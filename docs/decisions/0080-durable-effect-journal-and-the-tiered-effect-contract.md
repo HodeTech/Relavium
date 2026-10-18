@@ -369,3 +369,19 @@ An author sweep of the same class also reproduces multi-`@` URL userinfo retaini
 password suffix. One whole-authority projection masks through its last separator,
 preserving the host and subsequent public fields. Fresh independent review and
 publication validation remain required for the complete correction.
+
+### PR #95 structural-credential correction — 2026-10-18
+
+A separate security review at `63d8de41` confirms that a recognized credential
+field could retain the rest of its value when an inner text pattern matched.
+The structural field now decides before traversal; only a bounded, canonical
+authentication-scheme label may survive. The same whole-value rule applies to
+credential flags in both argument-vector spellings. The ambiguous `-p` port
+exception does not classify explicitly named credential flags as public ports.
+Native registry/store regressions retain original dispatch bytes while checking
+credential equality and public-argument distinction. Prior digest domains remain
+refused without rewriting history or granting retry authority. This restores the
+existing §11 requirement; current details remain in its
+[canonical contract](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+Fresh independent reviews, a complete separate security sitting and corrected-source
+publication checks are still required.

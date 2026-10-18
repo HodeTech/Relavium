@@ -730,7 +730,7 @@ OCCURRENCE, written by a `prepare` **before** an effectful tool dispatch leaves 
 | `tool_id` | TEXT | NOT NULL |
 | `tier` | INTEGER | NOT NULL — `1` \| `2` \| `3`; everything that ships is `3` |
 | `state` | TEXT | NOT NULL — `prepared` \| `dispatched` \| `committed` \| `ambiguous` \| `needs_attention` |
-| `args_digest` | TEXT | NOT NULL — current `v3:` prefix + SHA-256 over canonical JSON of the full redacted effective args; secret-tainted keys are **removed before hashing**. Unversioned and `v2:` legacy rows refuse matching prepare; see [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold). |
+| `args_digest` | TEXT | NOT NULL — current `v4:` prefix + SHA-256 over canonical JSON of the full redacted effective args; secret-tainted keys are **removed before hashing**. Unversioned, `v2:` and `v3:` legacy rows refuse matching prepare; see [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold). |
 | `target_idempotency_key` | TEXT | NULL — tier 1 only; what a safe retry reuses verbatim |
 | `result_json` | TEXT | Always NULL for `session:` scopes, including legacy rows after open-time clearing; RUN scopes retain the bounded result when re-delivery is possible |
 | `attempt_json` | TEXT | NOT NULL — the audit occurrence (node attempt, provider attempt, tool-call id, owning fence) |

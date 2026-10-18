@@ -351,13 +351,13 @@ unencrypted at rest. "A digest, not the bytes" is therefore not by itself a suff
 contract does not make it. The hash is SHA-256 over a canonical JSON serialization (sorted keys, no insignificant
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
-The current persisted form is `v3:` followed by the SHA-256 hex digest. The version
+The current persisted form is `v4:` followed by the SHA-256 hex digest. The version
 prefix is outside the hash and separates current full-value projections from legacy
-unversioned digests and `v2:` projections with incomplete credential masks; a JSON
+unversioned digests and `v2:`/`v3:` projections with incomplete credential masks; a JSON
 wrapper alone could itself equal arbitrary old tool args.
 The digest consumes the full surviving non-secret values, including long string tails.
 The bounded `toolInput` display preview is not a journal input: equal-length values can
-differ beyond its retained prefix. Every unversioned or `v2:` legacy row refuses matching prepare,
+differ beyond its retained prefix. Every unversioned, `v2:` or `v3:` legacy row refuses matching prepare,
 including unchanged small arguments: its original projection cannot be proven from the
 digest alone. There is no fallback to the old digest or automatic retry permission. Secret and
 inline-media redaction remain deliberate projection equality; raw credential bytes are never
@@ -369,6 +369,16 @@ longer than 512 characters. Quoted secret-key values honor escaped quotes and ba
 through the actual closing quote. A recognized value must not leave a credential suffix
 in the projection. This remains a finite shape detector, not a claim to identify arbitrary
 unlabelled secrets. Existing old digests are not retroactively erased or rewritten.
+
+A recognized structural credential key masks its entire value before traversal. A partial
+inner text match does not make the remaining value public. Only an anchored Bearer, Basic
+or Token scheme survives as its canonical label followed by `[redacted]`; no original
+credential remainder or casing is retained. Credential flags in an argument vector mask
+the whole following element or the complete value in `--token=value` form. Only the
+ambiguous `-p` spelling retains the existing port-shaped exception; explicitly named
+credential flags have none. Unrecognized public fields and ordinary arguments still
+contribute their complete surviving values to identity. These projections do not change
+the arguments dispatched to the host.
 
 A **session** row's `result_json` is always SQL NULL; even a supplied result whose serializer throws is never
 examined. A matching prepare refuses rather than replaying, and session audit readers omit the stored

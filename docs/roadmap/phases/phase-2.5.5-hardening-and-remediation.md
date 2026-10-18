@@ -8462,3 +8462,39 @@ domain from earlier partial projections. Existing old digests are not rewritten,
 and old rows grant neither replay nor retry permission. Two NEW complete cumulative
 clean rounds, a NEW separate clean security sitting and corrected-source publication
 evidence remain required after this finding.
+
+### PR #95 structural-credential correction — 2026-10-18
+
+The complete cumulative general round at `63d8de41` is clean across all **99
+corrective paths / 199 ordered default-context hunks**: library 20/52, CLI 43/93,
+tooling/docs 36/54. The separate new security sitting is **INCOMPLETE NONCLEAN**:
+it confirms a structural credential-field masking defect before the runner stops.
+Its incomplete coverage flags remain incomplete. A clean general round does not
+overrule that finding, certify the repair or supply separate security acceptance.
+The author independently reproduces the defect through the real HTTP registry
+and native SQLite store using synthetic values only.
+
+The repair gives a recognized credential key authority over its whole value,
+instead of retaining a partly scrubbed string. Only a fixed canonical auth-scheme
+label survives; credential containers are not traversed. The author same-class
+check also covers inline credential arguments and numeric credential flags,
+retaining the ambiguous `-p` port exception. These changes affect the redacted
+projection, not raw host dispatch. Prior digest domains refuse matching prepare;
+no history rewrite, automatic retry or new effect authority is introduced. Exact
+representation and compatibility remain in the
+[effect-journal contract](../../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+
+Permanent helper and actual built-in HTTP/command registry-to-SQLite cases check
+credential-only replay, independently authored canonical hashes, public-argument
+refusal and unchanged dispatch. The original structural helper/native cases fail
+before the repair. Author verification of code `1e3029d9` passes **181 focused
+cases**, with three removal controls producing **27 specific assertion failures**
+and byte-exact restoration followed by passing restored files. Workspace lint/
+typecheck is 17/17 (14 cache hits); serialized tasks are 11/11 (seven cache hits),
+retaining **748 files / 15,860 passing tests / 21 established skips**. Build is
+6/6 (five cache hits), and all **599 acceptance-tool cases** pass without skips.
+Cached results are not claimed rerun. This is author evidence; two NEW complete
+cumulative clean rounds, a NEW complete clean security sitting and fresh corrected-source
+CI/coverage/Sonar/platform evidence remain required. The successful `63d8de41`
+same-tarball consumers and Sonar analysis retain their earlier source attribution.
+Steps 9–19 remain unstarted and outside PR #95.
