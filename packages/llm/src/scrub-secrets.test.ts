@@ -255,7 +255,10 @@ describe('PR95 B2 finite joined-view boundaries', () => {
     const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
     const input = `${publicPrefix}sk-proj-${'B'.repeat(32)}\t${'C'.repeat(32)}; public=A`;
     const started = performance.now();
-    expect(scrubSecrets(input), 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+    const output = scrubSecrets(input);
+    // Keep removal evidence bounded: a regression must not serialize eight MiB into its report.
+    expect(output.length, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]'.length);
+    expect(output, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
     expect(performance.now() - started, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBeLessThan(5_000);
   });
 
