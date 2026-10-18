@@ -334,12 +334,7 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
   let redactNext: string | undefined;
   for (const item of items) {
     if (redactNext !== undefined) {
-      // Only the ambiguous -p flag has the documented port interpretation. --password/--token do not.
-      out.push(
-        typeof item === 'string' && redactNext.toLowerCase() === '-p' && looksLikePort(item)
-          ? redactSecretShapedWalk(item, seen)
-          : '[redacted]',
-      );
+      out.push(redactCredentialArgument(redactNext, item));
       redactNext = undefined;
       continue;
     }
@@ -348,7 +343,7 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
       const flag = separator > 0 ? item.slice(0, separator) : '';
       if (isSecretishFlag(flag)) {
         const value = item.slice(separator + 1);
-        out.push(flag.toLowerCase() === '-p' && looksLikePort(value) ? item : `${flag}=[redacted]`);
+        out.push(`${flag}=${redactCredentialArgument(flag, value)}`);
         continue;
       }
       if (isSecretishFlag(item)) redactNext = item;
@@ -356,6 +351,14 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
     out.push(redactSecretShapedWalk(item, seen));
   }
   return out;
+}
+
+/** One credential-value rule for both argv spellings; only ambiguous -p may name a public port. */
+function redactCredentialArgument(flag: string, value: unknown): string {
+  if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
+    return value;
+  }
+  return '[redacted]';
 }
 
 /**
