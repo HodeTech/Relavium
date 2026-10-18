@@ -8749,3 +8749,28 @@ collection confirms 25 complete workload files / 1,292 cases. These declarations
 and author checks are not final-source physical execution or independent acceptance.
 Two NEW complete cumulative clean rounds after the final
 material correction and the separate security/publication gates are still required.
+
+The second new cumulative round at `ce6df268` is also **COMPLETE NONCLEAN**:
+98 corrective paths / 251 ordered hunks are assigned exactly once and their
+body/hunk identities are independently reconciled. CLI and tooling/documentation
+lanes are clean. The libraries/native lane reproduces an overlapping finite
+header-label case: an invalid embedded `x-api-key` or `x-goog-api-key` candidate
+can still hide a valid original `api-key` boundary. This is the same admitted
+boundary class and remains a correction obligation, not a new accepted limitation.
+All four selected boundary controls at that source have independently inspected
+physical evidence: 12 phases / 1,320 executions / ten required witnesses / fifteen
+marked removal failures, zero unhandled errors and exact restoration. Selected
+captures remain incomplete-family evidence.
+
+The author separately reproduces quadratic work in the raw, non-joined standalone
+JWT pass: manufactured invalid hyphen-separated candidates take approximately
+5/17/66/255/994 ms at 8/16/32/64/128 KiB on the recorded host. An owned-child
+8-MiB reproduction reaches its three-second parent watchdog. That timeout is a
+reproduction limit, **not** acceptable causal-removal evidence. The correction
+shares the existing bounded canonical scanner across raw and joined standalone
+paths; finite header recognition checks original boundaries before matching.
+The LLM boundary path is unified across its finite families. The duplicated
+typed-replacement branch behind the source-bound Sonar reliability failure is
+also corrected without waiving the issue. Fresh author checks, two NEW complete
+cumulative clean rounds, a NEW separate security sitting and corrected-source
+publication gates remain required after these material corrections.
