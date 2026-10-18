@@ -251,6 +251,45 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
   });
 });
 
+describe('PR95 B2 complete diagnostic evidence before display normalization', () => {
+  const variants = [
+    { label: 'multiline', sanitize: sanitizeUntrusted },
+    { label: 'inline', sanitize: sanitizeUntrustedInline },
+  ];
+
+  it.each(
+    variants.flatMap((variant) => ['\n', '\t'].map((separator) => ({ ...variant, separator }))),
+  )(
+    'SECRETS_B2_DISPLAY_ORDER protects a complete first fragment in $label with $separator',
+    ({ sanitize, separator }) => {
+      for (const prefix of ['sk-proj-', 'AIza']) {
+        const input = `provider rejected ${prefix}${'A'.repeat(32)}${separator}${'B'.repeat(32)}; public=Q`;
+        expect(sanitize(input), 'SECRETS_B2_DISPLAY_ORDER').toBe('[REDACTED]');
+        expect(sanitize('provider rejected public-label; public=Q')).toBe(
+          'provider rejected public-label; public=Q',
+        );
+      }
+    },
+  );
+
+  it.each(
+    variants.flatMap((variant) =>
+      ['\u0001', '\u007f', '\u0085', '\u202e'].map((separator) => ({ ...variant, separator })),
+    ),
+  )(
+    'SECRETS_B2_DISPLAY_BOUNDARY preserves the original boundary in $label with $separator',
+    ({ sanitize, separator }) => {
+      for (const prefix of ['sk-proj-', 'AIza']) {
+        const input = `word${separator}${prefix}${'A'.repeat(32)}; public=Q`;
+        expect(sanitize(input), 'SECRETS_B2_DISPLAY_BOUNDARY').toBe('[REDACTED]');
+        expect(sanitize(`word${separator}public-label; public=Q`)).toBe(
+          'wordpublic-label; public=Q',
+        );
+      }
+    },
+  );
+});
+
 /**
  * `--json` is machine output that is read on a terminal as often as it is piped (#W15-10). `JSON.stringify`
  * escapes `ESC` but leaves DEL, the C1 controls and the Trojan-Source bidi family raw, so the human path's

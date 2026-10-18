@@ -29,45 +29,33 @@ export function sanitizeInline(text: string): string {
  * The sanitizer for text this process did NOT author — a rejection message, a provider response body, an MCP
  * error, a tool result, a stack trace.
  *
- * Two passes, and the ORDER is load-bearing: **normalize first, redact second.**
- *
- * This was the other way round, on the theory that a credential split by a control byte would rejoin once that
- * byte was removed — and the docblock admitted it could not construct a case where the order mattered. There
- * is one, and it is a real leak: a key split by a byte `stripTerminalControls` REMOVES (say `U+0001`) defeats
- * the pattern while the byte is still there, and then the strip rejoins the halves — printing the whole key.
- * Redacting after the strip sees the contiguous key and replaces it.
- *
- * A NEWLINE is different: `sanitizeInline` collapses it to a SPACE rather than removing it, so the halves
- * never become contiguous. The in-place pass cannot protect that suffix on its own; the whitespace-joined
- * residual check below supplies that protection. Only the REMOVED bytes rejoin during normalization.
- *
- * `scrubSecrets` rather than the tool-input detector `redactSecretShapedText`: the two catch different things,
- * and this path needs the KEY-PREFIX patterns (`sk-*`, `AIza*`, `Bearer`/`Basic` headers, URL userinfo, secret
- * query params) that an error message actually carries. The tool detector is tuned for authored paths and
- * commands and does not match a bare API key.
+ * Give the shared scrubber the ORIGINAL text before display normalization erases evidence.
+ * `scrubSecrets` independently checks raw and terminal-normalized views, including keys joined by
+ * removed controls and recognized LF/TAB continuations after a complete-looking first fragment.
+ * Stripping first can erase a legitimate original word boundary; collapsing LF/TAB first can expose
+ * the continuation after masking only the first fragment. Strip only after that complete projection,
+ * then apply the CLI's normalized/residual query-name policy before any one-line collapse.
  *
  * `sanitizeInline`/`stripTerminalControls` deliberately do NOT redact: they run on text this codebase composed,
  * where redaction would mangle legitimate output. This is the variant for the failure paths, where the content
  * is arbitrary and the cost of a false positive is a `[redacted]` in a diagnostic rather than a leaked key.
  */
 export function sanitizeUntrusted(text: string): string {
-  return redactIncludingAcrossSeparators(stripTerminalControls(text));
+  return redactIncludingAcrossSeparators(stripTerminalControls(scrubSecrets(text)));
 }
 
-/** {@link sanitizeUntrusted}, collapsed to one row — for a one-line notice. Same normalize-then-redact order:
- *  `sanitizeInline` is the normalization (strip + collapse), so the scrub sees the final text. */
+/** {@link sanitizeUntrusted}, collapsed to one row only AFTER its complete secret projection. */
 export function sanitizeUntrustedInline(text: string): string {
-  return redactIncludingAcrossSeparators(sanitizeInline(text));
+  return sanitizeInline(sanitizeUntrusted(text));
 }
 
 /**
- * Redact `normalized`, INCLUDING a credential split across whitespace.
+ * Redact the display-normalized diagnostic, INCLUDING the CLI's residual split query-name policy.
  *
  * The ordinary pass replaces a contiguous match in place, which is what almost every case is. What it cannot
- * see is a key broken by a newline or a tab: unlike the control bytes {@link stripTerminalControls} removes,
- * those are display-significant, so normalization COLLAPSES them to a space rather than deleting them — and
- * the halves never become contiguous for the matcher. The prefix (`sk-ant-…`) is public, so what leaked was
- * the part that matters: the secret suffix.
+ * classify universally is arbitrary opaque fragments separated by whitespace. The shared scrubber owns
+ * its finite original/normalized/LF-TAB rules; this additional CLI check joins still-unmasked spans to
+ * recognize split literal query names without joining through already-redacted material.
  *
  * After every in-place pass, this checks the remaining unredacted segments — is there a credential once
  * their separators are gone? — and if so redacts the WHOLE text. A successful independent redaction must

@@ -91,6 +91,41 @@ function messageFromJson(value: unknown): string {
 
 describe('renderError terminal projection', () => {
   it.each([
+    { label: 'human', json: false, verbose: false },
+    { label: 'human verbose', json: false, verbose: true },
+    { label: 'JSON', json: true, verbose: false },
+    { label: 'JSON verbose', json: true, verbose: true },
+  ])('SECRETS_B2_DISPLAY_ORDER protects original credential evidence in $label', (options) => {
+    for (const prefix of ['sk-proj-', 'AIza']) {
+      for (const separator of ['\n', '\t', '\u0001', '\u007f', '\u0085', '\u202e']) {
+        const marker =
+          separator === '\n' || separator === '\t'
+            ? 'SECRETS_B2_DISPLAY_ORDER'
+            : 'SECRETS_B2_DISPLAY_BOUNDARY';
+        const input =
+          separator === '\n' || separator === '\t'
+            ? `provider rejected ${prefix}${'A'.repeat(32)}${separator}${'B'.repeat(32)}; public=Q`
+            : `word${separator}${prefix}${'A'.repeat(32)}; public=Q`;
+        const error = new CliError('invalid_invocation', input);
+        Object.defineProperty(error, 'stack', { value: `outer stack ${input}` });
+        const capture = captureIo();
+        const stdout: string[] = [];
+        renderError(error, options, { ...capture.io, writeOut: (text) => stdout.push(text) });
+        expect(stdout, marker).toEqual([]);
+        const output = capture.stderr();
+        expect(output, marker).not.toContain('A'.repeat(32));
+        expect(output, marker).not.toContain('B'.repeat(32));
+        if (options.json) {
+          expect(messageFromJson(JSON.parse(output)), marker).toBe('[REDACTED]');
+          expect(output).not.toContain('outer stack');
+        } else {
+          expect(output, marker).toContain('relavium: [REDACTED]\n');
+        }
+      }
+    }
+  });
+
+  it.each([
     { json: false, verbose: false },
     { json: false, verbose: true },
     { json: true, verbose: false },

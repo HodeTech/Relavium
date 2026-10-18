@@ -62,12 +62,15 @@ describe('declared input-admission diagnostics', () => {
     const message = inputAdmissionMessage([
       { name: credential, message: 'value does not match the declared pattern' },
       { name: 'declared', message: 'r'.repeat(249) + ' ' + splitCredential },
+      { name: 'raw', message: 'r'.repeat(249) + ' ' + credential },
     ]);
     expect(message).toContain("input '[REDACTED]': value does not match the declared pattern");
     expect(message).not.toContain('sk-proj-');
     expect(message).not.toContain('x'.repeat(20));
-    // The complete credential spans the display limit, so truncating before redaction would leak it.
-    expect(message).toContain(`input 'declared': ${'r'.repeat(249)} [REDAC`);
+    // Normalization reveals a different finite match, so the original diagnostic is wholly masked.
+    expect(message).toContain("input 'declared': [REDACTED]");
+    // A raw credential still crosses the display limit; clipping before redaction would leak it.
+    expect(message).toContain(`input 'raw': ${'r'.repeat(249)} [REDAC`);
   });
 
   it('keeps terminal controls, bidi direction changes and extra rows out of a displayed reason', () => {
