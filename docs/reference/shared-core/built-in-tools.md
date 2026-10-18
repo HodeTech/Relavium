@@ -82,6 +82,29 @@ The result a tool hands **back to the model** (which re-enters the next request)
 
 The ceiling is a **byte/line** bound — no token count, which would need a provider-specific tokenizer and break engine purity. These defaults are tunable and revisited if real workflows hit them (the [deferred-tasks.md](../../roadmap/deferred-tasks.md) tool-output-gate framing). The dispatch lifecycle that applies them is in [tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file).
 
+
+### Finite diagnostic credential masking
+
+Tool-input previews, result summaries and journal argument projections recognize a
+finite set of credential shapes: labelled credential values, authentication schemes,
+URL userinfo and known token families, including hyphenated OpenAI/Anthropic key
+bodies. Recognition consumes the complete supported span before diagnostic clipping.
+This is conservative pattern masking, not proof that arbitrary sensitive content is
+absent; raw dispatch/model results, full spills and historical rows retain their
+existing content-sensitive handling.
+
+LF/TAB inside a recognized token-shaped credential extends the masked original span.
+An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
+that credential. Ordinary spaces and punctuation separate public prose; the masker
+does not discard the whole diagnostic because a credential appears. Supported split
+shapes are recognized **before** complete-text one-line normalization, followed by
+ordinary recognition and length clipping. This preserves multiline quoted-value
+recognition without exposing a split token's suffix. Public argument bytes are not
+globally whitespace-normalized for journal identity. The
+[journal contract](effect-journal.md#11-secrets-what-a-row-may-hold) owns recognized-
+credential equality and persisted compatibility; diagnostic masking grants no
+permission to repeat an effect.
+
 ## Subprocess environment
 
 A tool that spawns a process (`run_command`, `git_*`) runs with **`shell: false`** under an **explicitly-constructed environment** — **never** a blanket copy of the host environment, which would hand every subprocess the host's secrets and hijack vectors (`PATH`, `NODE_OPTIONS`, …). Because the engine is platform-free it cannot build a platform base env or resolve an executable on `PATH`, so the split is: the **engine** supplies the policy (the allowlist-checked command) plus the declared extra variables; the **host** resolves the executable, supplies the platform-minimal base env, and merges only the declared variables under an audited allowlist. The seam is in [tool-registry.md](tool-registry.md#the-toolhost-capability-seam).

@@ -508,6 +508,7 @@ describe('redactSecretShapedText', () => {
   it('scrubs every non-URL credential family after a long public prefix and preserves the full tail', () => {
     // No URL delimiter occurs in these values. Skipping impossible userinfo matches must not bypass
     // another credential family or truncate the journal input to the display projection's 16 KiB.
+    // An ordinary space distinguishes public prose from the LF/TAB token-continuation policy.
     const prefix = `${'a'.repeat(32 * 1024)}\n`;
     const cases = [
       [`?opaque=${'Q'.repeat(24)}`, '?opaque=[redacted]'],
@@ -518,8 +519,8 @@ describe('redactSecretShapedText', () => {
     ];
     for (const [credential, expected] of cases) {
       for (const tail of ['public-tail-A', 'public-tail-B']) {
-        expect(redactSecretShapedText(`${prefix}${credential}\n${tail}`)).toBe(
-          `${prefix}${expected}\n${tail}`,
+        expect(redactSecretShapedText(`${prefix}${credential}\n ${tail}`)).toBe(
+          `${prefix}${expected}\n ${tail}`,
         );
       }
     }
@@ -533,7 +534,7 @@ describe('redactSecretShapedText', () => {
 
   it(
     'is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)',
-    { timeout: 60_000 },
+    { timeout: 15_000 },
     () => {
       // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic
       // pattern blows up on. The correctness assertions catch a quantifier-narrowing regression that would
@@ -682,6 +683,7 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
   });
 
   it('still finds both userinfo forms after a long public prefix', () => {
+    // An ordinary space distinguishes public prose from the LF/TAB token-continuation policy.
     const prefix = `${'a'.repeat(32 * 1024)}\n`;
     for (const userinfo of ['user:opaque-password', 'opaque-token-value-without-colon']) {
       expect(redactSecretShapedText(`${prefix}custom+scheme://${userinfo}@host.example/tail`)).toBe(
@@ -888,5 +890,128 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(redactSecretShapedText('https://api.example.com/v1/things?limit=10&q=cats')).toBe(
       'https://api.example.com/v1/things?limit=10&q=cats',
     );
+  });
+});
+
+function expectCredentialProjection(value: unknown) {
+  return expect(value, 'SECRETS_B2_CORE_PROJECTION');
+}
+
+describe('PR95 B2 finite split-credential projections', () => {
+  const bodies = ['proj-', 'svcacct-', 'ant-', ''].map(
+    (prefix) => `sk-${prefix}${'A'.repeat(24)}_${'B'.repeat(24)}`,
+  );
+
+  it.each(bodies)('masks the complete modern provider shape %s', async (credential) => {
+    expectCredentialProjection(redactSecretShapedText(`public: ${credential}; tail=A`)).toBe(
+      'public: [redacted]; tail=A',
+    );
+    const bounded = await boundForModel(`public: ${credential}; tail=A`, BIG, {});
+    expectCredentialProjection(bounded.summary).toBe('public: [redacted]; tail=A');
+  });
+
+  it('masks every LF/TAB split without losing the surrounding public identity', async () => {
+    for (const credential of bodies) {
+      for (const separator of ['\n', '\t']) {
+        for (let index = 1; index < credential.length; index += 1) {
+          const split = credential.slice(0, index) + separator + credential.slice(index);
+          for (const tail of ['A', 'B']) {
+            const input = `provider rejected ${split}; public=${tail}`;
+            expectCredentialProjection(redactSecretShapedText(input)).toBe(
+              `provider rejected [redacted]; public=${tail}`,
+            );
+            expectCredentialProjection((await boundForModel(input, BIG, {})).summary).toBe(
+              `provider rejected [redacted]; public=${tail}`,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it.each(['\n', '\t'])(
+    'masks split schemes, finite header names and URL userinfo (%j)',
+    (separator) => {
+      for (const input of [
+        `Authorization: Be${separator}arer opaque-credential-Z29; public=A`,
+        `X-Api-${separator}Key: opaque-credential-Z29; public=A`,
+        `https://alice:opaque${separator}password@provider.invalid/v1; public=A`,
+      ]) {
+        const output = redactSecretShapedText(input);
+        expectCredentialProjection(output).not.toContain('opaque');
+        expectCredentialProjection(output).not.toContain('password@');
+        expectCredentialProjection(output).toContain('; public=A');
+      }
+    },
+  );
+
+  it.each(['?', '#'])(
+    'masks raw %s within password userinfo and preserves contact queries',
+    (separator) => {
+      expectCredentialProjection(
+        redactSecretShapedText(`https://alice:pa${separator}ss@provider.invalid/v1`),
+      ).toBe('https://[redacted]@provider.invalid/v1');
+      for (const host of ['provider.invalid', 'provider.invalid:8443', '[::1]:8443']) {
+        const publicUrl = `https://${host}${separator}contact=alice@example.invalid`;
+        expectCredentialProjection(redactSecretShapedText(publicUrl)).toBe(publicUrl);
+      }
+    },
+  );
+
+  it('keeps credential-free LF/TAB content byte-for-byte distinct', () => {
+    for (const input of [
+      'provider\nretry\tlater A',
+      'provider\nretry\tlater B',
+      'x-trace-id:\nordinary',
+      'not_a_sk-short',
+    ]) {
+      expectCredentialProjection(redactSecretShapedText(input)).toBe(input);
+    }
+  });
+});
+
+describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
+  it('retains prefix evidence inside a header and preserves the same public tail after multiple masks', () => {
+    const credential = `sk-proj-${'A'.repeat(24)}\n${'B'.repeat(24)}`;
+    const result = redactSecretShapedText(
+      `Bearer ${credential}; https://u:pa\tss@host.invalid/a; public=B`,
+    );
+    expectCredentialProjection(result).not.toContain('AAAA');
+    expectCredentialProjection(result).not.toContain('BBBB');
+    expectCredentialProjection(result).toContain('host.invalid/a; public=B');
+  });
+
+  it('keeps the original left boundary when LF/TAB occurs elsewhere or immediately before a key', () => {
+    const embedded = `wordsk-proj-${'A'.repeat(32)};\nordinary`;
+    expectCredentialProjection(redactSecretShapedText(embedded)).toBe(embedded);
+    const splitEmbedded = `wordsk-proj-${'A'.repeat(32)}\n${'B'.repeat(32)}; public=A`;
+    expectCredentialProjection(redactSecretShapedText(splitEmbedded)).toBe(splitEmbedded);
+    expectCredentialProjection(
+      redactSecretShapedText(`rejected\nsk-proj-AAA\t${'B'.repeat(32)}; public=A`),
+    ).toBe('rejected\n[redacted]; public=A');
+  });
+
+  it.each(['?', '#'])(
+    'preserves public %s tails after userinfo and masks raw password assignments',
+    (separator) => {
+      expectCredentialProjection(
+        redactSecretShapedText(
+          `https://u:password@host.invalid${separator}contact=a@example.invalid`,
+        ),
+      ).toBe(`https://[redacted]@host.invalid${separator}contact=a@example.invalid`);
+      expectCredentialProjection(
+        redactSecretShapedText(`https://u:pa${separator}ss=value@host.invalid/v1`),
+      ).toBe('https://[redacted]@host.invalid/v1');
+    },
+  );
+
+  it('projects an 8 MiB split credential and public payload without clipping or RegExp stack growth', () => {
+    const body = 'A'.repeat(8 * 1024 * 1024 - 256);
+    const projected = redactSecretShapedText(`sk-proj-${body}\nBBBBBBBB; public=A`);
+    // Fail with bounded metadata if a causal removal exposes this entire large credential.
+    expectCredentialProjection(projected.length).toBe('[redacted]; public=A'.length);
+    expectCredentialProjection(projected).toBe('[redacted]; public=A');
+    const publicText = `${body}\n public-tail-B`;
+    expectCredentialProjection(redactSecretShapedText(publicText)).toBe(publicText);
   });
 });

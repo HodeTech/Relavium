@@ -432,3 +432,20 @@ owns exact source, coverage, execution limits and published-source validation.
 Earlier pending review notes retain their historical attribution. Canonical
 projection/compatibility contracts remain authoritative; this landing rewrites no
 history and grants no automatic effect retry or whole-wave completion.
+
+
+### PR #95 split-credential recognition clarification — 2026-10-18
+
+> Amended 2026-10-18: The second maintainer systematic report identifies supported
+> token families and LF/TAB-split credential suffixes escaping finite masking.
+> Recognition now covers the complete supported original span before summary
+> normalization or diagnostic clipping; ambiguous token-alphabet continuation
+> after LF/TAB is conservatively part of that span. Ordinary spaces/punctuation
+> separate surrounding public prose. This refines recognized-credential
+> projection rather than promising removal of arbitrary sensitive content.
+> The [finite masking contract](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
+> and [journal compatibility contract](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold)
+> own current details. Raw dispatch/model content and historical rows are not
+> rewritten, and no effect retry authority is added. New independent review,
+> separate security and corrected-source publication checks remain pending in
+> the [second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).

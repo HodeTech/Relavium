@@ -120,6 +120,83 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   }
 }
 
+// One alternation preserves outer spans when credential families overlap. Bounded lookaheads
+// enforce minimum lengths before simple runs; no admitted-size repeated groups use the regex stack.
+const STANDALONE_CREDENTIAL =
+  /\b(?:sk-(?=[\w-]{16})[\w-]+|sk_(?:live|test)_(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|github_pat_(?=\w{20})\w+|glpat-(?=[\w-]{16})[\w-]+|xox[baprs]-(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+|AIza(?=[\w-]{30})[\w-]+|ya29\.(?=[\w-]{20})[\w-]+|hf_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|npm_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|eyJ(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+)/g; // NOSONAR — finite credential families, see the projection policy below
+// The joined probe checks its boundary in the ORIGINAL text. Removing LF/TAB must not erase
+// a legitimate boundary or manufacture one inside a public word. The source is the literal above.
+const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'g');
+
+const SCHEME_CREDENTIAL =
+  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
+
+type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
+
+/**
+ * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
+ * ordinary spaces remain boundaries and public text is never globally normalized for identity.
+ * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
+ * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ */
+function redactJoinedCredentialSpans(
+  text: string,
+  visit: (joined: string, mask: SecretSpanVisitor) => void,
+  boundary?: RegExp,
+): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const joined = text.replace(/[\n\t]+/g, '');
+  const parts: string[] = [];
+  let originalOffset = 0;
+  let joinedOffset = 0;
+  let copied = 0;
+  function advance(target: number): number {
+    while (joinedOffset < target && originalOffset < text.length) {
+      const char = text[originalOffset++];
+      if (char !== '\n' && char !== '\t') joinedOffset += 1;
+    }
+    return originalOffset;
+  }
+  visit(joined, (start, end, replacement) => {
+    let originalStart = advance(start);
+    while (text[originalStart] === '\n' || text[originalStart] === '\t') originalStart += 1;
+    const originalEnd = advance(end);
+    if (boundary?.test(text[originalStart - 1] ?? '')) return;
+    if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;
+    parts.push(text.slice(copied, originalStart), replacement);
+    copied = originalEnd;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+function redactSplitCredentials(text: string): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);
+  const keys = redactJoinedCredentialSpans(
+    urls,
+    (joined, mask) => {
+      for (const match of joined.matchAll(JOINED_STANDALONE_CREDENTIAL)) {
+        mask(match.index, match.index + match[0].length, '[redacted]');
+      }
+    },
+    /\w/,
+  );
+  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');
+  return redactJoinedCredentialSpans(
+    schemes,
+    (joined, mask) => {
+      // Finite literal header names only. Ordinary spaces delimit diagnostic text and values.
+      const header = /(?:authorization|(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi;
+      for (const match of joined.matchAll(header)) {
+        mask(match.index, match.index + match[0].length, match[0]);
+      }
+    },
+    /[A-Za-z0-9_-]/,
+  );
+}
+
 /**
  * Redact secret-SHAPED substrings from observability and journal projections — NOT the model-facing value
  * (the model must still see the real tool result
@@ -134,7 +211,7 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
  */
 export function redactSecretShapedText(text: string): string {
   return (
-    redactOpaqueQueryValues(redactUrlUserinfo(text))
+    redactOpaqueQueryValues(redactUrlUserinfo(redactSplitCredentials(text)))
       // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
       // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
       .replace(
@@ -146,7 +223,7 @@ export function redactSecretShapedText(text: string): string {
       // For every open-ended token minimum below, a bounded lookahead enforces the same floor before
       // one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
       // equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
-      .replace(/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi, '$1 [redacted]')
+      .replace(SCHEME_CREDENTIAL, '$1 [redacted]')
       // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
       // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
       // value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
@@ -174,7 +251,7 @@ export function redactSecretShapedText(text: string): string {
       // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
       .replace(
         // NOSONAR — the per-regex complexity is the deliberate, documented exception explained above
-        /\b(?:sk-(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|sk_(?:live|test)_(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|github_pat_(?=\w{20})\w+|glpat-(?=[\w-]{16})[\w-]+|xox[baprs]-(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+|AIza(?=[\w-]{30})[\w-]+|ya29\.(?=[\w-]{20})[\w-]+|hf_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|npm_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|eyJ(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+)/g,
+        STANDALONE_CREDENTIAL,
         '[redacted]',
       )
   );
@@ -210,33 +287,52 @@ function redactOpaqueQueryValues(text: string): string {
 /**
  * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
  * matches can mask the first password fragment and leave another `@` plus a credential
- * tail in the durable digest. Delimiters stop before paths, queries, fragments or adjacent
- * JSON fields; a short colonless vanity handle retains the existing non-secret policy.
+ * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
+ * after an existing userinfo separator remain public. Before that separator, raw ?/# in a
+ * colon-bearing password are masked, except an explicit public host:port prefix; a short colonless vanity handle retains the existing non-secret policy.
  */
-function redactUrlUserinfo(text: string): string {
-  // This necessary delimiter also avoids retrying a scheme prefix across large non-URL values.
-  if (!text.includes('://')) return text;
+function isPublicHostPort(text: string): boolean {
+  const colon = text.lastIndexOf(':');
+  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
+  const hostname = text.slice(0, colon);
+  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+}
+
+function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
+  if (!text.includes('://')) return;
   const scheme = /[a-z][\w+.-]{0,31}:\/\//gi;
-  const delimiter = /[/\s?#"',}\]]/g;
-  const parts: string[] = [];
-  let cursor = 0;
+  const delimiter = /[/\s"',}\]]/g;
   for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
-    const authorityStart = scheme.lastIndex;
-    delimiter.lastIndex = authorityStart;
+    const start = scheme.lastIndex;
+    delimiter.lastIndex = start;
     const end = delimiter.exec(text)?.index ?? text.length;
-    const authority = text.slice(authorityStart, end);
-    const at = authority.lastIndexOf('@');
+    const authority = text.slice(start, end);
+    const firstQuery = authority.search(/[?#]/);
+    const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
+    const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
     if (at < 0) continue;
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
+    const query = userinfo.search(/[?#]/);
+    // Raw ?/# can belong to a malformed password. An explicit host:port prefix instead
+    // introduces a public query/fragment; its contact values must not become userinfo.
+    if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
+      continue;
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
-    parts.push(text.slice(cursor, authorityStart), '[redacted]');
-    cursor = authorityStart + at;
-    // Do not consume the host while examining it: `host;other://...` must leave the next
-    // scheme available to this scanner, rather than swallowing `other:` at its first slash.
-    scheme.lastIndex = cursor + 1;
+    mask(start, start + at, '[redacted]');
+    // Skip the recognized userinfo without hiding a later scheme in the public host/tail.
+    scheme.lastIndex = start + at + 1;
   }
+}
+
+function redactUrlUserinfo(text: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  visitUrlUserinfo(text, (start, end, replacement) => {
+    parts.push(text.slice(cursor, start), replacement);
+    cursor = end;
+  });
   if (parts.length === 0) return text;
   parts.push(text.slice(cursor));
   return parts.join('');
@@ -476,10 +572,9 @@ function toText(result: unknown): string {
 }
 
 function makeSummary(text: string): string {
-  // Normalize the complete materialized text before recognition, preserving the one-line diagnostic
-  // policy even for quoted multiline values. Clip only after recognition: a closing quote or URL
+  // Recognize LF/TAB-split shapes in the complete materialized text before one-line normalization. Clip only after recognition: a closing quote or URL
   // authority separator can be beyond the preview. Raw model/spill text stays unchanged.
-  const oneLine = redactSecretShapedText(text.replace(/\s+/g, ' ').trim());
+  const oneLine = redactSecretShapedText(redactSplitCredentials(text).replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 
