@@ -80,6 +80,28 @@ const headerOriginalBoundaryCases = ['x-', 'x-goog-'].flatMap((prefix) =>
       `recovers the original finite header boundary after embedded ${prefix} (${JSON.stringify(separator)})`,
   ),
 );
+const displayProjectionCases = [
+  'apps/cli/src/render/sanitize.test.ts',
+  'apps/cli/src/process/render-error.test.ts',
+];
+const displayOrderMarker = 'SECRETS_B2_DISPLAY_ORDER';
+const displayBoundaryMarker = 'SECRETS_B2_DISPLAY_BOUNDARY';
+const displayOrderCases = ['\\n', '\\t'].map(
+  (separator) =>
+    `${displayOrderMarker} protects a complete first fragment in 'inline' with '${separator}'`,
+);
+const displayBoundaryCases = ['multiline', 'inline'].flatMap((label) =>
+  ['\\u0001', '\\u007f', '\\u0085', '\\u202e'].map(
+    (separator) =>
+      `${displayBoundaryMarker} preserves the original boundary in '${label}' with '${separator}'`,
+  ),
+);
+function displayRendererWitnesses(marker) {
+  return ['human', 'human verbose', 'JSON', 'JSON verbose'].map((label) => ({
+    target: `${displayOrderMarker} protects original credential evidence in '${label}'`,
+    marker,
+  }));
+}
 // Both scanner admission and mapper admission enforce one original-boundary law. Remove both
 // exact checks together; removing only the late mapper guard would leave its new prefilter intact.
 const coreOriginalBoundary = String.raw`    if (/\w/.test(original[originalOffset - 1] ?? '')) continue;
@@ -298,11 +320,10 @@ export const mutations = [
   control(
     'diagnostic-residual-scrub',
     'apps/cli/src/render/sanitize.ts',
-    '  const scrubbed = scrubSecrets(normalized);',
-    `  const scrubbed = scrubSecrets(normalized);
-  if (scrubbed !== normalized) return scrubbed;`,
+    "  for (const remaining of scrubbed.split('[REDACTED]')) {",
+    '  for (const remaining of []) {',
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    163,
+    179,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -344,7 +365,7 @@ export const mutations = [
       'apps/cli/src/render/sanitize.test.ts',
       'apps/cli/src/process/render-error.test.ts',
     ],
-    261,
+    277,
     'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
     'SECRETS_CAUSAL_PREFIX_ORDER',
     [
@@ -393,7 +414,7 @@ export const mutations = [
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
-    261,
+    277,
     `${overlapMarker} protects client_secret normalized key before query redaction`,
     overlapMarker,
     overlapWitnesses('normalized key').filter(
@@ -408,7 +429,7 @@ export const mutations = [
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,
-    261,
+    277,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
     overlapMarker,
     [
@@ -902,8 +923,8 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-joined-original-boundary',
-    "if (/[A-Za-z]/.test(char ?? '') && !rule.boundary.test(text[originalOffset - 1] ?? '')) {",
-    "if (/[A-Za-z]/.test(char ?? '')) {",
+    "if (letter && !previousWord && !rule.boundary.test(text[originalOffset - 1] ?? '')) {",
+    'if (letter) {',
     ['does not invent a key boundary in a public word with a separate newline'],
   ),
   diagnosticControl(
@@ -947,5 +968,34 @@ export const mutations = [
     "!rule.boundary.test((rule.joinedPattern !== undefined ? joined[joinedOffset - 1] : text[originalOffset - 1]) ?? '')",
     headerOriginalBoundaryCases,
     headerOriginalBoundaryMarker,
+  ),
+  // R3: retain original credential evidence before independent inline/terminal display transforms.
+  control(
+    'diagnostic-inline-projection-order',
+    'apps/cli/src/render/sanitize.ts',
+    '  return sanitizeInline(sanitizeUntrusted(text));',
+    '  return sanitizeUntrusted(sanitizeInline(text));',
+    displayProjectionCases,
+    179,
+    displayOrderCases[0],
+    displayOrderMarker,
+    [
+      ...displayOrderCases.slice(1).map((target) => ({ target, marker: displayOrderMarker })),
+      ...displayRendererWitnesses(displayOrderMarker),
+    ],
+  ),
+  control(
+    'diagnostic-original-control-boundary',
+    'apps/cli/src/render/sanitize.ts',
+    '  return redactIncludingAcrossSeparators(stripTerminalControls(scrubSecrets(text)));',
+    '  return redactIncludingAcrossSeparators(stripTerminalControls(text));',
+    displayProjectionCases,
+    179,
+    displayBoundaryCases[0],
+    displayBoundaryMarker,
+    [
+      ...displayBoundaryCases.slice(1).map((target) => ({ target, marker: displayBoundaryMarker })),
+      ...displayRendererWitnesses(displayBoundaryMarker),
+    ],
   ),
 ];

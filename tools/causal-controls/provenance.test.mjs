@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 55);
+  assert.equal(secretsControls.length, 57);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    318,
+    336,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -287,7 +287,7 @@ test('secrets workload corrections retain independent complete-count and reader-
     [
       'diagnostic-residual-scrub',
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-      163,
+      179,
     ],
     ...['prefix-before-redaction', 'normalized-secret-probe', 'non-query-before-query'].map(
       (id) => [
@@ -297,7 +297,7 @@ test('secrets workload corrections retain independent complete-count and reader-
           'apps/cli/src/render/sanitize.test.ts',
           'apps/cli/src/process/render-error.test.ts',
         ],
-        261,
+        277,
       ],
     ),
     ...[
@@ -318,11 +318,60 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-joined-original-boundary-recovery',
       'diagnostic-header-original-boundary-recovery',
     ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 89]),
+    ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
+      id,
+      ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
+      179,
+    ]),
   ]) {
     const selected = secretsControls.find((entry) => entry.id === id);
     assert.ok(selected, `${id}: missing redaction control`);
     assert.deepEqual(selected.files, files);
     assert.equal(selected.expectedTests, expectedTests, `${id}: complete workload drift`);
+  }
+  const llmBoundary = secretsControls.find(
+    (entry) => entry.id === 'diagnostic-joined-original-boundary',
+  );
+  assert.ok(llmBoundary);
+  assert.ok(llmBoundary.before.includes('!previousWord && !rule.boundary.test('));
+  assert.equal(llmBoundary.after, 'if (letter) {');
+  const cliResidual = secretsControls.find((entry) => entry.id === 'diagnostic-residual-scrub');
+  assert.ok(cliResidual);
+  assert.equal(cliResidual.before, "  for (const remaining of scrubbed.split('[REDACTED]')) {");
+  assert.equal(cliResidual.after, '  for (const remaining of []) {');
+  for (const [id, marker, sanitizerTargets] of [
+    [
+      'diagnostic-inline-projection-order',
+      'SECRETS_B2_DISPLAY_ORDER',
+      ['\\n', '\\t'].map(
+        (separator) =>
+          `SECRETS_B2_DISPLAY_ORDER protects a complete first fragment in 'inline' with '${separator}'`,
+      ),
+    ],
+    [
+      'diagnostic-original-control-boundary',
+      'SECRETS_B2_DISPLAY_BOUNDARY',
+      ['multiline', 'inline'].flatMap((label) =>
+        ['\\u0001', '\\u007f', '\\u0085', '\\u202e'].map(
+          (separator) =>
+            `SECRETS_B2_DISPLAY_BOUNDARY preserves the original boundary in '${label}' with '${separator}'`,
+        ),
+      ),
+    ],
+  ]) {
+    const display = secretsControls.find((entry) => entry.id === id);
+    assert.ok(display, `${id}: missing display projection control`);
+    assert.equal(display.marker, marker);
+    assert.deepEqual(
+      [display.target, ...display.witnesses.map((witness) => witness.target)],
+      [
+        ...sanitizerTargets,
+        ...['human', 'human verbose', 'JSON', 'JSON verbose'].map(
+          (label) => `SECRETS_B2_DISPLAY_ORDER protects original credential evidence in '${label}'`,
+        ),
+      ],
+    );
+    assert.ok(display.witnesses.every((witness) => witness.marker === marker));
   }
   for (const id of [
     'core-joined-original-boundary-recovery',

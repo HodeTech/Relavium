@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **55 independent controls and 318 required named assertion witnesses**.
+declares **57 independent controls and 336 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -17,7 +17,7 @@ including exact-cap, Unicode/whitespace and benign query-name positive cases. Th
 requires all three aggregate and all three single-chunk witnesses. Source-error
 normalization requires all nine declared ownership boundaries. Each native
 operation requires both constructor and method witnesses with an opaque Error.
-The diagnostic residual control restores the unsafe early return after an in-place match
+The diagnostic residual control skips the CLI's still-unmasked-span residual scan
 and requires all 21 named completed assertion witnesses: both sanitizer functions
 for each of the eight query families, human/JSON diagnostics in normal/verbose
 mode and an isolated verbose-stack case with a benign message. Each pairs a newly
@@ -48,7 +48,7 @@ other replacement erases its evidence, followed by the finite query replacement.
 The views include the canonical terminal-normalized text and a whitespace-joined
 residual view. The split literal query name remains an independent CLI obligation.
 Across the thirteen Step 3 controls, 191 named assertion witnesses are required. The shared
-overlap controls collect 261 tests across the LLM, CLI sanitizer and renderer files.
+overlap controls collect 277 tests across the LLM, CLI sanitizer and renderer files.
 The B2 controls below pin the conservative LF/TAB continuation rule when a first
 fragment already meets a key-length floor. Broader whitespace residual checks retain
 their finite scope; neither mechanism claims universal secret detection.
@@ -179,7 +179,7 @@ independently. Four LLM controls remove the before-masking LF/TAB probe, its ori
 left-boundary check, split API-header recognition and raw-password recognition.
 Every core phase executes the complete 142-case bounding file; every new LLM phase
 executes the complete 89-case scrubber file. Independent ordinary tooling tests pin
-these inventories, the 261-case overlap cohort, 163-case CLI diagnostic cohort and
+these inventories, the 277-case overlap cohort, 179-case CLI diagnostic cohort and
 17-case command-export cohort. Actual collection still has to match in every phase.
 
 The boundary controls preserve an embedded public-word key-shaped run containing an
@@ -231,8 +231,34 @@ retain their own source/workload attribution. Declaration maintenance and fresh
 collection do not recertify them as current-source or full-55 execution. Actual
 fixed/removal/restored evidence and independent acceptance remain separate.
 
-The current 55-control / 165-phase full declaration projects 997 retained files
-(55 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+Two R3 display-projection controls add eighteen named assertion witnesses while
+retaining all 55 prior identities, targets, markers and witness arrays. The
+`diagnostic-inline-projection-order` removal collapses LF/TAB before the complete
+untrusted-text projection. Its two inline sanitizer cases and four actual
+human/JSON normal/verbose renderer cases must fail `SECRETS_B2_DISPLAY_ORDER`.
+The independent `diagnostic-original-control-boundary` removal strips terminal
+controls before the initial shared scrubber can observe their original credential
+boundary. Eight multiline/inline sanitizer cases cover removed C0, DEL, C1 and
+bidi units; the same four real renderer cases must fail their distinct
+`SECRETS_B2_DISPLAY_BOUNDARY` assertion. Both phases execute the complete 179-case
+sanitizer/renderer cohort. The earlier CLI residual-query control remains
+independent and retains its required witnesses. Its removal now skips the actual
+remaining-span loop: the new outer raw scrubber can already mask ordinary matches,
+so the former conditional early-return mutation would leave this policy active.
+
+The LLM original-boundary removal now removes both the numeric coarse
+previous-word prefilter and the rule's own boundary predicate; retaining either
+would leave the tested policy active. Header/key recovery removals still change
+their original-rule boundary only, and all removals retain the same canonical
+matchers and bounded raw/joined standalone visitors. Current collection is 25
+complete files / 1,319 cases, with each control's exact workload and named target
+checked separately. These are updated declarations and author checks, not new
+physical causal captures or a clean review round. R3 remains NONCLEAN until its
+corrections receive new independent acceptance; prior selected `7e9096a8` captures
+retain their older source/workload attribution.
+
+The current 57-control / 171-phase full declaration projects 1,033 retained files
+(57 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
