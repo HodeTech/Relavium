@@ -174,3 +174,97 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
     },
   );
 });
+
+function expectCredentialDiagnostic(value: unknown) {
+  return expect(value, 'SECRETS_B2_LLM_DIAGNOSTIC');
+}
+
+describe('PR95 B2 split provider/header and malformed userinfo diagnostics', () => {
+  it('masks every LF/TAB split including a complete-looking first key fragment', () => {
+    for (const prefix of ['sk-', 'sk-proj-', 'sk-svcacct-', 'sk-ant-', 'AIza']) {
+      const credential = `${prefix}${'A'.repeat(32)}_${'B'.repeat(32)}`;
+      for (const separator of ['\n', '\t']) {
+        for (let index = 1; index < credential.length; index += 1) {
+          const input = `provider rejected ${credential.slice(0, index)}${separator}${credential.slice(index)}; retry later`;
+          expectCredentialDiagnostic(scrubSecrets(input)).toBe('[REDACTED]');
+          const error = makeLlmError({
+            provider: 'openai',
+            kind: 'auth',
+            message: input,
+            code: input,
+          });
+          expectCredentialDiagnostic(error.message).toBe('[REDACTED]');
+          expectCredentialDiagnostic(error.code).toBe('[REDACTED]');
+        }
+      }
+    }
+  });
+
+  it('masks each split position in the finite API header names', () => {
+    for (const name of ['api-key', 'x-api-key', 'x-goog-api-key']) {
+      for (const separator of ['\n', '\t']) {
+        for (let index = 1; index < name.length; index += 1) {
+          const input = `header ${name.slice(0, index)}${separator}${name.slice(index)}: opaque-Z29; retry later`;
+          expectCredentialDiagnostic(scrubSecrets(input)).toBe('[REDACTED]');
+        }
+      }
+    }
+  });
+
+  it.each(['?', '#'])(
+    'masks raw %s in userinfo while retaining host contact queries',
+    (separator) => {
+      expectCredentialDiagnostic(
+        scrubSecrets(`https://alice:pa${separator}ss@provider.invalid/v1`),
+      ).toBe('https://[REDACTED]@provider.invalid/v1');
+      for (const host of ['provider.invalid', 'provider.invalid:8443', '[::1]:8443']) {
+        const input = `https://${host}${separator}contact=alice@example.invalid`;
+        expectCredentialDiagnostic(scrubSecrets(input)).toBe(input);
+      }
+    },
+  );
+
+  it('scrubs admitted-scale key and URL values without consuming the RegExp stack', () => {
+    const body = 'A'.repeat(8 * 1024 * 1024 - 256);
+    expectCredentialDiagnostic(scrubSecrets(`provider rejected sk-proj-${body}; retry`)).toBe(
+      'provider rejected [REDACTED]; retry',
+    );
+    const url = scrubSecrets(`https://alice:${body}?ss@provider.invalid/v1`);
+    // A removed recognizer must fail without serializing an admitted-size credential into evidence.
+    expectCredentialDiagnostic(url.length).toBe('https://[REDACTED]@provider.invalid/v1'.length);
+    expectCredentialDiagnostic(url).toBe('https://[REDACTED]@provider.invalid/v1');
+  });
+});
+
+describe('PR95 B2 finite joined-view boundaries', () => {
+  it('does not invent a key boundary in a public word with a separate newline', () => {
+    const input = `wordsk-proj-${'A'.repeat(32)};\nordinary`;
+    expectCredentialDiagnostic(scrubSecrets(input)).toBe(input);
+    const splitEmbedded = `wordsk-proj-${'A'.repeat(32)}\n${'B'.repeat(32)}; retry`;
+    expectCredentialDiagnostic(scrubSecrets(splitEmbedded)).toBe(splitEmbedded);
+    expectCredentialDiagnostic(
+      scrubSecrets(`rejected\nsk-proj-AAA\t${'B'.repeat(32)}; retry`),
+    ).toBe('[REDACTED]');
+  });
+
+  it.each(['?', '#'])(
+    'preserves public %s tails after userinfo and masks raw password assignments',
+    (separator) => {
+      expectCredentialDiagnostic(
+        scrubSecrets(`https://u:password@host.invalid${separator}contact=a@example.invalid`),
+      ).toBe(`https://[REDACTED]@host.invalid${separator}contact=a@example.invalid`);
+      expectCredentialDiagnostic(
+        scrubSecrets(`https://u:pa${separator}ss=value@host.invalid/v1`),
+      ).toBe('https://[REDACTED]@host.invalid/v1');
+    },
+  );
+
+  it('treats LF/TAB token-character continuations as credential material even after a complete first fragment', () => {
+    expectCredentialDiagnostic(
+      scrubSecrets(`sk-proj-${'A'.repeat(32)}\nrequest; retry later`),
+    ).toBe('[REDACTED]');
+    expectCredentialDiagnostic(
+      scrubSecrets(`sk-proj-${'A'.repeat(32)}\n request; retry later`),
+    ).toBe('[REDACTED]\n request; retry later');
+  });
+});

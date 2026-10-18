@@ -301,6 +301,7 @@ describe('finite secret query names (#196)', () => {
   });
 
   it('SECRETS_CAUSAL_OVERLAP_ORDER preserves prose after every completely masked credential', () => {
+    // A plain space is a hard boundary; LF/TAB alone can now continue a finite prefixed key.
     for (const [credential, masked] of [
       [['sk-', 'ant-api03-', overlapSuffix].join(''), '[REDACTED]'],
       [['AI', 'zaSyA', overlapSuffix].join(''), '[REDACTED]'],
@@ -311,8 +312,8 @@ describe('finite secret query names (#196)', () => {
       ['Bearer opaque-header-Z29', 'Bearer [REDACTED]'],
       ['Basic dXNlcjpvcGFxdWU=', 'Basic [REDACTED]'],
     ]) {
-      const text = `${credential}\nrequest failed retry later`;
-      const expected = `${masked}\nrequest failed retry later`;
+      const text = `${credential}\n request failed retry later`;
+      const expected = `${masked}\n request failed retry later`;
       const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
       for (const output of [scrubSecrets(text), error.message, error.code]) {
         expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').toBe(expected);
@@ -345,8 +346,8 @@ describe('finite secret query names (#196)', () => {
         `?${name}=[REDACTED] request failed retry later`,
       );
     }
-    expect(scrubSecrets(`key ${key}\nrequest failed retry later`)).toBe(
-      'key [REDACTED]\nrequest failed retry later',
+    expect(scrubSecrets(`key ${key}\n request failed retry later`)).toBe(
+      'key [REDACTED]\n request failed retry later',
     );
     const alreadyMasked = '?client_secret=[REDACTED]\nrequest failed retry later';
     expect(scrubSecrets(alreadyMasked)).toBe(alreadyMasked);

@@ -6,9 +6,9 @@ import { stripTerminalControls } from '@relavium/shared/terminal-safe';
  * the engine's `deInlineMedia` pass, leak-freedom here is an active transform at one boundary, not
  * per-adapter discipline. It masks finite common secret **shapes**: prefixed keys, literal secret query
  * names, URL userinfo and finite API-key/Bearer/Basic headers. Each non-query rule probes the original diagnostic
- * independently, including terminal-normalized and whitespace-joined residual views, before any
+ * independently, including terminal-normalized and LF/TAB-joined views, before any
  * other rule can erase its identifying context. A match revealed by normalization masks the whole
- * diagnostic. The finite patterns retain their word boundaries and already-masked-span limits;
+ * diagnostic. The finite patterns check boundaries in the original text and preserve already-masked spans;
  * this is not universal fragment discovery. Query names are excluded from the residual probe.
  * Pure and total for string input: regex replacements and a
  * finite residual check, with no parsing or external calls on the error path.
@@ -21,26 +21,29 @@ export function scrubSecrets(text: string): string {
 
 interface SecretRule {
   readonly pattern: RegExp;
-  readonly replacement: string;
-  readonly joinMaskedLines?: boolean;
+  readonly replacement: string | ((match: string) => string);
+  readonly joinedPattern?: RegExp;
+  readonly boundary?: RegExp;
 }
 
 /** One private authority per existing credential family, shared by probes and output masking. */
 const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // OpenAI sk-/sk-proj-/sk-svcacct- and Anthropic sk-ant- key prefixes.
-  { pattern: /\bsk-(?:ant-)?[A-Za-z0-9\-_]{16,}/g, replacement: '[REDACTED]' },
-  { pattern: /\bAIza[0-9A-Za-z\-_]{20,}/g, replacement: '[REDACTED]' },
-  // Finite authority schemes, not URL validation. The LAST @ before /, ? or # ends userinfo,
-  // including malformed raw @/colon characters in a password; path/query @ remain public text.
+  { pattern: /\bsk-(?=[\w-]{16})[\w-]+/g, replacement: '[REDACTED]', boundary: /\w/ },
+  { pattern: /\bAIza(?=[\w-]{20})[\w-]+/g, replacement: '[REDACTED]', boundary: /\w/ },
+  // Finite authority schemes, not URL validation. Raw ?/# before the first @ may belong
+  // to a password; after an existing @ they begin public query/fragment text.
   {
-    pattern: /\b((?:https?|wss?|ftps?):\/\/)[^/\s?#]*@/gi,
-    replacement: '$1[REDACTED]@',
-    joinMaskedLines: true,
+    pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi,
+    replacement: maskUrlUserinfo,
+    boundary: /\w/,
   },
   // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
   {
     pattern: /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)[^\s"',;}]+/gi,
     replacement: '$1$2$3[REDACTED]',
+    joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,
+    boundary: /[A-Za-z0-9_-]/,
   },
   // LF/TAB may split the finite scheme LABEL. Preserve the required label/value separator and
   // ordinary following prose; opaque value fragments cannot be distinguished from that prose.
@@ -56,34 +59,83 @@ function normalizeSecretProbe(text: string): string {
   return stripTerminalControls(text);
 }
 
+function isPublicHostPort(text: string): boolean {
+  const colon = text.lastIndexOf(':');
+  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
+  const hostname = text.slice(0, colon);
+  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+}
+
+function maskUrlUserinfo(match: string): string {
+  const start = match.indexOf('://') + 3;
+  const authority = match.slice(start);
+  const firstQuery = authority.search(/[?#]/);
+  const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
+  const at = authorityAt >= 0 ? authorityAt : authority.length - 1;
+  const userinfo = authority.slice(0, at);
+  const query = userinfo.search(/[?#]/);
+  const colon = userinfo.indexOf(':');
+  // Raw ?/# may occur inside a malformed password. Preserve host query/fragment assignments,
+  // including hosts with ports, rather than interpreting their contact values as credentials.
+  if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
+    return match;
+  return `${match.slice(0, start)}[REDACTED]${authority.slice(at)}`;
+}
+
+function applyRule(text: string, rule: SecretRule): string {
+  return typeof rule.replacement === 'string'
+    ? text.replace(rule.pattern, rule.replacement)
+    : text.replace(rule.pattern, rule.replacement);
+}
+
+/**
+ * Probe LF/TAB joins before any masking can destroy the prefix. Ordinary spaces remain boundaries.
+ * Check the left boundary against the original string: a join must neither erase an existing
+ * boundary nor invent a match inside a public word. Only finite prefix/header/URL families join;
+ * opaque Bearer/Basic values and literal query names keep their established delimiter policy.
+ */
+function hasSplitCredential(text: string, joined: string, rule: SecretRule): boolean {
+  if (rule.boundary === undefined) return false;
+  const pattern =
+    rule.joinedPattern ?? new RegExp(rule.pattern.source.slice(2), rule.pattern.flags);
+  let originalOffset = 0;
+  let joinedOffset = 0;
+  function advance(target: number): number {
+    while (joinedOffset < target && originalOffset < text.length) {
+      const char = text[originalOffset++];
+      if (char !== '\n' && char !== '\t') joinedOffset += 1;
+    }
+    return originalOffset;
+  }
+  for (const match of joined.matchAll(pattern)) {
+    let start = advance(match.index);
+    while (text[start] === '\n' || text[start] === '\t') start += 1;
+    const end = advance(match.index + match[0].length);
+    if (rule.boundary.test(text[start - 1] ?? '')) continue;
+    if (!/[\n\t]/.test(text.slice(start, end))) continue;
+    // A malformed URL candidate may actually be a public contact query.
+    if (typeof rule.replacement === 'function' && rule.replacement(match[0]) === match[0]) continue;
+    return true;
+  }
+  return false;
+}
+
 function scrubNonQuerySecrets(text: string): string {
   const normalized = normalizeSecretProbe(text);
+  const joined = /[\n\t]/.test(normalized) ? normalized.replace(/[\n\t]+/g, '') : undefined;
   for (const rule of NON_QUERY_SECRET_RULES) {
-    const rawMasked = text.replace(rule.pattern, rule.replacement);
-    const normalizedMasked = normalized.replace(rule.pattern, rule.replacement);
-    // Keep required header whitespace: joining first would hide a newly revealed Bearer/Basic label.
+    const rawMasked = applyRule(text, rule);
+    const normalizedMasked = applyRule(normalized, rule);
     if (normalizeSecretProbe(rawMasked) !== normalizedMasked) return '[REDACTED]';
-    // A raw @ before LF/TAB can create a partial URL mask while another @ still ends the actual
-    // authority. Compare this rule's full views before treating its masks as complete delimiters.
-    // Spaces remain boundaries here so separate same-line diagnostics cannot merge authorities.
-    if (rule.joinMaskedLines) {
-      const joined = normalized.replace(/[\n\t]+/g, '');
-      if (
-        joined.replace(rule.pattern, rule.replacement) !== normalizedMasked.replace(/[\n\t]+/g, '')
-      ) {
-        return '[REDACTED]';
-      }
-    }
-    // Other families must not destroy this rule's prefix; only its own complete masks delimit spans.
+    if (joined !== undefined && hasSplitCredential(normalized, joined, rule)) return '[REDACTED]';
+    // Retain the existing broader whitespace probe only within this rule's still-unmasked spans.
+    // It detects incomplete prefixes separated by spaces without consuming prose after a full mask.
     for (const remaining of normalizedMasked.split('[REDACTED]')) {
-      const joined = remaining.replace(/\s+/g, '');
-      if (joined.replace(rule.pattern, rule.replacement) !== joined) return '[REDACTED]';
+      const residual = remaining.replace(/\s+/g, '');
+      if (applyRule(residual, rule) !== residual) return '[REDACTED]';
     }
   }
-  return NON_QUERY_SECRET_RULES.reduce(
-    (masked, rule) => masked.replace(rule.pattern, rule.replacement),
-    text,
-  );
+  return NON_QUERY_SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);
 }
 
 /** Exact literal query names, applied last so a value cannot erase another family's evidence. */
