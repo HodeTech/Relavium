@@ -7,7 +7,6 @@ import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@rela
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OpenedSessionStore } from '../history/session-open.js';
-import { CliError } from '../process/cli-error.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
@@ -240,23 +239,33 @@ describe('chatExportCommand (2.P)', () => {
     expect(err()).not.toContain('could not mark the session exported');
   });
 
-  it('degrades a row-mark failure to a stderr warning — the scaffold still lands, exit 0', () => {
-    // updateSession throws (e.g. a locked db): the file write is the durable contract, so the export still
-    // succeeds (exit 0) with a stderr note rather than failing an export already on disk.
-    opened = {
-      ...opened,
-      store: {
-        ...opened.store,
-        updateSession: () => {
-          throw new CliError('storage_unavailable', '');
-        },
-      },
-    };
-    const { io, err } = captureIo();
-    expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toBe(EXIT_CODES.success);
-    expect(err()).toContain('could not mark the session exported');
-    expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
-  });
+  it.each([false, true])(
+    'preserves the written scaffold and success on actual SQLite readonly metadata refusal (json=%s)',
+    (json) => {
+      client.sqlite.pragma('query_only = ON');
+      const { io, err, out } = captureIo();
+      expect(
+        chatExportCommand({ sessionId: 's1', force: false }, deps(io, json)),
+        'EXPORT_NATIVE_READONLY_SUCCESS',
+      ).toBe(EXIT_CODES.success);
+      expect(err(), 'EXPORT_NATIVE_READONLY_WARNING').toContain(
+        'could not mark the session exported',
+      );
+      expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+      expect(opened.store.loadSession('s1')?.status).toBe('active');
+      if (json) {
+        expect(parseNdjson(out())).toEqual([
+          expect.objectContaining({
+            type: 'session:exported',
+            sessionId: 's1',
+            workflowPath: join(cwd, 's1.relavium.yaml'),
+          }),
+        ]);
+      } else {
+        expect(out()).toBe(`Exported session s1 to ${join(cwd, 's1.relavium.yaml')}\n`);
+      }
+    },
+  );
 
   it('refuses to overwrite an existing target without --force (exit-2 fault) and closes the store', () => {
     const { io } = captureIo();

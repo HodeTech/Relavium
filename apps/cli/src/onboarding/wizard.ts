@@ -337,9 +337,9 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
 /**
  * Live-validate a key with a retry loop (2.5.G S8). Returns `{ keyToStore, verified }` once the user has a key to
  * persist — verified (probe ok), or consciously accepted despite a failure ("save it anyway"). Returns `null` when
- * the user skips (a note/outro is already shown, mirroring the top-level flow). Never throws for a bad key; only a
- * clack-prompt fault propagates (caught by the Home's cleanup). Secret-free: the key is never echoed — only the
- * redacted `detail`. A bad key never reaches the keychain (storage happens only after this resolves).
+ * the user skips (a note/outro is already shown, mirroring the top-level flow). Rejected keys produce retry
+ * choices; prompt, lifecycle and unexpected probe faults can propagate through Home cleanup. The key is never
+ * echoed, only redacted `detail`. Storage follows this result and its explicit verification/continue decision.
  */
 async function validateWithRetry(
   p: ClackOnboardingDeps,
@@ -375,9 +375,8 @@ async function validateWithRetry(
       p.note(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`, 'Verification');
     const sp = p.spinner?.();
     sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
-    // The spinner MUST stop even if the probe rejects unexpectedly (validateProviderKey never rejects, but a future
-    // injected `validate` might) — otherwise a runaway spinner interval would sit over the ink-hosted Home while the
-    // throw propagates to the Home's cleanup. The `finally` stops it; the throw then surfaces cleanly there.
+    // Always stop the spinner before a probe, lifecycle or injected-validator fault propagates
+    // through Home cleanup; an unresolved presentation interval does not own the real probe.
     let res: ProviderKeyValidation;
     try {
       res = await validate(provider, keyToStore);

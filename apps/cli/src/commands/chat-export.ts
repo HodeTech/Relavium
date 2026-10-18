@@ -80,8 +80,8 @@ export function chatExportCommand(
 
     // Mark the session `exported` + record the path (provenance, ADR-0026). Safe here — this is a NON-live
     // session (no concurrent persister), unlike the in-REPL `/export` which deliberately does not mark the row.
-    // The file write is the durable contract, so a provenance-mark fault degrades to a warning (stderr, so
-    // stdout stays pure under --json) rather than failing an export whose scaffold already landed on disk.
+    // The file write is durable: a classified storage refusal degrades to a stderr warning
+    // (keeping --json stdout pure). Unexpected metadata faults still propagate; the scaffold remains.
     const exportedAt = new Date(now()).toISOString();
     try {
       opened.store.updateSession({

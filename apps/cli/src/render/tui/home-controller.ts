@@ -204,7 +204,7 @@ export interface HomeModelsPort {
   };
   /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
   refreshIfStale: () => Promise<RefreshReport | undefined>;
-  /** Unbounded, user-initiated refresh (Ctrl+R) — every connected provider, per-provider-isolated. Never rejects. */
+  /** User-initiated refresh (Ctrl+R), regardless of TTL. Provider faults are isolated; owned stop can reject. */
   refresh: () => Promise<RefreshReport>;
   /** The current `[preferences].default_model` (the picker's `✓` marker), or `undefined` when none is set. */
   currentDefault: () => string | undefined;

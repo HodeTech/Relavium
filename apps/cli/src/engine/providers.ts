@@ -205,9 +205,9 @@ export type ProviderKeyValidation =
  * defensively redact any occurrence (`raw.split(key).join(keyHint(key))`) before surfacing AND never attach
  * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose).
  *
- * The request is BOUNDED here — by an `AbortController` (cancels the in-flight request) AND a hard `Promise.race`
- * timeout (settles the call even if an adapter ignores the signal) — so BOTH callers (`provider test` and the
- * `/doctor --deep` probe) are bounded by construction; a stalled provider can never hang the CLI.
+ * Abort and the timeout bound the caller's probe observation. With a lifecycle owner, entered producer
+ * work remains retained until its actual settlement; a UX timeout never acknowledges cleanup.
+ * Ownership/admission refusals can reject instead of producing a validation result.
  */
 export async function validateProviderKey(
   provider: LlmProvider,
