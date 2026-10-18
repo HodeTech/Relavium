@@ -66,30 +66,82 @@ const rawPasswordAssignments = ['?', '#'].map(
   (separator) =>
     `preserves public ${separator} tails after userinfo and masks raw password assignments`,
 );
-function coreProjectionControl(id, before, after, targets) {
+const originalBoundaryMarker = 'SECRETS_B2_ORIGINAL_BOUNDARY';
+const originalBoundaryCases = ['sk-proj-', 'AIza'].flatMap((prefix) =>
+  ['\n', '\t'].map(
+    (separator) =>
+      `keeps the original boundary after an embedded greedy prefix ${prefix} (${JSON.stringify(separator)})`,
+  ),
+);
+// Both scanner admission and mapper admission enforce one original-boundary law. Remove both
+// exact checks together; removing only the late mapper guard would leave its new prefilter intact.
+const coreOriginalBoundary = String.raw`    if (/\w/.test(original[originalOffset - 1] ?? '')) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+    if (!JOINED_STANDALONE_CREDENTIAL.test(preview(start))) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = start;
+    const match = JOINED_STANDALONE_CREDENTIAL.exec(joined);
+    if (match === null) continue;
+    matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+    mask(start, matchedUntil, '[redacted]');
+  }
+}
+
+/**
+ * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
+ * ordinary spaces remain boundaries and public text is never globally normalized for identity.
+ * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
+ * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ */
+function redactJoinedCredentialSpans(
+  text: string,
+  visit: (joined: string, mask: SecretSpanVisitor) => void,
+  boundary?: RegExp,
+): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const joined = text.replace(/[\n\t]+/g, '');
+  const parts: string[] = [];
+  let originalOffset = 0;
+  let joinedOffset = 0;
+  let copied = 0;
+  function advance(target: number): number {
+    while (joinedOffset < target && originalOffset < text.length) {
+      const char = text[originalOffset++];
+      if (char !== '\n' && char !== '\t') joinedOffset += 1;
+    }
+    return originalOffset;
+  }
+  visit(joined, (start, end, replacement) => {
+    let originalStart = advance(start);
+    while (text[originalStart] === '\n' || text[originalStart] === '\t') originalStart += 1;
+    const originalEnd = advance(end);
+    if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
+const withoutCoreOriginalBoundary = coreOriginalBoundary
+  .replace("    if (/\\w/.test(original[originalOffset - 1] ?? '')) continue;\n", '')
+  .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
     coreProjection,
     before,
     after,
     coreProjectionCases,
-    129,
+    136,
     targets[0],
-    coreProjectionMarker,
-    targets.slice(1).map((target) => ({ target, marker: coreProjectionMarker })),
+    marker,
+    targets.slice(1).map((target) => ({ target, marker })),
   );
 }
-function diagnosticControl(id, before, after, targets) {
+function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
     scrubSecretsLeaf,
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    79,
+    84,
     targets[0],
-    diagnosticMarker,
-    targets.slice(1).map((target) => ({ target, marker: diagnosticMarker })),
+    marker,
+    targets.slice(1).map((target) => ({ target, marker })),
   );
 }
 
@@ -774,8 +826,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-joined-original-boundary',
-    "    if (boundary?.test(text[originalStart - 1] ?? '')) return;",
-    '',
+    coreOriginalBoundary,
+    withoutCoreOriginalBoundary,
     ['keeps the original left boundary when LF/TAB occurs elsewhere or immediately before a key'],
   ),
   coreProjectionControl(
@@ -808,8 +860,8 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-joined-original-boundary',
-    "    if (rule.boundary.test(text[start - 1] ?? '')) continue;",
-    '',
+    "if (/[A-Za-z]/.test(char ?? '') && !rule.boundary?.test(text[originalOffset - 1] ?? '')) {",
+    "if (/[A-Za-z]/.test(char ?? '')) {",
     ['does not invent a key boundary in a public word with a separate newline'],
   ),
   diagnosticControl(
@@ -823,5 +875,20 @@ export const mutations = [
     String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi,`,
     String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi,`,
     [...diagnosticPasswords, ...rawPasswordAssignments],
+  ),
+  // R1-LN-1: recover a valid original start hidden inside a rejected greedy joined candidate.
+  coreProjectionControl(
+    'core-joined-original-boundary-recovery',
+    "    if (/\\w/.test(original[originalOffset - 1] ?? '')) continue;\n",
+    '',
+    originalBoundaryCases,
+    originalBoundaryMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-joined-original-boundary-recovery',
+    '  if (rule.joinedToken === true) return hasSplitToken(text, joined, rule);\n',
+    '',
+    originalBoundaryCases,
+    originalBoundaryMarker,
   ),
 ];

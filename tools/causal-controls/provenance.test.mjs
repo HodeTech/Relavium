@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 51);
+  assert.equal(secretsControls.length, 53);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    302,
+    310,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -307,18 +307,38 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-split-scheme-label',
       'core-split-header-label',
       'core-raw-password-userinfo',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 129]),
+      'core-joined-original-boundary-recovery',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 136]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
       'diagnostic-split-header-label',
       'diagnostic-raw-password-userinfo',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 79]),
+      'diagnostic-joined-original-boundary-recovery',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 84]),
   ]) {
     const selected = secretsControls.find((entry) => entry.id === id);
     assert.ok(selected, `${id}: missing redaction control`);
     assert.deepEqual(selected.files, files);
     assert.equal(selected.expectedTests, expectedTests, `${id}: complete workload drift`);
+  }
+  for (const id of [
+    'core-joined-original-boundary-recovery',
+    'diagnostic-joined-original-boundary-recovery',
+  ]) {
+    const recovery = secretsControls.find((entry) => entry.id === id);
+    assert.ok(recovery, `${id}: missing original-boundary recovery`);
+    assert.equal(recovery.marker, 'SECRETS_B2_ORIGINAL_BOUNDARY');
+    assert.deepEqual(
+      [recovery.target, ...recovery.witnesses.map((witness) => witness.target)],
+      ['sk-proj-', 'AIza'].flatMap((prefix) =>
+        ['\n', '\t'].map(
+          (separator) =>
+            `keeps the original boundary after an embedded greedy prefix ${prefix} (${JSON.stringify(separator)})`,
+        ),
+      ),
+    );
+    assert.ok(recovery.witnesses.every(({ marker }) => marker === 'SECRETS_B2_ORIGINAL_BOUNDARY'));
   }
   const reader = secretsControls.find((entry) => entry.id === 'run-default-secret-reader');
   assert.equal(

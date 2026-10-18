@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **51 independent controls and 302 required named assertion witnesses**.
+declares **53 independent controls and 310 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -177,8 +177,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 129-case bounding file; every new LLM phase
-executes the complete 79-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 136-case bounding file; every new LLM phase
+executes the complete 84-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 261-case overlap cohort, 163-case CLI diagnostic cohort and
 17-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -192,10 +192,25 @@ LF/TAB continuation and malformed-userinfo policy is documented in the canonical
 An eight-MiB permanent fixture checks completion and whole-span behavior without a
 machine-speed threshold; these controls do not certify arbitrary obfuscation.
 
-The current 51-control / 153-phase full declaration projects 925 retained files
-(51 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+Two R1 original-boundary recovery controls add eight named assertions, retaining all
+51 prior identities and required witnesses. The core removal admits embedded-word
+starts while retaining the mapper's late refusal and bounded probe; the rejected
+candidate consumes the later valid start. The LLM removal restores the old
+non-overlapping discovery for its bounded single-run token families. All four
+OpenAI/Google × LF/TAB poisoned-prefix cases must then fail with
+`SECRETS_B2_ORIGINAL_BOUNDARY`;
+public embedded-word preservation and the later complete split credential are
+asserted together. The earlier core boundary control removes both scanner and
+mapper boundary checks as one policy; removing the late mapper check alone leaves
+the new scanner prefilter active. The LLM boundary control removes its actual early
+token-boundary predicate. Their existing named witnesses remain required. These
+are declared controls; actual final-source fixed/removal/restored evidence remains
+separate from the older eleven selected captures and independent acceptance.
+
+The current 53-control / 159-phase full declaration projects 961 retained files
+(53 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
-original source and cohort attribution; selected B2 captures are not full-family
+original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
 
 The thin entry point uses the same coordinator, outcome and bounded process join

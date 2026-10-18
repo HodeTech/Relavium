@@ -281,7 +281,7 @@ jobs:
   secrets-mutations:
     name: Wave 2 secrets causal controls
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # The current cohort is 51 controls (2026-10-18); this comment does not certify its execution.
+    # The current cohort is 53 controls (2026-10-18); this comment does not certify its execution.
     # Per-phase, case/hook, output and retained-evidence bounds remain unchanged.
     timeout-minutes: 30
     runs-on: ubuntu-latest
