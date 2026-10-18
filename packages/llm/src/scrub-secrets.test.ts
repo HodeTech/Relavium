@@ -237,6 +237,28 @@ describe('PR95 B2 split provider/header and malformed userinfo diagnostics', () 
 });
 
 describe('PR95 B2 finite joined-view boundaries', () => {
+  it.each([
+    ['sk-proj-', '\n'],
+    ['sk-proj-', '\t'],
+    ['AIza', '\n'],
+    ['AIza', '\t'],
+  ])('keeps the original boundary after an embedded greedy prefix %s (%j)', (prefix, separator) => {
+    const input = `word${prefix}${'A'.repeat(32)}${separator}${prefix}${'B'.repeat(32)}${separator}${'C'.repeat(32)}; public=A`;
+    expect(scrubSecrets(input), 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+    const error = makeLlmError({ provider: 'openai', kind: 'auth', message: input, code: input });
+    expect(error.message, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+    expect(error.code, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+  });
+
+  it('bounds admitted-size embedded prefixes before a valid original boundary', () => {
+    const fragment = `wordsk-proj-${'A'.repeat(52)}\n`;
+    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+    const input = `${publicPrefix}sk-proj-${'B'.repeat(32)}\t${'C'.repeat(32)}; public=A`;
+    const started = performance.now();
+    expect(scrubSecrets(input), 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+    expect(performance.now() - started, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBeLessThan(5_000);
+  });
+
   it('does not invent a key boundary in a public word with a separate newline', () => {
     const input = `wordsk-proj-${'A'.repeat(32)};\nordinary`;
     expectCredentialDiagnostic(scrubSecrets(input)).toBe(input);
