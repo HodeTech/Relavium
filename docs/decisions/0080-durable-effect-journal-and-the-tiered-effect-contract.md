@@ -422,3 +422,13 @@ now normalizes the complete materialized text, recognizes complete spans, then
 clips. The full journal projection, raw result/spill and recorded replay contract
 are unchanged. The [canonical diagnostic contract](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file)
 owns this finite behavior; no historical-content rewrite is introduced.
+
+### PR #95 corrective review landing — 2026-10-18
+
+The complete corrective implementation at `ba14b1bd` has two NEW clean cumulative
+independent review rounds and a NEW separate clean defensive security sitting.
+The [correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+owns exact source, coverage, execution limits and published-source validation.
+Earlier pending review notes retain their historical attribution. Canonical
+projection/compatibility contracts remain authoritative; this landing rewrites no
+history and grants no automatic effect retry or whole-wave completion.

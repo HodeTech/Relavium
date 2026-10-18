@@ -236,3 +236,12 @@ declaration snapshot before reading that value. This closes an embedding-only im
 fallback while preserving normal fresh/resume/preparation resolution and the existing fixed
 validation refusal. The [runner contract](../reference/shared-core/agent-runner.md#qualified-context-consumers)
 owns this boundary; the accepted decision and historical implementation evidence remain unchanged.
+
+### PR #95 corrective review landing — 2026-10-18
+
+The external-projection guard is included in the two NEW clean complete cumulative
+reviews and NEW separate clean defensive security sitting at `ba14b1bd`. The
+[correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+owns exact scopes and validation attribution. The existing trusted-host and
+historical-content limits remain; this does not invent a tool-mapping producer,
+retroactive erasure or whole-wave acceptance.

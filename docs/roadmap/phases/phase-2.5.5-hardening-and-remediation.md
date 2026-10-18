@@ -8613,3 +8613,49 @@ passing after every removal. Runner receipts record zero unhandled errors. A
 forced clean build, all 177 bootstrap controls, finite closure and lint/typecheck
 (17/17, 11 cache hits) pass. These author checks do not supply the required fresh
 independent acceptance or final-source remote publication evidence.
+
+### PR #95 corrective review completion — 2026-10-18
+
+The maintainer-review corrections are implemented and independently reviewed on
+`development` at `ba14b1bd179270742534fc460501ec72dba85da1`, against the submitted
+review base `05061d55`. Two NEW complete cumulative rounds, R9 and R10, each use
+four independent reviewers and cover all **100 paths / 212 ordered default-context
+hunks**. Root verifies the exact coverage union, current-body/diff/hunk hashes,
+reports and semantic assessments. All current code/test bodies and deleted or
+replaced branches are read. Long historical documents receive full-byte identity,
+structure/status/link checks and complete changed/current affected-clause review;
+unrelated historical narrative is not freshly recertified line by line. Both
+rounds are CLEAN. Earlier NONCLEAN and incomplete rounds retain their own sources
+and do not supply this acceptance.
+
+A NEW separate defensive security sitting is also COMPLETE CLEAN for **40 paths /
+100 hunks** at the same source. It is a static code/contract review; it executes no
+tests and inherits no earlier execution result. Root independently verifies its
+coverage, source bindings and substantive assessments. The finite redaction,
+historical-content, native-acknowledgement and trusted-host limits remain explicit
+in their canonical contracts.
+
+Author checks retain **748 files / 15,887 passes / 21 established skips**. Final
+workspace tasks pass 11/11 with eight cache hits; lint/typecheck passes 17/17 with
+17 cache hits, following the dedicated current-code check with six fresh tasks
+and eleven cache hits. Cached work is not represented as rerun. All 599
+acceptance-tool cases, source/dependency/schema/isolation checks and formatting
+pass. The forced clean build is fresh 6/6; all 177 bootstrap controls and the
+finite compiled closure pass. Eight author removals produce 89 specific assertion
+failures, each followed by byte-exact restoration and all 208 focused targets
+passing, with zero unhandled errors in the committed runner reporter. Independent
+reviewer test selections retain their separate, overlapping scopes rather than
+being added into a new repository total.
+
+This closes corrective implementation and independent review, not a new whole-PR
+or whole-wave review. Subsequent completion metadata is documentation-only and
+must retain executable/configuration/dependency equivalence to this reviewed
+source and receive two NEW independent documentation checks. Published-source
+acceptance is assessed through the actual required CI, ordinary/enforced coverage,
+source-bound Sonar analysis and all four same-archive installed consumers attached
+to [PR #95](https://github.com/HodeTech/Relavium/pull/95). The current installed
+inventory is 177 bootstrap controls plus ten behavior cases per consumer;
+downloaded archive/report inspection is distinct from executing another platform.
+Earlier pending checkpoints are historical, not outstanding requests to repeat
+their old-source reviews. No merge, release, new decision or deferral is added.
+Steps 9–19 remain unstarted and outside this PR.

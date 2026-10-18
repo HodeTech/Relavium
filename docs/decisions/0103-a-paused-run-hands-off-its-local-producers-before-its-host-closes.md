@@ -1257,3 +1257,13 @@ cancellation, close initiation, a rejected observer or budget expiry into acknow
 The exact host sequence and exceptional budget-observation path live in
 [mcp-integration.md](../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle).
 Fresh cumulative review and corrected-source gates remain required in PR #95.
+
+### PR #95 corrective review landing — 2026-10-18
+
+The session-close correction is included in the two NEW clean complete cumulative
+reviews and NEW separate clean defensive security sitting at `ba14b1bd`. The
+[correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+records exact scopes, tests and published-source validation. Earlier pending
+checkpoints are historical. Actual native/work/terminal/database acknowledgements
+remain distinct from cancellation, initiation, refusal and deadline expiry; this
+note adds no shutdown authority or whole-wave acceptance.
