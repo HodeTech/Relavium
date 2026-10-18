@@ -120,7 +120,18 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
       originalOffset += 1;
       continue;
     }
-    if (/[A-Za-z]/.test(char ?? '') && !rule.boundary.test(text[originalOffset - 1] ?? '')) {
+    // Both finite boundary classes reject ASCII word characters. Skip those impossible
+    // starts without allocating/testing RegExp objects for every admitted-size character;
+    // the rule's own boundary and canonical matcher still decide every eligible start.
+    const code = text.charCodeAt(originalOffset);
+    const previous = text.charCodeAt(originalOffset - 1);
+    const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const previousWord =
+      (previous >= 48 && previous <= 57) ||
+      (previous >= 65 && previous <= 90) ||
+      (previous >= 97 && previous <= 122) ||
+      previous === 95;
+    if (letter && !previousWord && !rule.boundary.test(text[originalOffset - 1] ?? '')) {
       pattern.lastIndex = joinedOffset;
       const match = pattern.exec(joined);
       if (match !== null) {
@@ -150,8 +161,11 @@ function scrubNonQuerySecrets(text: string): string {
   const joined = /[\n\t]/.test(normalized) ? normalized.replace(/[\n\t]+/g, '') : undefined;
   for (const rule of NON_QUERY_SECRET_RULES) {
     const rawMasked = applyRule(text, rule);
-    const normalizedMasked = applyRule(normalized, rule);
-    if (normalizeSecretProbe(rawMasked) !== normalizedMasked) return '[REDACTED]';
+    // Identical inputs have identical pure projections; unchanged raw text already has
+    // its normalized view. Reuse these results rather than rescan large public diagnostics.
+    const normalizedMasked = normalized === text ? rawMasked : applyRule(normalized, rule);
+    if ((rawMasked === text ? normalized : normalizeSecretProbe(rawMasked)) !== normalizedMasked)
+      return '[REDACTED]';
     if (joined !== undefined && hasSplitCredential(normalized, joined, rule)) return '[REDACTED]';
     // Retain the existing broader whitespace probe only within this rule's still-unmasked spans.
     // It detects incomplete prefixes separated by spaces without consuming prose after a full mask.
