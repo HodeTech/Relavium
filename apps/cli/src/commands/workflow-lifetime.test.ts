@@ -7,6 +7,7 @@ import { WorkflowLifetime } from './workflow-lifetime.js';
 import { InvocationRegistry } from '../process/invocation-registry.js';
 import { createInvocationFiniteExit } from '../process/invocation-finite-exit.js';
 import { createNativeProcessController } from '../process/native-process-owner.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 
 function fixture() {
   const captured = captureIo();
@@ -231,3 +232,140 @@ it.each(['storage_unavailable', 'internal'] as const)(
     expect(registry.activeOwners).toBe(1);
   },
 );
+
+it.each([
+  'prompt-rejection',
+  'prompt-construction',
+  'input-release',
+  'late-input-release',
+  'renderer-construction',
+  'job-construction',
+  'job-release',
+  'job-dispose',
+  'view-operation',
+] as const)('bounds actual retained terminal cleanup after a classified %s fault', async (path) => {
+  const f = invocationFixture();
+  const lifetime = new WorkflowLifetime(f.invocation, captureIo().io, () => () => undefined);
+  const cause = new CliError('storage_unavailable', 'synthetic terminal fault');
+  let releaseViewOperation: () => void = () => undefined;
+  const viewOperation = new Promise<void>((resolve) => {
+    releaseViewOperation = resolve;
+  });
+  let settled = false;
+  let escaped: unknown;
+  const work = lifetime.execute(async () => {
+    if (path === 'prompt-rejection') await lifetime.terminal.runPrompt(() => Promise.reject(cause));
+    else if (path === 'prompt-construction')
+      await lifetime.terminal.runPrompt(() => {
+        throw cause;
+      });
+    else if (path === 'renderer-construction')
+      lifetime.terminal.createRenderer(() => {
+        throw cause;
+      });
+    else if (path === 'job-construction')
+      lifetime.terminal.createJobControl(() => {
+        throw cause;
+      });
+    else if (path === 'job-release') {
+      const released = Promise.reject<void>(cause);
+      lifetime.terminal.createJobControl(() => ({ dispose: () => undefined, released }));
+    } else if (path === 'job-dispose')
+      lifetime.terminal.createJobControl(() => ({
+        dispose: () => {
+          throw cause;
+        },
+      }));
+    else {
+      let releases = 0;
+      lifetime.terminal.createRenderer(() => ({
+        onEvent: () => undefined,
+        releaseInput: () => {
+          releases += 1;
+          return path === 'late-input-release' && releases === 1
+            ? Promise.resolve()
+            : Promise.reject(cause);
+        },
+      }));
+      if (path === 'view-operation')
+        await lifetime.terminal.runViewOperation(() => Promise.reject(cause));
+      else if (path === 'late-input-release') {
+        void lifetime.terminal.runViewOperation(() => viewOperation);
+        // Restoration has to join the entered operation before its final release.
+        setImmediate(releaseViewOperation);
+      }
+    }
+    return 0;
+  });
+  void work.then(
+    () => {
+      settled = true;
+    },
+    (failure: unknown) => {
+      settled = true;
+      escaped = failure;
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(f.registry.budget.deadline(), 'TERMINAL_RETAINED_FAILURE_FINITE').toBe(3000);
+  expect(f.registry.activeOwners, 'TERMINAL_RETAINED_FAILURE_NO_ACK').toBe(1);
+  expect(settled).toBe(false);
+  f.advance(2999);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(f.exit).not.toHaveBeenCalled();
+  f.advance(3000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+  expect(f.registry.activeOwners, 'TERMINAL_EXPIRY_NEVER_ACKNOWLEDGES').toBe(1);
+  expect(settled).toBe(false);
+  expect(escaped).toBeUndefined();
+});
+
+it('preserves a classified constructor refusal after positive native-free acknowledgement', async () => {
+  const f = invocationFixture();
+  const lifetime = new WorkflowLifetime(f.invocation, captureIo().io, () => () => undefined);
+  const cause = new CliError('storage_unavailable', 'synthetic native-free refusal');
+  await expect(
+    lifetime.execute(() => {
+      lifetime.terminal.createRenderer((creation) => {
+        creation.acknowledgeNoAcquisition();
+        throw cause;
+      });
+      return Promise.resolve(0);
+    }),
+  ).rejects.toBe(cause);
+  expect(f.registry.activeOwners).toBe(0);
+  expect(f.registry.budget.deadline()).toBeUndefined();
+  expect(f.registry.observations.exitCode()).toBe(1);
+  expect(f.exit).not.toHaveBeenCalled();
+});
+
+it('allows an adopted terminal rollback to retire after its actual release despite a classified fault', async () => {
+  const f = invocationFixture();
+  const lifetime = new WorkflowLifetime(f.invocation, captureIo().io, () => () => undefined);
+  const cause = new CliError('storage_unavailable', 'synthetic adopted-constructor fault');
+  let release: () => void = () => undefined;
+  const ack = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let settled = false;
+  const work = lifetime.execute(() => {
+    lifetime.terminal.createRenderer((creation) => {
+      creation.adopt({ releaseInput: () => ack });
+      throw cause;
+    });
+    return Promise.resolve(0);
+  });
+  const observed = work.catch((failure: unknown) => {
+    settled = true;
+    return failure;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(f.registry.budget.deadline()).toBe(3000);
+  expect(f.registry.activeOwners).toBe(1);
+  expect(settled).toBe(false);
+  release();
+  expect(await observed).toMatchObject({ code: 'cli_internal', cause });
+  expect(f.registry.activeOwners, 'TERMINAL_REAL_ACK_CAN_RETIRE').toBe(0);
+});

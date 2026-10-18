@@ -118,7 +118,7 @@ describe('reserved workflow terminal creation and actual restoration', () => {
     await turn();
     expect(finished).toBe(false);
     expect(f.registry.activeOwners).toBe(1);
-    expect(f.fail).toHaveBeenCalledWith(cause);
+    expect(f.fail).toHaveBeenCalledWith(cause, true);
   });
   it('adopts late job-control return after a reentrant seal and disposes it before retirement', async () => {
     const f = fixture();

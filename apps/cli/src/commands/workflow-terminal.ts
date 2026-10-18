@@ -15,7 +15,7 @@ export interface RendererCreationOwner {
 export class WorkflowTerminal {
   readonly #registry: InvocationRegistry;
   readonly #io: CliIo;
-  readonly #fail: (cause: unknown) => void;
+  readonly #fail: (cause: unknown, cleanupUnacknowledged: boolean) => void;
   readonly #assertEntering: () => void;
   readonly #prompts = new Set<Promise<void>>();
   readonly #viewOperations = new Set<Promise<void>>();
@@ -36,7 +36,7 @@ export class WorkflowTerminal {
     registry: InvocationRegistry,
     io: CliIo,
     assertEntering: () => void,
-    fail: (cause: unknown) => void,
+    fail: (cause: unknown, cleanupUnacknowledged: boolean) => void,
   ) {
     this.#registry = registry;
     this.#io = io;
@@ -75,7 +75,7 @@ export class WorkflowTerminal {
       this.#promptUnacknowledged = true;
       this.#prompts.delete(settled);
       settle();
-      this.#fail(cause);
+      this.#fail(cause, true);
       throw cause;
     };
     let raw: Promise<T>;
@@ -85,7 +85,7 @@ export class WorkflowTerminal {
       this.#promptUnacknowledged = true;
       this.#prompts.delete(settled);
       settle();
-      this.#fail(cause);
+      this.#fail(cause, true);
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the opaque constructor failure without forging terminal release.
       return Promise.reject<T>(cause);
     }
@@ -115,6 +115,7 @@ export class WorkflowTerminal {
       raw = factory();
     } catch (cause) {
       finish();
+      this.#fail(cause, mayAcquire || this.#view !== undefined);
       return Promise.resolve().then(() => {
         throw cause;
       });
@@ -126,6 +127,7 @@ export class WorkflowTerminal {
       },
       (cause: unknown) => {
         finish();
+        this.#fail(cause, mayAcquire || this.#view !== undefined);
         throw cause;
       },
     );
@@ -139,8 +141,9 @@ export class WorkflowTerminal {
       return this.#view?.releaseInput?.();
     });
     this.#inputWork = pending;
-    void pending.catch(() => {
+    void pending.catch((cause: unknown) => {
       if (this.#inputWork === pending) this.#inputWork = undefined;
+      this.#fail(cause, true);
     });
     return pending;
   }
@@ -173,7 +176,9 @@ export class WorkflowTerminal {
       if (this.#sealed) renderer.seal?.();
       return renderer;
     } catch (cause) {
-      this.#fail(cause);
+      // A positive native-free declaration needs no cleanup bound. An adopted view
+      // still owns its real release, including constructor rollback after adoption.
+      this.#fail(cause, this.#viewUnacknowledged || this.#view !== undefined);
       throw cause;
     }
   }
@@ -193,9 +198,12 @@ export class WorkflowTerminal {
       this.#jobReleased = control.released;
       this.#jobUnacknowledged = false;
       if (control.released !== undefined)
-        void control.released.then(() => {
-          if (this.#disposeJobControl === control.dispose) this.#disposeJobControl = undefined;
-        }, this.#fail);
+        void control.released.then(
+          () => {
+            if (this.#disposeJobControl === control.dispose) this.#disposeJobControl = undefined;
+          },
+          (cause: unknown) => this.#fail(cause, true),
+        );
       if (this.#sealed) this.#releaseJobControl();
     };
     try {
@@ -203,7 +211,7 @@ export class WorkflowTerminal {
       adopt(control);
       return control;
     } catch (cause) {
-      this.#fail(cause);
+      this.#fail(cause, true);
       throw cause;
     }
   }
@@ -222,12 +230,12 @@ export class WorkflowTerminal {
     try {
       this.#view?.seal?.();
     } catch (cause) {
-      this.#fail(cause);
+      this.#fail(cause, true);
     }
     try {
       this.#releaseJobControl();
     } catch (cause) {
-      this.#fail(cause);
+      this.#fail(cause, true);
     }
   }
 
@@ -255,7 +263,7 @@ export class WorkflowTerminal {
       // Attempt and observe independent operations before awaiting a held prompt/view/stdout callback.
       const guarded = [earlyCursor, view, job].map((work) =>
         work.catch((cause: unknown) => {
-          this.#fail(cause);
+          this.#fail(cause, true);
           throw cause;
         }),
       );
@@ -285,7 +293,7 @@ export class WorkflowTerminal {
   /** Seal only at the last preparation/driver boundary, then join actual restoration. */
   async finish(): Promise<void> {
     this.seal();
-    void this.#restore().catch(this.#fail);
+    void this.#restore().catch((cause: unknown) => this.#fail(cause, true));
     await this.#retired;
   }
 }

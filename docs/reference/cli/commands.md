@@ -1100,6 +1100,10 @@ their classifier; unknown cleanup failures do not silently become success.
 
 The first owned infrastructure fault starts the common three-second backstop
 immediately, including when cleanup holds the rejection from the outer catch.
+Retained terminal cleanup starts that bound even when the original operation has
+a known operational classification. The terminal retains its own release ACK;
+this does not mark an already-safe workflow as unacknowledged. A positively
+native-free constructor refusal keeps its ordinary classification.
 The native bootstrap takes the original observer, deadline and physical-exit
 latch before runtime entry, invalidating any queued fallback completion. Actual
 terminal restoration and the sole fixed final diagnostic require native ACK

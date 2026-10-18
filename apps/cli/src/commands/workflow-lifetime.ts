@@ -57,7 +57,13 @@ export class WorkflowLifetime {
       this.invocation.registry,
       io,
       () => this.checkpoint(),
-      (cause) => this.failure(cause),
+      (cause, cleanupUnacknowledged) => {
+        this.failure(cause);
+        // Terminal cleanup uncertainty itself needs the common bound even when
+        // the operation's cause is classified (for example unavailable storage).
+        // The terminal keeps its own ACK: do not taint the workflow's retirement.
+        if (cleanupUnacknowledged) this.invocation.finiteExit.fail('cli_internal');
+      },
     );
     this.effectNoticeOwner = Object.freeze({
       signal: this.signal,
