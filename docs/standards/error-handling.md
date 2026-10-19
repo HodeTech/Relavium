@@ -120,6 +120,41 @@ owns the fixture-pinned classification and custom-endpoint downgrade. Actual usa
 with a failed native response is still priced and recorded; a reserved estimate is never
 reported as actual usage. Surfaces supply their own policy-aware commands.
 
+### Diagnostic secret backstop
+
+`makeLlmError` passes every `message` and `code` through `scrubSecrets`
+(`packages/llm/src/scrub-secrets.ts`), and the CLI's display sanitizer composes the same function.
+It is a defense-in-depth **backstop**: the adapter still owns passing an already-redacted
+message, and the backstop masks a finite set of secret **shapes**, not arbitrary sensitive
+content.
+
+- **Shapes.** OpenAI/Anthropic `sk-…` and Google `AIza…` key prefixes; a finite list of literal
+  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names (a
+  value that begins with a `Bearer`/`Basic` label is masked together with its token); and
+  `Bearer`/`Basic` authentication values.
+- **URL userinfo.** The schemes `http(s)`, `ws(s)` and `ftp(s)` mask any userinfo. The
+  connection-string schemes `postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`,
+  `mongodb`, `mongodb+srv`, `amqp`, `amqps`, `ssh`, `sftp`, `ldap`, `ldaps`, `smtp` and `smtps`
+  mask colon-bearing userinfo (`user:pass@`, `:pass@`); a bare user such as `ssh://git@host`
+  stays visible. A raw `?` or `#` before the authority `@` begins public query or fragment
+  text only when the text before it is host-shaped (a dotted name or IPv4, `localhost` or a
+  bracketed IP literal, with an optional port) **and** an `=` assignment follows it, as in
+  `https://host.example?contact=a@b.example`; otherwise the userinfo is masked. Core's journal
+  projection applies the same `?`/`#` predicate
+  ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
+- **Split and normalized forms.** Each rule also probes the terminal-normalized text and the
+  LF/TAB-joined view at original-text boundaries; a credential revealed only by
+  normalization or by an LF/TAB split masks the **whole** diagnostic.
+- **Documented trade-offs, all failing closed.** A scheme glued to a word character is masked in
+  place; an unlisted scheme ending in a listed one (`gftp://`) matches by its suffix; prose
+  that the whitespace-stripped residual probe glues to a path-less URL and a later `@` blanks the
+  whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`) and a
+  single-label host query are masked; and a `Bearer`/`Basic` label that ends a line takes the
+  next token with it.
+- **Limits.** Malformed URLs (`https:/u:p@h`), a raw `/` inside a password, invisible characters
+  inside a scheme and opaque fragments separated by ordinary spaces are outside the finite
+  shapes.
+
 ## No silent catches
 
 - A `catch` block must do one of: handle the error meaningfully, enrich and rethrow it, or

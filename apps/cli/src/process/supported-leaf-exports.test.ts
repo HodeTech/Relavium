@@ -70,10 +70,13 @@ describe('supported compiled dependency leaves', () => {
     }
   });
 
-  it('loads the actual supported compiled leaf with only terminal-safe reachable', () => {
+  it('loads the actual supported compiled leaf with only terminal-safe and its own probe reachable', () => {
     const require = createRequire(import.meta.url);
+    const leaf = pathToFileURL(require.resolve('@relavium/llm/scrub-secrets')).href;
     const allowed = [
-      pathToFileURL(require.resolve('@relavium/llm/scrub-secrets')).href,
+      leaf,
+      // The leaf's dependency-free, package-internal split-credential probe (no package export).
+      new URL('./split-credential-probe.js', leaf).href,
       pathToFileURL(require.resolve('@relavium/shared/terminal-safe')).href,
     ];
     // An isolated ESM loader refuses every other module, including schema/provider barrels.

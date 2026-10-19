@@ -1,12 +1,14 @@
 import { stripTerminalControls } from '@relavium/shared/terminal-safe';
 
+import { splitProbe, type SplitProbe, type SplitProbeAnchor } from './split-credential-probe.js';
+
 /**
  * Defense-in-depth secret scrub applied at the one `makeLlmError` choke point. The CALLER (adapter) is
  * still responsible for passing an already-redacted message; this is the **structural backstop** — like
  * the engine's `deInlineMedia` pass, leak-freedom here is an active transform at one boundary, not
  * per-adapter discipline. It masks finite common secret **shapes**: prefixed keys, literal secret query
- * names, URL userinfo and finite API-key/Bearer/Basic headers. Each non-query rule probes the original diagnostic
- * independently, including terminal-normalized and LF/TAB-joined views, before any
+ * names, URL userinfo of a finite scheme list and finite API-key/Bearer/Basic headers. Each non-query rule probes
+ * the original diagnostic independently, including terminal-normalized and LF/TAB-joined views, before any
  * other rule can erase its identifying context. A match revealed by normalization masks the whole
  * diagnostic. The finite patterns check boundaries in the original text (the URL rule has none, like the
  * pre-PR matcher, so a scheme glued to a word character is masked in place) and preserve already-masked spans;
@@ -15,6 +17,7 @@ import { stripTerminalControls } from '@relavium/shared/terminal-safe';
  * finite residual check, with no parsing or external calls on the error path.
  * Asserted by `llm-error.test.ts` (the backstop) and each adapter's
  * secret-safety test (a planted secret → a secret-free surfaced `LlmError`); see security-review.md.
+ * The canonical policy is error-handling.md's diagnostic secret backstop.
  */
 export function scrubSecrets(text: string): string {
   return scrubQuerySecrets(scrubNonQuerySecrets(text));
@@ -25,21 +28,35 @@ interface SecretRule {
   readonly replacement: string | ((match: string) => string);
   readonly joinedPattern?: RegExp;
   readonly boundary?: RegExp;
+  /** Split-scanner prefilter: a match must reach this literal within its window (see `splitProbe`). */
+  readonly anchor?: SplitProbeAnchor;
 }
 
 /**
  * Deliberately NOT word-bounded: the pre-PR http(s) matcher masked `xhttps://user:pass@host`, and a `\b`
- * here would let any scheme glued to a preceding word character through unmasked. This PR added
- * ws/wss/ftp/ftps under the same rule. The rule has no `\b` prefix, so it supplies its own joined form
- * (the split-credential scanner would otherwise strip two characters that are not there) and its
- * `boundary` blocks no start. Consequences, pinned by tests and fail-closed: a longer scheme name
- * ending in one of these (`sftp://u@h`) matches by suffix, and the whitespace-stripped residual probe
- * turns a path-less URL, prose and a later `@` into a whole-diagnostic `[REDACTED]` (the pre-PR matcher did
- * so for http(s); dropping `\b` extends it to prose that stripping glues to the scheme). A credential
- * split by a plain SPACE that also holds a raw `@` remains the documented opaque-fragments-across-spaces
- * limit, as it was for the pre-PR matcher.
+ * here would let any scheme glued to a preceding word character through unmasked. PR #95 added
+ * ws/wss/ftp/ftps under the same rule, and the PR95 increment added the connection-string schemes
+ * (postgres(ql), mysql, mariadb, redis(s), mongodb(+srv), amqp(s), ssh, sftp, ldap(s), smtp(s)), whose
+ * colonless userinfo names a user and stays visible (see `maskUrlUserinfo`). The rule has no `\b` prefix,
+ * so it supplies its own joined form (the split-credential scanner would otherwise strip two characters
+ * that are not there) and its `boundary` blocks no start. Consequences, pinned by tests and fail-closed: an
+ * unlisted longer scheme name ending in a listed one (`gftp://u@h`) matches by suffix, and the
+ * whitespace-stripped residual probe turns a path-less URL, prose and a later `@` into a whole-diagnostic
+ * `[REDACTED]` (the pre-PR matcher did so for http(s); dropping `\b` extends it to prose that stripping glues
+ * to the scheme). A credential split by a plain SPACE that also holds a raw `@` remains the documented
+ * opaque-fragments-across-spaces limit, as it was for the pre-PR matcher.
  */
-const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;
+const URL_USERINFO_PATTERN =
+  /(?:https?|wss?|ftps?|postgres(?:ql)?|mysql|mariadb|rediss?|mongodb(?:\+srv)?|amqps?|ssh|sftp|ldaps?|smtps?):\/\/[^/\s]*@/gi;
+
+/** The schemes whose colonless userinfo is masked too; every other listed scheme needs a `:` in it. */
+const COLONLESS_USERINFO_SCHEME = /^(?:https?|wss?|ftps?)$/i;
+
+/**
+ * Every listed scheme ends within this many joined characters before its `://`, so the split scanner
+ * tries no URL start farther away. It is generous on purpose: the longest scheme (`mongodb+srv`) has 11.
+ */
+const URL_SCHEME_WINDOW = 32;
 
 /** A start boundary that never matches: no preceding character makes a start ineligible. */
 const NO_BOUNDARY = /(?!)/;
@@ -58,16 +75,21 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
     boundary: /\w/,
   },
   // Finite authority schemes, not URL validation. Raw ?/# before the first @ may belong
-  // to a password; after an existing @ they begin public query/fragment text.
+  // to a username or password; after an existing @ they begin public query/fragment text.
   {
     pattern: URL_USERINFO_PATTERN,
     joinedPattern: URL_USERINFO_PATTERN,
     replacement: maskUrlUserinfo,
     boundary: NO_BOUNDARY,
+    anchor: { text: '://', window: URL_SCHEME_WINDOW },
   },
   // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
+  // A value may begin with a (possibly LF/TAB-split) Bearer/Basic label: the label and its token are
+  // masked together, so the later scheme-label rules cannot lose their anchor to this one. Like those
+  // rules, whitespace after the label may be a line break, and the next token is masked fail-closed.
   {
-    pattern: /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)[^\s"',;}]+/gi,
+    pattern:
+      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+)?[^\s"',;}]+/gi,
     replacement: '$1$2$3[REDACTED]',
     joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,
     boundary: /[A-Za-z0-9_-]/,
@@ -81,16 +103,38 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   { pattern: /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+\S+/gi, replacement: 'Basic [REDACTED]' },
 ];
 
+/**
+ * Each boundary-bearing rule compiled once for the split scanner. `splitProbe` checks the scanner's
+ * two invariants here, at module load, so a misconfigured rule fails fast with a typed error instead of
+ * a `SyntaxError` inside `makeLlmError` on some later LF/TAB diagnostic.
+ */
+const SPLIT_PROBES: ReadonlyMap<SecretRule, SplitProbe> = new Map(
+  NON_QUERY_SECRET_RULES.flatMap((rule) =>
+    rule.boundary === undefined
+      ? []
+      : [[rule, splitProbe({ ...rule, boundary: rule.boundary })] as const],
+  ),
+);
+
 /** Reuse the display boundary's platform-free normalization without changing benign output. */
 function normalizeSecretProbe(text: string): string {
   return stripTerminalControls(text);
 }
 
-function isPublicHostPort(text: string): boolean {
-  const colon = text.lastIndexOf(':');
-  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
-  const hostname = text.slice(0, colon);
-  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+/** A host-shaped prefix: a dotted name (or IPv4), `localhost` or a bracketed IP literal, with an optional port. */
+const HOST_SHAPED_AUTHORITY =
+  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
+
+/**
+ * A raw `?`/`#` before the authority `@` begins public query or fragment text only when the text
+ * before it is host-shaped **and** an `=` assignment follows it, as in
+ * `https://host.example?contact=a@b.example`. Anything else may be a malformed username or password
+ * and is masked: `https://us?er:TOKEN@h/`, `http://#TOKEN@h`, `https://my.user:1234?TOKEN@h/`. A host
+ * fragment without an assignment (`https://host.example#sec@x`) is masked too, failing closed. Core's
+ * journal projection applies the same predicate (`packages/core/src/tools/bounding.ts`).
+ */
+function isPublicQueryContact(userinfo: string, query: number): boolean {
+  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
 
 function maskUrlUserinfo(match: string): string {
@@ -101,10 +145,9 @@ function maskUrlUserinfo(match: string): string {
   const at = authorityAt >= 0 ? authorityAt : authority.length - 1;
   const userinfo = authority.slice(0, at);
   const query = userinfo.search(/[?#]/);
-  const colon = userinfo.indexOf(':');
-  // Raw ?/# may occur inside a malformed password. Preserve host query/fragment assignments,
-  // including hosts with ports, rather than interpreting their contact values as credentials.
-  if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
+  if (query >= 0 && isPublicQueryContact(userinfo, query)) return match;
+  // A connection string's colonless userinfo names a user (`ssh://git@host`), not a credential.
+  if (!userinfo.includes(':') && !COLONLESS_USERINFO_SCHEME.test(match.slice(0, start - 3)))
     return match;
   return `${match.slice(0, start)}[REDACTED]${authority.slice(at)}`;
 }
@@ -119,9 +162,7 @@ function applyRule(text: string, rule: SecretRule): string {
 /**
  * Probe LF/TAB joins at eligible ORIGINAL starts before a greedy match can hide a later boundary.
  * All boundary-bearing rules use this scanner and their canonical matcher (or finite header-label
- * override). A rule that has a `joinedPattern` uses it as written; any other rule MUST begin its pattern
- * with `\b`, which is stripped here (deleting an explicit `joinedPattern` from a rule without `\b`
- * throws on any LF/TAB input that no earlier rule has already redacted, which the suite catches at once).
+ * override), compiled once into `SPLIT_PROBES` (`splitProbe` rejects a rule with no joined form).
  * Prefixes start with ASCII letters;
  * that prefilter skips only impossible starts.
  * Keys have one token run after a bounded prefix/minimum. Header labels are bounded and their
@@ -131,17 +172,18 @@ function applyRule(text: string, rule: SecretRule): string {
  * Opaque Bearer/Basic values and literal query names keep their established delimiter policy.
  */
 function hasSplitCredential(text: string, joined: string, rule: SecretRule): boolean {
-  if (rule.boundary === undefined) return false;
-  const canonical = rule.joinedPattern ?? rule.pattern;
-  const source = rule.joinedPattern === undefined ? canonical.source.slice(2) : canonical.source;
+  const probe = SPLIT_PROBES.get(rule);
+  if (rule.boundary === undefined || probe === undefined) return false;
   // Absence under the same boundary-free canonical matcher proves there is no joined
   // candidate. Presence still requires the original-boundary and split checks below.
   // Native scanning avoids a JS/coverage branch for every byte of unrelated large text.
-  if (!new RegExp(source, canonical.flags).test(joined)) return false;
-  const pattern = new RegExp(source, canonical.flags.replace('g', 'y'));
-  // Only a rule whose boundary rejects ASCII word characters may skip word-preceded starts. `'a'` stands
-  // for all of them: every current boundary class rejects all ASCII word characters or none of them.
-  const wordBlocksStart = rule.boundary.test('a');
+  if (!probe.preflight.test(joined)) return false;
+  const pattern = probe.sticky;
+  // Only a rule whose boundary rejects every ASCII word character may skip word-preceded starts;
+  // `splitProbe` refused any boundary that treats some word characters differently from others.
+  const wordBlocksStart = probe.wordBlocksStart;
+  const anchor = probe.anchor;
+  let anchorAt = -1;
   let originalOffset = 0;
   let joinedOffset = 0;
   while (originalOffset < text.length) {
@@ -150,13 +192,22 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
       originalOffset += 1;
       continue;
     }
+    // An anchored rule (the URL rule's `://`) can match only within its window before the next
+    // anchor. Past the last anchor no match can start, and letter-heavy text far from any anchor is
+    // skipped without a RegExp attempt per character.
+    if (anchor !== undefined && anchorAt < joinedOffset) {
+      anchorAt = joined.indexOf(anchor.text, joinedOffset);
+      if (anchorAt < 0) return false;
+    }
     // The key and header boundary classes reject ASCII word characters. Skip those impossible
     // starts without allocating/testing RegExp objects for every admitted-size character;
     // the rule's own boundary and canonical matcher still decide every eligible start. The URL
     // rule blocks no start, so a glued scheme (`xhttps://`) is examined like any other.
     const code = text.charCodeAt(originalOffset);
     const previous = text.charCodeAt(originalOffset - 1);
-    const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const letter =
+      ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) &&
+      (anchor === undefined || anchorAt - joinedOffset <= anchor.window);
     const previousWord =
       wordBlocksStart &&
       ((previous >= 48 && previous <= 57) ||

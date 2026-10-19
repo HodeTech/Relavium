@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 57);
+  assert.equal(secretsControls.length, 66);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    336,
+    416,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -309,7 +309,9 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-raw-password-userinfo',
       'core-joined-original-boundary-recovery',
       'core-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 142]),
+      'core-userinfo-contact-assignment',
+      'core-userinfo-contact-host',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 150]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -317,7 +319,14 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-raw-password-userinfo',
       'diagnostic-joined-original-boundary-recovery',
       'diagnostic-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 111]),
+      'diagnostic-header-scheme-label',
+      'diagnostic-userinfo-contact-assignment',
+      'diagnostic-userinfo-contact-host',
+      'diagnostic-connection-scheme-userinfo',
+      'diagnostic-joined-url-userinfo',
+      'diagnostic-url-glued-scheme',
+      'diagnostic-url-scheme-window',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 174]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

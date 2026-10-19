@@ -1,3 +1,4 @@
+import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -629,9 +630,13 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
     for (const text of [
       'https://vanity@api.invalid/x',
       'https://api.invalid?public=alice@example.invalid',
-      'https://api.invalid#alice@example.invalid',
+      'https://api.invalid#contact=alice@example.invalid',
     ])
       expect(redactSecretShapedText(text)).toBe(text);
+    // A host fragment with no assignment may be a malformed password: masked, failing closed.
+    expect(redactSecretShapedText('https://api.invalid#alice@example.invalid')).toBe(
+      'https://[redacted]@example.invalid',
+    );
     expect(redactSecretShapedText(`https://${'u'.repeat(600)}@api.invalid/x`)).toBe(
       'https://[redacted]@api.invalid/x',
     );
@@ -1152,5 +1157,60 @@ describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
     expectCredentialProjection(projected).toBe('[redacted]; public=A');
     const publicText = `${body}\n public-tail-B`;
     expectCredentialProjection(redactSecretShapedText(publicText)).toBe(publicText);
+  });
+});
+
+describe('PR95 raw ?/# userinfo in the journal projection', () => {
+  const userinfoContact = (value: unknown) => expect(value, 'SECRETS_B2_CORE_USERINFO_CONTACT');
+
+  it.each([
+    ['https://us?er:TOKEN@h.example/', 'https://[redacted]@h.example/'],
+    ['https://us?er=1:TOKEN@h.example/', 'https://[redacted]@h.example/'],
+  ])('masks userinfo whose raw ?/# follows no host-shaped prefix: %s', (input, expected) => {
+    userinfoContact(redactSecretShapedText(input)).toBe(expected);
+  });
+
+  it.each([
+    ['https://my.user:1234?TOKEN@h.example/', 'https://[redacted]@h.example/'],
+    ['https://provider.example#section@x.example', 'https://[redacted]@x.example'],
+  ])('masks a host-shaped prefix that no assignment follows: %s', (input, expected) => {
+    userinfoContact(redactSecretShapedText(input)).toBe(expected);
+  });
+
+  it.each(['?', '#'])('retains public %s contact text after a host-shaped prefix', (separator) => {
+    for (const host of [
+      'provider.invalid',
+      'provider.invalid:8443',
+      'provider.invalid.',
+      '10.0.0.1',
+      'localhost:3000',
+    ]) {
+      const input = `connect https://${host}${separator}contact=alice@example.invalid failed`;
+      expect(redactSecretShapedText(input)).toBe(input);
+    }
+  });
+
+  it('keeps its documented short colonless-handle difference from the LLM backstop', () => {
+    // Core retains a colonless userinfo under 16 characters; the LLM diagnostic backstop masks it.
+    expect(redactSecretShapedText('http://#TOKEN@h.example')).toBe('http://#TOKEN@h.example');
+    expect(scrubSecrets('http://#TOKEN@h.example')).toBe('http://[REDACTED]@h.example');
+  });
+
+  it('agrees with the LLM backstop on every raw ?/# decision outside those differences', () => {
+    for (const input of [
+      'https://alice:pa?ss@provider.invalid/v1',
+      'https://alice:pa#ss@provider.invalid/v1',
+      'https://alice:pa?ss=value@provider.invalid/v1',
+      'https://us?er:TOKEN@h.example/',
+      'https://us?er=1:TOKEN@h.example/',
+      'https://my.user:1234?TOKEN@h.example/',
+      'https://provider.example#section@x.example',
+      'https://provider.invalid?contact=alice@example.invalid',
+      'https://provider.invalid:8443#contact=alice@example.invalid',
+      'https://localhost:3000?contact=alice@example.invalid',
+      'https://10.0.0.1#contact=alice@example.invalid',
+    ]) {
+      expect(redactSecretShapedText(input) === input, input).toBe(scrubSecrets(input) === input);
+    }
   });
 });

@@ -66,6 +66,61 @@ const rawPasswordAssignments = ['?', '#'].map(
   (separator) =>
     `preserves public ${separator} tails after userinfo and masks raw password assignments`,
 );
+// PR95: the extended URL scheme list, the header scheme label and the raw ?/# contact predicate.
+const urlSchemes = String.raw`https?|wss?|ftps?|postgres(?:ql)?|mysql|mariadb|rediss?|mongodb(?:\+srv)?|amqps?|ssh|sftp|ldaps?|smtps?`;
+const colonlessSchemes = ['http', 'https', 'ws', 'wss', 'ftp', 'ftps'];
+const connectionSchemes = [
+  'postgres',
+  'postgresql',
+  'mysql',
+  'mariadb',
+  'redis',
+  'rediss',
+  'mongodb',
+  'mongodb+srv',
+  'amqp',
+  'amqps',
+  'ssh',
+  'sftp',
+  'ldap',
+  'ldaps',
+  'smtp',
+  'smtps',
+];
+const headerSchemeLabelMarker = 'SECRETS_B2_HEADER_SCHEME_LABEL';
+const headerSchemeLabelCases = [
+  ...['api-key', 'x-api-key', 'x-goog-api-key', 'X-Api-Key'].map(
+    (name) => `masks the token after a scheme label in the ${name} header`,
+  ),
+  'masks every LF/TAB split position inside a scheme label after a header',
+  'masks the next token, failing closed, when a scheme label ends the line',
+];
+const userinfoContactMarker = 'SECRETS_B2_USERINFO_CONTACT';
+const coreUserinfoContactMarker = 'SECRETS_B2_CORE_USERINFO_CONTACT';
+const contactAssignmentCases = (secondInput) =>
+  ['https://my.user:1234?TOKEN@h.example/', secondInput].map(
+    (input) => `masks a host-shaped prefix that no assignment follows: ${input}`,
+  );
+const contactHostCase =
+  'masks userinfo whose raw ?/# follows no host-shaped prefix: https://us?er=1:TOKEN@h.example/';
+const contactAssignment = String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);`;
+const connectionSchemeMarker = 'SECRETS_B2_CONNECTION_SCHEME';
+// sftp also matches the original list by its ftp suffix, so the old list still masks it.
+const connectionSchemeCases = connectionSchemes
+  .filter((scheme) => scheme !== 'sftp')
+  .map((scheme) => `masks colon-bearing ${scheme} userinfo and keeps a bare user`);
+const urlJoinedMarker = 'SECRETS_B2_URL_JOINED';
+const urlJoinedCases = (schemes) => [
+  ...schemes.map((scheme) => `masks a split ${scheme} credential around an inner masked span`),
+  ...['?', '#'].map(
+    (raw) => `masks a split credential holding a raw ${raw} and an inner masked span`,
+  ),
+];
+const urlGluedMarker = 'SECRETS_B2_URL_GLUED_SCHEME';
+const urlGluedCases = ['\n', '\t'].map(
+  (separator) =>
+    `masks a glued scheme whose split credential holds a raw @ (${JSON.stringify(separator)})`,
+);
 const originalBoundaryMarker = 'SECRETS_B2_ORIGINAL_BOUNDARY';
 const originalBoundaryCases = ['sk-proj-', 'AIza'].flatMap((prefix) =>
   ['\n', '\t'].map(
@@ -221,7 +276,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    142,
+    150,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -234,7 +289,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    111,
+    174,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -967,9 +1022,86 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-raw-password-userinfo',
-    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
-    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi;`,
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s]*@/gi;`,
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s?#]*@/gi;`,
     [...diagnosticPasswords, ...rawPasswordAssignments],
+  ),
+  // PR95: a header value's leading Bearer/Basic label is masked with its token.
+  diagnosticControl(
+    'diagnostic-header-scheme-label',
+    String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+)?[^\s"',;}]+/gi,`,
+    String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)[^\s"',;}]+/gi,`,
+    headerSchemeLabelCases,
+    headerSchemeLabelMarker,
+  ),
+  // PR95: raw ?/# userinfo is public only after a host-shaped prefix AND an assignment.
+  diagnosticControl(
+    'diagnostic-userinfo-contact-assignment',
+    contactAssignment,
+    String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));`,
+    contactAssignmentCases('https://host.example#sec@x.example'),
+    userinfoContactMarker,
+  ),
+  control(
+    'diagnostic-userinfo-contact-host',
+    scrubSecretsLeaf,
+    contactAssignment,
+    String.raw`  return userinfo.includes('=', query + 1);`,
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    174,
+    contactHostCase,
+    userinfoContactMarker,
+    rawPasswordAssignments.map((target) => ({ target, marker: diagnosticMarker })),
+  ),
+  coreProjectionControl(
+    'core-userinfo-contact-assignment',
+    contactAssignment,
+    String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));`,
+    contactAssignmentCases('https://provider.example#section@x.example'),
+    coreUserinfoContactMarker,
+  ),
+  control(
+    'core-userinfo-contact-host',
+    coreProjection,
+    contactAssignment,
+    String.raw`  return userinfo.includes('=', query + 1);`,
+    coreProjectionCases,
+    150,
+    contactHostCase,
+    coreUserinfoContactMarker,
+    rawPasswordAssignments.map((target) => ({ target, marker: coreProjectionMarker })),
+  ),
+  // PR95: connection-string schemes join the finite URL list.
+  diagnosticControl(
+    'diagnostic-connection-scheme-userinfo',
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s]*@/gi;`,
+    String.raw`  /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
+    connectionSchemeCases,
+    connectionSchemeMarker,
+  ),
+  // PR95: only the joined scanner sees a split credential around an inner masked span.
+  diagnosticControl(
+    'diagnostic-joined-url-userinfo',
+    '    joinedPattern: URL_USERINFO_PATTERN,',
+    '    joinedPattern: /a^/g,',
+    urlJoinedCases([...colonlessSchemes, ...connectionSchemes]),
+    urlJoinedMarker,
+  ),
+  // PR95: the URL rule blocks no start, so a glued scheme is scanned like any other.
+  diagnosticControl(
+    'diagnostic-url-glued-scheme',
+    '    boundary: NO_BOUNDARY,',
+    String.raw`    boundary: /\w/,`,
+    urlGluedCases,
+    urlGluedMarker,
+  ),
+  // PR95: the `://` prefilter window must cover every listed scheme (`ws` alone fits in two).
+  diagnosticControl(
+    'diagnostic-url-scheme-window',
+    "    anchor: { text: '://', window: URL_SCHEME_WINDOW },",
+    "    anchor: { text: '://', window: 2 },",
+    urlJoinedCases([...colonlessSchemes, ...connectionSchemes].filter((scheme) => scheme !== 'ws')),
+    urlJoinedMarker,
   ),
   // R1-LN-1: recover a valid original start hidden inside a rejected greedy joined candidate.
   coreProjectionControl(

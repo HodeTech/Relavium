@@ -93,6 +93,13 @@ This is conservative pattern masking, not proof that arbitrary sensitive content
 absent; raw dispatch/model results, full spills and historical rows retain their
 existing content-sensitive handling.
 
+A raw `?` or `#` before a URL authority's `@` begins public query or fragment text only when
+the text before it is host-shaped (a dotted name or IPv4, `localhost` or a bracketed IP literal,
+with an optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked.
+This is the same predicate as the [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop).
+Two projection-only differences remain by design: `]` ends an authority, and a userinfo
+with no password that is shorter than 16 characters is kept as a vanity handle.
+
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
 that credential. Ordinary spaces and punctuation separate public prose; the masker

@@ -431,18 +431,23 @@ function redactOpaqueQueryValues(text: string): string {
   return parts.join('');
 }
 
+/** A host-shaped prefix: a dotted name (or IPv4), `localhost` or a bracketed IP literal, with an optional port. */
+const HOST_SHAPED_AUTHORITY =
+  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
+
 /**
  * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
  * matches can mask the first password fragment and leave another `@` plus a credential
  * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
- * after an existing userinfo separator remain public. Before that separator, raw ?/# in a
- * colon-bearing password are masked, except an explicit public host:port prefix; a short colonless vanity handle retains the existing non-secret policy.
+ * after an existing userinfo separator remain public. Before that separator, a raw ?/#
+ * begins public query/fragment text only when the text before it is host-shaped **and** an
+ * `=` assignment follows it; anything else may be a malformed username or password. This is
+ * the same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
+ * Two core-only differences remain by design: `]` ends an authority, and a userinfo with no
+ * password that is shorter than 16 characters is a vanity handle under the existing non-secret policy.
  */
-function isPublicHostPort(text: string): boolean {
-  const colon = text.lastIndexOf(':');
-  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
-  const hostname = text.slice(0, colon);
-  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+function isPublicQueryContact(userinfo: string, query: number): boolean {
+  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
@@ -461,10 +466,9 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
     const query = userinfo.search(/[?#]/);
-    // Raw ?/# can belong to a malformed password. An explicit host:port prefix instead
-    // introduces a public query/fragment; its contact values must not become userinfo.
-    if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
-      continue;
+    // Raw ?/# can belong to a malformed username or password. A host-shaped prefix followed by
+    // an assignment instead introduces a public query/fragment whose contact must not become userinfo.
+    if (query >= 0 && isPublicQueryContact(userinfo, query)) continue;
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
     mask(start, start + at, '[redacted]');

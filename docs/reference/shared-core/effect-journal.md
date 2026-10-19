@@ -376,6 +376,14 @@ through the actual closing quote. A recognized value must not leave a credential
 in the projection. This remains a finite shape detector, not a claim to identify arbitrary
 unlabelled secrets. Existing old digests are not retroactively erased or rewritten.
 
+A raw `?` or `#` before the authority's `@` is public only after a host-shaped prefix that an
+`=` assignment follows ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)).
+Wave 3's PR95 increment tightened that predicate without a new digest domain. It changes a
+`v5:` projection only where such userinfo was previously treated as public: a resumed run whose
+committed effect carried one now computes a different digest and refuses matching prepare
+instead of replaying, which is the fail-closed outcome of any digest difference. Every other
+`v5:` row keeps its digest.
+
 A recognized structural credential key masks its entire value before traversal. A partial
 inner text match does not make the remaining value public. Only an anchored Bearer, Basic
 or Token scheme survives as its canonical label followed by `[redacted]`; no original

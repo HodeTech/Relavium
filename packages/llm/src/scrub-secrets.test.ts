@@ -8,6 +8,13 @@ import { scrubSecrets } from './scrub-secrets.js';
 const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
 const googleKey = ['AI', 'za', 'SyA1234567890abcdefghijklmnopqrstuv'].join('');
 
+/**
+ * Eight-MiB cases take about a second. Their bound is this case deadline, far below the minutes a
+ * quadratic scan would need, rather than a wall-clock assertion that a loaded runner can trip. It is
+ * also the largest case budget the secrets causal-control phases admit (`CAUSAL_TIMEOUT_BUDGET`).
+ */
+const ADMITTED_SIZE_CASE_TIMEOUT_MS = 15_000;
+
 const compatibleDiagnostics = [
   { input: `invalid ${key}; retry later`, expected: 'invalid [REDACTED]; retry later' },
   { input: `invalid ${googleKey}; retry later`, expected: 'invalid [REDACTED]; retry later' },
@@ -172,7 +179,7 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
 
   // Documents, and does not endorse, two consequences of a URL rule with no word boundary. Both fail
   // closed: they blank or widen a diagnostic rather than reveal one. The whitespace-stripped residual probe
-  // glues the prose before a URL to its scheme, and a longer scheme name matches by its suffix.
+  // glues the prose before a URL to its scheme, and an unlisted longer scheme name matches by its suffix.
   it.each([
     {
       input: 'Error: ECONNREFUSED http://127.0.0.1:11434 contact admin@corp',
@@ -182,7 +189,11 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
       input: 'MCP server at ws://127.0.0.1:8080 refused; email support@vendor.com',
       expected: '[REDACTED]',
     },
-    { input: 'sftp://scm@code.example/x', expected: 'sftp://[REDACTED]@code.example/x' },
+    {
+      input: 'Error: connect ECONNREFUSED postgres://db.example:5432 contact dba@corp',
+      expected: '[REDACTED]',
+    },
+    { input: 'gftp://scm@code.example/x', expected: 'gftp://[REDACTED]@code.example/x' },
   ])('fails closed on the documented trade-off $input', ({ input, expected }) => {
     expect(scrubSecrets(input)).toBe(expected);
   });
@@ -324,16 +335,38 @@ describe('PR95 B2 finite joined-view boundaries', () => {
     },
   );
 
-  it('bounds admitted-size failed header and URL preparation', () => {
-    const started = performance.now();
-    for (const fragment of ['wordx-\tapi-\nkey ', 'https:\n//provider.invalid/']) {
-      const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
-      const output = scrubSecrets(input);
-      expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
-      expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
-    }
-    expect(performance.now() - started, 'SECRETS_B2_HEADER_PREPARATION').toBeLessThan(5_000);
-  });
+  it(
+    'bounds admitted-size failed header and URL preparation',
+    () => {
+      for (const fragment of ['wordx-\tapi-\nkey ', 'https:\n//provider.invalid/']) {
+        const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+        const output = scrubSecrets(input);
+        expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
+        expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'reaches the split URL scan over admitted-size letter-heavy text',
+    () => {
+      const letters = 8 * 1024 * 1024 - 256;
+      for (const filler of ['a', 'hwf']) {
+        const tail = filler.repeat(Math.floor(letters / filler.length));
+        for (const [input, expected] of [
+          [`a\nhttps://u@h ${tail}`, `a\nhttps://[REDACTED]@h ${tail}`],
+          [`${tail}\nhttps://u@h`, `${tail}\nhttps://[REDACTED]@h`],
+        ] as const) {
+          const output = scrubSecrets(input);
+          // Bounded evidence: a regression must not serialize eight MiB into its report.
+          expect(output.length, 'SECRETS_B2_URL_SCAN').toBe(expected.length);
+          expect(output === expected, 'SECRETS_B2_URL_SCAN').toBe(true);
+        }
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it.each([
     ['sk-proj-', '\n'],
@@ -348,17 +381,19 @@ describe('PR95 B2 finite joined-view boundaries', () => {
     expect(error.code, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
   });
 
-  it('bounds admitted-size embedded prefixes before a valid original boundary', () => {
-    const fragment = `wordsk-proj-${'A'.repeat(52)}\n`;
-    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
-    const input = `${publicPrefix}sk-proj-${'B'.repeat(32)}\t${'C'.repeat(32)}; public=A`;
-    const started = performance.now();
-    const output = scrubSecrets(input);
-    // Keep removal evidence bounded: a regression must not serialize eight MiB into its report.
-    expect(output.length, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]'.length);
-    expect(output, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
-    expect(performance.now() - started, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBeLessThan(5_000);
-  });
+  it(
+    'bounds admitted-size embedded prefixes before a valid original boundary',
+    () => {
+      const fragment = `wordsk-proj-${'A'.repeat(52)}\n`;
+      const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+      const input = `${publicPrefix}sk-proj-${'B'.repeat(32)}\t${'C'.repeat(32)}; public=A`;
+      const output = scrubSecrets(input);
+      // Keep removal evidence bounded: a regression must not serialize eight MiB into its report.
+      expect(output.length, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]'.length);
+      expect(output, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it('does not invent a key boundary in a public word with a separate newline', () => {
     const input = `wordsk-proj-${'A'.repeat(32)};\nordinary`;
@@ -390,4 +425,196 @@ describe('PR95 B2 finite joined-view boundaries', () => {
       scrubSecrets(`sk-proj-${'A'.repeat(32)}\n request; retry later`),
     ).toBe('[REDACTED]\n request; retry later');
   });
+});
+
+const COLONLESS_SCHEMES = ['http', 'https', 'ws', 'wss', 'ftp', 'ftps'];
+const CONNECTION_SCHEMES = [
+  'postgres',
+  'postgresql',
+  'mysql',
+  'mariadb',
+  'redis',
+  'rediss',
+  'mongodb',
+  'mongodb+srv',
+  'amqp',
+  'amqps',
+  'ssh',
+  'sftp',
+  'ldap',
+  'ldaps',
+  'smtp',
+  'smtps',
+];
+
+describe('PR95 header values that begin with a Bearer/Basic label', () => {
+  const token = ['abcdef', 'ghijkl', '123456'].join('');
+  const headerSchemeLabel = (value: unknown) => expect(value, 'SECRETS_B2_HEADER_SCHEME_LABEL');
+
+  it.each(['api-key', 'x-api-key', 'x-goog-api-key', 'X-Api-Key'])(
+    'masks the token after a scheme label in the %s header',
+    (name) => {
+      for (const label of ['Bearer', 'Basic', 'bearer', 'BASIC']) {
+        for (const [input, expected] of [
+          [`${name}:${label} ${token}`, `${name}:[REDACTED]`],
+          [`header ${name}: ${label} ${token} rejected`, `header ${name}: [REDACTED] rejected`],
+          [`${name}:\t${label}\t${token}`, `${name}:\t[REDACTED]`],
+          [
+            `{"${name}":"${label} ${token}","ordinary":"kept"}`,
+            `{"${name}":"[REDACTED]","ordinary":"kept"}`,
+          ],
+        ] as const) {
+          const output = scrubSecrets(input);
+          headerSchemeLabel(output).toBe(expected);
+          headerSchemeLabel(output.includes(token)).toBe(false);
+        }
+      }
+    },
+  );
+
+  it('masks every LF/TAB split position inside a scheme label after a header', () => {
+    for (const label of ['Bearer', 'Basic']) {
+      for (const separator of ['\n', '\t', '\n\t']) {
+        for (let position = 1; position < label.length; position += 1) {
+          const input = `api-key:${label.slice(0, position)}${separator}${label.slice(position)} ${token}`;
+          headerSchemeLabel(scrubSecrets(input)).toBe('api-key:[REDACTED]');
+        }
+      }
+    }
+  });
+
+  it('masks the next token, failing closed, when a scheme label ends the line', () => {
+    headerSchemeLabel(scrubSecrets('api-key: Bearer\nrequest failed')).toBe(
+      'api-key: [REDACTED] failed',
+    );
+    expect(scrubSecrets('api-key: Bearer')).toBe('api-key: [REDACTED]');
+  });
+
+  it('keeps a token masked when the scheme label precedes the header name', () => {
+    expect(scrubSecrets(`Bearer api-key: ${token}`)).toBe('Bearer [REDACTED] [REDACTED]');
+  });
+});
+
+describe('PR95 raw ?/# userinfo: public only after a host-shaped prefix and an assignment', () => {
+  const userinfoContact = (value: unknown) => expect(value, 'SECRETS_B2_USERINFO_CONTACT');
+
+  it.each([
+    ['https://us?er:TOKEN@h.example/', 'https://[REDACTED]@h.example/'],
+    ['http://#TOKEN@h.example', 'http://[REDACTED]@h.example'],
+    ['https://us?er=1:TOKEN@h.example/', 'https://[REDACTED]@h.example/'],
+  ])('masks userinfo whose raw ?/# follows no host-shaped prefix: %s', (input, expected) => {
+    userinfoContact(scrubSecrets(input)).toBe(expected);
+  });
+
+  it.each([
+    ['https://my.user:1234?TOKEN@h.example/', 'https://[REDACTED]@h.example/'],
+    ['https://host.example#sec@x.example', 'https://[REDACTED]@x.example'],
+  ])('masks a host-shaped prefix that no assignment follows: %s', (input, expected) => {
+    userinfoContact(scrubSecrets(input)).toBe(expected);
+  });
+
+  it.each(['?', '#'])('retains public %s contact text after a host-shaped prefix', (separator) => {
+    for (const host of [
+      'provider.invalid',
+      'provider.invalid:8443',
+      'provider.invalid.',
+      '10.0.0.1',
+      'localhost:3000',
+      '[::1]',
+      '[::1]:8443',
+      '[::ffff:10.0.0.1]',
+    ]) {
+      const input = `connect https://${host}${separator}contact=alice@example.invalid failed`;
+      expect(scrubSecrets(input)).toBe(input);
+    }
+  });
+
+  it('masks a single-label host query, failing closed', () => {
+    expect(scrubSecrets('https://intranet?contact=alice@example.invalid')).toBe(
+      'https://[REDACTED]@example.invalid',
+    );
+  });
+
+  it.each(['\n', '\t'])('keeps the predicate across an LF/TAB split (%j)', (separator) => {
+    userinfoContact(scrubSecrets(`https://us?e${separator}r:TOKEN@h.example/`)).toBe('[REDACTED]');
+    const contact = `https://provider.invalid?con${separator}tact=alice@example.invalid`;
+    expect(scrubSecrets(contact)).toBe(contact);
+  });
+});
+
+describe('PR95 connection-string URL schemes', () => {
+  const connectionScheme = (value: unknown) => expect(value, 'SECRETS_B2_CONNECTION_SCHEME');
+
+  it.each(CONNECTION_SCHEMES)('masks colon-bearing %s userinfo and keeps a bare user', (scheme) => {
+    for (const spelling of [scheme, scheme.toUpperCase()]) {
+      connectionScheme(scrubSecrets(`connect ${spelling}://user:opaque@db.example/x failed`)).toBe(
+        `connect ${spelling}://[REDACTED]@db.example/x failed`,
+      );
+      connectionScheme(scrubSecrets(`${spelling}://:opaque@db.example`)).toBe(
+        `${spelling}://[REDACTED]@db.example`,
+      );
+      connectionScheme(scrubSecrets(`x${spelling}://user:opaque@db.example/x`)).toBe(
+        `x${spelling}://[REDACTED]@db.example/x`,
+      );
+      const bareUser = `${spelling}://admin@db.example/x`;
+      expect(scrubSecrets(bareUser)).toBe(bareUser);
+    }
+  });
+
+  it('masks a multi-host connection string and keeps a git+ssh user', () => {
+    connectionScheme(scrubSecrets('mongodb://user:opaque@h1.example,h2.example/db')).toBe(
+      'mongodb://[REDACTED]@h1.example,h2.example/db',
+    );
+    expect(scrubSecrets('git+ssh://git@github.com/org/repo')).toBe(
+      'git+ssh://git@github.com/org/repo',
+    );
+  });
+
+  it('keeps masking colonless userinfo for the original schemes', () => {
+    for (const scheme of COLONLESS_SCHEMES) {
+      expect(scrubSecrets(`${scheme}://opaque@provider.invalid/x`)).toBe(
+        `${scheme}://[REDACTED]@provider.invalid/x`,
+      );
+    }
+  });
+});
+
+describe('PR95 joined-view and glued-scheme witnesses', () => {
+  // An inner pre-masked span splits the whitespace-stripped residual probe, so only the joined
+  // scanner can see each split credential below.
+  it.each([...COLONLESS_SCHEMES, ...CONNECTION_SCHEMES])(
+    'masks a split %s credential around an inner masked span',
+    (scheme) => {
+      for (const separator of ['\n', '\t']) {
+        expect(
+          scrubSecrets(`${scheme}://u${separator}ser:pa[REDACTED]ss@h.example/x`),
+          'SECRETS_B2_URL_JOINED',
+        ).toBe('[REDACTED]');
+      }
+    },
+  );
+
+  it.each(['?', '#'])(
+    'masks a split credential holding a raw %s and an inner masked span',
+    (raw) => {
+      for (const separator of ['\n', '\t']) {
+        expect(
+          scrubSecrets(`https://u${separator}ser:pa${raw}ss[REDACTED]x@h.example/v1`),
+          'SECRETS_B2_URL_JOINED',
+        ).toBe('[REDACTED]');
+      }
+    },
+  );
+
+  it.each(['\n', '\t'])(
+    'masks a glued scheme whose split credential holds a raw @ (%j)',
+    (separator) => {
+      for (const scheme of ['https', 'postgres']) {
+        expect(
+          scrubSecrets(`x${scheme}://user:p@ss${separator}word@provider.invalid/v1`),
+          'SECRETS_B2_URL_GLUED_SCHEME',
+        ).toBe('[REDACTED]');
+      }
+    },
+  );
 });
