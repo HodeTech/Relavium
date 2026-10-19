@@ -105,8 +105,10 @@ async function until(predicate: () => boolean, budgetMs = 10_000): Promise<boole
   return predicate();
 }
 
-// The process table is read with POSIX `ps -A -o pid=,args=`, which does not exist on Windows: skip rather
-// than fail at the first `execFileSync`. Windows native reaping is covered by the portable owner units.
+// One case reads the process table with POSIX `ps -A -o pid=,args=`, which does not exist on Windows, and the
+// reap assertions of the others have only ever been run on POSIX. The whole suite is skipped on Windows out
+// of caution rather than guessing which cases would pass there. Windows native reaping is covered by the
+// portable owner units.
 describe.skipIf(process.platform === 'win32')(
   'MCP orphan reaping — against the real child-process table',
   () => {

@@ -173,8 +173,10 @@ describe('native child resource lifetime after an error (ADR-0103)', () => {
       };
       const spawned = deferred();
       let closed = false;
+      let started: ChildProcess | undefined;
       vi.mocked(spawn).mockImplementationOnce((command, args, options) => {
         const child = native.spawn(command, args, options);
+        started = child;
         child.once('close', () => {
           closed = true;
         });
@@ -198,16 +200,26 @@ describe('native child resource lifetime after an error (ADR-0103)', () => {
         .finally(() => {
           settled = true;
         });
-      if ('abort' in branch) {
-        await spawned.promise;
+      try {
+        if ('abort' in branch) {
+          await spawned.promise;
+          controller.abort();
+        }
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 3_000 });
+        // Hold the gate for a fixed margin, not one macrotask: a publication that is merely late (a timer
+        // or a retried step) must be caught too, and a single turn let a 20 ms-late one through.
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        expect(settled, `PROCESS_OWNER_CLOSE_JOIN_${branch.name}`).toBe(false);
+        gate.resolve();
+        expect(await call).toMatchObject(branch.expected);
+      } finally {
+        // A failing case must not leave the long-lived child (or a pending call) behind.
+        gate.resolve();
         controller.abort();
+        if (started !== undefined && started.exitCode === null && started.signalCode === null)
+          started.kill('SIGKILL');
+        await call;
       }
-      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 3_000 });
-      // Microtasks queued by the close dispatch have run; give any ungated publication one more turn.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(settled, `PROCESS_OWNER_CLOSE_JOIN_${branch.name}`).toBe(false);
-      gate.resolve();
-      expect(await call).toMatchObject(branch.expected);
     },
   );
 });
