@@ -213,7 +213,9 @@ all 53 prior control identities, paths, targets, markers and witness arrays. Fou
 `SECRETS_B2_HEADER_ORIGINAL_BOUNDARY`. The core removal admits an embedded outer
 label but retains the mapper's late boundary refusal, reproducing consumption of
 the valid inner label. The LLM removal substitutes joined-boundary checks only for
-its finite-header rule; other rules still use original boundaries. Neither removal
+its finite-header rule; other rules still use original boundaries. (The URL rule is selected
+too, because it supplies its own joined pattern, but its boundary blocks no start, so the
+substitution cannot change its result.) Neither removal
 disables bounded JWT probing or replaces canonical matcher authority. The earlier
 split-header-label control now removes the header helper's actual mask delivery.
 Core and LLM stress cases check bounded preparation with length/Boolean assertions,

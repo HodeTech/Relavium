@@ -9,7 +9,7 @@ import { stripTerminalControls } from '@relavium/shared/terminal-safe';
  * independently, including terminal-normalized and LF/TAB-joined views, before any
  * other rule can erase its identifying context. A match revealed by normalization masks the whole
  * diagnostic. The finite patterns check boundaries in the original text (the URL rule has none, like the
- * pre-PR matcher, and so fails closed on prose that sits next to a URL) and preserve already-masked spans;
+ * pre-PR matcher, so a scheme glued to a word character is masked in place) and preserve already-masked spans;
  * this is not universal fragment discovery. Query names are excluded from the residual probe.
  * Pure and total for string input: regex replacements and a
  * finite residual check, with no parsing or external calls on the error path.
@@ -34,7 +34,8 @@ interface SecretRule {
  * (the split-credential scanner would otherwise strip two characters that are not there) and its
  * `boundary` blocks no start. Consequences, pinned by tests and fail-closed: a longer scheme name
  * ending in one of these (`sftp://u@h`) matches by suffix, and the whitespace-stripped residual probe
- * can turn prose followed by a URL and a later `@` into a whole-diagnostic `[REDACTED]`. A credential
+ * turns a path-less URL, prose and a later `@` into a whole-diagnostic `[REDACTED]` (the pre-PR matcher did
+ * so for http(s); dropping `\b` extends it to prose that stripping glues to the scheme). A credential
  * split by a plain SPACE that also holds a raw `@` remains the documented opaque-fragments-across-spaces
  * limit, as it was for the pre-PR matcher.
  */
@@ -120,7 +121,8 @@ function applyRule(text: string, rule: SecretRule): string {
  * All boundary-bearing rules use this scanner and their canonical matcher (or finite header-label
  * override). A rule that has a `joinedPattern` uses it as written; any other rule MUST begin its pattern
  * with `\b`, which is stripped here (deleting an explicit `joinedPattern` from a rule without `\b`
- * throws on every LF/TAB input, which the suite catches at once). Prefixes start with ASCII letters;
+ * throws on any LF/TAB input that no earlier rule has already redacted, which the suite catches at once).
+ * Prefixes start with ASCII letters;
  * that prefilter skips only impossible starts.
  * Keys have one token run after a bounded prefix/minimum. Header labels are bounded and their
  * trailing whitespace cannot contain another label. URL authority excludes slash, so a later URL
