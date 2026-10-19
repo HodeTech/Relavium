@@ -11,11 +11,13 @@ import {
 } from '../process/native-process-owner.js';
 
 /**
- * These waits observe a REAL spawned child (or the retirement reaction of one). vitest's default
- * `waitFor` timeout is 1 s, which a cold or loaded worker can exceed before a child has booted.
- * Kept under the 5 s default test timeout so a genuine failure surfaces as its own assertion.
+ * Applied to the ONE wait that observes a real child booting (its marker file): vitest's default
+ * `waitFor` timeout is 1 s, which a cold or loaded worker can exceed before a node child has started.
+ * It leaves 2 s of the 5 s default case timeout for setup; a failure after more than that is reported
+ * by the case timeout instead of the named assertion. The other waits here only observe registry
+ * reactions of an already-started or already-closed child and keep the default.
  */
-const REAL_CHILD_WAIT_MS = 4_000;
+const REAL_CHILD_BOOT_WAIT_MS = 3_000;
 
 /** A physical child witness for host-only forwarding, with an independent tool timeout. */
 export async function witnessNativeToolProcess(
@@ -38,7 +40,6 @@ export async function witnessNativeToolProcess(
   // queued. Require its actual removal before measuring the stable native-parent baseline.
   await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(expectedParentOwners), {
     interval: 1,
-    timeout: REAL_CHILD_WAIT_MS,
   });
   const pending = host.process.spawn(
     process.execPath,
@@ -51,12 +52,11 @@ export async function witnessNativeToolProcess(
       expect(invocation.registry.activeOwners, 'NATIVE_PROCESS_ASSEMBLY_OWNERSHIP').toBe(
         expectedParentOwners + 1,
       ),
-    { interval: 1, timeout: REAL_CHILD_WAIT_MS },
+    { interval: 1 },
   );
   expect(await pending).toMatchObject({ exitCode: 0, stdout: 'native-witness' });
   await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(expectedParentOwners), {
     interval: 1,
-    timeout: REAL_CHILD_WAIT_MS,
   });
 }
 
@@ -103,7 +103,7 @@ export async function holdNativeToolProcess(
         expect(existsSync(marker)).toBe(true); // physical native entry, not only a reserved field
         expect(invocation.registry.activeOwners).toBe(before + 1);
       },
-      { interval: 1, timeout: REAL_CHILD_WAIT_MS },
+      { interval: 1, timeout: REAL_CHILD_BOOT_WAIT_MS },
     );
     return { close };
   } catch (error) {

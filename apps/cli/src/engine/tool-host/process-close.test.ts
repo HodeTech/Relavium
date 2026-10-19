@@ -127,39 +127,87 @@ describe('native child resource lifetime after an error (ADR-0103)', () => {
     expect(closed).toBe(true);
   });
 
-  it('withholds the failed-spawn result until the owner reservation joins close', async () => {
-    // The child's own `close` event cannot pin this: the capability's handler only runs after it, so a
-    // rejection that skipped `reservation.whenClosed` would still see a closed child (and, on POSIX with no
-    // helper, an already-retired owner). Gate the reservation's join itself and observe the publication.
-    const real = nativeProcessesForInvocation(createCliInvocation());
-    if (real === undefined) throw new Error('explicit invocation missing');
-    const gate = deferred();
-    const gated: NativeProcessController = {
-      ...real,
-      reserve: async (kind) => ({ ...(await real.reserve(kind)), whenClosed: gate.promise }),
-    };
-    let closed = false;
-    vi.mocked(spawn).mockImplementationOnce((command, args, options) => {
-      const child = native.spawn(command, args, options);
-      child.once('close', () => {
-        closed = true;
+  // The child's own `close` event cannot pin the owner join: the capability's handler only runs after it, so
+  // a publication that skipped `reservation.whenClosed` would still see a closed child (and, on POSIX with
+  // no helper, an already-retired owner). Each publication branch of `runChild` is therefore tested by
+  // gating the reservation's join itself and observing when the result reaches the caller.
+  const longLived = ['-e', 'setInterval(() => {}, 30000)'];
+  const branches = [
+    {
+      name: 'failed-spawn',
+      command: () => join(workspace, 'absent-executable'),
+      args: [] as string[],
+      expected: { message: 'the command failed to run' },
+    },
+    {
+      name: 'natural-exit',
+      command: () => process.execPath,
+      args: ['-e', ''],
+      expected: { exitCode: 0 },
+    },
+    {
+      name: 'abort',
+      command: () => process.execPath,
+      args: longLived,
+      abort: true,
+      expected: { message: 'the command was aborted' },
+    },
+    {
+      name: 'timeout',
+      command: () => process.execPath,
+      args: longLived,
+      timeoutMs: 300,
+      expected: { message: 'the command timed out after 300ms' },
+    },
+  ] as const;
+
+  it.each(branches)(
+    'withholds the $name result until the owner reservation joins close',
+    async (branch) => {
+      const real = nativeProcessesForInvocation(createCliInvocation());
+      if (real === undefined) throw new Error('explicit invocation missing');
+      const gate = deferred();
+      const gated: NativeProcessController = {
+        ...real,
+        reserve: async (kind) => ({ ...(await real.reserve(kind)), whenClosed: gate.promise }),
+      };
+      const spawned = deferred();
+      let closed = false;
+      vi.mocked(spawn).mockImplementationOnce((command, args, options) => {
+        const child = native.spawn(command, args, options);
+        child.once('close', () => {
+          closed = true;
+        });
+        spawned.resolve();
+        return child;
       });
-      return child;
-    });
-    let settled = false;
-    const call = createNodeProcessCapability({ workspaceDir: workspace, nativeProcesses: gated })
-      .spawn(join(workspace, 'absent-executable'), [], {}, {})
-      .catch((cause: unknown) => cause)
-      .finally(() => {
-        settled = true;
-      });
-    await vi.waitFor(() => expect(closed).toBe(true));
-    // Microtasks queued by the close dispatch have run; give any ungated publication one more turn.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled, 'PROCESS_OWNER_CLOSE_JOIN').toBe(false);
-    gate.resolve();
-    const error = await call;
-    expect(error).toBeInstanceOf(ProcessCapabilityError);
-    expect(error).toMatchObject({ message: 'the command failed to run' });
-  });
+      const controller = new AbortController();
+      let settled = false;
+      const call = createNodeProcessCapability({ workspaceDir: workspace, nativeProcesses: gated })
+        .spawn(
+          branch.command(),
+          [...branch.args],
+          {},
+          'timeoutMs' in branch ? { timeoutMs: branch.timeoutMs } : {},
+          controller.signal,
+        )
+        .then(
+          (value: unknown) => value,
+          (cause: unknown) => cause,
+        )
+        .finally(() => {
+          settled = true;
+        });
+      if ('abort' in branch) {
+        await spawned.promise;
+        controller.abort();
+      }
+      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 3_000 });
+      // Microtasks queued by the close dispatch have run; give any ungated publication one more turn.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled, `PROCESS_OWNER_CLOSE_JOIN_${branch.name}`).toBe(false);
+      gate.resolve();
+      expect(await call).toMatchObject(branch.expected);
+    },
+  );
 });
