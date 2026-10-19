@@ -98,10 +98,10 @@ the text before it is host-shaped (a dotted name or IPv4, `localhost` or a brack
 with an optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked.
 This is the same predicate as the [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop),
 including its 260-character bound on the host-shaped prefix. The projection otherwise differs from
-that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and `]`; it recognizes any
-scheme of up to 32 characters rather than a finite list; a userinfo with no password is kept as a
-vanity handle below 16 characters and masked from 16 on, under every scheme; and it does not treat
-an already-masked password as masked.
+that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and `]`, so userinfo that
+contains one of them — an already-masked `[REDACTED]` password among them — is left as it is; it
+recognizes any scheme of up to 32 characters rather than a finite list; and a userinfo with no
+password is kept as a vanity handle below 16 characters and masked from 16 on, under every scheme.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with

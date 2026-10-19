@@ -447,9 +447,10 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * `=` assignment follows it; anything else may be a malformed username or password. This is
  * the same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
  * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
- * `}` and `]`; it recognizes any scheme of up to 32 characters rather than a finite list; a
- * userinfo with no password is a vanity handle below 16 characters and masked from 16 on, under
- * every scheme; and it does not treat an already-masked password as masked.
+ * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
+ * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
+ * and a userinfo with no password is a vanity handle below 16 characters and masked from 16 on,
+ * under every scheme.
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
   // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp

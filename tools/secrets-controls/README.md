@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **72 independent controls and 430 required named assertion witnesses**.
+declares **79 independent controls and 441 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -128,7 +128,7 @@ permanent negative cases; no notice is produced before a successful export.
 
 Four snapshot controls remove the finite scrubber detection site and the actual
 `create`, `import`, and `run` warning calls. Each has a named value-free assertion in
-its complete 10-case detector, 11-case create, 11-case import or 84-case run file.
+its complete 11-case detector, 11-case create, 11-case import or 84-case run file.
 The adjacent tests check preserved authored files and admitted run snapshots, JSON
 stdout, and scan-budget/incomplete notices. These controls certify warning delivery
 for the planted supported shapes at these entry points, not universal secret
@@ -177,8 +177,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 155-case bounding file; every new LLM phase
-executes the complete 185-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 156-case bounding file; every new LLM phase
+executes the complete 191-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -259,14 +259,14 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,431 cases, with each control's exact workload and named target
+complete files / 1,438 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 72-control / 216-phase full declaration projects 1,303 retained files
-(72 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+The current 79-control / 237-phase full declaration projects 1,429 retained files
+(79 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
@@ -291,6 +291,14 @@ controls per masker remove the host-shaped prefix's length bound (an admitted-si
 prefix then exhausts V8's RegExp stack, and its witness catches the throw) or its `^`/`$`
 anchors (look-alike prefixes such as `john.doe:s3cret` turn public). The snapshot detector's
 complete workload is now 11 cases.
+
+The second review round added seven controls and 11 named assertions. One unbounds the header
+rule's label run (an admitted-size run of labels then exhausts the RegExp stack); two drop the
+header token's guards, so a ninth label becomes the token and the real one leaks, or an
+already-masked `Bearer [REDACTED]` stops being a fixed point; four drop the same two guards from
+the standalone Bearer and Basic rules, so a stacked label becomes the token or a masked JSON
+value loses its closing characters. The host-length controls also witness the exact 260/261
+boundary.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

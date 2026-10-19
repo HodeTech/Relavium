@@ -1190,10 +1190,20 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     }
   });
 
-  it('keeps its documented short colonless-handle difference from the LLM backstop', () => {
+  it('keeps its documented differences from the LLM backstop', () => {
     // Core retains a colonless userinfo under 16 characters; the LLM diagnostic backstop masks it.
     expect(redactSecretShapedText('http://#TOKEN@h.example')).toBe('http://#TOKEN@h.example');
     expect(scrubSecrets('http://#TOKEN@h.example')).toBe('http://[REDACTED]@h.example');
+    // Core's authority also ends at `"`, `'`, `,`, `}` and `]`, so it leaves userinfo containing
+    // one of them as it is: an already-masked password, a bracketed-host prefix, a raw comma.
+    for (const [input, masked] of [
+      ['https://app:[REDACTED]@h.example/', 'https://[REDACTED]@h.example/'],
+      ['https://[::1]:8443?u:TOKENTOKEN@h.example/', 'https://[REDACTED]@h.example/'],
+      ['https://user:pa,ssword@host.example/', 'https://[REDACTED]@host.example/'],
+    ] as const) {
+      expect(redactSecretShapedText(input), input).toBe(input);
+      expect(scrubSecrets(input), input).toBe(masked);
+    }
   });
 
   it('agrees with the LLM backstop on every raw ?/# decision outside those differences', () => {
@@ -1228,6 +1238,18 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     expect(redactSecretShapedText(input), 'SECRETS_B2_CORE_USERINFO_CONTACT').toBe(
       'https://[redacted]@h.example/',
     );
+  });
+
+  it('bounds the host-shaped prefix at exactly 260 characters, case-insensitively', () => {
+    const host = (length: number) => `${'a'.repeat(length - 2)}.b`;
+    const retained = `connect https://${host(260)}?contact=alice@example.invalid failed`;
+    expect(redactSecretShapedText(retained), 'SECRETS_B2_CORE_USERINFO_HOST_LENGTH').toBe(retained);
+    expect(
+      redactSecretShapedText(`https://${host(261)}?contact=alice@example.invalid`),
+      'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
+    ).toBe('https://[redacted]@example.invalid');
+    const upper = 'connect https://PROVIDER.INVALID:8443?contact=alice@example.invalid failed';
+    expect(redactSecretShapedText(upper)).toBe(upper);
   });
 
   it('masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack', () => {

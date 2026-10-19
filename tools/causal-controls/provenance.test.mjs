@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 72);
+  assert.equal(secretsControls.length, 79);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    430,
+    441,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -313,7 +313,7 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-userinfo-contact-host',
       'core-userinfo-host-length',
       'core-userinfo-host-anchors',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 155]),
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 156]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -332,7 +332,14 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-header-label-whitespace',
       'diagnostic-userinfo-host-length',
       'diagnostic-userinfo-host-anchors',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 185]),
+      'diagnostic-header-label-bound',
+      'diagnostic-header-token-not-label',
+      'diagnostic-header-token-not-masked',
+      'diagnostic-bearer-token-not-label',
+      'diagnostic-basic-token-not-label',
+      'diagnostic-bearer-token-not-masked',
+      'diagnostic-basic-token-not-masked',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 191]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

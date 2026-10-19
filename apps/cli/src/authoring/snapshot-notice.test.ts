@@ -48,13 +48,14 @@ describe('authored snapshot credential notice', () => {
     expect(err()).toBe('');
   });
 
-  it('keeps placeholder connection-string passwords quiet and reports a literal http(s) username', () => {
+  it('keeps placeholder passwords and header tokens quiet and reports a literal http(s) username', () => {
     const quiet = captureIo();
     warnSnapshotLiterals(
       {
         env: {
           DATABASE_URL: 'postgres://app:{{secrets.db_password}}@db.example/app',
           CACHE_URL: 'redis://:{{secrets.cache_password}}@cache.example:6379',
+          AUTH_HEADER: 'x-api-key: Bearer {{secrets.provider_key}}',
         },
       },
       quiet.io,

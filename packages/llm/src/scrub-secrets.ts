@@ -84,29 +84,32 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
     anchor: { text: '://', window: URL_SCHEME_WINDOW },
   },
   // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
-  // A value may begin with up to eight (possibly LF/TAB-split) Bearer/Basic labels, as a doubled
-  // `Bearer Bearer` misconfiguration does, and its token may be quoted: the labels and the token are
-  // masked together, so the later scheme-label rules cannot lose their anchor to this one. Like those
-  // rules, whitespace after a label may be a line break, and the next token is masked fail-closed.
-  // The repetition is bounded so that no admitted-size label run can exhaust the RegExp stack.
+  // A value may begin with up to eight (possibly quoted, escaped or LF/TAB-split) Bearer/Basic labels,
+  // as a doubled `Bearer Bearer` misconfiguration does: the labels and the token after them are masked
+  // together, and the token may itself begin with (escaped) quotes, as in a JSON-encoded value. The
+  // token is never another label, so a ninth label fails this rule rather than leak the token (the
+  // label rules and the residual probe then mask it), and never an already-masked `[REDACTED]`, which
+  // stays a fixed point. The repetition is bounded so no label run can exhaust the RegExp stack.
   {
     pattern:
-      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}["']?[^\s"',;}]+/gi,
+      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:[\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))(?:\\*["'])?[^\s"',;}]+/gi,
     replacement: '$1$2$3[REDACTED]',
     joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,
     boundary: /[A-Za-z0-9_-]/,
   },
   // LF/TAB may split the finite scheme LABEL. Preserve the required label/value separator and
-  // ordinary following prose; opaque value fragments cannot be distinguished from that prose. Up to
-  // eight stacked labels (`Bearer Bearer <token>`) precede the token without becoming it.
+  // ordinary following prose; opaque value fragments cannot be distinguished from that prose. A
+  // label never takes another label as its token, so any number of stacked labels
+  // (`Bearer Bearer <token>`) leaves the last one to mask the token, with no repetition to bound,
+  // and an already-masked token stays a fixed point.
   {
     pattern:
-      /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r(?:\s+(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,8}\s+\S+/gi,
+      /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))\S+/gi,
     replacement: 'Bearer [REDACTED]',
   },
   {
     pattern:
-      /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c(?:\s+(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,8}\s+\S+/gi,
+      /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))\S+/gi,
     replacement: 'Basic [REDACTED]',
   },
 ];
@@ -168,7 +171,7 @@ function maskUrlUserinfo(match: string): string {
   if (colon < 0 && !colonless) return match;
   // Already-masked userinfo stays as it is: an exactly masked password under a connection-string
   // scheme, whose usernames are public, or a masked or empty username beside it under any scheme.
-  // `postgres://app:{{secrets.password}}@db` therefore projects to a fixed point.
+  // The authored-content detector's projection `postgres://app:[REDACTED]@db` is a fixed point.
   const username = userinfo.slice(0, Math.max(colon, 0));
   if (
     colon >= 0 &&

@@ -96,10 +96,22 @@ const headerSchemeLabelCases = [
   'masks the next token, failing closed, when a scheme label ends the line',
   'masks the token after stacked or quoted scheme labels in a header value',
   'masks the token after more than one whitespace character following a scheme label',
+  'masks quoted and escaped tokens beside header scheme labels',
 ];
-const headerLabelValue = String.raw`(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}["']?[^\s"',;}]+/gi,`;
+const schemeLabel = String.raw`(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)`;
+const notLabel = String.raw`(?![\\"']*${schemeLabel}(?:\s|$))`;
+const notMasked = String.raw`(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))`;
+const headerLabelValue = String.raw`(?:[\\"']*${schemeLabel}\s+){0,8}${notLabel}${notMasked}(?:\\*["'])?[^\s"',;}]+/gi,`;
 const headerLine = (value) =>
   String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)` + value;
+const labelLine = (first, value) => String.raw`      /\b${first}\s+` + value;
+const bearerFirst = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r`;
+const basicFirst = String.raw`B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c`;
+const labelToken = String.raw`${notLabel}${notMasked}\S+/gi,`;
+const stackedLabelCase =
+  'masks a header token after up to eight stacked labels and fails closed beyond them';
+const standaloneStackCase = 'masks the token after any number of stacked standalone labels';
+const fixedPointCase = 'keeps already-masked scheme tokens as fixed points';
 const hostLengthGuard = '  if (query > HOST_SHAPED_MAX_LENGTH) return false;';
 const hostShapedLine = String.raw`  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;`;
 const hostShapedUnanchored = String.raw`  /(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?/i;`;
@@ -290,7 +302,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    155,
+    156,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -303,7 +315,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    185,
+    191,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -1049,12 +1061,16 @@ export const mutations = [
     headerSchemeLabelMarker,
   ),
   // PR95 round 1: stacked labels (`Bearer Bearer <token>`) and multi-character label whitespace.
-  diagnosticControl(
+  control(
     'diagnostic-header-stacked-labels',
+    scrubSecretsLeaf,
     headerLine(headerLabelValue),
     headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s+)?`)),
-    ['masks the token after stacked or quoted scheme labels in a header value'],
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    191,
+    'masks the token after stacked or quoted scheme labels in a header value',
     headerSchemeLabelMarker,
+    [{ target: stackedLabelCase, marker: 'SECRETS_B2_STACKED_LABEL' }],
   ),
   diagnosticControl(
     'diagnostic-header-label-whitespace',
@@ -1063,19 +1079,76 @@ export const mutations = [
     ['masks the token after more than one whitespace character following a scheme label'],
     headerSchemeLabelMarker,
   ),
+  // PR95 round 2: the label run is bounded, its token is never another label or a masked span,
+  // and the standalone label rules take no label as their token.
+  diagnosticControl(
+    'diagnostic-header-label-bound',
+    headerLine(headerLabelValue),
+    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s+)*`)),
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
+  ),
+  diagnosticControl(
+    'diagnostic-header-token-not-label',
+    headerLine(headerLabelValue),
+    headerLine(headerLabelValue.replace(notLabel, '')),
+    [stackedLabelCase],
+    'SECRETS_B2_STACKED_LABEL',
+  ),
+  diagnosticControl(
+    'diagnostic-header-token-not-masked',
+    headerLine(headerLabelValue),
+    headerLine(headerLabelValue.replace(notMasked, '')),
+    [fixedPointCase],
+    'SECRETS_B2_MASKED_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-bearer-token-not-label',
+    labelLine(bearerFirst, labelToken),
+    labelLine(bearerFirst, labelToken.replace(notLabel, '')),
+    [standaloneStackCase],
+    'SECRETS_B2_STACKED_LABEL',
+  ),
+  diagnosticControl(
+    'diagnostic-basic-token-not-label',
+    labelLine(basicFirst, labelToken),
+    labelLine(basicFirst, labelToken.replace(notLabel, '')),
+    [standaloneStackCase],
+    'SECRETS_B2_STACKED_LABEL',
+  ),
+  diagnosticControl(
+    'diagnostic-bearer-token-not-masked',
+    labelLine(bearerFirst, labelToken),
+    labelLine(bearerFirst, labelToken.replace(notMasked, '')),
+    [fixedPointCase],
+    'SECRETS_B2_MASKED_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-basic-token-not-masked',
+    labelLine(basicFirst, labelToken),
+    labelLine(basicFirst, labelToken.replace(notMasked, '')),
+    [fixedPointCase],
+    'SECRETS_B2_MASKED_FIXED_POINT',
+  ),
   // PR95 round 1: the host-shaped prefix is bounded before the RegExp and anchored at both ends.
   diagnosticControl(
     'diagnostic-userinfo-host-length',
     hostLengthGuard,
     '',
-    ['masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack'],
+    [
+      'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+      'bounds the host-shaped prefix at exactly 260 characters, case-insensitively',
+    ],
     'SECRETS_B2_USERINFO_HOST_LENGTH',
   ),
   coreProjectionControl(
     'core-userinfo-host-length',
     hostLengthGuard,
     '',
-    ['masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack'],
+    [
+      'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+      'bounds the host-shaped prefix at exactly 260 characters, case-insensitively',
+    ],
     'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
   ),
   diagnosticControl(
@@ -1106,7 +1179,7 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    185,
+    191,
     contactHostCase,
     userinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: diagnosticMarker })),
@@ -1124,7 +1197,7 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     coreProjectionCases,
-    155,
+    156,
     contactHostCase,
     coreUserinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: coreProjectionMarker })),
