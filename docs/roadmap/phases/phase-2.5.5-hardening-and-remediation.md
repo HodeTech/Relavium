@@ -3672,6 +3672,10 @@ No credential values or request captures belong in tracked evidence.
 | 8c | **Recorded split — workflow and render integration:** run/gate/budget/driver owners, real return/throw health priority, cancellation, terminal/job-control leases and force-quit routing. No timer certifies DB close or receipt settlement. |
 | 8d | **Recorded split — sessions, terminal and activation:** fresh/resumed/one-shot/Home/pending/replaced session lifetimes, retained publication failure and shared actual cleanup promises; connect caught slash/rebuild faults, restore terminal custody before diagnosis, then activate early coordinator/background/sink integration. Actual native/platform/packed controls and complete cumulative Step 8 acceptance follow. |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
+| 9a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage #46/ADR-0111 unchanged, no new contract) — release maps, final build and symbolication:** fresh uncached upstream original-TypeScript maps, the sole prepack final CLI build, final trailer removal before hashes, map and private-graph staging outside public artifacts and caches, exact tarball-to-final-JS binding, and real packed CLI and engine frame symbolication with wrong JS/map/source and missing-map negative controls. Ordinary builds remain map-free. |
+| 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
+| 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
+| 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
 | 11 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
 | 12 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
@@ -9141,3 +9145,132 @@ criteria; [PR #95](https://github.com/HodeTech/Relavium/pull/95) owns their live
 result. Source acceptance does not assert a green retry or completed publication.
 Steps **9–19 have NOT STARTED**. No merge, release, new user decision or deferral
 is claimed.
+
+### Wave 3 Steps 1–8 merge checkpoint — 2026-10-18
+
+[PR #95](https://github.com/HodeTech/Relavium/pull/95) merged to `main` at
+**22:44:24 UTC (01:44:24 Europe/Istanbul, 2026-10-19)**, merge commit
+`6d2a737231e2445c6d9d54b2d7449084e036ade4` (parents `ab08209e` and `a3e164b5`). The merged
+head is `a3e164b5608d386fc3db7fa3b8483d0adf2ed0fd`; the merge tree
+(`415af9662f5690b675ebaf4ccfff5840ea6e3f29`) is byte-identical to it. GitHub records
+649 changed files, +81,844 / −7,343. **Wave 3 Steps 1–8 are complete on `main`. Wave 3 is
+not: Steps 9–19 have NOT STARTED and whole-wave acceptance remains Step 19.** ADR-0110–0113
+remain Accepted. The PR was the maintainer-authorized, scoped publication checkpoint recorded
+in [Wave 3 Steps 1–8 scoped publication](#wave-3-steps-18-scoped-publication--2026-10-17); it
+claimed no whole-wave acceptance and this checkpoint does not add one.
+
+#### Completed Steps 1–8 scope
+
+| Step | Complete on `main` |
+| --- | --- |
+| 1 | Shared close handling, safe source labels with UTF-8 admission parity, exhaustive session/picker/run switches and actual reasoning rendering. |
+| 2 | Shared admission and diagnostics: status/duplicate matrices, shared parser reason helper and config numeric bounds. |
+| 3 | Secret provenance at public sinks (ADR-0113): engine-owned context/input provenance across fresh, resume, condition, transform and merge paths. |
+| 4 | Typed error/envelope substrate (`RelaviumError`, migrated classes, cross-bundle structural guards). |
+| 5 | Tools and engine tails: bounds before effects, model-visible semantics, ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence. |
+| 6 | Pure process/discovery substrate (ADR-0110): categories, early flag grammar, exit/site inventory, descriptor registry and invocation owner registry. |
+| 7 | Lazy runtime, finite compiled graph, exact-tarball inspection and the required Node 22.0.0 plus Linux/macOS/Windows consumers (ADR-0111). |
+| 8 | Creation-owned native process integration, kind-specific owners, terminal custody and the total fatal budget across workflow, render and session lifetimes. |
+
+#### Review attribution
+
+Each step keeps its own acceptance register; none is widened by the merge. Whole Step 8
+is accepted at `c83c8575` (two NEW complete cumulative CLEAN rounds, 342 paths / 1,842
+ordered hunks, separate clean security sitting). The two PR #95 correction cycles are
+accepted at `ec0f3e10` ([second corrective source-review completion](#pr-95-second-corrective-source-review-completion--2026-10-18)),
+and the two later native test-fixture increments (`154d832d`, `1c7aec25`) have their own
+[supplemental acceptance](#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Detailed review records remain local and Git-ignored.
+
+The difference between `ec0f3e10` and the merged head is exactly twelve non-documentation
+paths plus three documentation files. Two test files are the independently accepted fixture
+increments above. The other ten are the commit below, which has **no independent acceptance**.
+
+#### Independent review of the published head and its corrections
+
+After the accepted sources, a further independent systematic review of the PR at `19c99968`
+(reviewer-reported: two rounds, 14 agent sessions in total, all 648 changed files read at diff level,
+about 5,000 targeted test runs, five red-team attacks on the headline invariants) reported **no blocker, no high, one
+medium, four low and about seventeen nit/info/suggestion items**, with four items withdrawn after
+its own verification. The attacks did not break a headline claim; the test-evidence attack held
+only partially (LOW-4). Its detailed records stay local. The author reproduced each finding
+before acting. Corrections landed as `a3e164b5`:
+
+| Finding | Disposition |
+| --- | --- |
+| **MEDIUM-1** — URL userinfo not masked when its scheme is glued to a word character (`xhttps://user:pass@host`) | Reproduced at `19c99968` through both `scrubSecrets` and the CLI sanitizer. Fixed in `packages/llm/src/scrub-secrets.ts`: the rule returns to its pre-PR word-adjacency (no `\b`) and supplies its own joined pattern, because the split-credential scanner otherwise strips two characters from a pattern that has none. Fourteen new `scrub-secrets` cases and one CLI case; reverting the production change fails all fourteen (the CLI case failed against the stale build before it was rebuilt). |
+| **LOW-4** — failed-spawn test does not pin the native close join | Confirmed by mutation: removing `reservation.whenClosed` left all three `process-close` tests green. The reviewer's suggested `activeOwners === 0` assertion was also tried and **did not** kill that mutant, because the owner retires synchronously inside its own `close` handler on POSIX. Replaced by a case that gates the reservation's `whenClosed` and observes publication; it fails only when the join is removed. |
+| **LOW-2** — default 1 s `vi.waitFor` on a real spawned child | Fixed: the four waits in `native-forwarding.test-support.ts` carry an explicit 4 s bound, below the 5 s default case timeout. |
+| **LOW-3** — POSIX `ps` suite not skipped on Windows | Fixed: `describe.skipIf(process.platform === 'win32')`. Prettier re-indented the suite body, so the raw diff of that file is 215 lines; `git show -w` shows the 7-insertion / 2-deletion semantic change. |
+| **LOW-1** — fixed 5 s native watchdogs | **Not changed.** Three runs of the three affected native files (52 tests) all passed at a load average of 80–96, the reviewer could not observe the Windows root cause, and the constants are coupled to neighbouring bounds, so a retune would be speculative. Recorded in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18). |
+| Nit — import above the module docblock in `parser.ts`, `agent-parser.ts` | Fixed (no behaviour change). |
+| Nit — `packages/shared` curated export list | Closed without change: it is an illustrative existence sample, not an exhaustive contract. |
+| Other nits and info items | Open, in the same deferred-tasks section. |
+
+The production change restores a pre-PR behavior, but it touches a secret-scrubbing rule and
+the repository's causal controls: the `diagnostic-raw-password-userinfo` source anchor moved to
+the new `URL_USERINFO_PATTERN` constant, and the pinned complete workloads changed (89→103,
+179→180, 277→278) because the files gained cases. **Verification is the author's only.** The
+full local gate was run in two parts: `pnpm run ci` through the workspace tests, builds, format,
+fences, bundle closure and smokes; then, after the anchor/pin update, `test:acceptance-tools`
+(633 of 633) and the secrets, wire, usage and filesystem mutation gates (exit code 0 each, the
+userinfo control 103 / 98 with five failing cases / 103), plus tools lint, typecheck and format and
+the affected suites under `CI=true GITHUB_ACTIONS=true`. A second complete `pnpm run ci` after
+the pin update and a coverage run were not performed. No independent review rounds and no security
+sitting cover `a3e164b5`; none is claimed.
+
+#### Publication state observed at merge
+
+The merged head's [PR CI](https://github.com/HodeTech/Relavium/actions/runs/39169681878) and
+[push CI](https://github.com/HodeTech/Relavium/actions/runs/39169678515) started at 21:51 UTC.
+Observed at 22:48 UTC, four minutes after the merge, each had 14 of 15 jobs completed
+successfully (including the four same-archive installed-CLI consumers and the causal-control
+families) and no failed job. The aggregate `lint · typecheck · test` job, one of the two
+required status checks on `main` (with `engine coverage floor (llm, mcp)`), was still running; in the PR run it
+started at 22:46:21 UTC, after the merge. The merge commit's own
+[push CI on `main`](https://github.com/HodeTech/Relavium/actions/runs/39173540595) started at
+22:44:30 UTC. **That observation asserted none of the eventual conclusions.** Earlier full-CI,
+coverage, SonarCloud and platform results stay attributed to the sources recorded in the preceding
+registers and are not carried to `a3e164b5` or the merge commit.
+
+**Later observation, 2026-10-19 06:53 UTC.** All three runs completed with conclusion `success`,
+**15 of 15 jobs each**, and both required checks succeeded on the merged head (`lint · typecheck · test`
+completed 22:54 UTC in the push run and 23:00 UTC in the PR run). Job logs, coverage figures and
+test counts were not re-read for this record. SonarCloud's PR analysis passed its quality gate
+(102 new issues, 86 accepted). Its analysis of the **`main` merge commit failed the quality gate**:
+`new_security_rating` C against the required A, from 9 open vulnerabilities on the `previous_version`
+baseline (2026-06-04) — seven `githubactions:S6505` findings on workflow `pnpm install` lines
+(created June–July, deliberately declined with a recorded rationale but still open on the `main`
+branch, where SonarCloud already carries five other S6505 findings as false positives), one
+`jssecurity:S8707` (created 2026-10-08; seventeen sibling findings are already false positives
+on `main`) and one `javascript:S4036` (created 2026-10-17; won't-fix on the PR #95 branch, open on
+`main`). SonarCloud statuses are per branch, so these are existing dispositions not yet applied
+on `main`. The same gate also failed on the `main` merge
+commits of PR #90, #92 and #94, so this was a standing condition of `main`, not a regression of
+PR #95, and SonarCloud is not a required check. **Resolved 2026-10-19 10:50 UTC:** at the
+maintainer's direction the author applied those dispositions on `main` through the SonarCloud
+API, each with a reviewed comment (the seven S6505 and the S8707 as false positives, the S4036
+accepted), after re-verifying the recorded rationale against the repository at `6d2a7372` — the
+pinned pnpm 9.12.3, the two-package `onlyBuiltDependencies` allowlist, no workspace install hooks,
+the S8707 path coming from a fresh owned scratch directory, and `RELAVIUM_PACKAGE_SOURCE_SHA` set by
+both workflow steps that run the aggregator. SonarCloud then reported **zero open vulnerabilities
+and an OK quality gate for `main`**. No rule, threshold or quality gate was changed. The failed
+check-run attached to the merge commit itself is historical and unchanged. Recorded in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
+
+#### Exit status and Step 9 as next work
+
+**Wave 3 Steps 1–8 are on `main`; Wave 3 remains in progress.** Open after this merge: Steps 9–19
+and whole-wave acceptance (Step 19: A/E/G and M2.5.5-3 evidence, promoting core's ≥90% line/branch
+floor to required CI, the reconciled EXIT:4 reading, two new whole-wave cumulative reviews);
+an independent review of the `a3e164b5` delta; and the unactioned review findings. Phase 2.5.5 exit criteria 4–8, sub-stream I, later
+product waves and the existing approved deferrals keep their canonical homes. The merge adds no
+deferral, ADR or release.
+
+**Next is Step 9 — release map/custody substrate** (#46, ADR-0111): upstream TypeScript maps, a
+sole prepack final build, exact tarball symbolication, the encrypt-once candidate through
+discovery/reservation → pack/reuse → smoke → archive → npm → finalization, with a dedicated
+archive/crypto security sitting. The maintainer-approved 9a–9d subdivision is recorded in the
+[increment table](#proposed-implementation-increments), and 9a is first. Steps 10–19 follow the
+approved plan in order. New implementation
+commits on `development` now start a new publication checkpoint; PR #95 no longer bounds their review scope.

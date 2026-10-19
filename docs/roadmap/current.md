@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -134,18 +134,37 @@ future live headers and existing approved residuals. Wave 2 has no remaining imp
 review, publication, ADR approval, provider capture, credential, billing or user-decision gate.
 The [deferred register](deferred-tasks.md) retains its existing limits; closure adds no deferral.
 
+## Wave 3 Steps 1–8 merged — PR #95
+
+**Wave 3 Steps 1–8 merged to `main` on 2026-10-18 as [PR #95](https://github.com/HodeTech/Relavium/pull/95),
+merge commit `6d2a7372` (22:44 UTC). Wave 3 itself is not complete: Steps 9–19 have NOT STARTED and
+whole-wave acceptance remains Step 19.** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
+joins the completed scope, every review attribution, the independent review's dispositions and the
+publication state observed at merge. It was the maintainer-authorized, scoped publication checkpoint.
+
+On `main` now: close handling, safe source labels and exhaustiveness guards (Step 1); shared admission and
+diagnostics (2); secret provenance at public sinks, ADR-0113 (3); the typed error/envelope substrate (4); tool and
+engine tails (5); the pure process/discovery substrate, ADR-0110 (6); the lazy runtime, finite compiled graph and
+exact-tarball consumers, ADR-0111 (7); and creation-owned native process integration (8).
+
+Three points are recorded rather than papered over; two are now resolved. **Open:** the merged head `a3e164b5` carries
+corrections from a further independent review (one medium and three low findings: a secret-scrubbing production rule and
+two behaviour-neutral import moves, plus tests and causal-control pins) that have **author verification only** — no
+independent review rounds and no security sitting cover them. **Resolved:** CI had not finished when the merge happened
+(the required `lint · typecheck · test` job was still running); the three runs later completed `success`, 15 of 15 jobs
+each, as the [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#publication-state-observed-at-merge)
+records. And SonarCloud's quality gate, which had failed on `main` since at least PR #90 because its dispositions lived
+only on PR branches, was cleared on 2026-10-19 (zero open vulnerabilities, gate OK). The review's remaining low and nit
+findings are unactioned, in [deferred-tasks.md](deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
+
 ## Next work — Wave 3 — Clear the ground
 
-Wave 3 implementation is in progress on `development`; Steps 1–8 have scoped
-independent acceptance. The initial publication checkpoint is
-[PR #95](https://github.com/HodeTech/Relavium/pull/95). A second maintainer systematic
-review at `a5a5d45e` reopened corrective work; its
-[current correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
-owns dispositions and remaining gates. Corrective source reviews are complete;
-the two later native test-fixture increments have [separate scoped acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
-Final pushed-head publication checks remain required, with their live results on
-PR #95. Steps 9–19 have not started; check the PR status before extending its scope
-with Step 9. See the [Wave 3 queue](#wave-3--clear-the-ground).
+Wave 3 implementation continues on `development`: Steps 1–8 are merged, **Step 9 is next** — the release
+map/custody substrate (#46, ADR-0111), split into 9a–9d in the [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments),
+which carries a dedicated archive/crypto security sitting. Steps 10–19
+follow the approved [nineteen-increment plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
+and end with whole-wave acceptance at Step 19. New implementation commits start a new publication checkpoint; PR #95
+no longer bounds their review scope. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 ## Historical W7 implementation checkpoints
 
@@ -1110,35 +1129,21 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Implementation in progress — 2026-10-18.** ADR-0110–0113, their linked
-contracts and the nineteen-increment plan were approved on 2026-10-16.
-[Steps 1–8 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
-on `development`, with whole Step 8 reviewed at `c83c8575`. The phase register
-owns each increment's source, tests, cumulative review rounds, security sittings
-and platform/publication evidence, including historical NONCLEAN R1–R24 records.
-This live page links that history instead of repeating its superseded pending states.
-
-The maintainer authorized the initial completed-Steps-1–8 publication checkpoint,
-[PR #95](https://github.com/HodeTech/Relavium/pull/95). The
-[previous corrective review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
-remains attributed to `ba14b1bd`; it does not certify later changes. The second
-maintainer systematic report reviews `a5a5d45e` and opens further corrections.
-The [second correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
-is canonical for that work. The
-[second corrective source-review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
-accepts corrections at `ec0f3e10` after two NEW complete cumulative clean rounds
-and a NEW separate clean security sitting. Current source-bound PR/push CI,
-coverage, SonarCloud, same-archive consumers and physical control artifacts remain
-required publication criteria; PR #95 owns their live result. Source review does
-not imply merge or whole-wave acceptance. The later
-[native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
-retains the failed advisory attempt and separate test-preparation review scope;
-production runtime is unchanged. The later [supplemental fixture acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18)
-records both owned-preparation and native-concurrency review scopes, including
-both failed Windows attempts. PR #95 owns final pushed-head publication results.
-Steps 9–19 have **NOT STARTED** and whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
-which extend its review scope. No new decision, credential, billing or provider
-capture gate is introduced.
+**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Steps 9–19 NOT STARTED — 2026-10-19.**
+ADR-0110–0113, their linked contracts and the nineteen-increment plan were approved on 2026-10-16.
+[Steps 1–8 were independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`, with whole Step 8 reviewed at `c83c8575`, and published as the scoped checkpoint
+[PR #95](https://github.com/HodeTech/Relavium/pull/95); its [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18) is the canonical record of
+what merged. The phase register owns each increment's source, tests, cumulative review rounds, security sittings and
+platform/publication evidence, including historical NONCLEAN R1–R24 records, the
+[previous corrective review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18),
+the [second correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18),
+the [second corrective source-review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
+(accepted at `ec0f3e10`), the [native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
+and the [supplemental fixture acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Those scopes are not widened: the delta from `ec0f3e10` to the merged head is two independently accepted test-fixture
+increments, documentation and the independent review's corrections at `a3e164b5`, which have author verification
+only. Whole-wave acceptance remains Step 19. No new decision, credential, billing or provider capture gate is introduced.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The approved

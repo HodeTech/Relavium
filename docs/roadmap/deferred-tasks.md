@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-18 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are accepted on `development`, with PR #95 under review. Existing approved deferrals remain.
+> Last updated: 2026-10-19 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Steps 9–19 not started). The independent PR #95 review's unactioned findings are recorded below. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -367,6 +367,75 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
+
+## PR #95 independent review — unactioned findings (2026-10-18)
+
+An independent systematic review of [PR #95](https://github.com/HodeTech/Relavium/pull/95) at `19c99968`
+reported no blocker or high finding. Its medium and three of its four low findings were corrected in `a3e164b5`
+([disposition table](phases/phase-2.5.5-hardening-and-remediation.md#independent-review-of-the-published-head-and-its-corrections));
+what follows was **not** actioned. These are `- [ ]` (unscheduled, actionable) items, not approved deferrals:
+no maintainer ruling is recorded for them. Items marked *(reviewer)* are quoted
+from that review and were not re-verified by the author; items marked *(author)* were measured or counted here.
+
+- **DONE 2026-10-19 — SonarCloud's quality gate was red on `main` after every merge.** *(author)* The `main`
+  analysis failed `new_security_rating` (C, required A) against the `previous_version` baseline (2026-06-04) because nine
+  vulnerabilities were open there: seven `githubactions:S6505` ("omitting `--ignore-scripts`") on the
+  `pnpm install --frozen-lockfile` lines in `.github/workflows/ci.yml` (120, 432, 463, 487), `release.yml` (94) and
+  `models-catalog.yml` (51, 95); one `jssecurity:S8707` at `tools/budget-replay-compat/lifecycle-smoke.mjs:47`; one
+  `javascript:S4036` at `tools/cli-package/aggregate.mjs:58`. The gate had failed after the PR #90, #92, #94 and #95
+  merges while the PR-level analyses passed, because SonarCloud statuses are per branch and the existing dispositions lived
+  on PR branches and on other `main` records. SonarCloud is not a required check. At the maintainer's direction the
+  dispositions were applied on `main` through the SonarCloud API after re-verifying each rationale at `6d2a7372`: the seven
+  S6505 and the S8707 as false positives (same reasons as their `main` siblings; the install-script posture comment at the top of
+  `ci.yml` and the Sonar backlog section below), the S4036 accepted as on the PR #95 branch. SonarCloud then reported zero
+  open vulnerabilities and an OK gate for `main`. No rule, threshold or gate was changed; the per-issue record is local
+  and Git-ignored. *(was medium · process)*
+- [ ] **Native-lifetime watchdogs are fixed 5 s bounds inside 10 s cases (`LOW-1`).** *Low.* The watchdogs in
+  `apps/cli/src/process/native-process-owner.test.ts`, `engine/tool-host/os-native-lifetime.test.ts`,
+  `render/editor-native-lifetime.test.ts`, `render/fixtures/native-editor.mjs` and
+  `tools/cli-package/smoke/native-process.test.mjs` assert that a slow-but-correct close did not trip them, so a
+  loaded runner produces red without a defect. *(author)* The constants are **coupled** — the Home editor case
+  has a 5 s fixture watchdog, a 3 s ready wait, a 6 s release wait and a 10 s case bound — so raising one alone
+  does nothing, and three runs of the three vitest files (52 tests) passed at a load average of 80–96 on macOS.
+  The reviewer could not observe the Windows root cause either. **Trigger: a Windows trace that names the bound
+  that fired**; retune the coupled set together then. *(low · the files above)*
+- [ ] **`bounds admitted-size failed header and URL preparation` is load-sensitive.** *Low.* *(author)* It allows
+  5 s for two 8 MiB scrubs that take about 0.75 s in total, and it failed twice with the load average near 65 (6.4 s
+  in the run that logged the duration). Measured alternately, the pre-change code and the corrected code take the same
+  time, so the failures were load, not the correction. The test
+  guards against a quadratic regression, so any loosening must stay far below minutes. **Trigger: the next CI
+  failure of this case.** *(low · packages/llm/src/scrub-secrets.test.ts, `SECRETS_B2_HEADER_PREPARATION`)*
+- [ ] **Raw exit-code literals where `EXIT_CODES` names exist.** *Nit.* *(reviewer)* reported
+  `result === 5 || result === 7 || result === 8` in `apps/cli/src/chat/session-surface-lifetime.ts:54`; *(author)*
+  the same literals occur in four places: that site, `commands/workflow-lifetime.ts:178`,
+  `process/command-lifetime.ts:110` and `commands/drive.ts:225`. Behaviour-neutral, but it sits on the exit-code
+  precedence that the review's red-team matrix held, so rerun the precedence tests with the change.
+  *(nit · the four files above)*
+- [ ] **CLI lifetime and API-drift nits.** *Nit, (reviewer).* `chat/session-ink-input.ts:40-42,124-131` guards only
+  the `readable` listener (Ink's kitty `data` path is latent because `kittyKeyboard` is unused);
+  `home/drive-home.tsx:165-166,1067,1115-1116` keeps `HomeDeps.exit` although the owned path never calls it;
+  `commands/lazy-dispatch.ts:49` imports the media route without the cause-wrap the sibling routes carry.
+  *(nit · the files above)*
+- [ ] **Test-evidence nits.** *Nit, (reviewer).* `process/pure-substrate-graph.test.ts:117-133` — the purity-guard
+  root set omits the ADR-0111 eager-boot files (the reviewer verified that opaque marking fixes it); three
+  no-argument `toHaveBeenCalled()` positives outside `native-process-owner.test.ts`;
+  `packages/llm/src/adapters/list-models-lifetime.test.ts:122` labels a fake-`fetch` case "real installed SDK";
+  `apps/cli/src/harness/concurrency.e2e.test.ts:434-441` uses a fixed 100 ms contention margin;
+  `tools/cli-package/consumer-lifetime.test.mjs:54-59` pre-marks every synthetic case `passed: true` (by design;
+  real detection is the packed-consumer CI). *(nit · the files above)*
+- [ ] **Tooling and documentation nits.** *Nit, (reviewer).* Unreachable `TAR_FORMAT` branches at
+  `tools/cli-package/archive.mjs:126,135`; no `break` in the ancestor loop at `tools/cli-package/smoke/worker.mjs:64-65`
+  (the outermost `node_modules` wins); and repeated heading texts in the phase register, whose later occurrences
+  take a `-1` slug suffix. *(author)* A scan finds repeated H2–H4 headings (the 2.5.5.B–I sub-stream headings and the
+  Wave 2 checkpoint's sub-headings among them); no link is broken today. *(nit · the files above)*
+- [ ] **Informational items to keep in view.** *(reviewer)* `packages/mcp/src/manager.ts:228-236` — a comment omits
+  the bare `Error` in the throwing-observer branch (behaviour is canonical); `packages/core/src/tools/bounding.ts` —
+  the removed 4k pre-clip in `makeSummary` is required for correctness (8 MiB takes about 49 ms, about 200 ms with
+  line feeds) and the alias DAG is `2^d` (depth 18 is 786k nodes in 404 ms) for host/embedder graphs only, never model
+  JSON; `packages/core/src/tools/builtins.ts:451-452` — the `git_commit` description promises human-gate approval
+  while no producer sets `gateApproved=true` (not verified by the reviewer); `commands/workflow-lifetime.ts:204`
+  can return a raw signal code above 9 that the physical exit never uses, a note for future embedders. No action
+  is proposed for any of these.
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

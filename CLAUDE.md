@@ -204,12 +204,16 @@ failed reviewer-preparation records and source/native/platform limits remain
 explicit; source CI does not certify later documentation commits. The
 [acceptance register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 joins exact evidence and historical corrections. Steps 1–8 are accepted;
-Steps 9–19 have NOT STARTED. After the private handoff, the maintainer authorized
-an initial PR for completed Steps 1–8. This is a scoped publication checkpoint;
-whole-wave acceptance remains Step 19. Later work stays with the next agent.
-Check that PR's status before committing Step 9 on `development`, because new
-commits extend its review scope. No provider, credential, billing or new ADR
-approval is pending for the approved implementation plan.
+**Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
+itself is NOT complete: Steps 9–19 have NOT STARTED and whole-wave acceptance remains
+Step 19. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
+records what merged, its review attributions, and one open limit: the final head `a3e164b5`
+(corrections from a further independent review, including a secret-scrubbing rule) has
+author verification only. CI for it and the merge commit finished green, and SonarCloud's
+`main` gate (red since at least PR #90) was cleared on 2026-10-19. Next is Step 9 (release
+map/custody substrate, #46/ADR-0111, split into 9a–9d in the increment table); new commits
+on `development` start a new publication checkpoint. No provider,
+credential, billing or new ADR approval is pending for the approved implementation plan.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
