@@ -161,12 +161,15 @@ security residuals that predate the follow-up — an `api-key:Bearer <token>` to
 
 ## Next work — Wave 3 — Clear the ground
 
-Wave 3 implementation continues on `development`: Steps 1–8 are merged, **Step 9 is next** — the release
-map/custody substrate (#46, ADR-0111), split into 9a–9d in the [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments),
-which carries a dedicated archive/crypto security sitting. Steps 10–19
-follow the approved [nineteen-increment plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
-and end with whole-wave acceptance at Step 19. New implementation commits start a new publication checkpoint; PR #95
-no longer bounds their review scope. See the [Wave 3 queue](#wave-3--clear-the-ground).
+Wave 3 implementation continues on `development`: Steps 1–8 are merged. A pre-implementation document/source review
+of Steps 9–19 and the maintainer's rulings are recorded in the
+[2026-10-19 rulings](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+(no new ADR; 29 recorded increments). **Next is the PR95 increment** — the PR #95 scrubber residuals, including the two security
+residuals — and then **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), whose
+9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
+[increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) and end with
+whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the
+review scope of new commits. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 ## Historical W7 implementation checkpoints
 
@@ -1144,8 +1147,10 @@ the [second corrective source-review completion](phases/phase-2.5.5-hardening-an
 (accepted at `ec0f3e10`), the [native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
 and the [supplemental fixture acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
 Those scopes are not widened: the delta from `ec0f3e10` to the merged head is two independently accepted test-fixture
-increments, documentation and the independent review's corrections at `a3e164b5`, which have author verification
-only. Whole-wave acceptance remains Step 19. No new decision, credential, billing or provider capture gate is introduced.
+increments, documentation and the independent review's corrections at `a3e164b5`, which merged with author
+verification only and were then independently reviewed after the merge
+([review record](phases/phase-2.5.5-hardening-and-remediation.md#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19));
+the follow-up corrections are on `development`, not yet on `main`. Whole-wave acceptance remains Step 19. No new decision, credential, billing or provider capture gate is introduced.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The approved

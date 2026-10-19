@@ -158,9 +158,10 @@ Relavium is under active development. The **CLI is published as v0.1.1**; the pu
 agent-session entry point, workflow runtime, inbound MCP client, and CLI management surface
 are implemented. **Phase 2.6.5 — Core Reliability Remediation is complete with approved
 deferrals**, with W8 merged in PR #92. The joint Phase 2.5.5/2.6 security remediation
-Wave 2 merged to `main` on 2026-10-15 as PR #94. The next
-engineering wave is “Clear the ground”: CLI safety, shared guards and decomposition
-of the hot files needed by later product work.
+Wave 2 merged to `main` on 2026-10-15 as PR #94. The current
+engineering wave is “Clear the ground” (CLI safety, shared guards and decomposition
+of the hot files needed by later product work); its first eight steps merged to `main`
+on 2026-10-18 as PR #95.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is

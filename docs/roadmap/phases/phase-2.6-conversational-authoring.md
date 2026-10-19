@@ -899,6 +899,11 @@ sensitive-read floors).
   approval prompt even renders, defeating the ADR-0057 approval-floor investment. Wire an `allowed_domains`
   config path alongside the credential-resolver activation above — the same fix pattern.
   *(S · `apps/cli/src/chat/session-host.ts` (`chatToolPolicy`); G30)*
+  *(pulled forward, 2026-10-19)*: G30 is not 2.6.M work any more. The approved Wave 3 plan lands it in
+  [Phase 2.5.5 execution row 13](phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) under
+  Accepted [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): a
+  global-only `[chat_http].allowed_domains` with live narrowing authority, explicitly **not** coupled to the
+  credential-resolver or `web_search` activation above. The prescription in this bullet is historical.
 - **`extra_roots`** *(pulled forward, 2026-10-12)*: invocation grants and committed narrowing selectors are accepted in [Wave 2 Step 2](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12). Config never grants authority.
 - **Tool-call rendering v2** (with 2.6.F's renderer): keep the collapsed one-line annotation as the
   default, add a **details view** (a `/details` toggle or transcript overlay) revealing *sanitized,

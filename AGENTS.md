@@ -121,11 +121,12 @@ Step 19. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-re
 records what merged and its review attributions. The final head `a3e164b5` (corrections from a
 further independent review, including a secret-scrubbing rule) merged with author verification
 only and was then independently reviewed (four rounds and a security sitting, with follow-up
-fixes in later commits); CI for it and the merge commit finished green, and SonarCloud's `main`
-gate (red since at least PR #90) was cleared on 2026-10-19. Open review findings, including two
-security residuals, are in deferred-tasks.md. Next is Step 9 (release map/custody substrate,
-#46/ADR-0111, split into 9a–9d in the increment table); new commits on `development` start a
-new publication checkpoint. No provider,
+fixes on `development`, not yet on `main`); CI for it and the merge commit finished green, and SonarCloud's `main`
+gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
+and the maintainer's [2026-10-19 rulings](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+give every open PR #95 finding an owner and record 29 increments (no new ADR). Next is the PR95
+increment (the scrubber residuals, including both security residuals), then Step 9a.1 (release
+map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
@@ -172,7 +173,8 @@ Never `npm` or `yarn`. `workspace:*` for inter-package deps; no circular deps.
 
 ## Git workflow
 
-- Trunk-based on `main`; short-lived feature branches via PR.
+- Work lands on the long-lived `development` branch and reaches the protected `main` (required CI
+  checks) through a PR from `development`. Do not create other branches unless the maintainer asks.
 - Conventional Commits with a per-package scope (`feat(core):`, `fix(llm):`,
   `docs(decisions):`). Reference the ADR or task the change advances. See
   [docs/standards/commit-style.md](docs/standards/commit-style.md).
