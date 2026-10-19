@@ -83,8 +83,10 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
         expected: `connect ${scheme.toUpperCase()}://[REDACTED]@provider.invalid/v1 failed`,
       },
     ]),
-    // A scheme glued to a preceding word character was masked before this PR; a `\b` on the rule
-    // let it through (PR #95 review, MEDIUM-1). Adjacent and LF/TAB-split forms are both pinned.
+    // A scheme glued to a preceding word character: the pre-PR matcher masked it for http(s), and a `\b` on
+    // the rule let it through (PR #95 review, MEDIUM-1). ws/wss/ftp/ftps are this PR's additions and get
+    // the same word-adjacency, so those cases pin new behaviour, not parity. Adjacent and LF/TAB-split
+    // forms are both pinned.
     ...['http', 'https', 'ws', 'wss', 'ftp', 'ftps'].flatMap((scheme) => [
       {
         input: `x${scheme}://alice:opaque-password@provider.invalid/v1`,
@@ -99,6 +101,29 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
       input: `xhttps://ali${separator}ce:opaque-password@provider.invalid/v1`,
       expected: '[REDACTED]',
     })),
+    // A glued, split credential that also contains a raw `@` used to leave a partial mask with the rest
+    // of the credential visible: the scanner skipped starts preceded by a word character (security
+    // sitting, PR #95 post-merge review). A clean-prefix twin was already redacted whole.
+    {
+      input: 'x\u0000https://u@e.com:pw\nxyz@provider.invalid/v1',
+      expected: '[REDACTED]',
+    },
+    {
+      input: 'xhttps://user:p@ss\tword@provider.invalid/v1',
+      expected: '[REDACTED]',
+    },
+    {
+      input: '_https://alice:opaque-password@provider.invalid/v1',
+      expected: '_https://[REDACTED]@provider.invalid/v1',
+    },
+    {
+      input: 'xht\ntps://alice:opaque-password@provider.invalid/v1',
+      expected: '[REDACTED]',
+    },
+    {
+      input: 'a http://u1:p1@h1.invalid/x and xhttps://u2:p2@h2.invalid/y',
+      expected: 'a http://[REDACTED]@h1.invalid/x and xhttps://[REDACTED]@h2.invalid/y',
+    },
     ...['api-key', 'x-api-key', 'x-goog-api-key'].flatMap((name) => [
       {
         input: `header ${name}: opaque-header-Z29 rejected`,
@@ -143,6 +168,23 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
     const error = makeLlmError({ provider: 'openai', kind: 'auth', message: input, code: input });
     expect(error.message).toBe(expected);
     expect(error.code).toBe(expected);
+  });
+
+  // Documents, and does not endorse, two consequences of a URL rule with no word boundary. Both fail
+  // closed: they blank or widen a diagnostic, they never reveal one. The whitespace-stripped residual probe
+  // glues the prose before a URL to its scheme, and a longer scheme name matches by its suffix.
+  it.each([
+    {
+      input: 'Error: ECONNREFUSED http://127.0.0.1:11434 contact admin@corp',
+      expected: '[REDACTED]',
+    },
+    {
+      input: 'MCP server at ws://127.0.0.1:8080 refused; email support@vendor.com',
+      expected: '[REDACTED]',
+    },
+    { input: 'sftp://scm@code.example/x', expected: 'sftp://[REDACTED]@code.example/x' },
+  ])('fails closed on the documented trade-off $input', ({ input, expected }) => {
+    expect(scrubSecrets(input)).toBe(expected);
   });
 
   it('protects each internal LF/TAB split position in the finite Bearer/Basic labels', () => {

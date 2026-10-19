@@ -8,7 +8,8 @@ import { stripTerminalControls } from '@relavium/shared/terminal-safe';
  * names, URL userinfo and finite API-key/Bearer/Basic headers. Each non-query rule probes the original diagnostic
  * independently, including terminal-normalized and LF/TAB-joined views, before any
  * other rule can erase its identifying context. A match revealed by normalization masks the whole
- * diagnostic. The finite patterns check boundaries in the original text and preserve already-masked spans;
+ * diagnostic. The finite patterns check boundaries in the original text (the URL rule has none, like the
+ * pre-PR matcher, and so fails closed on prose that sits next to a URL) and preserve already-masked spans;
  * this is not universal fragment discovery. Query names are excluded from the residual probe.
  * Pure and total for string input: regex replacements and a
  * finite residual check, with no parsing or external calls on the error path.
@@ -27,11 +28,18 @@ interface SecretRule {
 }
 
 /**
- * Deliberately NOT word-bounded: the pre-PR matcher masked `xhttps://user:pass@host`, and a `\b` here
- * would let any scheme glued to a preceding word character through unmasked. The rule has no `\b`
- * prefix, so it also supplies its own joined form rather than letting the scanner strip one.
+ * Deliberately NOT word-bounded: the pre-PR http(s) matcher masked `xhttps://user:pass@host`, and a `\b`
+ * here would let any scheme glued to a preceding word character through unmasked. This PR added
+ * ws/wss/ftp/ftps under the same rule. The rule has no `\b` prefix, so it supplies its own joined form
+ * (the split-credential scanner would otherwise strip two characters that are not there) and its
+ * `boundary` blocks no start. Consequences, all fail-closed and pinned by tests: a longer scheme name
+ * ending in one of these (`sftp://u@h`) matches by suffix, and the whitespace-stripped residual probe
+ * can turn prose followed by a URL and a later `@` into a whole-diagnostic `[REDACTED]`.
  */
 const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;
+
+/** A start boundary that never matches: no preceding character makes a start ineligible. */
+const NO_BOUNDARY = /(?!)/;
 
 /** One private authority per existing credential family, shared by probes and output masking. */
 const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
@@ -52,7 +60,7 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
     pattern: URL_USERINFO_PATTERN,
     joinedPattern: URL_USERINFO_PATTERN,
     replacement: maskUrlUserinfo,
-    boundary: /\w/,
+    boundary: NO_BOUNDARY,
   },
   // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
   {
@@ -108,7 +116,10 @@ function applyRule(text: string, rule: SecretRule): string {
 /**
  * Probe LF/TAB joins at eligible ORIGINAL starts before a greedy match can hide a later boundary.
  * All boundary-bearing rules use this scanner and their canonical matcher (or finite header-label
- * override). Prefixes start with ASCII letters; that prefilter skips only impossible starts.
+ * override). A rule that has a `joinedPattern` uses it as written; any other rule MUST begin its pattern
+ * with `\b`, which is stripped here (deleting an explicit `joinedPattern` from a rule without `\b`
+ * throws on every LF/TAB input, which the suite catches at once). Prefixes start with ASCII letters;
+ * that prefilter skips only impossible starts.
  * Keys have one token run after a bounded prefix/minimum. Header labels are bounded and their
  * trailing whitespace cannot contain another label. URL authority excludes slash, so a later URL
  * prefix delimits a failed authority scan. Successful matches advance both cursors over their span;
@@ -124,6 +135,8 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
   // Native scanning avoids a JS/coverage branch for every byte of unrelated large text.
   if (!new RegExp(source, canonical.flags).test(joined)) return false;
   const pattern = new RegExp(source, canonical.flags.replace('g', 'y'));
+  // Only a rule whose boundary rejects ASCII word characters may skip word-preceded starts.
+  const wordBlocksStart = rule.boundary.test('a');
   let originalOffset = 0;
   let joinedOffset = 0;
   while (originalOffset < text.length) {
@@ -132,17 +145,19 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
       originalOffset += 1;
       continue;
     }
-    // Both finite boundary classes reject ASCII word characters. Skip those impossible
+    // The key and header boundary classes reject ASCII word characters. Skip those impossible
     // starts without allocating/testing RegExp objects for every admitted-size character;
-    // the rule's own boundary and canonical matcher still decide every eligible start.
+    // the rule's own boundary and canonical matcher still decide every eligible start. The URL
+    // rule blocks no start, so a glued scheme (`xhttps://`) is examined like any other.
     const code = text.charCodeAt(originalOffset);
     const previous = text.charCodeAt(originalOffset - 1);
     const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
     const previousWord =
-      (previous >= 48 && previous <= 57) ||
-      (previous >= 65 && previous <= 90) ||
-      (previous >= 97 && previous <= 122) ||
-      previous === 95;
+      wordBlocksStart &&
+      ((previous >= 48 && previous <= 57) ||
+        (previous >= 65 && previous <= 90) ||
+        (previous >= 97 && previous <= 122) ||
+        previous === 95);
     if (letter && !previousWord && !rule.boundary.test(text[originalOffset - 1] ?? '')) {
       pattern.lastIndex = joinedOffset;
       const match = pattern.exec(joined);

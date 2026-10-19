@@ -259,6 +259,9 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       for (const separator of ['\n', '\t']) {
         expect(sanitize(`xhttps://us${separator}er:opaque-value@host/x`)).toBe('[REDACTED]');
       }
+      // Glued scheme + split credential + a raw `@` in the credential: no partial mask may remain.
+      expect(sanitize('xhttps://user:p@ss\tword@host/x')).toBe('[REDACTED]');
+      expect(sanitize('xhttps://u@e.com:pw\nxyz@host/x')).toBe('[REDACTED]');
     }
   });
 });

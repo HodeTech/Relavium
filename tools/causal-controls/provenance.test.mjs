@@ -317,7 +317,7 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-raw-password-userinfo',
       'diagnostic-joined-original-boundary-recovery',
       'diagnostic-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 103]),
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 111]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

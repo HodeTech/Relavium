@@ -48,7 +48,7 @@ other replacement erases its evidence, followed by the finite query replacement.
 The views include the canonical terminal-normalized text and a whitespace-joined
 residual view. The split literal query name remains an independent CLI obligation.
 Across the thirteen Step 3 controls, 191 named assertion witnesses are required. The shared
-overlap controls collect 277 tests across the LLM, CLI sanitizer and renderer files.
+overlap controls collect 278 tests across the LLM, CLI sanitizer and renderer files.
 The B2 controls below pin the conservative LF/TAB continuation rule when a first
 fragment already meets a key-length floor. Broader whitespace residual checks retain
 their finite scope; neither mechanism claims universal secret detection.
@@ -178,8 +178,8 @@ check, split scheme labels, split API-header labels and raw `?`/`#` password rec
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
 Every core phase executes the complete 142-case bounding file; every new LLM phase
-executes the complete 89-case scrubber file. Independent ordinary tooling tests pin
-these inventories, the 277-case overlap cohort, 179-case CLI diagnostic cohort and
+executes the complete 111-case scrubber file. Independent ordinary tooling tests pin
+these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
 The boundary controls preserve an embedded public-word key-shaped run containing an
@@ -240,7 +240,7 @@ The independent `diagnostic-original-control-boundary` removal strips terminal
 controls before the initial shared scrubber can observe their original credential
 boundary. Eight multiline/inline sanitizer cases cover removed C0, DEL, C1 and
 bidi units; the same four real renderer cases must fail their distinct
-`SECRETS_B2_DISPLAY_BOUNDARY` assertion. Both phases execute the complete 179-case
+`SECRETS_B2_DISPLAY_BOUNDARY` assertion. Both phases execute the complete 180-case
 sanitizer/renderer cohort. The earlier CLI residual-query control remains
 independent and retains its required witnesses. Its removal now skips the actual
 remaining-span loop: the new outer raw scrubber can already mask ordinary matches,
@@ -257,7 +257,7 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,320 cases, with each control's exact workload and named target
+complete files / 1,343 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
