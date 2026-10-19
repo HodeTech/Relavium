@@ -118,12 +118,14 @@ joins exact evidence and historical corrections. Steps 1–8 are accepted;
 **Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
 itself is NOT complete: Steps 9–19 have NOT STARTED and whole-wave acceptance remains
 Step 19. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
-records what merged, its review attributions, and one open limit: the final head `a3e164b5`
-(corrections from a further independent review, including a secret-scrubbing rule) has
-author verification only. CI for it and the merge commit finished green, and SonarCloud's
-`main` gate (red since at least PR #90) was cleared on 2026-10-19. Next is Step 9 (release
-map/custody substrate, #46/ADR-0111, split into 9a–9d in the increment table); new commits
-on `development` start a new publication checkpoint. No provider,
+records what merged and its review attributions. The final head `a3e164b5` (corrections from a
+further independent review, including a secret-scrubbing rule) merged with author verification
+only and was then independently reviewed (four rounds and a security sitting, with follow-up
+fixes in later commits); CI for it and the merge commit finished green, and SonarCloud's `main`
+gate (red since at least PR #90) was cleared on 2026-10-19. Open review findings, including two
+security residuals, are in deferred-tasks.md. Next is Step 9 (release map/custody substrate,
+#46/ADR-0111, split into 9a–9d in the increment table); new commits on `development` start a
+new publication checkpoint. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

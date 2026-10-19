@@ -147,15 +147,17 @@ diagnostics (2); secret provenance at public sinks, ADR-0113 (3); the typed erro
 engine tails (5); the pure process/discovery substrate, ADR-0110 (6); the lazy runtime, finite compiled graph and
 exact-tarball consumers, ADR-0111 (7); and creation-owned native process integration (8).
 
-Three points are recorded rather than papered over; two are now resolved. **Open:** the merged head `a3e164b5` carries
-corrections from a further independent review (one medium and three low findings: a secret-scrubbing production rule and
-two behaviour-neutral import moves, plus tests and causal-control pins) that have **author verification only** — no
-independent review rounds and no security sitting cover them. **Resolved:** CI had not finished when the merge happened
-(the required `lint · typecheck · test` job was still running); the three runs later completed `success`, 15 of 15 jobs
-each, as the [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#publication-state-observed-at-merge)
+Three points were recorded rather than papered over; all three are now resolved. The merged head `a3e164b5` carried
+corrections from a further independent review (a secret-scrubbing production rule, two behaviour-neutral import moves,
+tests and causal-control pins) with **author verification only** at merge; a post-merge independent review — four
+rounds and a security sitting, with fixes in follow-up commits — accepted them, as the
+[review record](phases/phase-2.5.5-hardening-and-remediation.md#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19) shows. CI had not finished when the merge
+happened (the required `lint · typecheck · test` job was still running); the three runs later completed `success`,
+15 of 15 jobs each, as the [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#publication-state-observed-at-merge)
 records. And SonarCloud's quality gate, which had failed on `main` since at least PR #90 because its dispositions lived
-only on PR branches, was cleared on 2026-10-19 (zero open vulnerabilities, gate OK). The review's remaining low and nit
-findings are unactioned, in [deferred-tasks.md](deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
+only on PR branches, was cleared on 2026-10-19 (zero open vulnerabilities, gate OK). Open findings remain, including two
+security residuals that predate the follow-up — an `api-key:Bearer <token>` token leak and unmasked userinfo with a raw
+`?`/`#` — in [deferred-tasks.md](deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
 
 ## Next work — Wave 3 — Clear the ground
 

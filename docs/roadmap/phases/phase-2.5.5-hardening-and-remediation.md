@@ -9184,7 +9184,8 @@ Detailed review records remain local and Git-ignored.
 
 The difference between `ec0f3e10` and the merged head is exactly twelve non-documentation
 paths plus three documentation files. Two test files are the independently accepted fixture
-increments above. The other ten are the commit below, which has **no independent acceptance**.
+increments above. The other ten are the commit below. It merged with author verification only; its
+post-merge independent review is recorded in [its own section](#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19) after this checkpoint.
 
 #### Independent review of the published head and its corrections
 
@@ -9199,25 +9200,26 @@ before acting. Corrections landed as `a3e164b5`:
 | Finding | Disposition |
 | --- | --- |
 | **MEDIUM-1** — URL userinfo not masked when its scheme is glued to a word character (`xhttps://user:pass@host`) | Reproduced at `19c99968` through both `scrubSecrets` and the CLI sanitizer. Fixed in `packages/llm/src/scrub-secrets.ts`: the rule returns to its pre-PR word-adjacency (no `\b`) and supplies its own joined pattern, because the split-credential scanner otherwise strips two characters from a pattern that has none. Fourteen new `scrub-secrets` cases and one CLI case; reverting the production change fails all fourteen (the CLI case failed against the stale build before it was rebuilt). |
-| **LOW-4** — failed-spawn test does not pin the native close join | Confirmed by mutation: removing `reservation.whenClosed` left all three `process-close` tests green. The reviewer's suggested `activeOwners === 0` assertion was also tried and **did not** kill that mutant, because the owner retires synchronously inside its own `close` handler on POSIX. Replaced by a case that gates the reservation's `whenClosed` and observes publication; it fails only when the join is removed. |
-| **LOW-2** — default 1 s `vi.waitFor` on a real spawned child | Fixed: the four waits in `native-forwarding.test-support.ts` carry an explicit 4 s bound, below the 5 s default case timeout. |
+| **LOW-4** — failed-spawn test does not pin the native close join | Confirmed by mutation: removing `reservation.whenClosed` left all three `process-close` tests green. The reviewer's suggested `activeOwners === 0` assertion was also tried and **did not** kill that mutant, because the owner retires synchronously inside its own `close` handler on POSIX. Replaced by a case that gates the reservation's `whenClosed` and observes publication; it fails only when the join is removed. The post-merge review extended it to all four publication branches. |
+| **LOW-2** — default 1 s `vi.waitFor` on a real spawned child | Added in `a3e164b5` (an explicit 4 s bound on four waits), then **reverted** after the post-merge review: the only wait that observes a real child booting is enclosed by 1 s waits in its sole caller, so a longer inner bound could not help. Examined and deliberately unchanged; see deferred-tasks.md. |
 | **LOW-3** — POSIX `ps` suite not skipped on Windows | Fixed: `describe.skipIf(process.platform === 'win32')`. Prettier re-indented the suite body, so the raw diff of that file is 215 lines; `git show -w` shows the 7-insertion / 2-deletion semantic change. |
 | **LOW-1** — fixed 5 s native watchdogs | **Not changed.** Three runs of the three affected native files (52 tests) all passed at a load average of 80–96, the reviewer could not observe the Windows root cause, and the constants are coupled to neighbouring bounds, so a retune would be speculative. Recorded in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18). |
 | Nit — import above the module docblock in `parser.ts`, `agent-parser.ts` | Fixed (no behaviour change). |
 | Nit — `packages/shared` curated export list | Closed without change: it is an illustrative existence sample, not an exhaustive contract. |
 | Other nits and info items | Open, in the same deferred-tasks section. |
 
-The production change restores a pre-PR behavior, but it touches a secret-scrubbing rule and
+The production change restores the pre-PR word-adjacency for http(s) (and gives the ws/wss/ftp/ftps
+schemes this PR added the same behaviour), but it touches a secret-scrubbing rule and
 the repository's causal controls: the `diagnostic-raw-password-userinfo` source anchor moved to
 the new `URL_USERINFO_PATTERN` constant, and the pinned complete workloads changed (89→103,
-179→180, 277→278) because the files gained cases. **Verification is the author's only.** The
+179→180, 277→278) because the files gained cases. **At merge, verification was the author's only.** The
 full local gate was run in two parts: `pnpm run ci` through the workspace tests, builds, format,
 fences, bundle closure and smokes; then, after the anchor/pin update, `test:acceptance-tools`
 (633 of 633) and the secrets, wire, usage and filesystem mutation gates (exit code 0 each, the
 userinfo control 103 / 98 with five failing cases / 103), plus tools lint, typecheck and format and
 the affected suites under `CI=true GITHUB_ACTIONS=true`. A second complete `pnpm run ci` after
-the pin update and a coverage run were not performed. No independent review rounds and no security
-sitting cover `a3e164b5`; none is claimed.
+the pin update and a coverage run were not performed. No independent review rounds or security
+sitting had covered `a3e164b5` at merge; the review that followed is recorded after this checkpoint.
 
 #### Publication state observed at merge
 
@@ -9263,7 +9265,7 @@ check-run attached to the merge commit itself is historical and unchanged. Recor
 **Wave 3 Steps 1–8 are on `main`; Wave 3 remains in progress.** Open after this merge: Steps 9–19
 and whole-wave acceptance (Step 19: A/E/G and M2.5.5-3 evidence, promoting core's ≥90% line/branch
 floor to required CI, the reconciled EXIT:4 reading, two new whole-wave cumulative reviews);
-an independent review of the `a3e164b5` delta; and the unactioned review findings. Phase 2.5.5 exit criteria 4–8, sub-stream I, later
+and the unactioned review findings. Phase 2.5.5 exit criteria 4–8, sub-stream I, later
 product waves and the existing approved deferrals keep their canonical homes. The merge adds no
 deferral, ADR or release.
 
@@ -9274,3 +9276,47 @@ archive/crypto security sitting. The maintainer-approved 9a–9d subdivision is 
 [increment table](#proposed-implementation-increments), and 9a is first. Steps 10–19 follow the
 approved plan in order. New implementation
 commits on `development` now start a new publication checkpoint; PR #95 no longer bounds their review scope.
+
+### Independent review of `a3e164b5` and its follow-up corrections — 2026-10-19
+
+The merged delta `19c99968..a3e164b5` had author verification only. After the merge it was reviewed by
+independent reviewers, each in an isolated worktree at an exact tree, given the code and a neutral statement of
+purpose, never the author's conclusions: three area reviewers (the scrubbing rule and its tests; the
+causal-control pins and README; the CLI test changes and two import moves) and a separate security sitting on
+the rule. Later rounds review the **cumulative** result, so the fixes made between rounds are reviewed too. Detailed
+records stay local and Git-ignored.
+
+| Round | Source | Result |
+| --- | --- | --- |
+| 1 | `a3e164b5` (tree `415af966`) | All four NONCLEAN: no blocker, high or medium; low and nit findings. |
+| 2 | `f597977a` (tree `7fd14b05`) | Rule and tests **CLEAN**, pins and README **CLEAN**, security sitting **CLEAN**; CLI tests NONCLEAN (one medium, three low). |
+| 3 | `fcfe79b1` (tree `b45d510d`) | Rule and tests **CLEAN**, pins and README **CLEAN**, CLI tests **CLEAN**. |
+| 4 | `fcfe79b1` | CLI tests **CLEAN**, a second fresh reviewer on the same bytes. |
+
+Each area therefore has two clean rounds on identical code bytes (rule and tests: rounds 2–3; pins and README:
+2–3; CLI tests: 3–4), plus one clean security sitting (round 2). Differential corpora ran the pre-PR matcher,
+`19c99968`, `a3e164b5` and the corrected tree side by side: the scrubbing reviewers used 0.8–1.1 million structured
+inputs and up to 2.2 million random strings, the security sitting 48 million exhaustive and 31.5 million random
+token sequences with a planted-token leak oracle (which did detect leaks in the three older versions). **Against
+`19c99968` no input regressed, apart from accidents of that version:** the few inputs it redacted wholesale only
+because its raw and normalized views disagreed (for example an ANSI-coloured URL whose credential is split by a
+plain space) are now masked in place and keep the documented opaque-fragments-across-spaces limit that the
+pre-PR matcher shares. **Against the pre-PR matcher** the only inputs it masked and the corrected tree does not
+are the raw-`?`/`#` userinfo class recorded in deferred-tasks.md. Reviewers ran on macOS only, and no review ran SonarCloud
+on the final code or exercised Windows. Three comment-only corrections in `scrub-secrets.ts` and two README
+sentences were made after the last review of those files; they change no behaviour, anchor or count.
+
+| Finding (source) | Disposition |
+| --- | --- |
+| A glued scheme with an LF/TAB-split credential that also holds a raw `@` left a partial mask with part of the credential visible, e.g. `xhttps://user:p@ss\tword@host/v1` (security sitting, round 1; low). | **Fixed** in `c64f3c39`: the URL rule's `boundary` blocks no start, and the scanner's word-character shortcut applies only when a rule's boundary rejects word characters. The anchored scanner gate and pattern line are untouched, so no causal-control anchor moves. Two regression cases (reverting the gate fails exactly those) and CLI assertions. |
+| The join of the owner reservation was pinned on the failed-spawn branch only; a mutant keeping it there alone passed every `process*` test (round 1; low). | **Fixed** in `f597977a` and `ebbec1c0`: one table over failed-spawn, natural exit, abort and timeout, mutation-verified branch by branch, against a stop-based join, against ungated publications up to about 100 ms late, and with the child reaped in a `finally` (removing it leaks a child). |
+| The 4 s `waitFor` bound could not help its only caller (round 2; medium). | **Reverted** in `ebbec1c0`; `native-forwarding.test-support.ts` is byte-identical to its `19c99968` form. Examined and deliberately unchanged. |
+| Stale pinned counts and README numbers (round 1; low). | **Fixed**: scrub-secrets set 89→111, sanitize + render-error 179→180, llm-error + sanitize + render-error 277→278; the README carries them and 25 files / 1,343 cases, measured independently by three reviewers. |
+| Inaccurate or overclaiming comments (rounds 1–3). | **Corrected**: ws/wss/ftp/ftps were this PR's additions, not pre-PR behaviour; "never reveal" and "all fail-closed"; the `slice(2)` contract; the `'a'` proxy; the `mcp-orphan` skip reason. |
+| Whole-diagnostic redaction of prose next to a path-less URL and a later `@`, and suffix matches such as `sftp://` (rounds 1–3; low). | **Characterised, not changed**: three tests and a docblock state the trade-off. It fails closed, equals the pre-PR matcher for http(s), and is new for the schemes this PR added. |
+| Residuals that predate the follow-up and are not in this delta: an `api-key:Bearer <token>` token leak, userinfo with a raw `?`/`#` before the first `:`, URL schemes outside the finite rule, a constant-factor scan cost, two unchecked invariants, an equivalent-mutant coverage gap, the load-sensitive wall-clock test and join-table nits. | **Open, not fixed**: recorded in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18). |
+
+Author verification of the corrected tree: full local `pnpm run ci` passes end to end at `7913b7b7` (workspace lint, typecheck, tests and build; format; fences; bundle closure; smokes; the acceptance tools; and the wire, usage, filesystem and secrets mutation families); the affected suites pass with and
+without `CI=true GITHUB_ACTIONS=true`. The `a3e164b5` subject line (`refactor(tests)`, a non-package scope on a
+change that spans llm, core, cli and tools) is already published and is not rewritten. The follow-up commits are
+`c64f3c39`, `f597977a`, `ebbec1c0`, `fcfe79b1` and `7913b7b7`.
