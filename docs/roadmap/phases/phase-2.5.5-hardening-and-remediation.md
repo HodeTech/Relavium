@@ -9393,7 +9393,7 @@ plan amendment (row PR95) and the recorded splits; ID coverage is unchanged apar
 
 | Area | Ruling |
 | --- | --- |
-| Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting, and whole-step sittings stay where their rows require them. |
+| Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting: PR95, 9a.1, 9a.2, 9b, 9c, 9d (whole Step 9 custody), 10a, 10c, 11b, 13c, 14b, 15c, 16a, 16b, 16c (whole Step 16), 18 and 19b (whole wave). |
 | Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. |
 | Plan shape | PR95 + 9a.1, 9a.2, 9b, 9c, 9d + 10a–c + 11a–b + 12a–b + 13a–c + 14a–b + 15a–c + 16a–c + 17a–b + 18 + 19a–b (29 increments). Each split is recorded before its step starts. |
 | Reassignments | G54 moves from row 17 to 11a; #311's implementation moves to 10b and its certification stays in 17a; G36/G46 are re-scoped in 10a to the branch that replaces the raw-stack branch and are certified in 17b; promotion of the Steps 6–10 commands.md sections moves from Step 19 to 10c. |

@@ -48,6 +48,27 @@ describe('authored snapshot credential notice', () => {
     expect(err()).toBe('');
   });
 
+  it('keeps placeholder connection-string passwords quiet and reports a literal http(s) username', () => {
+    const quiet = captureIo();
+    warnSnapshotLiterals(
+      {
+        env: {
+          DATABASE_URL: 'postgres://app:{{secrets.db_password}}@db.example/app',
+          CACHE_URL: 'redis://:{{secrets.cache_password}}@cache.example:6379',
+        },
+      },
+      quiet.io,
+    );
+    expect(quiet.err()).toBe('');
+    // http(s)/ws(s)/ftp(s) mask any userinfo, so a literal username beside a placeholder still counts.
+    const reported = captureIo();
+    warnSnapshotLiterals(
+      { env: { REPOSITORY: 'https://app:{{secrets.token}}@git.example/repo.git' } },
+      reported.io,
+    );
+    expect(reported.err()).toContain('1 string(s) matching known credential shapes');
+  });
+
   it('does not exempt credential literals beside placeholders or inside filter arguments', () => {
     const literal = 'sk-templateSyntheticCredential123456789';
     const { io, err } = captureIo();

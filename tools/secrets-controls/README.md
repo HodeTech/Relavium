@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **66 independent controls and 416 required named assertion witnesses**.
+declares **72 independent controls and 430 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -177,8 +177,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 150-case bounding file; every new LLM phase
-executes the complete 174-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 155-case bounding file; every new LLM phase
+executes the complete 185-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -259,14 +259,14 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,414 cases, with each control's exact workload and named target
+complete files / 1,431 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 66-control / 198-phase full declaration projects 1,195 retained files
-(66 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+The current 72-control / 216-phase full declaration projects 1,303 retained files
+(72 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
@@ -283,6 +283,14 @@ fits a two-character window, so it is no witness). Each of the nine ran in diagn
 with its fixed and restored phases green and every declared witness failing on its marker;
 that is author evidence, not a full-family capture. The eight-MiB scrubber cases now carry a 15-second
 case deadline instead of a wall-clock assertion, inside the phases' `CAUSAL_TIMEOUT_BUDGET`.
+
+The increment's first review round added six more controls and 14 named assertions. Two
+header controls narrow the label prefix back to one label, or its whitespace back to one
+character, so a doubled `Bearer Bearer` label or a multi-character gap leaks the token. Two
+controls per masker remove the host-shaped prefix's length bound (an admitted-size dotted
+prefix then exhausts V8's RegExp stack, and its witness catches the throw) or its `^`/`$`
+anchors (look-alike prefixes such as `john.doe:s3cret` turn public). The snapshot detector's
+complete workload is now 11 cases.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

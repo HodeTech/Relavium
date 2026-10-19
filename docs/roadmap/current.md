@@ -1154,8 +1154,8 @@ the follow-up corrections are on `development`, not yet on `main`. Whole-wave ac
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The approved
-[nineteen-increment execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
-owns the full order and review gates: finish each increment and its fresh reviews
+[nineteen-step execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments),
+recorded as 29 increments since 2026-10-19, owns the full order and review gates: finish each increment and its fresh reviews
 before advancing; no parallel edits of shared hot files.
 
 The groups below retain the original scope inventory and within-file dependency

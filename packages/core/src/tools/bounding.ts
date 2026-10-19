@@ -435,6 +435,9 @@ function redactOpaqueQueryValues(text: string): string {
 const HOST_SHAPED_AUTHORITY =
   /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
 
+/** A DNS name has at most 253 characters (254 with a trailing dot), and a `:port` adds at most six. */
+const HOST_SHAPED_MAX_LENGTH = 260;
+
 /**
  * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
  * matches can mask the first password fragment and leave another `@` plus a credential
@@ -443,10 +446,15 @@ const HOST_SHAPED_AUTHORITY =
  * begins public query/fragment text only when the text before it is host-shaped **and** an
  * `=` assignment follows it; anything else may be a malformed username or password. This is
  * the same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
- * Two core-only differences remain by design: `]` ends an authority, and a userinfo with no
- * password that is shorter than 16 characters is a vanity handle under the existing non-secret policy.
+ * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
+ * `}` and `]`; it recognizes any scheme of up to 32 characters rather than a finite list; a
+ * userinfo with no password is a vanity handle below 16 characters and masked from 16 on, under
+ * every scheme; and it does not treat an already-masked password as masked.
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
+  // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
+  // backtrack stack at admitted size; such a prefix stays userinfo, which fails closed.
+  if (query > HOST_SHAPED_MAX_LENGTH) return false;
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
 

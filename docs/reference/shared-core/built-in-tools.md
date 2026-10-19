@@ -96,9 +96,12 @@ existing content-sensitive handling.
 A raw `?` or `#` before a URL authority's `@` begins public query or fragment text only when
 the text before it is host-shaped (a dotted name or IPv4, `localhost` or a bracketed IP literal,
 with an optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked.
-This is the same predicate as the [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop).
-Two projection-only differences remain by design: `]` ends an authority, and a userinfo
-with no password that is shorter than 16 characters is kept as a vanity handle.
+This is the same predicate as the [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop),
+including its 260-character bound on the host-shaped prefix. The projection otherwise differs from
+that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and `]`; it recognizes any
+scheme of up to 32 characters rather than a finite list; a userinfo with no password is kept as a
+vanity handle below 16 characters and masked from 16 on, under every scheme; and it does not treat
+an already-masked password as masked.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with

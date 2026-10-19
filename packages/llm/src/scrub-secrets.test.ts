@@ -618,3 +618,106 @@ describe('PR95 joined-view and glued-scheme witnesses', () => {
     },
   );
 });
+
+describe('PR95 review round 1: label stacking, host bounds and masked userinfo', () => {
+  const token = ['abcdef', 'ghijkl', '123456'].join('');
+  const headerSchemeLabel = (value: unknown) => expect(value, 'SECRETS_B2_HEADER_SCHEME_LABEL');
+  const userinfoContact = (value: unknown) => expect(value, 'SECRETS_B2_USERINFO_CONTACT');
+
+  it('masks the token after stacked or quoted scheme labels in a header value', () => {
+    for (const [input, expected] of [
+      [`api-key: Bearer Bearer ${token}`, 'api-key: [REDACTED]'],
+      [`x-api-key: Basic Bearer ${token}`, 'x-api-key: [REDACTED]'],
+      [`{"x-api-key":"Bearer Bearer ${token}"}`, '{"x-api-key":"[REDACTED]"}'],
+      [`x-goog-api-key: Bearer\nBearer ${token}`, 'x-goog-api-key: [REDACTED]'],
+      [`api-key:Bearer B\tearer ${token}`, 'api-key:[REDACTED]'],
+      [`api-key: Bearer "${token}"`, 'api-key: [REDACTED]"'],
+      [`api-key: Basic '${token}'`, "api-key: [REDACTED]'"],
+    ] as const) {
+      const output = scrubSecrets(input);
+      headerSchemeLabel(output).toBe(expected);
+      headerSchemeLabel(output.includes(token)).toBe(false);
+    }
+  });
+
+  it('masks the token after more than one whitespace character following a scheme label', () => {
+    for (const [input, expected] of [
+      [`api-key: Bearer  ${token} rejected`, 'api-key: [REDACTED] rejected'],
+      [`x-api-key:Basic \t${token}`, 'x-api-key:[REDACTED]'],
+      [`api-key:Bearer \r\n${token}`, 'api-key:[REDACTED]'],
+    ] as const) {
+      const output = scrubSecrets(input);
+      headerSchemeLabel(output).toBe(expected);
+      headerSchemeLabel(output.includes(token)).toBe(false);
+    }
+  });
+
+  it('masks the token after stacked labels in a standalone scheme value', () => {
+    for (const [input, expected] of [
+      [
+        `Authorization: Bearer Bearer ${token} rejected`,
+        'Authorization: Bearer [REDACTED] rejected',
+      ],
+      [`Authorization: Basic Basic ${token}`, 'Authorization: Basic [REDACTED]'],
+      [`Authorization: Bearer Basic ${token}`, 'Authorization: Bearer [REDACTED]'],
+      [`Authorization: Bearer B\nearer ${token}`, 'Authorization: Bearer [REDACTED]'],
+    ] as const) {
+      expect(scrubSecrets(input)).toBe(expected);
+    }
+    expect(scrubSecrets('Authorization: Bearer Bearerish rejected')).toBe(
+      'Authorization: Bearer [REDACTED] rejected',
+    );
+  });
+
+  it.each([
+    'https://john.doe:s3cret?x=1@h.example/',
+    'https://localhostuser:pw?a=b@h.example/',
+    'https://user:pw.evil.com?x=1@h.example/',
+    'https://h.example:123456?x=1@h.example/',
+  ])('masks userinfo whose prefix only resembles a host: %s', (input) => {
+    userinfoContact(scrubSecrets(input)).toBe('https://[REDACTED]@h.example/');
+  });
+
+  it('retains a public contact after a host with a five-digit port', () => {
+    const input = 'connect https://h.example:65535?contact=alice@example.invalid failed';
+    expect(scrubSecrets(input)).toBe(input);
+  });
+
+  it(
+    'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+    () => {
+      const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+      const input = `upstream said https://${labels}a?x=1@h failed`;
+      let output = '';
+      expect(() => {
+        output = scrubSecrets(input);
+      }, 'SECRETS_B2_USERINFO_HOST_LENGTH').not.toThrow();
+      expect(
+        output === 'upstream said https://[REDACTED]@h failed',
+        'SECRETS_B2_USERINFO_HOST_LENGTH',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it('keeps colonless connection-string userinfo visible even with a raw ?/#', () => {
+    for (const input of ['redis://#TOKEN@h.example', 'postgres://us?er@db.example/x']) {
+      expect(scrubSecrets(input)).toBe(input);
+    }
+  });
+
+  it('leaves already-masked userinfo as a fixed point and masks a literal around a mask', () => {
+    for (const input of [
+      'postgres://app:[REDACTED]@db.example/app',
+      'redis://:[REDACTED]@cache.example:6379',
+      'https://[REDACTED]:[REDACTED]@h.example/',
+      'https://:[REDACTED]@h.example/',
+    ]) {
+      expect(scrubSecrets(input)).toBe(input);
+    }
+    expect(scrubSecrets('https://app:[REDACTED]@h.example/')).toBe('https://[REDACTED]@h.example/');
+    expect(scrubSecrets('postgres://app:pa[REDACTED]ss@db.example')).toBe(
+      'postgres://[REDACTED]@db.example',
+    );
+  });
+});

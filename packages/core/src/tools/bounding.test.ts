@@ -1209,8 +1209,37 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       'https://provider.invalid:8443#contact=alice@example.invalid',
       'https://localhost:3000?contact=alice@example.invalid',
       'https://10.0.0.1#contact=alice@example.invalid',
+      'https://john.doe:s3cret?x=1@h.example/',
+      'https://localhostuser:pw?a=b@h.example/',
+      'https://user:pw.evil.com?x=1@h.example/',
+      'https://h.example:123456?x=1@h.example/',
+      'https://h.example:65535?contact=alice@example.invalid',
     ]) {
       expect(redactSecretShapedText(input) === input, input).toBe(scrubSecrets(input) === input);
     }
   });
+
+  it.each([
+    'https://john.doe:s3cret?x=1@h.example/',
+    'https://localhostuser:pw?a=b@h.example/',
+    'https://user:pw.evil.com?x=1@h.example/',
+    'https://h.example:123456?x=1@h.example/',
+  ])('masks userinfo whose prefix only resembles a host: %s', (input) => {
+    expect(redactSecretShapedText(input), 'SECRETS_B2_CORE_USERINFO_CONTACT').toBe(
+      'https://[redacted]@h.example/',
+    );
+  });
+
+  it('masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack', () => {
+    const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+    const input = `upstream said https://${labels}a?x=1@h failed`;
+    let output = '';
+    expect(() => {
+      output = redactSecretShapedText(input);
+    }, 'SECRETS_B2_CORE_USERINFO_HOST_LENGTH').not.toThrow();
+    expect(
+      output === 'upstream said https://[redacted]@h failed',
+      'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
+    ).toBe(true);
+  }, 15_000);
 });

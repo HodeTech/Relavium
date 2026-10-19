@@ -84,23 +84,31 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
     anchor: { text: '://', window: URL_SCHEME_WINDOW },
   },
   // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
-  // A value may begin with a (possibly LF/TAB-split) Bearer/Basic label: the label and its token are
+  // A value may begin with up to eight (possibly LF/TAB-split) Bearer/Basic labels, as a doubled
+  // `Bearer Bearer` misconfiguration does, and its token may be quoted: the labels and the token are
   // masked together, so the later scheme-label rules cannot lose their anchor to this one. Like those
-  // rules, whitespace after the label may be a line break, and the next token is masked fail-closed.
+  // rules, whitespace after a label may be a line break, and the next token is masked fail-closed.
+  // The repetition is bounded so that no admitted-size label run can exhaust the RegExp stack.
   {
     pattern:
-      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+)?[^\s"',;}]+/gi,
+      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}["']?[^\s"',;}]+/gi,
     replacement: '$1$2$3[REDACTED]',
     joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,
     boundary: /[A-Za-z0-9_-]/,
   },
   // LF/TAB may split the finite scheme LABEL. Preserve the required label/value separator and
-  // ordinary following prose; opaque value fragments cannot be distinguished from that prose.
+  // ordinary following prose; opaque value fragments cannot be distinguished from that prose. Up to
+  // eight stacked labels (`Bearer Bearer <token>`) precede the token without becoming it.
   {
-    pattern: /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+\S+/gi,
+    pattern:
+      /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r(?:\s+(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,8}\s+\S+/gi,
     replacement: 'Bearer [REDACTED]',
   },
-  { pattern: /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+\S+/gi, replacement: 'Basic [REDACTED]' },
+  {
+    pattern:
+      /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c(?:\s+(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,8}\s+\S+/gi,
+    replacement: 'Basic [REDACTED]',
+  },
 ];
 
 /**
@@ -125,17 +133,25 @@ function normalizeSecretProbe(text: string): string {
 const HOST_SHAPED_AUTHORITY =
   /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
 
+/** A DNS name has at most 253 characters (254 with a trailing dot), and a `:port` adds at most six. */
+const HOST_SHAPED_MAX_LENGTH = 260;
+
 /**
  * A raw `?`/`#` before the authority `@` begins public query or fragment text only when the text
  * before it is host-shaped **and** an `=` assignment follows it, as in
- * `https://host.example?contact=a@b.example`. Anything else may be a malformed username or password
- * and is masked: `https://us?er:TOKEN@h/`, `http://#TOKEN@h`, `https://my.user:1234?TOKEN@h/`. A host
- * fragment without an assignment (`https://host.example#sec@x`) is masked too, failing closed. Core's
- * journal projection applies the same predicate (`packages/core/src/tools/bounding.ts`).
+ * `https://host.example?contact=a@b.example`. Otherwise the text is userinfo: `https://us?er:TOKEN@h/`,
+ * `http://#TOKEN@h`, `https://my.user:1234?TOKEN@h/` and a host fragment without an assignment
+ * (`https://host.example#sec@x`, failing closed) are masked under the rest of `maskUrlUserinfo`'s policy.
+ * Core's journal projection applies the same predicate (`packages/core/src/tools/bounding.ts`).
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
+  // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
+  // backtrack stack at admitted size; such a prefix stays userinfo, which fails closed.
+  if (query > HOST_SHAPED_MAX_LENGTH) return false;
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
+
+const MASKED = '[REDACTED]';
 
 function maskUrlUserinfo(match: string): string {
   const start = match.indexOf('://') + 3;
@@ -146,10 +162,21 @@ function maskUrlUserinfo(match: string): string {
   const userinfo = authority.slice(0, at);
   const query = userinfo.search(/[?#]/);
   if (query >= 0 && isPublicQueryContact(userinfo, query)) return match;
+  const colonless = COLONLESS_USERINFO_SCHEME.test(match.slice(0, start - 3));
+  const colon = userinfo.indexOf(':');
   // A connection string's colonless userinfo names a user (`ssh://git@host`), not a credential.
-  if (!userinfo.includes(':') && !COLONLESS_USERINFO_SCHEME.test(match.slice(0, start - 3)))
+  if (colon < 0 && !colonless) return match;
+  // Already-masked userinfo stays as it is: an exactly masked password under a connection-string
+  // scheme, whose usernames are public, or a masked or empty username beside it under any scheme.
+  // `postgres://app:{{secrets.password}}@db` therefore projects to a fixed point.
+  const username = userinfo.slice(0, Math.max(colon, 0));
+  if (
+    colon >= 0 &&
+    userinfo.slice(colon + 1) === MASKED &&
+    (!colonless || username === '' || username === MASKED)
+  )
     return match;
-  return `${match.slice(0, start)}[REDACTED]${authority.slice(at)}`;
+  return `${match.slice(0, start)}${MASKED}${authority.slice(at)}`;
 }
 
 function applyRule(text: string, rule: SecretRule): string {

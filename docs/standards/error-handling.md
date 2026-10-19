@@ -129,31 +129,44 @@ message, and the backstop masks a finite set of secret **shapes**, not arbitrary
 content.
 
 - **Shapes.** OpenAI/Anthropic `sk-…` and Google `AIza…` key prefixes; a finite list of literal
-  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names (a
-  value that begins with a `Bearer`/`Basic` label is masked together with its token); and
-  `Bearer`/`Basic` authentication values.
-- **URL userinfo.** The schemes `http(s)`, `ws(s)` and `ftp(s)` mask any userinfo. The
-  connection-string schemes `postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`,
-  `mongodb`, `mongodb+srv`, `amqp`, `amqps`, `ssh`, `sftp`, `ldap`, `ldaps`, `smtp` and `smtps`
-  mask colon-bearing userinfo (`user:pass@`, `:pass@`); a bare user such as `ssh://git@host`
-  stays visible. A raw `?` or `#` before the authority `@` begins public query or fragment
-  text only when the text before it is host-shaped (a dotted name or IPv4, `localhost` or a
-  bracketed IP literal, with an optional port) **and** an `=` assignment follows it, as in
-  `https://host.example?contact=a@b.example`; otherwise the userinfo is masked. Core's journal
-  projection applies the same `?`/`#` predicate
+  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names; and
+  `Bearer`/`Basic` authentication values. A header value that begins with up to eight
+  `Bearer`/`Basic` labels (a doubled `Bearer Bearer` is a common misconfiguration) is masked
+  together with the token that follows them, quoted or not; a standalone value accepts the same
+  stacked labels before its token.
+- **URL userinfo.** The `?`/`#` rule decides where userinfo ends: a raw `?` or `#` before the
+  authority `@` begins public query or fragment text only when the text before it is host-shaped
+  (a dotted name or IPv4, `localhost` or a bracketed IP literal, with an optional port, at most
+  260 characters in all) **and** an `=` assignment follows it, as in
+  `https://host.example?contact=a@b.example`. The scheme rule then decides what is masked:
+  `http(s)`, `ws(s)` and `ftp(s)` mask any userinfo, while the connection-string schemes
+  `postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`, `mongodb+srv`,
+  `amqp`, `amqps`, `ssh`, `sftp`, `ldap`, `ldaps`, `smtp` and `smtps` mask only colon-bearing
+  userinfo (`user:pass@`, `:pass@`), so a bare user such as `ssh://git@host` (or a colonless
+  `redis://#TOKEN@host`) stays visible. Userinfo that is already masked stays as it is: an
+  exactly masked password under a connection-string scheme, or every part masked or empty under
+  any scheme, so `postgres://app:{{secrets.password}}@db` projects to a fixed point. Core's
+  journal projection applies the same `?`/`#` predicate
   ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
-- **Split and normalized forms.** Each rule also probes the terminal-normalized text and the
-  LF/TAB-joined view at original-text boundaries; a credential revealed only by
-  normalization or by an LF/TAB split masks the **whole** diagnostic.
+- **Split and normalized forms.** Every rule except the literal query names also probes the
+  terminal-normalized text; a credential revealed only by normalization masks the **whole**
+  diagnostic. The key prefixes, URL
+  userinfo and the `api-key` header label are additionally probed in the LF/TAB-joined view at
+  original-text boundaries, and a credential revealed only by such a split masks the whole
+  diagnostic too. A `Bearer`/`Basic` label may itself be split by LF/TAB.
 - **Documented trade-offs, all failing closed.** A scheme glued to a word character is masked in
-  place; an unlisted scheme ending in a listed one (`gftp://`) matches by its suffix; prose
-  that the whitespace-stripped residual probe glues to a path-less URL and a later `@` blanks the
-  whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`) and a
-  single-label host query are masked; and a `Bearer`/`Basic` label that ends a line takes the
-  next token with it.
-- **Limits.** Malformed URLs (`https:/u:p@h`), a raw `/` inside a password, invisible characters
-  inside a scheme and opaque fragments separated by ordinary spaces are outside the finite
-  shapes.
+  place; an unlisted scheme ending in a listed one (`gftp://`, `jdbc:mysql://`) matches by its
+  suffix; prose that the whitespace-stripped residual probe glues to a path-less URL and a later
+  `@` blanks the whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`),
+  a single-label host query and an over-long host-shaped prefix are masked; and a
+  `Bearer`/`Basic` label that ends a line takes the next token with it.
+- **Limits.** Userinfo under an unlisted scheme is not masked, including driver-qualified
+  spellings such as `postgresql+psycopg2://`. Opaque `Bearer`/`Basic` values, `api-key` header
+  values and literal secret query values end at any whitespace, LF and TAB included, so a
+  fragment after such a break stays visible, as it does after an ordinary space; a header token
+  that begins with `,`, `;` or `}` after a label is likewise outside the shape. Malformed URLs
+  (`https:/u:p@h`), a raw `/` inside a password and invisible characters inside a scheme are
+  outside the finite shapes.
 
 ## No silent catches
 

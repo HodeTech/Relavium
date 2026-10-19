@@ -94,7 +94,21 @@ const headerSchemeLabelCases = [
   ),
   'masks every LF/TAB split position inside a scheme label after a header',
   'masks the next token, failing closed, when a scheme label ends the line',
+  'masks the token after stacked or quoted scheme labels in a header value',
+  'masks the token after more than one whitespace character following a scheme label',
 ];
+const headerLabelValue = String.raw`(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}["']?[^\s"',;}]+/gi,`;
+const headerLine = (value) =>
+  String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)` + value;
+const hostLengthGuard = '  if (query > HOST_SHAPED_MAX_LENGTH) return false;';
+const hostShapedLine = String.raw`  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;`;
+const hostShapedUnanchored = String.raw`  /(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?/i;`;
+const hostLookalikeCases = [
+  'https://john.doe:s3cret?x=1@h.example/',
+  'https://localhostuser:pw?a=b@h.example/',
+  'https://user:pw.evil.com?x=1@h.example/',
+  'https://h.example:123456?x=1@h.example/',
+].map((input) => `masks userinfo whose prefix only resembles a host: ${input}`);
 const userinfoContactMarker = 'SECRETS_B2_USERINFO_CONTACT';
 const coreUserinfoContactMarker = 'SECRETS_B2_CORE_USERINFO_CONTACT';
 const contactAssignmentCases = (secondInput) =>
@@ -276,7 +290,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    150,
+    155,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -289,7 +303,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    174,
+    185,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -805,7 +819,7 @@ export const mutations = [
     '    if (scrubSecrets(probe) !== probe) matches += 1;',
     '    void probe;',
     ['apps/cli/src/authoring/snapshot-notice.test.ts'],
-    10,
+    11,
     'detects existing credential shapes without values or arbitrary keys in the notice',
     'SNAPSHOT_CAUSAL_DETECTOR',
   ),
@@ -1029,10 +1043,54 @@ export const mutations = [
   // PR95: a header value's leading Bearer/Basic label is masked with its token.
   diagnosticControl(
     'diagnostic-header-scheme-label',
-    String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+)?[^\s"',;}]+/gi,`,
-    String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)[^\s"',;}]+/gi,`,
+    headerLine(headerLabelValue),
+    headerLine(String.raw`[^\s"',;}]+/gi,`),
     headerSchemeLabelCases,
     headerSchemeLabelMarker,
+  ),
+  // PR95 round 1: stacked labels (`Bearer Bearer <token>`) and multi-character label whitespace.
+  diagnosticControl(
+    'diagnostic-header-stacked-labels',
+    headerLine(headerLabelValue),
+    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s+)?`)),
+    ['masks the token after stacked or quoted scheme labels in a header value'],
+    headerSchemeLabelMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-header-label-whitespace',
+    headerLine(headerLabelValue),
+    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s){0,8}`)),
+    ['masks the token after more than one whitespace character following a scheme label'],
+    headerSchemeLabelMarker,
+  ),
+  // PR95 round 1: the host-shaped prefix is bounded before the RegExp and anchored at both ends.
+  diagnosticControl(
+    'diagnostic-userinfo-host-length',
+    hostLengthGuard,
+    '',
+    ['masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack'],
+    'SECRETS_B2_USERINFO_HOST_LENGTH',
+  ),
+  coreProjectionControl(
+    'core-userinfo-host-length',
+    hostLengthGuard,
+    '',
+    ['masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack'],
+    'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-host-anchors',
+    hostShapedLine,
+    hostShapedUnanchored,
+    hostLookalikeCases,
+    userinfoContactMarker,
+  ),
+  coreProjectionControl(
+    'core-userinfo-host-anchors',
+    hostShapedLine,
+    hostShapedUnanchored,
+    hostLookalikeCases,
+    coreUserinfoContactMarker,
   ),
   // PR95: raw ?/# userinfo is public only after a host-shaped prefix AND an assignment.
   diagnosticControl(
@@ -1048,7 +1106,7 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    174,
+    185,
     contactHostCase,
     userinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: diagnosticMarker })),
@@ -1066,7 +1124,7 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     coreProjectionCases,
-    150,
+    155,
     contactHostCase,
     coreUserinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: coreProjectionMarker })),
