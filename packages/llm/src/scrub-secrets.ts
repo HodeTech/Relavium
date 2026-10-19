@@ -32,9 +32,11 @@ interface SecretRule {
  * here would let any scheme glued to a preceding word character through unmasked. This PR added
  * ws/wss/ftp/ftps under the same rule. The rule has no `\b` prefix, so it supplies its own joined form
  * (the split-credential scanner would otherwise strip two characters that are not there) and its
- * `boundary` blocks no start. Consequences, all fail-closed and pinned by tests: a longer scheme name
+ * `boundary` blocks no start. Consequences, pinned by tests and fail-closed: a longer scheme name
  * ending in one of these (`sftp://u@h`) matches by suffix, and the whitespace-stripped residual probe
- * can turn prose followed by a URL and a later `@` into a whole-diagnostic `[REDACTED]`.
+ * can turn prose followed by a URL and a later `@` into a whole-diagnostic `[REDACTED]`. A credential
+ * split by a plain SPACE that also holds a raw `@` remains the documented opaque-fragments-across-spaces
+ * limit, as it was for the pre-PR matcher.
  */
 const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;
 
@@ -135,7 +137,8 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
   // Native scanning avoids a JS/coverage branch for every byte of unrelated large text.
   if (!new RegExp(source, canonical.flags).test(joined)) return false;
   const pattern = new RegExp(source, canonical.flags.replace('g', 'y'));
-  // Only a rule whose boundary rejects ASCII word characters may skip word-preceded starts.
+  // Only a rule whose boundary rejects ASCII word characters may skip word-preceded starts. `'a'` stands
+  // for all of them: every current boundary class rejects all ASCII word characters or none of them.
   const wordBlocksStart = rule.boundary.test('a');
   let originalOffset = 0;
   let joinedOffset = 0;

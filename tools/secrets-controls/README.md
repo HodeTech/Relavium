@@ -196,7 +196,7 @@ Two R1 original-boundary recovery controls add eight named assertions, retaining
 51 prior identities and required witnesses. The core removal admits embedded-word
 starts while retaining the mapper's late refusal and bounded probe; the rejected
 candidate consumes the later valid start. The LLM removal replaces original-boundary checks with joined-boundary checks only
-for the non-header rules in its unified scanner, preserving the finite-header path. All four
+for the key (`sk-`/`AIza`) rules in its unified scanner (the URL and header rules supply their own joined patterns), preserving the finite-header path. All four
 OpenAI/Google × LF/TAB poisoned-prefix cases must then fail with
 `SECRETS_B2_ORIGINAL_BOUNDARY`;
 public embedded-word preservation and the later complete split credential are

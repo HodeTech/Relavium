@@ -171,7 +171,7 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
   });
 
   // Documents, and does not endorse, two consequences of a URL rule with no word boundary. Both fail
-  // closed: they blank or widen a diagnostic, they never reveal one. The whitespace-stripped residual probe
+  // closed: they blank or widen a diagnostic rather than reveal one. The whitespace-stripped residual probe
   // glues the prose before a URL to its scheme, and a longer scheme name matches by its suffix.
   it.each([
     {
