@@ -56,6 +56,8 @@ describe('authored snapshot credential notice', () => {
           DATABASE_URL: 'postgres://app:{{secrets.db_password}}@db.example/app',
           CACHE_URL: 'redis://:{{secrets.cache_password}}@cache.example:6379',
           AUTH_HEADER: 'x-api-key: Bearer {{secrets.provider_key}}',
+          QUOTED_HEADER: 'x-api-key: Bearer "{{secrets.provider_key}}"',
+          QUOTED_BASIC: "x-api-key: Basic '{{secrets.provider_key}}'",
         },
       },
       quiet.io,

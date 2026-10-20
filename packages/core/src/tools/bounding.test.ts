@@ -1195,11 +1195,14 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     expect(redactSecretShapedText('http://#TOKEN@h.example')).toBe('http://#TOKEN@h.example');
     expect(scrubSecrets('http://#TOKEN@h.example')).toBe('http://[REDACTED]@h.example');
     // Core's authority also ends at `"`, `'`, `,`, `}` and `]`, so it leaves userinfo containing
-    // one of them as it is: an already-masked password, a bracketed-host prefix, a raw comma.
+    // one of them as it is: an already-masked password, a bracketed-host prefix, a raw delimiter.
     for (const [input, masked] of [
       ['https://app:[REDACTED]@h.example/', 'https://[REDACTED]@h.example/'],
       ['https://[::1]:8443?u:TOKENTOKEN@h.example/', 'https://[REDACTED]@h.example/'],
       ['https://user:pa,ssword@host.example/', 'https://[REDACTED]@host.example/'],
+      ['https://user:pa"ssword@host.example/', 'https://[REDACTED]@host.example/'],
+      ["https://user:pa'ssword@host.example/", 'https://[REDACTED]@host.example/'],
+      ['https://user:pa}ssword@host.example/', 'https://[REDACTED]@host.example/'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(input);
       expect(scrubSecrets(input), input).toBe(masked);

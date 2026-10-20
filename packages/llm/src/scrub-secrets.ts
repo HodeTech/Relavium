@@ -13,8 +13,8 @@ import { splitProbe, type SplitProbe, type SplitProbeAnchor } from './split-cred
  * diagnostic. The finite patterns check boundaries in the original text (the URL rule has none, like the
  * pre-PR matcher, so a scheme glued to a word character is masked in place) and preserve already-masked spans;
  * this is not universal fragment discovery. Query names are excluded from the residual probe.
- * Pure and total for string input: regex replacements and a
- * finite residual check, with no parsing or external calls on the error path.
+ * Pure and total for string input: regex matching, one merged masking pass and a finite residual
+ * check, with no parsing or external calls on the error path.
  * Asserted by `llm-error.test.ts` (the backstop) and each adapter's
  * secret-safety test (a planted secret → a secret-free surfaced `LlmError`); see security-review.md.
  * The canonical policy is error-handling.md's diagnostic secret backstop.
@@ -23,13 +23,33 @@ export function scrubSecrets(text: string): string {
   return scrubQuerySecrets(scrubNonQuerySecrets(text));
 }
 
+/** A range of the original diagnostic that one rule masks with `[REDACTED]`. */
+interface MaskRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 interface SecretRule {
   readonly pattern: RegExp;
-  readonly replacement: string | ((match: string) => string);
+  /** The masked range of one match, relative to the match; `undefined` keeps the match. */
+  readonly mask: (match: RegExpExecArray) => MaskRange | undefined;
+  /** Whether a joined-view candidate is a credential; absent means every candidate is. */
+  readonly credential?: (matched: string) => boolean;
   readonly joinedPattern?: RegExp;
   readonly boundary?: RegExp;
   /** Split-scanner prefilter: a match must reach this literal within its window (see `splitProbe`). */
   readonly anchor?: SplitProbeAnchor;
+}
+
+/** Mask the whole match. */
+const WHOLE_MATCH = (match: RegExpExecArray): MaskRange => ({ start: 0, end: match[0].length });
+
+/** Mask only the named `token` group of a `d`-flagged pattern, keeping its label or header around it. */
+function tokenGroup(match: RegExpExecArray): MaskRange | undefined {
+  const span = match.indices?.groups?.['token'];
+  return span === undefined
+    ? undefined
+    : { start: span[0] - match.index, end: span[1] - match.index };
 }
 
 /**
@@ -37,7 +57,7 @@ interface SecretRule {
  * here would let any scheme glued to a preceding word character through unmasked. PR #95 added
  * ws/wss/ftp/ftps under the same rule, and the PR95 increment added the connection-string schemes
  * (postgres(ql), mysql, mariadb, redis(s), mongodb(+srv), amqp(s), ssh, sftp, ldap(s), smtp(s)), whose
- * colonless userinfo names a user and stays visible (see `maskUrlUserinfo`). The rule has no `\b` prefix,
+ * colonless userinfo names a user and stays visible (see `urlUserinfoRange`). The rule has no `\b` prefix,
  * so it supplies its own joined form (the split-credential scanner would otherwise strip two characters
  * that are not there) and its `boundary` blocks no start. Consequences, pinned by tests and fail-closed: an
  * unlisted longer scheme name ending in a listed one (`gftp://u@h`) matches by suffix, and the
@@ -61,17 +81,23 @@ const URL_SCHEME_WINDOW = 32;
 /** A start boundary that never matches: no preceding character makes a start ineligible. */
 const NO_BOUNDARY = /(?!)/;
 
-/** One private authority per existing credential family, shared by probes and output masking. */
+/**
+ * One private authority per existing credential family, shared by probes and output masking. Every
+ * rule finds its matches in the original diagnostic and the masked ranges of all rules are merged
+ * before anything is replaced, so no rule can erase the context another rule needs, whatever their
+ * order. A token rule masks only its token, so its label or header name stays visible, and masking a
+ * token that is already exactly `[REDACTED]` changes nothing: every masked token is a fixed point.
+ */
 const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // OpenAI sk-/sk-proj-/sk-svcacct- and Anthropic sk-ant- key prefixes.
   {
     pattern: /\bsk-(?=[\w-]{16})[\w-]+/g,
-    replacement: '[REDACTED]',
+    mask: WHOLE_MATCH,
     boundary: /\w/,
   },
   {
     pattern: /\bAIza(?=[\w-]{20})[\w-]+/g,
-    replacement: '[REDACTED]',
+    mask: WHOLE_MATCH,
     boundary: /\w/,
   },
   // Finite authority schemes, not URL validation. Raw ?/# before the first @ may belong
@@ -79,38 +105,43 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   {
     pattern: URL_USERINFO_PATTERN,
     joinedPattern: URL_USERINFO_PATTERN,
-    replacement: maskUrlUserinfo,
+    mask: (match) => urlUserinfoRange(match[0]),
+    credential: (matched) => urlUserinfoRange(matched) !== undefined,
     boundary: NO_BOUNDARY,
     anchor: { text: '://', window: URL_SCHEME_WINDOW },
   },
-  // Exact literal header names, also in quoted diagnostic objects. No arbitrary header discovery.
-  // A value may begin with up to eight (possibly quoted, escaped or LF/TAB-split) Bearer/Basic labels,
-  // as a doubled `Bearer Bearer` misconfiguration does: the labels and the token after them are masked
-  // together, and the token may itself begin with (escaped) quotes, as in a JSON-encoded value. The
-  // token is never another label, so a ninth label fails this rule rather than leak the token (the
-  // label rules and the residual probe then mask it), and never an already-masked `[REDACTED]`, which
-  // stays a fixed point. The repetition is bounded so no label run can exhaust the RegExp stack.
+  // Exact literal header names, also in quoted or JSON-escaped diagnostic objects. No arbitrary
+  // header discovery. A value may begin with up to eight Bearer/Basic labels (possibly quoted,
+  // escaped, glued behind punctuation or LF/TAB-split), as a doubled `Bearer Bearer`
+  // misconfiguration does; the token after them is masked and the labels stay. The token may begin
+  // with any run of (escaped) quotes, is never a label, a run of labels or another header name, and
+  // ends at a delimiter, at escapes before one or before a header name glued to it, which then masks
+  // its own value. The label repetition is bounded so no label run can exhaust the RegExp stack;
+  // past the bound the residual probe blanks the whole diagnostic.
   {
     pattern:
-      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)(?:[\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)\s+){0,8}(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))(?:\\*["'])?[^\s"',;}]+/gi,
-    replacement: '$1$2$3[REDACTED]',
-    joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,
+      /(?<![A-Za-z0-9_-])(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:\s*["']?(?:[^\w\s]*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*\s+){0,8}(?![^\w\s]*(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*){1,8}(?:\s|$))[\\"']*(?!(?<=[^A-Za-z0-9_-])(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:)(?<token>[^\s"',;}\\][^\s"',;}]*?)(?=(?<=[^A-Za-z0-9_-])(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:|\\{0,15}[\s"',;}]|\\{0,15}$)/dgi,
+    mask: tokenGroup,
+    joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:/gi,
     boundary: /[A-Za-z0-9_-]/,
   },
-  // LF/TAB may split the finite scheme LABEL. Preserve the required label/value separator and
-  // ordinary following prose; opaque value fragments cannot be distinguished from that prose. A
-  // label never takes another label as its token, so any number of stacked labels
-  // (`Bearer Bearer <token>`) leaves the last one to mask the token, with no repetition to bound,
-  // and an already-masked token stays a fixed point.
+  // LF/TAB may split the finite scheme LABEL, and a label may be closed by its own quote before the
+  // whitespace (`"Bearer" <token>`). Preserve the required label/value separator and ordinary
+  // following prose; opaque value fragments cannot be distinguished from that prose. A label never
+  // takes another label as its token, even one glued behind punctuation, quoted or concatenated, so
+  // any number of stacked labels leaves the last one to mask the token, and a token ends before a
+  // label glued to it behind a non-word character, which then masks its own token. Quotes and
+  // `,;}` around a token stay outside it unless it continues past them, so `[REDACTED];tail` is
+  // masked whole.
   {
     pattern:
-      /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r\s+(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))\S+/gi,
-    replacement: 'Bearer [REDACTED]',
+      /\bB[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r[\\"']*\s+(?![^\w\s]*(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*){1,8}(?:\s|$))[\\"']*(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])[\\"',;}]*(?=(?<=[^\w])(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*(?:\s|$)|\s|$)/dgi,
+    mask: tokenGroup,
   },
   {
     pattern:
-      /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c\s+(?![\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:\s|$))(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))\S+/gi,
-    replacement: 'Basic [REDACTED]',
+      /\bB[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c[\\"']*\s+(?![^\w\s]*(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*){1,8}(?:\s|$))[\\"']*(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])[\\"',;}]*(?=(?<=[^\w])(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*(?:\s|$)|\s|$)/dgi,
+    mask: tokenGroup,
   },
 ];
 
@@ -144,7 +175,7 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * before it is host-shaped **and** an `=` assignment follows it, as in
  * `https://host.example?contact=a@b.example`. Otherwise the text is userinfo: `https://us?er:TOKEN@h/`,
  * `http://#TOKEN@h`, `https://my.user:1234?TOKEN@h/` and a host fragment without an assignment
- * (`https://host.example#sec@x`, failing closed) are masked under the rest of `maskUrlUserinfo`'s policy.
+ * (`https://host.example#sec@x`, failing closed) are masked under the rest of `urlUserinfoRange`'s policy.
  * Core's journal projection applies the same predicate (`packages/core/src/tools/bounding.ts`).
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
@@ -156,7 +187,11 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
 
 const MASKED = '[REDACTED]';
 
-function maskUrlUserinfo(match: string): string {
+/**
+ * The userinfo range of one finite-scheme URL match, or `undefined` when the policy keeps it: a
+ * public query contact, a connection string's colonless user or already-masked userinfo.
+ */
+function urlUserinfoRange(match: string): MaskRange | undefined {
   const start = match.indexOf('://') + 3;
   const authority = match.slice(start);
   const firstQuery = authority.search(/[?#]/);
@@ -164,11 +199,11 @@ function maskUrlUserinfo(match: string): string {
   const at = authorityAt >= 0 ? authorityAt : authority.length - 1;
   const userinfo = authority.slice(0, at);
   const query = userinfo.search(/[?#]/);
-  if (query >= 0 && isPublicQueryContact(userinfo, query)) return match;
+  if (query >= 0 && isPublicQueryContact(userinfo, query)) return undefined;
   const colonless = COLONLESS_USERINFO_SCHEME.test(match.slice(0, start - 3));
   const colon = userinfo.indexOf(':');
   // A connection string's colonless userinfo names a user (`ssh://git@host`), not a credential.
-  if (colon < 0 && !colonless) return match;
+  if (colon < 0 && !colonless) return undefined;
   // Already-masked userinfo stays as it is: an exactly masked password under a connection-string
   // scheme, whose usernames are public, or a masked or empty username beside it under any scheme.
   // The authored-content detector's projection `postgres://app:[REDACTED]@db` is a fixed point.
@@ -178,15 +213,47 @@ function maskUrlUserinfo(match: string): string {
     userinfo.slice(colon + 1) === MASKED &&
     (!colonless || username === '' || username === MASKED)
   )
-    return match;
-  return `${match.slice(0, start)}${MASKED}${authority.slice(at)}`;
+    return undefined;
+  return { start, end: start + at };
+}
+
+/** Every masked range of one rule's matches in `text`. */
+function ruleRanges(text: string, rule: SecretRule): MaskRange[] {
+  const ranges: MaskRange[] = [];
+  for (const match of text.matchAll(rule.pattern)) {
+    const range = rule.mask(match);
+    if (range !== undefined) {
+      ranges.push({ start: match.index + range.start, end: match.index + range.end });
+    }
+  }
+  return ranges;
+}
+
+/** Replace each run of overlapping ranges with one `[REDACTED]`; the rest of `text` is kept. */
+function maskRanges(text: string, ranges: readonly MaskRange[]): string {
+  const ordered = [...ranges].sort(
+    (left, right) => left.start - right.start || left.end - right.end,
+  );
+  let output = '';
+  let cursor = 0;
+  let open: { start: number; end: number } | undefined;
+  for (const range of ordered) {
+    if (open !== undefined && range.start < open.end) {
+      open.end = Math.max(open.end, range.end);
+      continue;
+    }
+    if (open !== undefined) {
+      output += text.slice(cursor, open.start) + MASKED;
+      cursor = open.end;
+    }
+    open = { start: range.start, end: range.end };
+  }
+  if (open === undefined) return text;
+  return output + text.slice(cursor, open.start) + MASKED + text.slice(open.end);
 }
 
 function applyRule(text: string, rule: SecretRule): string {
-  const replacement = rule.replacement;
-  return typeof replacement === 'string'
-    ? text.replace(rule.pattern, replacement)
-    : text.replace(rule.pattern, (match) => replacement(match));
+  return maskRanges(text, ruleRanges(text, rule));
 }
 
 /**
@@ -257,7 +324,7 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
         if (
           originalOffset - start > joinedOffset - joinedStart &&
           // A malformed URL candidate may actually be a public contact query.
-          (typeof rule.replacement !== 'function' || rule.replacement(match[0]) !== match[0])
+          (rule.credential === undefined || rule.credential(match[0]))
         )
           return true;
         continue;
@@ -287,7 +354,11 @@ function scrubNonQuerySecrets(text: string): string {
       if (applyRule(residual, rule) !== residual) return '[REDACTED]';
     }
   }
-  return NON_QUERY_SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);
+  // Every rule's ranges come from the original text and are merged, so none erases another's context.
+  return maskRanges(
+    text,
+    NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),
+  );
 }
 
 /** Exact literal query names, applied last so a value cannot erase another family's evidence. */

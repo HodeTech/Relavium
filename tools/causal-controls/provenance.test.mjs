@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 79);
+  assert.equal(secretsControls.length, 92);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    441,
+    462,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -333,13 +333,26 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-userinfo-host-length',
       'diagnostic-userinfo-host-anchors',
       'diagnostic-header-label-bound',
+      'diagnostic-header-concat-bound',
+      'diagnostic-label-concat-bound',
       'diagnostic-header-token-not-label',
-      'diagnostic-header-token-not-masked',
+      'diagnostic-header-not-nested',
+      'diagnostic-header-nested-stop',
+      'diagnostic-header-lookbehind',
+      'diagnostic-header-escaped-separator',
+      'diagnostic-header-quote-run',
+      'diagnostic-header-backslash-first',
+      'diagnostic-header-escaped-stop',
       'diagnostic-bearer-token-not-label',
       'diagnostic-basic-token-not-label',
-      'diagnostic-bearer-token-not-masked',
-      'diagnostic-basic-token-not-masked',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 191]),
+      'diagnostic-label-quoted-label',
+      'diagnostic-label-glued-label',
+      'diagnostic-label-embedded-stop',
+      'diagnostic-label-masked-tail',
+      'diagnostic-merged-masking',
+      'diagnostic-mask-merge',
+      'diagnostic-token-only-mask',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 198]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

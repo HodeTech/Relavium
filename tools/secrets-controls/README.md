@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **79 independent controls and 441 required named assertion witnesses**.
+declares **92 independent controls and 462 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -178,7 +178,7 @@ check, split scheme labels, split API-header labels and raw `?`/`#` password rec
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
 Every core phase executes the complete 156-case bounding file; every new LLM phase
-executes the complete 191-case scrubber file. Independent ordinary tooling tests pin
+executes the complete 198-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -259,14 +259,14 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,438 cases, with each control's exact workload and named target
+complete files / 1,445 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 79-control / 237-phase full declaration projects 1,429 retained files
-(79 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+The current 92-control / 276-phase full declaration projects 1,663 retained files
+(92 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
@@ -292,13 +292,21 @@ prefix then exhausts V8's RegExp stack, and its witness catches the throw) or it
 anchors (look-alike prefixes such as `john.doe:s3cret` turn public). The snapshot detector's
 complete workload is now 11 cases.
 
-The second review round added seven controls and 11 named assertions. One unbounds the header
-rule's label run (an admitted-size run of labels then exhausts the RegExp stack); two drop the
-header token's guards, so a ninth label becomes the token and the real one leaks, or an
-already-masked `Bearer [REDACTED]` stops being a fixed point; four drop the same two guards from
-the standalone Bearer and Basic rules, so a stacked label becomes the token or a masked JSON
-value loses its closing characters. The host-length controls also witness the exact 260/261
-boundary.
+The second review round added seven controls and 11 named assertions: an unbounded header label
+run, and the label-as-token and masked-marker guards of the header and standalone rules. The
+host-length controls also witness the exact 260/261 boundary.
+
+The third round replaced sequential rule application with one merged masking pass: every rule
+finds its matches in the original text, the masked ranges are merged, and a token rule masks only
+its token, so masking an exact `[REDACTED]` is the identity and the three masked-marker guards are
+gone. The header and label block now has 23 controls, 13 more than the ten it replaced. Seven
+re-anchor the earlier label-run, label-whitespace, label-bound and not-a-label controls; the new
+ones restore the sequential pass, disable range merging or mask a whole header match; unbound the
+concatenated-label lookaheads (an admitted-size glued run then exhausts the RegExp stack); drop
+the header's not-a-nested-header guard, nested-header stop or zero-width boundary; weaken its
+escaped separator, quote-run prefix, first-character or escaped-stop rules; drop the standalone
+rules' closing-quote or glued-label guard or their embedded-label stop; or reintroduce round 2's
+masked-marker guard, which exposes a tail glued to the marker.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

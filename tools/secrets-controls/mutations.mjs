@@ -98,16 +98,52 @@ const headerSchemeLabelCases = [
   'masks the token after more than one whitespace character following a scheme label',
   'masks quoted and escaped tokens beside header scheme labels',
 ];
-const schemeLabel = String.raw`(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)`;
-const notLabel = String.raw`(?![\\"']*${schemeLabel}(?:\s|$))`;
-const notMasked = String.raw`(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))`;
-const headerLabelValue = String.raw`(?:[\\"']*${schemeLabel}\s+){0,8}${notLabel}${notMasked}(?:\\*["'])?[^\s"',;}]+/gi,`;
-const headerLine = (value) =>
-  String.raw`      /(^|[^A-Za-z0-9_-])((?:x-)?api-key|x-goog-api-key)(["']?\s*:\s*["']?)` + value;
-const labelLine = (first, value) => String.raw`      /\b${first}\s+` + value;
+const schemeLabel = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c`;
+const headerName = String.raw`(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:`;
+// The header rule, piece by piece, so a control can remove or weaken exactly one guard.
+const header = {
+  boundary: String.raw`(?<![A-Za-z0-9_-])`,
+  separator: String.raw`\\*["']?\s*:\s*["']?`,
+  labelRun: String.raw`(?:[^\w\s]*(?:${schemeLabel})[\\"']*\s+){0,8}`,
+  notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
+  prefix: String.raw`[\\"']*`,
+  notNested: String.raw`(?!(?<=[^A-Za-z0-9_-])${headerName})`,
+  token: String.raw`(?<token>[^\s"',;}\\][^\s"',;}]*?)`,
+  stop: String.raw`(?=(?<=[^A-Za-z0-9_-])${headerName}|\\{0,15}[\s"',;}]|\\{0,15}$)`,
+};
+const headerLine = (part = {}) => {
+  const value = { ...header, ...part };
+  return (
+    String.raw`      /${value.boundary}(?:(?:x-)?api-key|x-goog-api-key)${value.separator}${value.labelRun}` +
+    String.raw`${value.notLabel}${value.prefix}${value.notNested}${value.token}${value.stop}/dgi,`
+  );
+};
+// The two standalone label rules share one tail after their label.
+const label = {
+  close: String.raw`[\\"']*\s+`,
+  notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
+  lead: String.raw`[\\"']*`,
+  token: String.raw`(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])`,
+  trail: String.raw`[\\"',;}]*`,
+  stop: String.raw`(?=(?<=[^\w])(?:${schemeLabel})[\\"']*(?:\s|$)|\s|$)`,
+};
+const labelLine = (first, part = {}) => {
+  const value = { ...label, ...part };
+  return (
+    String.raw`      /\b${first}${value.close}${value.notLabel}${value.lead}${value.token}` +
+    String.raw`${value.trail}${value.stop}/dgi,`
+  );
+};
 const bearerFirst = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r`;
 const basicFirst = String.raw`B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c`;
-const labelToken = String.raw`${notLabel}${notMasked}\S+/gi,`;
+const mergedMasking = [
+  '  return maskRanges(',
+  '    text,',
+  '    NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
+  '  );',
+].join('\n');
+const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
+const headerTokenMask = '    mask: tokenGroup,\n    joinedPattern:';
 const stackedLabelCase =
   'masks a header token after up to eight stacked labels and fails closed beyond them';
 const standaloneStackCase = 'masks the token after any number of stacked standalone labels';
@@ -308,6 +344,8 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     targets.slice(1).map((target) => ({ target, marker })),
   );
 }
+/** The complete scrubber test file every LLM diagnostic control runs. */
+const LLM_SCRUB_CASES = 198;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -315,7 +353,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    191,
+    LLM_SCRUB_CASES,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -1042,7 +1080,7 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-split-header-label',
-    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,`,
+    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:/gi,`,
     'joinedPattern: /a^/g,',
     ['masks each split position in the finite API header names'],
   ),
@@ -1052,81 +1090,178 @@ export const mutations = [
     String.raw`  /(?:${urlSchemes}):\/\/[^/\s?#]*@/gi;`,
     [...diagnosticPasswords, ...rawPasswordAssignments],
   ),
-  // PR95: a header value's leading Bearer/Basic label is masked with its token.
+  // PR95: a header value's leading Bearer/Basic labels are skipped and its token is masked. Without
+  // the label run, the probes see an unmasked label and token and blank the whole diagnostic.
   diagnosticControl(
     'diagnostic-header-scheme-label',
-    headerLine(headerLabelValue),
-    headerLine(String.raw`[^\s"',;}]+/gi,`),
+    headerLine(),
+    headerLine({ labelRun: '' }),
     headerSchemeLabelCases,
     headerSchemeLabelMarker,
   ),
-  // PR95 round 1: stacked labels (`Bearer Bearer <token>`) and multi-character label whitespace.
   control(
     'diagnostic-header-stacked-labels',
     scrubSecretsLeaf,
-    headerLine(headerLabelValue),
-    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s+)?`)),
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s+)?`) }),
     ['packages/llm/src/scrub-secrets.test.ts'],
-    191,
+    LLM_SCRUB_CASES,
     'masks the token after stacked or quoted scheme labels in a header value',
     headerSchemeLabelMarker,
     [{ target: stackedLabelCase, marker: 'SECRETS_B2_STACKED_LABEL' }],
   ),
   diagnosticControl(
     'diagnostic-header-label-whitespace',
-    headerLine(headerLabelValue),
-    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s){0,8}`)),
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s){0,8}`) }),
     ['masks the token after more than one whitespace character following a scheme label'],
     headerSchemeLabelMarker,
   ),
-  // PR95 round 2: the label run is bounded, its token is never another label or a masked span,
-  // and the standalone label rules take no label as their token.
+  // Every quantified label group is bounded so no admitted-size run can exhaust the RegExp stack.
   diagnosticControl(
     'diagnostic-header-label-bound',
-    headerLine(headerLabelValue),
-    headerLine(headerLabelValue.replace(String.raw`\s+){0,8}`, String.raw`\s+)*`)),
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s+)*`) }),
     ['keeps admitted-size label runs linear and fails closed'],
     'SECRETS_B2_HEADER_LABEL_BOUND',
   ),
   diagnosticControl(
+    'diagnostic-header-concat-bound',
+    headerLine(),
+    headerLine({ notLabel: header.notLabel.replace('{1,8}', '+') }),
+    ['keeps admitted-size escape and concatenated-label runs linear and total'],
+    'SECRETS_B3_ADMITTED_RUNS',
+  ),
+  diagnosticControl(
+    'diagnostic-label-concat-bound',
+    labelLine(bearerFirst),
+    labelLine(bearerFirst, { notLabel: label.notLabel.replace('{1,8}', '+') }),
+    ['keeps admitted-size escape and concatenated-label runs linear and total'],
+    'SECRETS_B3_ADMITTED_RUNS',
+  ),
+  // A header token is never a label, a run of labels or a nested header name.
+  diagnosticControl(
     'diagnostic-header-token-not-label',
-    headerLine(headerLabelValue),
-    headerLine(headerLabelValue.replace(notLabel, '')),
-    [stackedLabelCase],
-    'SECRETS_B2_STACKED_LABEL',
+    headerLine(),
+    headerLine({ notLabel: '' }),
+    ['treats a labels-only header value alike in every context'],
+    'SECRETS_B3_LABEL_CONTEXT',
+  ),
+  ...[
+    ['diagnostic-header-not-nested', { notNested: '' }],
+    [
+      'diagnostic-header-nested-stop',
+      { stop: header.stop.replace(String.raw`(?<=[^A-Za-z0-9_-])${headerName}|`, '') },
+    ],
+    ['diagnostic-header-lookbehind', { boundary: '(?:^|[^A-Za-z0-9_-])' }],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      headerLine(),
+      headerLine(part),
+      ['keeps every header value and label token apart from a nested header name'],
+      'SECRETS_B3_NESTED_HEADER',
+    ),
+  ),
+  // Quotes and escapes around a header token, also in JSON-encoded JSON.
+  ...[
+    [
+      'diagnostic-header-escaped-separator',
+      { separator: header.separator.replace(String.raw`\\*["']?\s*:`, String.raw`["']?\s*:`) },
+    ],
+    ['diagnostic-header-quote-run', { prefix: String.raw`(?:\\*["'])?` }],
+    [
+      'diagnostic-header-backslash-first',
+      { token: header.token.replace(String.raw`[^\s"',;}\\]`, String.raw`[^\s"',;}]`) },
+    ],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      headerLine(),
+      headerLine(part),
+      ['masks a header token after any run of quotes or escapes, also in JSON-encoded JSON'],
+      'SECRETS_B3_HEADER_ESCAPES',
+    ),
   ),
   diagnosticControl(
-    'diagnostic-header-token-not-masked',
-    headerLine(headerLabelValue),
-    headerLine(headerLabelValue.replace(notMasked, '')),
+    'diagnostic-header-escaped-stop',
+    headerLine(),
+    headerLine({
+      stop: header.stop.replace(
+        String.raw`|\\{0,15}[\s"',;}]|\\{0,15}$)`,
+        String.raw`|[\s"',;}]|$)`,
+      ),
+    }),
     [fixedPointCase],
     'SECRETS_B2_MASKED_FIXED_POINT',
   ),
-  diagnosticControl(
-    'diagnostic-bearer-token-not-label',
-    labelLine(bearerFirst, labelToken),
-    labelLine(bearerFirst, labelToken.replace(notLabel, '')),
-    [standaloneStackCase],
-    'SECRETS_B2_STACKED_LABEL',
+  // The standalone label rules: no label as a token, labels closed by a quote, glued labels.
+  ...[
+    ['diagnostic-bearer-token-not-label', bearerFirst],
+    ['diagnostic-basic-token-not-label', basicFirst],
+  ].map(([id, first]) =>
+    diagnosticControl(
+      id,
+      labelLine(first),
+      labelLine(first, { notLabel: '' }),
+      [standaloneStackCase],
+      'SECRETS_B2_STACKED_LABEL',
+    ),
   ),
   diagnosticControl(
-    'diagnostic-basic-token-not-label',
-    labelLine(basicFirst, labelToken),
-    labelLine(basicFirst, labelToken.replace(notLabel, '')),
-    [standaloneStackCase],
-    'SECRETS_B2_STACKED_LABEL',
+    'diagnostic-label-quoted-label',
+    labelLine(bearerFirst),
+    labelLine(bearerFirst, { close: String.raw`\s+` }),
+    ['masks the token after a label closed by its own quote'],
+    'SECRETS_B3_QUOTED_LABEL',
+  ),
+  ...[
+    [
+      'diagnostic-label-glued-label',
+      { notLabel: label.notLabel.replace(String.raw`[^\w\s]*`, String.raw`[\\"']*`) },
+    ],
+    [
+      'diagnostic-label-embedded-stop',
+      { stop: label.stop.replace(String.raw`(?<=[^\w])(?:${schemeLabel})[\\"']*(?:\s|$)|`, '') },
+    ],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      labelLine(bearerFirst),
+      labelLine(bearerFirst, part),
+      ['masks the token after a label glued behind punctuation or inside another token'],
+      'SECRETS_B3_GLUED_LABEL',
+    ),
+  ),
+  // Reintroducing round 2's masked-marker guard exposes a tail glued to the marker again.
+  diagnosticControl(
+    'diagnostic-label-masked-tail',
+    labelLine(bearerFirst),
+    labelLine(bearerFirst, {
+      lead: String.raw`(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))` + label.lead,
+    }),
+    ["masks a tail glued to a masked token, including the scrubber's own masks"],
+    'SECRETS_B3_MASKED_TAIL',
+  ),
+  // Masks come from the original text and are merged; each token rule masks only its token.
+  diagnosticControl(
+    'diagnostic-merged-masking',
+    mergedMasking,
+    '  return NON_QUERY_SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);',
+    ['masks the token after a label glued behind punctuation or inside another token'],
+    'SECRETS_B3_GLUED_LABEL',
   ),
   diagnosticControl(
-    'diagnostic-bearer-token-not-masked',
-    labelLine(bearerFirst, labelToken),
-    labelLine(bearerFirst, labelToken.replace(notMasked, '')),
-    [fixedPointCase],
-    'SECRETS_B2_MASKED_FIXED_POINT',
+    'diagnostic-mask-merge',
+    overlapMerge,
+    '    if (open !== undefined && false) {',
+    headerSchemeLabelCases,
+    headerSchemeLabelMarker,
   ),
   diagnosticControl(
-    'diagnostic-basic-token-not-masked',
-    labelLine(basicFirst, labelToken),
-    labelLine(basicFirst, labelToken.replace(notMasked, '')),
+    'diagnostic-token-only-mask',
+    headerTokenMask,
+    '    mask: WHOLE_MATCH,\n    joinedPattern:',
     [fixedPointCase],
     'SECRETS_B2_MASKED_FIXED_POINT',
   ),
@@ -1179,7 +1314,7 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    191,
+    LLM_SCRUB_CASES,
     contactHostCase,
     userinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: diagnosticMarker })),

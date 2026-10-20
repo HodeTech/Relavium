@@ -148,9 +148,12 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
     ...['\n', '\t'].flatMap((separator) => [
       {
         input: `Bear${separator}er opaque-header-Z29 rejected`,
-        expected: 'Bearer [REDACTED] rejected',
+        expected: `Bear${separator}er [REDACTED] rejected`,
       },
-      { input: `Bas${separator}ic dXNlcjpwYXNz rejected`, expected: 'Basic [REDACTED] rejected' },
+      {
+        input: `Bas${separator}ic dXNlcjpwYXNz rejected`,
+        expected: `Bas${separator}ic [REDACTED] rejected`,
+      },
       {
         input: `wss://ali${separator}ce:opaque@password@provider.invalid/v1`,
         expected: '[REDACTED]',
@@ -202,8 +205,8 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
     for (const label of ['Bearer', 'Basic']) {
       for (const separator of ['\n', '\t', '\n\t']) {
         for (let position = 1; position < label.length; position += 1) {
-          const input = `${label.slice(0, position)}${separator}${label.slice(position)} opaque-header-Z29`;
-          expect(scrubSecrets(input)).toBe(`${label} [REDACTED]`);
+          const split = `${label.slice(0, position)}${separator}${label.slice(position)}`;
+          expect(scrubSecrets(`${split} opaque-header-Z29`)).toBe(`${split} [REDACTED]`);
         }
       }
     }
@@ -456,12 +459,17 @@ describe('PR95 header values that begin with a Bearer/Basic label', () => {
     (name) => {
       for (const label of ['Bearer', 'Basic', 'bearer', 'BASIC']) {
         for (const [input, expected] of [
-          [`${name}:${label} ${token}`, `${name}:[REDACTED]`],
-          [`header ${name}: ${label} ${token} rejected`, `header ${name}: [REDACTED] rejected`],
-          [`${name}:\t${label}\t${token}`, `${name}:\t[REDACTED]`],
+          [`${name}:${label} ${token}`, `${name}:${label} [REDACTED]`],
+          [
+            `header ${name}: ${label} ${token} rejected`,
+            `header ${name}: ${label} [REDACTED] rejected`,
+          ],
+          [`${name}:\t${label}\t${token}`, `${name}:\t${label}\t[REDACTED]`],
+          // An opaque value after a label ends only at whitespace, so in compact JSON it fails closed
+          // to the end of the run, exactly as a standalone `"authorization":"Bearer …"` does.
           [
             `{"${name}":"${label} ${token}","ordinary":"kept"}`,
-            `{"${name}":"[REDACTED]","ordinary":"kept"}`,
+            `{"${name}":"${label} [REDACTED]"}`,
           ],
         ] as const) {
           const output = scrubSecrets(input);
@@ -476,8 +484,10 @@ describe('PR95 header values that begin with a Bearer/Basic label', () => {
     for (const label of ['Bearer', 'Basic']) {
       for (const separator of ['\n', '\t', '\n\t']) {
         for (let position = 1; position < label.length; position += 1) {
-          const input = `api-key:${label.slice(0, position)}${separator}${label.slice(position)} ${token}`;
-          headerSchemeLabel(scrubSecrets(input)).toBe('api-key:[REDACTED]');
+          const split = `${label.slice(0, position)}${separator}${label.slice(position)}`;
+          headerSchemeLabel(scrubSecrets(`api-key:${split} ${token}`)).toBe(
+            `api-key:${split} [REDACTED]`,
+          );
         }
       }
     }
@@ -485,7 +495,7 @@ describe('PR95 header values that begin with a Bearer/Basic label', () => {
 
   it('masks the next token, failing closed, when a scheme label ends the line', () => {
     headerSchemeLabel(scrubSecrets('api-key: Bearer\nrequest failed')).toBe(
-      'api-key: [REDACTED] failed',
+      'api-key: Bearer\n[REDACTED] failed',
     );
     // A bare label is no token: it stays visible rather than become the masked value.
     expect(scrubSecrets('api-key: Bearer')).toBe('api-key: Bearer');
@@ -627,13 +637,13 @@ describe('PR95 review round 1: label stacking, host bounds and masked userinfo',
 
   it('masks the token after stacked or quoted scheme labels in a header value', () => {
     for (const [input, expected] of [
-      [`api-key: Bearer Bearer ${token}`, 'api-key: [REDACTED]'],
-      [`x-api-key: Basic Bearer ${token}`, 'x-api-key: [REDACTED]'],
-      [`{"x-api-key":"Bearer Bearer ${token}"}`, '{"x-api-key":"[REDACTED]"}'],
-      [`x-goog-api-key: Bearer\nBearer ${token}`, 'x-goog-api-key: [REDACTED]'],
-      [`api-key:Bearer B\tearer ${token}`, 'api-key:[REDACTED]'],
-      [`api-key: Bearer "${token}"`, 'api-key: [REDACTED]"'],
-      [`api-key: Basic '${token}'`, "api-key: [REDACTED]'"],
+      [`api-key: Bearer Bearer ${token}`, 'api-key: Bearer Bearer [REDACTED]'],
+      [`x-api-key: Basic Bearer ${token}`, 'x-api-key: Basic Bearer [REDACTED]'],
+      [`{"x-api-key":"Bearer Bearer ${token}"}`, '{"x-api-key":"Bearer Bearer [REDACTED]"}'],
+      [`x-goog-api-key: Bearer\nBearer ${token}`, 'x-goog-api-key: Bearer\nBearer [REDACTED]'],
+      [`api-key:Bearer B\tearer ${token}`, 'api-key:Bearer B\tearer [REDACTED]'],
+      [`api-key: Bearer "${token}"`, 'api-key: Bearer "[REDACTED]"'],
+      [`api-key: Basic '${token}'`, "api-key: Basic '[REDACTED]'"],
     ] as const) {
       const output = scrubSecrets(input);
       headerSchemeLabel(output).toBe(expected);
@@ -643,9 +653,9 @@ describe('PR95 review round 1: label stacking, host bounds and masked userinfo',
 
   it('masks the token after more than one whitespace character following a scheme label', () => {
     for (const [input, expected] of [
-      [`api-key: Bearer  ${token} rejected`, 'api-key: [REDACTED] rejected'],
-      [`x-api-key:Basic \t${token}`, 'x-api-key:[REDACTED]'],
-      [`api-key:Bearer \r\n${token}`, 'api-key:[REDACTED]'],
+      [`api-key: Bearer  ${token} rejected`, 'api-key: Bearer  [REDACTED] rejected'],
+      [`x-api-key:Basic \t${token}`, 'x-api-key:Basic \t[REDACTED]'],
+      [`api-key:Bearer \r\n${token}`, 'api-key:Bearer \r\n[REDACTED]'],
     ] as const) {
       const output = scrubSecrets(input);
       headerSchemeLabel(output).toBe(expected);
@@ -662,7 +672,7 @@ describe('PR95 review round 1: label stacking, host bounds and masked userinfo',
       ],
       [`Authorization: Basic Basic ${token}`, 'Authorization: Basic Basic [REDACTED]'],
       [`Authorization: Bearer Basic ${token}`, 'Authorization: Bearer Basic [REDACTED]'],
-      [`Authorization: Bearer B\nearer ${token}`, 'Authorization: Bearer Bearer [REDACTED]'],
+      [`Authorization: Bearer B\nearer ${token}`, 'Authorization: Bearer B\nearer [REDACTED]'],
     ] as const) {
       expect(scrubSecrets(input)).toBe(expected);
     }
@@ -732,12 +742,18 @@ describe('PR95 review round 2: quoted labels, unbounded stacking and fixed point
     for (const [input, expected] of [
       [
         `request headers: {'x-api-key': '"Bearer ${token}"'}`,
-        `request headers: {'x-api-key': '[REDACTED]"'}`,
+        `request headers: {'x-api-key': '"Bearer [REDACTED]"'}`,
       ],
-      [`{"x-api-key":"Bearer \\"${token}\\""}`, '{"x-api-key":"[REDACTED]""}'],
-      [`{"x-goog-api-key":"Basic Basic \\"${token}\\""}`, '{"x-goog-api-key":"[REDACTED]""}'],
-      [`{"x-api-key":"\\\\\\"Bearer ${token}\\\\\\""}`, '{"x-api-key":"[REDACTED]""}'],
-      [`{"x-api-key":"\\"${token}\\""}`, '{"x-api-key":"[REDACTED]""}'],
+      [`{"x-api-key":"Bearer \\"${token}\\""}`, '{"x-api-key":"Bearer \\"[REDACTED]\\""}'],
+      [
+        `{"x-goog-api-key":"Basic Basic \\"${token}\\""}`,
+        '{"x-goog-api-key":"Basic Basic \\"[REDACTED]\\""}',
+      ],
+      [
+        `{"x-api-key":"\\\\\\"Bearer ${token}\\\\\\""}`,
+        '{"x-api-key":"\\\\\\"Bearer [REDACTED]\\\\\\""}',
+      ],
+      [`{"x-api-key":"\\"${token}\\""}`, '{"x-api-key":"\\"[REDACTED]\\""}'],
       // A delimiter-led token after a label: the whitespace-stripped residual probe blanks it all.
       [`api-key: Bearer ,${token}`, '[REDACTED]'],
     ] as const) {
@@ -751,7 +767,7 @@ describe('PR95 review round 2: quoted labels, unbounded stacking and fixed point
     for (let count = 1; count <= 12; count += 1) {
       const labels = Array.from({ length: count }, (_, index) => (index % 2 ? 'Basic' : 'Bearer'));
       const output = scrubSecrets(`api-key: ${labels.join(' ')} ${token}`);
-      stacked(output).toBe(count <= 8 ? 'api-key: [REDACTED]' : '[REDACTED]');
+      stacked(output).toBe(count <= 8 ? `api-key: ${labels.join(' ')} [REDACTED]` : '[REDACTED]');
     }
   });
 
@@ -793,6 +809,12 @@ describe('PR95 review round 2: quoted labels, unbounded stacking and fixed point
       '{"x-api-key":"Basic [REDACTED]"}',
       "{'api-key': 'Bearer [REDACTED]'}",
       'Authorization: Bearer "[REDACTED]"',
+      // Round 3: quoted and backslash-escaped masked tokens after a label or a header separator.
+      'x-api-key: Bearer "[REDACTED]"',
+      "x-api-key: Basic '[REDACTED]'",
+      'api-key: \\"[REDACTED]\\"',
+      'api-key: Bearer \\"[REDACTED]\\"',
+      '{"x-api-key":"Bearer \\"[REDACTED]\\""}',
     ]) {
       expect(scrubSecrets(input), 'SECRETS_B2_MASKED_FIXED_POINT').toBe(input);
     }
@@ -809,4 +831,130 @@ describe('PR95 review round 2: quoted labels, unbounded stacking and fixed point
     const upper = 'connect https://PROVIDER.INVALID:8443?contact=alice@example.invalid failed';
     expect(scrubSecrets(upper)).toBe(upper);
   });
+});
+
+describe('PR95 review round 3: merged masking, glued labels and nested headers', () => {
+  const token = ['abcdef', 'ghijkl', '123456'].join('');
+  const cases = (marker: string, pairs: readonly (readonly [string, string])[]) => {
+    for (const [input, expected] of pairs) {
+      const output = scrubSecrets(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(token) || output.includes('SECRET'), marker).toBe(false);
+      expect(scrubSecrets(output), marker).toBe(output);
+    }
+  };
+
+  it("masks a tail glued to a masked token, including the scrubber's own masks", () => {
+    cases('SECRETS_B3_MASKED_TAIL', [
+      [
+        'Authorization: Bearer sk-abcdefghijklmnopqrstuv;TENANTSECRET99',
+        'Authorization: Bearer [REDACTED]',
+      ],
+      [
+        'Authorization: Basic AIzaSyABCDEFGHIJKLMNOPQRSTUVWX,TAILSECRET',
+        'Authorization: Basic [REDACTED]',
+      ],
+      ["Authorization: Bearer [REDACTED]'TAILSECRET", 'Authorization: Bearer [REDACTED]'],
+      ['Authorization: Bearer [REDACTED]TAILSECRET', 'Authorization: Bearer [REDACTED]'],
+      [
+        '{"authorization":"Bearer sk-proj-abcdefghijklmnopqrst","api_key":"SECRETVALUE77"}',
+        '{"authorization":"Bearer [REDACTED]"}',
+      ],
+      // A header token continues through a backslash, so a marker glued to it is no fixed point.
+      ['api-key: [REDACTED]\\TAILSECRET', 'api-key: [REDACTED]'],
+      ['api-key: sk-abcdefghijklmnopqrstuv\\TAILSECRET', 'api-key: [REDACTED]'],
+    ]);
+  });
+
+  it('masks the token after a label glued behind punctuation or inside another token', () => {
+    cases('SECRETS_B3_GLUED_LABEL', [
+      [`api-key: \\"(Bearer ${token}`, 'api-key: \\"(Bearer [REDACTED]'],
+      [`x-api-key:""(Bearer ${token}`, 'x-api-key:""(Bearer [REDACTED]'],
+      [`api-key: \\"=Basic ${token}`, 'api-key: \\"=Basic [REDACTED]'],
+      [`api-key: \\"[REDACTED]Bearer ${token}`, 'api-key: \\"[REDACTED] [REDACTED]'],
+      [
+        `Authorization: Bearer Bearer (Bearer ${token}`,
+        'Authorization: Bearer Bearer (Bearer [REDACTED]',
+      ],
+      [`api-key: abc(Bearer ${token}`, 'api-key: [REDACTED] [REDACTED]'],
+      [`Bearer x"Bearer ${token}`, 'Bearer [REDACTED]"Bearer [REDACTED]'],
+      // A terminal control inside the run makes the raw and normalized views disagree: fail closed.
+      [`Bearer \u001b[0m""Bearer \n${token}`, '[REDACTED]'],
+    ]);
+  });
+
+  it('masks the token after a label closed by its own quote', () => {
+    cases('SECRETS_B3_QUOTED_LABEL', [
+      [`x-api-key: "Bearer" ${token}`, 'x-api-key: "Bearer" [REDACTED]'],
+      [`api-key: 'Bearer' ${token}`, "api-key: 'Bearer' [REDACTED]"],
+      [`{"x-api-key": "Bearer" "${token}"}`, '{"x-api-key": "Bearer" "[REDACTED]"}'],
+      [`Authorization: Bearer "Bearer" ${token}`, 'Authorization: Bearer "Bearer" [REDACTED]'],
+      [`Authorization: Bearer "Basic" ${token}`, 'Authorization: Bearer "Basic" [REDACTED]'],
+      [
+        `Authorization: Basic \\"Bearer\\" ${token}`,
+        'Authorization: Basic \\"Bearer\\" [REDACTED]',
+      ],
+    ]);
+    // A word that only begins with a label is a token; a label at the end of the text has none.
+    expect(scrubSecrets('Authorization: Basic Basicx'), 'SECRETS_B3_QUOTED_LABEL').toBe(
+      'Authorization: Basic [REDACTED]',
+    );
+    expect(scrubSecrets('Authorization: Basic Basic'), 'SECRETS_B3_QUOTED_LABEL').toBe(
+      'Authorization: Basic Basic',
+    );
+  });
+
+  it('masks a header token after any run of quotes or escapes, also in JSON-encoded JSON', () => {
+    cases('SECRETS_B3_HEADER_ESCAPES', [
+      [`x-api-key: '""${token}`, `x-api-key: '""[REDACTED]`],
+      [`{"x-api-key":"\\"\\"${token}"}`, '{"x-api-key":"\\"\\"[REDACTED]"}'],
+      [`{"x-api-key":"\\\\\\"${token}\\\\\\""}`, '{"x-api-key":"\\\\\\"[REDACTED]\\\\\\""}'],
+      [
+        `{"body":"{\\"x-api-key\\":\\"${token}\\"}"}`,
+        '{"body":"{\\"x-api-key\\":\\"[REDACTED]\\"}"}',
+      ],
+      [
+        `{"body":"{\\"x-api-key\\":\\"Bearer ${token}\\"}"}`,
+        '{"body":"{\\"x-api-key\\":\\"Bearer [REDACTED]\\"}"}',
+      ],
+    ]);
+  });
+
+  it('keeps every header value and label token apart from a nested header name', () => {
+    cases('SECRETS_B3_NESTED_HEADER', [
+      [`api-key:""api-key":${token}`, 'api-key:""api-key":[REDACTED]'],
+      [`api-key: x(api-key: ${token}`, 'api-key: [REDACTED]api-key: [REDACTED]'],
+      [`api-key:(api-key:[REDACTED]${token}`, 'api-key:[REDACTED]api-key:[REDACTED]'],
+      [`Bearer api-key: ${token}`, 'Bearer [REDACTED] [REDACTED]'],
+      [`Bearer api-key:,${token}`, 'Bearer [REDACTED]'],
+    ]);
+  });
+
+  it('treats a labels-only header value alike in every context', () => {
+    for (const input of ['api-key: Bearer Bearer', 'x api-key: Bearer Bearer', 'api-key: Basic']) {
+      expect(scrubSecrets(input), 'SECRETS_B3_LABEL_CONTEXT').toBe(input);
+    }
+    const masked = scrubSecrets('sk-proj-ABCDEFGHIJKLMNOPQRSTUV api-key: Bearer Bearer');
+    expect(masked, 'SECRETS_B3_LABEL_CONTEXT').toBe('[REDACTED] api-key: Bearer Bearer');
+    expect(scrubSecrets(masked), 'SECRETS_B3_LABEL_CONTEXT').toBe(masked);
+  });
+
+  it(
+    'keeps admitted-size escape and concatenated-label runs linear and total',
+    () => {
+      const size = 8 * 1024 * 1024 - 256 - 64;
+      const escapes = `api-key: ${'\\\\'.repeat(size)}`;
+      const quoted = `api-key: ${'"Bearer'.repeat(Math.floor(size / 7))} ${token}`;
+      const standalone = `Bearer ${'"Bearer'.repeat(Math.floor(size / 7))} ${token}`;
+      let results: string[] = [];
+      expect(() => {
+        results = [escapes, quoted, standalone].map((input) => scrubSecrets(input));
+      }, 'SECRETS_B3_ADMITTED_RUNS').not.toThrow();
+      // A run of escapes holds no token, and the token after either glued-label run is masked.
+      expect(results[0] === escapes, 'SECRETS_B3_ADMITTED_RUNS').toBe(true);
+      expect(results[1]?.includes(token), 'SECRETS_B3_ADMITTED_RUNS').toBe(false);
+      expect(results[2]?.includes(token), 'SECRETS_B3_ADMITTED_RUNS').toBe(false);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 });

@@ -129,13 +129,24 @@ message, and the backstop masks a finite set of secret **shapes**, not arbitrary
 content.
 
 - **Shapes.** OpenAI/Anthropic `sk-…` and Google `AIza…` key prefixes; a finite list of literal
-  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names; and
-  `Bearer`/`Basic` authentication values. A header value that begins with up to eight (possibly
-  quoted, escaped or LF/TAB-split) `Bearer`/`Basic` labels — a doubled `Bearer Bearer` is a
-  common misconfiguration — is masked together with the token after them, and that token may
-  itself begin with (escaped) quotes, as in a JSON-encoded value. No label rule takes another
-  label as its token, so a standalone value with any number of stacked labels masks the token
-  after the last one, and an already-masked `[REDACTED]` token stays a fixed point.
+  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names, also
+  in quoted, JSON-encoded and JSON-in-JSON (`\"x-api-key\":\"…\"`) objects; and
+  `Bearer`/`Basic` authentication values. A header value may begin with up to eight (possibly
+  quoted, escaped, punctuation-glued or LF/TAB-split) `Bearer`/`Basic` labels — a doubled
+  `Bearer Bearer` is a common misconfiguration. Its token may begin with any run of (escaped)
+  quotes and ends at a delimiter, at escapes before one, or before a nested header name, which
+  then masks its own value. A label may be closed by its own quote before its token
+  (`"Bearer" <token>`). No label takes another label as its token, even one glued behind
+  punctuation, quoted or concatenated, so a standalone value with any number of stacked labels
+  masks the token after the last one, and a label glued to a token behind a non-word character
+  masks its own token.
+- **Masking.** Every rule finds its matches in the original text, and the masked ranges of all
+  rules are merged before anything is replaced, so no rule can erase the context another rule
+  needs. A header or label rule masks only its token: the header name, the separator and any
+  labels stay visible, an LF/TAB-split label keeps its spelling, and quotes around a token stay
+  outside it. Masking a token that is already exactly `[REDACTED]` changes nothing, so a masked
+  token is a fixed point, quoted, escaped or after labels; text glued to the marker
+  (`[REDACTED];tail`) is masked with it.
 - **URL userinfo.** The `?`/`#` rule decides where userinfo ends: a raw `?` or `#` before the
   authority `@` begins public query or fragment text only when the text before it is host-shaped
   (a dotted name or IPv4, `localhost` or a bracketed IP literal, with an optional port, at most
@@ -162,16 +173,19 @@ content.
   suffix; prose that the whitespace-stripped residual probe glues to a path-less URL and a later
   `@` blanks the whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`),
   a single-label host query and an over-long host-shaped prefix are masked; a
-  `Bearer`/`Basic` label that ends a line takes the next token with it; and nine or more labels
-  after a header name, or a token that begins with `,`, `;` or `}` after a label, blank the
-  whole diagnostic.
+  `Bearer`/`Basic` label that ends a line takes the next token with it; an opaque value after a
+  label ends only at whitespace, so in compact JSON it masks to the end of the run; and nine or
+  more labels after a header name, or a token that begins with `,`, `;` or `}` after a header
+  label, blank the whole diagnostic. Whether nine or more labels with no token after them blank
+  it can depend on the character before the header name, so a second scrub of such output may
+  blank what the first kept; no token is visible either way.
 - **Limits.** Userinfo under an unlisted scheme is not masked, including driver-qualified
   spellings such as `postgresql+psycopg2://`. Opaque `Bearer`/`Basic` values, `api-key` header
   values and literal secret query values end at any whitespace, LF and TAB included, so a
   fragment after such a break stays visible, as it does after an ordinary space; a label glued to
   a quoted token without whitespace (`Bearer"<token>"`) is likewise outside the shape. Malformed URLs
-  (`https:/u:p@h`), a raw `/` inside a password and invisible characters inside a scheme are
-  outside the finite shapes.
+  (`https:/u:p@h`), a raw `/` inside a password, invisible characters inside a scheme and JSON
+  whose quotes are themselves escaped as `\u0022` are outside the finite shapes.
 
 ## No silent catches
 
