@@ -699,13 +699,13 @@ describe('PR95 review round 1: label stacking, host bounds and masked userinfo',
     'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
     () => {
       const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
-      const input = `upstream said https://${labels}a?x=1@h failed`;
+      const input = `upstream said https://${labels}a?x=1@h.example failed`;
       let output = '';
       expect(() => {
         output = scrubSecrets(input);
       }, 'SECRETS_B2_USERINFO_HOST_LENGTH').not.toThrow();
       expect(
-        output === 'upstream said https://[REDACTED]@h failed',
+        output === 'upstream said https://[REDACTED]@h.example failed',
         'SECRETS_B2_USERINFO_HOST_LENGTH',
       ).toBe(true);
     },
@@ -856,6 +856,8 @@ describe('PR95 review round 3: merged masking, glued labels and nested headers',
       ],
       ["Authorization: Bearer [REDACTED]'TAILSECRET", 'Authorization: Bearer [REDACTED]'],
       ['Authorization: Bearer [REDACTED]TAILSECRET', 'Authorization: Bearer [REDACTED]'],
+      ["Authorization: Basic [REDACTED]'TAILSECRET", 'Authorization: Basic [REDACTED]'],
+      ['Authorization: Basic [REDACTED]TAILSECRET', 'Authorization: Basic [REDACTED]'],
       [
         '{"authorization":"Bearer sk-proj-abcdefghijklmnopqrst","api_key":"SECRETVALUE77"}',
         '{"authorization":"Bearer [REDACTED]"}',
@@ -878,6 +880,9 @@ describe('PR95 review round 3: merged masking, glued labels and nested headers',
       ],
       [`api-key: abc(Bearer ${token}`, 'api-key: [REDACTED] [REDACTED]'],
       [`Bearer x"Bearer ${token}`, 'Bearer [REDACTED]"Bearer [REDACTED]'],
+      [`Authorization: Basic x(Basic ${token}`, 'Authorization: Basic [REDACTED]Basic [REDACTED]'],
+      [`Authorization: Basic (Basic ${token}`, 'Authorization: Basic (Basic [REDACTED]'],
+      [`Basic x"Basic ${token}`, 'Basic [REDACTED]"Basic [REDACTED]'],
       // A terminal control inside the run makes the raw and normalized views disagree: fail closed.
       [`Bearer \u001b[0m""Bearer \n${token}`, '[REDACTED]'],
     ]);
@@ -894,6 +899,8 @@ describe('PR95 review round 3: merged masking, glued labels and nested headers',
         `Authorization: Basic \\"Bearer\\" ${token}`,
         'Authorization: Basic \\"Bearer\\" [REDACTED]',
       ],
+      [`Authorization: "Basic" ${token}`, 'Authorization: "Basic" [REDACTED]'],
+      [`Authorization: Bearer 'Basic' ${token}`, "Authorization: Bearer 'Basic' [REDACTED]"],
     ]);
     // A word that only begins with a label is a token; a label at the end of the text has none.
     expect(scrubSecrets('Authorization: Basic Basicx'), 'SECRETS_B3_QUOTED_LABEL').toBe(
@@ -930,7 +937,7 @@ describe('PR95 review round 3: merged masking, glued labels and nested headers',
     ]);
   });
 
-  it('treats a labels-only header value alike in every context', () => {
+  it('treats a whitespace-separated labels-only header value alike in every context', () => {
     for (const input of ['api-key: Bearer Bearer', 'x api-key: Bearer Bearer', 'api-key: Basic']) {
       expect(scrubSecrets(input), 'SECRETS_B3_LABEL_CONTEXT').toBe(input);
     }
@@ -946,14 +953,275 @@ describe('PR95 review round 3: merged masking, glued labels and nested headers',
       const escapes = `api-key: ${'\\\\'.repeat(size)}`;
       const quoted = `api-key: ${'"Bearer'.repeat(Math.floor(size / 7))} ${token}`;
       const standalone = `Bearer ${'"Bearer'.repeat(Math.floor(size / 7))} ${token}`;
+      const basic = `Basic ${'"Basic'.repeat(Math.floor(size / 6))} ${token}`;
       let results: string[] = [];
       expect(() => {
-        results = [escapes, quoted, standalone].map((input) => scrubSecrets(input));
+        results = [escapes, quoted, standalone, basic].map((input) => scrubSecrets(input));
       }, 'SECRETS_B3_ADMITTED_RUNS').not.toThrow();
-      // A run of escapes holds no token, and the token after either glued-label run is masked.
+      // A run of escapes holds no token, and a glued-label run past eight labels blanks it all.
       expect(results[0] === escapes, 'SECRETS_B3_ADMITTED_RUNS').toBe(true);
-      expect(results[1]?.includes(token), 'SECRETS_B3_ADMITTED_RUNS').toBe(false);
-      expect(results[2]?.includes(token), 'SECRETS_B3_ADMITTED_RUNS').toBe(false);
+      expect(results.slice(1), 'SECRETS_B3_ADMITTED_RUNS').toEqual(Array(3).fill('[REDACTED]'));
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+});
+
+describe('PR95 review round 4: concatenated labels, ambiguous authorities and a fixed point', () => {
+  const token = ['abcdef', 'ghijkl', '123456'].join('');
+  const cases = (marker: string, pairs: readonly (readonly [string, string])[]) => {
+    for (const [input, expected] of pairs) {
+      const output = scrubSecrets(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(token) || output.includes('SECRET'), marker).toBe(false);
+      expect(scrubSecrets(output), marker).toBe(output);
+    }
+  };
+  const kept = (marker: string, inputs: readonly string[]) => {
+    for (const input of inputs) expect(scrubSecrets(input), marker).toBe(input);
+  };
+
+  it('masks the token after a concatenated label run in every context', () => {
+    cases('SECRETS_B4_CONCAT_LABEL', [
+      [
+        `Authorization: Bearer BearerBearer ${token}`,
+        'Authorization: Bearer BearerBearer [REDACTED]',
+      ],
+      [`Authorization: BearerBearer ${token}`, 'Authorization: BearerBearer [REDACTED]'],
+      [`Authorization: BasicBearer ${token}`, 'Authorization: BasicBearer [REDACTED]'],
+      [`Authorization: Bearer BasicBasic ${token}`, 'Authorization: Bearer BasicBasic [REDACTED]'],
+      [`Basic bearerbasic ${token}`, 'Basic bearerbasic [REDACTED]'],
+      [
+        `Authorization: Bearer\tBearerBearer ${token}`,
+        'Authorization: Bearer\tBearerBearer [REDACTED]',
+      ],
+      [`Authorization: B\nearerBasic ${token}`, 'Authorization: B\nearerBasic [REDACTED]'],
+      [
+        `Authorization: Bearer "BearerBearer" ${token}`,
+        'Authorization: Bearer "BearerBearer" [REDACTED]',
+      ],
+      [
+        `{"authorization":"Bearer BearerBearer ${token}"}`,
+        '{"authorization":"Bearer BearerBearer [REDACTED]"}',
+      ],
+      [`api-key: BearerBearer ${token}`, 'api-key: BearerBearer [REDACTED]'],
+      [`see api-key: BearerBearer ${token}`, 'see api-key: BearerBearer [REDACTED]'],
+      [`curl -H x-api-key: BearerBearer ${token}`, 'curl -H x-api-key: BearerBearer [REDACTED]'],
+      [`api-key: BearerBearer [REDACTED]${token}`, 'api-key: BearerBearer [REDACTED]'],
+      [`x-api-key: }Bearer BearerBearer ${token}`, 'x-api-key: }Bearer BearerBearer [REDACTED]'],
+      // A token ends before a concatenated run glued to it behind punctuation.
+      [
+        `Authorization: Bearer x(BasicBearer ${token}`,
+        'Authorization: Bearer [REDACTED]BasicBearer [REDACTED]',
+      ],
+      [
+        `Authorization: Basic x(BearerBasic ${token}`,
+        'Authorization: Basic [REDACTED]BearerBasic [REDACTED]',
+      ],
+      // A terminal control inside the header name reveals the value only once normalized.
+      [`-H X\u0007-API-KEY: BearerBearer ${token}`, '[REDACTED]'],
+    ]);
+    // A concatenated run is never a token: labels alone stay visible.
+    kept('SECRETS_B4_CONCAT_LABEL', [
+      'Authorization: Bearer BearerBearer',
+      'Authorization: Basic BasicBasic',
+      'Authorization: BearerBearer',
+      'api-key: BearerBearer',
+    ]);
+  });
+
+  it('fails closed on nine concatenated labels and keeps eight in place', () => {
+    const bound = (value: unknown) => expect(value, 'SECRETS_B4_LABEL_RUN_BOUND');
+    for (let count = 1; count <= 12; count += 1) {
+      for (const label of ['Bearer', 'Basic']) {
+        const run = label.repeat(count);
+        bound(scrubSecrets(`Authorization: Bearer ${run} ${token}`)).toBe(
+          count <= 8 ? `Authorization: Bearer ${run} [REDACTED]` : '[REDACTED]',
+        );
+        bound(scrubSecrets(`api-key: ${run} ${token}`)).toBe(
+          count <= 8 ? `api-key: ${run} [REDACTED]` : '[REDACTED]',
+        );
+      }
+    }
+    // Quotes or escapes between the labels still join them, and a run with no token fails alike.
+    for (const input of [
+      `Authorization: ${'"Bearer'.repeat(9)} ${token}`,
+      `Authorization: ${'\\"Basic'.repeat(9)} ${token}`,
+      `Authorization: Bearer ${'Basic'.repeat(9)}`,
+    ]) {
+      bound(scrubSecrets(input)).toBe('[REDACTED]');
+    }
+  });
+
+  it(
+    'keeps admitted-size label runs total, concatenated or separate',
+    () => {
+      const size = 8 * 1024 * 1024 - 256 - 64;
+      const concatenated = `Authorization: Bearer ${'Bearer'.repeat(Math.floor(size / 6))} ${token}`;
+      const separate = `Authorization: ${'Basic '.repeat(Math.floor(size / 6))}${token}`;
+      let results: string[] = [];
+      expect(() => {
+        results = [concatenated, separate].map((input) => scrubSecrets(input));
+      }, 'SECRETS_B4_LABEL_RUN_BOUND').not.toThrow();
+      expect(results[0] === '[REDACTED]', 'SECRETS_B4_LABEL_RUN_BOUND').toBe(true);
+      expect(
+        results[1]?.endsWith('Basic [REDACTED]') === true && !results[1].includes(token),
+        'SECRETS_B4_LABEL_RUN_BOUND',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it('ends a header token at a closing quote or brace', () => {
+    cases('SECRETS_B4_HEADER_STOP', [
+      [`{api-key:${token}}`, '{api-key:[REDACTED]}'],
+      [`api-key: ${token}}`, 'api-key: [REDACTED]}'],
+      [`{'api-key':'${token}'}`, "{'api-key':'[REDACTED]'}"],
+      [`{'x-api-key': '${token}', 'b': 1}`, "{'x-api-key': '[REDACTED]', 'b': 1}"],
+    ]);
+  });
+
+  it('masks a quoted standalone token after either label', () => {
+    cases('SECRETS_B4_LABEL_LEAD', [
+      [`Authorization: Bearer "${token}"`, 'Authorization: Bearer "[REDACTED]"'],
+      [`Authorization: Bearer '${token}'`, "Authorization: Bearer '[REDACTED]'"],
+      [`{"authorization":"Bearer \\"${token}\\""}`, '{"authorization":"Bearer \\"[REDACTED]\\""}'],
+      [`Authorization: Basic "${token}"`, 'Authorization: Basic "[REDACTED]"'],
+      [`Authorization: Basic '${token}'`, "Authorization: Basic '[REDACTED]'"],
+      [`{"authorization":"Basic \\"${token}\\""}`, '{"authorization":"Basic \\"[REDACTED]\\""}'],
+    ]);
+  });
+
+  it('masks the whole of a range that contains a later one', () => {
+    // A later pass re-masks a truncated range wherever its rule matches again; behind an ambiguous
+    // authority no `@` is left, so only the merged extent keeps a key's neighbour masked.
+    cases('SECRETS_B4_MERGE_EXTENT', [
+      ['https://svc?a=b@.sk-abcdefghijklmnopqrstuv.TAILSECRET', 'https://[REDACTED]'],
+      [
+        'https://svc?a=b@.AIzaSyA1234567890abcdefghijklmn.TAILSECRET failed',
+        'https://[REDACTED] failed',
+      ],
+      ['{"u":"https://svc#x@.sk-abcdefghijklmnopqrstuv.TAILSECRET"}', '{"u":"https://[REDACTED]"}'],
+      [
+        `https://user:sk-abcdefghijklmnopqrstuv:more${token}@h.example/`,
+        'https://[REDACTED]@h.example/',
+      ],
+      [`postgres://u:AIzaSyA1234567890abcdefghijklmn:${token}@db/x`, 'postgres://[REDACTED]@db/x'],
+    ]);
+  });
+
+  it('keeps the documented edges of the label and header rules', () => {
+    cases('SECRETS_B4_RULE_EDGES', [[`api-key : ${token} retry`, 'api-key : [REDACTED] retry']]);
+    // A label glued to a preceding word character is no label.
+    kept('SECRETS_B4_RULE_EDGES', [`xBearer ${token}`, `xBasic ${token}`]);
+  });
+
+  it('masks a literal query value in the same pass as every other rule', () => {
+    cases('SECRETS_B4_QUERY_MERGE', [
+      [
+        '{\\"x-api-key\\":\\"https://h.example/cb?token=abc;SECRETTAIL\\"}',
+        '{\\"x-api-key\\":\\"[REDACTED]',
+      ],
+      ['x-api-key: https://h.example/cb?token=abc;SECRETTAIL', 'x-api-key: [REDACTED]'],
+    ]);
+  });
+
+  it('masks a secret query value that holds a raw @ after a single-label host', () => {
+    for (const [input, expected, tail] of [
+      [
+        'request to https://svc?password=P@ssw0rd123 failed',
+        'request to https://[REDACTED] failed',
+        'ssw0rd123',
+      ],
+      ['https://gateway?api_key=Ab3@Zx9QrT7', 'https://[REDACTED]', 'Zx9QrT7'],
+      ['postgres://db?options=a:b&password=P@ssw0rd99', 'postgres://[REDACTED]', 'ssw0rd99'],
+      ['https://svc?token=abc@def&x=1', 'https://[REDACTED]', 'def'],
+    ] as const) {
+      const output = scrubSecrets(input);
+      expect(output, 'SECRETS_B4_AMBIGUOUS_QUERY').toBe(expected);
+      expect(output.includes(tail), 'SECRETS_B4_AMBIGUOUS_QUERY').toBe(false);
+    }
+  });
+
+  it('masks an ambiguous authority through its end unless a host follows its last @', () => {
+    cases('SECRETS_B4_AUTHORITY_REST', [
+      ['https://svc?opaque=P@SECRETTAIL1 failed', 'https://[REDACTED] failed'],
+      ['https://svc#frag@SECRETTAIL1 x', 'https://[REDACTED] x'],
+      ['{"url":"https://svc?code=ab@SECRETTAIL1","n":1}', '{"url":"https://[REDACTED]","n":1}'],
+      ['https://us?er:TOKEN@h/', 'https://[REDACTED]/'],
+    ]);
+    // A raw ?/# in a password does not hide the host it connects to.
+    for (const [input, expected] of [
+      ['https://alice:pa?ss@provider.invalid/v1', 'https://[REDACTED]@provider.invalid/v1'],
+      ['https://u:p?w@[::1]:8443/x', 'https://[REDACTED]@[::1]:8443/x'],
+      ['https://u:p?w@localhost:3000/x', 'https://[REDACTED]@localhost:3000/x'],
+    ] as const) {
+      expect(scrubSecrets(input), 'SECRETS_B4_AUTHORITY_REST').toBe(expected);
+    }
+  });
+
+  it(
+    'bounds the host test after an ambiguous authority at admitted size',
+    () => {
+      const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+      const input = `upstream said https://svc?x=1@${labels}a failed`;
+      let output = '';
+      expect(() => {
+        output = scrubSecrets(input);
+      }, 'SECRETS_B4_REST_LENGTH').not.toThrow();
+      expect(output === 'upstream said https://[REDACTED] failed', 'SECRETS_B4_REST_LENGTH').toBe(
+        true,
+      );
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it('reads a word glued before sftp as part of an sftp scheme', () => {
+    // Every whitespace-joined probe glues prose to a scheme the same way, so `to sftp://` must stay.
+    kept('SECRETS_B4_GLUED_SFTP', [
+      'statusftp://deploy@h.example',
+      'upload to sftp://deploy@files.example failed',
+    ]);
+    expect(scrubSecrets('statusftp://deploy:pw@h.example'), 'SECRETS_B4_GLUED_SFTP').toBe(
+      'statusftp://[REDACTED]@h.example',
+    );
+  });
+
+  it('reaches a fixed point, failing closed when it cannot', () => {
+    for (const [input, expected] of [
+      ['api-key: https://"@host.example', 'api-key: [REDACTED]'],
+      ['{"x-api-key":"https://\\"@h.example"}', '{"x-api-key":"[REDACTED]"}'],
+      ['x-api-key: Bearer abc"=Bearer xyz', 'x-api-key: Bearer [REDACTED] [REDACTED]'],
+      ['x-api-key: Bearer abc"(Bearer xyz12345', 'x-api-key: Bearer [REDACTED] [REDACTED]'],
+      ['api-key:Bearer S":BEAReR', 'api-key:Bearer [REDACTED]'],
+      ['x:sk-proj-abcdefghijklmnopqrst  api-key\\":\\" :', '[REDACTED]'],
+      ['&key=H X-GOOG-API-KEY:basic |BasiC', '[REDACTED]'],
+      ['http://i.b#@=\n@', '[REDACTED]'],
+      ['[REDACTED]', '[REDACTED]'],
+    ] as const) {
+      const output = scrubSecrets(input);
+      expect(output, 'SECRETS_B4_FIXED_POINT').toBe(expected);
+      expect(scrubSecrets(output), 'SECRETS_B4_FIXED_POINT').toBe(output);
+    }
+  });
+
+  it(
+    'keeps quote and escape runs after a label or header token linear at admitted size',
+    () => {
+      // Pinned by this case deadline only: a quadratic scan here still finishes, just too late.
+      const size = 8 * 1024 * 1024 - 256 - 64;
+      const quotes = '"'.repeat(size);
+      const inputs = [
+        `Bearer ${quotes}`,
+        `Basic ${quotes}`,
+        `api-key: ${token}${'\\'.repeat(size)}x`,
+      ];
+      let results: string[] = [];
+      expect(() => {
+        results = inputs.map((input) => scrubSecrets(input));
+      }, 'SECRETS_B4_ADMITTED_RUNS').not.toThrow();
+      expect(results[0] === inputs[0], 'SECRETS_B4_ADMITTED_RUNS').toBe(true);
+      expect(results[1] === inputs[1], 'SECRETS_B4_ADMITTED_RUNS').toBe(true);
+      expect(results[2] === 'api-key: [REDACTED]', 'SECRETS_B4_ADMITTED_RUNS').toBe(true);
     },
     ADMITTED_SIZE_CASE_TIMEOUT_MS,
   );

@@ -104,7 +104,7 @@ const headerName = String.raw`(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:`;
 const header = {
   boundary: String.raw`(?<![A-Za-z0-9_-])`,
   separator: String.raw`\\*["']?\s*:\s*["']?`,
-  labelRun: String.raw`(?:[^\w\s]*(?:${schemeLabel})[\\"']*\s+){0,8}`,
+  labelRun: String.raw`(?:[^\w\s]*(?:${schemeLabel})(?:[\\"']*(?:${schemeLabel})){0,7}[\\"']*\s+){0,8}`,
   notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
   prefix: String.raw`[\\"']*`,
   notNested: String.raw`(?!(?<=[^A-Za-z0-9_-])${headerName})`,
@@ -118,31 +118,51 @@ const headerLine = (part = {}) => {
     String.raw`${value.notLabel}${value.prefix}${value.notNested}${value.token}${value.stop}/dgi,`
   );
 };
-// The two standalone label rules share one tail after their label.
+// The one standalone label rule, piece by piece; its first label is either label.
 const label = {
+  first: String.raw`\b(?:${schemeLabel})`,
+  concat: String.raw`(?:[\\"']*(?:${schemeLabel})){0,7}`,
   close: String.raw`[\\"']*\s+`,
   notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
   lead: String.raw`[\\"']*`,
   token: String.raw`(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])`,
   trail: String.raw`[\\"',;}]*`,
-  stop: String.raw`(?=(?<=[^\w])(?:${schemeLabel})[\\"']*(?:\s|$)|\s|$)`,
+  stop: String.raw`(?=(?<=[^\w])(?:${schemeLabel})(?:[\\"']*(?:${schemeLabel})){0,7}[\\"']*(?:\s|$)|\s|$)`,
 };
-const labelLine = (first, part = {}) => {
+const labelLine = (part = {}) => {
   const value = { ...label, ...part };
   return (
-    String.raw`      /\b${first}${value.close}${value.notLabel}${value.lead}${value.token}` +
+    String.raw`      /${value.first}${value.concat}${value.close}${value.notLabel}${value.lead}${value.token}` +
     String.raw`${value.trail}${value.stop}/dgi,`
   );
 };
-const bearerFirst = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r`;
-const basicFirst = String.raw`B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c`;
 const mergedMasking = [
   '  return maskRanges(',
   '    text,',
-  '    NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
+  '    SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
   '  );',
 ].join('\n');
+const queryRule = (names) => String.raw`/[?&](?:${names})=(?<token>[^&\s#]+)/dgi`;
+const queryNames = String.raw`(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret`;
 const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
+const mergeExtent = '      open.end = Math.max(open.end, range.end);';
+const hostFollowsLine =
+  '  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);';
+const llmFixedPoint = [
+  '  const once = scrubOnce(text);',
+  '  if (once === text) return once;',
+  '  const twice = scrubOnce(once);',
+  '  if (twice === once) return once;',
+  '  return scrubOnce(twice) === twice ? twice : MASKED;',
+].join('\n');
+const coreFixedPoint = [
+  '  const once = redactSecretShapedOnce(text);',
+  '  if (once === text) return once;',
+  '  const twice = redactSecretShapedOnce(once);',
+  '  if (twice === once) return once;',
+  "  return redactSecretShapedOnce(twice) === twice ? twice : '[redacted]';",
+].join('\n');
+const coreSchemeCredential = String.raw`  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;`;
 const headerTokenMask = '    mask: tokenGroup,\n    joinedPattern:';
 const stackedLabelCase =
   'masks a header token after up to eight stacked labels and fails closed beyond them';
@@ -303,6 +323,8 @@ function redactJoinedCredentialSpans(
   text: string,
   visit: (joined: string, mask: SecretSpanVisitor) => void,
   boundary?: RegExp,
+  // URL userinfo owns a separator at either edge: one right after the scheme or before the @ splits it.
+  ownsEdges = false,
 ): string {
   if (!/[\n\t]/.test(text)) return text;
   const joined = text.replace(/[\n\t]+/g, '');
@@ -322,8 +344,8 @@ function redactJoinedCredentialSpans(
     return target + removed;
   }
   visit(joined, (start, end, replacement) => {
-    const originalStart = advance(start, true);
-    const originalEnd = advance(end);
+    const originalStart = advance(start, !ownsEdges);
+    const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
 const withoutCoreOriginalBoundary = coreOriginalBoundary
   .replace(
@@ -331,6 +353,8 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
     String.raw`  const candidates = /([A-Za-z])/g;`,
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+/** The complete core projection test file every core projection control runs. */
+const CORE_PROJECTION_CASES = 162;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -338,14 +362,14 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    156,
+    CORE_PROJECTION_CASES,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
   );
 }
 /** The complete scrubber test file every LLM diagnostic control runs. */
-const LLM_SCRUB_CASES = 198;
+const LLM_SCRUB_CASES = 212;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -461,8 +485,8 @@ export const mutations = [
   control(
     'query-names',
     scrubSecretsLeaf,
-    String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
-    String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
+    queryRule(queryNames),
+    queryRule(String.raw`(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret`),
     ['packages/llm/src/llm-error.test.ts'],
     98,
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
@@ -577,8 +601,14 @@ export const mutations = [
   control(
     'non-query-before-query',
     scrubSecretsLeaf,
-    '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
-    '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
+    mergedMasking,
+    [
+      '  const queried = applyRule(text, QUERY_SECRET_RULE);',
+      '  return maskRanges(',
+      '    queried,',
+      '    NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(queried, rule)),',
+      '  );',
+    ].join('\n'),
     overlapFiles,
     278,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
@@ -1046,8 +1076,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-split-scheme-label',
-    String.raw`/\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
-    String.raw`/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    coreSchemeCredential,
+    String.raw`  /\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;`,
     splitCoreHeaders,
   ),
   coreProjectionControl(
@@ -1129,22 +1159,64 @@ export const mutations = [
     'diagnostic-header-concat-bound',
     headerLine(),
     headerLine({ notLabel: header.notLabel.replace('{1,8}', '+') }),
-    ['keeps admitted-size escape and concatenated-label runs linear and total'],
-    'SECRETS_B3_ADMITTED_RUNS',
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
+  ),
+  // Round 4: a run of up to eight concatenated labels is one label, in a header value and alone.
+  diagnosticControl(
+    'diagnostic-header-concat-run',
+    headerLine(),
+    headerLine({
+      labelRun: header.labelRun.replace(String.raw`(?:[\\"']*(?:${schemeLabel})){0,7}`, ''),
+    }),
+    ['masks the token after a concatenated label run in every context'],
+    'SECRETS_B4_CONCAT_LABEL',
+  ),
+  ...[
+    ['diagnostic-label-concat-run', { concat: '' }],
+    ['diagnostic-label-concat-stop', { stop: label.stop.replace(label.concat, '') }],
+    ['diagnostic-label-concat-refusal', { notLabel: label.notLabel.replace('{1,8}', '{1}') }],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      labelLine(),
+      labelLine(part),
+      ['masks the token after a concatenated label run in every context'],
+      'SECRETS_B4_CONCAT_LABEL',
+    ),
+  ),
+  // The concatenated run is bounded; the residual of a separate-label run reaches it.
+  diagnosticControl(
+    'diagnostic-label-start-bound',
+    labelLine(),
+    labelLine({ concat: label.concat.replace('{0,7}', '*') }),
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
   ),
   diagnosticControl(
-    'diagnostic-label-concat-bound',
-    labelLine(bearerFirst),
-    labelLine(bearerFirst, { notLabel: label.notLabel.replace('{1,8}', '+') }),
-    ['keeps admitted-size escape and concatenated-label runs linear and total'],
-    'SECRETS_B3_ADMITTED_RUNS',
+    'diagnostic-label-lead',
+    labelLine(),
+    labelLine({ lead: '' }),
+    ['masks a quoted standalone token after either label'],
+    'SECRETS_B4_LABEL_LEAD',
+  ),
+  // Nine concatenated labels exceed every bounded run, so the diagnostic fails closed.
+  diagnosticControl(
+    'diagnostic-label-run-bound',
+    '  if (LABEL_RUN_PAST_BOUND.test(normalized)) return MASKED;',
+    '',
+    [
+      'fails closed on nine concatenated labels and keeps eight in place',
+      'keeps admitted-size label runs total, concatenated or separate',
+    ],
+    'SECRETS_B4_LABEL_RUN_BOUND',
   ),
   // A header token is never a label, a run of labels or a nested header name.
   diagnosticControl(
     'diagnostic-header-token-not-label',
     headerLine(),
     headerLine({ notLabel: '' }),
-    ['treats a labels-only header value alike in every context'],
+    ['treats a whitespace-separated labels-only header value alike in every context'],
     'SECRETS_B3_LABEL_CONTEXT',
   ),
   ...[
@@ -1183,6 +1255,18 @@ export const mutations = [
       'SECRETS_B3_HEADER_ESCAPES',
     ),
   ),
+  ...[
+    ['diagnostic-header-stop-brace', String.raw`[\s"',;]`],
+    ['diagnostic-header-stop-quote', String.raw`[\s",;}]`],
+  ].map(([id, stop]) =>
+    diagnosticControl(
+      id,
+      headerLine(),
+      headerLine({ stop: header.stop.replace(String.raw`[\s"',;}]`, stop) }),
+      ['ends a header token at a closing quote or brace'],
+      'SECRETS_B4_HEADER_STOP',
+    ),
+  ),
   diagnosticControl(
     'diagnostic-header-escaped-stop',
     headerLine(),
@@ -1195,23 +1279,18 @@ export const mutations = [
     [fixedPointCase],
     'SECRETS_B2_MASKED_FIXED_POINT',
   ),
-  // The standalone label rules: no label as a token, labels closed by a quote, glued labels.
-  ...[
-    ['diagnostic-bearer-token-not-label', bearerFirst],
-    ['diagnostic-basic-token-not-label', basicFirst],
-  ].map(([id, first]) =>
-    diagnosticControl(
-      id,
-      labelLine(first),
-      labelLine(first, { notLabel: '' }),
-      [standaloneStackCase],
-      'SECRETS_B2_STACKED_LABEL',
-    ),
+  // The standalone label rule: no label as a token, labels closed by a quote, glued labels.
+  diagnosticControl(
+    'diagnostic-label-token-not-label',
+    labelLine(),
+    labelLine({ notLabel: '' }),
+    [standaloneStackCase],
+    'SECRETS_B2_STACKED_LABEL',
   ),
   diagnosticControl(
     'diagnostic-label-quoted-label',
-    labelLine(bearerFirst),
-    labelLine(bearerFirst, { close: String.raw`\s+` }),
+    labelLine(),
+    labelLine({ close: String.raw`\s+` }),
     ['masks the token after a label closed by its own quote'],
     'SECRETS_B3_QUOTED_LABEL',
   ),
@@ -1222,13 +1301,18 @@ export const mutations = [
     ],
     [
       'diagnostic-label-embedded-stop',
-      { stop: label.stop.replace(String.raw`(?<=[^\w])(?:${schemeLabel})[\\"']*(?:\s|$)|`, '') },
+      {
+        stop: label.stop.replace(
+          String.raw`(?<=[^\w])(?:${schemeLabel})${label.concat}[\\"']*(?:\s|$)|`,
+          '',
+        ),
+      },
     ],
   ].map(([id, part]) =>
     diagnosticControl(
       id,
-      labelLine(bearerFirst),
-      labelLine(bearerFirst, part),
+      labelLine(),
+      labelLine(part),
       ['masks the token after a label glued behind punctuation or inside another token'],
       'SECRETS_B3_GLUED_LABEL',
     ),
@@ -1236,8 +1320,8 @@ export const mutations = [
   // Reintroducing round 2's masked-marker guard exposes a tail glued to the marker again.
   diagnosticControl(
     'diagnostic-label-masked-tail',
-    labelLine(bearerFirst),
-    labelLine(bearerFirst, {
+    labelLine(),
+    labelLine({
       lead: String.raw`(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))` + label.lead,
     }),
     ["masks a tail glued to a masked token, including the scrubber's own masks"],
@@ -1247,9 +1331,39 @@ export const mutations = [
   diagnosticControl(
     'diagnostic-merged-masking',
     mergedMasking,
-    '  return NON_QUERY_SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);',
+    '  return SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);',
     ['masks the token after a label glued behind punctuation or inside another token'],
     'SECRETS_B3_GLUED_LABEL',
+  ),
+  // Round 4: applying the query names after the merged pass loses a value a header token cut short.
+  diagnosticControl(
+    'diagnostic-query-merge',
+    mergedMasking,
+    [
+      '  return applyRule(',
+      '    maskRanges(',
+      '      text,',
+      '      NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
+      '    ),',
+      '    QUERY_SECRET_RULE,',
+      '  );',
+    ].join('\n'),
+    ['masks a literal query value in the same pass as every other rule'],
+    'SECRETS_B4_QUERY_MERGE',
+  ),
+  diagnosticControl(
+    'diagnostic-mask-merge-extent',
+    mergeExtent,
+    '      open.end = range.end;',
+    ['masks the whole of a range that contains a later one'],
+    'SECRETS_B4_MERGE_EXTENT',
+  ),
+  diagnosticControl(
+    'diagnostic-fixed-point',
+    llmFixedPoint,
+    '  return scrubOnce(text);',
+    ['reaches a fixed point, failing closed when it cannot'],
+    'SECRETS_B4_FIXED_POINT',
   ),
   diagnosticControl(
     'diagnostic-mask-merge',
@@ -1332,10 +1446,62 @@ export const mutations = [
     contactAssignment,
     String.raw`  return userinfo.includes('=', query + 1);`,
     coreProjectionCases,
-    156,
+    CORE_PROJECTION_CASES,
     contactHostCase,
     coreUserinfoContactMarker,
     rawPasswordAssignments.map((target) => ({ target, marker: coreProjectionMarker })),
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-authority-rest',
+    '  return { start, end: start + at + (hostFollows(tail) ? 0 : 1 + tail.length) };',
+    '  return { start, end: start + at };',
+    ['masks an ambiguous authority through its end unless a host follows its last @'],
+    'SECRETS_B4_AUTHORITY_REST',
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-rest-length',
+    hostFollowsLine,
+    '  return HOST_SHAPED_AUTHORITY.test(host);',
+    ['bounds the host test after an ambiguous authority at admitted size'],
+    'SECRETS_B4_REST_LENGTH',
+  ),
+  coreProjectionControl(
+    'core-userinfo-authority-rest',
+    '      if (!hostFollows(text.slice(maskEnd + 1, restEnd))) maskEnd = restEnd;',
+    '',
+    ['masks a secret query value that holds a raw @ after a single-label host'],
+    'SECRETS_B4_CORE_AUTHORITY_REST',
+  ),
+  coreProjectionControl(
+    'core-userinfo-rest-length',
+    hostFollowsLine,
+    '  return HOST_SHAPED_AUTHORITY.test(host);',
+    ['bounds the host test after an ambiguous authority at admitted size'],
+    'SECRETS_B4_CORE_REST_LENGTH',
+  ),
+  coreProjectionControl(
+    'core-scheme-url-lookahead',
+    coreSchemeCredential,
+    coreSchemeCredential.replace(String.raw`(?![\w.~+/-]*:\/\/)`, ''),
+    ['never takes a URL scheme as the token after a scheme label'],
+    'SECRETS_B4_CORE_SCHEME_TOKEN',
+  ),
+  coreProjectionControl(
+    'core-userinfo-split-edges',
+    '  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo, undefined, true);',
+    '  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);',
+    ['\n', '\t'].map(
+      (separator) =>
+        `masks URL userinfo split at either of its edges (${JSON.stringify(separator)})`,
+    ),
+    'SECRETS_B4_CORE_SPLIT_EDGE',
+  ),
+  coreProjectionControl(
+    'core-fixed-point',
+    coreFixedPoint,
+    '  return redactSecretShapedOnce(text);',
+    ['reaches a fixed point, failing closed when it cannot'],
+    'SECRETS_B4_CORE_FIXED_POINT',
   ),
   // PR95: connection-string schemes join the finite URL list.
   diagnosticControl(

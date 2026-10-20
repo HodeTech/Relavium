@@ -1257,14 +1257,84 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
 
   it('masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack', () => {
     const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
-    const input = `upstream said https://${labels}a?x=1@h failed`;
+    const input = `upstream said https://${labels}a?x=1@h.example failed`;
     let output = '';
     expect(() => {
       output = redactSecretShapedText(input);
     }, 'SECRETS_B2_CORE_USERINFO_HOST_LENGTH').not.toThrow();
     expect(
-      output === 'upstream said https://[redacted]@h failed',
+      output === 'upstream said https://[redacted]@h.example failed',
       'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
     ).toBe(true);
   }, 15_000);
+});
+
+describe('PR95 review round 4: ambiguous authorities, URL schemes after labels and split edges', () => {
+  it('masks a secret query value that holds a raw @ after a single-label host', () => {
+    for (const [input, expected, tail] of [
+      ['mysql://db?user=root&password=Adm1n@2024!secure', 'mysql://[redacted]', '2024!secure'],
+      ['https://svc?access_token=ya29@abcdefXYZ', 'https://[redacted]', 'abcdefXYZ'],
+    ] as const) {
+      const output = redactSecretShapedText(input);
+      expect(output, 'SECRETS_B4_CORE_AUTHORITY_REST').toBe(expected);
+      expect(output.includes(tail), 'SECRETS_B4_CORE_AUTHORITY_REST').toBe(false);
+    }
+    // A raw ?/# in a password does not hide the host it connects to.
+    for (const [input, expected] of [
+      ['https://alice:pa?ss@provider.invalid/v1', 'https://[redacted]@provider.invalid/v1'],
+      ['https://u:p?w@[::1]:8443/x', 'https://[redacted]@[::1]:8443/x'],
+      ['https://u:p?w@localhost:3000/x', 'https://[redacted]@localhost:3000/x'],
+    ] as const) {
+      expect(redactSecretShapedText(input), 'SECRETS_B4_CORE_AUTHORITY_REST').toBe(expected);
+    }
+  });
+
+  it('bounds the host test after an ambiguous authority at admitted size', () => {
+    const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+    const input = `upstream said https://user:pw?x=1@${labels}a failed`;
+    let output = '';
+    expect(() => {
+      output = redactSecretShapedText(input);
+    }, 'SECRETS_B4_CORE_REST_LENGTH').not.toThrow();
+    expect(
+      output === 'upstream said https://[redacted] failed',
+      'SECRETS_B4_CORE_REST_LENGTH',
+    ).toBe(true);
+  }, 15_000);
+
+  it('never takes a URL scheme as the token after a scheme label', () => {
+    for (const [input, expected] of [
+      [
+        'invalid token postgres://app:hunter2secret@db\n',
+        'invalid token postgres://[redacted]@db\n',
+      ],
+      ['invalid bearer https://app:hunter2secret@db\n', 'invalid bearer https://[redacted]@db\n'],
+      ['token postgresql://app:hunter2secret@db', 'token postgresql://[redacted]@db'],
+      ['token abcdefghijkl\n', 'token [redacted]\n'],
+    ] as const) {
+      expect(redactSecretShapedText(input), 'SECRETS_B4_CORE_SCHEME_TOKEN').toBe(expected);
+    }
+  });
+
+  it.each(['\n', '\t'])('masks URL userinfo split at either of its edges (%j)', (separator) => {
+    for (const input of [
+      `https://user:hunter2secret${separator}@host.example/x`,
+      `https://${separator}user:hunter2secret@host.example/x`,
+    ]) {
+      expect(redactSecretShapedText(input), 'SECRETS_B4_CORE_SPLIT_EDGE').toBe(
+        'https://[redacted]@host.example/x',
+      );
+    }
+  });
+
+  it('reaches a fixed point, failing closed when it cannot', () => {
+    for (const [input, expected] of [
+      ['g://s.hos#mHPGEAXXQ8@?q==a@b.exam/user:3eYPUzfxo', 'g://[redacted]'],
+      ['[redacted]', '[redacted]'],
+    ] as const) {
+      const output = redactSecretShapedText(input);
+      expect(output, 'SECRETS_B4_CORE_FIXED_POINT').toBe(expected);
+      expect(redactSecretShapedText(output), 'SECRETS_B4_CORE_FIXED_POINT').toBe(output);
+    }
+  });
 });

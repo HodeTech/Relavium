@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **92 independent controls and 462 required named assertion witnesses**.
+declares **109 independent controls and 481 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -41,10 +41,11 @@ secret suffix after an overlapping query value. The normalized-secret-probe cont
 removes the canonical `stripTerminalControls` view from the shared non-query probe;
 29 named normalized-key overlap witnesses require that view in LLM messages/codes,
 both CLI sanitizer functions, all four renderer modes and a verbose stack. The
-non-query-before-query control reverses the final composition and requires 58 named
-Bearer/Basic overlap witnesses across those same surfaces. These controls require
-each finite non-query rule to inspect its own original diagnostic views before any
-other replacement erases its evidence, followed by the finite query replacement.
+non-query-before-query control applies the literal query names before the merged
+pass and requires 58 named Bearer/Basic overlap witnesses across those same surfaces.
+These controls require each finite non-query rule to inspect its own original
+diagnostic views before any other replacement erases its evidence; the literal query
+values then join the same merged masking pass instead of following it.
 The views include the canonical terminal-normalized text and a whitespace-joined
 residual view. The split literal query name remains an independent CLI obligation.
 Across the thirteen Step 3 controls, 191 named assertion witnesses are required. The shared
@@ -177,8 +178,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 156-case bounding file; every new LLM phase
-executes the complete 198-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 162-case bounding file; every new LLM phase
+executes the complete 212-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -259,14 +260,14 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,445 cases, with each control's exact workload and named target
+complete files / 1,465 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 92-control / 276-phase full declaration projects 1,663 retained files
-(92 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+The current 109-control / 327-phase full declaration projects 1,969 retained files
+(109 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
@@ -307,6 +308,29 @@ the header's not-a-nested-header guard, nested-header stop or zero-width boundar
 escaped separator, quote-run prefix, first-character or escaped-stop rules; drop the standalone
 rules' closing-quote or glued-label guard or their embedded-label stop; or reintroduce round 2's
 masked-marker guard, which exposes a tail glued to the marker.
+
+The fourth round merged the two standalone label rules into one, whose first label is either
+label, so neither copy can drift from the other: the former Bearer and Basic not-a-label controls
+became `diagnostic-label-token-not-label`, and every label control now covers both labels. A run
+of up to eight concatenated labels (`BearerBearer`) is one label, nine blank the diagnostic, the
+literal query names join the merged pass, an ambiguous authority is masked through its end, and
+the scrubber repeats its pass to a fixed point. Nineteen controls were added: the label run, its
+embedded stop, its not-a-label refusal (`{1,8}` weakened to `{1}`), its stack bound and its
+leading quote run; the header's concatenated run and its `}`/`'` stops; the nine-label bound;
+the query merge; the merge extent; the fixed point; the ambiguous-authority extent and its host
+length bound (with core twins for the last two); and core's URL-scheme lookahead after a scheme
+label, its split-userinfo edges and its fixed point. With the merged pair, 109 controls remain:
+`diagnostic-label-concat-bound` was retired as an equivalent mutant: the label rule's not-a-label bound is reached only by nine or more
+concatenated labels, which the nine-label bound blanks first, or in the whitespace-stripped
+residual, where a label rule (which needs whitespace after the label) never matches. The header's
+bound stays controlled through the residual of a separate-label run. Edges that only change how
+much is masked, never whether a token leaks (a word-glued label is no label, whitespace before a
+header colon, a host after an ambiguous authority staying visible), are pinned by tests without a
+control, which keeps the family inside the 2,000-file export bound. Two quadratic guards (the label
+token's first-character lookahead and the header stop's bounded escape run) and the URL rule's
+`://` prefilter are output-equivalent and pinned only by the admitted-size case deadline: the
+coordinator counts a timeout as infrastructure, never as a removal's failure, so they have no
+control.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

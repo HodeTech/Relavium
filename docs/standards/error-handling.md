@@ -136,23 +136,31 @@ content.
   `Bearer Bearer` is a common misconfiguration. Its token may begin with any run of (escaped)
   quotes and ends at a delimiter, at escapes before one, or before a nested header name, which
   then masks its own value. A label may be closed by its own quote before its token
-  (`"Bearer" <token>`). No label takes another label as its token, even one glued behind
-  punctuation, quoted or concatenated, so a standalone value with any number of stacked labels
+  (`"Bearer" <token>`), and a run of up to eight concatenated labels (`BearerBearer`) counts as
+  one label. No label takes another label as its token, even one glued behind punctuation,
+  quoted or concatenated, so a standalone value with any number of separately stacked labels
   masks the token after the last one, and a label glued to a token behind a non-word character
   masks its own token.
-- **Masking.** Every rule finds its matches in the original text, and the masked ranges of all
-  rules are merged before anything is replaced, so no rule can erase the context another rule
-  needs. A header or label rule masks only its token: the header name, the separator and any
-  labels stay visible, an LF/TAB-split label keeps its spelling, and quotes around a token stay
-  outside it. Masking a token that is already exactly `[REDACTED]` changes nothing, so a masked
-  token is a fixed point, quoted, escaped or after labels; text glued to the marker
-  (`[REDACTED];tail`) is masked with it.
+- **Masking.** Every rule, the literal query names included, finds its matches in the original
+  text, and the masked ranges of all rules are merged before anything is replaced, so no rule
+  can erase the context another rule needs. A header, label or query rule masks only its token:
+  the header name, the separator, any labels and the query name stay visible, an LF/TAB-split
+  label keeps its spelling, and quotes around a token stay outside it. Masking a token that is
+  already exactly `[REDACTED]` changes nothing, so a masked token is a fixed point, quoted,
+  escaped or after labels. After a `Bearer`/`Basic` label, text glued to the marker
+  (`Bearer [REDACTED];tail`) is masked with it; a header token ends at `,`, `;` or `}`. One
+  pass can still glue a marker to the text after another rule's token, so the scrub repeats
+  until its output stops changing, at most three passes, and blanks the whole diagnostic if it
+  has not settled: a second scrub changes nothing.
 - **URL userinfo.** The `?`/`#` rule decides where userinfo ends: a raw `?` or `#` before the
   authority `@` begins public query or fragment text only when the text before it is host-shaped
   (a dotted name or IPv4, `localhost` or a bracketed IP literal, with an optional port, at most
   260 characters in all) **and** an `=` assignment follows it, as in
-  `https://host.example?contact=a@b.example`. The scheme rule then decides what is masked:
-  `http(s)`, `ws(s)` and `ftp(s)` mask any userinfo, while the connection-string schemes
+  `https://host.example?contact=a@b.example`. Masked userinfo that holds such a raw `?` or `#`
+  leaves the authority ambiguous: unless a host-shaped name follows its last `@`, the text there
+  may be the rest of a query value (`https://svc?password=P@ss`), so the mask runs through the
+  authority's end, the next `/`, whitespace, quote, `,` or `}`. The scheme rule then decides
+  what is masked: `http(s)`, `ws(s)` and `ftp(s)` mask any userinfo, while the connection-string schemes
   `postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`, `mongodb+srv`,
   `amqp`, `amqps`, `ssh`, `sftp`, `ldap`, `ldaps`, `smtp` and `smtps` mask only colon-bearing
   userinfo (`user:pass@`, `:pass@`), so a bare user such as `ssh://git@host` (or a colonless
@@ -160,32 +168,41 @@ content.
   exactly masked password under a connection-string scheme, or every part masked or empty under
   any scheme. The authored-content detector's projection of `postgres://app:{{secrets.password}}@db`
   to `postgres://app:[REDACTED]@db` is therefore a fixed point. Core's
-  journal projection applies the same `?`/`#` predicate
+  journal projection applies the same `?`/`#` predicate and ambiguous-authority extent
   ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
 - **Split and normalized forms.** Every rule except the literal query names also probes the
   terminal-normalized text; a credential revealed only by normalization masks the **whole**
   diagnostic. The key prefixes, URL
-  userinfo and the `api-key` header label are additionally probed in the LF/TAB-joined view at
+  userinfo and the exact header names are additionally probed in the LF/TAB-joined view at
   original-text boundaries, and a credential revealed only by such a split masks the whole
   diagnostic too. A `Bearer`/`Basic` label may itself be split by LF/TAB.
 - **Documented trade-offs, all failing closed.** A scheme glued to a word character is masked in
   place; an unlisted scheme ending in a listed one (`gftp://`, `jdbc:mysql://`) matches by its
   suffix; prose that the whitespace-stripped residual probe glues to a path-less URL and a later
   `@` blanks the whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`),
-  a single-label host query and an over-long host-shaped prefix are masked; a
+  a single-label host query and an over-long host-shaped prefix are masked, and so is the text
+  after the last `@` of such an ambiguous authority unless it is host-shaped; a
   `Bearer`/`Basic` label that ends a line takes the next token with it; an opaque value after a
-  label ends only at whitespace, so in compact JSON it masks to the end of the run; and nine or
-  more labels after a header name, or a token that begins with `,`, `;` or `}` after a header
-  label, blank the whole diagnostic. Whether nine or more labels with no token after them blank
-  it can depend on the character before the header name, so a second scrub of such output may
-  blank what the first kept; no token is visible either way.
+  label ends only at whitespace, so in compact JSON it masks to the end of the run; nine or more
+  concatenated labels, and a token that begins with `,`, `;` or `}` after a `Bearer`/`Basic`
+  label in a header value, blank the whole diagnostic. Past eight separate labels after a header
+  name, and in a value of labels alone glued behind punctuation (`Bearer |Bearer`), the outcome
+  depends on what precedes the header name: when its nearest non-whitespace character is a word
+  character, `-` or `_`, the diagnostic stays in place (the last label masks any token);
+  otherwise, the start of the text included, it is blanked. No token is visible either way, and
+  the output is stable under a second scrub.
 - **Limits.** Userinfo under an unlisted scheme is not masked, including driver-qualified
   spellings such as `postgresql+psycopg2://`. Opaque `Bearer`/`Basic` values, `api-key` header
   values and literal secret query values end at any whitespace, LF and TAB included, so a
   fragment after such a break stays visible, as it does after an ordinary space; a label glued to
-  a quoted token without whitespace (`Bearer"<token>"`) is likewise outside the shape. Malformed URLs
-  (`https:/u:p@h`), a raw `/` inside a password, invisible characters inside a scheme and JSON
-  whose quotes are themselves escaped as `\u0022` are outside the finite shapes.
+  a quoted token without whitespace (`Bearer"<token>"`) is likewise outside the shape, as is a
+  token after a JSON escape (`\n`, `\t`) that stands for the whitespace after a label. A word
+  glued before `sftp://` (`statusftp://user@h`) reads as `sftp`, so its colonless userinfo stays
+  visible like any `sftp` user: every whitespace-joined probe, the CLI's display residual among
+  them, glues prose to a scheme the same way, and reading it as `ftp` would blank an ordinary
+  `connect to sftp://user@host` diagnostic. Malformed URLs (`https:/u:p@h`), a raw `/` inside a
+  password, invisible characters inside a scheme and JSON whose quotes are themselves escaped as
+  `\u0022` are outside the finite shapes.
 
 ## No silent catches
 

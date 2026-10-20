@@ -159,8 +159,9 @@ const STANDALONE_CREDENTIAL_PREFIX = new RegExp(
 // a legitimate boundary or manufacture one inside a public word. The source uses the same fragments.
 const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'y');
 
+// A token is never a URL scheme: `token postgres://app:pw@db` leaves the URL to the userinfo rule.
 const SCHEME_CREDENTIAL =
-  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
+  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;
 
 type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
 
@@ -299,6 +300,8 @@ function redactJoinedCredentialSpans(
   text: string,
   visit: (joined: string, mask: SecretSpanVisitor) => void,
   boundary?: RegExp,
+  // URL userinfo owns a separator at either edge: one right after the scheme or before the @ splits it.
+  ownsEdges = false,
 ): string {
   if (!/[\n\t]/.test(text)) return text;
   const joined = text.replace(/[\n\t]+/g, '');
@@ -318,8 +321,8 @@ function redactJoinedCredentialSpans(
     return target + removed;
   }
   visit(joined, (start, end, replacement) => {
-    const originalStart = advance(start, true);
-    const originalEnd = advance(end);
+    const originalStart = advance(start, !ownsEdges);
+    const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;
     if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;
     parts.push(text.slice(copied, originalStart), replacement);
@@ -332,7 +335,7 @@ function redactJoinedCredentialSpans(
 
 function redactSplitCredentials(text: string): string {
   if (!/[\n\t]/.test(text)) return text;
-  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);
+  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo, undefined, true);
   const keys = redactJoinedCredentialSpans(
     urls,
     (joined, mask) => {
@@ -363,6 +366,17 @@ function redactSplitCredentials(text: string): string {
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
+  // One pass can change the context a later pass decides on (a masked query value can remove the
+  // authority's last `@`), so the projection repeats until it is stable within three passes and
+  // fails closed otherwise: its output is stable under another projection.
+  const once = redactSecretShapedOnce(text);
+  if (once === text) return once;
+  const twice = redactSecretShapedOnce(once);
+  if (twice === once) return once;
+  return redactSecretShapedOnce(twice) === twice ? twice : '[redacted]';
+}
+
+function redactSecretShapedOnce(text: string): string {
   const projected = redactOpaqueQueryValues(redactUrlUserinfo(redactSplitCredentials(text)))
     // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
     // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
@@ -444,8 +458,9 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
  * after an existing userinfo separator remain public. Before that separator, a raw ?/#
  * begins public query/fragment text only when the text before it is host-shaped **and** an
- * `=` assignment follows it; anything else may be a malformed username or password. This is
- * the same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
+ * `=` assignment follows it; anything else may be a malformed username or password, and unless a
+ * host-shaped name follows the last `@` such an ambiguous authority is masked through its end. This
+ * is the same predicate and extent as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
  * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
  * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
  * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
@@ -459,10 +474,20 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
 
+/** Whether an authority's text after its last `@` begins with a host, up to any query or fragment. */
+function hostFollows(rest: string): boolean {
+  const end = rest.search(/[?#]/);
+  const host = end < 0 ? rest : rest.slice(0, end);
+  // Bounded like the contact prefix, so an admitted-size run cannot exhaust the RegExp stack.
+  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);
+}
+
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
   const scheme = /[a-z][\w+.-]{0,31}:\/\//gi;
   const delimiter = /[/\s"',}\]]/g;
+  // The LLM backstop's authority rest: `]` stays inside it, so a bracketed IP host stays whole.
+  const restDelimiter = /[/\s"',}]/g;
   for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
     const start = scheme.lastIndex;
     delimiter.lastIndex = start;
@@ -480,9 +505,17 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     if (query >= 0 && isPublicQueryContact(userinfo, query)) continue;
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
-    mask(start, start + at, '[redacted]');
+    let maskEnd = start + at;
+    if (query >= 0) {
+      // A raw ?/# leaves the authority ambiguous: unless a host follows its last `@`, the text there
+      // may be the rest of a query value (`https://svc?password=P@ss`), so the mask runs through it.
+      restDelimiter.lastIndex = maskEnd + 1;
+      const restEnd = restDelimiter.exec(text)?.index ?? text.length;
+      if (!hostFollows(text.slice(maskEnd + 1, restEnd))) maskEnd = restEnd;
+    }
+    mask(start, maskEnd, '[redacted]');
     // Skip the recognized userinfo without hiding a later scheme in the public host/tail.
-    scheme.lastIndex = start + at + 1;
+    scheme.lastIndex = Math.max(maskEnd, start + at + 1);
   }
 }
 

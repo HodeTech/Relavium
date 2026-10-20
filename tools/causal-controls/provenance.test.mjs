@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 92);
+  assert.equal(secretsControls.length, 109);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    462,
+    481,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -313,7 +313,12 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-userinfo-contact-host',
       'core-userinfo-host-length',
       'core-userinfo-host-anchors',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 156]),
+      'core-userinfo-authority-rest',
+      'core-userinfo-rest-length',
+      'core-scheme-url-lookahead',
+      'core-userinfo-split-edges',
+      'core-fixed-point',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 162]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -334,7 +339,6 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-userinfo-host-anchors',
       'diagnostic-header-label-bound',
       'diagnostic-header-concat-bound',
-      'diagnostic-label-concat-bound',
       'diagnostic-header-token-not-label',
       'diagnostic-header-not-nested',
       'diagnostic-header-nested-stop',
@@ -343,8 +347,7 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-header-quote-run',
       'diagnostic-header-backslash-first',
       'diagnostic-header-escaped-stop',
-      'diagnostic-bearer-token-not-label',
-      'diagnostic-basic-token-not-label',
+      'diagnostic-label-token-not-label',
       'diagnostic-label-quoted-label',
       'diagnostic-label-glued-label',
       'diagnostic-label-embedded-stop',
@@ -352,7 +355,19 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-merged-masking',
       'diagnostic-mask-merge',
       'diagnostic-token-only-mask',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 198]),
+      // Round 4: one label rule for both labels, and each new leak or totality mechanism.
+      ...['concat-run', 'concat-stop', 'concat-refusal', 'start-bound', 'lead', 'run-bound'].map(
+        (mechanism) => `diagnostic-label-${mechanism}`,
+      ),
+      'diagnostic-header-concat-run',
+      'diagnostic-header-stop-brace',
+      'diagnostic-header-stop-quote',
+      'diagnostic-query-merge',
+      'diagnostic-mask-merge-extent',
+      'diagnostic-fixed-point',
+      'diagnostic-userinfo-authority-rest',
+      'diagnostic-userinfo-rest-length',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 212]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

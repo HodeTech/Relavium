@@ -64,8 +64,8 @@ export function sanitizeUntrustedInline(text: string): string {
  * Coarse on purpose: a boolean cannot locate the
  * span, and this function's whole posture (see {@link sanitizeUntrusted}) is that the cost of a false
  * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. This broader CLI
- * probe also checks split literal query names. The shared `scrubSecrets` separately protects its finite
- * non-query credential shapes before query masking can destroy their identifying context; it does not
+ * probe also checks split literal query names. The shared `scrubSecrets` masks its finite shapes and
+ * its literal query values in one merged pass, so no mask erases another shape's context; it does not
  * join query names or ordinary query prose.
  */
 function redactIncludingAcrossSeparators(normalized: string): string {

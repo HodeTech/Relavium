@@ -96,8 +96,12 @@ existing content-sensitive handling.
 A raw `?` or `#` before a URL authority's `@` begins public query or fragment text only when
 the text before it is host-shaped (a dotted name or IPv4, `localhost` or a bracketed IP literal,
 with an optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked.
-This is the same predicate as the [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop),
-including its 260-character bound on the host-shaped prefix. The projection otherwise differs from
+Masked userinfo that holds such a raw `?` or `#` leaves the authority ambiguous: unless a
+host-shaped name follows its last `@`, the text there may be the rest of a query value
+(`https://svc?password=P@ss`), so the mask runs through the authority's end, the next `/`,
+whitespace, quote, `,` or `}`. This is the same predicate and extent as the
+[LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop), including
+its 260-character bound on a host-shaped name. The projection otherwise differs from
 that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and `]`, so userinfo that
 contains one of them — an already-masked `[REDACTED]` password among them — is left as it is; it
 recognizes any scheme of up to 32 characters rather than a finite list; and a userinfo with no
@@ -105,7 +109,11 @@ password is kept as a vanity handle below 16 characters and masked from 16 on, u
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
-that credential. Ordinary spaces and punctuation separate public prose; the masker
+that credential. An LF or TAB right after a URL's `://` or right before its userinfo's `@`
+belongs to the split userinfo, which is masked as one span. An authentication scheme label
+never takes a URL scheme as its token: `token postgres://app:pw@db` leaves the URL to the
+userinfo rule. The projection repeats until its output stops changing, at most three passes,
+and becomes `[redacted]` if it has not settled, so projecting a projection changes nothing. Ordinary spaces and punctuation separate public prose; the masker
 does not discard the whole diagnostic because a credential appears. Supported split
 shapes are recognized **before** complete-text one-line normalization, followed by
 ordinary recognition and length clipping. This preserves multiline quoted-value
