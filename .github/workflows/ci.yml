@@ -279,15 +279,20 @@ jobs:
           retention-days: 7
 
   secrets-mutations:
-    name: Wave 2 secrets causal controls
+    name: Wave 2 secrets causal controls (shard ${{ matrix.shard }} of 2)
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # Wave 3's PR95 increment grows the cohort to 110 controls (2026-10-20): each scrubber
-    # control runs its eight-MiB-heavy file in three phases (about 24 s locally), so the job
-    # allowance matches the filesystem job's 60 minutes. Per-phase, case/hook, output and
-    # retained-evidence bounds remain unchanged (110 × 18 + 7 = 1,987 of 2,000 files);
-    # this comment does not certify execution.
+    # Wave 3's PR95 increment grows the cohort to 120 controls (2026-10-20): each scrubber
+    # control runs its eight-MiB-heavy file in three phases (about 24 s locally). One export
+    # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so two
+    # legs each run and export a disjoint round-robin half (`--shard k/2`) under the
+    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds; the allowance
+    # matches the filesystem job's 60 minutes. This comment does not certify execution.
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -304,12 +309,12 @@ jobs:
       - name: Run secrets removal and restoration controls
         env:
           RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
-        run: pnpm check:secrets-mutations
+        run: pnpm check:secrets-mutations --shard ${{ matrix.shard }}/2
       - name: Retain bounded secrets control metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wave2-secrets-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wave2-secrets-${{ matrix.shard }}-of-2-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/secrets
           if-no-files-found: warn
           retention-days: 7

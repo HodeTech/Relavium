@@ -1,22 +1,33 @@
 import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 import type { AbortSignalLike } from '@relavium/shared';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   boundForModel,
   redactInlineMedia,
   redactSecretShapedText,
+  projectSecretShapedValue,
   redactSecretShapedValue,
   utf8ByteLength,
 } from './bounding.js';
-import { toFixedPoint } from './fixed-point.js';
+import { fixedPointOf, toFixedPoint } from './fixed-point.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 // Observe the projection's bounded fixed point, retaining its actual implementation, so one case can
 // make it fail and see which value the projection fails closed with.
 vi.mock('./fixed-point.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fixed-point.js')>();
-  return { ...actual, toFixedPoint: vi.fn(actual.toFixedPoint) };
+  return {
+    ...actual,
+    fixedPointOf: vi.fn(actual.fixedPointOf),
+    toFixedPoint: vi.fn(actual.toFixedPoint),
+  };
+});
+
+// The observation must not keep every admitted-size input and projection alive for the whole file.
+afterEach(() => {
+  vi.mocked(fixedPointOf).mockClear();
+  vi.mocked(toFixedPoint).mockClear();
 });
 
 const BIG: ToolResultLimits = { maxBytes: 50_000, maxLines: 2000 };
@@ -1741,5 +1752,197 @@ describe('PR95 review round 6: one merged pass of every core rule', () => {
   it('fails closed with its own mask when the projection does not settle', () => {
     vi.mocked(toFixedPoint).mockImplementationOnce((_pass, _text, failed) => failed);
     expect(redactSecretShapedText('public text'), 'SECRETS_B6_CORE_FAIL_CLOSED').toBe('[redacted]');
+  });
+});
+
+describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued credentials', () => {
+  const projects = (marker: string, pairs: readonly (readonly [string, string, string])[]) => {
+    for (const [input, expected, secret] of pairs) {
+      const output = redactSecretShapedText(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(secret), marker).toBe(false);
+      expect(redactSecretShapedText(output), marker).toBe(output);
+    }
+  };
+
+  it("owns no text past a split userinfo's first LF or TAB", () => {
+    projects('SECRETS_B7_CORE_SPLIT_ZONE', [
+      [
+        'see https://\nDATABASE_PASSWORD=P@ssw0rd123 now',
+        'see https://[redacted] now',
+        'ssw0rd123',
+      ],
+      ['x https://\tSERVICE_TOKEN_VALUE=Adm1n@2024x', 'x https://[redacted]', '2024x'],
+      [
+        'DATABASE_URL=https://db.internal.example.com\nDB_PASSWORD=P@ssw0rd123\n',
+        'DATABASE_URL=https://[redacted]\n',
+        'ssw0rd123',
+      ],
+      [
+        'REDIS_URL=redis://cache.internal:6379\nREDIS_PASSWORD=r3d1s@Passw0rd\n',
+        'REDIS_URL=redis://[redacted]\n',
+        'Passw0rd',
+      ],
+      // A username-shaped key on the next line is no username of this URL.
+      ['see https://\nDB_PASSWORD:P@ssw0rd123 now', 'see https://[redacted] now', 'ssw0rd123'],
+      ['x https://\tSERVICE_TOKEN:Adm1n@2024x', 'x https://[redacted]', '2024x'],
+    ]);
+  });
+
+  it("reads a key in a userinfo's password or parameter position", () => {
+    projects('SECRETS_B7_CORE_USERNAME_ZONE', [
+      [
+        'jdbc:sqlserver://db.example:1433;databaseName=app;user=sa;password=P@ssw0rd2024;encrypt=true',
+        'jdbc:sqlserver://[redacted];encrypt=true',
+        'ssw0rd2024',
+      ],
+      ['https://svc;a=1;password=P@ssw0rd123', 'https://[redacted]', 'ssw0rd123'],
+      ['mysql://h.example;password=Secr3tValue@x', 'mysql://[redacted]', 'Secr3tValue'],
+      [
+        '{"content":"REDIS_URL=redis://cache.internal:6379\\nREDIS_PASSWORD=r3d1s@Passw0rd\\n"}',
+        '{"content":"REDIS_URL=redis://[redacted]"}',
+        'Passw0rd',
+      ],
+      // A colon after a raw ?/#, or before any username, marks no user.
+      ['https://password=abcdefgh?x:y@host.example/path', 'https://[redacted]', 'abcdefgh'],
+      ['https://:password=abcdefghij?x@host.example/p', 'https://[redacted]', 'abcdefghij'],
+    ]);
+  });
+
+  it('keeps the host when only the username names a secret, split after its colon or not', () => {
+    const host = (value: unknown) => expect(value, 'SECRETS_B7_CORE_USERNAME_ZONE');
+    host(
+      redactSecretShapedText(
+        'https://x-access-token:\nghp_abcdefghijklmnopqrstuvwxyz0123@github.com/o/r',
+      ),
+    ).toBe('https://[redacted]@github.com/o/r');
+    // Split inside the username, the key after the break is read and masks the host: fail-closed.
+    host(
+      redactSecretShapedText(
+        'https://x-access-\ntoken:ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/o/r',
+      ),
+    ).toBe('https://[redacted]');
+  });
+
+  it('projects exactly admitted-size quoted values without exhausting the RegExp stack', () => {
+    const size = 8 * 1024 * 1024;
+    for (const [input, expected] of [
+      [`token="${'a'.repeat(size - 7)}`, undefined],
+      [`password="${'a'.repeat(size - 11)}"`, '[redacted]'],
+      [`password='${'a'.repeat(size - 11)}'`, '[redacted]'],
+      [`{"access_token":"${'a'.repeat(size - 19)}"}`, '{"[redacted]}'],
+    ] as const) {
+      let output = '';
+      expect(() => {
+        output = redactSecretShapedText(input);
+      }, 'SECRETS_B7_CORE_QUOTED_SCAN').not.toThrow();
+      // An unclosed quote is no value: the text stays as it is.
+      expect(output === (expected ?? input), 'SECRETS_B7_CORE_QUOTED_SCAN').toBe(true);
+    }
+  }, 15_000);
+
+  it("keeps quoted values on one line and pins the key rule's names and delimiters", () => {
+    const keys = (value: unknown) => expect(value, 'SECRETS_B7_CORE_KEY_PIECES');
+    for (const input of [
+      'passwd=hunter2hunter2',
+      'access_key=hunter2hunter2',
+      'access-key: hunter2hunter2',
+      'private_key=hunter2hunter2',
+      'private-key: hunter2hunter2',
+      'api_key_id=abcdef123456',
+    ]) {
+      keys(redactSecretShapedText(input)).toBe('[redacted]');
+    }
+    keys(redactSecretShapedText('password=hunter2hunter2&next=public')).toBe(
+      '[redacted]&next=public',
+    );
+    keys(redactSecretShapedText('token=abcdefgh,next')).toBe('[redacted],next');
+    // A quoted value never crosses a line break, and a key must start within its word's first 33 characters.
+    for (const kept of [
+      'password="abc\ndef" tail',
+      "password='abc\rdef' tail",
+      `x${'y'.repeat(40)}token=listed`,
+    ]) {
+      keys(redactSecretShapedText(kept)).toBe(kept);
+    }
+  });
+
+  it('masks a run of glued fixed-length ids in one pass, split or not', async () => {
+    const ids = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBBAKIACCCCCCCCCCCCCCCCASIADDDDDDDDDDDDDDDD';
+    projects('SECRETS_B7_CORE_CHAIN', [
+      [`${ids} public tail`, `${'[redacted]'.repeat(4)} public tail`, 'DDDDDDDD'],
+      [
+        'AKIAABCDEFGHIJKLMNOPghp_AAAAAAAAAAAA\nBBBBBBBBBBBBBBBB done',
+        '[redacted][redacted] done',
+        'BBBBBBBB',
+      ],
+      [
+        'AKIAABCDEFGHIJKLMNOPsk-proj-AAAAAAAAAAAAAAAA\nBBBBBBBBBBBB done',
+        '[redacted][redacted] done',
+        'BBBBBBBB',
+      ],
+    ]);
+    const summary = await boundForModel(
+      'AKIAABCDEFGHIJKLMNOPsk-proj-AAAAAAAAAAAAAAAA\tBBBBBBBBBBBB done',
+      BIG,
+      {},
+    );
+    expect(summary.summary, 'SECRETS_B7_CORE_CHAIN').toBe('[redacted][redacted] done');
+  });
+
+  it("summarizes with the projection's fixed point before one-line normalization", async () => {
+    const result = await boundForModel(
+      'g://s.hos#mHPGE\nAXXQ8@?q==a@b.exam/user:3eYPUzfxo',
+      BIG,
+      {},
+    );
+    expect(result.summary, 'SECRETS_B7_CORE_SUMMARY').toBe('g://[redacted]@?q=[redacted]');
+  });
+
+  it('reads a value through earlier masks of every kind, in text order', () => {
+    projects('SECRETS_B6_CORE_VALUE_THROUGH_MASK', [
+      ['token=xyz?sig=AAAAAAAAAAAAAAAAAAAAAAAA;BBB#TAILSECRET', '[redacted]', 'TAILSECRET'],
+      [
+        'password=https://svc?sig=AAAAAAAAAAAAAAAAAAAAAAAAAAA&x=1@hostsecretTail',
+        '[redacted]',
+        'secretTail',
+      ],
+      [
+        'password=-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----TAIL https://u:p@h',
+        '[redacted] https://[redacted]@h',
+        'TAIL',
+      ],
+    ]);
+  });
+
+  it('keeps a scheme label and its space when its token is also a standalone credential', () => {
+    projects('SECRETS_B6_CORE_MERGE', [
+      ['Bearer sk-abcdefghijklmnopqrstuvwx', 'Bearer [redacted]', 'abcdefghij'],
+      [
+        'Authorization: Bearer sk-proj-abcdefghijklmnopqrstuvwx',
+        '[redacted] [redacted]',
+        'abcdefghij',
+      ],
+      ['token sk-abcdefghijklmnopqrstuvwx', 'token [redacted]', 'abcdefghij'],
+    ]);
+  });
+
+  it('reports whether a journal projection settled', () => {
+    const journal = (value: unknown) => expect(value, 'SECRETS_B7_CORE_JOURNAL_SETTLED');
+    const content =
+      'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBBAKIACCCCCCCCCCCCCCCCASIADDDDDDDDDDDDDDDD\nexpect(scan(x)).toBe(4)\n';
+    journal(projectSecretShapedValue({ path: 'test/fixtures/keys.txt', content })).toEqual({
+      value: {
+        path: 'test/fixtures/keys.txt',
+        content: `${'[redacted]'.repeat(4)}\nexpect(scan(x)).toBe(4)\n`,
+      },
+      settled: true,
+    });
+    // A string whose projection does not settle projects to the mask and is reported.
+    vi.mocked(fixedPointOf).mockImplementationOnce(() => undefined);
+    journal(projectSecretShapedValue('drifting text')).toEqual({
+      value: '[redacted]',
+      settled: false,
+    });
   });
 });

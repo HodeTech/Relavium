@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { toFixedPoint } from './fixed-point.js';
 import { scrubSecrets as rootScrubSecrets } from './index.js';
@@ -10,6 +10,11 @@ import { scrubSecrets } from './scrub-secrets.js';
 vi.mock('./fixed-point.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fixed-point.js')>();
   return { ...actual, toFixedPoint: vi.fn(actual.toFixedPoint) };
+});
+
+// The observation must not keep admitted-size inputs and outputs alive for the whole file.
+afterEach(() => {
+  vi.mocked(toFixedPoint).mockClear();
 });
 
 // Synthetic credentials assembled from fragments, never real provider material.
@@ -1320,6 +1325,18 @@ describe('PR95 review round 6: the label bound behind a terminal sequence, fragm
     for (const label of ['Bearer', 'Basic']) {
       for (const lead of ['Authorization: Bearer ', 'x-api-key: ', '']) {
         bound(scrubSecrets(`${lead}\u001b[${label.repeat(9)} opaqueTOKEN123`)).toBe('[REDACTED]');
+      }
+    }
+  });
+
+  it('fails closed on nine labels that only the normalized view joins', () => {
+    const bound = (value: unknown) => expect(value, 'SECRETS_B4_LABEL_RUN_BOUND');
+    // A terminal sequence normalization removes splits the raw run into four and five labels.
+    for (const label of ['Bearer', 'Basic']) {
+      for (const lead of ['Authorization: Bearer ', 'x-api-key: ', '']) {
+        bound(
+          scrubSecrets(`${lead}${label.repeat(4)}\u001b[0m${label.repeat(5)} opaqueTOKEN123`),
+        ).toBe('[REDACTED]');
       }
     }
   });

@@ -94,16 +94,21 @@ test('the actual required workflow joins both full offline controls and checks t
     assert.equal(job['continue-on-error'], undefined);
     assert.equal(job.if, undefined);
     assert.equal(job['timeout-minutes'], 60);
+    // Two legs, each running and exporting a disjoint half; neither may stop the other early.
+    assert.deepEqual(job.strategy, { 'fail-fast': false, matrix: { shard: [1, 2] } });
     assert.ok(job.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
     assert.ok(job.steps.some((step) => step.run === 'pnpm test:acceptance-tools'));
     assert.ok(job.steps.some((step) => step.with?.['node-version-file'] === '.nvmrc'));
-    const command = job.steps.find((step) => step.run === `pnpm check:${kind}-mutations`);
+    const command = job.steps.find(
+      (step) => step.run === `pnpm check:${kind}-mutations --shard \${{ matrix.shard }}/2`,
+    );
     assert.equal(command['continue-on-error'], undefined);
     assert.equal(command.if, undefined);
     assert.equal(command.env.RELAVIUM_ACCEPTANCE_EVIDENCE, '${{ runner.temp }}/wave2-acceptance');
     const artifact = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     assert.equal(artifact.if, '${{ always() }}');
     assert.equal(artifact.with.path, '${{ runner.temp }}/wave2-acceptance/secrets');
+    assert.match(artifact.with.name, /^wave2-secrets-\$\{\{ matrix\.shard \}\}-of-2-/);
     assert.equal(artifact.with['retention-days'], 7);
   }
   const filesystem = workflow.jobs['fs-mutations'];

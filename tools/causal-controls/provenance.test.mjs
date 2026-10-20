@@ -154,6 +154,21 @@ test('native child and target need same pinned child PID, parent link and depend
       assert.throws(() => assertEvaluations(candidate, { files }, target.path, graph, options));
   });
 });
+test('shards deal the declaration round-robin into disjoint, complete parts', () => {
+  const entries = ['a', 'b', 'c', 'd', 'e'].map((id) => ({
+    id,
+    before: 'old',
+    after: 'new',
+    expectedTests: 1,
+  }));
+  const ids = (args) => selectControls(entries, args).map((entry) => entry.id);
+  assert.deepEqual(ids(['--shard', '1/2']), ['a', 'c', 'e']);
+  assert.deepEqual(ids(['--shard', '2/2']), ['b', 'd']);
+  assert.deepEqual(ids(['--shard', '1/1']), ['a', 'b', 'c', 'd', 'e']);
+  for (const shard of ['0/2', '3/2', '1/6', '1/0', '01/2', '1/2/3', 'x/2', '', '-1/2'])
+    assert.throws(() => selectControls(entries, ['--shard', shard]));
+  assert.throws(() => selectControls(entries, ['--shard']));
+});
 test('unknown, ambiguous, empty and ineffective selection refuse before work', () => {
   const entry = { id: 'declared', before: 'old', after: 'new', expectedTests: 1 };
   assert.deepEqual(selectControls([entry], ['--mechanism', 'declared']), [entry]);
@@ -267,10 +282,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 110);
+  assert.equal(secretsControls.length, 120);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    491,
+    501,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -323,7 +338,16 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-key-value-through-masks',
       'core-scheme-nested-label',
       'core-mask-boundaries',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 185]),
+      // Round 7: userinfo ownership, the quoted-value scan, chaining, the summary and the journal.
+      'core-userinfo-username-zone',
+      'core-split-zone-cap',
+      'core-quoted-value-scan',
+      'core-standalone-chain',
+      'core-glued-span-boundary',
+      'core-summary-fixed-point',
+      'core-journal-settled',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 195]),
+    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 112],
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -370,7 +394,9 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-userinfo-authority-rest',
       'diagnostic-userinfo-rest-length',
       'diagnostic-url-split-retry',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 218]),
+      'diagnostic-label-run-normalized',
+      'diagnostic-label-run-raw',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 219]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

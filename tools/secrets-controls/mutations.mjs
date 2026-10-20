@@ -150,6 +150,8 @@ const hostFollowsLine =
   '  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);';
 const llmFixedPoint = '  return toFixedPoint(scrubOnce, text, MASKED);';
 const coreFixedPoint = "  return toFixedPoint(redactSecretShapedOnce, text, '[redacted]');";
+const coreUserinfoZone =
+  '    const ownsUntil = colon >= 0 && (query < 0 || colon < query) ? colon : 0;';
 const headerTokenMask = '    mask: tokenGroup,\n    joinedPattern:';
 const stackedLabelCase =
   'masks a header token after up to eight stacked labels and fails closed beyond them';
@@ -252,6 +254,16 @@ const coreOriginalBoundary = String.raw`  const candidates = /(^|[^\w])([A-Za-z]
     if (match === null) continue;
     matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
     mask(start, matchedUntil, '[redacted]');
+    // A credential glued to the end of this one starts one of its own, as after an applied mask, so a
+    // run of fixed-length ids (AKIA…ASIA…) is masked whole in one pass.
+    for (let glued = matchedUntil; /[A-Za-z]/.test(joined[glued] ?? ''); glued = matchedUntil) {
+      JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+      if (!JOINED_STANDALONE_CREDENTIAL.test(preview(glued))) break;
+      JOINED_STANDALONE_CREDENTIAL.lastIndex = glued;
+      if (JOINED_STANDALONE_CREDENTIAL.exec(joined) === null) break;
+      matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+      mask(glued, matchedUntil, '[redacted]');
+    }
   }
 }
 
@@ -318,21 +330,26 @@ function visitSplitSpans(
     }
     return target + removed;
   }
+  let previousEnd = -1;
   visit(joined, (start, end, replacement, url) => {
     // A separator right before a URL's scheme is outside the URL, so it splits nothing.
     const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
     const originalStart = advance(start, !ownsEdges);
     const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
     const originalEnd = advance(end, ownsEdges);
-    if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
+    // A span that starts where the visitor's previous one ended is glued to a credential, which bounds
+    // it as an applied mask would.
+    const glued = originalStart === previousEnd;
+    previousEnd = originalEnd;
+    if (!glued && boundary?.test(text[originalStart - 1] ?? '')) return;`;
 const withoutCoreOriginalBoundary = coreOriginalBoundary
   .replace(
     String.raw`  const candidates = /(^|[^\w])([A-Za-z])/g;`,
     String.raw`  const candidates = /([A-Za-z])/g;`,
   )
-  .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+  .replace("    if (!glued && boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 185;
+const CORE_PROJECTION_CASES = 195;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -346,8 +363,10 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     targets.slice(1).map((target) => ({ target, marker })),
   );
 }
+/** The complete registry test file the journal-identity control runs. */
+const REGISTRY_CASES = 112;
 /** The complete scrubber test file every LLM diagnostic control runs. */
-const LLM_SCRUB_CASES = 218;
+const LLM_SCRUB_CASES = 219;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -1177,7 +1196,28 @@ export const mutations = [
     ['masks a quoted standalone token after either label'],
     'SECRETS_B4_LABEL_LEAD',
   ),
-  // Nine concatenated labels exceed every bounded run, so the diagnostic fails closed.
+  // Nine concatenated labels exceed every bounded run, so the diagnostic fails closed, read in the
+  // normalized view and in the raw text alike (round 7: each half has its own control).
+  ...[
+    [
+      'diagnostic-label-run-normalized',
+      '  if (LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
+      'fails closed on nine labels that only the normalized view joins',
+    ],
+    [
+      'diagnostic-label-run-raw',
+      '  if (LABEL_RUN_PAST_BOUND.test(normalized)) return MASKED;',
+      'fails closed on nine labels behind a terminal sequence',
+    ],
+  ].map(([id, after, target]) =>
+    diagnosticControl(
+      id,
+      '  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
+      after,
+      [target],
+      'SECRETS_B4_LABEL_RUN_BOUND',
+    ),
+  ),
   diagnosticControl(
     'diagnostic-label-run-bound',
     '  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
@@ -1446,7 +1486,7 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-userinfo-query-zone',
-    '    const ownsUntil = query < 0 ? at : colon >= 0 && colon < query ? query : 0;',
+    coreUserinfoZone,
     '    const ownsUntil = at;',
     [
       'masks an ambiguous userinfo with the query values its later rules would mask whole',
@@ -1507,6 +1547,70 @@ export const mutations = [
         `masks URL userinfo split at either of its edges (${JSON.stringify(separator)})`,
     ),
     'SECRETS_B4_CORE_SPLIT_EDGE',
+  ),
+  // Round 7: only a username owns its userinfo's text, and none past an LF or TAB; quoted values are
+  // scanned without a RegExp repeat; glued credentials chain; the summary uses the projection's fixed
+  // point; and an effect whose journal projection never settles is refused before it is prepared.
+  coreProjectionControl(
+    'core-userinfo-username-zone',
+    coreUserinfoZone,
+    '    const ownsUntil = query < 0 ? at : colon >= 0 && colon < query ? query : 0;',
+    ["reads a key in a userinfo's password or parameter position"],
+    'SECRETS_B7_CORE_USERNAME_ZONE',
+  ),
+  coreProjectionControl(
+    'core-split-zone-cap',
+    '        : { schemeStart, ownsUntil: split < 0 ? ownsUntil : originalStart + split },',
+    '        : { schemeStart, ownsUntil },',
+    ["owns no text past a split userinfo's first LF or TAB"],
+    'SECRETS_B7_CORE_SPLIT_ZONE',
+  ),
+  coreProjectionControl(
+    'core-quoted-value-scan',
+    '      const end = quotedValueEnd(values, valueStart);',
+    String.raw`      const quoted = quote === '"' ? /"(?:[^"\\\r\n]|\\[^\r\n])*"/y : /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
+      quoted.lastIndex = valueStart;
+      const end = quoted.test(values) ? quoted.lastIndex : -1;`,
+    ['projects exactly admitted-size quoted values without exhausting the RegExp stack'],
+    'SECRETS_B7_CORE_QUOTED_SCAN',
+  ),
+  coreProjectionControl(
+    'core-standalone-chain',
+    "    for (let glued = matchedUntil; /[A-Za-z]/.test(joined[glued] ?? ''); glued = matchedUntil) {",
+    '    for (let glued = matchedUntil; false; glued = matchedUntil) {',
+    ['masks a run of glued fixed-length ids in one pass, split or not'],
+    'SECRETS_B7_CORE_CHAIN',
+  ),
+  coreProjectionControl(
+    'core-glued-span-boundary',
+    '    const glued = originalStart === previousEnd;',
+    '    const glued = false;',
+    ['masks a run of glued fixed-length ids in one pass, split or not'],
+    'SECRETS_B7_CORE_CHAIN',
+  ),
+  coreProjectionControl(
+    'core-summary-fixed-point',
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedText(text) : text;`,
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedOnce(text) : text;`,
+    ["summarizes with the projection's fixed point before one-line normalization"],
+    'SECRETS_B7_CORE_SUMMARY',
+  ),
+  coreProjectionControl(
+    'core-journal-settled',
+    '    settled = false;',
+    '',
+    ['reports whether a journal projection settled'],
+    'SECRETS_B7_CORE_JOURNAL_SETTLED',
+  ),
+  control(
+    'core-unsettled-refusal',
+    'packages/core/src/tools/registry.ts',
+    '  if (journal.unsettled.length > 0) {',
+    '  if (false) {',
+    ['packages/core/src/tools/registry.test.ts'],
+    REGISTRY_CASES,
+    'refuses a tiered effect whose journal projection does not settle, before preparing it',
+    'SECRETS_B7_CORE_UNSETTLED_REFUSAL',
   ),
   coreProjectionControl(
     'core-fixed-point',

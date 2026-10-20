@@ -169,8 +169,9 @@ content.
   any scheme; an empty password, or text glued after a masked one, is still masked. The
   authored-content detector's projection of `postgres://app:{{secrets.password}}@db` to
   `postgres://app:[REDACTED]@db` is therefore a fixed point. Core's journal projection applies the
-  same `?`/`#` predicate and also merges its rules' ranges, but masks an ambiguous userinfo together
-  with the query values in it, each to its own end, rather than through the authority's end
+  same `?`/`#` predicate and also merges its rules' ranges, but masks a userinfo together with the
+  values of the keys and query parameters in it, its username's excepted, each to its own end,
+  rather than through the authority's end
   ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
 - **Split and normalized forms.** Every rule except the literal query names also probes the
   terminal-normalized text; a credential revealed only by normalization masks the **whole**
@@ -211,9 +212,15 @@ content.
   whose quotes are themselves escaped as `\u0022` are outside the finite shapes. In a JSON-encoded
   diagnostic, an escape written as two characters (`\n`, `\t`, `\r`) and glued before a key prefix,
   a header name or a label defeats that shape's word boundary, so the credential after it stays
-  visible (`"key rejected:\nsk-…"`); core's journal projection shares this limit. A header value
+  visible (`"key rejected:\nsk-…"`). Core's journal projection shares this limit for key prefixes
+  and scheme labels; its key/value rule's word-character prefix still reads a header or secret-key
+  name glued after such an escape (`"err:\napi-key: …"`) and masks the value with it. A header value
   that begins with `,`, `;` or `}` and has no label before it is an empty token, so the text after
-  it stays visible.
+  it stays visible. The backstop has no generic key/value rule: a secret key inside a URL authority
+  whose value holds `@` — after `;` (`https://svc;a=1;password=P@ss…`), after `&` unless it is one
+  of the literal secret query names, or on the next line of a JSON-encoded file whose break is the
+  escape `\n` — leaves its value's text after the last `@` visible as the host. Core's key/value
+  rule reads that key and masks its value.
 
 ## No silent catches
 

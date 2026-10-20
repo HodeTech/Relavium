@@ -19,6 +19,7 @@ import {
 
 import {
   boundForModel,
+  projectSecretShapedValue,
   redactInlineMedia,
   redactSecretShapedText,
   redactSecretShapedValue,
@@ -338,13 +339,23 @@ async function prepareEffect(
   effective: Readonly<Record<string, unknown>>,
   ctx: ToolDispatchContext,
 ): Promise<EffectPrepareVerdict> {
-  try {
-    const args = [
-      ctx.effectSlot,
+  const journal = projectInput(def, effective, ctx.secretArgKeys, 'journal');
+  if (journal.unsettled.length > 0) {
+    // A value whose redacted projection never settles projects to `[redacted]`, which any other such
+    // value shares: its digest could replay one call's result for a different call (§4), so the
+    // effect is refused before anything is journaled. The model can correct the argument. An open
+    // schema lets the model choose an argument's name, so the names are masked like any other text.
+    const fields = [...new Set(journal.unsettled.map(redactSecretShapedText))];
+    throw new ToolArgsInvalidError(
       def.id,
-      tier,
-      sanitizeInput(def, effective, ctx.secretArgKeys, 'journal'),
-    ] as const;
+      fields,
+      `tool \`${def.id}\`: credential-shaped text in ${fields.join(
+        ', ',
+      )} has no stable redacted form, so this effect cannot be given a journal identity`,
+    );
+  }
+  try {
+    const args = [ctx.effectSlot, def.id, tier, journal.input] as const;
     return await (ctx.effectAttempt === undefined
       ? ctx.effects.prepare(...args)
       : ctx.effects.prepare(...args, undefined, ctx.effectAttempt));
@@ -1061,6 +1072,19 @@ function sanitizeInput(
   secretArgKeys: ReadonlySet<string> | undefined,
   purpose: 'display' | 'journal',
 ): Readonly<Record<string, unknown>> {
+  return projectInput(def, effective, secretArgKeys, purpose).input;
+}
+
+/**
+ * `sanitizeInput`'s projection, with the top-level arguments whose journal projection did not settle
+ * (always none for the display projection, which needs no identity).
+ */
+function projectInput(
+  def: ToolDef,
+  effective: Readonly<Record<string, unknown>>,
+  secretArgKeys: ReadonlySet<string> | undefined,
+  purpose: 'display' | 'journal',
+): { readonly input: Readonly<Record<string, unknown>>; readonly unsettled: readonly string[] } {
   const out: Record<string, unknown> = { ...effective };
   for (const key of def.configOnlyParams ?? []) {
     delete out[key];
@@ -1094,12 +1118,27 @@ function sanitizeInput(
   // A display preview may omit a tail; the journal's collision guard may not. Both still exclude
   // declared secrets and credential/media-shaped values BEFORE the host computes its digest.
   // Recognition needs the complete value: clipping may remove a quote or URL authority separator.
-  const walked = redactSecretShapedValue(redactInlineMedia(out));
+  const media = redactInlineMedia(out);
+  const journal = purpose === 'journal' ? projectSecretShapedValue(media) : undefined;
+  const walked = journal === undefined ? redactSecretShapedValue(media) : journal.value;
   const projection = purpose === 'display' ? boundArgsForDisplay(walked) : walked;
+  // Name the arguments that did not settle (the walk itself reports only that one did not).
+  const unsettled =
+    journal === undefined || journal.settled || !isPlainRecord(media)
+      ? []
+      : Object.keys(media)
+          .filter((key) => !projectSecretShapedValue({ [key]: media[key] }).settled)
+          .toSorted(byCodeUnit);
   // The walk preserves plain-object shape, so this is the same record with scrubbed members; the guard is
   // a boundary check rather than a cast, and the fallback can only be reached if the walk ever stops
   // returning an object for an object input.
-  return isPlainRecord(projection) ? projection : out;
+  return {
+    input: isPlainRecord(projection) ? projection : out,
+    unsettled:
+      journal?.settled === false && unsettled.length === 0
+        ? Object.keys(out).toSorted(byCodeUnit)
+        : unsettled,
+  };
 }
 
 /**

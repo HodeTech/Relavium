@@ -23,7 +23,7 @@ import { utf8ByteLength } from '@relavium/shared';
 // while the IMPLEMENTATION lives in `@relavium/shared` — see its header for why it moved.
 export { utf8ByteLength };
 
-import { toFixedPoint } from './fixed-point.js';
+import { fixedPointOf, toFixedPoint } from './fixed-point.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 export interface BoundedResult {
@@ -171,12 +171,6 @@ const SCHEME_CREDENTIAL =
 // `visitSecretKeyValues`.
 const SECRET_KEY =
   /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*/gi;
-// A QUOTED value ends at the first UNESCAPED matching quote, including JSON's escaped quotes/backslashes;
-// otherwise a valid password such as `a\"secret-tail` left its tail exposed. The two alternatives inside
-// each repetition are disjoint: a backslash consumes exactly the following non-newline character, while
-// the ordinary class excludes it. No ambiguous nested repetition/backref is needed.
-const DOUBLE_QUOTED_VALUE = /"(?:[^"\\\r\n]|\\[^\r\n])*"/y;
-const SINGLE_QUOTED_VALUE = /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
 
 /**
  * One recognized span of the projection's input and the text that replaces it. Every rule reports
@@ -194,7 +188,7 @@ interface SecretRange {
  * A URL userinfo's context. `schemeStart` is where its identifying prefix starts: a removed LF/TAB
  * anywhere from there on splits the credential, so a separator inside `scheme://` counts even though
  * only the userinfo is replaced. Up to `ownsUntil` the userinfo owns its text: a key or query
- * parameter there names a username or password, not a credential of its own.
+ * parameter there names the user, not a credential of its own.
  */
 interface UrlUserinfo {
   readonly schemeStart: number;
@@ -286,6 +280,16 @@ function visitJoinedStandaloneCredentials(
     if (match === null) continue;
     matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
     mask(start, matchedUntil, '[redacted]');
+    // A credential glued to the end of this one starts one of its own, as after an applied mask, so a
+    // run of fixed-length ids (AKIA…ASIA…) is masked whole in one pass.
+    for (let glued = matchedUntil; /[A-Za-z]/.test(joined[glued] ?? ''); glued = matchedUntil) {
+      JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+      if (!JOINED_STANDALONE_CREDENTIAL.test(preview(glued))) break;
+      JOINED_STANDALONE_CREDENTIAL.lastIndex = glued;
+      if (JOINED_STANDALONE_CREDENTIAL.exec(joined) === null) break;
+      matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+      mask(glued, matchedUntil, '[redacted]');
+    }
   }
 }
 
@@ -352,19 +356,30 @@ function visitSplitSpans(
     }
     return target + removed;
   }
+  let previousEnd = -1;
   visit(joined, (start, end, replacement, url) => {
     // A separator right before a URL's scheme is outside the URL, so it splits nothing.
     const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
     const originalStart = advance(start, !ownsEdges);
     const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
     const originalEnd = advance(end, ownsEdges);
-    if (boundary?.test(text[originalStart - 1] ?? '')) return;
+    // A span that starts where the visitor's previous one ended is glued to a credential, which bounds
+    // it as an applied mask would.
+    const glued = originalStart === previousEnd;
+    previousEnd = originalEnd;
+    if (!glued && boundary?.test(text[originalStart - 1] ?? '')) return;
     if (!/[\n\t]/.test(text.slice(schemeStart ?? originalStart, originalEnd))) return;
+    // A split userinfo owns nothing past its first removed separator: the next line may hold a key
+    // of its own (`https://\nDB_PASSWORD=P@ss`).
+    const split =
+      ownsUntil === undefined ? -1 : text.slice(originalStart, ownsUntil).search(/[\n\t]/);
     report(
       originalStart,
       originalEnd,
       replacement,
-      schemeStart === undefined || ownsUntil === undefined ? undefined : { schemeStart, ownsUntil },
+      schemeStart === undefined || ownsUntil === undefined
+        ? undefined
+        : { schemeStart, ownsUntil: split < 0 ? ownsUntil : originalStart + split },
     );
   });
 }
@@ -395,7 +410,8 @@ function afterMasks(text: string, ranges: readonly SecretRange[]): string {
  * starts at a word boundary, and a credential or a PEM block right before it is one (`afterMasks`).
  */
 function joinSplitHeaderLabels(text: string): string {
-  if (!/[\n\t]/.test(text)) return text;
+  // A label ends in ':' (visitJoinedHeaderLabels) and no fill adds one, so a text without one has none.
+  if (!/[\n\t]/.test(text) || !text.includes(':')) return text;
   const masks: SecretRange[] = [];
   const mask: SecretSpanVisitor = (start, end, replacement) => {
     masks.push({ start, end, replacement });
@@ -615,9 +631,31 @@ function visitSchemeCredentials(text: string, mask: SecretSpanVisitor): void {
 }
 
 /**
+ * Where the quoted value that opens at `start` ends, or -1 when it does not close: just past the
+ * first UNESCAPED matching quote, including JSON's escaped quotes/backslashes (otherwise a valid
+ * password such as `a\"secret-tail` left its tail exposed), and never across a CR or LF. A backslash
+ * consumes exactly the next character. A plain scan, because a RegExp repeat over the value keeps
+ * backtracking state per character and exhausts V8's stack on an admitted-size value.
+ */
+function quotedValueEnd(text: string, start: number): number {
+  const quote = text[start];
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === quote) return index + 1;
+    if (char === '\r' || char === '\n') return -1;
+    if (char === '\\') {
+      const next = text[index + 1];
+      if (next === undefined || next === '\r' || next === '\n') return -1;
+      index += 1;
+    }
+  }
+  return -1;
+}
+
+/**
  * A secret-ish key (`SECRET_KEY`) and its value: a whole quoted string, or an unquoted run of at least
  * six characters up to whitespace, a quote, `,`, `;` or `&`. Keys are read in `keys`, which hides each
- * URL userinfo's own text: a key there names its username or password
+ * URL userinfo's username (`UrlUserinfo.ownsUntil`): a key there names the user
  * (`https://x-access-token:<t>@github.com/o/r`), and its value would run on through the public host and
  * path. Values are read in `values`, where every earlier mask is one run, as an applied mask would be.
  * The key scan resumes at each value rather than after it, so a key inside a value is read too:
@@ -633,9 +671,8 @@ function visitSecretKeyValues(keys: string, values: string, mask: SecretSpanVisi
     const valueStart = key.lastIndex;
     const quote = values[valueStart];
     if (quote === '"' || quote === "'") {
-      const quoted = quote === '"' ? DOUBLE_QUOTED_VALUE : SINGLE_QUOTED_VALUE;
-      quoted.lastIndex = valueStart;
-      if (quoted.test(values)) mask(match.index, quoted.lastIndex, '[redacted]');
+      const end = quotedValueEnd(values, valueStart);
+      if (end >= 0) mask(match.index, end, '[redacted]');
       continue;
     }
     if (delimiterAt < valueStart) {
@@ -662,9 +699,9 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * `=` assignment follows it; anything else may be a malformed username or password. This is the
  * same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`). For such an
  * ambiguous userinfo the backstop masks through the authority's end unless a host-shaped name follows
- * its last `@`. This projection masks the userinfo and reads the keys and parameters in it from the
- * raw ?/# on, or all of them when no `user:password` comes first; their values keep their own extent
- * and the rules' ranges merge (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
+ * its last `@`. This projection masks the userinfo and reads every key and parameter in it but its
+ * username's; their values keep their own extent and the rules' ranges merge
+ * (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
  * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
  * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
  * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
@@ -699,10 +736,11 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     if (query >= 0 && isPublicQueryContact(userinfo, query)) continue;
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
-    // A raw ?/# leaves the authority ambiguous: from there on the userinfo may also be a query
-    // another rule reads (`https://gateway?password=P@ss.word1`). A `user:password` before it owns
-    // its text; with no colon there, nothing marks a username, so the userinfo owns none of it.
-    const ownsUntil = query < 0 ? at : colon >= 0 && colon < query ? query : 0;
+    // Only a username owns its text: the part before the first ':' when no raw ?/# comes first. A key
+    // there names the user (`https://x-access-token:<t>@github.com/o/r` keeps its host). A key in the
+    // password, after a raw ?/# or in a userinfo with no username is read by the key/value and
+    // opaque-query rules, which mask its value to its own end (`jdbc:…;password=P@ss;…`).
+    const ownsUntil = colon >= 0 && (query < 0 || colon < query) ? colon : 0;
     mask(start, start + at, '[redacted]', {
       schemeStart: match.index,
       ownsUntil: start + ownsUntil,
@@ -721,8 +759,31 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
  * position is redacted, closing that leak path too). Cycle-safe; model/dispatch values stay unchanged.
  */
 export function redactSecretShapedValue(value: unknown): unknown {
-  return redactSecretShapedWalk(value, new WeakSet<object>());
+  return redactSecretShapedWalk(value, new WeakSet<object>(), redactSecretShapedText);
 }
+
+/**
+ * The journal projection of a tool's arguments (`redactSecretShapedValue`) and whether every string in it
+ * settled. A string whose projection still changes on its third pass becomes `[redacted]`, which would give
+ * different calls one journal identity, so the registry refuses such an effect before it is prepared
+ * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §11).
+ */
+export function projectSecretShapedValue(value: unknown): {
+  readonly value: unknown;
+  readonly settled: boolean;
+} {
+  let settled = true;
+  const projected = redactSecretShapedWalk(value, new WeakSet<object>(), (text) => {
+    const fixed = fixedPointOf(redactSecretShapedOnce, text);
+    if (fixed !== undefined) return fixed;
+    settled = false;
+    return '[redacted]';
+  });
+  return { value: projected, settled };
+}
+
+/** How the walk projects each string: the display projection, or the journal's settle-checking one. */
+type TextProjection = (text: string) => string;
 
 /**
  * Does this OBJECT KEY name a secret? The same keyword alternation the `key=value` text rule uses, anchored
@@ -805,7 +866,11 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
  * FOLLOWING a secret-ish flag is redacted; the flag itself is kept, because which flag was passed is
  * diagnostic and is not the secret.
  */
-function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unknown[] {
+function redactArgVector(
+  items: readonly unknown[],
+  seen: WeakSet<object>,
+  project: TextProjection,
+): unknown[] {
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
@@ -824,7 +889,7 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
       }
       if (isSecretishFlag(item)) redactNext = item;
     }
-    out.push(redactSecretShapedWalk(item, seen));
+    out.push(redactSecretShapedWalk(item, seen, project));
   }
   return out;
 }
@@ -874,9 +939,14 @@ function looksLikePort(value: string): boolean {
  * remaining text is public. Do not traverse a credential container or carry any partially scrubbed value
  * into the journal. Only an anchored, known auth scheme may survive as a fixed diagnostic label.
  */
-function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unknown {
+function redactUnderKey(
+  key: string,
+  item: unknown,
+  seen: WeakSet<object>,
+  project: TextProjection,
+): unknown {
   if (!isSecretishKey(key) || item === null || item === undefined)
-    return redactSecretShapedWalk(item, seen);
+    return redactSecretShapedWalk(item, seen, project);
   if (typeof item === 'string') {
     // Match only the bounded label and the start of a nonempty remainder, never return that remainder.
     // Canonical labels also keep caller-controlled casing out of the credential projection.
@@ -893,13 +963,17 @@ function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unkn
   return '[redacted]';
 }
 
-function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
-  if (typeof value === 'string') return redactSecretShapedText(value);
+function redactSecretShapedWalk(
+  value: unknown,
+  seen: WeakSet<object>,
+  project: TextProjection,
+): unknown {
+  if (typeof value === 'string') return project(value);
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
   try {
-    if (Array.isArray(value)) return redactArgVector(value, seen);
+    if (Array.isArray(value)) return redactArgVector(value, seen, project);
     if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
     const out: Record<string, unknown> = {};
     // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
@@ -909,8 +983,8 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
       // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
       // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
       // field does not become a phantom `[redacted]` in a diagnostic.
-      Object.defineProperty(out, redactSecretShapedText(key), {
-        value: redactUnderKey(key, item, seen),
+      Object.defineProperty(out, project(key), {
+        value: redactUnderKey(key, item, seen, project),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -948,7 +1022,7 @@ function toText(result: unknown): string {
 function makeSummary(text: string): string {
   // Recognize LF/TAB-split shapes in the complete materialized text before one-line normalization. Clip only after recognition: a closing quote or URL
   // authority separator can be beyond the preview. Raw model/spill text stays unchanged.
-  const recognized = /[\n\t]/.test(text) ? redactSecretShapedOnce(text) : text;
+  const recognized = /[\n\t]/.test(text) ? redactSecretShapedText(text) : text;
   const oneLine = redactSecretShapedText(recognized.replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }

@@ -104,12 +104,17 @@ leaves the authority ambiguous: the userinfo may also be a query that another ru
 host-shaped name follows its last `@`. This projection, like the backstop, finds every rule's
 ranges on the same text and merges overlapping ranges before it replaces anything, so no rule's
 mask removes the key name, scheme label, PEM marker or URL scheme another rule reads. Its
-key/value and opaque-query rules read an ambiguous userinfo's keys and parameters from the raw `?`
-or `#` on, or all of them when no `user:password` comes before it, and mask each value to its own
-end (`https://gateway?password=P@ss.word1` → `https://[redacted]`). A key or parameter in a
-userinfo's own text — all of an unambiguous userinfo, and a `user:password` before a raw `?` or
-`#` — names a username or password, so its value does not run on through the public host and path
-(`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`). The projection
+key/value and opaque-query rules read every key and parameter in a userinfo but its username's and
+mask each value to its own end, through the last `@` when the value holds one
+(`https://gateway?password=P@ss.word1` → `https://[redacted]`;
+`jdbc:sqlserver://db.example:1433;user=sa;password=P@ssw0rd2024;encrypt=true` →
+`jdbc:sqlserver://[redacted];encrypt=true`). The username is the text before the userinfo's first
+`:` when no raw `?` or `#` comes before that colon; a userinfo with no such colon has none, and a
+username never reaches past an LF or TAB. A key in the username names the user, so its value does
+not run on through the public host and path
+(`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`), and a key on
+the line after a split URL masks its value to its own end (`see https://\nDB_PASSWORD=P@ssw0rd123 now` →
+`see https://\n[redacted] now`). The projection
 otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and
 `]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them —
 is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
@@ -119,7 +124,12 @@ under every scheme.
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
 that credential. An LF or TAB right after a URL's `://`, right before its userinfo's `@` or inside
-its `scheme://` belongs to the split userinfo, which is masked as one span. A key's value runs
+its `scheme://` belongs to the split userinfo, which is masked as one span. A credential glued to
+the end of a fixed-length one (`AKIA…ASIA…`, `AKIA…ghp_…`) is a credential of its own, so a run of
+them is masked whole in one pass. A variable-length token is masked to the end of its alphabet, so
+a second token glued to it with no separator, whose prefix the first body takes only in part
+(`ghp_<body>ghp_<body>`), is masked only through that part, and the rest of the second token stays
+visible. A key's value runs
 through every span an earlier rule masks, line breaks included, as through an applied mask, so a
 quoted value that carries a split credential or a PEM block is masked whole. A key inside another
 key's value, and a scheme label inside another label's token, start a credential of their own
@@ -129,10 +139,15 @@ block, as after an applied mask. A scheme label
 that takes a URL scheme as its token no longer hides that URL's password
 (`token postgres://app:pw@db` → `token [redacted]://[redacted]@db`). The projection repeats until
 its output stops changing, at most three passes, and becomes `[redacted]` if it has not settled, so
-projecting a projection changes nothing; every rule's scan stays linear in the admitted text.
+projecting a projection changes nothing. A tiered call whose journal projection has not settled is
+refused before it is prepared ([tool registry](tool-registry.md#resolution--the-dispatch-lifecycle)), so that constant
+never stands for two different arguments in the journal. Every rule's scan stays linear in the
+admitted text, and none uses a backtracking pattern whose stack an admitted value can exhaust: a
+quoted value is read by a character scan to its closing quote.
 Ordinary spaces and punctuation separate public prose; the masker does not discard the whole
 diagnostic because a credential appears. Supported split
-shapes are recognized **before** complete-text one-line normalization, followed by
+shapes are recognized **before** complete-text one-line normalization, by the projection's full
+fixed point, followed by
 ordinary recognition and length clipping. This preserves multiline quoted-value
 recognition without exposing a split token's suffix. Public argument bytes are not
 globally whitespace-normalized for journal identity. The

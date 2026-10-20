@@ -36,6 +36,7 @@ import {
   mergeFiles,
   assertEvaluations,
   selectControls,
+  parseShard,
   phaseEnvironment,
   exactReplacement,
   assertSelectedAnchors,
@@ -53,12 +54,23 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   const vitest = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
   const requested = process.argv.slice(2);
   const selected = selectControls(mutations, requested);
+  // A shard is a selection like any other, so it never claims the complete family; it records which
+  // controls it was dealt, so the shards' summaries can be joined against the declaration.
+  const shard =
+    requested[0] === '--shard'
+      ? {
+          ...parseShard(requested[1]),
+          declared: mutations.length,
+          members: selected.map((entry) => entry.id),
+        }
+      : undefined;
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), `relavium-${evidenceKind}-controls-`)));
   const graph = join(scratch, 'graph');
   const summary = {
     version: 1,
     complete: false,
     node: process.version,
+    ...(shard === undefined ? {} : { shard }),
     mechanisms: [],
     restorations: [],
   };

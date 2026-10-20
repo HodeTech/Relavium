@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **110 independent controls and 491 required named assertion witnesses**.
+declares **120 independent controls and 501 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -178,8 +178,9 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 185-case bounding file; every new LLM phase
-executes the complete 218-case scrubber file. Independent ordinary tooling tests pin
+Every core projection phase executes the complete 195-case bounding file (the journal-identity
+control's phases the complete 112-case registry file); every new LLM phase executes the complete
+219-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -259,16 +260,19 @@ The LLM original-boundary removal now removes both the numeric coarse
 previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
-matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,494 cases, with each control's exact workload and named target
+matchers and bounded raw/joined standalone visitors. Current collection is 26
+complete files / 1,617 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 110-control / 330-phase full declaration projects 1,987 retained files
-(110 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
-calculation, not a measured full capture. Historical 41-control captures retain their
+The current 120-control / 360-phase full declaration runs as two round-robin shards of 60
+controls (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,087
+retained files (60 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many
+and measured 45.50 MiB and 45.48 MiB, final export record included, against the unchanged 64-MiB
+bound. That is one local measurement at the round-7 source, not a CI capture; one export of the
+whole family would exceed the byte bound. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
 
@@ -382,6 +386,36 @@ fixed-point helper that keeps its implementation. The split view still maps a UR
 separator right before it; that only spares reporting the main view's range a second time, so the
 output cannot show it and it has neither a test nor a control. The shared END search is pinned by
 the admitted-size case deadline alone, like round 4's deadline-only guards.
+
+The seventh round found that a key in a URL userinfo's own text could still hide a real
+credential. An unambiguous userinfo owned every key in it, so a key in its password or parameter
+position (`jdbc:sqlserver://db:1433;user=sa;password=P@ss…`, `https://svc;a=1;password=P@ss…`) and,
+in the LF/TAB-joined view, a key on the next line (`DATABASE_URL=https://h\nDB_PASSWORD=P@ss…`) left
+its value's text after the last `@` visible. Only a userinfo's username — the text before its first
+`:` when no raw `?`/`#` comes before that colon — now owns its keys, and never past an LF or TAB. The
+quoted-value pattern's repeated group exhausted V8's RegExp stack at an exactly admitted 8-MiB value,
+after a write had landed; quoted values are now found by a character scan. A credential glued to the
+end of a fixed-length one (`AKIA…ASIA…`) is a credential of its own, so a run of them is masked in one
+pass, and a split span glued to the one before it is bounded by it as by an applied mask. Summaries
+recognize split shapes with the projection's fixed point. A projection that does not settle becomes
+one constant, which would give two different calls one journal digest, so a tiered call whose
+journal projection does not settle is refused before its prepare, its argument names masked. The
+family also could not export its evidence: one export of its 110 controls measured about 77 MiB
+against the unchanged 64-MiB bound, and no author gate exercised the export, because only the
+dedicated job sets `RELAVIUM_ACCEPTANCE_EVIDENCE`. It now runs as two shards
+([causal-controls](../causal-controls/README.md)), and both ran locally with the export enabled.
+Ten controls were added: `core-userinfo-username-zone`, `core-split-zone-cap`,
+`core-quoted-value-scan`, `core-standalone-chain`, `core-glued-span-boundary`,
+`core-summary-fixed-point`, `core-journal-settled` and `core-unsettled-refusal`, and
+`diagnostic-label-run-normalized` and `diagnostic-label-run-raw`, which remove one half of the
+nine-label bound each, since removing the whole line (`diagnostic-label-run-bound`, kept) left the
+normalized half untested. `core-userinfo-query-zone` is re-anchored and no control is retired.
+Pinned by tests without a control: the username zone's colon comparisons, the merged run's
+replacement, the fill's merge and order and the place of opaque values among the masks, the key
+rule's keyword alternatives, suffix and boundary and the value's delimiters, the quoted scan's escape
+and line-break rules, the refused argument names' masking and the helper's settled report. The header
+label join's `:` prefilter only skips work whose result is the text unchanged, so the output cannot
+show it and it has neither a test nor a control.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).
