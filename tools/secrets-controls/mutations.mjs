@@ -142,7 +142,7 @@ const mergedMasking = [
   '    SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
   '  );',
 ].join('\n');
-const queryRule = (names) => String.raw`/[?&](?:${names})=(?<token>[^&\s#]+)/dgi`;
+const queryRule = (names) => String.raw`/[?&#](?:${names})=(?<token>[^&\s#]+)/dgi`;
 const queryNames = String.raw`(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret`;
 const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
 const mergeExtent = '      open.end = Math.max(open.end, range.end);';
@@ -255,18 +255,6 @@ const coreOriginalBoundary = String.raw`  const candidates = /(^|[^\w])([A-Za-z]
   }
 }
 
-function redactStandaloneCredentials(text: string): string {
-  const parts: string[] = [];
-  let copied = 0;
-  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
-    parts.push(text.slice(copied, start), replacement);
-    copied = end;
-  });
-  if (parts.length === 0) return text;
-  parts.push(text.slice(copied));
-  return parts.join('');
-}
-
 /**
  * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
  * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
@@ -301,25 +289,25 @@ function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretS
 }
 
 /**
- * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
- * ordinary spaces remain boundaries and public text is never globally normalized for identity.
- * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
- * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ * LF/TAB may split finite credential shapes. Map the spans recognized in the joined view back onto
+ * the original text and report the ones a removed separator actually splits; ordinary spaces remain
+ * boundaries and public text is never globally normalized for identity. Token-character
+ * continuations after LF/TAB are intentionally part of a recognized credential. The two cursors
+ * advance monotonically, with no per-character offset array or recursive matcher.
  */
-function redactJoinedCredentialSpans(
+function visitSplitSpans(
   text: string,
   visit: (joined: string, mask: SecretSpanVisitor) => void,
+  report: SecretSpanVisitor,
   boundary?: RegExp,
   // URL userinfo owns a separator at either edge: one right after the scheme or before the @ splits it.
   ownsEdges = false,
-): string {
-  if (!/[\n\t]/.test(text)) return text;
+): void {
+  if (!/[\n\t]/.test(text)) return;
   const joined = text.replace(/[\n\t]+/g, '');
-  const parts: string[] = [];
   const separators = /[\n\t]+/g;
   let next = separators.exec(text);
   let removed = 0;
-  let copied = 0;
   function advance(target: number, includeAtBoundary = false): number {
     while (
       next !== null &&
@@ -330,9 +318,11 @@ function redactJoinedCredentialSpans(
     }
     return target + removed;
   }
-  visit(joined, (start, end, replacement, splitFrom) => {
-    const originalSplitFrom = splitFrom === undefined ? undefined : advance(splitFrom);
+  visit(joined, (start, end, replacement, url) => {
+    // A separator right before a URL's scheme is outside the URL, so it splits nothing.
+    const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
     const originalStart = advance(start, !ownsEdges);
+    const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
     const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
 const withoutCoreOriginalBoundary = coreOriginalBoundary
@@ -342,7 +332,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 167;
+const CORE_PROJECTION_CASES = 185;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -357,7 +347,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete scrubber test file every LLM diagnostic control runs. */
-const LLM_SCRUB_CASES = 215;
+const LLM_SCRUB_CASES = 218;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -1049,8 +1039,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-joined-credential-spans',
-    '  visit(joined, (start, end, replacement, splitFrom) => {',
-    "  visit('', (start, end, replacement, splitFrom) => {",
+    '  visit(joined, (start, end, replacement, url) => {',
+    "  visit('', (start, end, replacement, url) => {",
     [
       'masks every LF/TAB split without losing the surrounding public identity',
       ...splitCoreHeaders,
@@ -1190,7 +1180,7 @@ export const mutations = [
   // Nine concatenated labels exceed every bounded run, so the diagnostic fails closed.
   diagnosticControl(
     'diagnostic-label-run-bound',
-    '  if (LABEL_RUN_PAST_BOUND.test(normalized)) return MASKED;',
+    '  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
     '',
     [
       'fails closed on nine concatenated labels and keeps eight in place',
@@ -1229,10 +1219,6 @@ export const mutations = [
       { separator: header.separator.replace(String.raw`\\*["']?\s*:`, String.raw`["']?\s*:`) },
     ],
     ['diagnostic-header-quote-run', { prefix: String.raw`(?:\\*["'])?` }],
-    [
-      'diagnostic-header-backslash-first',
-      { token: header.token.replace(String.raw`[^\s"',;}\\]`, String.raw`[^\s"',;}]`) },
-    ],
   ].map(([id, part]) =>
     diagnosticControl(
       id,
@@ -1240,18 +1226,6 @@ export const mutations = [
       headerLine(part),
       ['masks a header token after any run of quotes or escapes, also in JSON-encoded JSON'],
       'SECRETS_B3_HEADER_ESCAPES',
-    ),
-  ),
-  ...[
-    ['diagnostic-header-stop-brace', String.raw`[\s"',;]`],
-    ['diagnostic-header-stop-quote', String.raw`[\s",;}]`],
-  ].map(([id, stop]) =>
-    diagnosticControl(
-      id,
-      headerLine(),
-      headerLine({ stop: header.stop.replace(String.raw`[\s"',;}]`, stop) }),
-      ['ends a header token at a closing quote or brace'],
-      'SECRETS_B4_HEADER_STOP',
     ),
   ),
   diagnosticControl(
@@ -1452,32 +1426,72 @@ export const mutations = [
     ['bounds the host test after an ambiguous authority at admitted size'],
     'SECRETS_B4_REST_LENGTH',
   ),
-  // Round 5: an ambiguous userinfo is masked with exactly the query values core's later rules read.
+  // Round 6: core's rules report ranges on one text and merge them, as the scrubber's do. An
+  // ambiguous userinfo's query is read by the later rules, a key or scheme label inside a value
+  // starts its own credential, a value runs through earlier masks, and a split header label, a
+  // scheme label or a credential may start right after another credential.
   coreProjectionControl(
-    'core-userinfo-query-extent',
-    '      maskEnd = Math.max(maskEnd, laterQueryValueEnd(text, start + query, start + at));',
-    '',
-    ['masks an ambiguous userinfo with the query values its later rules would mask whole'],
+    'core-merged-ranges',
+    '    if (run !== undefined && range.start < run.end) {',
+    '    if (run !== undefined && false) {',
+    [
+      'keeps every credential and its context when core masks overlap',
+      ...['\n', '\t', 'word\t', 'DATABASE_URL:\n'].map(
+        (prefix) =>
+          `masks an ambiguous userinfo with its query values behind ${JSON.stringify(prefix)}`,
+      ),
+      'masks an ambiguous userinfo whose scheme is split by an LF',
+    ],
+    'SECRETS_B6_CORE_MERGE',
+  ),
+  coreProjectionControl(
+    'core-userinfo-query-zone',
+    '    const ownsUntil = query < 0 ? at : colon >= 0 && colon < query ? query : 0;',
+    '    const ownsUntil = at;',
+    [
+      'masks an ambiguous userinfo with the query values its later rules would mask whole',
+      'masks an admitted-size query value inside an ambiguous userinfo',
+    ],
     'SECRETS_B5_CORE_QUERY_EXTENT',
   ),
   coreProjectionControl(
-    'core-userinfo-joined-extent',
-    '    if (extend && query >= 0) {',
-    '    if (query >= 0) {',
-    ['keeps the context of a later credential after an ambiguous authority'],
-    'SECRETS_B5_CORE_LATER_CONTEXT',
+    'core-key-value-nested',
+    "    if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt, '[redacted]');",
+    "    if (delimiterAt - valueStart >= 6) {\n      mask(match.index, delimiterAt, '[redacted]');\n      key.lastIndex = delimiterAt;\n    }",
+    ["reads a key inside another key's value"],
+    'SECRETS_B6_CORE_NESTED_KEY',
   ),
   coreProjectionControl(
-    'core-split-userinfo-before-scheme',
-    "  const schemes = redactUrlUserinfo(keys).replace(SCHEME_CREDENTIAL, '$1 [redacted]');",
-    "  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');",
-    ['masks the userinfo of a URL behind a scheme label, split or not, and a token glued to a URL'],
-    'SECRETS_B5_CORE_SCHEME_ORDER',
+    'core-key-value-through-masks',
+    '  visitSecretKeyValues(names, fillRanges(text, masked), record);',
+    '  visitSecretKeyValues(names, names, record);',
+    ['reads a value through the masks before it, line breaks included'],
+    'SECRETS_B6_CORE_VALUE_THROUGH_MASK',
+  ),
+  coreProjectionControl(
+    'core-scheme-nested-label',
+    '    scheme.lastIndex = labelEnd;',
+    '',
+    [
+      "reads a scheme label inside another label's token",
+      'keeps nested values, labels and open PEM blocks linear at admitted size',
+    ],
+    'SECRETS_B6_CORE_NESTED_LABEL',
+  ),
+  coreProjectionControl(
+    'core-mask-boundaries',
+    '  return fillRanges(text, ranges);',
+    '  return text;',
+    [
+      'joins a split header label right after a credential or a PEM block',
+      'reads a scheme label or a credential glued to the end of another credential',
+    ],
+    'SECRETS_B6_CORE_MASK_BOUNDARY',
   ),
   coreProjectionControl(
     'core-userinfo-split-scheme',
-    "    mask(start, maskEnd, '[redacted]', match.index);",
-    "    mask(start, maskEnd, '[redacted]');",
+    '      schemeStart: match.index,',
+    '      schemeStart: start,',
     ['\n', '\t'].map(
       (separator) =>
         `masks URL userinfo whose scheme is split by an LF or TAB (${JSON.stringify(separator)})`,
@@ -1486,8 +1500,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-userinfo-split-edges',
-    '  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo, undefined, true);',
-    '  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);',
+    '  visitSplitSpans(text, visitUrlUserinfo, report, undefined, true);',
+    '  visitSplitSpans(text, visitUrlUserinfo, report);',
     ['\n', '\t'].map(
       (separator) =>
         `masks URL userinfo split at either of its edges (${JSON.stringify(separator)})`,

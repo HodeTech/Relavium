@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { toFixedPoint } from './fixed-point.js';
 import { scrubSecrets as rootScrubSecrets } from './index.js';
 import { makeLlmError, scrubSecrets as errorScrubSecrets } from './llm-error.js';
 import { scrubSecrets } from './scrub-secrets.js';
+
+// Observe the scrubber's bounded fixed point, retaining its actual implementation, so one case can
+// make it fail and see which value the scrubber fails closed with.
+vi.mock('./fixed-point.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fixed-point.js')>();
+  return { ...actual, toFixedPoint: vi.fn(actual.toFixedPoint) };
+});
 
 // Synthetic credentials assembled from fragments, never real provider material.
 const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
@@ -1302,5 +1310,38 @@ describe('PR95 review round 5: label pieces, a split ftp credential and the repe
     ]) {
       expect(scrubSecrets(input), 'SECRETS_B5_RESIDUAL_AFTER_MASK').toBe('[REDACTED]');
     }
+  });
+});
+
+describe('PR95 review round 6: the label bound behind a terminal sequence, fragments and failing closed', () => {
+  it('fails closed on nine labels behind a terminal sequence', () => {
+    const bound = (value: unknown) => expect(value, 'SECRETS_B4_LABEL_RUN_BOUND');
+    // Normalization reads `ESC [` plus the run's first letter as one terminal sequence.
+    for (const label of ['Bearer', 'Basic']) {
+      for (const lead of ['Authorization: Bearer ', 'x-api-key: ', '']) {
+        bound(scrubSecrets(`${lead}\u001b[${label.repeat(9)} opaqueTOKEN123`)).toBe('[REDACTED]');
+      }
+    }
+  });
+
+  it('masks a literal secret query name in a fragment', () => {
+    const fragment = (value: unknown) => expect(value, 'SECRETS_B6_QUERY_FRAGMENT');
+    fragment(scrubSecrets('https://[::1]#id_token=Zk81Pq0aLm3nB7xY@127.0.0.1/cb')).toBe(
+      'https://[::1]#id_token=[REDACTED]',
+    );
+    fragment(
+      scrubSecrets(
+        'redirect https://app.example/cb#access_token=Zk81Pq0aLm3nB7xYt2Rw&token_type=bearer',
+      ),
+    ).toBe('redirect https://app.example/cb#access_token=[REDACTED]&token_type=bearer');
+    // A name that only begins like one, and an empty value, stay.
+    for (const kept of ['see https://docs.example/page#tokenizer=fast', 'page#token= next']) {
+      fragment(scrubSecrets(kept)).toBe(kept);
+    }
+  });
+
+  it('fails closed with its own mask when the scrub does not settle', () => {
+    vi.mocked(toFixedPoint).mockImplementationOnce((_pass, _text, failed) => failed);
+    expect(scrubSecrets('public text'), 'SECRETS_B6_FAIL_CLOSED').toBe('[REDACTED]');
   });
 });

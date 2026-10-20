@@ -270,7 +270,7 @@ test('secrets workload corrections retain independent complete-count and reader-
   assert.equal(secretsControls.length, 110);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    483,
+    491,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -313,13 +313,17 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-userinfo-contact-host',
       'core-userinfo-host-length',
       'core-userinfo-host-anchors',
-      'core-userinfo-query-extent',
-      'core-userinfo-joined-extent',
-      'core-split-userinfo-before-scheme',
       'core-userinfo-split-scheme',
       'core-userinfo-split-edges',
       'core-fixed-point',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 167]),
+      // Round 6: core's merged ranges and the mechanisms they read through.
+      'core-merged-ranges',
+      'core-userinfo-query-zone',
+      'core-key-value-nested',
+      'core-key-value-through-masks',
+      'core-scheme-nested-label',
+      'core-mask-boundaries',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 185]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -346,7 +350,6 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-header-lookbehind',
       'diagnostic-header-escaped-separator',
       'diagnostic-header-quote-run',
-      'diagnostic-header-backslash-first',
       'diagnostic-header-escaped-stop',
       'diagnostic-label-token-not-label',
       'diagnostic-label-quoted-label',
@@ -361,15 +364,13 @@ test('secrets workload corrections retain independent complete-count and reader-
         (mechanism) => `diagnostic-label-${mechanism}`,
       ),
       'diagnostic-header-concat-run',
-      'diagnostic-header-stop-brace',
-      'diagnostic-header-stop-quote',
       'diagnostic-query-merge',
       'diagnostic-mask-merge-extent',
       'diagnostic-fixed-point',
       'diagnostic-userinfo-authority-rest',
       'diagnostic-userinfo-rest-length',
       'diagnostic-url-split-retry',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 215]),
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 218]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

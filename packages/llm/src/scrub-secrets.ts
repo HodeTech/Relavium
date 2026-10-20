@@ -156,11 +156,12 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
 
 /**
  * Exact literal query names with exact boundaries, so benign suffixes stay; no URL-name decoding.
- * Their values join the merged masking pass, but no probe joins query names or ordinary query prose.
+ * A fragment carries them too (an OAuth implicit-flow `#access_token=`). Their values join the merged
+ * masking pass, but no probe joins query names or ordinary query prose.
  */
 const QUERY_SECRET_RULE: SecretRule = {
   pattern:
-    /[?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=(?<token>[^&\s#]+)/dgi,
+    /[?&#](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=(?<token>[^&\s#]+)/dgi,
   mask: tokenGroup,
 };
 
@@ -169,7 +170,9 @@ const SECRET_RULES: readonly SecretRule[] = [...NON_QUERY_SECRET_RULES, QUERY_SE
 
 /**
  * Nine concatenated labels (`BearerBearer…`, possibly with quotes or escapes between them) exceed
- * every bounded label run above, so the token after them cannot be told from them: fail closed.
+ * every bounded label run above, so the token after them cannot be told from them: fail closed. The
+ * raw text is checked as well as its normalized view, which can drop a label letter as the final
+ * byte of a terminal sequence (`ESC [` then `BearerBearer…`).
  */
 const LABEL_RUN_PAST_BOUND =
   /(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:[\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){8}/i;
@@ -404,7 +407,7 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
  */
 function scrubOnce(text: string): string {
   const normalized = normalizeSecretProbe(text);
-  if (LABEL_RUN_PAST_BOUND.test(normalized)) return MASKED;
+  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;
   const joined = /[\n\t]/.test(normalized) ? normalized.replace(/[\n\t]+/g, '') : undefined;
   for (const rule of NON_QUERY_SECRET_RULES) {
     const rawMasked = applyRule(text, rule);

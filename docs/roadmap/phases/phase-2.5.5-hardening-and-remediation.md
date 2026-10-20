@@ -9423,8 +9423,9 @@ carries the same owners.
 `fixed-point.ts`) and in core's twin projection, `packages/core/src/tools/bounding.ts`, together with
 the CLI's authored-content detector, the secrets causal controls and the canonical documents. Base
 `9902e0a0`; commits `38e10d42` (Docs-0, the rulings), `dda3b45e` (implementation) and the
-corrections `ef3ded0d`, `bdd292a6`, `6fb7e9d9`, `b2c50e88` and the round-5 commit that adds this
-section. The commits stay local on `development` until the increment is accepted.
+corrections `ef3ded0d`, `bdd292a6`, `6fb7e9d9`, `b2c50e88`, `6b2e94dd` (round 5, which added this
+section) and the round-6 commit. The commits stay local on `development` until the increment is
+accepted.
 
 **Review rounds.** Each round is a NEW independent complete cumulative review of `9902e0a0..HEAD`, every
 reviewer in its own worktree detached at the reviewed head: scrubber correctness, tests and causal
@@ -9439,10 +9440,11 @@ stay local and Git-ignored.
 | 3 | `bdd292a6` | NONCLEAN | 17 | sequential rule application replaced by one merged, token-only masking pass |
 | 4 | `6fb7e9d9` | NONCLEAN (integration clean) | 19 | the literal query names in the merged pass; concatenated label runs and the nine-label bound; one standalone label rule for both labels; a bounded fixed point in both maskers; the secrets CI job allowance becomes 60 minutes |
 | 5 | `b2c50e88` | NONCLEAN | 20 (2 high) | core's round-4 authority extent erased the context its sequential rules read, so core now masks an ambiguous userinfo with exactly the query values its later rules mask whole; its split view masks URL userinfo before scheme labels; the LLM split scan retries a kept candidate glued across a line break; tested fixed-point helpers; untested pattern pieces gained discriminating tests |
+| 6 | `6b2e94dd` | NONCLEAN | 21 (9 high) | round 5's value mirror was quadratic and still erased context, and its split view dropped the value mask; core now merges every rule's ranges on one text, as the scrubber does, reads a key or scheme label inside another value and a value through earlier masks, reads a split header label or a scheme label right after a credential, and scans PEM blocks linearly; the scrubber's nine-label bound also reads the raw text and its literal query names follow `#`; both fail-closed values are tested |
 
 **Author gates and controls.** Every corrected head passed `pnpm run ci` and the affected suites under
 `CI=true GITHUB_ACTIONS=true`, plus local differential, exhaustive and admitted-size harnesses that
-found no new leak against the previous head. The secrets family is 110 controls / 330 phases / 482
+found no new leak against the previous head. The secrets family is 110 controls / 330 phases / 491
 targets and witnesses, projecting 1,987 of the unchanged 2,000 retained files;
 [tools/secrets-controls/README.md](../../../tools/secrets-controls/README.md) records each round's
 control changes and, from round 5, the rule that pieces inside a mechanism's pattern are pinned by

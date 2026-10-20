@@ -9,7 +9,15 @@ import {
   redactSecretShapedValue,
   utf8ByteLength,
 } from './bounding.js';
+import { toFixedPoint } from './fixed-point.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
+
+// Observe the projection's bounded fixed point, retaining its actual implementation, so one case can
+// make it fail and see which value the projection fails closed with.
+vi.mock('./fixed-point.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fixed-point.js')>();
+  return { ...actual, toFixedPoint: vi.fn(actual.toFixedPoint) };
+});
 
 const BIG: ToolResultLimits = { maxBytes: 50_000, maxLines: 2000 };
 const TINY: ToolResultLimits = { maxBytes: 20, maxLines: 3 };
@@ -1472,4 +1480,266 @@ describe('PR95 review round 5: an ambiguous userinfo masked with exactly the val
     }, 'SECRETS_B5_CORE_SCHEME_ORDER').not.toThrow();
     expect(output === 'Bearer [redacted]://h.example', 'SECRETS_B5_CORE_SCHEME_ORDER').toBe(true);
   }, 15_000);
+});
+
+describe('PR95 review round 6: one merged pass of every core rule', () => {
+  const pem = [
+    '-----BEGIN RSA PRIVATE KEY-----',
+    'MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu',
+    '-----END RSA PRIVATE KEY-----',
+  ].join('\n');
+  const projects = (marker: string, pairs: readonly (readonly [string, string, string])[]) => {
+    for (const [input, expected, secret] of pairs) {
+      const output = redactSecretShapedText(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(secret), marker).toBe(false);
+      expect(redactSecretShapedText(output), marker).toBe(output);
+    }
+  };
+
+  it('keeps every credential and its context when core masks overlap', () => {
+    projects('SECRETS_B6_CORE_MERGE', [
+      [
+        'https://a?b:c&password=xy@Bearer abcdefgh12345678',
+        'https://[redacted] [redacted]',
+        'abcdefgh12345678',
+      ],
+      [
+        'https://svc?password=abcd@c/Bearer abcdefgh12345678',
+        'https://[redacted] [redacted]',
+        'abcdefgh12345678',
+      ],
+      [`https://a?b:c&password=xy@${pem}`, 'https://[redacted]', 'MIIBOgIBAAJBAKj34'],
+      [
+        `https://u:pw?x=${'a'.repeat(24)}@h;Bearer abcdefgh12345678`,
+        'https://[redacted] [redacted]',
+        'abcdefgh12345678',
+      ],
+      [
+        'postgres://app:pw?application_name=reporting-service-01@db;password="S3cr3tValue99"',
+        'postgres://[redacted]',
+        'S3cr3tValue99',
+      ],
+      [
+        'mysql://db?user=root&password=Adm1n@2024.prod/Bearer hunter2secretvalue',
+        'mysql://[redacted] [redacted]',
+        'hunter2secretvalue',
+      ],
+      [`redis://db#client_secret=G5oK47GKkhEp@2024.prod/${pem}`, 'redis://[redacted]', 'MIIBOg'],
+    ]);
+  });
+
+  it.each(['\n', '\t', 'word\t', 'DATABASE_URL:\n'])(
+    'masks an ambiguous userinfo with its query values behind %j',
+    (prefix) => {
+      projects('SECRETS_B6_CORE_MERGE', [
+        [`${prefix}https://gateway?password=P@ssw0rd123`, `${prefix}https://[redacted]`, 'ssw0rd'],
+        [
+          `${prefix}mysql://db?user=root&password=Adm1n@2024.prod`,
+          `${prefix}mysql://[redacted]`,
+          '2024.prod',
+        ],
+        [
+          `${prefix}see https://svc?token=abcdefghij@foo.example/x for details`,
+          `${prefix}see https://[redacted] for details`,
+          'foo.example',
+        ],
+        [
+          `${prefix}https://svc?sig=${'A'.repeat(24)}@tail.example`,
+          `${prefix}https://[redacted]`,
+          'tail.example',
+        ],
+      ]);
+    },
+  );
+
+  it('masks an ambiguous userinfo whose scheme is split by an LF', () => {
+    projects('SECRETS_B6_CORE_MERGE', [
+      ['https:/\n/svc?password=Secret@tail99', 'https:/\n/[redacted]', 'tail99'],
+      ['https://\nsvc?password=Secret@tail99', 'https://[redacted]', 'tail99'],
+    ]);
+  });
+
+  it("reads a key inside another key's value", () => {
+    projects('SECRETS_B6_CORE_NESTED_KEY', [
+      ['token=abcdef>password: hunter2hunter2', '[redacted]', 'hunter2hunter2'],
+      [
+        'https://user:pw?token=K9wR2v@db/x>password: hunter2hunter2',
+        'https://[redacted]',
+        'hunter2hunter2',
+      ],
+      [
+        'postgres://u:p?password=K9wR2v@db/path[api_key: SECRETVALUE99',
+        'postgres://[redacted]',
+        'SECRETVALUE99',
+      ],
+      [
+        '{"msg":"http://app:pw?a=1&x=OGePIzn69aW2APSxEBy7@def.example\\nx-api-key: R2FIHKWkS0J2kZ0L35"}',
+        '{"msg":"http://[redacted]"}',
+        'R2FIHKWkS0J2kZ0L35',
+      ],
+      ['x-api-key: "abc password="hunter2 secret value"', '[redacted]', 'secret value'],
+    ]);
+  });
+
+  it("reads a scheme label inside another label's token", () => {
+    projects('SECRETS_B6_CORE_NESTED_LABEL', [
+      ['Bearer abcdefgh/Bearer hunter2secretvalue', 'Bearer [redacted] [redacted]', 'hunter2'],
+      ['token abcdefgh12/Basic hunter2secretvalue==', 'token [redacted] [redacted]', 'hunter2'],
+    ]);
+  });
+
+  it('reads a value through the masks before it, line breaks included', () => {
+    projects('SECRETS_B6_CORE_VALUE_THROUGH_MASK', [
+      [
+        '{"a":"x-api-key": "QL9uUu2jzxnM\txoxb-QWZDhKp63WKU\naccess_token="Qi3YmmwU37GH Qqu6LcyxbzW8"',
+        '{"a":"[redacted]',
+        'QL9uUu2jzxnM',
+      ],
+      [
+        `x-api-key: "v@${pem}client_secret="Q9w8EwQDxFP2 QmeNGkQBxtfm"`,
+        '[redacted]',
+        'Q9w8EwQDxFP2',
+      ],
+      [
+        'token: "abc sk-proj-abcdefghij\nklmnopqrstuv" password: "secret value 1"',
+        '[redacted] [redacted]',
+        'secret value',
+      ],
+    ]);
+  });
+
+  it('joins a split header label right after a credential or a PEM block', () => {
+    projects('SECRETS_B6_CORE_MASK_BOUNDARY', [
+      [
+        'url: AKIA\nQRTBLS2XNANSABCDx-api-\tkey": "QzJsBjkrL2GS?access_token="QeKrgCE47mCW QW2Y8jaZkAPA"',
+        'url: [redacted]',
+        'QzJsBjkrL2GS',
+      ],
+      [`${pem}authori\nzation: QFzQnbCdq2TL`, '[redacted]', 'QFzQnbCdq2TL'],
+      ['AKIAQNNKD8CEOFHOABCDauthori\nzation:QNauurwS3vLp', '[redacted]', 'QNauurwS3vLp'],
+    ]);
+  });
+
+  it('reads a scheme label or a credential glued to the end of another credential', () => {
+    projects('SECRETS_B6_CORE_MASK_BOUNDARY', [
+      [
+        'x\n\tclient_secret=QRYyV2UYKhnz!AKIAQPJ53XE28CC4A\nBCDtoken QNZd4i2J6YY5',
+        'x\n\t[redacted] [redacted]',
+        'QNZd4i2J6YY5',
+      ],
+      ['AKIAQPJ53XE28CC4ABCDtoken QNZd4i2J6YY5', '[redacted]token [redacted]', 'QNZd4i2J6YY5'],
+      [
+        'client_secret=QRYyV2UYKhnz!AKIAQPJ53XE28CC4ABCDtoken QNZd4i2J6YY5',
+        '[redacted] [redacted]',
+        'QNZd4i2J6YY5',
+      ],
+      ['AKIAQPJ53XE28CC4ABCDsk-proj-abcdefghijklmnopqrstuv', '[redacted][redacted]', 'ghijklmnop'],
+      [
+        'AKIAQPJ53XE28CC4A\nBCDsk-proj-abcdefghijklmnopqrstuv',
+        '[redacted][redacted]',
+        'ghijklmnop',
+      ],
+    ]);
+  });
+
+  it('keeps the host of a URL whose userinfo names a secret', () => {
+    const userinfo = (value: unknown) => expect(value, 'SECRETS_B6_CORE_USERINFO_ZONE');
+    for (const [input, expected] of [
+      [
+        'https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/org/repo.git',
+        'https://[redacted]@github.com/org/repo.git',
+      ],
+      [
+        'https://token:abcdef@h.example/x?password=hunter2hunter2',
+        'https://[redacted]@h.example/x?[redacted]',
+      ],
+      [`https://a&sig=${'X'.repeat(28)}:pw@h.example/`, 'https://[redacted]@h.example/'],
+      // Before a raw ?/#, a `user:password` owns its text; the query after it stays readable.
+      ['https://token:pa?ss@h.example/repo', 'https://[redacted]@h.example/repo'],
+      ['https://token:abc?x=1@host/path?y=2', 'https://[redacted]@host/path?y=2'],
+    ] as const) {
+      userinfo(redactSecretShapedText(input)).toBe(expected);
+    }
+  });
+
+  it('reads every key of an ambiguous userinfo that names no user', () => {
+    projects('SECRETS_B6_CORE_USERINFO_COLON', [
+      ['https://password=Secret1?x@t123456', 'https://[redacted]', 't123456'],
+      [`https://a&sig=${'X'.repeat(28)}?y@tail99`, 'https://[redacted]', 'tail99'],
+      ['https://svc?a=1;password=P@ssw0rd123', 'https://[redacted]', 'ssw0rd123'],
+      ['https://svc?password:P@ssw0rd99', 'https://[redacted]', 'ssw0rd99'],
+      ['https://svc?x!password=Secr@t123456', 'https://[redacted]', 't123456'],
+      ['https://svc?a=b+password=Secr@t123456', 'https://[redacted]', 't123456'],
+      [`https://svc?${'n'.repeat(70)}.password=Secr@t123456`, 'https://[redacted]', 't123456'],
+    ]);
+  });
+
+  it('projects a split URL into the summary and the journal value alike', async () => {
+    const result = await boundForModel('see\nhttps://gateway?password=P@ssw0rd123 now', BIG, {});
+    expect(result.summary, 'SECRETS_B6_CORE_MERGE').toBe('see https://[redacted] now');
+    expect(
+      redactSecretShapedValue({ url: 'x\thttps://gateway?password=P@ssw0rd123' }),
+      'SECRETS_B6_CORE_MERGE',
+    ).toEqual({ url: 'x\thttps://[redacted]' });
+  });
+
+  it('keeps many query assignments in an ambiguous userinfo linear at admitted size', () => {
+    const size = 8 * 1024 * 1024 - 256;
+    const run = (prefix: string, unit: string, suffix: string) =>
+      prefix +
+      unit.repeat(Math.floor((size - prefix.length - suffix.length) / unit.length)) +
+      suffix;
+    for (const [input, expected] of [
+      [run('https://x', '?password=', '@h'), 'https://[redacted]'],
+      [run('https://x', '?a=', '@h'), 'https://[redacted]'],
+      [run('https://svc?', '#password=x', '@h'), 'https://[redacted]'],
+      [run('see https://svc', '?token=a@b', ''), 'see https://[redacted]'],
+      [run('redis://app:pw', '?client_secret=x', '@db'), 'redis://[redacted]'],
+    ] as const) {
+      let output = '';
+      expect(() => {
+        output = redactSecretShapedText(input);
+      }, 'SECRETS_B6_CORE_MERGE').not.toThrow();
+      expect(output === expected, 'SECRETS_B6_CORE_MERGE').toBe(true);
+    }
+  }, 15_000);
+
+  it('keeps nested values, labels and open PEM blocks linear at admitted size', () => {
+    const size = 8 * 1024 * 1024 - 256;
+    const count = (unit: string) => Math.floor(size / unit.length);
+    const keys = 'token=ab>'.repeat(count('token=ab>'));
+    expect(redactSecretShapedText(keys) === '[redacted]', 'SECRETS_B6_CORE_NESTED_KEY').toBe(true);
+    const labels = count('Bearer abcdefgh/');
+    expect(
+      redactSecretShapedText('Bearer abcdefgh/'.repeat(labels)) ===
+        `Bearer${' [redacted]'.repeat(labels)}`,
+      'SECRETS_B6_CORE_NESTED_LABEL',
+    ).toBe(true);
+    // Only the BEGIN marker whose body reaches the far END within the body bound opens a block; the
+    // markers before it stay, and each of them reuses one END search instead of scanning to it again.
+    const marker = '-----BEGIN PRIVATE KEY-----\n';
+    const open = marker.repeat(count(marker) - 1);
+    const first =
+      Math.ceil((open.length - 20_000 - (marker.length - 1)) / marker.length) * marker.length;
+    expect(
+      redactSecretShapedText(`password=hunter2secret ${open}-----END PRIVATE KEY-----`) ===
+        `[redacted] ${open.slice(0, first)}[redacted]`,
+      'SECRETS_B6_CORE_MERGE',
+    ).toBe(true);
+  }, 15_000);
+
+  it('masks a PEM block whose body reaches exactly the body bound', () => {
+    const begin = '-----BEGIN PRIVATE KEY-----';
+    const end = '-----END PRIVATE KEY-----';
+    const bounded = (value: unknown) => expect(value, 'SECRETS_B6_CORE_MERGE');
+    bounded(redactSecretShapedText(`${begin}${'A'.repeat(20_000)}${end}`)).toBe('[redacted]');
+    const longer = `${begin}${'A'.repeat(20_001)}${end}`;
+    bounded(redactSecretShapedText(longer) === longer).toBe(true);
+  });
+
+  it('fails closed with its own mask when the projection does not settle', () => {
+    vi.mocked(toFixedPoint).mockImplementationOnce((_pass, _text, failed) => failed);
+    expect(redactSecretShapedText('public text'), 'SECRETS_B6_CORE_FAIL_CLOSED').toBe('[redacted]');
+  });
 });

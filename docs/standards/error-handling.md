@@ -129,7 +129,7 @@ message, and the backstop masks a finite set of secret **shapes**, not arbitrary
 content.
 
 - **Shapes.** OpenAI/Anthropic `sk-…` and Google `AIza…` key prefixes; a finite list of literal
-  secret query names; the exact `api-key`, `x-api-key` and `x-goog-api-key` header names, also
+  secret query names, after `?`, `&` or `#` (an OAuth implicit-flow `#access_token=`); the exact `api-key`, `x-api-key` and `x-goog-api-key` header names, also
   in quoted, JSON-encoded and JSON-in-JSON (`\"x-api-key\":\"…\"`) objects; and
   `Bearer`/`Basic` authentication values. A header value may begin with up to eight (possibly
   quoted, escaped, punctuation-glued or LF/TAB-split) `Bearer`/`Basic` labels — a doubled
@@ -169,8 +169,8 @@ content.
   any scheme; an empty password, or text glued after a masked one, is still masked. The
   authored-content detector's projection of `postgres://app:{{secrets.password}}@db` to
   `postgres://app:[REDACTED]@db` is therefore a fixed point. Core's journal projection applies the
-  same `?`/`#` predicate, but its rules run in sequence, so it masks an ambiguous userinfo together
-  with the query values its later rules would mask whole instead of through the authority's end
+  same `?`/`#` predicate and also merges its rules' ranges, but masks an ambiguous userinfo together
+  with the query values in it, each to its own end, rather than through the authority's end
   ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
 - **Split and normalized forms.** Every rule except the literal query names also probes the
   terminal-normalized text; a credential revealed only by normalization masks the **whole**
@@ -189,7 +189,7 @@ content.
   after the last `@` of such an ambiguous authority unless it is host-shaped; a
   `Bearer`/`Basic` label that ends a line takes the next token with it; an opaque value after a
   label ends only at whitespace, so in compact JSON it masks to the end of the run; nine or more
-  concatenated labels, and a token that begins with `,`, `;` or `}` after a `Bearer`/`Basic`
+  concatenated labels, read in the raw text as well as the normalized one, and a token that begins with `,`, `;` or `}` after a `Bearer`/`Basic`
   label in a header value, blank the whole diagnostic. Past eight separate labels after a header
   name, and in a value of labels alone glued behind punctuation (`Bearer |Bearer`), the outcome
   depends on what precedes the header name: when its nearest non-whitespace character is a word
@@ -208,7 +208,12 @@ content.
   an ordinary `connect to sftp://user@host` diagnostic. (A word that ends a line before `ftp://`
   is no such glue: an LF/TAB-split ftp credential after it blanks the diagnostic.) Malformed URLs
   (`https:/u:p@h`), a raw `/` inside a password, invisible characters inside a scheme and JSON
-  whose quotes are themselves escaped as `\u0022` are outside the finite shapes.
+  whose quotes are themselves escaped as `\u0022` are outside the finite shapes. In a JSON-encoded
+  diagnostic, an escape written as two characters (`\n`, `\t`, `\r`) and glued before a key prefix,
+  a header name or a label defeats that shape's word boundary, so the credential after it stays
+  visible (`"key rejected:\nsk-…"`); core's journal projection shares this limit. A header value
+  that begins with `,`, `;` or `}` and has no label before it is an empty token, so the text after
+  it stays visible.
 
 ## No silent catches
 

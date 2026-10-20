@@ -99,13 +99,17 @@ with an optional port) **and** an `=` assignment follows it; otherwise the useri
 This is the same predicate as the
 [LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop), including
 its 260-character bound on the host-shaped prefix. Masked userinfo that holds such a raw `?` or `#`
-leaves the authority ambiguous: the userinfo may also be the query a later rule reads
-(`https://svc?password=P@ss`). The backstop merges every rule's ranges and masks through the
-authority's end; this projection's rules run in sequence, and masking the userinfo first would
-remove the names its later rules read, so the userinfo mask also covers each query value that its
-opaque-query rule (24 or more characters after `?`/`&`) or secret key/value rule would mask whole,
-and ends where that rule would end it. It never masks farther, so the context of a credential after
-the authority stays in place; in the LF/TAB-joined view it masks the userinfo only. The projection
+leaves the authority ambiguous: the userinfo may also be a query that another rule reads
+(`https://gateway?password=P@ss.word1`). The backstop masks through the authority's end unless a
+host-shaped name follows its last `@`. This projection, like the backstop, finds every rule's
+ranges on the same text and merges overlapping ranges before it replaces anything, so no rule's
+mask removes the key name, scheme label, PEM marker or URL scheme another rule reads. Its
+key/value and opaque-query rules read an ambiguous userinfo's keys and parameters from the raw `?`
+or `#` on, or all of them when no `user:password` comes before it, and mask each value to its own
+end (`https://gateway?password=P@ss.word1` → `https://[redacted]`). A key or parameter in a
+userinfo's own text — all of an unambiguous userinfo, and a `user:password` before a raw `?` or
+`#` — names a username or password, so its value does not run on through the public host and path
+(`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`). The projection
 otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and
 `]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them —
 is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
@@ -114,12 +118,18 @@ under every scheme.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span.
 An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
-that credential. An LF or TAB right after a URL's `://` or right before its userinfo's `@`
-belongs to the split userinfo, which is masked as one span. URL userinfo is masked before an
-authentication scheme label takes its token, in the split view as in the main pass, so a label
-that takes a URL scheme (`token postgres://app:pw@db` → `token [redacted]://[redacted]@db`) never
-hides a password. The projection repeats until its output stops changing, at most three passes,
-and becomes `[redacted]` if it has not settled, so projecting a projection changes nothing.
+that credential. An LF or TAB right after a URL's `://`, right before its userinfo's `@` or inside
+its `scheme://` belongs to the split userinfo, which is masked as one span. A key's value runs
+through every span an earlier rule masks, line breaks included, as through an applied mask, so a
+quoted value that carries a split credential or a PEM block is masked whole. A key inside another
+key's value, and a scheme label inside another label's token, start a credential of their own
+(`token=a>password: <secret>` → `[redacted]`; `Bearer a/Bearer <t>` → `Bearer [redacted] [redacted]`),
+and an LF/TAB-split header label or a scheme label may start right after a credential or a PEM
+block, as after an applied mask. A scheme label
+that takes a URL scheme as its token no longer hides that URL's password
+(`token postgres://app:pw@db` → `token [redacted]://[redacted]@db`). The projection repeats until
+its output stops changing, at most three passes, and becomes `[redacted]` if it has not settled, so
+projecting a projection changes nothing; every rule's scan stays linear in the admitted text.
 Ordinary spaces and punctuation separate public prose; the masker does not discard the whole
 diagnostic because a credential appears. Supported split
 shapes are recognized **before** complete-text one-line normalization, followed by
