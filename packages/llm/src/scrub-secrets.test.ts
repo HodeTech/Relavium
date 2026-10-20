@@ -278,6 +278,9 @@ describe('PR95 B2 split provider/header and malformed userinfo diagnostics', () 
         for (let index = 1; index < name.length; index += 1) {
           const input = `header ${name.slice(0, index)}${separator}${name.slice(index)}: opaque-Z29; retry later`;
           expectCredentialDiagnostic(scrubSecrets(input)).toBe('[REDACTED]');
+          // JSON-encoded JSON; the inner mask keeps the whitespace-stripped residual from answering.
+          const escaped = `{\\"${name.slice(0, index)}${separator}${name.slice(index)}\\":\\"[REDACTED]opaque-Z29\\"}`;
+          expectCredentialDiagnostic(scrubSecrets(escaped)).toBe('[REDACTED]');
         }
       }
     }
@@ -731,6 +734,15 @@ describe('PR95 review round 1: label stacking, host bounds and masked userinfo',
     expect(scrubSecrets('postgres://app:pa[REDACTED]ss@db.example')).toBe(
       'postgres://[REDACTED]@db.example',
     );
+    // Only an exactly masked password is kept: text glued after the marker, or an empty password, is not.
+    for (const [input, expected] of [
+      ['postgres://app:[REDACTED]tail@db.example/x', 'postgres://[REDACTED]@db.example/x'],
+      ['redis://:[REDACTED]SECRETTAIL@cache:6379', 'redis://[REDACTED]@cache:6379'],
+      ['https://:[REDACTED]tail@h.example/', 'https://[REDACTED]@h.example/'],
+      ['https://[REDACTED]:@h.example/', 'https://[REDACTED]@h.example/'],
+    ] as const) {
+      expect(scrubSecrets(input), 'SECRETS_B5_MASKED_USERINFO').toBe(expected);
+    }
   });
 });
 
@@ -1050,6 +1062,18 @@ describe('PR95 review round 4: concatenated labels, ambiguous authorities and a 
     ]) {
       bound(scrubSecrets(input)).toBe('[REDACTED]');
     }
+    // Any case, and labels split by LF or TAB, count alike.
+    for (const label of ['bearer', 'BASIC', 'B\nearer', 'B\tasic']) {
+      for (const count of [8, 9]) {
+        const run = label.repeat(count);
+        bound(scrubSecrets(`Authorization: Bearer ${run} ${token}`)).toBe(
+          count <= 8 ? `Authorization: Bearer ${run} [REDACTED]` : '[REDACTED]',
+        );
+        bound(scrubSecrets(`api-key: ${run} ${token}`)).toBe(
+          count <= 8 ? `api-key: ${run} [REDACTED]` : '[REDACTED]',
+        );
+      }
+    }
   });
 
   it(
@@ -1186,7 +1210,7 @@ describe('PR95 review round 4: concatenated labels, ambiguous authorities and a 
     );
   });
 
-  it('reaches a fixed point, failing closed when it cannot', () => {
+  it('reaches a fixed point', () => {
     for (const [input, expected] of [
       ['api-key: https://"@host.example', 'api-key: [REDACTED]'],
       ['{"x-api-key":"https://\\"@h.example"}', '{"x-api-key":"[REDACTED]"}'],
@@ -1225,4 +1249,58 @@ describe('PR95 review round 4: concatenated labels, ambiguous authorities and a 
     },
     ADMITTED_SIZE_CASE_TIMEOUT_MS,
   );
+});
+
+describe('PR95 review round 5: label pieces, a split ftp credential and the repeated residual', () => {
+  const token = ['abcdef', 'ghijkl', '123456'].join('');
+  const cases = (marker: string, pairs: readonly (readonly [string, string])[]) => {
+    for (const [input, expected] of pairs) {
+      const output = scrubSecrets(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(token) || output.includes('SECRET'), marker).toBe(false);
+      expect(scrubSecrets(output), marker).toBe(output);
+    }
+  };
+
+  it('ends a standalone token before a trailing delimiter, a quote-closed label or a concatenated run', () => {
+    cases('SECRETS_B5_LABEL_PIECES', [
+      [`Authorization: Bearer ${token}; retry`, 'Authorization: Bearer [REDACTED]; retry'],
+      [`Authorization: Bearer ${token}, retry`, 'Authorization: Bearer [REDACTED], retry'],
+      [`Authorization: Basic ${token}; retry`, 'Authorization: Basic [REDACTED]; retry'],
+      [`Authorization: Basic ${token}, retry`, 'Authorization: Basic [REDACTED], retry'],
+      [
+        `Authorization: Bearer x("Bearer" ${token}`,
+        'Authorization: Bearer [REDACTED]"Bearer" [REDACTED]',
+      ],
+      [
+        `Authorization: Bearer x(${'Bearer'.repeat(8)} ${token}`,
+        `Authorization: Bearer [REDACTED]${'Bearer'.repeat(8)} [REDACTED]`,
+      ],
+    ]);
+  });
+
+  it('blanks an LF/TAB-split ftp credential after a line that ends in s', () => {
+    cases('SECRETS_B5_SPLIT_SFTP', [
+      ['Uploading files\nftp://deploySECRET\n1234@host.example/x', '[REDACTED]'],
+      ['Uploading files\n\tftp://deploySECRET\n1234@host.example/x', '[REDACTED]'],
+      ['files\nf\ntp://TOKENSECRET@host', '[REDACTED]'],
+    ]);
+    // A real sftp scheme keeps its colonless user, also when the user is split.
+    for (const input of [
+      'files\nsftp://deploy\nuser@host',
+      'connect to sftp://deploy@files.example',
+    ]) {
+      expect(scrubSecrets(input), 'SECRETS_B5_SPLIT_SFTP').toBe(input);
+    }
+  });
+
+  it('blanks a diagnostic whose key prefix reaches its length across spaces after a mask', () => {
+    // The repeat reads another rule's mask as a segment start for the whitespace-stripped residual.
+    for (const input of [
+      'Authorization: Bearer xyz sk-ant api key invalid for this org',
+      'x-api-key: abc AIza prefix keys are restricted here',
+    ]) {
+      expect(scrubSecrets(input), 'SECRETS_B5_RESIDUAL_AFTER_MASK').toBe('[REDACTED]');
+    }
+  });
 });

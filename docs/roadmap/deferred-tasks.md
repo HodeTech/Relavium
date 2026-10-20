@@ -2252,7 +2252,7 @@ future test cannot silently re-acquire it.
 ## Wave 3 approved later-wave ownership — 2026-10-16
 
 - [ ] **Scheduled → Wave 4b: production recipient key constraints.** Approved with the Wave 3
-  Steps 9–19 rulings (2026-10-19, [ruling C2](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)):
+  Steps 9–19 rulings (2026-10-19, [Step 9 mechanics ruling](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)):
   the confirmed production recipient for encrypted release custody must be an OpenPGP v4 key
   with a cv25519 or RSA≥3072 encryption-capable subkey. Wave 3 Step 9 implements custody with
   synthetic keys only; an actual release fails closed until this recipient, its offline

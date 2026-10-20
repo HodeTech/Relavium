@@ -3696,7 +3696,7 @@ No credential values or request captures belong in tracked evidence.
 | 8d | **Recorded split — sessions, terminal and activation:** fresh/resumed/one-shot/Home/pending/replaced session lifetimes, retained publication failure and shared actual cleanup promises; connect caught slash/rebuild faults, restore terminal custody before diagnosis, then activate early coordinator/background/sink integration. Actual native/platform/packed controls and complete cumulative Step 8 acceptance follow. |
 | PR95 | **Recorded plan amendment, 2026-10-19 (maintainer-approved; new scope from the [PR #95 independent review](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18), not a split of rows 1–19) — scrubber residuals, before 9a:** the `api-key:Bearer`/`Basic` label erasure that leaks the token; raw `?`/`#` URL userinfo masked unless the text before it is host-shaped **and** an `=` assignment separates it from the authority `@`, applied to the LLM leaf and core's twin predicate; an extended finite scheme list (postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp, smtps) masking colon-bearing userinfo for the new schemes; module-load checks of the split-credential scanner's two invariants, a start prefilter, joined-view and glued-scheme witnesses, the load-sensitive 8 MiB timing case, and the causal-control pins. One increment with ordered commits, two NEW clean complete cumulative rounds and a separate security sitting. |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
-| 9a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage #46/ADR-0111 unchanged, no new contract) — release maps, final build and symbolication:** fresh uncached upstream original-TypeScript maps, the sole prepack final CLI build, final trailer removal before hashes, map and private-graph staging outside public artifacts and caches, exact tarball-to-final-JS binding, and real packed CLI and engine frame symbolication with wrong JS/map/source and missing-map negative controls. Ordinary builds remain map-free. |
+| 9a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage #46/ADR-0111 unchanged, no new contract) — release maps, final build and symbolication:** fresh uncached upstream original-TypeScript maps, the sole prepack final CLI build, final trailer removal before hashes, map and private-graph staging outside public artifacts and caches, exact tarball-to-final-JS binding, and real packed CLI and engine frame symbolication with wrong JS/map/source and missing-map negative controls. Ordinary builds remain map-free. *Split again on 2026-10-19 into 9a.1 and 9a.2 below, which replace it as increments ([Plan shape](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)).* |
 | 9a.1 | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — candidate build and finalizer:** an owned isolated candidate copy, fresh uncached upstream maps, candidate-mode tsup selection with absent `sourcesContent`, the prepack finalizer (upstream and final map validation, repository-relative sources, exact trailer removal before hashes), owner-only private staging outside public artifacts and caches, closure/seal adaptation, the ordinary map-free control, the PR #95 archive/worker fold-ins, and a fail-closed `release.yml` publish guard that refuses any non-release candidate until 9d and Wave 4b custody exist. The receipt stays `compiled_package_test`. |
 | 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
@@ -3736,7 +3736,7 @@ No credential values or request captures belong in tracked evidence.
 | 19b | **Recorded split — whole-wave acceptance:** every disposition, canonical landings and the Proposed-section inventory, final exact-head gates, two NEW whole-wave cumulative reviews and the PR. |
 
 Steps are dependency-safe increments, not permission to parallel-edit shared hot
-files. Within each row, arrows remain strict. The process/packaging sequence replaces the old fatal-before-lazy assumption: pure contracts → guarded lazy graph → native fatal integration → map/archive custody → remaining CLI behaviour. It is nineteen increments, with no parallel edits of shared hot files. Step 1 completes before all other
+files. Within each row, arrows remain strict. The process/packaging sequence replaces the old fatal-before-lazy assumption: pure contracts → guarded lazy graph → native fatal integration → map/archive custody → remaining CLI behaviour. It was approved as nineteen steps; the recorded splits and the 2026-10-19 amendment make it 29 increments (see the rulings' Plan shape), with no parallel edits of shared hot files. Step 1 completes before all other
 code. Home cost is disposed or implemented before its decomposition; viewport
 geometry work never races editor/cache work. If review exposes a necessary smaller
 increment, split it with unchanged ID coverage and record the split before proceeding.
@@ -9415,3 +9415,40 @@ cause-wrap and the purity-guard root set → 10a; `HomeDeps.exit` → 14a; the k
 exit-code literal sites → 17a; test-evidence and join-table nits → 17b; the duplicate-heading nit (with its corrected
 premise) → 19b. [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18)
 carries the same owners.
+
+### Wave 3 PR95 increment implementation checkpoint and review-round corrections — 2026-10-20
+
+**Scope and source.** The PR95 increment implements the PR95 scrubber residuals ruling above in
+`packages/llm/src/scrub-secrets.ts` (with its package-internal `split-credential-probe.ts` and
+`fixed-point.ts`) and in core's twin projection, `packages/core/src/tools/bounding.ts`, together with
+the CLI's authored-content detector, the secrets causal controls and the canonical documents. Base
+`9902e0a0`; commits `38e10d42` (Docs-0, the rulings), `dda3b45e` (implementation) and the
+corrections `ef3ded0d`, `bdd292a6`, `6fb7e9d9`, `b2c50e88` and the round-5 commit that adds this
+section. The commits stay local on `development` until the increment is accepted.
+
+**Review rounds.** Each round is a NEW independent complete cumulative review of `9902e0a0..HEAD`, every
+reviewer in its own worktree detached at the reviewed head: scrubber correctness, tests and causal
+controls, documentation, integration, a separate security sitting and, from round 3, generative
+properties and a completeness critic. Every finding is adversarially verified. The detailed reports
+stay local and Git-ignored.
+
+| Round | Reviewed head | Verdict | Verified findings | Main corrections |
+| --- | --- | --- | --- | --- |
+| 1 | `dda3b45e` | NONCLEAN | 15 (2 high) | the host-shaped prefix bounded at 260 characters before the RegExp, which had exhausted V8's stack at admitted size, and anchored; stacked labels; already-masked userinfo kept |
+| 2 | `ef3ded0d` | NONCLEAN | 15 | quote-closed labels, bounded label stacking, masked tokens as fixed points |
+| 3 | `bdd292a6` | NONCLEAN | 17 | sequential rule application replaced by one merged, token-only masking pass |
+| 4 | `6fb7e9d9` | NONCLEAN (integration clean) | 19 | the literal query names in the merged pass; concatenated label runs and the nine-label bound; one standalone label rule for both labels; a bounded fixed point in both maskers; the secrets CI job allowance becomes 60 minutes |
+| 5 | `b2c50e88` | NONCLEAN | 20 (2 high) | core's round-4 authority extent erased the context its sequential rules read, so core now masks an ambiguous userinfo with exactly the query values its later rules mask whole; its split view masks URL userinfo before scheme labels; the LLM split scan retries a kept candidate glued across a line break; tested fixed-point helpers; untested pattern pieces gained discriminating tests |
+
+**Author gates and controls.** Every corrected head passed `pnpm run ci` and the affected suites under
+`CI=true GITHUB_ACTIONS=true`, plus local differential, exhaustive and admitted-size harnesses that
+found no new leak against the previous head. The secrets family is 110 controls / 330 phases / 482
+targets and witnesses, projecting 1,987 of the unchanged 2,000 retained files;
+[tools/secrets-controls/README.md](../../../tools/secrets-controls/README.md) records each round's
+control changes and, from round 5, the rule that pieces inside a mechanism's pattern are pinned by
+discriminating tests rather than by new controls.
+
+**Remaining gates.** The increment is not independently accepted: two NEW consecutive clean complete
+cumulative rounds after the last material fix, with a clean separate security sitting, remain. Then
+`development` is pushed and its CI observed, and the PR #95 items in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) close.

@@ -164,11 +164,13 @@ content.
   `postgres`, `postgresql`, `mysql`, `mariadb`, `redis`, `rediss`, `mongodb`, `mongodb+srv`,
   `amqp`, `amqps`, `ssh`, `sftp`, `ldap`, `ldaps`, `smtp` and `smtps` mask only colon-bearing
   userinfo (`user:pass@`, `:pass@`), so a bare user such as `ssh://git@host` (or a colonless
-  `redis://#TOKEN@host`) stays visible. Userinfo that is already masked stays as it is: an
-  exactly masked password under a connection-string scheme, or every part masked or empty under
-  any scheme. The authored-content detector's projection of `postgres://app:{{secrets.password}}@db`
-  to `postgres://app:[REDACTED]@db` is therefore a fixed point. Core's
-  journal projection applies the same `?`/`#` predicate and ambiguous-authority extent
+  `redis://#TOKEN@host`) stays visible. Userinfo whose password is exactly masked stays as it is:
+  beside any username under a connection-string scheme, or beside a masked or empty username under
+  any scheme; an empty password, or text glued after a masked one, is still masked. The
+  authored-content detector's projection of `postgres://app:{{secrets.password}}@db` to
+  `postgres://app:[REDACTED]@db` is therefore a fixed point. Core's journal projection applies the
+  same `?`/`#` predicate, but its rules run in sequence, so it masks an ambiguous userinfo together
+  with the query values its later rules would mask whole instead of through the authority's end
   ([built-in tools](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)).
 - **Split and normalized forms.** Every rule except the literal query names also probes the
   terminal-normalized text; a credential revealed only by normalization masks the **whole**
@@ -179,7 +181,10 @@ content.
 - **Documented trade-offs, all failing closed.** A scheme glued to a word character is masked in
   place; an unlisted scheme ending in a listed one (`gftp://`, `jdbc:mysql://`) matches by its
   suffix; prose that the whitespace-stripped residual probe glues to a path-less URL and a later
-  `@` blanks the whole diagnostic; a host fragment with no assignment (`https://host.example#sec@x`),
+  `@` blanks the whole diagnostic, and so does a key prefix (`sk-`, `AIza`) that the same probe
+  joins with the following words to its minimum length, at the start of the text or, since the
+  scrub repeats, right after another rule's mask (`Authorization: Bearer xyz sk-ant api key
+  invalid`); a host fragment with no assignment (`https://host.example#sec@x`),
   a single-label host query and an over-long host-shaped prefix are masked, and so is the text
   after the last `@` of such an ambiguous authority unless it is host-shaped; a
   `Bearer`/`Basic` label that ends a line takes the next token with it; an opaque value after a
@@ -197,12 +202,13 @@ content.
   fragment after such a break stays visible, as it does after an ordinary space; a label glued to
   a quoted token without whitespace (`Bearer"<token>"`) is likewise outside the shape, as is a
   token after a JSON escape (`\n`, `\t`) that stands for the whitespace after a label. A word
-  glued before `sftp://` (`statusftp://user@h`) reads as `sftp`, so its colonless userinfo stays
-  visible like any `sftp` user: every whitespace-joined probe, the CLI's display residual among
-  them, glues prose to a scheme the same way, and reading it as `ftp` would blank an ordinary
-  `connect to sftp://user@host` diagnostic. Malformed URLs (`https:/u:p@h`), a raw `/` inside a
-  password, invisible characters inside a scheme and JSON whose quotes are themselves escaped as
-  `\u0022` are outside the finite shapes.
+  glued before `sftp://` on the same line (`statusftp://user@h`) reads as `sftp`, so its colonless
+  userinfo stays visible like any `sftp` user: every whitespace-joined probe, the CLI's display
+  residual among them, glues prose to a scheme the same way, and reading it as `ftp` would blank
+  an ordinary `connect to sftp://user@host` diagnostic. (A word that ends a line before `ftp://`
+  is no such glue: an LF/TAB-split ftp credential after it blanks the diagnostic.) Malformed URLs
+  (`https:/u:p@h`), a raw `/` inside a password, invisible characters inside a scheme and JSON
+  whose quotes are themselves escaped as `\u0022` are outside the finite shapes.
 
 ## No silent catches
 

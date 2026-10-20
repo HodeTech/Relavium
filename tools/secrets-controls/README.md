@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **109 independent controls and 481 required named assertion witnesses**.
+declares **110 independent controls and 483 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -178,8 +178,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 162-case bounding file; every new LLM phase
-executes the complete 212-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 167-case bounding file; every new LLM phase
+executes the complete 215-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -260,14 +260,14 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,465 cases, with each control's exact workload and named target
+complete files / 1,473 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 109-control / 327-phase full declaration projects 1,969 retained files
-(109 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+The current 110-control / 330-phase full declaration projects 1,987 retained files
+(110 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
@@ -326,11 +326,34 @@ residual, where a label rule (which needs whitespace after the label) never matc
 bound stays controlled through the residual of a separate-label run. Edges that only change how
 much is masked, never whether a token leaks (a word-glued label is no label, whitespace before a
 header colon, a host after an ambiguous authority staying visible), are pinned by tests without a
-control, which keeps the family inside the 2,000-file export bound. Two quadratic guards (the label
-token's first-character lookahead and the header stop's bounded escape run) and the URL rule's
-`://` prefilter are output-equivalent and pinned only by the admitted-size case deadline: the
-coordinator counts a timeout as infrastructure, never as a removal's failure, so they have no
-control.
+control, which keeps the family inside the 2,000-file export bound. Three guards are pinned only
+by the admitted-size case deadline: the label token's first-character lookahead and the URL rule's
+`://` prefilter are output-equivalent, and the header stop's bounded escape run only decides how
+many escapes past fifteen fold into the mask; removing any of them brings back a quadratic scan,
+and the coordinator counts a timeout as infrastructure, never as a removal's failure, so they have
+no control.
+
+The fifth round found that core's round-4 authority extent erased the context its later rules
+read: core's rules run in sequence, so masking through an ambiguous authority's end swallowed the
+key name, label, scheme or PEM marker of the next credential, and in the LF/TAB-joined view it ran
+across a real line break. Core now masks an ambiguous userinfo together with exactly the query
+values its opaque-query and secret key/value rules would mask whole, ending where those rules end
+them, and masks the userinfo only in the joined view; the URL-scheme lookahead after a scheme label
+is gone, because the split view now masks URL userinfo before scheme labels, as the main pass
+always did. Three core controls were replaced by three for those mechanisms
+(`core-userinfo-query-extent`, `core-userinfo-joined-extent`,
+`core-split-userinfo-before-scheme`); `core-userinfo-split-scheme` controls a separator inside a
+URL's `scheme://`, which now splits its userinfo as one at the userinfo's edges does (core had left
+`https:/\n/user:pass@host` unmasked since before the increment); and `diagnostic-url-split-retry`
+controls the split scan's retry of a kept candidate glued across a line break (`files\nftp://`
+read as `sftp://`). `diagnostic-label-concat-refusal` is retired to make room, and its test stays.
+The family is now 110 controls, the most the unchanged 2,000-file export bound admits (110 × 18 + 7
+= 1,987). From this round on, a control pins each new leak-bearing mechanism, and the pieces inside
+a mechanism's pattern (one character of a delimiter class, a repetition bound, a flag, a fixed
+point's fail-closed branch) are pinned by discriminating tests instead: the fifth round's tests for
+the label rule's trailing `;`/`,`, its embedded stop's closing quote run and bound, the nine-label
+bound's case and LF/TAB letters, the exactly masked password, the escaped joined header name and
+both fixed-point helpers were each checked against the mutation they kill.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

@@ -370,8 +370,8 @@ inline-media redaction remain deliberate projection equality; raw credential byt
 added to the digest to distinguish calls.
 
 Recognized URL userinfo is masked through the authority's last `@`, preserving the host,
-path, query and fragment; userinfo holding a raw `?` or `#` with no host-shaped name after
-that `@` is masked through the authority's end. Recognized opaque URL-query values are masked through their delimiter, including values
+path, query and fragment; userinfo holding a raw `?` or `#` is masked together with the query
+values the later rules would mask whole. Recognized opaque URL-query values are masked through their delimiter, including values
 longer than 512 characters. Quoted secret-key values honor escaped quotes and backslashes
 through the actual closing quote. A recognized value must not leave a credential suffix
 in the projection. This remains a finite shape detector, not a claim to identify arbitrary
@@ -380,10 +380,11 @@ unlabelled secrets. Existing old digests are not retroactively erased or rewritt
 A raw `?` or `#` before the authority's `@` is public only after a host-shaped prefix that an
 `=` assignment follows ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)).
 Wave 3's PR95 increment tightened that predicate without a new digest domain. It also masks
-an ambiguous authority through its end, masks userinfo split by an LF or TAB at either edge,
-keeps an authentication scheme label from taking a URL scheme as its token, and repeats the
-projection until it is stable. These change a `v5:` projection only for the arguments they
-project differently, such as userinfo previously treated as public: a resumed run whose
+an ambiguous userinfo together with the query values the later rules would mask whole, masks
+userinfo split by an LF or TAB at either edge, masks URL userinfo before an authentication
+scheme label in the split view, and repeats the projection until it is stable. These change a
+`v5:` projection only for the arguments they project differently, such as userinfo previously
+treated as public: a resumed run whose
 committed effect carried one now computes a different digest and refuses matching prepare
 instead of replaying, which is the fail-closed outcome of any digest difference. Every other
 `v5:` row keeps its digest.

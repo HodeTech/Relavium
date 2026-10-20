@@ -148,21 +148,8 @@ const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
 const mergeExtent = '      open.end = Math.max(open.end, range.end);';
 const hostFollowsLine =
   '  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);';
-const llmFixedPoint = [
-  '  const once = scrubOnce(text);',
-  '  if (once === text) return once;',
-  '  const twice = scrubOnce(once);',
-  '  if (twice === once) return once;',
-  '  return scrubOnce(twice) === twice ? twice : MASKED;',
-].join('\n');
-const coreFixedPoint = [
-  '  const once = redactSecretShapedOnce(text);',
-  '  if (once === text) return once;',
-  '  const twice = redactSecretShapedOnce(once);',
-  '  if (twice === once) return once;',
-  "  return redactSecretShapedOnce(twice) === twice ? twice : '[redacted]';",
-].join('\n');
-const coreSchemeCredential = String.raw`  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;`;
+const llmFixedPoint = '  return toFixedPoint(scrubOnce, text, MASKED);';
+const coreFixedPoint = "  return toFixedPoint(redactSecretShapedOnce, text, '[redacted]');";
 const headerTokenMask = '    mask: tokenGroup,\n    joinedPattern:';
 const stackedLabelCase =
   'masks a header token after up to eight stacked labels and fails closed beyond them';
@@ -343,7 +330,8 @@ function redactJoinedCredentialSpans(
     }
     return target + removed;
   }
-  visit(joined, (start, end, replacement) => {
+  visit(joined, (start, end, replacement, splitFrom) => {
+    const originalSplitFrom = splitFrom === undefined ? undefined : advance(splitFrom);
     const originalStart = advance(start, !ownsEdges);
     const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
@@ -354,7 +342,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 162;
+const CORE_PROJECTION_CASES = 167;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -369,7 +357,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete scrubber test file every LLM diagnostic control runs. */
-const LLM_SCRUB_CASES = 212;
+const LLM_SCRUB_CASES = 215;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -1061,8 +1049,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-joined-credential-spans',
-    '  visit(joined, (start, end, replacement) => {',
-    "  visit('', (start, end, replacement) => {",
+    '  visit(joined, (start, end, replacement, splitFrom) => {',
+    "  visit('', (start, end, replacement, splitFrom) => {",
     [
       'masks every LF/TAB split without losing the surrounding public identity',
       ...splitCoreHeaders,
@@ -1076,8 +1064,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-split-scheme-label',
-    coreSchemeCredential,
-    String.raw`  /\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;`,
+    String.raw`/\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    String.raw`/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
     splitCoreHeaders,
   ),
   coreProjectionControl(
@@ -1175,7 +1163,6 @@ export const mutations = [
   ...[
     ['diagnostic-label-concat-run', { concat: '' }],
     ['diagnostic-label-concat-stop', { stop: label.stop.replace(label.concat, '') }],
-    ['diagnostic-label-concat-refusal', { notLabel: label.notLabel.replace('{1,8}', '{1}') }],
   ].map(([id, part]) =>
     diagnosticControl(
       id,
@@ -1362,7 +1349,7 @@ export const mutations = [
     'diagnostic-fixed-point',
     llmFixedPoint,
     '  return scrubOnce(text);',
-    ['reaches a fixed point, failing closed when it cannot'],
+    ['reaches a fixed point'],
     'SECRETS_B4_FIXED_POINT',
   ),
   diagnosticControl(
@@ -1465,26 +1452,37 @@ export const mutations = [
     ['bounds the host test after an ambiguous authority at admitted size'],
     'SECRETS_B4_REST_LENGTH',
   ),
+  // Round 5: an ambiguous userinfo is masked with exactly the query values core's later rules read.
   coreProjectionControl(
-    'core-userinfo-authority-rest',
-    '      if (!hostFollows(text.slice(maskEnd + 1, restEnd))) maskEnd = restEnd;',
+    'core-userinfo-query-extent',
+    '      maskEnd = Math.max(maskEnd, laterQueryValueEnd(text, start + query, start + at));',
     '',
-    ['masks a secret query value that holds a raw @ after a single-label host'],
-    'SECRETS_B4_CORE_AUTHORITY_REST',
+    ['masks an ambiguous userinfo with the query values its later rules would mask whole'],
+    'SECRETS_B5_CORE_QUERY_EXTENT',
   ),
   coreProjectionControl(
-    'core-userinfo-rest-length',
-    hostFollowsLine,
-    '  return HOST_SHAPED_AUTHORITY.test(host);',
-    ['bounds the host test after an ambiguous authority at admitted size'],
-    'SECRETS_B4_CORE_REST_LENGTH',
+    'core-userinfo-joined-extent',
+    '    if (extend && query >= 0) {',
+    '    if (query >= 0) {',
+    ['keeps the context of a later credential after an ambiguous authority'],
+    'SECRETS_B5_CORE_LATER_CONTEXT',
   ),
   coreProjectionControl(
-    'core-scheme-url-lookahead',
-    coreSchemeCredential,
-    coreSchemeCredential.replace(String.raw`(?![\w.~+/-]*:\/\/)`, ''),
-    ['never takes a URL scheme as the token after a scheme label'],
-    'SECRETS_B4_CORE_SCHEME_TOKEN',
+    'core-split-userinfo-before-scheme',
+    "  const schemes = redactUrlUserinfo(keys).replace(SCHEME_CREDENTIAL, '$1 [redacted]');",
+    "  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');",
+    ['masks the userinfo of a URL behind a scheme label, split or not, and a token glued to a URL'],
+    'SECRETS_B5_CORE_SCHEME_ORDER',
+  ),
+  coreProjectionControl(
+    'core-userinfo-split-scheme',
+    "    mask(start, maskEnd, '[redacted]', match.index);",
+    "    mask(start, maskEnd, '[redacted]');",
+    ['\n', '\t'].map(
+      (separator) =>
+        `masks URL userinfo whose scheme is split by an LF or TAB (${JSON.stringify(separator)})`,
+    ),
+    'SECRETS_B5_CORE_SPLIT_SCHEME',
   ),
   coreProjectionControl(
     'core-userinfo-split-edges',
@@ -1500,8 +1498,15 @@ export const mutations = [
     'core-fixed-point',
     coreFixedPoint,
     '  return redactSecretShapedOnce(text);',
-    ['reaches a fixed point, failing closed when it cannot'],
+    ['reaches a fixed point'],
     'SECRETS_B4_CORE_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-url-split-retry',
+    "          /[\\n\\t]/.test(text[originalOffset + 1] ?? '') &&",
+    '          false &&',
+    ['blanks an LF/TAB-split ftp credential after a line that ends in s'],
+    'SECRETS_B5_SPLIT_SFTP',
   ),
   // PR95: connection-string schemes join the finite URL list.
   diagnosticControl(

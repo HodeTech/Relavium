@@ -1289,30 +1289,37 @@ describe('PR95 review round 4: ambiguous authorities, URL schemes after labels a
     }
   });
 
-  it('bounds the host test after an ambiguous authority at admitted size', () => {
+  it('masks an admitted-size query value inside an ambiguous userinfo', () => {
     const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
     const input = `upstream said https://user:pw?x=1@${labels}a failed`;
     let output = '';
     expect(() => {
       output = redactSecretShapedText(input);
-    }, 'SECRETS_B4_CORE_REST_LENGTH').not.toThrow();
+    }, 'SECRETS_B5_CORE_QUERY_EXTENT').not.toThrow();
     expect(
       output === 'upstream said https://[redacted] failed',
-      'SECRETS_B4_CORE_REST_LENGTH',
+      'SECRETS_B5_CORE_QUERY_EXTENT',
     ).toBe(true);
   }, 15_000);
 
-  it('never takes a URL scheme as the token after a scheme label', () => {
+  it('masks the userinfo of a URL behind a scheme label, split or not, and a token glued to a URL', () => {
     for (const [input, expected] of [
       [
         'invalid token postgres://app:hunter2secret@db\n',
-        'invalid token postgres://[redacted]@db\n',
+        'invalid token [redacted]://[redacted]@db\n',
       ],
-      ['invalid bearer https://app:hunter2secret@db\n', 'invalid bearer https://[redacted]@db\n'],
-      ['token postgresql://app:hunter2secret@db', 'token postgresql://[redacted]@db'],
+      ['invalid token postgres://app:pa#ss@db\n', 'invalid token [redacted]://[redacted]@db\n'],
+      ['token postgresql://app:hunter2secret@db', 'token [redacted]://[redacted]@db'],
       ['token abcdefghijkl\n', 'token [redacted]\n'],
+      ['Bearer abcdefgh12345678/https://x.example', 'Bearer [redacted]://x.example'],
+      ['Bearer abcDEF123456xyzhttps://h.example', 'Bearer [redacted]://h.example'],
+      ['token\tabcdefgh12345678/https://x', 'token [redacted]://x'],
+      [
+        'Authorization: Bearer abcDEF123456xyzhttps://u:p@h.example',
+        '[redacted] [redacted]://[redacted]@h.example',
+      ],
     ] as const) {
-      expect(redactSecretShapedText(input), 'SECRETS_B4_CORE_SCHEME_TOKEN').toBe(expected);
+      expect(redactSecretShapedText(input), 'SECRETS_B5_CORE_SCHEME_ORDER').toBe(expected);
     }
   });
 
@@ -1327,9 +1334,10 @@ describe('PR95 review round 4: ambiguous authorities, URL schemes after labels a
     }
   });
 
-  it('reaches a fixed point, failing closed when it cannot', () => {
+  it('reaches a fixed point', () => {
+    // The opaque value removes the authority's last `@`, so the second pass reads a new userinfo.
     for (const [input, expected] of [
-      ['g://s.hos#mHPGEAXXQ8@?q==a@b.exam/user:3eYPUzfxo', 'g://[redacted]'],
+      ['g://s.hos#mHPGEAXXQ8@?q==a@b.exam/user:3eYPUzfxo', 'g://[redacted]@?q=[redacted]'],
       ['[redacted]', '[redacted]'],
     ] as const) {
       const output = redactSecretShapedText(input);
@@ -1337,4 +1345,131 @@ describe('PR95 review round 4: ambiguous authorities, URL schemes after labels a
       expect(redactSecretShapedText(output), 'SECRETS_B4_CORE_FIXED_POINT').toBe(output);
     }
   });
+});
+
+describe('PR95 review round 5: an ambiguous userinfo masked with exactly the values later rules read', () => {
+  const pem = [
+    'https://a?b:c@-----BEGIN RSA PRIVATE KEY-----',
+    'MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu',
+    '-----END RSA PRIVATE KEY-----',
+  ].join('\n');
+  const projects = (marker: string, pairs: readonly (readonly [string, string, string])[]) => {
+    for (const [input, expected, secret] of pairs) {
+      const output = redactSecretShapedText(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(secret), marker).toBe(false);
+      expect(redactSecretShapedText(output), marker).toBe(output);
+    }
+  };
+
+  it('masks an ambiguous userinfo with the query values its later rules would mask whole', () => {
+    projects('SECRETS_B5_CORE_QUERY_EXTENT', [
+      ['mysql://db?user=root&password=Adm1n@2024.prod', 'mysql://[redacted]', '2024.prod'],
+      ['https://gateway?password=P@ss.word1', 'https://[redacted]', 'ss.word1'],
+      ['https://svc?client_secret=abcdefgh@def.example', 'https://[redacted]', 'def.example'],
+      ['https://svc?x.client_secret=abcdefgh@def.example', 'https://[redacted]', 'def.example'],
+      [
+        'postgres://db?sslmode=require&password=Adm1n@x/Secret2024',
+        'postgres://[redacted]',
+        'Secret2024',
+      ],
+      [
+        'see https://svc?token=abcdefghij@foo.example/x for details',
+        'see https://[redacted] for details',
+        'foo.example',
+      ],
+      ['https://user:pw?token=abcdefgh@host', 'https://[redacted]', 'host'],
+      [`https://svc?sig=${'A'.repeat(24)}@tail.example`, 'https://[redacted]', 'tail.example'],
+      [
+        'https://proxy?redirect_target=a@http://user:secretpw@host.example/',
+        'https://[redacted]',
+        'secretpw',
+      ],
+      ['https://svc:pw?x=1@ftp://user:pw2secret@h.example/', 'https://[redacted]', 'pw2secret'],
+    ]);
+    // A value no later rule masks leaves the userinfo mask where it was.
+    for (const [input, expected] of [
+      ['https://us?er=1:TOKEN@h.example/', 'https://[redacted]@h.example/'],
+      ['https://alice:pa?ss@provider.invalid/v1', 'https://[redacted]@provider.invalid/v1'],
+    ] as const) {
+      expect(redactSecretShapedText(input), 'SECRETS_B5_CORE_QUERY_EXTENT').toBe(expected);
+    }
+  });
+
+  it('keeps the context of a later credential after an ambiguous authority', () => {
+    projects('SECRETS_B5_CORE_LATER_CONTEXT', [
+      [
+        'url: postgres://app:pa#ss@db.internal\npassword: hunter2hunter2\n',
+        'url: postgres://[redacted]@db.internal\n[redacted]\n',
+        'hunter2hunter2',
+      ],
+      [
+        'url: postgres://app:pa#ss@db.internal\n\ttoken: hunter2hunter2\n',
+        'url: postgres://[redacted]@db.internal\n\t[redacted]\n',
+        'hunter2hunter2',
+      ],
+      [
+        'https://user:pa?ss@minio?sig=Zm9vYmFy/YmF6cXV4cXV1eHh4eHh4eHh4eHh4',
+        'https://[redacted]@minio?sig=[redacted]',
+        'YmF6cXV4',
+      ],
+      [
+        'https://a?b:c@Bearer abcdefgh12345678',
+        'https://[redacted]@Bearer [redacted]',
+        'abcdefgh12345678',
+      ],
+      [pem, 'https://[redacted]@[redacted]', 'MIIBOgIBAAJBAKj34'],
+      [
+        'DATABASE_URL=mysql://db?user=root&password=Adm1n@2024\nREPLICA_URL=postgres://app:hunter2secret@replica/x',
+        'DATABASE_URL=mysql://[redacted]\nREPLICA_URL=postgres://[redacted]@replica/x',
+        'hunter2secret',
+      ],
+      [
+        'https://gateway?password=P@ssw0rd123\nBearer hunter2secretvalue',
+        'https://[redacted]\nBearer [redacted]',
+        'hunter2secretvalue',
+      ],
+      [
+        'https://gateway?password=P@ssw0rd123\tx-api-key: hunter2secretvalue',
+        'https://[redacted]\t[redacted]',
+        'hunter2secretvalue',
+      ],
+      [
+        'mysql://db?user=root&password=Adm1n@2024;Bearer hunter2secretvalue',
+        'mysql://[redacted];Bearer [redacted]',
+        'hunter2secretvalue',
+      ],
+    ]);
+  });
+
+  it.each(['\n', '\t'])(
+    'masks URL userinfo whose scheme is split by an LF or TAB (%j)',
+    (separator) => {
+      for (const [input, expected] of [
+        [
+          `https:/${separator}/user:hunter2secret@host.example/x`,
+          `https:/${separator}/[redacted]@host.example/x`,
+        ],
+        [
+          `https${separator}://user:hunter2secret@host.example`,
+          `https${separator}://[redacted]@host.example`,
+        ],
+        [
+          `ssh:${separator}//deploy:hunter2secret@h.example`,
+          `ssh:${separator}//[redacted]@h.example`,
+        ],
+      ] as const) {
+        expect(redactSecretShapedText(input), 'SECRETS_B5_CORE_SPLIT_SCHEME').toBe(expected);
+      }
+    },
+  );
+
+  it('masks a token glued to a URL at admitted size', () => {
+    const input = `Bearer ${'a'.repeat(8 * 1024 * 1024 - 64)}://h.example`;
+    let output = '';
+    expect(() => {
+      output = redactSecretShapedText(input);
+    }, 'SECRETS_B5_CORE_SCHEME_ORDER').not.toThrow();
+    expect(output === 'Bearer [redacted]://h.example', 'SECRETS_B5_CORE_SCHEME_ORDER').toBe(true);
+  }, 15_000);
 });

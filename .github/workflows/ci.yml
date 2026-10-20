@@ -281,10 +281,10 @@ jobs:
   secrets-mutations:
     name: Wave 2 secrets causal controls
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # Wave 3's PR95 increment grows the cohort to 109 controls (2026-10-20): each scrubber
+    # Wave 3's PR95 increment grows the cohort to 110 controls (2026-10-20): each scrubber
     # control runs its eight-MiB-heavy file in three phases (about 24 s locally), so the job
     # allowance matches the filesystem job's 60 minutes. Per-phase, case/hook, output and
-    # retained-evidence bounds remain unchanged (109 × 18 + 7 = 1,969 of 2,000 files);
+    # retained-evidence bounds remain unchanged (110 × 18 + 7 = 1,987 of 2,000 files);
     # this comment does not certify execution.
     timeout-minutes: 60
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 import { stripTerminalControls } from '@relavium/shared/terminal-safe';
 
+import { toFixedPoint } from './fixed-point.js';
 import { splitProbe, type SplitProbe, type SplitProbeAnchor } from './split-credential-probe.js';
 
 /** The marker every masked span becomes; a diagnostic that cannot be masked in place becomes it whole. */
@@ -26,11 +27,7 @@ const MASKED = '[REDACTED]';
  * The canonical policy is error-handling.md's diagnostic secret backstop.
  */
 export function scrubSecrets(text: string): string {
-  const once = scrubOnce(text);
-  if (once === text) return once;
-  const twice = scrubOnce(once);
-  if (twice === once) return once;
-  return scrubOnce(twice) === twice ? twice : MASKED;
+  return toFixedPoint(scrubOnce, text, MASKED);
 }
 
 /** A range of the original diagnostic that one rule masks with `[REDACTED]`. */
@@ -315,7 +312,8 @@ function applyRule(text: string, rule: SecretRule): string {
  * that prefilter skips only impossible starts.
  * Keys have one token run after a bounded prefix/minimum. Header labels are bounded and their
  * trailing whitespace cannot contain another label. URL authority excludes slash, so a later URL
- * prefix delimits a failed authority scan. Successful matches advance both cursors over their span;
+ * prefix delimits a failed authority scan. Successful matches advance both cursors over their span,
+ * except a kept candidate whose first letter ends a line, which advances one start, once per start;
  * no failed candidate rescans an admitted-size run at every LF/TAB boundary.
  * Opaque Bearer/Basic values and literal query names keep their established delimiter policy.
  */
@@ -366,6 +364,18 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
       pattern.lastIndex = joinedOffset;
       const match = pattern.exec(joined);
       if (match !== null) {
+        // A candidate the policy keeps (a connection string's user, a public contact) whose first
+        // letter ends a line may be a word glued across the break to a shorter listed scheme
+        // (`files\nftp://` reads as `sftp://`), so the next start is tried instead of its span.
+        if (
+          /[\n\t]/.test(text[originalOffset + 1] ?? '') &&
+          rule.credential !== undefined &&
+          !rule.credential(match[0])
+        ) {
+          originalOffset += 1;
+          joinedOffset += 1;
+          continue;
+        }
         const start = originalOffset;
         const joinedStart = joinedOffset;
         while (joinedOffset < pattern.lastIndex) {

@@ -23,6 +23,7 @@ import { utf8ByteLength } from '@relavium/shared';
 // while the IMPLEMENTATION lives in `@relavium/shared` — see its header for why it moved.
 export { utf8ByteLength };
 
+import { toFixedPoint } from './fixed-point.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 export interface BoundedResult {
@@ -159,11 +160,38 @@ const STANDALONE_CREDENTIAL_PREFIX = new RegExp(
 // a legitimate boundary or manufacture one inside a public word. The source uses the same fragments.
 const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'y');
 
-// A token is never a URL scheme: `token postgres://app:pw@db` leaves the URL to the userinfo rule.
 const SCHEME_CREDENTIAL =
-  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})(?![\w.~+/-]*:\/\/)[\w.~+/-]+={0,2}/gi;
+  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
 
-type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
+// A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
+// BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
+// value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
+// including JSON's escaped quotes/backslashes; otherwise a valid password such as `a\"secret-tail`
+// left its tail exposed. The two alternatives inside each repetition are disjoint: a backslash
+// consumes exactly the following non-newline character, while the ordinary class excludes it.
+// No ambiguous nested repetition/backref is needed. Unquoted values retain their delimiter and
+// minimum-length policy. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
+// super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
+// breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
+const SECRET_KEY_VALUE =
+  /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*'|(?=[^\s"',;&]{6})[^\s"',;&]+)/gi;
+/** The same rule anchored at one position, for a query value inside an ambiguous userinfo. */
+const SECRET_KEY_VALUE_AT = new RegExp(SECRET_KEY_VALUE.source, 'iy');
+/** A query name the secret key=value rule reads, from the word boundary where that rule would start. */
+const SECRET_QUERY_NAME =
+  /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}$/i;
+
+/**
+ * Masks one recognized span. `splitFrom`, when given, is where the credential's identifying prefix
+ * starts (a URL's scheme): a removed LF/TAB anywhere from there on splits the credential, so a
+ * separator inside `scheme://` counts even though only the userinfo is replaced.
+ */
+type SecretSpanVisitor = (
+  start: number,
+  end: number,
+  replacement: string,
+  splitFrom?: number,
+) => void;
 
 /**
  * A failed JWT probe must not rescan an admitted-size token run at every original boundary,
@@ -320,11 +348,12 @@ function redactJoinedCredentialSpans(
     }
     return target + removed;
   }
-  visit(joined, (start, end, replacement) => {
+  visit(joined, (start, end, replacement, splitFrom) => {
+    const originalSplitFrom = splitFrom === undefined ? undefined : advance(splitFrom);
     const originalStart = advance(start, !ownsEdges);
     const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;
-    if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;
+    if (!/[\n\t]/.test(text.slice(originalSplitFrom ?? originalStart, originalEnd))) return;
     parts.push(text.slice(copied, originalStart), replacement);
     copied = originalEnd;
   });
@@ -343,7 +372,9 @@ function redactSplitCredentials(text: string): string {
     },
     /\w/,
   );
-  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');
+  // A scheme label may take a URL scheme as its token, and a URL without its scheme hides its
+  // userinfo from every later rule, so the userinfo is masked first, as in the main chain.
+  const schemes = redactUrlUserinfo(keys).replace(SCHEME_CREDENTIAL, '$1 [redacted]');
   return redactJoinedCredentialSpans(
     schemes,
     (joined, mask) => {
@@ -366,14 +397,9 @@ function redactSplitCredentials(text: string): string {
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
-  // One pass can change the context a later pass decides on (a masked query value can remove the
-  // authority's last `@`), so the projection repeats until it is stable within three passes and
-  // fails closed otherwise: its output is stable under another projection.
-  const once = redactSecretShapedOnce(text);
-  if (once === text) return once;
-  const twice = redactSecretShapedOnce(once);
-  if (twice === once) return once;
-  return redactSecretShapedOnce(twice) === twice ? twice : '[redacted]';
+  // One pass can change the context a later pass decides on, so the projection repeats until it is
+  // stable and fails closed otherwise: its output is stable under another projection.
+  return toFixedPoint(redactSecretShapedOnce, text, '[redacted]');
 }
 
 function redactSecretShapedOnce(text: string): string {
@@ -390,20 +416,8 @@ function redactSecretShapedOnce(text: string): string {
     // one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
     // equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
     .replace(SCHEME_CREDENTIAL, '$1 [redacted]')
-    // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
-    // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
-    // value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
-    // including JSON's escaped quotes/backslashes; otherwise a valid password such as `a\"secret-tail`
-    // left its tail exposed. The two alternatives inside each repetition are disjoint: a backslash
-    // consumes exactly the following non-newline character, while the ordinary class excludes it.
-    // No ambiguous nested repetition/backref is needed. Unquoted values retain their delimiter and
-    // minimum-length policy. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
-    // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
-    // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
-    .replace(
-      /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*'|(?=[^\s"',;&]{6})[^\s"',;&]+)/gi,
-      '[redacted]',
-    );
+    // A secret-ish key and its value (`SECRET_KEY_VALUE`).
+    .replace(SECRET_KEY_VALUE, '[redacted]');
   // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
   // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
   // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
@@ -458,9 +472,11 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
  * after an existing userinfo separator remain public. Before that separator, a raw ?/#
  * begins public query/fragment text only when the text before it is host-shaped **and** an
- * `=` assignment follows it; anything else may be a malformed username or password, and unless a
- * host-shaped name follows the last `@` such an ambiguous authority is masked through its end. This
- * is the same predicate and extent as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`).
+ * `=` assignment follows it; anything else may be a malformed username or password. This is the
+ * same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`). For such an
+ * ambiguous userinfo the backstop masks through the authority's end, while this projection, whose rules
+ * run in sequence, masks it with the query values its later rules would mask whole (see
+ * `laterQueryValueEnd`).
  * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
  * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
  * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
@@ -474,20 +490,39 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
 
-/** Whether an authority's text after its last `@` begins with a host, up to any query or fragment. */
-function hostFollows(rest: string): boolean {
-  const end = rest.search(/[?#]/);
-  const host = end < 0 ? rest : rest.slice(0, end);
-  // Bounded like the contact prefix, so an admitted-size run cannot exhaust the RegExp stack.
-  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);
+/** A query assignment a later rule may read: a name and `=` after a raw `?`, `&` or `#`. */
+const QUERY_ASSIGNMENT = /[?&#]([\w.-]{1,64})=/g;
+
+/**
+ * Where core's later rules would end their masks of the query values that start inside an ambiguous
+ * userinfo (`from`..`to`), or -1: the opaque-query rule takes a value of 24 or more characters after
+ * `?`/`&`, and the secret key=value rule a secret-ish name's value. Masking the userinfo first would
+ * remove the names those rules read, so its mask runs to the same end and never farther, leaving
+ * every later credential's context in place.
+ */
+function laterQueryValueEnd(text: string, from: number, to: number): number {
+  let end = -1;
+  const opaqueEnd = /[\s&#"',}\]]/g;
+  for (const match of text.slice(from, to).matchAll(QUERY_ASSIGNMENT)) {
+    const valueStart = from + match.index + match[0].length;
+    if (match[0][0] !== '#') {
+      opaqueEnd.lastIndex = valueStart;
+      const valueEnd = opaqueEnd.exec(text)?.index ?? text.length;
+      if (valueEnd - valueStart >= 24) end = Math.max(end, valueEnd);
+    }
+    // The key=value rule may start at any word boundary inside the name, before its keyword.
+    const keyAt = (match[1] ?? '').search(SECRET_QUERY_NAME);
+    if (keyAt < 0) continue;
+    SECRET_KEY_VALUE_AT.lastIndex = from + match.index + 1 + keyAt;
+    if (SECRET_KEY_VALUE_AT.test(text)) end = Math.max(end, SECRET_KEY_VALUE_AT.lastIndex);
+  }
+  return end;
 }
 
-function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
+function visitUrlUserinfo(text: string, mask: SecretSpanVisitor, extend = false): void {
   if (!text.includes('://')) return;
   const scheme = /[a-z][\w+.-]{0,31}:\/\//gi;
   const delimiter = /[/\s"',}\]]/g;
-  // The LLM backstop's authority rest: `]` stays inside it, so a bracketed IP host stays whole.
-  const restDelimiter = /[/\s"',}]/g;
   for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
     const start = scheme.lastIndex;
     delimiter.lastIndex = start;
@@ -506,15 +541,14 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
     let maskEnd = start + at;
-    if (query >= 0) {
-      // A raw ?/# leaves the authority ambiguous: unless a host follows its last `@`, the text there
-      // may be the rest of a query value (`https://svc?password=P@ss`), so the mask runs through it.
-      restDelimiter.lastIndex = maskEnd + 1;
-      const restEnd = restDelimiter.exec(text)?.index ?? text.length;
-      if (!hostFollows(text.slice(maskEnd + 1, restEnd))) maskEnd = restEnd;
+    // A raw ?/# leaves the authority ambiguous: the userinfo may also be the query a later rule reads
+    // (`https://svc?password=P@ss`). Its mask also covers each value that rule would mask whole. The
+    // joined view (no `extend`) masks the userinfo only, so no value runs across a removed LF/TAB.
+    if (extend && query >= 0) {
+      maskEnd = Math.max(maskEnd, laterQueryValueEnd(text, start + query, start + at));
     }
-    mask(start, maskEnd, '[redacted]');
-    // Skip the recognized userinfo without hiding a later scheme in the public host/tail.
+    mask(start, maskEnd, '[redacted]', match.index);
+    // Skip the masked span without hiding a later scheme in the public host/tail.
     scheme.lastIndex = Math.max(maskEnd, start + at + 1);
   }
 }
@@ -522,10 +556,14 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
 function redactUrlUserinfo(text: string): string {
   const parts: string[] = [];
   let cursor = 0;
-  visitUrlUserinfo(text, (start, end, replacement) => {
-    parts.push(text.slice(cursor, start), replacement);
-    cursor = end;
-  });
+  visitUrlUserinfo(
+    text,
+    (start, end, replacement) => {
+      parts.push(text.slice(cursor, start), replacement);
+      cursor = end;
+    },
+    true,
+  );
   if (parts.length === 0) return text;
   parts.push(text.slice(cursor));
   return parts.join('');

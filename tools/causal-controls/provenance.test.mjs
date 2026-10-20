@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 109);
+  assert.equal(secretsControls.length, 110);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    481,
+    483,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -313,12 +313,13 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-userinfo-contact-host',
       'core-userinfo-host-length',
       'core-userinfo-host-anchors',
-      'core-userinfo-authority-rest',
-      'core-userinfo-rest-length',
-      'core-scheme-url-lookahead',
+      'core-userinfo-query-extent',
+      'core-userinfo-joined-extent',
+      'core-split-userinfo-before-scheme',
+      'core-userinfo-split-scheme',
       'core-userinfo-split-edges',
       'core-fixed-point',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 162]),
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 167]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -356,7 +357,7 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-mask-merge',
       'diagnostic-token-only-mask',
       // Round 4: one label rule for both labels, and each new leak or totality mechanism.
-      ...['concat-run', 'concat-stop', 'concat-refusal', 'start-bound', 'lead', 'run-bound'].map(
+      ...['concat-run', 'concat-stop', 'start-bound', 'lead', 'run-bound'].map(
         (mechanism) => `diagnostic-label-${mechanism}`,
       ),
       'diagnostic-header-concat-run',
@@ -367,7 +368,8 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-fixed-point',
       'diagnostic-userinfo-authority-rest',
       'diagnostic-userinfo-rest-length',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 212]),
+      'diagnostic-url-split-retry',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 215]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

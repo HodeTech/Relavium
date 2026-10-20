@@ -213,9 +213,10 @@ only and was then independently reviewed (four rounds and a security sitting, wi
 fixes on `development`, not yet on `main`); CI for it and the merge commit finished green, and SonarCloud's `main`
 gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
 and the maintainer's [2026-10-19 rulings](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
-give every open PR #95 finding an owner and record 29 increments (no new ADR). Next is the PR95
-increment (the scrubber residuals, including both security residuals), then Step 9a.1 (release
-map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
+give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
+(the scrubber residuals, including both security residuals) is implemented on `development` and under
+review: rounds 1–5 were NONCLEAN and are corrected ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)), and acceptance
+needs two consecutive clean rounds. Then Step 9a.1 (release map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
