@@ -126,9 +126,9 @@ gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation
 and the maintainer's [2026-10-19 rulings](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
 give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
 (the scrubber residuals, including both security residuals) is implemented on `development` and under
-review: rounds 1–8 were NONCLEAN and are corrected ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). Under the maintainer's
-2026-10-21 masker acceptance bar, round 9 accepts it with no high or medium finding and no regression against
-base; its low findings go to deferred-tasks.md. Then Step 9a.1 (release map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
+review: rounds 1–9 were NONCLEAN and are corrected ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). Under the maintainer's
+2026-10-21 masker acceptance bar and round cap, round 10 is the last: after it only high findings are
+corrected, and its other findings go to deferred-tasks.md. Then Step 9a.1 (release map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

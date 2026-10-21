@@ -165,9 +165,9 @@ Wave 3 implementation continues on `development`: Steps 1–8 are merged. A pre-
 of Steps 9–19 and the maintainer's rulings are recorded in the
 [2026-10-19 rulings](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
 (no new ADR; 29 recorded increments). **The PR95 increment is implemented on `development` and under review** — the PR #95
-scrubber residuals, including the two security residuals; rounds 1–8 were NONCLEAN and are corrected, as its
-[implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20) records. Under the maintainer's 2026-10-21 masker acceptance bar, round 9 accepts it with no high or medium
-finding and no regression against base, its low findings recorded in
+scrubber residuals, including the two security residuals; rounds 1–9 were NONCLEAN and are corrected, as its
+[implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20) records. Under the maintainer's 2026-10-21 masker acceptance bar and round cap, round 10 is the last: after it
+only its high findings are corrected, and its other findings are recorded in
 [deferred-tasks.md](deferred-tasks.md#pr-95-masker-low-edge-cases--approved-deferrals-2026-10-21). **Step 9a.1** follows, the first increment of the release map/custody substrate (#46, ADR-0111), whose
 9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
 [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) and end with

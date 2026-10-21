@@ -148,9 +148,14 @@ where each mask keeps the backslashes it ends with, as the text has them. So a m
 backslash escaping a later quote neither closes the value early
 (`password="Bearer\nabcdefgh token=xyz\"tail" more` → `[redacted] more`) nor, when that quote is the
 value's only closer, leaves it open (`password="say \"…?sig=<24 or more characters>\"` →
-`[redacted]`), in a summary too. One that does not close on its line is decided once the pass's other
-masks are known: when one of them takes its line break (a scheme label's token, a nested key's value),
-it closes as the next pass reads it and is masked whole, as before this rule; otherwise it is read as an unquoted value from after its quote — a run
+`[redacted]`), in a summary too. Both readings are also taken with the scheme labels' tokens filled,
+as the key rule read them before this projection merged its rules, so a token that takes the value's
+line break lets it close at its real quote. One that does not close on its line is decided once the
+pass's other masks are known: when one of them takes its line break (a scheme label's token, a nested
+key's value), it closes as the next pass reads it and is masked whole, as before this rule, and it is
+read with and without the key rule's own masks, so another key's value that takes its closing quote,
+or ends at its opening one, does not keep it open (`password="a b Bearer\nxyzxyzxy token="q" more` →
+`[redacted] more`); otherwise it is read as an unquoted value from after its quote — a run
 of at least six characters up to whitespace, a quote, `,`, `;` or `&` — and no further than its
 line's end, since its quote may instead close a string the key sits in: the text after such a quote
 stays (`stop logging "token=" values`), so calls that differ only there keep distinct projections,
@@ -179,7 +184,9 @@ PEM block is masked whole. A key word must start within the first 33 characters 
 from the last word boundary (a `-` starts one, a `_` does not), so a longer name is no key
 (`MY_APPLICATION_PRODUCTION_DATABASE_PASSWORD=…` stays). A key's mask starts where its word starts,
 so a credential glued to the front of a key name (`<token>password=…`) is masked with that key's
-value and stays when the value is empty or too short to mask. A key inside another key's value, and
+value and stays when the value is empty or too short to mask; a glued token of 33 or more characters
+puts the key word past that window, so no key is read and the value stays visible unless another rule
+recognizes it (`ghp_<36 characters>password=…`). A key inside another key's value, and
 a scheme label inside another label's token, start a credential of their own
 (`token=a>password: <secret>` → `[redacted]`; `Bearer a/Bearer <t>` →
 `Bearer [redacted] [redacted]`), and an LF/TAB-split header label or a scheme label may start right
@@ -200,23 +207,34 @@ the admitted text, and none uses a backtracking pattern whose stack an admitted 
 quoted value is read by a character scan no further than its line, and a summary decides its values
 that stop at a line break by one backward scan. Ordinary spaces and punctuation separate public
 prose; the masker does not discard the whole diagnostic because a credential appears. A summary uses
-the projection with one difference, since a summary is shown, never compared: a quoted value that
-stops at a line break is masked through the nearest later quote that could close it outside the
-values the rule masks or, when every such quote is inside one, through the last of them, and only
-else to the end of its line, in whichever of the two readings reaches further; one that reaches the end of the string around it or of the text without
-closing is masked to that end. A structured (non-string) result is summarized from its JSON once
-every member under a credential-named key and every argument after a credential flag is masked whole
-(a count such as `input_tokens` too, the text rules then masking the member's name with it); such
-a mask keeps a private-key BEGIN or END marker whose partner lies outside the member, so a block that
-runs on into or out of it is masked across members. The text rules read that JSON as one text, a
-value one JSON string down included, so a JSON-escaped line break is no delimiter and a PEM block or
-a quoted value that runs across members keeps its key and markers; a member masked whole is not read
-for a quoted value that runs on from it. Every summary also reads its text a second time with each
+the projection with one difference, since a summary is shown, never compared: a quoted value that one
+of its readings stops at a line break is masked through the nearest later quote that could close it
+outside the values the rule masks or, when every such quote is inside one, through the last of them,
+and only else to the end of its line, in whichever reading reaches further, and through the closing
+of a reading that closes too; one that reaches the end of the string around it or of the text without
+closing is masked to that end. A structured (non-string) result is summarized from its JSON with
+every member under a credential-named key and every argument after a credential flag masked whole
+(a count such as `input_tokens` too, the text rules then masking the member's name with it). The text
+rules read that JSON once before those masks, which the same pass applies, so a quoted value or a PEM
+block that runs into or out of a masked member is masked across members, as reading the unwalked JSON
+masks it; they read the JSON as one text, a value one JSON string down included, so a JSON-escaped
+line break is no delimiter and a PEM block or a quoted value that runs across members keeps its key
+and markers. A summary also reads a private-key marker whose words a line break, a tab or more than
+one space separates (`-----END RSA PRIVATE\nKEY-----`), as a block wrapped at a fixed width can split
+one; the journal projection reads such a marker as before, and a structured result's summary does not
+read one whose line break or tab its JSON escapes (`{"a":"…-----END RSA PRIVATE\nKEY-----"}`), a
+documented limit. A private-key block is masked only from a BEGIN marker to an END marker that starts
+at most 20,000 characters after it, so a block cut off before its END marker (`head -n 5 key.pem`)
+stays visible in every projection, a documented limit. In a summary, a key's unquoted value behind
+an escaped line break and indentation (`password:\n  <v>` in a structured result's JSON) is not read,
+a documented limit. Every summary also reads its text a second time with each
 escaped line feed, carriage return or tab (`\n`, `\r`, `\t`, behind any run of backslashes) as that
 separator, for the rules a separator decides: a credential or a scheme label right after one, and a
 credential split by one, are masked as in raw text (`{"stdout":"keys:\nsk-…"}` →
 `{"stdout":"keys:\n[redacted]"}`), while a header label split by one is not read; the journal
-projection reads no escape. Supported
+projection reads no escape. Core does not read a credential or a scheme label glued to a terminal
+sequence's final byte (`ESC[1msk-…`), which leaves no word boundary there, a documented limit; the
+backstop's terminal handling is in [error handling](../../standards/error-handling.md). Supported
 split shapes are recognized **before** complete-text one-line normalization, by that projection's
 full fixed point, followed by ordinary recognition and length clipping. This preserves multiline
 quoted-value recognition without exposing a split token's suffix. Public argument bytes are not

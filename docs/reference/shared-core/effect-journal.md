@@ -394,7 +394,7 @@ credential of its own, and a value through earlier masks; masks userinfo split b
 either edge or inside its `scheme://`; reads a quoted value one JSON string down too, and one that
 does not close on its line, or before the end of its string, as an unquoted run that stops there —
 unless another mask of the pass takes its line break and it closes, as the next pass read it before
-(at the later of its readings with and without the masks' trailing backslashes) — so the text after a quote that may close a string around the key keeps calls distinct; reads a
+(at the latest of its readings, with and without the key rule's own masks and the masks' trailing backslashes) — so the text after a quote that may close a string around the key keeps calls distinct; reads a
 split header label or a scheme label right after a credential or a PEM block, and a header label at
 a line start inside a split continuation; and repeats the projection until it is stable. These
 change a `v5:` projection only for the arguments they project differently, such as userinfo

@@ -2652,11 +2652,12 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
     }
   });
 
-  it('keeps the private-key markers a structured summary masks whole', async () => {
+  it("reads a structured summary's members before the walk masks them whole", async () => {
     const begin = '-----BEGIN RSA PRIVATE KEY-----';
     const end = '-----END RSA PRIVATE KEY-----';
-    // A credential member or flag argument masked whole keeps a marker whose partner lies outside it,
-    // so a block that runs on into or out of it is still masked across members.
+    // The text rules read the result's JSON once before the walk's whole masks, which that same pass
+    // applies, so a private-key block that runs into or out of a credential member or flag argument is
+    // masked across members, whatever the masked value holds.
     for (const [result, summary, secret] of [
       [
         { private_key: `${begin}\nMIIEAAAAfirst`, rest: `MIIEBBBBsecondbodyline\n${end}` },
@@ -2665,12 +2666,12 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
       ],
       [
         { a: `${begin}\nMIIEpAIBAAKCAQEAbodylineone`, private_key: `bodylinetwo\n${end}` },
-        '{"a":"[redacted]"}',
+        '{"a":"[redacted]}',
         'bodylineone',
       ],
       [
         ['--private-key', begin, 'MIIEpAIBAAKCAQEAsecretbodyline1', 'abcdefsecretbodyline2', end],
-        '["--private-key","[redacted][redacted]"]',
+        '["--private-key","[redacted]""]',
         'secretbodyline',
       ],
       [
@@ -2678,7 +2679,6 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
         '["--[redacted]"]',
         'MIIE',
       ],
-      // A member that ends one block and starts another keeps both markers.
       [
         {
           a: `${begin}\nAAAbody1`,
@@ -2689,48 +2689,62 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
         '{"a":"[redacted]","d":"public"}',
         'BBBbody2',
       ],
-      // The END marker it keeps is its first, the one that may close a block begun before it.
       [
         {
           a: `${begin}\nAAAfirstbody`,
           private_key: `bbb\n${end}\n${begin}\nccc\n${end}`,
           z: 'public',
         },
-        '{"a":"[redacted]","z":"public"}',
+        '{"a":"[redacted],"z":"public"}',
         'AAAfirstbody',
       ],
-      // The BEGIN marker it keeps is its last, the one that may open a block that runs on after it.
       [
         { private_key: `${begin}\nAAA\n${end}\n${begin}\nBBBhead`, rest: `CCCbody\n${end}` },
         '{"[redacted]}',
         'CCCbody',
       ],
-      // Members inside arrays and objects keep them too.
       [
         { items: [{ private_key: `${begin}\nMIIEnested`, rest: `NESTEDbody\n${end}` }] },
         '{"items":[{"[redacted]}]}',
         'NESTEDbody',
+      ],
+      // A credential member that holds a whole block of its own, an object, or a scheme label.
+      [
+        {
+          stdout: `${begin}\nMIIEpAIBAAKCAQEAQZXSECRETBODYLINE1abc\n[output truncated]`,
+          private_key: `${begin}\nMIIBOwIBAAJBAKj34\n${end}`,
+        },
+        '{"stdout":"[redacted]}',
+        'QZXSECRETBODYLINE1',
+      ],
+      [
+        {
+          credentials: { type: 'service_account', private_key: '-----BEGIN PRIVATE KEY-----' },
+          body: 'MIIEvQQZXSECRET\n-----END PRIVATE KEY-----\n',
+        },
+        '{"credentials":"[redacted]"}',
+        'QZXSECRET',
+      ],
+      [
+        { token: `Bearer x ${begin}`, rest: `MIIEvQQZXSECRET\n${end}` },
+        '{"[redacted]}',
+        'QZXSECRET',
       ],
     ] as const) {
       const bounded = await boundForModel(result, BIG, {});
       expect(bounded.summary, 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(summary);
       expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(false);
     }
-    // A block inside the member is masked with its markers, so a lone marker elsewhere stays text.
-    for (const [result, summary] of [
-      [
-        { a: `docs mention ${begin} here`, private_key: `${begin}\nMIIEwhole\n${end}` },
-        `{"a":"docs mention ${begin} here","[redacted]}`,
-      ],
-      [
-        { private_key: `${begin}\nMIIEwhole\n${end}`, b: `see ${end} there` },
-        `{"[redacted],"b":"see ${end} there"}`,
-      ],
-    ] as const) {
-      expect((await boundForModel(result, BIG, {})).summary, 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(
-        summary,
-      );
-    }
+    expect(
+      (
+        await boundForModel(
+          { private_key: `${begin}\nMIIEwhole\n${end}`, b: `see ${end} there` },
+          BIG,
+          {},
+        )
+      ).summary,
+      'SECRETS_B8_CORE_SUMMARY_PEM',
+    ).toBe(`{"[redacted],"b":"see ${end} there"}`);
     // The journal and the display projections keep their whole mask.
     expect(
       projectSecretShapedValue({ private_key: `${begin}\nMIIEAAAA`, rest: 'x' }).value,
@@ -2811,4 +2825,177 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
       'SECRETS_B8_CORE_SUMMARY_ESCAPES',
     ).toBe('{"msg":"Use\\nToken handling"}');
   });
+});
+
+describe('PR95 review round 9: closing views, unwalked members, wrapped markers and linear views', () => {
+  it('closes a quoted value in the views the key rule read it in before its rules merged', async () => {
+    // A value whose line break a scheme label's token takes closes as the next pass reads it. It is also
+    // read without the key rule's own masks, so another key's value that takes its closing quote, or ends
+    // at its opening one, does not keep it open; and where it is first read, with the scheme labels'
+    // tokens filled too, so a token that takes its line break lets it close at its real quote.
+    for (const [input, expected] of [
+      ['password="correct horse battery Bearer\nxyzxyzxy token="q" more', '[redacted] more'],
+      ['token\\":"x password="Bearer\nabcdefghij Wsecret12 Wsecret34" tail', '[redacted] tail'],
+      ["password:\\t'x api_key='Bearer\nabcdefghij Wsecret12 Wsecret34' tail", '[redacted] tail'],
+      [
+        'api_key=password="password="Bearer\nabcdefghij Wsecret12 Wsecret34" tail',
+        '[redacted] tail',
+      ],
+      ['{"secret": "hunter2 QZXsecondsecret Bearer\npassword": "x"}', '{"[redacted]}'],
+      ['token\\\':"secret="\'QZXJ7WKM2V Bearer\nabcdefgh"', '[redacted]'],
+      ['accesskey\\"="token:"Token\rabcd1234\\QZXJ7WKM2V"', '[redacted]'],
+      [
+        'authorization="g://&a=m3z1VvzzvmzZZ@gcom/v1/a\\"\\QZXJ7WKM2V BASIC\nqv8x~V6t"',
+        '[redacted]',
+      ],
+      // A filled scheme token only moves a closing that a reading already reaches: a value that no
+      // reading closes is decided once the next key's value, which opens at its first quote, is known.
+      ['Authorization: "Bearer\nAuthorization: ""Zq7Wk3Xp9Rm2"', '[redacted]'],
+      ['password="Bearer\npassword=""Zq7Wk3Xp9Rm2"', '[redacted]'],
+      // So does one behind an opaque value whose mask ends with a backslash, where the scheme views are read.
+      [
+        `x ?sig=${'a'.repeat(26)}\\" Authorization: "Bearer\nAuthorization: ""Zq7Wk3Xp9Rm2"`,
+        'x ?sig=[redacted]" [redacted]',
+      ],
+    ] as const) {
+      expect(redactSecretShapedText(input), 'SECRETS_B9_CORE_CLOSING_VIEWS').toBe(expected);
+      expect(projectSecretShapedValue({ a: input }), 'SECRETS_B9_CORE_CLOSING_VIEWS').toEqual({
+        value: { a: expected },
+        settled: true,
+      });
+      expect((await boundForModel(input, BIG, {})).summary, 'SECRETS_B9_CORE_CLOSING_VIEWS').toBe(
+        expected,
+      );
+    }
+  });
+
+  it('masks a summary value through a later closer when one of its readings stops at a line break', async () => {
+    // One reading closes the value at a quote an opaque value's mask unescapes, the other stops at the
+    // line break before its real closer; the summary masks through that closer.
+    for (const input of [
+      'password="see ?sig=https://u:p@cdn.example/abc\\" Wsecret12\nmore"',
+      'password="?sig=https://u:p@cdn.example/abc\\"Wq0zkx\n"',
+      "passwd='?g=ttps://u:p@h.example/\\n\\'PLANT9\n'",
+    ]) {
+      expect((await boundForModel(input, BIG, {})).summary, 'SECRETS_B9_CORE_SUMMARY_STOPPED').toBe(
+        '[redacted]',
+      );
+    }
+  });
+
+  it("reads a structured summary's quoted value across a member masked whole", async () => {
+    for (const [result, summary, secret] of [
+      [
+        { argv: ['mysql', "--password='correct", 'horse', "battery'", '-h', 'db'] },
+        '{"argv":["mysql","--[redacted]","-h","db"]}',
+        'battery',
+      ],
+      [
+        { argv: ['mysql', "--password='correcthorse", "battery'", '-h', 'db'] },
+        '{"argv":["mysql","--[redacted]","-h","db"]}',
+        'battery',
+      ],
+      [
+        { note: 'x', pin: "password='abc", b: "Wdef12' tail" },
+        '{"note":"x","pin":"[redacted]" tail"}',
+        'Wdef12',
+      ],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B9_CORE_SUMMARY_MEMBERS').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B9_CORE_SUMMARY_MEMBERS').toBe(false);
+    }
+  });
+
+  it('reads a private-key marker that a line break, a tab or a doubled space splits in a summary', async () => {
+    for (const [input, summary] of [
+      [
+        'PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0QZXSECRET\n-----END PRIVATE\nKEY-----',
+        '[redacted]',
+      ],
+      [
+        'token=-----BEGIN RSA PRIVATE KEY-----\nMIIEbodyQZXSECRET\n-----END\nPRIVATE KEY-----',
+        '[redacted]',
+      ],
+      [
+        'secret=-----BEGIN\tPRIVATE KEY-----\nMIIEbodyQZXSECRET\n-----END PRIVATE KEY-----',
+        '[redacted]',
+      ],
+      [
+        'PRIVATE_KEY=-----BEGIN RSA PRIVATE  KEY-----\nMIIEbodyQZXSECRET\n-----END RSA PRIVATE KEY-----',
+        '[redacted]',
+      ],
+      [
+        '-----BEGIN PRIVATE\nKEY-----\nMIIEbodyQZXSECRET\n-----END PRIVATE KEY-----apikey:"',
+        '[redacted]',
+      ],
+      [
+        'pem: -----BEGIN RSA PRIVATE  KEY-----\nMIIEbodyQZXSECRET\n-----END RSA PRIVATE  KEY----- done',
+        'pem: [redacted] done',
+      ],
+    ] as const) {
+      expect((await boundForModel(input, BIG, {})).summary, 'SECRETS_B9_CORE_WRAPPED_MARKERS').toBe(
+        summary,
+      );
+    }
+    // The journal projection, which is compared rather than shown, reads such a marker as before.
+    const wrapped =
+      'pem: -----BEGIN RSA PRIVATE  KEY-----\nMIIEbody\n-----END RSA PRIVATE  KEY----- done';
+    expect(redactSecretShapedText(wrapped), 'SECRETS_B9_CORE_WRAPPED_MARKERS').toBe(wrapped);
+  });
+
+  it("keeps the walk's masks in place for a result whose own text holds a placeholder", async () => {
+    // The summary marks each value the walk masks whole with a private-use placeholder; a result that
+    // already holds one is summarized from the walk's masks alone, and its own text stays as it is.
+    const result = { password: 'Qz7secretvalue', note: 'x\uE0000\uE001y' };
+    expect(
+      (await boundForModel(result, BIG, {})).summary,
+      'SECRETS_B9_CORE_SUMMARY_PLACEHOLDER',
+    ).toBe('{"[redacted],"note":"x\uE0000\uE001y"}');
+  });
+
+  it("reads an opaque parameter in a URL username behind that username's zone", () => {
+    expect(
+      redactSecretShapedText(`https://ab&tok=${'A'.repeat(26)}:pw@host.example/x?q=1`),
+      'SECRETS_B9_CORE_OPAQUE_NAMES',
+    ).toBe('https://[redacted]@host.example/x?q=1');
+  });
+
+  it(
+    'keeps every projection linear where masks share a run of backslashes or end in one',
+    async () => {
+      // Each view of a quoted value is built once per pass, and a run of backslashes that many masks
+      // end in is read once.
+      for (const [input, summary] of [
+        [`password="x\n${'token='.repeat(1_000_000)}${'\\'.repeat(1_000_000)} end`, '[redacted]'],
+        [`${'password="abcdefgh\n'.repeat(400_000)}token=abcdef\\ end`, '[redacted]'],
+        [
+          `${'"password": "abc", '.repeat(400_000)}\\"https://h.example/x?sig=${'a'.repeat(30)}\\" end`,
+          '"[redacted], "[redacted],',
+        ],
+      ] as const) {
+        expect(redactSecretShapedText(input).endsWith(' end'), 'SECRETS_B9_CORE_LINEAR_VIEWS').toBe(
+          true,
+        );
+        expect(
+          projectSecretShapedValue({ content: input }).settled,
+          'SECRETS_B9_CORE_LINEAR_VIEWS',
+        ).toBe(true);
+        expect(
+          (await boundForModel(input, BIG, {})).summary.startsWith(summary),
+          'SECRETS_B9_CORE_LINEAR_VIEWS',
+        ).toBe(true);
+      }
+      const structured = {
+        stdout: `password="first\nsecond" ${'log line ok\n'.repeat(600_000)}echo "token=abcdef12"\n`,
+      };
+      expect(
+        (await boundForModel(structured, BIG, {})).summary.startsWith(
+          '{"stdout":"[redacted] log line ok',
+        ),
+        'SECRETS_B9_CORE_LINEAR_VIEWS',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 });

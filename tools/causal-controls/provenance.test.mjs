@@ -355,10 +355,10 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-summary-whole-json',
       'core-journal-key-collision',
       'core-escaped-value-start',
-      // Sixth pre-review: a summary's escaped separators and the PEM markers its walk keeps.
+      // Sixth pre-review and round 9: a summary's escaped separators and its unwalked reading.
       'core-summary-escape-view',
       'core-summary-pem-markers',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 210]),
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 217]),
     ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 115],
     ...[
       'diagnostic-joined-before-masking',

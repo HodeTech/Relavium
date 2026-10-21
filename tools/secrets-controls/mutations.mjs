@@ -334,7 +334,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 210;
+const CORE_PROJECTION_CASES = 217;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -1491,7 +1491,7 @@ export const mutations = [
     'core-key-value-through-masks',
     '  const values = fillRanges(text, masked);',
     '  const values = names;',
-    ['reads a value through the masks before it, line breaks included'],
+    ['reads a value through earlier masks of every kind, in text order'],
     'SECRETS_B6_CORE_VALUE_THROUGH_MASK',
   ),
   coreProjectionControl(
@@ -1616,8 +1616,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-unclosed-closing-view',
-    '  const closing = fillRanges(text, ranges);',
-    '  const closing = values;',
+    '    views.push(fillRanges(text, list));',
+    '    views.push(values);',
     ['reads a quoted value that does not close on its line as an unquoted run'],
     'SECRETS_B8_CORE_UNCLOSED_QUOTE',
   ),
@@ -1634,8 +1634,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-summary-whole-json',
-    '        (text) => text,',
-    '        redactSecretShapedSummaryText,',
+    '      (text) => text,',
+    '      redactSecretShapedSummaryText,',
     ["reads a structured result's values across its line breaks and members"],
     'SECRETS_B8_CORE_SUMMARY_JSON',
   ),
@@ -1660,8 +1660,8 @@ export const mutations = [
     ['reads a label at a line start inside a split continuation'],
     'SECRETS_B8_CORE_CONTINUATION_LABEL',
   ),
-  // Sixth pre-review: a summary reads the line breaks and tabs that JSON escaping hides, and its walk
-  // keeps the private-key markers a whole mask would take from a block that crosses members.
+  // Sixth pre-review and round 9: a summary reads the line breaks and tabs that JSON escaping hides, and
+  // reads a structured result's JSON before the walk's whole masks, which that pass applies.
   coreProjectionControl(
     'core-summary-escape-view',
     '  if (throughCloser) visitEscapedSeparators(text, record);',
@@ -1671,9 +1671,9 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-summary-pem-markers',
-    '        maskWholeKeepingPemMarkers,',
-    '        maskWhole,',
-    ['keeps the private-key markers a structured summary masks whole'],
+    '  return replaceRanges(text, [...secretRanges(text, true), ...masks]);',
+    '  return replaceRanges(text, masks);',
+    ["reads a structured summary's members before the walk masks them whole"],
     'SECRETS_B8_CORE_SUMMARY_PEM',
   ),
   coreProjectionControl(

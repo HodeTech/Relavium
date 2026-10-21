@@ -178,7 +178,7 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core projection phase executes the complete 210-case bounding file (the journal-identity
+Every core projection phase executes the complete 217-case bounding file (the journal-identity
 control's phases the complete 115-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
@@ -261,7 +261,7 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 26
-complete files / 1,640 cases, with each control's exact workload and named target
+complete files / 1,647 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
@@ -270,8 +270,8 @@ later corrective acceptance belongs to the owning phase register. Prior selected
 The current 130-control / 390-phase full declaration runs as two round-robin shards of 65 controls
 (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,177 retained
 files (65 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many and measured
-49.83 MiB and 49.76 MiB, final export record included, against the unchanged
-64-MiB bound. That is one local measurement at the round-8 source, not a CI capture; one export of
+50.19 MiB and 50.09 MiB, final export record included, against the unchanged
+64-MiB bound. That is one local measurement at the round-9 source, not a CI capture; one export of
 the whole family would exceed the byte bound. Historical 41-control captures retain their original
 source and cohort attribution; selected B2 or original-boundary recovery captures are not
 full-family acceptance.
@@ -506,6 +506,39 @@ it. Four mutations are output-neutral and have neither a test nor a control: the
 `-----` prefilter and the two shortcuts that reuse a view when no mask ends with a backslash, which
 only skip work, and preferring a second reading that closes at all, since a reading that keeps the
 masks' backslashes closes only at a quote where the other reading has closed by then.
+
+The ninth round found two high findings in round 8's own code and eight medium regressions against
+base in five shapes. Round 8 compared whole views with `===` inside its loops and walked a run of
+backslashes once per mask that ends in it, both quadratic at admitted size: each view of a quoted
+value is now built once per pass, its presence a value decided once, and a run's start is remembered
+at every end it serves. A value whose line break a scheme label's token takes did not close where
+another key's value took its closing quote or ended at its opening one, and a reading closed early
+where a filled scheme token would have let it reach its real quote: such a value is now reread with
+and without the key rule's own masks, and the key rule's first decision also reads a view with the
+masks' backslashes kept and the scheme tokens filled, which only moves a closing that a plain
+reading reaches. A summary took one reading's early closing over another reading that stops at a
+line break, and now masks such a value through its later closer. A structured summary's walk
+replaced credential members and flag arguments before the text rules read the JSON: the summary now
+reads the unwalked JSON once, each masked value spliced back where the walk left a private-use
+placeholder, with the walk's masks as ranges of that pass, and round 8's kept PEM markers are
+withdrawn. A summary's pass before normalization cut a private-key marker that a line break, a tab
+or more than one space splits, and a summary now reads such markers. `core-summary-pem-markers`,
+`core-summary-whole-json` and `core-unclosed-closing-view` are re-anchored, and
+`core-key-value-through-masks` now targets round 7's reading through earlier masks, since the
+unclosed value's reread also reads round 6's quoted witnesses; no control is added, and a control
+for the later closing is deferred. Pinned by tests without a control, each killed by its
+mutation: the quoted value's plain and scheme views, the gate that keeps a scheme view to a closing
+a plain reading reaches, and the latest closing; the summary's stopped reading and its later closer;
+the unclosed value's views with and without the key rule's masks, their kept variants, the guard on
+a view that fills the value's quote and the latest reread; the unwalked reading's placeholders,
+whole and inside a string, a value with no JSON form, its mask and its collision guard; the
+scheme-labelled and argument whole masks; the wrapped markers in the summary alone, their whitespace
+runs and the prefilter; and the opaque parameter in a URL username. An admitted-size case deadline
+pins the four quadratic shapes in the journal, display and summary paths; a timeout counts as
+infrastructure, so no control can certify it. Five mutations are output-neutral and have neither a
+test nor a control: the closing mask of a summary value that also stops at a line break, which its
+later closer covers; a kept run's clamp to its range, whose empty ranges a fill skips anyway; and
+three shortcuts that keep or reuse a view when no mask ends with a backslash.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-20 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Steps 9–19 not started; the PR95 increment is under review on `development`). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-21 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Steps 9–19 not started; the PR95 increment is under review on `development`). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's low edge cases with the maintainer's 2026-10-21 acceptance bar. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -454,7 +454,8 @@ Under the [masker acceptance bar](phases/phase-2.5.5-hardening-and-remediation.m
 that the maintainer set on 2026-10-21, a low finding in the open-ended masker work
 (`packages/llm/src/scrub-secrets.ts` and core's twin projection in `packages/core/src/tools/bounding.ts`) is
 recorded here instead of being corrected in the review loop. None of these entries is a regression against base
-`9902e0a0`, and none was judged high or medium. The shapes that neither masker reads by design stay described in
+`9902e0a0`, and none was judged high or medium; the two entries marked pending were found by the author after
+round 9, outside any finding, and await the maintainer's confirmation after round 10. The shapes that neither masker reads by design stay described in
 their canonical homes, [built-in-tools.md](../reference/shared-core/built-in-tools.md) for core and
 [error-handling.md](../standards/error-handling.md) for the scrubber; this list holds the review findings and the
 re-checks they need. **Trigger for every entry:** a real tool result, journal entry or diagnostic that carries the
@@ -477,6 +478,42 @@ the repository, so each entry names the input and the property to re-check by ha
   journal digests, so it needs the compatibility review of
   [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
   *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). A summary does not read a key's unquoted value behind an
+  escaped line break and indentation.** *Low, unchanged from base.* *(round 9 critic, CRIT-R9-1)*
+  `boundForModel({ stdout: 'database:\n  password:\n  Qx7vT2mN9pL4kR8s\n  user: app' })` shows the value, while
+  the same text as a string result is masked. The key rule reads a value behind escaped separators only when a
+  quote opens it (`escapedValueStart`), and the summary's escaped-separator view runs no key rule. **Re-check:** a
+  fix lets the summary's key rule read an unquoted value behind escaped separators and spaces, or runs it over
+  `escapedSeparatorView`; the journal is unchanged. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). Core does not read a credential glued to a terminal
+  sequence's final byte.** *Low, unchanged from base.* *(round 9, R9-GEN-4)* `ESC[1msk-<body>` and
+  `ESC[0mBearer <token>` keep the credential: the SGR final byte `m` is a word character, so the standalone and
+  scheme rules see no boundary; built-in-tools.md names the limit. **Re-check:** read those two rules in a view
+  where CSI sequences are filled, as the backstop's normalized probe does. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). The quoted value's later-closing rule has tests but no causal
+  control.** *Low, partial.* *(round 9, TST-R9-2)* The mutations that keep a single reading, drop the kept
+  backslashes or skip the summary's second closer are each killed by
+  `closes a quoted value at the later of its readings with and without the masks`, but no declaration in
+  `tools/secrets-controls/mutations.mjs` targets it. **Re-check:** add a control (for example `keepingEscapes`
+  returning `ranges`) when the secrets family is next extended, with its counts.
+  *(low · tools/secrets-controls/mutations.mjs)*
+- [ ] **Deferral pending the maintainer's confirmation (author, 2026-10-21). A private-key block cut off before
+  its END marker is not masked.** *Unchanged from base; found by the author after round 9, outside any review
+  finding.* `redactSecretShapedText('<BEGIN marker>\nMIIE…')` and the summary of the same text keep the whole
+  body, as does a block whose END marker starts more than 20,000 characters after its BEGIN marker
+  (`PEM_BODY_MAX`): `visitPemBlocks` masks only a BEGIN…END pair, and the LLM backstop reads no private-key
+  block. A real tool output can cut a key short (`head -n 5 key.pem`, a tool that clips its own output).
+  built-in-tools.md names the limit. **Re-check:** mask an unclosed BEGIN marker through its base64 body lines in
+  every projection, linear at admitted size; a journal change needs the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(packages/core/src/tools/bounding.ts)*
+- [ ] **Deferral pending the maintainer's confirmation (author, 2026-10-21). A structured result's summary does
+  not read a private-key marker split by a line break or tab.** *Unchanged from base; found by the author after
+  round 9.* `boundForModel({ a: '<BEGIN marker>\nMIIE…\n-----END RSA PRIVATE\nKEY-----' })` shows the block in
+  its summary, while the same text as a string result is `[redacted]`: JSON escapes the line break or tab, so the
+  wrapped-marker patterns, which read raw whitespace, see none; more than one space still collapses in the
+  summary's one-line pass. built-in-tools.md names the limit. **Re-check:** read the wrapped markers in
+  `escapedSeparatorView` as well (`visitEscapedSeparators`). *(packages/core/src/tools/bounding.ts)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

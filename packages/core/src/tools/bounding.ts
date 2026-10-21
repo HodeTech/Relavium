@@ -538,18 +538,27 @@ function secretRanges(text: string, throughCloser: boolean): readonly SecretRang
   const record: SecretSpanVisitor = (start, end, replacement) => {
     ranges.push({ start, end, replacement });
   };
+  // The key rule's own masks, which a value that does not close is also read without.
+  const keyValues = new Set<SecretRange>();
+  const recordValue: SecretSpanVisitor = (start, end, replacement) => {
+    const range = { start, end, replacement };
+    ranges.push(range);
+    keyValues.add(range);
+  };
+  const schemes: SecretRange[] = [];
   visitSplitCredentials(text, report);
   visitUrlUserinfo(text, report);
   const names = fillRanges(text, owned);
   visitOpaqueQueryValues(names, text, report);
-  visitPemBlocks(text, report);
+  visitPemBlocks(text, report, throughCloser);
   // No value runs through a scheme label's token: `authorization: Bearer <t>` keeps both masks.
-  visitSchemeCredentials(text, record);
+  visitSchemeCredentials(text, (start, end, replacement) => {
+    record(start, end, replacement);
+    schemes.push({ start, end, replacement });
+  });
   const values = fillRanges(text, masked);
-  // The same masks with the backslashes each ends with kept, for a quote's second reading (`laterClosing`).
-  const kept = keepingEscapes(text, masked);
-  const escapes = kept === masked ? values : fillRanges(text, kept);
-  const unclosed = visitSecretKeyValues(names, values, escapes, record, throughCloser);
+  const views = quoteViews(text, masked, schemes);
+  const unclosed = visitSecretKeyValues(names, values, views, recordValue, throughCloser);
   // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
   // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
   // single leftmost-longest scan covers two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
@@ -573,7 +582,7 @@ function secretRanges(text: string, throughCloser: boolean): readonly SecretRang
   }
   // A key's quoted value that does not close on its line is decided last, when every other range of the
   // pass is known (`visitUnclosedValues`).
-  if (unclosed.length > 0) visitUnclosedValues(text, values, ranges, unclosed, record);
+  if (unclosed.length > 0) visitUnclosedValues(text, values, ranges, keyValues, unclosed, record);
   // A summary also reads the line breaks and tabs that JSON escaping hides (`visitEscapedSeparators`).
   if (throughCloser) visitEscapedSeparators(text, record);
   return ranges;
@@ -582,15 +591,31 @@ function secretRanges(text: string, throughCloser: boolean): readonly SecretRang
 /**
  * The ranges without the run of backslashes each ends with in `text`, or `ranges` itself when none ends
  * with one. Filled, they leave a quote right after a mask the escape it has in the text (`laterClosing`).
+ * Ranges that share a backslash run read it once: each run's start is remembered at every end it serves.
  */
 function keepingEscapes(text: string, ranges: readonly SecretRange[]): readonly SecretRange[] {
+  const runStarts = new Map<number, number>();
+  const runStart = (end: number): number => {
+    let index = end;
+    while (text[index - 1] === '\\') {
+      const known = runStarts.get(index);
+      if (known !== undefined) {
+        index = known;
+        break;
+      }
+      index -= 1;
+    }
+    for (let position = end; position > index && text[position - 1] === '\\'; position -= 1) {
+      if (runStarts.has(position)) break;
+      runStarts.set(position, index);
+    }
+    return index;
+  };
   let changed = false;
   const kept = ranges.map((range) => {
-    let end = range.end;
-    while (end > range.start && text[end - 1] === '\\') end -= 1;
-    if (end === range.end) return range;
+    if (text[range.end - 1] !== '\\') return range;
     changed = true;
-    return { ...range, end };
+    return { ...range, end: Math.max(runStart(range.end), range.start) };
   });
   return changed ? kept : ranges;
 }
@@ -599,16 +624,45 @@ function keepingEscapes(text: string, ranges: readonly SecretRange[]): readonly 
 type QuotedValueEnd = ReturnType<typeof quotedValueEnd>;
 
 /**
- * Of a quoted value's two readings, the one that closes it later: one where the masks before or inside it
- * are filled, as the next pass reads them, and one where each mask keeps the backslashes it ends with, as
- * the text has them. A mask can take the backslash that escapes a later quote, which then closes the value
- * early in the first reading (`password="Bearer\nabcdefgh token=xyz\"tail" more`), or the backslash before
- * a quote that is the value's only closer (`password="say \"…?sig=<24 or more>\"`), which closes it in the
- * first reading alone; the later closing of the two masks both. A reading that closes beats one that does
- * not.
+ * Of two readings of a quoted value, the one that closes it later; a reading that closes beats one that
+ * does not. A quoted value is read in several views of its text (`quoteViews`, `visitUnclosedValues`):
+ * with the masks before or inside it filled, as the next pass reads them, and with each mask keeping the
+ * backslashes it ends with, as the text has them; and with the scheme labels' tokens filled too, as the
+ * key rule read them before this projection merged its rules. A mask can take the backslash that escapes a
+ * later quote, which then closes the value early in one reading
+ * (`password="Bearer\nabcdefgh token=xyz\"tail" more`), or the backslash before a quote that is the
+ * value's only closer (`password="say \"…?sig=<24 or more>\"`), which closes it in that reading alone; a
+ * scheme token can take the line break before the value's closer. The latest closing of all of them
+ * masks each of these.
  */
 function laterClosing(first: QuotedValueEnd, second: QuotedValueEnd): QuotedValueEnd {
   return second.closed && (!first.closed || second.end > first.end) ? second : first;
+}
+
+/**
+ * The views a quoted value is also read in beside `values` (`laterClosing`), when one of the earlier masks
+ * ends with a backslash: `plain`, which is `escapes`, those masks keeping the backslashes they end with;
+ * and `schemed`, `escapes` with the scheme labels' tokens filled too, when there is one, which only moves
+ * a closing that a plain reading reaches. With no such backslash every view reads like `values`, so none
+ * is built: a scheme token cannot move a closing that `values` itself reaches on its line. `escapes` also
+ * gives the summary's closers their second reading (`throughNearestCloser`).
+ */
+interface QuoteViews {
+  readonly escapes: string | undefined;
+  readonly plain: readonly string[];
+  readonly schemed: readonly string[];
+}
+
+function quoteViews(
+  text: string,
+  masked: readonly SecretRange[],
+  schemes: readonly SecretRange[],
+): QuoteViews {
+  const kept = keepingEscapes(text, masked);
+  if (kept === masked) return { escapes: undefined, plain: [], schemed: [] };
+  const escapes = fillRanges(text, kept);
+  const schemed = schemes.length > 0 ? [fillRanges(text, [...kept, ...schemes])] : [];
+  return { escapes, plain: [escapes], schemed };
 }
 
 /**
@@ -683,12 +737,18 @@ const PEM_BODY_MAX = 20_000;
  * a BEGIN marker and the first END marker that starts at most PEM_BODY_MAX characters after it, which
  * is what one regex with a lazy bounded body finds. That regex rescanned the whole bounded body after
  * every unterminated BEGIN marker; here one END search serves every BEGIN marker before the END it
- * found, so the scan stays linear.
+ * found, so the scan stays linear. A summary also reads a marker whose words a line break, a tab or more
+ * than one space separates (`wrapped`), as a block wrapped at a fixed width can split one: its pass
+ * before normalization must not mask part of a marker that its one-line pass would pair.
  */
-function visitPemBlocks(text: string, mask: SecretSpanVisitor): void {
-  if (!text.includes('-----BEGIN ')) return;
-  const begin = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
-  const end = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
+function visitPemBlocks(text: string, mask: SecretSpanVisitor, wrapped = false): void {
+  if (!text.includes('-----BEGIN')) return;
+  const begin = wrapped
+    ? /-----BEGIN\s[A-Z0-9\s]{0,40}PRIVATE\s{1,8}KEY-----/g
+    : /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
+  const end = wrapped
+    ? /-----END\s[A-Z0-9\s]{0,40}PRIVATE\s{1,8}KEY-----/g
+    : /-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
   let found: RegExpExecArray | null | undefined;
   for (let marker = begin.exec(text); marker !== null; marker = begin.exec(text)) {
     const body = begin.lastIndex;
@@ -790,22 +850,23 @@ function valueDelimiter(): RegExp {
  * string down), or an unquoted run of at least six characters up to whitespace, a quote, `,`, `;` or
  * `&`. A quoted value that does not close on its line, or one JSON string down before the end of the
  * string around it, is returned for the journal projection to decide once the pass's other ranges are
- * known (`visitUnclosedValues`). The summary's projection (`throughCloser`) masks such a value through a
- * later quote instead (`throughNearestCloser`). Keys are read in `keys`, which hides each URL
- * userinfo's username (`UrlUserinfo.ownsUntil`): a key there names the user
+ * known (`visitUnclosedValues`). The summary's projection (`throughCloser`) masks a value that one of its
+ * readings stops at a line break through a later quote instead (`throughNearestCloser`), and through
+ * the closing of a reading that closes too. Keys are read in `keys`, which hides each URL userinfo's
+ * username (`UrlUserinfo.ownsUntil`): a key there names the user
  * (`https://x-access-token:<t>@github.com/o/r`), and its value would run on through the public host and
  * path. Values are read in `values`, where every earlier mask is one run, as an applied mask would be,
- * and a quoted value also in `escapes`, where each such mask keeps the backslashes it ends with; it closes
- * at the later of the two (`laterClosing`). The key scan resumes at each value rather than after it, so a
- * key inside a value is read too: `token=a>password: <secret>` has a second value past the first one's
- * end. One delimiter scan serves every unquoted value, and a quoted value is scanned no further than its
- * line: a nested quoted value can only open at the closing quote of the one around it, and one that does
- * not close leaves no quote of its kind on its line, so the scan stays linear.
+ * and a quoted value also in the other `views` (`quoteViews`); it closes at the latest of them
+ * (`laterClosing`). The key scan resumes at each value rather than after it, so a key inside a value is
+ * read too: `token=a>password: <secret>` has a second value past the first one's end. One delimiter scan
+ * serves every unquoted value, and a quoted value is scanned no further than its line in each view: a
+ * nested quoted value can only open at the closing quote of the one around it, and one that does not
+ * close leaves no quote of its kind on its line, so the scan stays linear.
  */
 function visitSecretKeyValues(
   keys: string,
   values: string,
-  escapes: string,
+  views: QuoteViews,
   report: SecretSpanVisitor,
   throughCloser: boolean,
 ): readonly UnclosedValue[] {
@@ -827,14 +888,22 @@ function visitSecretKeyValues(
     const opening = escaped ? values[valueStart + 1] : values[valueStart];
     if (opening === '"' || opening === "'") {
       const value = quotedValueEnd(values, valueStart);
-      const read =
-        escapes === values ? value : laterClosing(value, quotedValueEnd(escapes, valueStart));
+      const readings = [value, ...views.plain.map((view) => quotedValueEnd(view, valueStart))];
+      // A scheme label's token can take the line break before a closer that a reading reaches early; a
+      // value that no reading closes is decided once every range of the pass is known instead.
+      const first = readings.reduce(laterClosing);
+      const read = first.closed
+        ? views.schemed.map((view) => quotedValueEnd(view, valueStart)).reduce(laterClosing, first)
+        : first;
       const kind = escaped ? `\\${opening}` : opening;
-      if (read.closed) mask(match.index, read.end);
-      else if (!throughCloser)
-        unclosed.push({ start: match.index, quote: valueStart, end: read.end });
-      else if (read.lineBreak) open.push({ start: match.index, end: read.end, quote: kind });
-      else mask(match.index, read.end);
+      if (!throughCloser) {
+        if (read.closed) mask(match.index, read.end);
+        else unclosed.push({ start: match.index, quote: valueStart, end: read.end });
+        continue;
+      }
+      const stopped = readings.find((reading) => !reading.closed && reading.lineBreak);
+      if (read.closed || stopped === undefined) mask(match.index, read.end);
+      if (stopped !== undefined) open.push({ start: match.index, end: stopped.end, quote: kind });
       continue;
     }
     if (delimiterAt < valueStart) {
@@ -843,7 +912,7 @@ function visitSecretKeyValues(
     }
     if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt);
   }
-  for (const range of throughNearestCloser(values, escapes, masked, open)) {
+  for (const range of throughNearestCloser(values, views.escapes, masked, open)) {
     report(range.start, range.end, '[redacted]');
   }
   return unclosed;
@@ -858,39 +927,47 @@ interface UnclosedValue {
 
 /**
  * The journal projection's masks for key values that do not close on their line (`visitSecretKeyValues`).
- * Each is read again in `closing`, where every other range of the pass is filled: a mask that takes its
- * line break (a scheme label's token, a nested key's value) joins its lines as the next pass would read
- * them, so a value that then closes is masked whole, as it was before this rule; it closes at the later of
- * that reading and the one where each range keeps the backslashes it ends with (`laterClosing`).
- * Otherwise it is read as an unquoted run from after its quote, in `values`, no further than where it
- * stopped: its quote may instead close a string the key sits in (`"token=" in prose`), and masking on
- * past the run would give calls that differ only in that later text one projection. A run starts right
- * after a quote, where the delimiter scan of every earlier run stops, so no two runs share a scan; a
- * reading in `closing` stops at the next quote that could close it, so the readings of one kind of quote
- * share none either.
+ * Each is read again where every other range of the pass is filled: a mask that takes its line break (a
+ * scheme label's token, a nested key's value) joins its lines as the next pass would read them, so a
+ * value that then closes is masked whole, as it was before this rule. It is read with and without the
+ * key rule's own masks (`keyValues`), since another key's value can take its closing quote or end at its
+ * opening one, and in each with every range keeping the backslashes it ends with too; it closes at the
+ * latest of these readings (`laterClosing`). A reading whose view fills the value's own quote is skipped:
+ * there another range decides that quote. Otherwise the value is read as an unquoted run from after its
+ * quote, in `values`, no further than where it stopped: its quote may instead close a string the key sits
+ * in (`"token=" in prose`), and masking on past the run would give calls that differ only in that later
+ * text one projection. A run starts right after a quote, where the delimiter scan of every earlier run
+ * stops, so no two runs share a scan; a reading stops at the next quote that could close it in its view,
+ * so the readings of one kind of quote share none either.
  */
 function visitUnclosedValues(
   text: string,
   values: string,
   ranges: readonly SecretRange[],
+  keyValues: ReadonlySet<SecretRange>,
   unclosed: readonly UnclosedValue[],
   report: SecretSpanVisitor,
 ): void {
-  const closing = fillRanges(text, ranges);
-  const kept = keepingEscapes(text, ranges);
-  const escapes = kept === ranges ? closing : fillRanges(text, kept);
+  const others = ranges.filter((range) => !keyValues.has(range));
+  const views: string[] = [];
+  for (const list of others.length === ranges.length ? [ranges] : [ranges, others]) {
+    views.push(fillRanges(text, list));
+    const kept = keepingEscapes(text, list);
+    if (kept !== list) views.push(fillRanges(text, kept));
+  }
   const delimiter = valueDelimiter();
   for (const value of unclosed) {
     const from = value.quote + (values[value.quote] === '\\' ? 2 : 1);
-    // The quote itself may be inside another range, which then decides it.
-    if (closing.slice(value.quote, from) === values.slice(value.quote, from)) {
-      const first = quotedValueEnd(closing, value.quote);
-      const reread =
-        escapes === closing ? first : laterClosing(first, quotedValueEnd(escapes, value.quote));
-      if (reread.closed) {
-        report(value.start, reread.end, '[redacted]');
-        continue;
-      }
+    const quote = values.slice(value.quote, from);
+    let reread: QuotedValueEnd | undefined;
+    for (const view of views) {
+      if (view.slice(value.quote, from) !== quote) continue;
+      const reading = quotedValueEnd(view, value.quote);
+      reread = reread === undefined ? reading : laterClosing(reread, reading);
+    }
+    if (reread?.closed === true) {
+      report(value.start, reread.end, '[redacted]');
+      continue;
     }
     delimiter.lastIndex = from;
     const end = Math.min(delimiter.exec(values)?.index ?? values.length, value.end);
@@ -947,21 +1024,22 @@ function closingKind(text: string, index: number): string | undefined {
  * not, and only else to the end of its line. Masked values that take every later quote leave what lies
  * between them uncertain (`token='\ntoken=''<secret>'`), so the summary masks through all of it. Like a
  * value that closes, it is read twice, with every mask filled and with each mask keeping the backslashes
- * it ends with (`escapes`), and masked through the later of the two (`laterClosing`). One backward scan,
- * from the end of the text to the earliest end of an open value; each run of backslashes is read once,
- * before the quote it escapes.
+ * it ends with (`escapes` for the earlier masks), and masked through the later of the two
+ * (`laterClosing`). One backward scan, from the end of the text to the earliest end of an open value;
+ * each run of backslashes is read once, before the quote it escapes.
  */
 function throughNearestCloser(
   values: string,
-  escapes: string,
+  escapes: string | undefined,
   masked: readonly SecretRange[],
   open: readonly OpenValue[],
 ): readonly { readonly start: number; readonly end: number }[] {
   if (open.length === 0) return [];
   const byEnd = open.toSorted((left, right) => right.end - left.end);
   const filled = fillRanges(values, masked);
-  const kept = keepingEscapes(escapes, masked);
-  const keptFilled = kept === masked && escapes === values ? filled : fillRanges(escapes, kept);
+  const base = escapes ?? values;
+  const kept = keepingEscapes(base, masked);
+  const keptFilled = escapes === undefined && kept === masked ? undefined : fillRanges(base, kept);
   // Where the nearest quote of each kind outside the masked values ends, and where the last one does, in
   // each reading.
   const outside = new Map<string, number>();
@@ -981,10 +1059,10 @@ function throughNearestCloser(
     if (kind !== undefined) outside.set(kind, index + 1);
     const raw = closingKind(values, index);
     if (raw !== undefined && !last.has(raw)) last.set(raw, index + 1);
-    if (keptFilled === filled) continue;
+    if (keptFilled === undefined) continue;
     const keptKind = closingKind(keptFilled, index);
     if (keptKind !== undefined) keptOutside.set(keptKind, index + 1);
-    const keptRaw = closingKind(escapes, index);
+    const keptRaw = closingKind(base, index);
     if (keptRaw !== undefined && !keptLast.has(keptRaw)) keptLast.set(keptRaw, index + 1);
   }
   return ranges;
@@ -1100,43 +1178,82 @@ export function projectSecretShapedValue(value: unknown): {
 /** How the walk projects each string: the display projection, or the journal's settle-checking one. */
 type TextProjection = (text: string) => string;
 
-/** What the walk puts in place of a value it masks whole: a credential member or a credential flag's argument. */
-type WholeMask = (value: unknown) => string;
+/**
+ * What the walk puts in place of a value it masks whole, a credential member or a credential flag's
+ * argument, given that value and its `mask` (`[redacted]`, or a canonical scheme label and `[redacted]`).
+ */
+type WholeMask = (value: unknown, mask: string) => string;
 
-/** The journal's and the display's whole mask. */
-const maskWhole: WholeMask = () => '[redacted]';
+/** The journal's and the display's whole mask: the mask itself. */
+const maskWhole: WholeMask = (_value, mask) => mask;
 
 /**
- * The summary walk's whole mask (`toText`). It keeps a private-key END marker that may close a block opened
- * before the value and a BEGIN marker that may open one continuing after it, so the summary's text rules
- * still pair each with a marker in another member and mask the key's body there. A marker names a key
- * type, not key material; a block whose markers are both inside the value is masked with it.
+ * The text a non-string result's summary is made from (`toText`): its JSON with every value the walk masks
+ * whole (`redactSecretShapedWalk`) masked, and read once by the text rules before those masks, so a quoted
+ * value or a PEM block that runs into or out of such a value keeps the context it is read in, as the JSON
+ * of the unwalked result would give it. The walk leaves a private-use placeholder for each such value; the
+ * value's own JSON goes back where its placeholder is, and its mask is one more range of that reading. A
+ * result whose JSON already holds a placeholder character, or one that has no JSON form, keeps the walk's
+ * masks in place and skips the reading.
  */
-function maskWholeKeepingPemMarkers(value: unknown): string {
-  if (typeof value !== 'string' || !value.includes('-----')) return '[redacted]';
-  const begin = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
-  const end = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
-  let firstBegin: RegExpExecArray | undefined;
-  let lastBegin: RegExpExecArray | undefined;
-  for (let marker = begin.exec(value); marker !== null; marker = begin.exec(value)) {
-    firstBegin ??= marker;
-    lastBegin = marker;
+function structuredSummaryText(safe: unknown): string {
+  const holes: { readonly value: unknown; readonly mask: string }[] = [];
+  const marked = jsonText(() =>
+    redactSecretShapedWalk(
+      safe,
+      new WeakSet<object>(),
+      (text) => text,
+      undefined,
+      (value, mask) => `\uE000${holes.push({ value, mask }) - 1}\uE001`,
+    ),
+  );
+  if (holes.length === 0) return marked;
+  const placeholders = [...marked.matchAll(/\uE000(\d+)\uE001/g)];
+  if (placeholders.length !== holes.length || marked.split('\uE000').length - 1 !== holes.length) {
+    return jsonText(() => redactSecretShapedWalk(safe, new WeakSet<object>(), (text) => text));
   }
-  let firstEnd: RegExpExecArray | undefined;
-  let lastEnd: RegExpExecArray | undefined;
-  for (let marker = end.exec(value); marker !== null; marker = end.exec(value)) {
-    firstEnd ??= marker;
-    lastEnd = marker;
+  const parts: string[] = [];
+  const masks: SecretRange[] = [];
+  let length = 0;
+  let copied = 0;
+  for (const placeholder of placeholders) {
+    const hole = holes[Number(placeholder[1])];
+    if (hole === undefined) continue;
+    // A placeholder that is a whole JSON string stands for any value; one inside a string (a
+    // `--password=<value>` argument) stands for a string's text there.
+    let start = placeholder.index;
+    let end = start + placeholder[0].length;
+    let json: string;
+    let mask: string;
+    if (marked[start - 1] === '"' && marked[end] === '"') {
+      start -= 1;
+      end += 1;
+      // A value with no JSON form (a function, a bigint, a cycle) is read as its mask.
+      json = jsonValue(hole.value) ?? JSON.stringify(hole.mask);
+      mask = JSON.stringify(hole.mask);
+    } else {
+      json = JSON.stringify(typeof hole.value === 'string' ? hole.value : hole.mask).slice(1, -1);
+      mask = JSON.stringify(hole.mask).slice(1, -1);
+    }
+    const before = marked.slice(copied, start);
+    parts.push(before, json);
+    length += before.length;
+    masks.push({ start: length, end: length + json.length, replacement: mask });
+    length += json.length;
+    copied = end;
   }
-  const closing =
-    firstEnd !== undefined && (firstBegin === undefined || firstBegin.index > firstEnd.index)
-      ? firstEnd[0]
-      : '';
-  const opening =
-    lastBegin !== undefined && (lastEnd === undefined || lastEnd.index < lastBegin.index)
-      ? lastBegin[0]
-      : '';
-  return `${closing}[redacted]${opening}`;
+  parts.push(marked.slice(copied));
+  const text = parts.join('');
+  return replaceRanges(text, [...secretRanges(text, true), ...masks]);
+}
+
+/** The JSON of one value, or `undefined` where it has none or its serialization throws. */
+function jsonValue(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1255,7 +1372,7 @@ function redactCredentialArgument(flag: string, value: unknown, whole: WholeMask
   if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
     return value;
   }
-  return whole(value);
+  return whole(value, '[redacted]');
 }
 
 /**
@@ -1311,14 +1428,14 @@ function redactUnderKey(
     const scheme = /^(bearer|basic|token)[ \t]+\S/i.exec(item)?.[1]?.toLowerCase();
     switch (scheme) {
       case 'bearer':
-        return 'Bearer [redacted]';
+        return whole(item, 'Bearer [redacted]');
       case 'basic':
-        return 'Basic [redacted]';
+        return whole(item, 'Basic [redacted]');
       case 'token':
-        return 'Token [redacted]';
+        return whole(item, 'Token [redacted]');
     }
   }
-  return whole(item);
+  return whole(item, '[redacted]');
 }
 
 function redactSecretShapedWalk(
@@ -1362,9 +1479,9 @@ function redactSecretShapedWalk(
 /**
  * Render any result to the text the model would see (a string is itself; else compact JSON) and to the text
  * its summary is made from. Inline media bytes are redacted first so the summary/spill/preview can never
- * carry base64 (I3). A non-string result's summary text is its JSON once the walk has masked every member
- * under a credential-named key and every argument after a credential flag whole (`redactSecretShapedWalk`),
- * which no text rule reads. The text rules then read the JSON as one text (`makeSummary`), a value one JSON
+ * carry base64 (I3). A non-string result's summary text is its JSON with every member under a
+ * credential-named key and every argument after a credential flag masked whole (`structuredSummaryText`),
+ * which no text rule reads. The text rules read the JSON as one text (`makeSummary`), a value one JSON
  * string down included, so a PEM block or a quoted value that runs across members keeps the context it is
  * read in; projecting each string alone would mask a key or a PEM marker that a later member's text needs.
  */
@@ -1387,18 +1504,7 @@ function toText(result: unknown): { readonly text: string; readonly summaryText:
   } catch {
     return { text: '[unserializable]', summaryText: '[unserializable]' }; // throwing getter during redaction
   }
-  return {
-    text: jsonText(() => safe),
-    summaryText: jsonText(() =>
-      redactSecretShapedWalk(
-        safe,
-        new WeakSet<object>(),
-        (text) => text,
-        undefined,
-        maskWholeKeepingPemMarkers,
-      ),
-    ),
-  };
+  return { text: jsonText(() => safe), summaryText: structuredSummaryText(safe) };
 }
 
 /**
