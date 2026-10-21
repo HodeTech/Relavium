@@ -2999,3 +2999,55 @@ describe('PR95 review round 9: closing views, unwalked members, wrapped markers 
     ADMITTED_SIZE_CASE_TIMEOUT_MS,
   );
 });
+
+describe('PR95 review round 10: a value whose escaped quote an earlier mask took, in a summary', () => {
+  it("opens a value whose escaped quote ends an earlier mask's backslashes in a summary", async () => {
+    // A structured result's JSON escapes each line break, so a query value at the end of a line runs on
+    // through the next line's key and takes the backslash of its value's escaped quote; the summary opens
+    // that value where the query value's mask keeps its trailing backslashes.
+    const env =
+      'DATABASE_URL=postgres://db.example.com/app?sslmode=require\nPOSTGRES_PASSWORD="S3cr3tValue2024"\n';
+    for (const [result, summary, secret] of [
+      [
+        { exitCode: 0, stdout: env, stderr: '', durationMs: 12 },
+        '{"exitCode":0,"stdout":"DATABASE_URL=postgres://db.example.com/app?sslmode=[redacted]\\n","stderr":"","durationMs":12}',
+        'S3cr3tValue2024',
+      ],
+      [
+        { content: [{ type: 'text', text: env }] },
+        '{"content":[{"type":"text","text":"DATABASE_URL=postgres://db.example.com/app?sslmode=[redacted]\\n"}]}',
+        'S3cr3tValue2024',
+      ],
+      [
+        { stdout: env.replaceAll('\n', '\r\n') },
+        '{"stdout":"DATABASE_URL=postgres://db.example.com/app?sslmode=[redacted]\\r\\n"}',
+        'S3cr3tValue2024',
+      ],
+      [
+        {
+          stdout:
+            'MONGO_URL=mongodb://h/db?retryWrites=true&w=majority\nMONGO_PASSWORD="M0ngoSecretPass"\n',
+        },
+        '{"stdout":"MONGO_URL=mongodb://h/db?retryWrites=true&w=[redacted]\\n"}',
+        'M0ngoSecretPass',
+      ],
+      [
+        { stdout: 'GET /x?ssl_cert_reqs=required\tREDIS_PASSWORD="R3disSecretPass"' },
+        '{"stdout":"GET /x?ssl_cert_reqs=[redacted]"}',
+        'R3disSecretPass',
+      ],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B10_CORE_SUMMARY_KEPT_OPENING').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B10_CORE_SUMMARY_KEPT_OPENING').toBe(false);
+    }
+    // The journal projection, which is compared rather than shown, keeps its reading so that its digests do
+    // not change: the same JSON as a text argument still shows the value, a residual deferred-tasks.md records.
+    expect(
+      redactSecretShapedText(JSON.stringify({ stdout: env })),
+      'SECRETS_B10_CORE_SUMMARY_KEPT_OPENING',
+    ).toBe(
+      '{"stdout":"DATABASE_URL=postgres://db.example.com/app?sslmode=[redacted]"S3cr3tValue2024\\"\\n"}',
+    );
+  });
+});

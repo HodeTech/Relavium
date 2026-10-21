@@ -334,7 +334,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 217;
+const CORE_PROJECTION_CASES = 218;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -1553,12 +1553,13 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-quoted-value-scan',
-    '      const value = quotedValueEnd(values, valueStart);',
+    '      const readings = kept === undefined ? [quotedValueEnd(values, valueStart), ...plain] : plain;',
     String.raw`      const quoted = opening === '"' ? /"(?:[^"\\\r\n]|\\[^\r\n])*"/y : /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
       quoted.lastIndex = valueStart;
       const value = quoted.test(values)
         ? { end: quoted.lastIndex, closed: true, lineBreak: false }
-        : { end: valueStart, closed: false, lineBreak: true };`,
+        : { end: valueStart, closed: false, lineBreak: true };
+      const readings = kept === undefined ? [value, ...plain] : plain;`,
     ['projects exactly admitted-size quoted values without exhausting the RegExp stack'],
     'SECRETS_B7_CORE_QUOTED_SCAN',
   ),
@@ -1602,8 +1603,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-escaped-quote',
-    '    const opening = escaped ? values[valueStart + 1] : values[valueStart];',
-    '    const opening = values[valueStart];',
+    '    const opening = escaped ? opener[valueStart + 1] : opener[valueStart];',
+    '    const opening = opener[valueStart];',
     ['reads a quoted value one JSON string down'],
     'SECRETS_B8_CORE_ESCAPED_QUOTE',
   ),

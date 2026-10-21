@@ -391,10 +391,13 @@ of every rule before replacing anything, so a userinfo is masked together with t
 of the keys and query parameters in it but its username, which never reaches past an LF or TAB, and
 no mask removes another credential's context; reads a key or scheme label inside another value as a
 credential of its own, and a value through earlier masks; masks userinfo split by an LF or TAB at
-either edge or inside its `scheme://`; reads a quoted value one JSON string down too, and one that
-does not close on its line, or before the end of its string, as an unquoted run that stops there —
-unless another mask of the pass takes its line break and it closes, as the next pass read it before
-(at the latest of its readings, with and without the key rule's own masks and the masks' trailing backslashes) — so the text after a quote that may close a string around the key keeps calls distinct; reads a
+either edge or inside its `scheme://`; reads a quoted value one JSON string down too, and closes a
+quoted value at the latest of its readings, with earlier masks keeping their trailing backslashes and,
+once a reading closes, with the scheme labels' tokens filled; reads one that does not close on its
+line, or before the end of its string, as an unquoted run that stops there — unless another mask of
+the pass takes its line break and it closes, as the next pass read it before (at the latest of its
+readings, with and without the key rule's own masks and the masks' trailing backslashes) — so the
+text after a quote that may close a string around the key keeps calls distinct; reads a
 split header label or a scheme label right after a credential or a PEM block, and a header label at
 a line start inside a split continuation; and repeats the projection until it is stable. These
 change a `v5:` projection only for the arguments they project differently, such as userinfo

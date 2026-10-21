@@ -214,10 +214,11 @@ fixes on `development`, not yet on `main`); CI for it and the merge commit finis
 gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
 and the maintainer's [2026-10-19 rulings](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
 give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
-(the scrubber residuals, including both security residuals) is implemented on `development` and under
-review: rounds 1–9 were NONCLEAN and are corrected ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). Under the maintainer's
-2026-10-21 masker acceptance bar and round cap, round 10 is the last: after it only high findings are
-corrected, and its other findings go to deferred-tasks.md. Then Step 9a.1 (release map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
+(the scrubber residuals, including both security residuals) is closed on `development` under the
+maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)): rounds 1–10 were
+NONCLEAN; the high and medium findings through round 9 are corrected, and after round 10, the last
+round, only GEN-R10-1, which the maintainer counted as high on 2026-10-22, is corrected (in the summary,
+by the author alone). The other findings are recorded in deferred-tasks.md. Next is Step 9a.1 (release map/custody substrate, #46/ADR-0111). `development` is pushed after each accepted increment. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical

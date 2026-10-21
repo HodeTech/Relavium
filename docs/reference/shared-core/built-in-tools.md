@@ -207,27 +207,42 @@ the admitted text, and none uses a backtracking pattern whose stack an admitted 
 quoted value is read by a character scan no further than its line, and a summary decides its values
 that stop at a line break by one backward scan. Ordinary spaces and punctuation separate public
 prose; the masker does not discard the whole diagnostic because a credential appears. A summary uses
-the projection with one difference, since a summary is shown, never compared: a quoted value that one
-of its readings stops at a line break is masked through the nearest later quote that could close it
-outside the values the rule masks or, when every such quote is inside one, through the last of them,
-and only else to the end of its line, in whichever reading reaches further, and through the closing
-of a reading that closes too; one that reaches the end of the string around it or of the text without
-closing is masked to that end. A structured (non-string) result is summarized from its JSON with
+the projection with the differences below, since a summary is shown, never compared. A quoted value
+that one of its readings stops at a line break is masked through the nearest later quote that could
+close it outside the values the rule masks or, when every such quote is inside one, through the last
+of them, and only else to the end of its line, in whichever reading reaches further, and through the
+closing of a reading that closes too; one that reaches the end of the string around it or of the text
+without closing is masked to that end. A key's value whose escaped opening quote ends an earlier
+mask's backslashes opens where that mask keeps them, so a query value at the end of a line that runs
+on through the next line's key in a structured result's JSON does not hide that key's value (a
+`cat .env` result's `?sslmode=require\nPOSTGRES_PASSWORD=\"…\"` → `?sslmode=[redacted]\n`); the
+journal projection keeps its reading, so the same JSON as a text argument still shows such a value, a
+documented limit. A structured (non-string) result is summarized from its JSON with
 every member under a credential-named key and every argument after a credential flag masked whole
 (a count such as `input_tokens` too, the text rules then masking the member's name with it). The text
 rules read that JSON once before those masks, which the same pass applies, so a quoted value or a PEM
 block that runs into or out of a masked member is masked across members, as reading the unwalked JSON
-masks it; they read the JSON as one text, a value one JSON string down included, so a JSON-escaped
-line break is no delimiter and a PEM block or a quoted value that runs across members keeps its key
-and markers. A summary also reads a private-key marker whose words a line break, a tab or more than
+masks it. The summary marks those values with the private-use character U+E000, so a result whose JSON
+already holds one is summarized from the walk's masks alone and such a value or block is not masked
+across members there, a documented limit. The text rules read the JSON as one text, a value one
+JSON string down included, so a JSON-escaped line break is no delimiter and a PEM block or a quoted
+value that runs across members keeps its key and markers. A summary also reads a private-key marker whose words a line break, a tab or more than
 one space separates (`-----END RSA PRIVATE\nKEY-----`), as a block wrapped at a fixed width can split
-one; the journal projection reads such a marker as before, and a structured result's summary does not
-read one whose line break or tab its JSON escapes (`{"a":"…-----END RSA PRIVATE\nKEY-----"}`), a
-documented limit. A private-key block is masked only from a BEGIN marker to an END marker that starts
+one: one to eight whitespace characters between `PRIVATE` and `KEY`, and up to 40 characters of type
+words and whitespace after `BEGIN` or `END`. A marker wrapped further is read only after the summary's
+one-line normalization, which a key's value that takes the BEGIN marker first prevents
+(`PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n<body>\n-----END PRIVATE\n        KEY-----` shows the body),
+a documented limit. The journal projection reads such a marker as before, and a structured result's
+summary does not read one whose line break or tab its JSON escapes
+(`{"a":"…-----END RSA PRIVATE\nKEY-----"}`), a documented limit. A private-key block is masked only from a BEGIN marker to an END marker that starts
 at most 20,000 characters after it, so a block cut off before its END marker (`head -n 5 key.pem`)
-stays visible in every projection, a documented limit. In a summary, a key's unquoted value behind
-an escaped line break and indentation (`password:\n  <v>` in a structured result's JSON) is not read,
-a documented limit. Every summary also reads its text a second time with each
+stays visible in every projection, a documented limit. A block ends at its first END marker even where
+another rule's match is glued to it (`?sig=<v>-----END …`): text after that marker stays, and a key's
+quoted value whose closing quote lies inside the block shows its front
+(`api_key='x <v> -----BEGIN …' ?sig=<v>-----END …` → `api_key='x <v> [redacted]`); base masked these only
+because its rules ran in turn and the glued match erased the marker, a documented relaxation. In a
+summary, a key's unquoted value behind an escaped line break and indentation (`password:\n  <v>` in a
+structured result's JSON) is not read, a documented limit. Every summary also reads its text a second time with each
 escaped line feed, carriage return or tab (`\n`, `\r`, `\t`, behind any run of backslashes) as that
 separator, for the rules a separator decides: a credential or a scheme label right after one, and a
 credential split by one, are masked as in raw text (`{"stdout":"keys:\nsk-…"}` →

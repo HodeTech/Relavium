@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-21 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Steps 9–19 not started; the PR95 increment is under review on `development`). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's low edge cases with the maintainer's 2026-10-21 acceptance bar. Existing approved deferrals remain.
+> Last updated: 2026-10-22 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Steps 9–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -393,12 +393,12 @@ measured or counted here.
   `ci.yml` and the Sonar backlog section below), the S4036 accepted as on the PR #95 branch. SonarCloud then reported zero
   open vulnerabilities and an OK gate for `main`. No rule, threshold or gate was changed; the per-issue record is local
   and Git-ignored. *(was medium · process)*
-- [ ] **Scheduled → Wave 3 PR95. An `api-key` header label erases the `Bearer`/`Basic` label that follows it, so the token leaks.** *Low (security).* *(author)* `scrubSecrets('api-key:Bearer abcdefghijkl123456')` returns `api-key:[REDACTED] abcdefghijkl123456` — the `api-key` rule consumes the word `Bearer` as the header's value and the Bearer rule then has no label to anchor on. The pre-PR matcher returned `api-key:Bearer [REDACTED]`. Surfaced by the post-merge security sitting, reproduced independently; it comes from the PR's rule order, not from `a3e164b5`, and is **not fixed**. A plain `Authorization: Bearer …` is unaffected. Fix idea: let the header value skip a following `Bearer`/`Basic` label, or run those rules first. *(low · packages/llm/src/scrub-secrets.ts)*
-- [ ] **Scheduled → Wave 3 PR95. URL userinfo containing a raw `?` or `#` before the first `:` (or with no `:`) is not masked.** *Ruled 2026-10-19:* mask unless the text before the `?`/`#` is host-shaped (a dotted hostname, `localhost` or a bracketed IP, with an optional `:port`) **and** an `=` assignment lies between the `?`/`#` and the authority `@`; a plain host-shaped exemption would still leave `https://my.user:1234?TOKEN@h/` open. The same predicate applies to core's twin in `packages/core/src/tools/bounding.ts` (its colonless short-handle rule and `]` delimiter stay, recorded as differences). *Low (security).* *(author, from two independent differential runs)* `https://us?er:TOKEN@h/`, `http://#TOKEN@h` and `https://my.user:1234?TOKEN@h/` pass through unchanged; the pre-PR matcher masked all of them. It follows from the deliberate host-query policy in `maskUrlUserinfo` (a raw `?`/`#` may begin public query text, e.g. `https://host?contact=a@b.c`) and the colon-first cases are pinned by tests; it is identical at `19c99968` and is not introduced by the follow-up. **A maintainer call** whether a username shaped that way is worth the false positives. Fix idea: exempt only when the text before the `?`/`#` is non-empty and host-shaped (contains `.`, a `:port`, `localhost` or a bracketed IPv6), otherwise mask. *(low · packages/llm/src/scrub-secrets.ts)*
-- [ ] **Scheduled → Wave 3 PR95. Credentials in URLs of other schemes are outside the finite rule.** *Ruled 2026-10-19:* extend the finite list with postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp and smtps, masking only colon-bearing userinfo for the new schemes; malformed `https:/u:p@h`, a raw `/` inside a password and invisible characters inside the scheme stay documented limits. *Low, informational.* `postgres://`, `redis://`, `mongodb(+srv)://`, `ssh://` userinfo, malformed `https:/u:p@h`, a raw `/` inside a password, and invisible characters inside the scheme are not masked, identically before and after the follow-up. The file states its shapes are finite; a database connection error is the realistic carrier, so the scheme list may deserve a decision. *(info · packages/llm/src/scrub-secrets.ts)*
-- [ ] **Scheduled → Wave 3 PR95. The URL rule's split-credential scan costs 2.1–2.5× on letter-heavy input, and nothing times that loop.** *Low / nit.* With `NO_BOUNDARY` the scanner tests every ASCII letter start for the URL rule; at 8 MiB the worst case stays under about 1.1 s and linear (1–16 MiB scaling checked). A prefilter on `h`/`w`/`f` would recover most of it. The existing 8 MiB timing case contains no `@`, so it returns before the loop; a guard would use a leading `a\nhttps://u@h ` plus 8 MiB of letters, but see the load-sensitive timing item below before adding another wall-clock assertion. SonarCloud was not run on the never-matching `NO_BOUNDARY = /(?!)/`; check its next analysis. *(low · packages/llm/src/scrub-secrets.ts)*
-- [ ] **Scheduled → Wave 3 PR95. Two latent invariants in `hasSplitCredential` are unchecked.** *Nit.* A boundary-bearing rule with neither `\b` nor a `joinedPattern` makes `scrubSecrets` throw a `SyntaxError` on LF/TAB input no earlier rule has redacted (the suite fails at once, so it is caught, but it would break `makeLlmError`'s no-throw claim); and `wordBlocksStart` tests `boundary.test('a')` as a proxy for "rejects every ASCII word character", true for all current boundaries. An assertion at module load would pin both. *(nit · packages/llm/src/scrub-secrets.ts)*
-- [ ] **Scheduled → Wave 3 PR95. The userinfo control's joined-view half is not separately witnessed.** *Low (coverage).* *(author, from an independent run)* Mutating only `joinedPattern` of the URL rule leaves 111/111 tests green. The whitespace-stripped residual probe independently catches the class the existing cases use, so it may be largely an equivalent mutant; an added case that did not discriminate it was reverted rather than kept. No causal control pins the glued-scheme behaviour either — only ordinary tests do. *(low · tools/secrets-controls/mutations.mjs)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. An `api-key` header label erases the `Bearer`/`Basic` label that follows it, so the token leaks.** *Low (security).* *(author)* `scrubSecrets('api-key:Bearer abcdefghijkl123456')` returns `api-key:[REDACTED] abcdefghijkl123456` — the `api-key` rule consumes the word `Bearer` as the header's value and the Bearer rule then has no label to anchor on. The pre-PR matcher returned `api-key:Bearer [REDACTED]`. Surfaced by the post-merge security sitting, reproduced independently; it comes from the PR's rule order, not from `a3e164b5`, and is **not fixed**. A plain `Authorization: Bearer …` is unaffected. Fix idea: let the header value skip a following `Bearer`/`Basic` label, or run those rules first. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. URL userinfo containing a raw `?` or `#` before the first `:` (or with no `:`) is not masked.** *Ruled 2026-10-19:* mask unless the text before the `?`/`#` is host-shaped (a dotted hostname, `localhost` or a bracketed IP, with an optional `:port`) **and** an `=` assignment lies between the `?`/`#` and the authority `@`; a plain host-shaped exemption would still leave `https://my.user:1234?TOKEN@h/` open. The same predicate applies to core's twin in `packages/core/src/tools/bounding.ts` (its colonless short-handle rule and `]` delimiter stay, recorded as differences). *Low (security).* *(author, from two independent differential runs)* `https://us?er:TOKEN@h/`, `http://#TOKEN@h` and `https://my.user:1234?TOKEN@h/` pass through unchanged; the pre-PR matcher masked all of them. It follows from the deliberate host-query policy in `maskUrlUserinfo` (a raw `?`/`#` may begin public query text, e.g. `https://host?contact=a@b.c`) and the colon-first cases are pinned by tests; it is identical at `19c99968` and is not introduced by the follow-up. **A maintainer call** whether a username shaped that way is worth the false positives. Fix idea: exempt only when the text before the `?`/`#` is non-empty and host-shaped (contains `.`, a `:port`, `localhost` or a bracketed IPv6), otherwise mask. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Credentials in URLs of other schemes are outside the finite rule.** *Ruled 2026-10-19:* extend the finite list with postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp and smtps, masking only colon-bearing userinfo for the new schemes; malformed `https:/u:p@h`, a raw `/` inside a password and invisible characters inside the scheme stay documented limits. *Low, informational.* `postgres://`, `redis://`, `mongodb(+srv)://`, `ssh://` userinfo, malformed `https:/u:p@h`, a raw `/` inside a password, and invisible characters inside the scheme are not masked, identically before and after the follow-up. The file states its shapes are finite; a database connection error is the realistic carrier, so the scheme list may deserve a decision. *(info · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The URL rule's split-credential scan costs 2.1–2.5× on letter-heavy input, and nothing times that loop.** *Low / nit.* With `NO_BOUNDARY` the scanner tests every ASCII letter start for the URL rule; at 8 MiB the worst case stays under about 1.1 s and linear (1–16 MiB scaling checked). A prefilter on `h`/`w`/`f` would recover most of it. The existing 8 MiB timing case contains no `@`, so it returns before the loop; a guard would use a leading `a\nhttps://u@h ` plus 8 MiB of letters, but see the load-sensitive timing item below before adding another wall-clock assertion. SonarCloud was not run on the never-matching `NO_BOUNDARY = /(?!)/`; check its next analysis. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Two latent invariants in `hasSplitCredential` are unchecked.** *Nit.* A boundary-bearing rule with neither `\b` nor a `joinedPattern` makes `scrubSecrets` throw a `SyntaxError` on LF/TAB input no earlier rule has redacted (the suite fails at once, so it is caught, but it would break `makeLlmError`'s no-throw claim); and `wordBlocksStart` tests `boundary.test('a')` as a proxy for "rejects every ASCII word character", true for all current boundaries. An assertion at module load would pin both. *(nit · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The userinfo control's joined-view half is not separately witnessed.** *Low (coverage).* *(author, from an independent run)* Mutating only `joinedPattern` of the URL rule leaves 111/111 tests green. The whitespace-stripped residual probe independently catches the class the existing cases use, so it may be largely an equivalent mutant; an added case that did not discriminate it was reverted rather than kept. No causal control pins the glued-scheme behaviour either — only ordinary tests do. *(low · tools/secrets-controls/mutations.mjs)*
 - [ ] **Approved deferral (maintainer, 2026-10-19). `LOW-2` (the 1 s default `waitFor` on a real child) was examined and deliberately not changed.** *Low.* The only wait that observes a real child booting is `holdNativeToolProcess`'s marker wait, whose sole caller sits inside `drive-home.test.ts` waits (lines 633 and 637) that use the 1 s default and enclose the boot, so a longer inner bound cannot help; a retune must raise those outer waits together. No failure was reproduced (0 in dozens of loaded runs). `testing.md` also states that no readiness or case deadline is extended to pass the workspace gate. **Trigger: a recorded boot-time failure.** *(low · apps/cli/src/commands/native-forwarding.test-support.ts, apps/cli/src/home/drive-home.test.ts)*
 - [ ] **Scheduled → Wave 3 17b. Join-table test nits.** *Nit.* The `process-close.test.ts` gate margin is nominally 100 ms but `waitFor`'s 50 ms poll makes it 100–150 ms, so a publication more than about 150 ms late is invisible; the three rejection cases assert the message but not the `ProcessCapabilityError` class; the `mcp-orphan.e2e.test.ts` comment's statement that its cases have only ever run on POSIX is historical and unverifiable; the abort case's `await spawned.promise` is unbounded (a spawn that never happens fails only as the 5 s case timeout), its closed-child `waitFor` carries no tag, and the 100/300/3,000 ms margins are bare literals. *(nit · apps/cli/src/engine/tool-host/process-close.test.ts, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
 - [ ] **Approved deferral (maintainer, 2026-10-19). Native-lifetime watchdogs are fixed 5 s bounds inside 10 s cases (`LOW-1`).** *Low.* The watchdogs in
@@ -410,7 +410,7 @@ measured or counted here.
   does nothing, and three runs of the three vitest files (52 tests) passed at a load average of 80–96 on macOS.
   The reviewer could not observe the Windows root cause either. **Trigger: a Windows trace that names the bound
   that fired**; retune the coupled set together then. *(low · the files above)*
-- [ ] **Scheduled → Wave 3 PR95. `bounds admitted-size failed header and URL preparation` is load-sensitive.** *Low.* *(author)* It allows
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. `bounds admitted-size failed header and URL preparation` is load-sensitive.** *Low.* *(author)* It allows
   5 s for two 8 MiB scrubs that take about 0.75 s in total, and it failed twice with the load average near 65 (6.4 s
   in the run that logged the duration). Measured alternately, the pre-change code and the corrected code take the same
   time, so the failures were load, not the correction. Two independent reviewers saw it too (5,590 ms and 3,453 ms at load averages near 88–97) and recorded that `tools/secrets-controls/README.md` says the fixture runs without a machine-speed threshold, which this assertion contradicts; six controls run this file, so a loaded runner can turn a fixed phase red. The test
@@ -448,14 +448,17 @@ measured or counted here.
   can return a raw signal code above 9 that the physical exit never uses, a note for future embedders. No action
   is proposed for any of these.
 
-## PR #95 masker low edge cases — approved deferrals (2026-10-21)
+## PR #95 masker edge cases — approved deferrals (2026-10-21 and 2026-10-22)
 
 Under the [masker acceptance bar](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)
 that the maintainer set on 2026-10-21, a low finding in the open-ended masker work
 (`packages/llm/src/scrub-secrets.ts` and core's twin projection in `packages/core/src/tools/bounding.ts`) is
-recorded here instead of being corrected in the review loop. None of these entries is a regression against base
-`9902e0a0`, and none was judged high or medium; the two entries marked pending were found by the author after
-round 9, outside any finding, and await the maintainer's confirmation after round 10. The shapes that neither masker reads by design stay described in
+recorded here instead of being corrected in the review loop, and under the round cap of the same day so is
+every medium and low finding of round 10, the last round, after which only high findings are corrected. The
+entries up to round 9 are not regressions against base `9902e0a0`; the round-10 entries say when they are, in the
+shapes they name. The maintainer counted round 10's GEN-R10-1 (a `.env` password in a structured result's
+summary) as high on 2026-10-22, so its summary half is corrected and only its journal half is recorded here, and
+approved the two private-key block gaps the author found after round 9. The shapes that neither masker reads by design stay described in
 their canonical homes, [built-in-tools.md](../reference/shared-core/built-in-tools.md) for core and
 [error-handling.md](../standards/error-handling.md) for the scrubber; this list holds the review findings and the
 re-checks they need. **Trigger for every entry:** a real tool result, journal entry or diagnostic that carries the
@@ -497,23 +500,73 @@ the repository, so each entry names the input and the property to re-check by ha
   `tools/secrets-controls/mutations.mjs` targets it. **Re-check:** add a control (for example `keepingEscapes`
   returning `ranges`) when the secrets family is next extended, with its counts.
   *(low · tools/secrets-controls/mutations.mjs)*
-- [ ] **Deferral pending the maintainer's confirmation (author, 2026-10-21). A private-key block cut off before
-  its END marker is not masked.** *Unchanged from base; found by the author after round 9, outside any review
-  finding.* `redactSecretShapedText('<BEGIN marker>\nMIIE…')` and the summary of the same text keep the whole
-  body, as does a block whose END marker starts more than 20,000 characters after its BEGIN marker
-  (`PEM_BODY_MAX`): `visitPemBlocks` masks only a BEGIN…END pair, and the LLM backstop reads no private-key
-  block. A real tool output can cut a key short (`head -n 5 key.pem`, a tool that clips its own output).
-  built-in-tools.md names the limit. **Re-check:** mask an unclosed BEGIN marker through its base64 body lines in
-  every projection, linear at admitted size; a journal change needs the compatibility review of
+- [ ] **Approved deferral (maintainer, 2026-10-22). A private-key block cut off before its END marker is not
+  masked.** *Unchanged from base; found by the author after round 9, outside any review finding.*
+  `redactSecretShapedText('<BEGIN marker>\nMIIE…')` and the summary of the same text keep the whole body, as does
+  a block whose END marker starts more than 20,000 characters after its BEGIN marker (`PEM_BODY_MAX`):
+  `visitPemBlocks` masks only a BEGIN…END pair, and the LLM backstop reads no private-key block. A real tool output
+  can cut a key short (`head -n 5 key.pem`, a tool that clips its own output). built-in-tools.md names the limit.
+  **Re-check:** mask an unclosed BEGIN marker through its base64 body lines in every projection, linear at admitted
+  size; a journal change needs the compatibility review of
   [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
   *(packages/core/src/tools/bounding.ts)*
-- [ ] **Deferral pending the maintainer's confirmation (author, 2026-10-21). A structured result's summary does
-  not read a private-key marker split by a line break or tab.** *Unchanged from base; found by the author after
-  round 9.* `boundForModel({ a: '<BEGIN marker>\nMIIE…\n-----END RSA PRIVATE\nKEY-----' })` shows the block in
-  its summary, while the same text as a string result is `[redacted]`: JSON escapes the line break or tab, so the
-  wrapped-marker patterns, which read raw whitespace, see none; more than one space still collapses in the
-  summary's one-line pass. built-in-tools.md names the limit. **Re-check:** read the wrapped markers in
-  `escapedSeparatorView` as well (`visitEscapedSeparators`). *(packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-22). A structured result's summary does not read a private-key
+  marker split by a line break or tab.** *Unchanged from base; found by the author after round 9.*
+  `boundForModel({ a: '<BEGIN marker>\nMIIE…\n-----END RSA PRIVATE\nKEY-----' })` shows the block in its summary,
+  while the same text as a string result is `[redacted]`: JSON escapes the line break or tab, so the wrapped-marker
+  patterns, which read raw whitespace, see none; more than one space still collapses in the summary's one-line
+  pass. built-in-tools.md names the limit. **Re-check:** read the wrapped markers in `escapedSeparatorView` as well
+  (`visitEscapedSeparators`). *(packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A summary reads a wrapped private-key marker only within its
+  whitespace bounds.** *Medium, regression against base.* *(round 10, R10-SCRUB-1)*
+  `boundForModel('PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE\n        KEY-----')` shows the
+  body in its summary, which base masked: the wrapped patterns take one to eight whitespace characters between
+  `PRIVATE` and `KEY` and up to 40 characters of type words, and the key's unquoted value takes the BEGIN marker
+  before the one-line pass can pair the block. A line break with seven or more spaces of indentation in CRLF text,
+  nine tabs and a 31-column hanging indent leak the same way. built-in-tools.md names the bound. **Re-check:** let
+  each whitespace run grow as one simple quantifier (`PRIVATE\s+KEY`, type words separated by `\s+` with a bounded
+  word count) under the admitted-size case deadline, and add summary tests with nine or more whitespace characters
+  behind a key prefix. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A U+E000 in a structured result brings back walk-first masking
+  in its summary.** *Medium, regression against base.* *(round 10, R10-SCRUB-2, INT-R10-1 and PR95-R10-SEC-1)*
+  `boundForModel({ icon: ' ok', private_key: '<BEGIN marker>\nMIIEAAAAfirst', rest: 'MIIEBBBBsecond\n<END marker>' })`
+  shows the second half of the body and the END marker in its summary; `{ argv: ['mysql', "--password='correct",
+  'horse', "battery'"], icon: '' }` shows `horse` and `battery'`. The summary marks each whole-masked value with
+  a U+E000 placeholder and, when the result's JSON already holds that character, falls back to the walk's masks
+  applied before the text rules. A planted character or a glyph (a Nerd Font icon) is enough. built-in-tools.md
+  names the limit. **Re-check:** pick a placeholder that the result's JSON does not hold (an unused private-use code
+  point or a nonce) so that the unwalked reading always runs, and add tests with U+E000 beside a cross-member PEM
+  block and an argv password. *(medium · packages/core/src/tools/bounding.ts `structuredSummaryText`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A private-key block ends at its first END marker even where
+  another rule's match is glued to it.** *Medium, regression against base since `b89ac62e`.* *(round 10,
+  R10-SCRUB-3)* `redactSecretShapedText("api_key='x Wsecret12 -----BEGIN RSA PRIVATE KEY-----' ?sig=<24 a>-----END RSA PRIVATE KEY-----")`
+  is `api_key='x Wsecret12 [redacted]` (base: `[redacted] ?sig=[redacted] RSA PRIVATE KEY-----`), and
+  `'<BEGIN marker>\n?s=<26 characters><END marker>W<END marker>'` leaves `W<END marker>`, which base masked; base's
+  rules ran in turn, so the glued match erased the marker. built-in-tools.md names the relaxation. **Re-check:** end
+  a block only at an END marker that no other rule's match is glued to, or read a value's closing quote inside a
+  PEM range as closing. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`, `visitSecretKeyValues`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). Whitespace inside a wrapped marker's type words has no killing
+  test.** *Medium, test gap.* *(round 10, TST-R10-1)* Changing either wrapped pattern's type class
+  `[A-Z0-9\s]{0,40}` to `[A-Z0-9 ]{0,40}` leaves every bounding case passing, while the summary of
+  `PRIVATE_KEY=-----BEGIN RSA\nPRIVATE KEY-----\nMIIE…\n-----END RSA PRIVATE KEY-----`, or of the same split in the
+  END marker, then shows the body. **Re-check:** add both inputs to `reads a private-key marker that a line break, a
+  tab or a doubled space splits in a summary` and run both class mutants.
+  *(medium · packages/core/src/tools/bounding.test.ts)*
+- [ ] **Approved deferral (round cap, 2026-10-21). The summary's no-throw handling of a whole-masked value with no
+  JSON form has no killing test.** *Low, test gap.* *(round 10, TST-R10-2)* With `jsonValue` reduced to
+  `return JSON.stringify(value);`, `boundForModel({ password: 10n, ok: 1 })` and
+  `boundForModel(['--password', 10n, 'x'])` reject and every test still passes; the existing no-JSON-form test holds
+  no credential key. **Re-check:** add both inputs (summaries `{"[redacted],"ok":1}` and
+  `["--password","[redacted]","x"]`) and run the mutant. *(low · packages/core/src/tools/bounding.test.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-22). The journal projection of JSON text keeps a value whose escaped
+  opening quote an earlier mask took.** *Unchanged from base; the journal half of GEN-R10-1, whose summary half is
+  corrected.* `redactSecretShapedText(JSON.stringify({ stdout: 'DATABASE_URL=postgres://db.example.com/app?sslmode=require\nPOSTGRES_PASSWORD="<v>"\n' }))`
+  shows `<v>`: the query value runs on through the JSON-escaped line break and the next line's key and takes the
+  backslash of the value's escaped quote. A summary opens such a value where that mask keeps its backslashes; the
+  journal does not, so `v5:` digests do not change, and a test pins that. **Re-check:** drop the `throughCloser`
+  gate of the kept opening in `visitSecretKeyValues`, with the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(packages/core/src/tools/bounding.ts)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

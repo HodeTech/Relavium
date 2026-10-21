@@ -502,11 +502,14 @@ export function redactSecretShapedText(text: string): string {
 }
 
 /**
- * The summary's projection (`makeSummary`). A summary is shown, never compared, so it differs in one decision
- * (`visitSecretKeyValues`): a quoted value that stops at a line break is masked through a later quote that
- * could close it, else to the end of its line, and one that reaches the end of its string or of the text
- * without closing is masked to that end. Left to the one-line pass, such a value lost its key to a mask
- * before it (`token='a password="first\nsecond" done`), and JSON escaping hid it in a structured result.
+ * The summary's projection (`makeSummary`). A summary is shown, never compared, so it decides three things
+ * differently. In the key rule (`visitSecretKeyValues`), a quoted value that stops at a line break is masked
+ * through a later quote that could close it, else to the end of its line, and one that reaches the end of
+ * its string or of the text without closing is masked to that end: left to the one-line pass, such a value
+ * lost its key to a mask before it (`token='a password="first\nsecond" done`), and JSON escaping hid it in a
+ * structured result; and a value whose escaped opening quote ends an earlier mask's backslashes opens where
+ * that mask keeps them. It also reads private-key markers that whitespace wraps (`visitPemBlocks`) and the
+ * rules a separator decides behind escaped separators (`visitEscapedSeparators`).
  */
 function redactSecretShapedSummaryText(text: string): string {
   return toFixedPoint((value) => redactSecretShapedOnce(value, true), text, '[redacted]');
@@ -852,8 +855,10 @@ function valueDelimiter(): RegExp {
  * string around it, is returned for the journal projection to decide once the pass's other ranges are
  * known (`visitUnclosedValues`). The summary's projection (`throughCloser`) masks a value that one of its
  * readings stops at a line break through a later quote instead (`throughNearestCloser`), and through
- * the closing of a reading that closes too. Keys are read in `keys`, which hides each URL userinfo's
- * username (`UrlUserinfo.ownsUntil`): a key there names the user
+ * the closing of a reading that closes too; it also opens a value whose escaped opening quote ends an
+ * earlier mask's backslashes in the views that keep them (`?sslmode=require\nPOSTGRES_PASSWORD=\"…\"` in a
+ * structured result, where the query value runs on through the next line's key). Keys are read in
+ * `keys`, which hides each URL userinfo's username (`UrlUserinfo.ownsUntil`): a key there names the user
  * (`https://x-access-token:<t>@github.com/o/r`), and its value would run on through the public host and
  * path. Values are read in `values`, where every earlier mask is one run, as an applied mask would be,
  * and a quoted value also in the other `views` (`quoteViews`); it closes at the latest of them
@@ -884,11 +889,19 @@ function visitSecretKeyValues(
   };
   for (let match = key.exec(keys); match !== null; match = key.exec(keys)) {
     const valueStart = escapedValueStart(values, key.lastIndex);
-    const escaped = values[valueStart] === '\\';
-    const opening = escaped ? values[valueStart + 1] : values[valueStart];
+    // In a summary, a value whose escaped opening quote ends an earlier mask's backslashes (a query value
+    // that ran on through a JSON-escaped line break and the next line's key) opens where that mask keeps
+    // them, and is read only in the views that keep them.
+    const kept =
+      throughCloser && values[valueStart] !== '\\' && views.escapes?.[valueStart] === '\\'
+        ? views.escapes
+        : undefined;
+    const opener = kept ?? values;
+    const escaped = opener[valueStart] === '\\';
+    const opening = escaped ? opener[valueStart + 1] : opener[valueStart];
     if (opening === '"' || opening === "'") {
-      const value = quotedValueEnd(values, valueStart);
-      const readings = [value, ...views.plain.map((view) => quotedValueEnd(view, valueStart))];
+      const plain = views.plain.map((view) => quotedValueEnd(view, valueStart));
+      const readings = kept === undefined ? [quotedValueEnd(values, valueStart), ...plain] : plain;
       // A scheme label's token can take the line break before a closer that a reading reaches early; a
       // value that no reading closes is decided once every range of the pass is known instead.
       const first = readings.reduce(laterClosing);
@@ -1480,10 +1493,12 @@ function redactSecretShapedWalk(
  * Render any result to the text the model would see (a string is itself; else compact JSON) and to the text
  * its summary is made from. Inline media bytes are redacted first so the summary/spill/preview can never
  * carry base64 (I3). A non-string result's summary text is its JSON with every member under a
- * credential-named key and every argument after a credential flag masked whole (`structuredSummaryText`),
- * which no text rule reads. The text rules read the JSON as one text (`makeSummary`), a value one JSON
- * string down included, so a PEM block or a quoted value that runs across members keeps the context it is
- * read in; projecting each string alone would mask a key or a PEM marker that a later member's text needs.
+ * credential-named key and every argument after a credential flag masked whole (`structuredSummaryText`):
+ * the text rules read those values once in the unwalked JSON, with the whole masks as ranges of that same
+ * pass, and the later passes read only the masks. The text rules read the JSON as one text (`makeSummary`),
+ * a value one JSON string down included, so a PEM block or a quoted value that runs across members keeps
+ * the context it is read in; projecting each string alone would mask a key or a PEM marker that a later
+ * member's text needs.
  */
 function toText(result: unknown): { readonly text: string; readonly summaryText: string } {
   if (typeof result === 'string') {

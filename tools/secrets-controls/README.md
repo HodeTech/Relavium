@@ -178,7 +178,7 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core projection phase executes the complete 217-case bounding file (the journal-identity
+Every core projection phase executes the complete 218-case bounding file (the journal-identity
 control's phases the complete 115-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
@@ -261,7 +261,7 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 26
-complete files / 1,647 cases, with each control's exact workload and named target
+complete files / 1,648 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
@@ -270,8 +270,8 @@ later corrective acceptance belongs to the owning phase register. Prior selected
 The current 130-control / 390-phase full declaration runs as two round-robin shards of 65 controls
 (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,177 retained
 files (65 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many and measured
-50.19 MiB and 50.09 MiB, final export record included, against the unchanged
-64-MiB bound. That is one local measurement at the round-9 source, not a CI capture; one export of
+50.24 MiB and 50.14 MiB, final export record included, against the unchanged
+64-MiB bound. That is one local measurement at the round-10 source, not a CI capture; one export of
 the whole family would exceed the byte bound. Historical 41-control captures retain their original
 source and cohort attribution; selected B2 or original-boundary recovery captures are not
 full-family acceptance.
@@ -531,14 +531,29 @@ mutation: the quoted value's plain and scheme views, the gate that keeps a schem
 a plain reading reaches, and the latest closing; the summary's stopped reading and its later closer;
 the unclosed value's views with and without the key rule's masks, their kept variants, the guard on
 a view that fills the value's quote and the latest reread; the unwalked reading's placeholders,
-whole and inside a string, a value with no JSON form, its mask and its collision guard; the
-scheme-labelled and argument whole masks; the wrapped markers in the summary alone, their whitespace
-runs and the prefilter; and the opaque parameter in a URL username. An admitted-size case deadline
+whole and inside a string, a value with no JSON form through its `??` fallback, its mask and its
+collision guard; the scheme-labelled and argument whole masks; the wrapped markers in the summary
+alone, their whitespace between `PRIVATE` and `KEY` and the prefilter; and the opaque parameter in a
+URL username. (Corrected after round 10: the no-JSON-form value's try/catch and the whitespace inside
+the wrapped markers' type words have no killing test; both gaps are deferred.) An admitted-size case deadline
 pins the four quadratic shapes in the journal, display and summary paths; a timeout counts as
 infrastructure, so no control can certify it. Five mutations are output-neutral and have neither a
 test nor a control: the closing mask of a summary value that also stops at a line break, which its
 later closer covers; a kept run's clamp to its range, whose empty ranges a fill skips anyway; and
 three shortcuts that keep or reuse a view when no mask ends with a backslash.
+
+The tenth round, the last under the maintainer's round cap, found no high finding. The maintainer
+counted one realistic gap that base shares as high: in a structured result's JSON a query value at
+the end of a line runs on through the next line's key and takes the backslash of its value's escaped
+quote, so a `cat .env` result's password showed in its summary. A summary now opens such a value
+where the earlier mask keeps its trailing backslashes; the journal keeps its reading.
+`core-quoted-value-scan` and `core-escaped-quote` are re-anchored on the changed lines; no control is
+added. Pinned by a test without a control, each killed by its mutation: the summary-only gate, the
+kept opening and both of its reading sets. Two mutations are output-neutral and have neither a test
+nor a control: the condition that the filled view holds no backslash at the opening and the
+condition that the kept view holds one, since a mask the kept view keeps ends before a delimiter,
+where a view that keeps the backslashes closes no later than the filled one. The round's other
+findings are recorded in deferred-tasks.md.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).
