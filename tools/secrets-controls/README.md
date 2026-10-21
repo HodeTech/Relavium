@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **120 independent controls and 501 required named assertion witnesses**.
+declares **130 independent controls and 513 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -178,9 +178,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core projection phase executes the complete 195-case bounding file (the journal-identity
-control's phases the complete 112-case registry file); every new LLM phase executes the complete
-219-case scrubber file. Independent ordinary tooling tests pin
+Every core projection phase executes the complete 210-case bounding file (the journal-identity
+control's phases the complete 115-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -191,8 +190,9 @@ would survive its removal. Other witnesses require complete recognized spans and
 retain public tails, host contacts and the full-value identity policy. The finite
 LF/TAB continuation and malformed-userinfo policy is documented in the canonical
 [effect-journal contract](../../docs/reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
-An eight-MiB permanent fixture checks completion and whole-span behavior without a
-machine-speed threshold; these controls do not certify arbitrary obfuscation.
+Eight-MiB permanent fixtures in the core and scrubber files check completion and whole-span
+behavior under a 15-second case deadline rather than a machine-speed threshold; these controls do
+not certify arbitrary obfuscation.
 
 Two R1 original-boundary recovery controls add eight named assertions, retaining all
 51 prior identities and required witnesses. The core removal admits embedded-word
@@ -261,20 +261,20 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 26
-complete files / 1,617 cases, with each control's exact workload and named target
+complete files / 1,640 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 120-control / 360-phase full declaration runs as two round-robin shards of 60
-controls (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,087
-retained files (60 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many
-and measured 45.50 MiB and 45.48 MiB, final export record included, against the unchanged 64-MiB
-bound. That is one local measurement at the round-7 source, not a CI capture; one export of the
-whole family would exceed the byte bound. Historical 41-control captures retain their
-original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
-acceptance.
+The current 130-control / 390-phase full declaration runs as two round-robin shards of 65 controls
+(`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,177 retained
+files (65 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many and measured
+49.83 MiB and 49.76 MiB, final export record included, against the unchanged
+64-MiB bound. That is one local measurement at the round-8 source, not a CI capture; one export of
+the whole family would exceed the byte bound. Historical 41-control captures retain their original
+source and cohort attribution; selected B2 or original-boundary recovery captures are not
+full-family acceptance.
 
 Wave 3's PR95 increment adds nine controls and 80 named assertions, retaining all 57
 prior identities and witnesses. The LLM header control restores the old header value
@@ -416,6 +416,96 @@ rule's keyword alternatives, suffix and boundary and the value's delimiters, the
 and line-break rules, the refused argument names' masking and the helper's settled report. The header
 label join's `:` prefilter only skips work whose result is the text unchanged, so the output cannot
 show it and it has neither a test nor a control.
+
+The eighth round found that round 7's glued-credential chain could start a narrower family inside a
+wider credential or swallow a key name or label after it, and that four older gaps remained. The
+chain and its glued-span exemption are gone: a glued credential is read at the earlier mask's
+boundary on the next pass, and a run that never settles is redacted and refused. A structured
+result's summary is read from its JSON as one text once credential members and flag arguments are
+masked whole; quoted values are read one JSON string down, also behind escaped tabs and line breaks,
+where an apostrophe opens a value too; a quoted value that does not close on its line, or one JSON
+string down before its string ends, is decided once the pass's other masks are known, masked whole
+when they join its lines and it closes and otherwise read as an unquoted run from after its quote,
+no further than that end, while a summary masks one stopped by a line break through a later quote
+that could close it (else to the end of its line) and one that reaches the end of its string or of
+the text to that end; two member names that project alike make the journal projection unsettled; a
+header label at a line start inside a split continuation is read through a second label view; and
+the scrubber's split probe also reads the raw text when terminal normalization changed it. The
+round's password-position finding is documented rather than changed: such a key's value runs to the
+key rule's delimiter, through a URL's host and path, and calls that differ only there share a
+projection, as recognized credentials do. Before the commit the author ran the reviewers' method on
+the candidate, and six internal pre-reviews reviewed it. The first found that the draft's
+alternatives each opened a gap, and they were dropped: an authority-end rule that trusted a
+host-shaped tail revealed a password tail BASE had masked, quoted values that crossed lines took a
+quote that closes a string for one that opens a value, and a line-start credential inside a
+continuation made the split scan quadratic. The second found that the summary's pre-pass could erase
+the key of a nested multi-line value and that JSON escaping hid such values in structured results,
+that a value one JSON string down ran across a raw line break behind a backslash, and that two
+member names projecting alike dropped a member from the journal identity. The third found that the
+round's own additions failed: masking a value that never closes to the end of its line, decided from
+the end of the text back, merged the journal identities of calls whose text after a quote that
+closes a string around the key differed, so such a value is read as an unquoted run instead (the
+author's distinctness oracle then found the same merge one JSON string down, where a value ran to
+the end of its string, which now ends its run too); and the scrubber's reading of JSON-escaped tabs
+after a header's colon and its view of terminal sequences' final bytes each let a token leak or
+blanked coloured diagnostics, so both are withdrawn and their cases documented as limits. The fourth
+found that the run, deciding a value in the pass whose other rule also masked its line break, and
+the opaque mask's kept backslash showed values that every earlier version masked whole in its next
+pass, so such a value is now decided once the pass's other masks are known and the opaque mask takes
+the backslash again (the value one JSON string down that needed it is a documented limit); it also
+found that a terminal hyperlink to a bare origin before a later `@` blanks a diagnostic through the
+raw split probe, now a documented trade-off. The fifth found that projecting a structured result's
+strings one by one masked the keys and PEM markers that reading its JSON needs across members, so a
+structured summary reads its JSON as one text again and the per-string cache and summary-only runs
+over line breaks are withdrawn. The sixth found that the closing view and the summary's closer read
+a quote's escape after a nested key's value had taken the backslash before it, which showed a
+value's tail that base had masked; that a structured summary's walk took a private-key marker that a
+block across members needs; and that a structured summary read no JSON-escaped line break or tab, a
+gap base shares. A quoted value now closes at the later of two readings, with the masks before and
+inside it filled and with each mask keeping the backslashes it ends with, which also masks the tail
+that an opaque value's mask unescaped, behind a URL userinfo (which base masked) or not (which base
+showed too); the walk keeps a marker whose partner lies outside its member; and every summary also
+reads a view in which each escaped line feed, carriage return or tab is that separator. A structured
+summary's walk also became linear in its members at a small constant factor (one media-redaction
+walk serves both texts, that walk applies no text rule to a string because the text rules read the
+masked JSON once, and the key and label rules skip text that cannot hold them), and a many-part
+result takes a case deadline. Core's four eight-MiB cases take the scrubber's case deadline in place
+of their wall-clock bounds. `core-standalone-chain` and `core-glued-span-boundary` are removed with
+their mechanisms; `core-quoted-value-scan`, `core-joined-original-boundary`,
+`core-summary-fixed-point`, `core-key-value-through-masks`, `core-key-value-nested` and
+`core-journal-settled` are re-anchored; twelve controls are added (`core-summary-walk`,
+`core-escaped-quote`, `core-unclosed-run`, `core-unclosed-closing-view`, `core-continuation-label`,
+`core-summary-through-closer`, `core-summary-whole-json`, `core-journal-key-collision`,
+`core-escaped-value-start`, `core-summary-escape-view`, `core-summary-pem-markers`,
+`diagnostic-split-probe-raw`); and `core-unsettled-refusal` gains an unmocked witness and one for
+its whole-projection fallback. Pinned by tests without a control, each killed by its mutation: the
+separator before an escaped quote in the key rule; the escaped scan's decoding, its raw line breaks,
+also behind a backslash, and the raw quote that ends its string; a plain value's CR and backslash
+line ends, a lone backslash at the end of the text and the end of the text that leaves a value open;
+the run's start after its quote, its limit at its line's end, its six-character floor and its
+delimiters, which unquoted values share, the closing view's reread, its guard on a quote that
+another range takes and its second reading, the unquoted values' shared delimiter scan, the key
+rule's second reading of a quoted value, the backslashes each mask keeps in it and the later of the
+two readings; the raw tab, escaped CR, escaped apostrophe and raw apostrophe behind escaped
+separators; the summary's closers (the masked values' coverage, the nearest outside closer, the
+furthest masked one, the fill, the text end, the order by end, an escaped value's quote kind, the
+closers' backslash parity, even, 4k+1 and 4k+3, and the second reading's closers, masks and escapes
+with the later of the two), its fail-closed value, the summary projection in both passes, and the
+undefined and unserializable results; the conditions of the key and scheme rules' early exits and of
+the second scheme-label read, whose removal is output-neutral; the collision report inside arrays
+and under keys; the second label view's first-separator fill, the fill's opening bracket and the `'`
+delimiter; the structured summary's walk-only values; the escaped view's line feed, carriage return
+and tab, its doubled separator, its run of backslashes and each of the three rules that read it; the
+kept markers' first END and last BEGIN, the conditions under which a marker's partner lies inside
+its member, and the whole mask through arrays, members and both spellings of a flag argument, with
+the journal's and the display's own; the scrubber's host cut at a query or a fragment and the TAB
+half of its split retry; and the registry's masked, deduplicated refused names and its
+whole-projection fallback. Two and three PEM blocks in one text pin the shared END search's
+re-search, whose removal loops until the test worker runs out of memory, so no control can certify
+it. Four mutations are output-neutral and have neither a test nor a control: the kept markers'
+`-----` prefilter and the two shortcuts that reuse a view when no mask ends with a backslash, which
+only skip work, and preferring a second reading that closes at all, since a reading that keeps the
+masks' backslashes closes only at a quote where the other reading has closed by then.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

@@ -24,6 +24,13 @@ vi.mock('./fixed-point.js', async (importOriginal) => {
   };
 });
 
+/**
+ * Eight-MiB cases take well under a second. Their bound is this case deadline, far below the minutes a
+ * quadratic scan would need, rather than a wall-clock assertion that a loaded runner can trip. It is
+ * also the largest case budget the secrets causal-control phases admit (`CAUSAL_TIMEOUT_BUDGET`).
+ */
+const ADMITTED_SIZE_CASE_TIMEOUT_MS = 15_000;
+
 // The observation must not keep every admitted-size input and projection alive for the whole file.
 afterEach(() => {
   vi.mocked(fixedPointOf).mockClear();
@@ -159,6 +166,20 @@ describe('boundForModel', () => {
     const bounded = await boundForModel(undefined, TINY, host());
     expect(bounded.truncated).toBe(false);
     expect(bounded.value).toBeUndefined();
+    expect(bounded.summary).toBe('');
+  });
+
+  it('summarizes a result that has no JSON form as unserializable, without rejecting', async () => {
+    const throwing = Object.defineProperty({}, 'body', {
+      enumerable: true,
+      get() {
+        throw new Error('getter fails');
+      },
+    });
+    for (const result of [{ n: 10n }, throwing]) {
+      const bounded = await boundForModel(result, BIG, host());
+      expect(bounded.summary).toBe('[unserializable]');
+    }
   });
 
   it('renders a circular result without throwing (the cycle-safe redaction walk breaks the cycle)', async () => {
@@ -1025,15 +1046,17 @@ describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
     },
   );
 
-  it('bounds admitted-size failed finite header preparation', () => {
-    const fragment = 'wordx-\tapi-\nkey ';
-    const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
-    const started = performance.now();
-    const output = redactSecretShapedText(input);
-    expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
-    expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
-    expect(performance.now() - started, 'SECRETS_B2_HEADER_PREPARATION').toBeLessThan(5_000);
-  });
+  it(
+    'bounds admitted-size failed finite header preparation',
+    () => {
+      const fragment = 'wordx-\tapi-\nkey ';
+      const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+      const output = redactSecretShapedText(input);
+      expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
+      expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it.each([
     ['sk-proj-', '\n'],
@@ -1098,41 +1121,47 @@ describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
     }
   });
 
-  it('bounds admitted-size repeated invalid JWT starts without losing later valid spans', () => {
-    const fragment = `eyJ${'A'.repeat(61)}\n`;
-    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
-    const started = performance.now();
-    // No dot, or a huge second run with no second dot: both full JWT attempts would scan to EOF.
-    for (const suffix of ['', `.${'B'.repeat(128)}`]) {
-      const input = `${publicPrefix}${suffix}; sk-proj-${'C'.repeat(32)}\t${'D'.repeat(32)}; public=A`;
-      const expected = `${publicPrefix}${suffix}; [redacted]; public=A`;
+  it(
+    'bounds admitted-size repeated invalid JWT starts without losing later valid spans',
+    () => {
+      const fragment = `eyJ${'A'.repeat(61)}\n`;
+      const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+      // No dot, or a huge second run with no second dot: both full JWT attempts would scan to EOF.
+      for (const suffix of ['', `.${'B'.repeat(128)}`]) {
+        const input = `${publicPrefix}${suffix}; sk-proj-${'C'.repeat(32)}\t${'D'.repeat(32)}; public=A`;
+        const expected = `${publicPrefix}${suffix}; [redacted]; public=A`;
+        const output = redactSecretShapedText(input);
+        expect(output.length, 'SECRETS_B2_BOUNDED_PROBE').toBe(expected.length);
+        expect(output === expected, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'bounds admitted-size raw hyphen-separated invalid JWT starts and masks a later whole key',
+    () => {
+      const fragment = 'eyJAAAAAAAAAA-';
+      const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+      const input = `${publicPrefix}sk-proj-${'C'.repeat(32)}-${'D'.repeat(32)}; public=A`;
+      const expected = `${publicPrefix}[redacted]; public=A`;
       const output = redactSecretShapedText(input);
-      expect(output.length, 'SECRETS_B2_BOUNDED_PROBE').toBe(expected.length);
-      expect(output === expected, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
-    }
-    expect(performance.now() - started, 'SECRETS_B2_BOUNDED_PROBE').toBeLessThan(5_000);
-  });
+      expect(output.length, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(expected.length);
+      expect(output === expected, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
-  it('bounds admitted-size raw hyphen-separated invalid JWT starts and masks a later whole key', () => {
-    const fragment = 'eyJAAAAAAAAAA-';
-    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
-    const input = `${publicPrefix}sk-proj-${'C'.repeat(32)}-${'D'.repeat(32)}; public=A`;
-    const expected = `${publicPrefix}[redacted]; public=A`;
-    const started = performance.now();
-    const output = redactSecretShapedText(input);
-    expect(output.length, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(expected.length);
-    expect(output === expected, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(true);
-    expect(performance.now() - started, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBeLessThan(5_000);
-  });
-
-  it('preserves dense admitted-size public boundaries with bounded preparation', () => {
-    const started = performance.now();
-    for (const fragment of ['a\n', 'a ']) {
-      const input = `${fragment.repeat(4 * 1024 * 1024 - 1)}\n`;
-      expect(redactSecretShapedText(input) === input, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
-    }
-    expect(performance.now() - started, 'SECRETS_B2_BOUNDED_PROBE').toBeLessThan(5_000);
-  });
+  it(
+    'preserves dense admitted-size public boundaries with bounded preparation',
+    () => {
+      for (const fragment of ['a\n', 'a ']) {
+        const input = `${fragment.repeat(4 * 1024 * 1024 - 1)}\n`;
+        expect(redactSecretShapedText(input) === input, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it('retains prefix evidence inside a header and preserves the same public tail after multiple masks', () => {
     const credential = `sk-proj-${'A'.repeat(24)}\n${'B'.repeat(24)}`;
@@ -1274,18 +1303,22 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     expect(redactSecretShapedText(upper)).toBe(upper);
   });
 
-  it('masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack', () => {
-    const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
-    const input = `upstream said https://${labels}a?x=1@h.example failed`;
-    let output = '';
-    expect(() => {
-      output = redactSecretShapedText(input);
-    }, 'SECRETS_B2_CORE_USERINFO_HOST_LENGTH').not.toThrow();
-    expect(
-      output === 'upstream said https://[redacted]@h.example failed',
-      'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
-    ).toBe(true);
-  }, 15_000);
+  it(
+    'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+    () => {
+      const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+      const input = `upstream said https://${labels}a?x=1@h.example failed`;
+      let output = '';
+      expect(() => {
+        output = redactSecretShapedText(input);
+      }, 'SECRETS_B2_CORE_USERINFO_HOST_LENGTH').not.toThrow();
+      expect(
+        output === 'upstream said https://[redacted]@h.example failed',
+        'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('PR95 review round 4: ambiguous authorities, URL schemes after labels and split edges', () => {
@@ -1308,18 +1341,22 @@ describe('PR95 review round 4: ambiguous authorities, URL schemes after labels a
     }
   });
 
-  it('masks an admitted-size query value inside an ambiguous userinfo', () => {
-    const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
-    const input = `upstream said https://user:pw?x=1@${labels}a failed`;
-    let output = '';
-    expect(() => {
-      output = redactSecretShapedText(input);
-    }, 'SECRETS_B5_CORE_QUERY_EXTENT').not.toThrow();
-    expect(
-      output === 'upstream said https://[redacted] failed',
-      'SECRETS_B5_CORE_QUERY_EXTENT',
-    ).toBe(true);
-  }, 15_000);
+  it(
+    'masks an admitted-size query value inside an ambiguous userinfo',
+    () => {
+      const labels = 'a.'.repeat(Math.floor((8 * 1024 * 1024 - 256 - 64) / 2));
+      const input = `upstream said https://user:pw?x=1@${labels}a failed`;
+      let output = '';
+      expect(() => {
+        output = redactSecretShapedText(input);
+      }, 'SECRETS_B5_CORE_QUERY_EXTENT').not.toThrow();
+      expect(
+        output === 'upstream said https://[redacted] failed',
+        'SECRETS_B5_CORE_QUERY_EXTENT',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it('masks the userinfo of a URL behind a scheme label, split or not, and a token glued to a URL', () => {
     for (const [input, expected] of [
@@ -1483,14 +1520,18 @@ describe('PR95 review round 5: an ambiguous userinfo masked with exactly the val
     },
   );
 
-  it('masks a token glued to a URL at admitted size', () => {
-    const input = `Bearer ${'a'.repeat(8 * 1024 * 1024 - 64)}://h.example`;
-    let output = '';
-    expect(() => {
-      output = redactSecretShapedText(input);
-    }, 'SECRETS_B5_CORE_SCHEME_ORDER').not.toThrow();
-    expect(output === 'Bearer [redacted]://h.example', 'SECRETS_B5_CORE_SCHEME_ORDER').toBe(true);
-  }, 15_000);
+  it(
+    'masks a token glued to a URL at admitted size',
+    () => {
+      const input = `Bearer ${'a'.repeat(8 * 1024 * 1024 - 64)}://h.example`;
+      let output = '';
+      expect(() => {
+        output = redactSecretShapedText(input);
+      }, 'SECRETS_B5_CORE_SCHEME_ORDER').not.toThrow();
+      expect(output === 'Bearer [redacted]://h.example', 'SECRETS_B5_CORE_SCHEME_ORDER').toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('PR95 review round 6: one merged pass of every core rule', () => {
@@ -1695,50 +1736,60 @@ describe('PR95 review round 6: one merged pass of every core rule', () => {
     ).toEqual({ url: 'x\thttps://[redacted]' });
   });
 
-  it('keeps many query assignments in an ambiguous userinfo linear at admitted size', () => {
-    const size = 8 * 1024 * 1024 - 256;
-    const run = (prefix: string, unit: string, suffix: string) =>
-      prefix +
-      unit.repeat(Math.floor((size - prefix.length - suffix.length) / unit.length)) +
-      suffix;
-    for (const [input, expected] of [
-      [run('https://x', '?password=', '@h'), 'https://[redacted]'],
-      [run('https://x', '?a=', '@h'), 'https://[redacted]'],
-      [run('https://svc?', '#password=x', '@h'), 'https://[redacted]'],
-      [run('see https://svc', '?token=a@b', ''), 'see https://[redacted]'],
-      [run('redis://app:pw', '?client_secret=x', '@db'), 'redis://[redacted]'],
-    ] as const) {
-      let output = '';
-      expect(() => {
-        output = redactSecretShapedText(input);
-      }, 'SECRETS_B6_CORE_MERGE').not.toThrow();
-      expect(output === expected, 'SECRETS_B6_CORE_MERGE').toBe(true);
-    }
-  }, 15_000);
+  it(
+    'keeps many query assignments in an ambiguous userinfo linear at admitted size',
+    () => {
+      const size = 8 * 1024 * 1024 - 256;
+      const run = (prefix: string, unit: string, suffix: string) =>
+        prefix +
+        unit.repeat(Math.floor((size - prefix.length - suffix.length) / unit.length)) +
+        suffix;
+      for (const [input, expected] of [
+        [run('https://x', '?password=', '@h'), 'https://[redacted]'],
+        [run('https://x', '?a=', '@h'), 'https://[redacted]'],
+        [run('https://svc?', '#password=x', '@h'), 'https://[redacted]'],
+        [run('see https://svc', '?token=a@b', ''), 'see https://[redacted]'],
+        [run('redis://app:pw', '?client_secret=x', '@db'), 'redis://[redacted]'],
+      ] as const) {
+        let output = '';
+        expect(() => {
+          output = redactSecretShapedText(input);
+        }, 'SECRETS_B6_CORE_MERGE').not.toThrow();
+        expect(output === expected, 'SECRETS_B6_CORE_MERGE').toBe(true);
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
-  it('keeps nested values, labels and open PEM blocks linear at admitted size', () => {
-    const size = 8 * 1024 * 1024 - 256;
-    const count = (unit: string) => Math.floor(size / unit.length);
-    const keys = 'token=ab>'.repeat(count('token=ab>'));
-    expect(redactSecretShapedText(keys) === '[redacted]', 'SECRETS_B6_CORE_NESTED_KEY').toBe(true);
-    const labels = count('Bearer abcdefgh/');
-    expect(
-      redactSecretShapedText('Bearer abcdefgh/'.repeat(labels)) ===
-        `Bearer${' [redacted]'.repeat(labels)}`,
-      'SECRETS_B6_CORE_NESTED_LABEL',
-    ).toBe(true);
-    // Only the BEGIN marker whose body reaches the far END within the body bound opens a block; the
-    // markers before it stay, and each of them reuses one END search instead of scanning to it again.
-    const marker = '-----BEGIN PRIVATE KEY-----\n';
-    const open = marker.repeat(count(marker) - 1);
-    const first =
-      Math.ceil((open.length - 20_000 - (marker.length - 1)) / marker.length) * marker.length;
-    expect(
-      redactSecretShapedText(`password=hunter2secret ${open}-----END PRIVATE KEY-----`) ===
-        `[redacted] ${open.slice(0, first)}[redacted]`,
-      'SECRETS_B6_CORE_MERGE',
-    ).toBe(true);
-  }, 15_000);
+  it(
+    'keeps nested values, labels and open PEM blocks linear at admitted size',
+    () => {
+      const size = 8 * 1024 * 1024 - 256;
+      const count = (unit: string) => Math.floor(size / unit.length);
+      const keys = 'token=ab>'.repeat(count('token=ab>'));
+      expect(redactSecretShapedText(keys) === '[redacted]', 'SECRETS_B6_CORE_NESTED_KEY').toBe(
+        true,
+      );
+      const labels = count('Bearer abcdefgh/');
+      expect(
+        redactSecretShapedText('Bearer abcdefgh/'.repeat(labels)) ===
+          `Bearer${' [redacted]'.repeat(labels)}`,
+        'SECRETS_B6_CORE_NESTED_LABEL',
+      ).toBe(true);
+      // Only the BEGIN marker whose body reaches the far END within the body bound opens a block; the
+      // markers before it stay, and each of them reuses one END search instead of scanning to it again.
+      const marker = '-----BEGIN PRIVATE KEY-----\n';
+      const open = marker.repeat(count(marker) - 1);
+      const first =
+        Math.ceil((open.length - 20_000 - (marker.length - 1)) / marker.length) * marker.length;
+      expect(
+        redactSecretShapedText(`password=hunter2secret ${open}-----END PRIVATE KEY-----`) ===
+          `[redacted] ${open.slice(0, first)}[redacted]`,
+        'SECRETS_B6_CORE_MERGE',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it('masks a PEM block whose body reaches exactly the body bound', () => {
     const begin = '-----BEGIN PRIVATE KEY-----';
@@ -1786,6 +1837,18 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
       // A username-shaped key on the next line is no username of this URL.
       ['see https://\nDB_PASSWORD:P@ssw0rd123 now', 'see https://[redacted] now', 'ssw0rd123'],
       ['x https://\tSERVICE_TOKEN:Adm1n@2024x', 'x https://[redacted]', '2024x'],
+      // A mask past the userinfo's @ stops at the next line, which is read on its own.
+      [
+        'DATABASE_URL=https://db.internal.example.com\nDB_PASSWORD=P@ssw0rd123\nNEXT=1',
+        'DATABASE_URL=https://[redacted]\nNEXT=1',
+        'ssw0rd123',
+      ],
+      // Read on its own line, the key masks its whole value, a host-shaped tail included.
+      [
+        'see https://\nDB_PASSWORD=P@host.example now',
+        'see https://\n[redacted] now',
+        'host.example',
+      ],
     ]);
   });
 
@@ -1803,10 +1866,47 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
         '{"content":"REDIS_URL=redis://[redacted]"}',
         'Passw0rd',
       ],
-      // A colon after a raw ?/#, or before any username, marks no user.
+      // Its value runs to the key rule's own delimiter, through the host, path and query.
+      [
+        'https://user:password=Secr3tValue1@host.example/v1/a',
+        'https://[redacted]',
+        'host.example',
+      ],
+      [
+        'GET https://svc:secret=Qz7abc@api.example.com/v1/items/123?expand=all&page=2 200',
+        'GET https://[redacted]&page=2 200',
+        'api.example.com',
+      ],
+      ['sqlserver://;password=Adm1n@2024.prod/app', 'sqlserver://;[redacted]', '2024.prod'],
+      [
+        '"custom\t://user:db.password=Qz5SjmRYV4@Qz7uzLd396yJU1\neyJQz4kX2Nk3X2tw9s.Qz6CteaZX56zE1JL09cObAqM06.Qz0wvWBdMRLWj7  x',
+        '"custom\t://[redacted]\n[redacted]  x',
+        'Qz7uzLd396yJU1',
+      ],
+    ]);
+    // From a raw ?/# on, a key reads as a query parameter whose value runs to its own end too, and a
+    // colon after a raw ?/# or before any username marks no user.
+    projects('SECRETS_B7_CORE_USERNAME_ZONE', [
       ['https://password=abcdefgh?x:y@host.example/path', 'https://[redacted]', 'abcdefgh'],
       ['https://:password=abcdefghij?x@host.example/p', 'https://[redacted]', 'abcdefghij'],
     ]);
+    // Only a value some rule reads runs to its own end: a short value under another name is masked
+    // through the userinfo's last '@', and its text after that '@' reads as the host.
+    expect(
+      redactSecretShapedText('https://svc?a=1&code=Adm1n@2024prod'),
+      'SECRETS_B7_CORE_USERNAME_ZONE',
+    ).toBe('https://[redacted]@2024prod');
+    // Such a value is a recognized credential: calls that differ only in its host or path share a
+    // journal projection, while a URL whose userinfo holds no key keeps them apart.
+    const identity = (url: string) => projectSecretShapedValue({ url, method: 'POST' }).value;
+    expect(
+      identity('https://user:password=Secr3tValue1@host.example/v1/a'),
+      'SECRETS_B7_CORE_USERNAME_ZONE',
+    ).toEqual(identity('https://user:password=Secr3tValue1@other.example/v2/delete/7'));
+    expect(
+      identity('https://user:Secr3tValue1@host.example/v1/a'),
+      'SECRETS_B7_CORE_USERNAME_ZONE',
+    ).not.toEqual(identity('https://user:Secr3tValue1@host.example/v1/b'));
   });
 
   it('keeps the host when only the username names a secret, split after its colon or not', () => {
@@ -1824,22 +1924,33 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
     ).toBe('https://[redacted]');
   });
 
-  it('projects exactly admitted-size quoted values without exhausting the RegExp stack', () => {
-    const size = 8 * 1024 * 1024;
-    for (const [input, expected] of [
-      [`token="${'a'.repeat(size - 7)}`, undefined],
-      [`password="${'a'.repeat(size - 11)}"`, '[redacted]'],
-      [`password='${'a'.repeat(size - 11)}'`, '[redacted]'],
-      [`{"access_token":"${'a'.repeat(size - 19)}"}`, '{"[redacted]}'],
-    ] as const) {
-      let output = '';
-      expect(() => {
-        output = redactSecretShapedText(input);
-      }, 'SECRETS_B7_CORE_QUOTED_SCAN').not.toThrow();
-      // An unclosed quote is no value: the text stays as it is.
-      expect(output === (expected ?? input), 'SECRETS_B7_CORE_QUOTED_SCAN').toBe(true);
-    }
-  }, 15_000);
+  it(
+    'projects exactly admitted-size quoted values without exhausting the RegExp stack',
+    () => {
+      const size = 8 * 1024 * 1024;
+      const exact = (prefix: string, suffix: string) =>
+        `${prefix}${'a'.repeat(size - prefix.length - suffix.length)}${suffix}`;
+      for (const [input, expected] of [
+        // An unclosed value is read as an unquoted run from after its quote; here that run reaches the
+        // end of the text.
+        [exact('token="', ''), '[redacted]'],
+        [exact('password="', '"'), '[redacted]'],
+        [exact("password='", "'"), '[redacted]'],
+        [exact('{"access_token":"', '"}'), '{"[redacted]}'],
+        // One JSON level down, closed and unclosed.
+        [exact('{"b":"{\\"token\\":\\"', '\\"}"}'), '{"b":"{\\"[redacted]}"}'],
+        [exact('{"b":"token=\\"', '"}'), '{"b":"[redacted]"}'],
+      ] as const) {
+        expect(input.length, 'SECRETS_B7_CORE_QUOTED_SCAN').toBe(size);
+        let output = '';
+        expect(() => {
+          output = redactSecretShapedText(input);
+        }, 'SECRETS_B7_CORE_QUOTED_SCAN').not.toThrow();
+        expect(output === expected, 'SECRETS_B7_CORE_QUOTED_SCAN').toBe(true);
+      }
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
 
   it("keeps quoted values on one line and pins the key rule's names and delimiters", () => {
     const keys = (value: unknown) => expect(value, 'SECRETS_B7_CORE_KEY_PIECES');
@@ -1857,20 +1968,31 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
       '[redacted]&next=public',
     );
     keys(redactSecretShapedText('token=abcdefgh,next')).toBe('[redacted],next');
-    // A quoted value never crosses a line break, and a key must start within its word's first 33 characters.
+    keys(redactSecretShapedText("token=abcdefgh'tail")).toBe("[redacted]'tail");
+    // A quoted value closes on its line. One that does not, even past an escaped line break, is read
+    // as an unquoted run from after its quote, to that line's end at most: its quote may instead close
+    // a string the key sits in.
     for (const kept of [
       'password="abc\ndef" tail',
       "password='abc\rdef' tail",
-      `x${'y'.repeat(40)}token=listed`,
+      'password="abc\ndef tail',
+      'password="abc\\\ndef tail',
     ]) {
       keys(redactSecretShapedText(kept)).toBe(kept);
     }
+    keys(redactSecretShapedText('password="abcdef\nghi" tail')).toBe('[redacted]\nghi" tail');
+    keys(redactSecretShapedText('password="abcdef\\\nghi tail')).toBe('[redacted]\nghi tail');
+    // A key must start within its word's first 33 characters.
+    const listed = `x${'y'.repeat(40)}token=listed`;
+    keys(redactSecretShapedText(listed)).toBe(listed);
   });
 
-  it('masks a run of glued fixed-length ids in one pass, split or not', async () => {
-    const ids = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBBAKIACCCCCCCCCCCCCCCCASIADDDDDDDDDDDDDDDD';
-    projects('SECRETS_B7_CORE_CHAIN', [
-      [`${ids} public tail`, `${'[redacted]'.repeat(4)} public tail`, 'DDDDDDDD'],
+  it('recognizes a credential glued to another one pass later and redacts a run that never settles', async () => {
+    const two = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBB';
+    projects('SECRETS_B8_CORE_GLUED', [
+      [`${two} public tail`, '[redacted][redacted] public tail', 'BBBBBBBB'],
+      // Four glued ids need four passes: the text does not settle and fails closed.
+      [`${two}AKIACCCCCCCCCCCCCCCCASIADDDDDDDDDDDDDDDD public tail`, '[redacted]', 'DDDDDDDD'],
       [
         'AKIAABCDEFGHIJKLMNOPghp_AAAAAAAAAAAA\nBBBBBBBBBBBBBBBB done',
         '[redacted][redacted] done',
@@ -1881,13 +2003,35 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
         '[redacted][redacted] done',
         'BBBBBBBB',
       ],
+      // A glued credential is read at the mask's boundary, so it neither cuts a wider credential
+      // that starts inside it nor swallows a key name or a scheme label after it.
+      [
+        'AKIAIOSFODNN7EXAMPLExoxb-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpM',
+        '[redacted]xoxb-[redacted]',
+        'SflKxwRJSMeKKF2QT4fwpM',
+      ],
+      [
+        'AKIAIOSFODNN7EXAMPLExoxb-sk-proj-abcdefghij_klmnopqrstuv',
+        '[redacted]xoxb-[redacted]',
+        'klmnopqrstuv',
+      ],
+      [
+        'AKIAIOSFODNN7EXAMPLEnpm_abcdefghij0123456789token=SuperSecret99',
+        '[redacted][redacted]',
+        'SuperSecret99',
+      ],
+      [
+        'AKIAABCDEFGHIJKLMNOPsk-AKIAABCDEFGHIJKLMNOPBearer abcdefghijklmnop',
+        '[redacted]sk-[redacted]Bearer [redacted]',
+        'abcdefghijklmnop',
+      ],
     ]);
     const summary = await boundForModel(
       'AKIAABCDEFGHIJKLMNOPsk-proj-AAAAAAAAAAAAAAAA\tBBBBBBBBBBBB done',
       BIG,
       {},
     );
-    expect(summary.summary, 'SECRETS_B7_CORE_CHAIN').toBe('[redacted][redacted] done');
+    expect(summary.summary, 'SECRETS_B8_CORE_GLUED').toBe('[redacted][redacted] done');
   });
 
   it("summarizes with the projection's fixed point before one-line normalization", async () => {
@@ -1929,20 +2073,742 @@ describe('PR95 review round 7: userinfo ownership, admitted quoted values, glued
 
   it('reports whether a journal projection settled', () => {
     const journal = (value: unknown) => expect(value, 'SECRETS_B7_CORE_JOURNAL_SETTLED');
-    const content =
-      'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBBAKIACCCCCCCCCCCCCCCCASIADDDDDDDDDDDDDDDD\nexpect(scan(x)).toBe(4)\n';
-    journal(projectSecretShapedValue({ path: 'test/fixtures/keys.txt', content })).toEqual({
-      value: {
-        path: 'test/fixtures/keys.txt',
-        content: `${'[redacted]'.repeat(4)}\nexpect(scan(x)).toBe(4)\n`,
-      },
+    const ids = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBB';
+    journal(
+      projectSecretShapedValue({ path: 'test/fixtures/keys.txt', content: `${ids}\nscan(x)\n` }),
+    ).toEqual({
+      value: { path: 'test/fixtures/keys.txt', content: '[redacted][redacted]\nscan(x)\n' },
       settled: true,
     });
-    // A string whose projection does not settle projects to the mask and is reported.
+    // Four glued ids need four passes, and a key whose short value names the next key one per key.
+    for (const content of [`${ids}${ids}\nscan(x)\n`, 'token:token =token ://?-=Q']) {
+      journal(projectSecretShapedValue({ path: 'p', content })).toEqual({
+        value: { path: 'p', content: '[redacted]' },
+        settled: false,
+      });
+    }
     vi.mocked(fixedPointOf).mockImplementationOnce(() => undefined);
     journal(projectSecretShapedValue('drifting text')).toEqual({
       value: '[redacted]',
       settled: false,
     });
+  });
+});
+
+describe('PR95 review round 8: structured summaries, escaped and unclosed quotes, continuation labels', () => {
+  const projects = (marker: string, pairs: readonly (readonly [string, string, string])[]) => {
+    for (const [input, expected, secret] of pairs) {
+      const output = redactSecretShapedText(input);
+      expect(output, marker).toBe(expected);
+      expect(output.includes(secret), marker).toBe(false);
+      expect(redactSecretShapedText(output), marker).toBe(output);
+    }
+  };
+
+  it('summarizes a structured result from its JSON once credential members are masked', async () => {
+    for (const [result, secrets] of [
+      [
+        { content: 'DB_PASSWORD="hunter2hunter2"\nNODE_ENV=production\n', mimeType: 'text/plain' },
+        ['hunter2hunter2'],
+      ],
+      [
+        {
+          content:
+            '{\n  "database": {"password": "Qz9correcthorse"}, "client_secret": "Qz5clientsecretval"}',
+        },
+        ['Qz9correcthorse', 'Qz5clientsecretval'],
+      ],
+      [
+        {
+          status: 200,
+          headers: {},
+          body: '{"access_token":"2YotnFZFEjr1zCsicMWpAA","refresh_token":"tGzv3JOkF0XG5Qx2TlKWIA"}',
+        },
+        ['2YotnFZFEjr1zCsicMWpAA', 'tGzv3JOkF0XG5Qx2TlKWIA'],
+      ],
+      [
+        {
+          exitCode: 0,
+          stdout: 'export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"\n',
+          stderr: '',
+        },
+        ['wJalrXUtnFEMIK7MDENG'],
+      ],
+      // The walk also masks what no text rule reads: a secret-named key's whole value and the
+      // element after a credential flag.
+      [{ token: { value: 'Qz7nestedSecret' } }, ['Qz7nestedSecret']],
+      [{ argv: ['--password', 'Qz7flagSecret'] }, ['Qz7flagSecret']],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.value, 'SECRETS_B8_CORE_SUMMARY_WALK').toBe(result);
+      for (const secret of secrets) {
+        expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_WALK').toBe(false);
+      }
+    }
+    const summary = await boundForModel(
+      { content: 'DB_PASSWORD="hunter2hunter2"\nNODE_ENV=production\n' },
+      BIG,
+      {},
+    );
+    expect(summary.summary, 'SECRETS_B8_CORE_SUMMARY_WALK').toBe(
+      '{"content":"[redacted]\\nNODE_ENV=production\\n"}',
+    );
+  });
+
+  it('reads a quoted value one JSON string down', () => {
+    projects('SECRETS_B8_CORE_ESCAPED_QUOTE', [
+      [
+        '{"body":"{\\"password\\":\\"hunter2hunter2\\",\\"user\\":\\"bob\\"}"}',
+        '{"body":"{\\"[redacted],\\"user\\":\\"bob\\"}"}',
+        'hunter2hunter2',
+      ],
+      [
+        '{"stdout":"export TOKEN=\\"Qz7abc12345\\" && run"}',
+        '{"stdout":"export [redacted] && run"}',
+        'Qz7abc12345',
+      ],
+      [
+        '{"h":"{\\"x-api-key\\":\\"Bearer Qz7abcdefghijkl\\"}"}',
+        '{"h":"{\\"[redacted]}"}',
+        'Qz7abcdefghijkl',
+      ],
+      // An escaped tab or line break may stand between the separator and the escaped quote.
+      ['{"cfg":"password:\\t\\"hunter2Secr3t\\""}', '{"cfg":"[redacted]"}', 'hunter2Secr3t'],
+      ['{"cfg":"password:\\n  \\"hunter2Secr3t\\""}', '{"cfg":"[redacted]"}', 'hunter2Secr3t'],
+      // A raw tab may stand among them, an escaped CR LF is one line break, and an escaped apostrophe
+      // opens such a value too; so does a raw one, which JSON leaves unescaped.
+      ['{"cfg":"password:\\n\t\\"hunter2Secr3t\\""}', '{"cfg":"[redacted]"}', 'hunter2Secr3t'],
+      ['{"cfg":"password:\\r\\n\\"hunter2Secr3t\\""}', '{"cfg":"[redacted]"}', 'hunter2Secr3t'],
+      ['{"cfg":"password:\\n  \\\'hunter2Secr3t\\\'"}', '{"cfg":"[redacted]"}', 'hunter2Secr3t'],
+      ['{"yaml":"password:\\t\'Adm1nPassw0rd\'"}', '{"yaml":"[redacted]"}', 'Adm1nPassw0rd'],
+      ['{"yaml":"password:\\n  \'Adm1nPassw0rd\'"}', '{"yaml":"[redacted]"}', 'Adm1nPassw0rd'],
+      // An opaque value runs to its delimiter, the backslash before a quote included.
+      [
+        '{"m":"{\\"u\\":\\"https://h.example/cb?sig=AbCdEfGhIjKlMnOpQrStUvW\\"}"}',
+        '{"m":"{\\"u\\":\\"https://h.example/cb?sig=[redacted]"}"}',
+        'AbCdEfGhIjKlMnOpQrStUvW',
+      ],
+      // A quote escaped one level further down stays inside the value.
+      [
+        '{"cmd":"export TOKEN=\\"Qz\\\\\\"SecretTail\\" end"}',
+        '{"cmd":"export [redacted] end"}',
+        'SecretTail',
+      ],
+      // An escaped backslash escapes only the character right after it.
+      [
+        '{"cmd":"export TOKEN=\\"Qz7abcdef\\\\x\\" public"}',
+        '{"cmd":"export [redacted] public"}',
+        'Qz7abcdef',
+      ],
+    ]);
+  });
+
+  it('reads a quoted value that does not close on its line as an unquoted run', () => {
+    const runs = [
+      ['{"password":"hunter2hunter2', '{"[redacted]', 'hunter2hunter2'],
+      ['password: "hunter2hunter2\nnext line', '[redacted]\nnext line', 'hunter2hunter2'],
+      ["DB_PASSWORD='hunter2hunter2\nNEXT=1", '[redacted]\nNEXT=1', 'hunter2hunter2'],
+      ['api_key="Qz7abcdefghij\\', '[redacted]', 'Qz7abcdefghij'],
+      // The run ends at the delimiters of an unquoted value and at its line's end, which a CR, a
+      // backslash before one or a lone backslash also is.
+      ['password="Qz7abcdef public tail', '[redacted] public tail', 'Qz7abcdef'],
+      ['password="Qz7abcdef,next', '[redacted],next', 'Qz7abcdef'],
+      ['password="Qz7abcdef;next', '[redacted];next', 'Qz7abcdef'],
+      ['password="Qz7abcdef&x=1', '[redacted]&x=1', 'Qz7abcdef'],
+      ['password="Qz7abcdef\'x', "[redacted]'x", 'Qz7abcdef'],
+      ['password="Qz7abcdef\tpublic', '[redacted]\tpublic', 'Qz7abcdef'],
+      ['password="Qz7abc\ndef\nghi tail', '[redacted]\ndef\nghi tail', 'Qz7abc'],
+      ['password="Qz7abc\ndef\\', '[redacted]\ndef\\', 'Qz7abc'],
+      ['password="Qz7abc\rdef tail', '[redacted]\rdef tail', 'Qz7abc'],
+      ['password="Qz7abc\\\rdef tail', '[redacted]\rdef tail', 'Qz7abc'],
+      ['password="Qz7abcdef\\\nmore" tail', '[redacted]\nmore" tail', 'Qz7abcdef'],
+      ['password="Qz7abcdef\\\rmore" tail', '[redacted]\rmore" tail', 'Qz7abcdef'],
+      // A value that closes on a later line is read the same way, and a run of such values settles in
+      // one pass.
+      ['password="Qz7abcdef\nmore" tail', '[redacted]\nmore" tail', 'Qz7abcdef'],
+      [
+        'A_TOKEN="Qz7aaa1\nB_TOKEN=\'Qz7bbb2\nC_TOKEN="Qz7ccc3\nD_TOKEN="Qz7ddd4"',
+        '[redacted]\n[redacted]\n[redacted]\n[redacted]',
+        'Qz7bbb2',
+      ],
+      // One JSON level down only an escaped quote closes the value; the raw quote or raw line break
+      // that ends the string around it, like an escaped line break, ends its run.
+      [
+        '{"a":"password=\\"Qz7abcdefgh","b":"public"}',
+        '{"a":"[redacted]","b":"public"}',
+        'Qz7abcdefgh',
+      ],
+      ['{"a":"password=\\"Qz7abcdef ghi","b":"x"}', '{"a":"[redacted] ghi","b":"x"}', 'Qz7abcdef'],
+      [
+        '{"a":"password=\\"Qz7abcdefgh\\nline two","b":"public"}',
+        '{"a":"[redacted]\\nline two","b":"public"}',
+        'Qz7abcdefgh',
+      ],
+      [
+        '{"a":"password=\\"Qz7abcdefgh\\rline two","b":"public"}',
+        '{"a":"[redacted]\\rline two","b":"public"}',
+        'Qz7abcdefgh',
+      ],
+      [
+        '{"a":"password=\\"Qz7abc\\nQz7def\\" tail"}',
+        '{"a":"[redacted]\\nQz7def\\" tail"}',
+        'Qz7abc',
+      ],
+      [
+        '{"a":"password=\\"Qz7abcdefgh\n{"b":"say \\"hi\\""}',
+        '{"a":"[redacted]\n{"b":"say \\"hi\\""}',
+        'Qz7abcdefgh',
+      ],
+      [
+        'echo password=\\"Qz7abc\\\nline two \\\nline three\nend',
+        'echo [redacted]\nline two \\\nline three\nend',
+        'Qz7abc',
+      ],
+      [
+        '{"a":"A_TOKEN=\\"Qz7aaa1\\n B_TOKEN=\\"Qz7bbb2\\n C_TOKEN=\\"Qz7ccc3\\n D_TOKEN=\\"Qz7ddd4\\""}',
+        '{"a":"[redacted]\\n [redacted]\\n [redacted]\\n [redacted]"}',
+        'Qz7aaa1',
+      ],
+      // A raw quote of the other kind does not end it: an apostrophe is text in a JSON string.
+      [
+        '{"a":"token=\\\'Qz7secret","b":"public one"}',
+        '{"a":"[redacted]","b":"public one"}',
+        'Qz7secret',
+      ],
+      // A value whose line break another mask of the pass takes (a scheme label's token, a nested
+      // key's value) closes as the next pass reads it, and is masked whole.
+      ['DB_PASSWORD="Bearer\nabcdefghij Zq7Wk3Xp9Rm2" tail', '[redacted] tail', 'Zq7Wk3Xp9Rm2'],
+      [
+        'Authorization: "Bearer\r\nabcdefghij Zq7Wk3Xp9Rm2" tail',
+        '[redacted] tail',
+        'Zq7Wk3Xp9Rm2',
+      ],
+      ['password="abcdef Bearer\nabcdefghij Zq7Wk3Xp9Rm2" tail', '[redacted] tail', 'Zq7Wk3Xp9Rm2'],
+      ['token:"Kx96Wv Qze6S0YzVYHq Bearer\nQVI3ml-K"', '[redacted]', 'Qze6S0YzVYHq'],
+      [
+        'client_secret="token:\nabcdefghijkl Zq7Wk3Xp9Rm2Vn5Ty8Lb" end',
+        '[redacted] end',
+        'Zq7Wk3Xp9Rm2Vn5Ty8Lb',
+      ],
+      // A quote that closes another value is that value's: no value it opens is read through the
+      // other masks.
+      ["token='abc password='xyz] public", '[redacted]xyz] public', 'abc'],
+      // So does one whose escaped closing quote an opaque value's mask unescapes, behind an odd or
+      // an even run of backslashes.
+      [
+        'password="say \\"Zq7Wk3Xp9Rm2Vn5Ty8Lb?sig=AAAAAAAAAAAAAAAAAAAAAAAA\\"',
+        '[redacted]',
+        'Zq7Wk3Xp9Rm2Vn5Ty8Lb',
+      ],
+      [
+        'password="my Zq9SECRETvalue7Xk?sig=AbCdEfGhIjKlMnOpQrStUvWx\\\\" next',
+        '[redacted] next',
+        'Zq9SECRETvalue7Xk',
+      ],
+    ] as const;
+    projects('SECRETS_B8_CORE_UNCLOSED_QUOTE', runs);
+    for (const [input, expected] of runs) {
+      expect(projectSecretShapedValue({ a: input }), 'SECRETS_B8_CORE_UNCLOSED_QUOTE').toEqual({
+        value: { a: expected },
+        settled: true,
+      });
+    }
+    // Its quote may instead close a string the key sits in, so the text after the run stays, and calls
+    // that differ only there keep distinct projections. A run under six characters is no value.
+    const script = 'read -p "Enter password: " PW\necho "connecting to $HOST"\n';
+    for (const kept of [
+      script,
+      '{\n  "label": "Password:",\n  "hint": "at least 8 chars"\n}',
+      'print("token: " + t)\nprint("done")',
+      'fix(auth): stop logging "token=" query values in the billing service',
+      "grep -rn 'api_key=' config/prod.yaml",
+      `psql "password="$PW -c 'DROP TABLE orders_a'`,
+      '{"msg":"stop logging \\"token=\\" values in billing"}',
+      'A_TOKEN="Qz7a1\nx=\\\\"y',
+    ]) {
+      expect(redactSecretShapedText(kept), 'SECRETS_B8_CORE_UNCLOSED_QUOTE').toBe(kept);
+    }
+    for (const [one, other] of [
+      [script, script.replace('PW\n', 'PW; rm -rf ./build\n')],
+      [
+        'fix(auth): stop logging "token=" query values in the billing service',
+        'fix(auth): stop logging "token=" query values in the payments service',
+      ],
+      [
+        `psql "password="$PW -c 'DROP TABLE orders_a'`,
+        `psql "password="$PW -c 'DROP TABLE orders_b'`,
+      ],
+      [
+        '{"msg":"stop logging \\"token=\\" values in billing"}',
+        '{"msg":"stop logging \\"token=\\" values in payments"}',
+      ],
+      [
+        '{"cmd":"export TOKEN=\\"Qz7abcdef; echo done"}',
+        '{"cmd":"export TOKEN=\\"Qz7abcdef; rm -rf x"}',
+      ],
+    ]) {
+      expect(
+        projectSecretShapedValue({ content: one }).value,
+        'SECRETS_B8_CORE_UNCLOSED_QUOTE',
+      ).not.toEqual(projectSecretShapedValue({ content: other }).value);
+    }
+  });
+
+  it('reads a label at a line start inside a split continuation', () => {
+    projects('SECRETS_B8_CORE_CONTINUATION_LABEL', [
+      [
+        'sk-proj-AbCdEfGhIjKlMnOpQrSt\nauthori\tzation: Qz7SecretValue99',
+        '[redacted]',
+        'Qz7SecretValue99',
+      ],
+      ['glpat-AbCdEfGhIjKlMnOpQrSt\napi-k\tey: Qz7SecretValue99', '[redacted]', 'Qz7SecretValue99'],
+    ]);
+  });
+
+  it('masks two and three private-key blocks in one text', () => {
+    const block = (kind: string, body: string) =>
+      `-----BEGIN ${kind} PRIVATE KEY-----\n${body}\n-----END ${kind} PRIVATE KEY-----`;
+    projects('SECRETS_B8_CORE_PEM_BLOCKS', [
+      [
+        `a ${block('RSA', 'AAA')}\nb ${block('EC', 'BBBSECRET')} c`,
+        'a [redacted]\nb [redacted] c',
+        'BBBSECRET',
+      ],
+      [
+        `${block('RSA', 'X1SECRET')} ${block('EC', 'X2SECRET')} ${block('OPENSSH', 'X3SECRET')}`,
+        '[redacted] [redacted] [redacted]',
+        'X3SECRET',
+      ],
+    ]);
+  });
+
+  it("keeps a label's own whitespace before a split credential", () => {
+    expect(
+      redactSecretShapedText('Bearer  sk-\nabcdefghijklmnopqrstuvwx done'),
+      'SECRETS_B8_CORE_FILL',
+    ).toBe('Bearer  [redacted] done');
+  });
+  it('summarizes a value that closes on a later line whole', async () => {
+    for (const [result, summary, secret] of [
+      [
+        'token=\'abc password="first-half\nSECOND-HALF-SECRET" done',
+        '[redacted] done',
+        'SECOND-HALF',
+      ],
+      ['password="password="password="\nQ7mZ4pW9xK"', '[redacted]', 'Q7mZ4pW9xK'],
+      ['secret: \'line1\nline2 token="it\'s"', '[redacted]', 'line2'],
+      [{ content: 'password="hunter2 value\nmore text"' }, '{"content":"[redacted]"}', 'hunter2'],
+      [
+        { stdout: 'password="first-half\r\nSECOND-HALF" done' },
+        '{"stdout":"[redacted] done"}',
+        'SECOND-HALF',
+      ],
+      [['password="hunter2 value\nmore text"'], '["[redacted]"]', 'more text'],
+      // A masked value after it can take the quote that would close it.
+      ["token='\ntoken=''Qz7secret'", '[redacted]', 'Qz7secret'],
+      ['password="\npassword=""Qz7secret"', '[redacted]', 'Qz7secret'],
+      // When masked values take every later quote, the summary masks through the last of them.
+      ["token='\ntoken=''Qz7secret token='", '[redacted]', 'Qz7secret'],
+      // A structured result is read in its JSON, where the value one JSON string down runs on over the
+      // escaped line break to the end of the text.
+      [
+        { stdout: 'token=\'abc password="first-half\nSECOND-HALF-SECRET" done' },
+        '{"stdout":"[redacted]',
+        'SECOND-HALF',
+      ],
+      ['{"log":"password=\\"Qz7secret\\nmore\\" ok"}', '{"log":"[redacted] ok"}', 'Qz7secret'],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B8_CORE_SUMMARY_CLOSER').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_CLOSER').toBe(false);
+    }
+    // A value that reaches the end of the text unclosed is masked to that end. The nearest quote that
+    // closes the value ends its mask, so public text after it stays; a raw line break behind a backslash
+    // ends a value one JSON string down, and a quote behind three backslashes closes no value, one
+    // JSON string down too, where one behind five closes it. Each value is decided after its own line:
+    // a quote there that a nested value's mask leaves unescaped closes nothing.
+    for (const [result, summary] of [
+      ['token="Qz7abcdef ghi jkl', '[redacted]'],
+      ['password="Qz7abc\ndefSECRET\\\\" tail', '[redacted] tail'],
+      ['password="Qz7abc\ndefSECRET\\\\\\\\" tail', '[redacted] tail'],
+      ['token="Qz7first\ntoken="Qz7second\nend', '[redacted] end'],
+      ['{"cmd":"export TOKEN=\\"Qz7abcdef; echo done"}', '{"cmd":"export [redacted]"}'],
+      ['token:"token=\\\'token=h\\\\\\r\\"\n"', '[redacted]'],
+      ['password=\\"Qz7abcdefgh\\nx \\\\\\" y', '[redacted]\\nx \\\\\\" y'],
+      ['password=\\"Qz7abcdefgh\\nx \\\\\\\\\\" y', '[redacted] y'],
+      ['password="Qz7abc\ndef" public "kept"', '[redacted] public "kept"'],
+      ['echo password=\\"Qz7abc\\\nline two \\" end', 'echo [redacted] line two \\" end'],
+      ['password="Qz7abcdefgh\nmore \\\\\\" text', '[redacted] more \\\\\\" text'],
+    ] as const) {
+      expect((await boundForModel(result, BIG, {})).summary, 'SECRETS_B8_CORE_SUMMARY_CLOSER').toBe(
+        summary,
+      );
+    }
+    // The journal projection reads such a value only to its first line's end: its quote may close a
+    // string around it.
+    expect(
+      redactSecretShapedText('password="first-half\nSECOND-HALF" done'),
+      'SECRETS_B8_CORE_SUMMARY_CLOSER',
+    ).toBe('[redacted]\nSECOND-HALF" done');
+  });
+
+  it("reads a structured result's values across its line breaks and members", async () => {
+    // The text rules read the JSON as one text: a JSON-escaped line break is no delimiter, and a PEM
+    // block or a quoted value that runs on into later members keeps its key and markers.
+    const pem = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEowIBAAKCAQEAuY5wq3Zx9bQk1s8hR2pV7tX0aLmN4cQe',
+      'Kq1sW9eR4tY7uI0oP2aS5dF8gH1jK3lZ',
+      '-----END RSA PRIVATE KEY-----',
+    ];
+    const signed =
+      'curl -sS https://bucket.s3.example/obj?X-Amz-Signature=0123456789abcdef0123456789abcdef';
+    for (const [result, summary, secret] of [
+      [
+        {
+          lines: [
+            'APP_NAME=demo',
+            `PRIVATE_KEY="${pem[0]}`,
+            pem[1],
+            pem[2],
+            `${pem[3]}"`,
+            'PORT=8080',
+          ],
+        },
+        '{"lines":["APP_NAME=demo","[redacted]","PORT=8080"]}',
+        'MIIEowIBAAKCAQEA',
+      ],
+      [
+        { lines: [`password=${pem[0]}`, pem[1], pem[3]] },
+        '{"lines":["[redacted]"]}',
+        'MIIEowIBAAKCAQEA',
+      ],
+      [
+        { lines: ["export DB_PASSWORD='first", "hunter2secretpw'", 'echo ok'] },
+        '{"lines":["export [redacted]","echo ok"]}',
+        'hunter2secretpw',
+      ],
+      [{ stdout: "?token='\nhunter2secretpw\\'" }, '{"stdout":"?[redacted]"}', 'hunter2secretpw'],
+      ...['\n', '\r\n', '\r', '\t'].map(
+        (separator) =>
+          [
+            { stdout: `DB_PASSWORD=hunter2hunter2${separator}Q9zXw7TokenValue` },
+            '{"stdout":"[redacted]"}',
+            'Q9zXw7',
+          ] as const,
+      ),
+      ...['\n', '\r\n', '\t'].map(
+        (separator) =>
+          [
+            { stdout: `${signed}${separator}0123456789abcdefSECRETCONTINUATION -o out` },
+            '{"stdout":"curl -sS https://bucket.s3.example/obj?X-Amz-Signature=[redacted] -o out"}',
+            'SECRETCONTINUATION',
+          ] as const,
+      ),
+      [
+        {
+          content: [
+            {
+              type: 'text',
+              text: 'private_key=MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nSECONDLINEu8XJk2Wq4tRmYv0yZp3\nTHIRDLINEaBcDeFgHiJk',
+            },
+          ],
+        },
+        '{"content":[{"type":"text","text":"[redacted]"}]}',
+        'SECONDLINE',
+      ],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B8_CORE_SUMMARY_JSON').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_JSON').toBe(false);
+    }
+  });
+
+  it('shows a summary that does not settle as its own mask', async () => {
+    // Four glued ids need four passes, so neither summary pass settles.
+    const run = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBB'.repeat(2);
+    for (const [result, summary] of [
+      [run, '[redacted]'],
+      [{ stdout: run }, '[redacted]'],
+    ] as const) {
+      expect(
+        (await boundForModel(result, BIG, {})).summary,
+        'SECRETS_B8_CORE_SUMMARY_UNSETTLED',
+      ).toBe(summary);
+    }
+  });
+
+  it(
+    'summarizes a many-part result within the case deadline',
+    async () => {
+      // An MCP result near the 4 MiB http/sse message bound: every member is walked once, and its JSON
+      // is read as one text.
+      const parts = [{ type: 'text', text: 'token=Qz7manyPartSecret' }];
+      for (let index = 0; index < 150_000; index += 1) {
+        parts.push({ type: 'text', text: `part ${index}` });
+      }
+      const { summary } = await boundForModel({ content: parts }, BIG, {});
+      expect(summary.includes('Qz7manyPartSecret'), 'SECRETS_B8_CORE_SUMMARY_PARTS').toBe(false);
+      expect(
+        summary.startsWith('{"content":[{"type":"text","text":"[redacted]"},'),
+        'SECRETS_B8_CORE_SUMMARY_PARTS',
+      ).toBe(true);
+    },
+    ADMITTED_SIZE_CASE_TIMEOUT_MS,
+  );
+
+  it('reports a journal projection whose member names collide as unsettled', () => {
+    const colliding = {
+      'sk-AAAAAAAAAAAAAAAAAAAA': 'rm -rf build',
+      'sk-BBBBBBBBBBBBBBBBBBBB': 'echo done',
+    };
+    expect(projectSecretShapedValue(colliding), 'SECRETS_B8_CORE_KEY_COLLISION').toEqual({
+      value: { '[redacted]': 'echo done' },
+      settled: false,
+    });
+    expect(
+      projectSecretShapedValue({
+        nested: { 'https://u:pw1@h/x': 'one', 'https://u:pw2@h/x': 'two' },
+      }).settled,
+      'SECRETS_B8_CORE_KEY_COLLISION',
+    ).toBe(false);
+    // The report reaches objects inside arrays too.
+    for (const value of [{ list: [colliding] }, { argv: ['run', colliding] }]) {
+      expect(projectSecretShapedValue(value).settled, 'SECRETS_B8_CORE_KEY_COLLISION').toBe(false);
+    }
+    // Names that stay distinct settle, and the display projection still shows one member.
+    expect(
+      projectSecretShapedValue({ 'password=a': 1, 'password=b': 2 }).settled,
+      'SECRETS_B8_CORE_KEY_COLLISION',
+    ).toBe(true);
+    expect(redactSecretShapedValue(colliding), 'SECRETS_B8_CORE_KEY_COLLISION').toEqual({
+      '[redacted]': 'echo done',
+    });
+  });
+});
+
+describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM markers, escaped separators', () => {
+  it('closes a quoted value at the later of its readings with and without the masks', async () => {
+    // A mask can take the backslash that escapes a later quote. A quoted value closes at the later of two
+    // readings: with the masks before and inside it filled, as the next pass reads them, and with each
+    // mask keeping the backslashes it ends with, as the text has them. A nested key's value that takes
+    // the backslash before a later quote therefore does not close the value early, in the journal
+    // projection, whose line break a scheme token takes, and in the summary alike; after an even run of
+    // backslashes the quote is unescaped in both readings and closes the value.
+    const a26 = 'a'.repeat(26);
+    for (const [input, expected] of [
+      ['password="Bearer\nabcdefgh token=xyzxyz\\"secretpart" more', '[redacted] more'],
+      [
+        'password="a Bearer\nabcdefgh9 DB_PASSWORD=x9y8z7\\"Sup3rS3cretTail" next',
+        '[redacted] next',
+      ],
+      ['password="Bearer\nabcdefgh token=xyzxyz\\\\"tail more" end', '[redacted]tail more" end'],
+      ['password="Bearer\nabcdefgh token=xyzxyz\\\\\\"secret tail" end', '[redacted] end'],
+      // A value that closes only where a nested key's mask unescapes its last quote is masked whole.
+      ['"token":"Qz7abcdefghijkl,Qz7mnopqrstuv&\\ttoken:password:\\t\\"', '"[redacted]'],
+      // An opaque value's mask runs to the escaped quote and takes its backslash; a quote it unescapes
+      // closes the value only when no later quote does, behind a URL userinfo in it or not.
+      [`password="?sig=${a26}https://u:p@h\\"Qz7SecretTail" public`, '[redacted] public'],
+      [
+        `password="token\nabcdefgh9 ?sig=${a26}https://u:p@h\\"Qz7SecretTail" public`,
+        '[redacted] public',
+      ],
+      [`password="x ?sig=${a26}\\"Qz7SecretTail" public`, '[redacted] public'],
+      // The earlier rules' masks stay filled in both readings: a quote inside a private-key block
+      // closes nothing.
+      [
+        'password="Bearer\nabcdefgh -----BEGIN RSA PRIVATE KEY----- x"y -----END RSA PRIVATE KEY----- tail" more',
+        '[redacted] more',
+      ],
+    ] as const) {
+      expect(redactSecretShapedText(input), 'SECRETS_B8_CORE_CLOSER_ESCAPE').toBe(expected);
+      expect(projectSecretShapedValue({ a: input }), 'SECRETS_B8_CORE_CLOSER_ESCAPE').toEqual({
+        value: { a: expected },
+        settled: true,
+      });
+    }
+    // A summary masks a value that stops at a line break through the later of the two readings' closers.
+    for (const [input, expected] of [
+      ['export PASSWORD="line1\nDB_TOKEN=abcdef\\"Secr3tTail" done', 'export [redacted] done'],
+      [
+        'export PASSWORD="line1\nDB_TOKEN=abcdef\\"Secr3tTail" done "kept"',
+        'export [redacted] done "kept"',
+      ],
+      ['password="Qz7abc\nDB_TOKEN=abcdef\\"', '[redacted]'],
+      ['password="Qz7abc\nDB_TOKEN=abcdef\\"SECRETtail" done', '[redacted] done'],
+      ['password="Qz7abc\nDB_TOKEN=abcdef\\\\"tail" done', '[redacted]tail" done'],
+      ['password="Qz7abc\nDB_TOKEN=abcdef\\\\\\"SECRET tail" done', '[redacted] done'],
+      [`password="Qz7abc\nx ?sig=${a26}\\"Qz7SecretTail" public`, '[redacted] public'],
+      [`password="Qz7abc\nx ?sig=${a26}\\"`, '[redacted]'],
+      // The second reading falls back to the last quote that could close the value, like the first.
+      ['password="Qz7\ntoken="abcdef" token=zzzzzz\\" token="ghijkl" tail', '[redacted] tail'],
+      // Each value is decided at its own end, whatever order the values were found in.
+      ['passwd="\ntoken:"\n" tail', '[redacted] tail'],
+      ['passwd="token=\\\'\\rtoken=ef\\\\n\\"\ntoken=bcdef\\"', '[redacted]'],
+    ] as const) {
+      expect((await boundForModel(input, BIG, {})).summary, 'SECRETS_B8_CORE_CLOSER_ESCAPE').toBe(
+        expected,
+      );
+    }
+  });
+
+  it('keeps the private-key markers a structured summary masks whole', async () => {
+    const begin = '-----BEGIN RSA PRIVATE KEY-----';
+    const end = '-----END RSA PRIVATE KEY-----';
+    // A credential member or flag argument masked whole keeps a marker whose partner lies outside it,
+    // so a block that runs on into or out of it is still masked across members.
+    for (const [result, summary, secret] of [
+      [
+        { private_key: `${begin}\nMIIEAAAAfirst`, rest: `MIIEBBBBsecondbodyline\n${end}` },
+        '{"[redacted]}',
+        'MIIEBBBB',
+      ],
+      [
+        { a: `${begin}\nMIIEpAIBAAKCAQEAbodylineone`, private_key: `bodylinetwo\n${end}` },
+        '{"a":"[redacted]"}',
+        'bodylineone',
+      ],
+      [
+        ['--private-key', begin, 'MIIEpAIBAAKCAQEAsecretbodyline1', 'abcdefsecretbodyline2', end],
+        '["--private-key","[redacted][redacted]"]',
+        'secretbodyline',
+      ],
+      [
+        [`--private-key=${begin}`, 'MIIEpAIBAAKCAQEAsecretbodyline1', end],
+        '["--[redacted]"]',
+        'MIIE',
+      ],
+      // A member that ends one block and starts another keeps both markers.
+      [
+        {
+          a: `${begin}\nAAAbody1`,
+          private_key: `body1tail\n${end}\n-----BEGIN EC PRIVATE KEY-----\nbody2head`,
+          c: 'BBBbody2\n-----END EC PRIVATE KEY-----',
+          d: 'public',
+        },
+        '{"a":"[redacted]","d":"public"}',
+        'BBBbody2',
+      ],
+      // The END marker it keeps is its first, the one that may close a block begun before it.
+      [
+        {
+          a: `${begin}\nAAAfirstbody`,
+          private_key: `bbb\n${end}\n${begin}\nccc\n${end}`,
+          z: 'public',
+        },
+        '{"a":"[redacted]","z":"public"}',
+        'AAAfirstbody',
+      ],
+      // The BEGIN marker it keeps is its last, the one that may open a block that runs on after it.
+      [
+        { private_key: `${begin}\nAAA\n${end}\n${begin}\nBBBhead`, rest: `CCCbody\n${end}` },
+        '{"[redacted]}',
+        'CCCbody',
+      ],
+      // Members inside arrays and objects keep them too.
+      [
+        { items: [{ private_key: `${begin}\nMIIEnested`, rest: `NESTEDbody\n${end}` }] },
+        '{"items":[{"[redacted]}]}',
+        'NESTEDbody',
+      ],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(false);
+    }
+    // A block inside the member is masked with its markers, so a lone marker elsewhere stays text.
+    for (const [result, summary] of [
+      [
+        { a: `docs mention ${begin} here`, private_key: `${begin}\nMIIEwhole\n${end}` },
+        `{"a":"docs mention ${begin} here","[redacted]}`,
+      ],
+      [
+        { private_key: `${begin}\nMIIEwhole\n${end}`, b: `see ${end} there` },
+        `{"[redacted],"b":"see ${end} there"}`,
+      ],
+    ] as const) {
+      expect((await boundForModel(result, BIG, {})).summary, 'SECRETS_B8_CORE_SUMMARY_PEM').toBe(
+        summary,
+      );
+    }
+    // The journal and the display projections keep their whole mask.
+    expect(
+      projectSecretShapedValue({ private_key: `${begin}\nMIIEAAAA`, rest: 'x' }).value,
+      'SECRETS_B8_CORE_SUMMARY_PEM',
+    ).toEqual({ private_key: '[redacted]', rest: 'x' });
+    expect(
+      redactSecretShapedValue(['--private-key', begin]),
+      'SECRETS_B8_CORE_SUMMARY_PEM',
+    ).toEqual(['--private-key', '[redacted]']);
+  });
+
+  it("reads a structured summary's JSON-escaped line breaks and tabs", async () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    // JSON writes a line break or a tab in a member as two characters, which the summary reads as that
+    // separator for a credential or a scheme label after it and for a credential split by it.
+    for (const [result, summary, secret] of [
+      [
+        { stdout: 'keys:\nsk-proj-abcdefghijklmnopqrstuvwxyz', stderr: '', exitCode: 0 },
+        '{"stdout":"keys:\\n[redacted]","stderr":"","exitCode":0}',
+        'sk-proj-abc',
+      ],
+      [
+        { stdout: 'ACCESSKEY\tAKIAIOSFODNN7EXAMPLE\tActive\n' },
+        '{"stdout":"ACCESSKEY\\t[redacted]\\tActive\\n"}',
+        'AKIAIOSFODNN7',
+      ],
+      [
+        { stdout: 'one sk-proj-aaaaaaaaaaaaaaaaaaaaaaaa\r\nsk-proj-bbbbbbbbbbbbbbbbbbbbbbbb' },
+        '{"stdout":"one [redacted]\\r\\n[redacted]"}',
+        'bbbbbbbb',
+      ],
+      [{ stdout: 'AKIAABCDEFGH\nIJKLMNOP' }, '{"stdout":"[redacted]"}', 'IJKLMNOP'],
+      [
+        { stdout: 'progress 50%\rsk-proj-abcdefghijklmnopqrstuvwxyz' },
+        '{"stdout":"progress 50%\\r[redacted]"}',
+        'sk-proj-abc',
+      ],
+      [
+        { stdout: 'Bearer\nabcdefghijklmnop' },
+        '{"stdout":"Bearer [redacted]"}',
+        'abcdefghijklmnop',
+      ],
+      [
+        { content: [{ type: 'text', text: `Token issued:\n${jwt}` }] },
+        '{"content":[{"type":"text","text":"Token issued:\\n[redacted]"}]}',
+        'eyJhbGciOiJIUzI1NiJ9',
+      ],
+      // The backslash before the letter may end a longer run: a backslash before a line break, or a JSON
+      // text inside a member.
+      [
+        { stdout: 'x\\\nsk-proj-abcdefghijklmnopqrstuvwxyz' },
+        '{"stdout":"x\\\\\\n[redacted]"}',
+        'sk-proj-abc',
+      ],
+      [
+        { stdout: '{"msg":"line1\\nsk-proj-abcdefghijklmnopqrstuvwxyz"}' },
+        '{"stdout":"{\\"msg\\":\\"line1\\\\n[redacted]\\"}"}',
+        'sk-proj-abc',
+      ],
+    ] as const) {
+      const bounded = await boundForModel(result, BIG, {});
+      expect(bounded.summary, 'SECRETS_B8_CORE_SUMMARY_ESCAPES').toBe(summary);
+      expect(bounded.summary.includes(secret), 'SECRETS_B8_CORE_SUMMARY_ESCAPES').toBe(false);
+    }
+    // A path's backslashes before a letter add no mask without a credential after them.
+    expect(
+      (await boundForModel({ stdout: 'C:\\new\\token path\\nothing here' }, BIG, {})).summary,
+      'SECRETS_B8_CORE_SUMMARY_ESCAPES',
+    ).toBe('{"stdout":"C:\\\\new\\\\token path\\\\nothing here"}');
+    // The journal projection, which is compared rather than shown, reads no escape.
+    expect(
+      (await boundForModel({ msg: 'Use\nToken handling' }, BIG, {})).summary,
+      'SECRETS_B8_CORE_SUMMARY_ESCAPES',
+    ).toBe('{"msg":"Use\\nToken [redacted]"}');
+    expect(
+      redactSecretShapedText('{"msg":"Use\\nToken handling"}'),
+      'SECRETS_B8_CORE_SUMMARY_ESCAPES',
+    ).toBe('{"msg":"Use\\nToken handling"}');
   });
 });

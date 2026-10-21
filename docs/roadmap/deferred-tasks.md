@@ -448,6 +448,36 @@ measured or counted here.
   can return a raw signal code above 9 that the physical exit never uses, a note for future embedders. No action
   is proposed for any of these.
 
+## PR #95 masker low edge cases — approved deferrals (2026-10-21)
+
+Under the [masker acceptance bar](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)
+that the maintainer set on 2026-10-21, a low finding in the open-ended masker work
+(`packages/llm/src/scrub-secrets.ts` and core's twin projection in `packages/core/src/tools/bounding.ts`) is
+recorded here instead of being corrected in the review loop. None of these entries is a regression against base
+`9902e0a0`, and none was judged high or medium. The shapes that neither masker reads by design stay described in
+their canonical homes, [built-in-tools.md](../reference/shared-core/built-in-tools.md) for core and
+[error-handling.md](../standards/error-handling.md) for the scrubber; this list holds the review findings and the
+re-checks they need. **Trigger for every entry:** a real tool result, journal entry or diagnostic that carries the
+shape, or the next change to the rule the entry names. The generative harnesses that found them are not part of
+the repository, so each entry names the input and the property to re-check by hand or in a test.
+
+- [ ] **Approved deferral (maintainer, 2026-10-21). A header label split by a JSON escape is not joined in a
+  summary.** *Low, unchanged from base.* *(author)* `boundForModel({ stdout: 'api-k\tey: <value>' })` shows the
+  value in its summary, while the same text as a string result is `[redacted]`. The summary's second reading
+  (`visitEscapedSeparators`) runs the standalone, scheme-label and split-credential rules, not the split
+  header-label join, which rewrites the text instead of reporting ranges. **Re-check:** whether a real tool output
+  splits a header label across a line break; a fix reports the joined labels as ranges of the escaped view.
+  *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). A private-key block split across array elements shows its
+  body in the journal and display projections.** *Low, unchanged from base.* *(author)*
+  `redactSecretShapedValue(['--private-key', '<BEGIN marker>', 'MIIE…', '<END marker>'])` keeps `'MIIE…'` and the
+  END marker, and `{ argv: ['ssh', '-i', '<BEGIN marker>\nMIIE…', '…\n<END marker>'] }` stays whole. Both
+  projections read each string alone; only a summary reads a structured value's JSON as one text. **Re-check:**
+  `redactSecretShapedWalk` under `projectSecretShapedValue` and `redactSecretShapedValue`; a fix changes `v5:`
+  journal digests, so it needs the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(low · packages/core/src/tools/bounding.ts)*
+
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete

@@ -282,10 +282,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 120);
+  assert.equal(secretsControls.length, 130);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    501,
+    513,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -338,16 +338,28 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-key-value-through-masks',
       'core-scheme-nested-label',
       'core-mask-boundaries',
-      // Round 7: userinfo ownership, the quoted-value scan, chaining, the summary and the journal.
+      // Round 7: userinfo ownership, the quoted-value scan, the summary and the journal.
       'core-userinfo-username-zone',
       'core-split-zone-cap',
       'core-quoted-value-scan',
-      'core-standalone-chain',
-      'core-glued-span-boundary',
       'core-summary-fixed-point',
       'core-journal-settled',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 195]),
-    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 112],
+      // Round 8: structured summaries, escaped and unclosed quotes, continuation labels.
+      'core-summary-walk',
+      'core-escaped-quote',
+      'core-unclosed-run',
+      'core-unclosed-closing-view',
+      'core-continuation-label',
+      // Pre-review: the summary's closer and whole-JSON reading, colliding names, values one JSON level down.
+      'core-summary-through-closer',
+      'core-summary-whole-json',
+      'core-journal-key-collision',
+      'core-escaped-value-start',
+      // Sixth pre-review: a summary's escaped separators and the PEM markers its walk keeps.
+      'core-summary-escape-view',
+      'core-summary-pem-markers',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 210]),
+    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 115],
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -394,9 +406,10 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-userinfo-authority-rest',
       'diagnostic-userinfo-rest-length',
       'diagnostic-url-split-retry',
+      'diagnostic-split-probe-raw',
       'diagnostic-label-run-normalized',
       'diagnostic-label-run-raw',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 219]),
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 224]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

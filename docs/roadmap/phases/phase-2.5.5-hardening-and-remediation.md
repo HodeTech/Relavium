@@ -9424,8 +9424,8 @@ carries the same owners.
 the CLI's authored-content detector, the secrets causal controls and the canonical documents. Base
 `9902e0a0`; commits `38e10d42` (Docs-0, the rulings), `dda3b45e` (implementation) and the
 corrections `ef3ded0d`, `bdd292a6`, `6fb7e9d9`, `b2c50e88`, `6b2e94dd` (round 5, which added this
-section), `b89ac62e` (round 6) and the round-7 commit. The commits stay local on `development` until
-the increment is accepted.
+section), `b89ac62e` (round 6), `082962e2` (round 7) and the round-8 commit. The commits stay local on
+`development` until the increment is accepted.
 
 **Review rounds.** Each round is a NEW independent complete cumulative review of `9902e0a0..HEAD`, every
 reviewer in its own worktree detached at the reviewed head: scrubber correctness, tests and causal
@@ -9442,20 +9442,42 @@ stay local and Git-ignored.
 | 5 | `b2c50e88` | NONCLEAN | 20 (2 high) | core's round-4 authority extent erased the context its sequential rules read, so core now masks an ambiguous userinfo with exactly the query values its later rules mask whole; its split view masks URL userinfo before scheme labels; the LLM split scan retries a kept candidate glued across a line break; tested fixed-point helpers; untested pattern pieces gained discriminating tests |
 | 6 | `6b2e94dd` | NONCLEAN | 21 (9 high) | round 5's value mirror was quadratic and still erased context, and its split view dropped the value mask; core now merges every rule's ranges on one text, as the scrubber does, reads a key or scheme label inside another value and a value through earlier masks, reads a split header label or a scheme label right after a credential, and scans PEM blocks linearly; the scrubber's nine-label bound also reads the raw text and its literal query names follow `#`; both fail-closed values are tested |
 | 7 | `b89ac62e` | NONCLEAN | 17 (2 high) | only a userinfo's username owns its keys, never past an LF or TAB, so a key in its password or parameter position or on the next line masks its value through the last `@`; quoted values are found by a character scan that an admitted 8-MiB value cannot exhaust; a credential glued to a fixed-length one is masked in the same pass; summaries use the projection's fixed point; a tiered call whose journal projection does not settle is refused before its prepare; the secrets controls run as two CI shards so that each evidence export fits the unchanged 64-MiB bound, which the single export had exceeded; untested pieces gained discriminating tests |
+| 8 | `082962e2` | NONCLEAN (integration and security clean) | 16 (1 high) | round 7's glued-credential chain cut wider credentials and swallowed key names, and is gone; a structured result's summary reads its JSON as one text once credential members are masked; quoted values are read one JSON string down, and one that does not close on its line is read as an unquoted run from after its quote, no further than that line's end (one JSON string down, its string's end), unless another mask of the pass takes its line break and it closes; a summary masks one stopped by a line break through a later quote instead; a header label at a line start inside a split continuation is read; the scrubber's split probe also reads the raw text; a password-position key's extent is documented as credential equality. Before the commit the author ran the reviewers' method on the candidate and six internal pre-reviews: the first found three of the draft's alternatives unsound (a trusted host-shaped tail, quoted values across lines, a quadratic line-start scan), and they were dropped; the second (17 findings, none high) led to the summary's through-the-closer masking, colliding member names refused as unsettled and escaped separators and opaque values before escaped quotes; the third (27 findings, two high) found that the round's own additions failed — masking a value that never closes to its line end merged journal identities, and the scrubber's escaped header separator and terminal final-byte view let a token leak or blanked coloured diagnostics — so such a value is read as an unquoted run, the two scrubber additions are withdrawn and documented as limits, and a structured summary's walk became linear at a small constant factor; the fourth (16 findings, two medium; the critic clean, with all 128 controls run) found that the run and the opaque mask's kept backslash showed values that earlier versions masked whole in their next pass, so such a value is decided once the pass's other masks are known and the opaque mask takes the backslash again, and gaps in tests and wording; the fifth (19 findings, one high; the critic clean) found that projecting a structured result's strings one by one removed the PEM markers and keys that reading its JSON needs across members, so a structured summary reads its JSON as one text again and the summary-only runs over line breaks are withdrawn; the sixth (four findings and a duplicate, one medium; the integration lens and the critic clean) found that the closing view and the summary's closer read a quote's escape after a nested key's value had taken its backslash, and that a structured summary's walk dropped the private-key markers a block across members needs, both regressions against base, and that a structured summary read no JSON-escaped line break or tab, a gap base shares, so a quoted value closes at the later of its readings with and without the masks' trailing backslashes, which also masks the tail an opaque value's mask unescaped (behind a URL userinfo, a further regression the author's oracles found), the walk keeps a marker whose partner lies outside its member, and every summary also reads its escaped separators; two low edge cases base shares went to deferred-tasks.md under the maintainer's 2026-10-21 bar |
 
-**Author gates and controls.** Every corrected head passed `pnpm run ci` and the affected suites under
-`CI=true GITHUB_ACTIONS=true`, plus local differential, exhaustive and admitted-size harnesses that
-found no new leak against the previous head. Until round 7 no author gate ran the evidence export,
-which only the dedicated CI job enables, so the 110-control family's single export, about 77 MiB
-against the unchanged 64-MiB bound, would have failed that job. From round 7 the family is 120
-controls / 360 phases / 501 targets and witnesses, run as two 60-control shards that each project
-1,087 of the unchanged 2,000 retained files; both shards ran locally with
+**Author gates and controls.** Every corrected head passed `pnpm run ci` and the affected suites
+under `CI=true GITHUB_ACTIONS=true`, plus local differential, exhaustive and admitted-size harnesses
+that found no new leak against the previous head beyond the classes a round documents (in round 8,
+glued credentials that round 7's chain had masked in one pass, and a key that only such a
+credential's mask exposes inside a value that does not close). Until round 7 no author gate ran the
+evidence export, which only the dedicated CI job enables, so the 110-control family's single export,
+about 77 MiB against the unchanged 64-MiB bound, would have failed that job. From round 7 the family
+is 120 controls / 360 phases / 501 targets and witnesses, run as two 60-control shards that each
+project 1,087 of the unchanged 2,000 retained files; both shards ran locally with
 `RELAVIUM_ACCEPTANCE_EVIDENCE` set, and each export held 1,087 files and measured 45.50 MiB and
-45.48 MiB, its final record included. [tools/secrets-controls/README.md](../../../tools/secrets-controls/README.md)
-records each round's control changes and, from round 5, the rule that pieces inside a mechanism's
-pattern are pinned by discriminating tests rather than by new controls.
+45.48 MiB, its final record included. From round 8 the family is 130 controls / 390 phases / 513
+targets and witnesses in two shards of 65 controls (1,177 files each), whose exports measured
+49.83 MiB and 49.76 MiB. From round 8 the author also runs the reviewers' own
+generative harness (a planted-token oracle, idempotence, JSON round trips, prose preservation,
+admitted-size timing and a search for projections that do not settle) and an internal multi-lens
+pre-review on every correction before its commit.
+[tools/secrets-controls/README.md](../../../tools/secrets-controls/README.md) records each round's
+control changes and, from round 5, the rule that pieces inside a mechanism's pattern are pinned by
+discriminating tests rather than by new controls.
 
-**Remaining gates.** The increment is not independently accepted: two NEW consecutive clean complete
-cumulative rounds after the last material fix, with a clean separate security sitting, remain. Then
-`development` is pushed and its CI observed, and the PR #95 items in
+**Maintainer ruling — the masker acceptance bar, 2026-10-21.** After eight external rounds and six
+internal pre-reviews, the maintainer narrowed this increment's acceptance bar. A pattern-based masker
+cannot be complete, and each aggressive round found another corner case while Step 9 waited. A round
+is clean for this increment when it reports no high or medium finding and no regression against base
+`9902e0a0` (text that base masked and the reviewed head shows). Each low finding is recorded in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-low-edge-cases--approved-deferrals-2026-10-21)
+with its file, a minimal example and where to re-check it, instead of being corrected in the loop.
+The increment closes with the sixth internal pre-review and one external round (round 9) under that
+bar. The ruling covers only the open-ended masker work: `packages/llm/src/scrub-secrets.ts`, core's
+twin projection in `packages/core/src/tools/bounding.ts` and their controls. Every other increment
+keeps the approved bar of two NEW consecutive clean complete cumulative rounds after the last
+material fix.
+
+**Remaining gates.** The increment is not independently accepted. Round 9 remains: a NEW complete
+cumulative round, with its separate security lens, that meets the 2026-10-21 bar. Then `development`
+is pushed and its CI observed, and the PR #95 items in
 [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) close.

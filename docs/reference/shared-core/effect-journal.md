@@ -369,34 +369,49 @@ no fallback to the old digest or automatic retry permission. Secret and
 inline-media redaction remain deliberate projection equality; raw credential bytes are never
 added to the digest to distinguish calls.
 
-Recognized URL userinfo is masked through the authority's last `@`, preserving the host,
-path, query and fragment; the values of the keys and query parameters in it, its username's
-excepted, are masked to their own ends as well, through that `@` when a value holds one.
-Recognized opaque URL-query values are masked through their delimiter, including values
-longer than 512 characters. Quoted secret-key values honor escaped quotes and backslashes
-through the actual closing quote. A recognized value must not leave a credential suffix
-in the projection. This remains a finite shape detector, not a claim to identify arbitrary
-unlabelled secrets. Existing old digests are not retroactively erased or rewritten.
+Recognized URL userinfo is masked through the authority's last `@`, preserving the host, path, query
+and fragment; the values the key and opaque-query rules recognize in it, its username's excepted,
+are masked to their own ends as well, through that `@` and on through the host, path and query when
+no delimiter of theirs comes first, while a value no rule recognizes ends at that `@` and the text
+after it stays as the host
+([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)). Recognized opaque
+URL-query values are masked through their delimiter, including values longer than 512 characters.
+Quoted secret-key values honor escaped quotes and backslashes through the actual closing quote on
+their line. A recognized value must not leave a credential suffix in the projection; what a rule
+does not recognize whole, such as the later words of a quoted value that does not close on its line,
+is listed with the shapes
+([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)). This remains a finite
+shape detector, not a claim to identify arbitrary unlabelled secrets. Existing old digests are not
+retroactively erased or rewritten.
 
-A raw `?` or `#` before the authority's `@` is public only after a host-shaped prefix that an
-`=` assignment follows ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)).
-Wave 3's PR95 increment tightened that predicate without a new digest domain. It also merges
-the ranges of every rule before replacing anything, so a userinfo is masked together with the
-values of every key and query parameter in it but its username, which never reaches past an LF or
-TAB, and no mask removes another credential's context; reads a key or scheme label inside another
-value as a credential of its own, and a value through earlier masks; masks userinfo split by an LF
-or TAB at either edge or inside its `scheme://`; masks a credential glued to the end of a
-fixed-length one as a credential of its own; reads a split header label or a scheme label right
-after a credential or a PEM block; and repeats the projection until it is stable.
-These change a `v5:` projection only for the arguments they project differently, such as
-userinfo previously treated as public or a credential an earlier mask had hidden: a resumed run whose
-committed effect carried one now computes a different digest and refuses matching prepare
-instead of replaying, which is the fail-closed outcome of any digest difference. Every other
-`v5:` row keeps its digest. A projection that has not settled after three passes becomes the
-constant `[redacted]` in diagnostics, but it never becomes a journal identity: the registry
-refuses such a tiered call with `ToolArgsInvalidError` before its prepare
+A raw `?` or `#` before the authority's `@` is public only after a host-shaped prefix that an `=`
+assignment follows ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)). Wave
+3's PR95 increment tightened that predicate without a new digest domain. It also merges the ranges
+of every rule before replacing anything, so a userinfo is masked together with the recognized values
+of the keys and query parameters in it but its username, which never reaches past an LF or TAB, and
+no mask removes another credential's context; reads a key or scheme label inside another value as a
+credential of its own, and a value through earlier masks; masks userinfo split by an LF or TAB at
+either edge or inside its `scheme://`; reads a quoted value one JSON string down too, and one that
+does not close on its line, or before the end of its string, as an unquoted run that stops there —
+unless another mask of the pass takes its line break and it closes, as the next pass read it before
+(at the later of its readings with and without the masks' trailing backslashes) — so the text after a quote that may close a string around the key keeps calls distinct; reads a
+split header label or a scheme label right after a credential or a PEM block, and a header label at
+a line start inside a split continuation; and repeats the projection until it is stable. These
+change a `v5:` projection only for the arguments they project differently, such as userinfo
+previously treated as public or a credential an earlier mask had hidden: a resumed run whose
+committed effect carried one now computes a different digest and refuses matching prepare instead of
+replaying, which is the fail-closed outcome of any digest difference. Every other `v5:` row keeps
+its digest. Text a rule reads as part of a credential's value — such as the host, path and query a
+password-position key's value runs through — is that credential's, so calls that differ only there
+share a projection, as recognized credentials always do. A projection that has not settled after
+three passes becomes the constant `[redacted]` in diagnostics, but it never becomes a journal
+identity: the registry refuses such a tiered call with `ToolArgsInvalidError` before its prepare
 ([tool registry](tool-registry.md#resolution--the-dispatch-lifecycle)), so two different calls
-cannot share it and replay one another's results.
+cannot share it and replay one another's results. Two member names of one object that project alike
+would leave one member for two argument sets, so such a projection counts as not settled and is
+refused the same way. Like any refusal before the prepare, it does not consult a row an earlier
+version committed at that slot; the corrected call takes the next slot, as
+[§14](#14-known-limitations)'s slot instability already allows ([§4](#4-the-resume-gate)).
 
 A recognized structural credential key masks its entire value before traversal. A partial
 inner text match does not make the remaining value public. Only an anchored Bearer, Basic

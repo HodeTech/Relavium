@@ -125,8 +125,11 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // escaped, glued behind punctuation, LF/TAB-split or a concatenated run of up to eight, as in
   // `BearerBearer`), as a doubled `Bearer Bearer` misconfiguration does; the token after them is
   // masked and the labels stay. The token may begin with any run of (escaped) quotes, is never a
-  // label, a run of labels or another header name, and ends at a delimiter, at escapes before one or
-  // before a header name glued to it, which then masks its own value. Every label repetition is
+  // label or a run of labels that whitespace or the end follows, nor another header name, and ends
+  // at a delimiter, at escapes before one or before a header name glued to it, which then masks its
+  // own value. A JSON escape after the `:` starts the token, so it takes a value glued to the
+  // escape (`"x-api-key":"\n<t>"` keeps only the backslash) but not a quoted value behind one
+  // (`x-api-key:\t"<t>"`), a documented limit (error-handling.md). Every label repetition is
   // bounded so no label run can exhaust the RegExp stack: past eight separate labels the standalone
   // label rule masks the token after the last one, and nine concatenated labels blank the diagnostic
   // (`LABEL_RUN_PAST_BOUND`).
@@ -141,12 +144,12 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // finite scheme LABEL, a label may be closed by its own quote before the whitespace
   // (`"Bearer" <token>`), and a run of up to eight concatenated labels (`BearerBearer`) counts as one
   // label. Preserve the required label/value separator and ordinary following prose; opaque value
-  // fragments cannot be distinguished from that prose. A label never takes another label as its
-  // token, even one glued behind punctuation, quoted or concatenated, so any number of stacked labels
-  // leaves the last one to mask the token, and a token ends before a label (or a concatenated run)
-  // glued to it behind a non-word character, which then masks its own token. Quotes and `,;}`
-  // around a token stay outside it unless it continues past them, so `[REDACTED];tail` is masked
-  // whole.
+  // fragments cannot be distinguished from that prose. A label never takes as its token another
+  // label that whitespace or the end follows, even one glued behind punctuation, quoted or
+  // concatenated, so any number of stacked labels leaves the last one to mask the token, and a
+  // token ends before a label (or a concatenated run) glued to it behind a non-word character,
+  // which then masks its own token. Quotes and `,;}` around a token stay outside it unless it
+  // continues past them, so `[REDACTED];tail` is masked whole.
   {
     pattern:
       /\b(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:[\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,7}[\\"']*\s+(?![^\w\s]*(?:(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)[\\"']*){1,8}(?:\s|$))[\\"']*(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])[\\"',;}]*(?=(?<=[^\w])(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)(?:[\\"']*(?:B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c)){0,7}[\\"']*(?:\s|$)|\s|$)/dgi,
@@ -409,6 +412,11 @@ function scrubOnce(text: string): string {
   const normalized = normalizeSecretProbe(text);
   if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;
   const joined = /[\n\t]/.test(normalized) ? normalized.replace(/[\n\t]+/g, '') : undefined;
+  // Normalization can take a split credential's first letter into a terminal sequence (ESC 'A'
+  // before `AIza`, ESC '[' before `sk-`), so the raw text's joined view is probed as well when the
+  // two views differ.
+  const rawJoined =
+    normalized !== text && /[\n\t]/.test(text) ? text.replace(/[\n\t]+/g, '') : undefined;
   for (const rule of NON_QUERY_SECRET_RULES) {
     const rawMasked = applyRule(text, rule);
     // Identical inputs have identical pure projections; unchanged raw text already has
@@ -417,6 +425,7 @@ function scrubOnce(text: string): string {
     if ((rawMasked === text ? normalized : normalizeSecretProbe(rawMasked)) !== normalizedMasked)
       return '[REDACTED]';
     if (joined !== undefined && hasSplitCredential(normalized, joined, rule)) return '[REDACTED]';
+    if (rawJoined !== undefined && hasSplitCredential(text, rawJoined, rule)) return '[REDACTED]';
     // Retain the existing broader whitespace probe only within this rule's still-unmasked spans.
     // It detects incomplete prefixes separated by spaces without consuming prose after a full mask.
     for (const remaining of normalizedMasked.split('[REDACTED]')) {

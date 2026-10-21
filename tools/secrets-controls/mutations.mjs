@@ -254,16 +254,6 @@ const coreOriginalBoundary = String.raw`  const candidates = /(^|[^\w])([A-Za-z]
     if (match === null) continue;
     matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
     mask(start, matchedUntil, '[redacted]');
-    // A credential glued to the end of this one starts one of its own, as after an applied mask, so a
-    // run of fixed-length ids (AKIA…ASIA…) is masked whole in one pass.
-    for (let glued = matchedUntil; /[A-Za-z]/.test(joined[glued] ?? ''); glued = matchedUntil) {
-      JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
-      if (!JOINED_STANDALONE_CREDENTIAL.test(preview(glued))) break;
-      JOINED_STANDALONE_CREDENTIAL.lastIndex = glued;
-      if (JOINED_STANDALONE_CREDENTIAL.exec(joined) === null) break;
-      matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
-      mask(glued, matchedUntil, '[redacted]');
-    }
   }
 }
 
@@ -330,26 +320,21 @@ function visitSplitSpans(
     }
     return target + removed;
   }
-  let previousEnd = -1;
   visit(joined, (start, end, replacement, url) => {
     // A separator right before a URL's scheme is outside the URL, so it splits nothing.
     const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
     const originalStart = advance(start, !ownsEdges);
     const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
     const originalEnd = advance(end, ownsEdges);
-    // A span that starts where the visitor's previous one ended is glued to a credential, which bounds
-    // it as an applied mask would.
-    const glued = originalStart === previousEnd;
-    previousEnd = originalEnd;
-    if (!glued && boundary?.test(text[originalStart - 1] ?? '')) return;`;
+    if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
 const withoutCoreOriginalBoundary = coreOriginalBoundary
   .replace(
     String.raw`  const candidates = /(^|[^\w])([A-Za-z])/g;`,
     String.raw`  const candidates = /([A-Za-z])/g;`,
   )
-  .replace("    if (!glued && boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+  .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 195;
+const CORE_PROJECTION_CASES = 210;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -364,9 +349,9 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete registry test file the journal-identity control runs. */
-const REGISTRY_CASES = 112;
+const REGISTRY_CASES = 115;
 /** The complete scrubber test file every LLM diagnostic control runs. */
-const LLM_SCRUB_CASES = 219;
+const LLM_SCRUB_CASES = 224;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -1228,7 +1213,8 @@ export const mutations = [
     ],
     'SECRETS_B4_LABEL_RUN_BOUND',
   ),
-  // A header token is never a label, a run of labels or a nested header name.
+  // A header token is never a label or a run of labels that whitespace or the end follows, nor a
+  // nested header name.
   diagnosticControl(
     'diagnostic-header-token-not-label',
     headerLine(),
@@ -1496,15 +1482,15 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-key-value-nested',
-    "    if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt, '[redacted]');",
-    "    if (delimiterAt - valueStart >= 6) {\n      mask(match.index, delimiterAt, '[redacted]');\n      key.lastIndex = delimiterAt;\n    }",
+    '    if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt);',
+    '    if (delimiterAt - valueStart >= 6) {\n      mask(match.index, delimiterAt);\n      key.lastIndex = delimiterAt;\n    }',
     ["reads a key inside another key's value"],
     'SECRETS_B6_CORE_NESTED_KEY',
   ),
   coreProjectionControl(
     'core-key-value-through-masks',
-    '  visitSecretKeyValues(names, fillRanges(text, masked), record);',
-    '  visitSecretKeyValues(names, names, record);',
+    '  const values = fillRanges(text, masked);',
+    '  const values = names;',
     ['reads a value through the masks before it, line breaks included'],
     'SECRETS_B6_CORE_VALUE_THROUGH_MASK',
   ),
@@ -1549,8 +1535,8 @@ export const mutations = [
     'SECRETS_B4_CORE_SPLIT_EDGE',
   ),
   // Round 7: only a username owns its userinfo's text, and none past an LF or TAB; quoted values are
-  // scanned without a RegExp repeat; glued credentials chain; the summary uses the projection's fixed
-  // point; and an effect whose journal projection never settles is refused before it is prepared.
+  // scanned without a RegExp repeat; the summary uses the projection's fixed point; and an effect whose
+  // journal projection never settles is refused before it is prepared.
   coreProjectionControl(
     'core-userinfo-username-zone',
     coreUserinfoZone,
@@ -1567,38 +1553,26 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-quoted-value-scan',
-    '      const end = quotedValueEnd(values, valueStart);',
-    String.raw`      const quoted = quote === '"' ? /"(?:[^"\\\r\n]|\\[^\r\n])*"/y : /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
+    '      const value = quotedValueEnd(values, valueStart);',
+    String.raw`      const quoted = opening === '"' ? /"(?:[^"\\\r\n]|\\[^\r\n])*"/y : /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
       quoted.lastIndex = valueStart;
-      const end = quoted.test(values) ? quoted.lastIndex : -1;`,
+      const value = quoted.test(values)
+        ? { end: quoted.lastIndex, closed: true, lineBreak: false }
+        : { end: valueStart, closed: false, lineBreak: true };`,
     ['projects exactly admitted-size quoted values without exhausting the RegExp stack'],
     'SECRETS_B7_CORE_QUOTED_SCAN',
   ),
   coreProjectionControl(
-    'core-standalone-chain',
-    "    for (let glued = matchedUntil; /[A-Za-z]/.test(joined[glued] ?? ''); glued = matchedUntil) {",
-    '    for (let glued = matchedUntil; false; glued = matchedUntil) {',
-    ['masks a run of glued fixed-length ids in one pass, split or not'],
-    'SECRETS_B7_CORE_CHAIN',
-  ),
-  coreProjectionControl(
-    'core-glued-span-boundary',
-    '    const glued = originalStart === previousEnd;',
-    '    const glued = false;',
-    ['masks a run of glued fixed-length ids in one pass, split or not'],
-    'SECRETS_B7_CORE_CHAIN',
-  ),
-  coreProjectionControl(
     'core-summary-fixed-point',
-    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedText(text) : text;`,
-    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedOnce(text) : text;`,
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedSummaryText(text) : text;`,
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedOnce(text, true) : text;`,
     ["summarizes with the projection's fixed point before one-line normalization"],
     'SECRETS_B7_CORE_SUMMARY',
   ),
   coreProjectionControl(
     'core-journal-settled',
-    '    settled = false;',
-    '',
+    "      settled = false;\n      return '[redacted]';",
+    "      return '[redacted]';",
     ['reports whether a journal projection settled'],
     'SECRETS_B7_CORE_JOURNAL_SETTLED',
   ),
@@ -1611,6 +1585,96 @@ export const mutations = [
     REGISTRY_CASES,
     'refuses a tiered effect whose journal projection does not settle, before preparing it',
     'SECRETS_B7_CORE_UNSETTLED_REFUSAL',
+    [
+      'refuses a real tiered effect whose arguments never settle',
+      'names every argument when only the whole projection does not settle',
+    ].map((target) => ({ target, marker: 'SECRETS_B7_CORE_UNSETTLED_REFUSAL' })),
+  ),
+  // Round 8: a structured result is summarized from its projection, quoted values are read one JSON
+  // string down, one that does not close on its line is read as an unquoted run unless the pass's other
+  // masks join its lines, and a label may start at a line start inside a split continuation.
+  coreProjectionControl(
+    'core-summary-walk',
+    '  const summary = makeSummary(summaryText);',
+    '  const summary = makeSummary(text);',
+    ['summarizes a structured result from its JSON once credential members are masked'],
+    'SECRETS_B8_CORE_SUMMARY_WALK',
+  ),
+  coreProjectionControl(
+    'core-escaped-quote',
+    '    const opening = escaped ? values[valueStart + 1] : values[valueStart];',
+    '    const opening = values[valueStart];',
+    ['reads a quoted value one JSON string down'],
+    'SECRETS_B8_CORE_ESCAPED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-unclosed-run',
+    "    if (end - from >= 6) report(value.start, end, '[redacted]');",
+    '',
+    ['reads a quoted value that does not close on its line as an unquoted run'],
+    'SECRETS_B8_CORE_UNCLOSED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-unclosed-closing-view',
+    '  const closing = fillRanges(text, ranges);',
+    '  const closing = values;',
+    ['reads a quoted value that does not close on its line as an unquoted run'],
+    'SECRETS_B8_CORE_UNCLOSED_QUOTE',
+  ),
+  // Pre-review: the summary masks a value that a later quote could close through that quote and reads
+  // a structured result's JSON as one text, a journal projection whose member names collide does not
+  // settle, one JSON level down a value opens behind escaped tabs and line breaks, and a value that
+  // does not close is decided once the pass's other masks are known.
+  coreProjectionControl(
+    'core-summary-through-closer',
+    "  return toFixedPoint((value) => redactSecretShapedOnce(value, true), text, '[redacted]');",
+    "  return toFixedPoint((value) => redactSecretShapedOnce(value, false), text, '[redacted]');",
+    ['summarizes a value that closes on a later line whole'],
+    'SECRETS_B8_CORE_SUMMARY_CLOSER',
+  ),
+  coreProjectionControl(
+    'core-summary-whole-json',
+    '        (text) => text,',
+    '        redactSecretShapedSummaryText,',
+    ["reads a structured result's values across its line breaks and members"],
+    'SECRETS_B8_CORE_SUMMARY_JSON',
+  ),
+  coreProjectionControl(
+    'core-journal-key-collision',
+    '      if (Object.hasOwn(out, name)) collide?.();',
+    '',
+    ['reports a journal projection whose member names collide as unsettled'],
+    'SECRETS_B8_CORE_KEY_COLLISION',
+  ),
+  coreProjectionControl(
+    'core-escaped-value-start',
+    '    const valueStart = escapedValueStart(values, key.lastIndex);',
+    '    const valueStart = key.lastIndex;',
+    ['reads a quoted value one JSON string down'],
+    'SECRETS_B8_CORE_ESCAPED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-continuation-label',
+    '  for (const boundaries of new Set([afterMasks(text, masks), afterMasks(text, firstLines)])) {',
+    '  for (const boundaries of new Set([afterMasks(text, masks)])) {',
+    ['reads a label at a line start inside a split continuation'],
+    'SECRETS_B8_CORE_CONTINUATION_LABEL',
+  ),
+  // Sixth pre-review: a summary reads the line breaks and tabs that JSON escaping hides, and its walk
+  // keeps the private-key markers a whole mask would take from a block that crosses members.
+  coreProjectionControl(
+    'core-summary-escape-view',
+    '  if (throughCloser) visitEscapedSeparators(text, record);',
+    '',
+    ["reads a structured summary's JSON-escaped line breaks and tabs"],
+    'SECRETS_B8_CORE_SUMMARY_ESCAPES',
+  ),
+  coreProjectionControl(
+    'core-summary-pem-markers',
+    '        maskWholeKeepingPemMarkers,',
+    '        maskWhole,',
+    ['keeps the private-key markers a structured summary masks whole'],
+    'SECRETS_B8_CORE_SUMMARY_PEM',
   ),
   coreProjectionControl(
     'core-fixed-point',
@@ -1618,6 +1682,13 @@ export const mutations = [
     '  return redactSecretShapedOnce(text);',
     ['reaches a fixed point'],
     'SECRETS_B4_CORE_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-split-probe-raw',
+    "    if (rawJoined !== undefined && hasSplitCredential(text, rawJoined, rule)) return '[REDACTED]';",
+    '',
+    ['blanks a split credential whose first letter a bare terminal introducer would take'],
+    'SECRETS_B8_SPLIT_RAW',
   ),
   diagnosticControl(
     'diagnostic-url-split-retry',

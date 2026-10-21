@@ -342,16 +342,17 @@ async function prepareEffect(
   const journal = projectInput(def, effective, ctx.secretArgKeys, 'journal');
   if (journal.unsettled.length > 0) {
     // A value whose redacted projection never settles projects to `[redacted]`, which any other such
-    // value shares: its digest could replay one call's result for a different call (§4), so the
-    // effect is refused before anything is journaled. The model can correct the argument. An open
-    // schema lets the model choose an argument's name, so the names are masked like any other text.
+    // value shares, and two member names that project alike leave one member: either way the digest
+    // could replay one call's result for a different call (§4), so the effect is refused before
+    // anything is journaled. The model can correct the argument. An open schema lets the model choose
+    // an argument's name, so the names are masked like any other text.
     const fields = [...new Set(journal.unsettled.map(redactSecretShapedText))];
     throw new ToolArgsInvalidError(
       def.id,
       fields,
       `tool \`${def.id}\`: credential-shaped text in ${fields.join(
         ', ',
-      )} has no stable redacted form, so this effect cannot be given a journal identity`,
+      )} has no stable, distinct redacted form, so this effect cannot be given a journal identity`,
     );
   }
   try {

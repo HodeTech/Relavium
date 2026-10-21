@@ -1297,6 +1297,7 @@ describe('PR95 review round 5: label pieces, a split ftp credential and the repe
       ['Uploading files\nftp://deploySECRET\n1234@host.example/x', '[REDACTED]'],
       ['Uploading files\n\tftp://deploySECRET\n1234@host.example/x', '[REDACTED]'],
       ['files\nf\ntp://TOKENSECRET@host', '[REDACTED]'],
+      ['Uploading files\tftp://deploySECRET\t1234@host.example/x', '[REDACTED]'],
     ]);
     // A real sftp scheme keeps its colonless user, also when the user is split.
     for (const input of [
@@ -1360,5 +1361,84 @@ describe('PR95 review round 6: the label bound behind a terminal sequence, fragm
   it('fails closed with its own mask when the scrub does not settle', () => {
     vi.mocked(toFixedPoint).mockImplementationOnce((_pass, _text, failed) => failed);
     expect(scrubSecrets('public text'), 'SECRETS_B6_FAIL_CLOSED').toBe('[REDACTED]');
+  });
+});
+
+describe('PR95 review round 8: the split probe behind a terminal introducer and the host after a query', () => {
+  it('blanks a split credential whose first letter a bare terminal introducer would take', () => {
+    // Normalization reads ESC '[' plus the credential's first letter as a terminal sequence.
+    for (const input of [
+      '\u001b[sk-Abc4Def5\nGhi6Jkl7Mno8Pqr9',
+      'auth failed: \u001b[api-k\ney: Abc4Def5Ghi6Jkl7Mno8',
+      '\u001b[https://user:Abc4Def5\tGhi6Jkl7Mno8@host.example/x',
+      // A two-byte escape takes the letter too.
+      '\u001bAIzaSyAbc12345\n678901234567890xyz',
+    ]) {
+      expect(scrubSecrets(input), 'SECRETS_B8_SPLIT_RAW').toBe('[REDACTED]');
+    }
+    const benign = 'plain \u001b[1mbold\u001b[0m text\nnext line';
+    expect(scrubSecrets(benign), 'SECRETS_B8_SPLIT_RAW').toBe(benign);
+  });
+
+  it('reads the host after an ambiguous authority up to its query or fragment', () => {
+    for (const [input, expected] of [
+      ['https://gw?a=1@host.example?q=1', 'https://[REDACTED]@host.example?q=1'],
+      ['https://gw?a=1@host.example#frag rest', 'https://[REDACTED]@host.example#frag rest'],
+    ] as const) {
+      expect(scrubSecrets(input), 'SECRETS_B8_HOST_QUERY').toBe(expected);
+    }
+  });
+
+  it('masks a header token that a JSON escape begins', () => {
+    // The escape's letter starts the token, so the value glued to it is masked with it.
+    for (const [input, expected] of [
+      [
+        '400 invalid header value: {"x-api-key":"\\nsk-ant-api03-Q9zXw7TokenValue12345abcdef"}',
+        '400 invalid header value: {"x-api-key":"\\[REDACTED]"}',
+      ],
+      [
+        '{"x-goog-api-key":"\\tAIzaSyQ9zXw7TokenValue12345abcdef01"}',
+        '{"x-goog-api-key":"\\[REDACTED]"}',
+      ],
+      ['{"api-key":"\\r\\nQ9zXw7TokenValue12345abcdef"}', '{"api-key":"\\[REDACTED]"}'],
+      ['x-goog-api-key:\\n\\n\\nQ9zXw7TokenValue12345abcdef', 'x-goog-api-key:\\[REDACTED]'],
+      ['x-api-key:\\r\\n\\r\\nQ9zXw7TokenValue12345abcdef', 'x-api-key:\\[REDACTED]'],
+      [
+        '{\\"api-key\\": \\"\\nQ9zXw7TokenValue12345abcdef\\"}',
+        '{\\"api-key\\": \\"\\[REDACTED]\\"}',
+      ],
+      ['api-key:"\\ nQ9zXw7TokenValue12345abcdef', '[REDACTED]'],
+    ] as const) {
+      expect(scrubSecrets(input), 'SECRETS_B8_HEADER_ESCAPE_TOKEN').toBe(expected);
+    }
+  });
+
+  it('blanks a path-less hyperlink target that the raw split probe joins with a later @', () => {
+    // A documented fail-closed trade-off: the raw LF/TAB-joined view reads a terminal hyperlink's bare
+    // origin and the next cell's address as one userinfo; a target with a path stops it.
+    const row = (target: string) =>
+      `ID\tOWNER\n\u001b]8;;${target}\u001b\\build-42\u001b]8;;\u001b\\\tbob@example.com\n`;
+    expect(scrubSecrets(row('https://ci.example.com')), 'SECRETS_B8_HYPERLINK_TRADEOFF').toBe(
+      '[REDACTED]',
+    );
+    const withPath = row('https://ci.example.com/builds/42');
+    expect(scrubSecrets(withPath), 'SECRETS_B8_HYPERLINK_TRADEOFF').toBe(withPath);
+  });
+
+  it('masks a credential before or inside a terminal sequence in place', () => {
+    for (const [input, expected] of [
+      [
+        'request failed: Authorization: Bearer Q9zXw7TokenValue\u001b[0m (status 401)',
+        'request failed: Authorization: Bearer [REDACTED] (status 401)',
+      ],
+      [
+        'x-api-key: \u001b[33mabcdef123456\u001b[0m rejected by upstream',
+        'x-api-key: [REDACTED] rejected by upstream',
+      ],
+      ['see https://user:pa\u001b[0mss@host.example/x', 'see https://[REDACTED]@host.example/x'],
+      ['Bearer \u001b[1mtoken123abc\u001b[0m done', 'Bearer [REDACTED] done'],
+    ] as const) {
+      expect(scrubSecrets(input), 'SECRETS_B8_TERMINAL_IN_PLACE').toBe(expected);
+    }
   });
 });
