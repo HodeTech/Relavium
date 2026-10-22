@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBootstrap } from '../cli-bootstrap/check.mjs';
-import { abandonFixtures } from '../cli-bootstrap/child.mjs';
 import { inspectPackageArchive } from './archive.mjs';
 import {
   originFromEnvironment,
@@ -183,9 +182,9 @@ await completeConsumer({
     validateConsumerRecord(record, receipt, { ...expected, allowLocal: true });
     return record;
   },
-  // An interrupt stops the bootstrap's own children and fixtures too; retries absorb a killed child
-  // that was still finishing a write.
-  abandon: abandonFixtures,
+  // An interrupt also abandons the bootstrap witness's fixtures and the installed smoke's worker roots
+  // in the report directory; retries absorb a killed child that was still finishing a write.
+  supportRoot: reportDirectory,
   cleanup: () => rmSync(home, { recursive: true, force: true, maxRetries: 3 }),
   cleanupFailed: () => writeSync(2, 'PACKED_CLI_SECONDARY_INSTALLATION_CLEANUP_FAILED\n'),
   publish(record) {

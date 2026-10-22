@@ -1,18 +1,25 @@
 import assert from 'node:assert/strict';
+import { isAbsolute } from 'node:path';
+import { abandonFixtures } from '../cli-bootstrap/child.mjs';
 import { exitOnInterrupt } from './process.mjs';
+import { abandonInstalledSmoke } from './smoke/index.mjs';
 
 /**
  * A success publication includes actual worker settlement and owned installation removal. An
  * interrupt (SIGINT, SIGTERM, SIGHUP) is the primary outcome: it stops every `runCommand` child tree,
- * runs `abandon` for the children and directories `runCommand` does not own, removes the installation
- * and exits with the signal's code, reporting a failed removal only through `cleanupFailed`. `abandon`
- * and `cleanup` are therefore synchronous.
+ * then the bootstrap witness's bounded children, removes its live fixtures and the installed smoke's
+ * worker roots under `supportRoot` (the native fixture targets end with that worker), removes the
+ * installation and exits with the signal's code, reporting any failed removal only through
+ * `cleanupFailed`. `cleanup` is therefore synchronous.
  * @template T
  * @param {{exercise: () => Promise<T>, cleanup: () => void, cleanupFailed: () => void,
- *   publish: (result: T) => unknown, abandon: () => void}} options
+ *   publish: (result: T) => unknown, supportRoot: string}} options
  */
-export async function completeConsumer({ exercise, cleanup, cleanupFailed, publish, abandon }) {
-  assert.equal(typeof abandon, 'function', 'PACKED_CLI_CONSUMER_ABANDON');
+export async function completeConsumer({ exercise, cleanup, cleanupFailed, publish, supportRoot }) {
+  assert.ok(
+    typeof supportRoot === 'string' && isAbsolute(supportRoot),
+    'PACKED_CLI_CONSUMER_SUPPORT_ROOT',
+  );
   const secondary = () => {
     try {
       cleanupFailed();
@@ -21,12 +28,15 @@ export async function completeConsumer({ exercise, cleanup, cleanupFailed, publi
     }
   };
   const interrupted = () => {
-    try {
-      abandon();
-      cleanup();
-    } catch {
-      secondary();
+    let failed = false;
+    for (const step of [abandonFixtures, () => abandonInstalledSmoke(supportRoot), cleanup]) {
+      try {
+        step();
+      } catch {
+        failed = true;
+      }
     }
+    if (failed) secondary();
   };
   return exitOnInterrupt(interrupted, async () => {
     let result;

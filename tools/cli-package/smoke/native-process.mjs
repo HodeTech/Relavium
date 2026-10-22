@@ -344,6 +344,8 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           log,
           node: process.execPath,
           descendant: fixture('native-descendant.cjs'),
+          // This worker: the fixture's processes end once it is gone (an interrupted consumer).
+          owner: process.pid,
           ...(bootstrap ? { release } : {}),
         }),
         { mode: 0o600 },

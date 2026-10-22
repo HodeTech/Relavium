@@ -18,7 +18,8 @@ pnpm smoke:cli-package
 The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
 It copies the files Git would ship, by the repository's ignore rules and the developer's
 global excludes file (its Git reads no other home, global or system configuration), into a
-fresh owner-only candidate tree, refusing if the original checkout's commit, status or set of
+fresh owner-only candidate tree (owner-only where POSIX modes are observable; on Windows it
+inherits the temporary directory's ACL, which is not verified), refusing if the original checkout's commit, status or set of
 files Git is told not to check changes during the copy (such a skip-worktree or assume-unchanged
 file makes the source `dirty`), and installs the locked closure there offline, frozen and
 without lifecycle scripts from the existing store. In that tree it emits the five
@@ -43,7 +44,8 @@ The candidate's maps are built, validated and then removed with the rest of the
 private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP), which
 stops the build first and empties the artifact directory, even after the last build child
 exited. An interrupted consumer stops its children, the bootstrap witness's included, and
-removes its installation. `pnpm smoke:cli-package` forwards an interrupt to the producer or
+removes its installation, the witness's fixtures and the installed smoke's working directory; the
+installed CLI's detached native fixture targets end once the smoke worker that owns them is gone. `pnpm smoke:cli-package` forwards an interrupt to the producer or
 consumer it started instead of ending before them and starts no later stage after one; a
 producer killed outright can leave its owner-only root in the temporary directory. The receipt does **not** certify symbolication, a map manifest,
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,

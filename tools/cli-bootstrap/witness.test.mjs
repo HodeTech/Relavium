@@ -413,20 +413,24 @@ test('output cap counts UTF-8 bytes and joins the killed child', async () => {
   assert.equal(result.signal, 'SIGKILL');
 });
 test(
-  'an interrupted caller abandons a running control: its bounded child is killed, its fixture removed',
+  'an interrupted caller abandons a running control: its bounded process group is killed, its fixture removed',
   { skip: process.platform === 'win32' },
   async (t) => {
     const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-bootstrap-abandon-')));
     t.after(() => rmSync(temporary, { recursive: true, force: true }));
-    const pidFile = join(temporary, 'child.pid');
+    const pidFiles = ['child.pid', 'grandchild.pid'].map((name) => join(temporary, name));
     const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
-    // The bounded child keeps writing into its fixture, as a running control does, and outlives the
-    // fixture's removal unless it is killed.
-    const writer =
+    // The bounded child and a grandchild in its process group keep writing into the fixture, as a
+    // running control's processes do, and outlive the fixture's removal unless they are killed.
+    const writer = (pidFile) =>
       `const { writeFileSync } = require('node:fs');` +
       `const { join } = require('node:path');` +
       `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
       `let n = 0; setInterval(() => { try { writeFileSync(join(process.env.TMPDIR, 'f' + n++), 'x'); } catch {} }, 5);`;
+    const bounded =
+      `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+        writer(pidFiles[1]),
+      )}], { stdio: 'ignore' });` + writer(pidFiles[0]);
     const script = `
 import { abandonFixtures, withFixture } from ${url('./child.mjs')};
 import { spawnBounded } from ${url('./process.mjs')};
@@ -435,7 +439,7 @@ process.on('SIGINT', () => {
   process.exit(130);
 });
 await withFixture((fixture) =>
-  spawnBounded(['-e', ${JSON.stringify(writer)}], { env: { TMPDIR: fixture.temporary } }, {
+  spawnBounded(['-e', ${JSON.stringify(bounded)}], { env: { TMPDIR: fixture.temporary } }, {
     timeoutMs: 60_000,
   }),
 );
@@ -444,17 +448,23 @@ await withFixture((fixture) =>
       env: { PATH: process.env.PATH, TMPDIR: temporary },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let child;
-    try {
-      for (
-        let waited = 0;
-        !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
-        waited += 25
-      ) {
-        assert.ok(waited < 20_000, 'the bounded child never started');
-        await delay(25);
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
       }
-      child = Number(readFileSync(pidFile, 'utf8'));
+    };
+    const tree = [];
+    try {
+      for (const file of pidFiles) {
+        for (let waited = 0; !existsSync(file) || readFileSync(file, 'utf8') === ''; waited += 25) {
+          assert.ok(waited < 20_000, 'the bounded control never started');
+          await delay(25);
+        }
+        tree.push(Number(readFileSync(file, 'utf8')));
+      }
       assert.equal(
         readdirSync(temporary).filter((name) => name.startsWith('relavium-bootstrap-')).length,
         1,
@@ -464,16 +474,9 @@ await withFixture((fixture) =>
       );
       caller.kill('SIGINT');
       assert.deepEqual(await exited, [130, null]);
-      const alive = () => {
-        try {
-          process.kill(child, 0);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      for (let waited = 0; alive(); waited += 25) {
-        assert.ok(waited < 5_000, 'the bounded child outlived the abandoned control');
+      // The whole process group goes, not only the process spawnBounded started.
+      for (let waited = 0; tree.some(alive); waited += 25) {
+        assert.ok(waited < 5_000, 'part of the bounded control outlived its abandonment');
         await delay(25);
       }
       assert.deepEqual(
@@ -482,13 +485,7 @@ await withFixture((fixture) =>
       );
     } finally {
       if (caller.exitCode === null && caller.signalCode === null) caller.kill('SIGKILL');
-      if (child !== undefined) {
-        try {
-          process.kill(child, 'SIGKILL');
-        } catch {
-          // Already stopped.
-        }
-      }
+      for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
     }
   },
 );

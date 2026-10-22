@@ -20,8 +20,9 @@ import { emitFreshPackage } from './pipeline.mjs';
 
 /**
  * Produce one package-test artifact from the original checkout `repository` into the empty
- * `destination`. The candidate tree and its private staging are siblings in one owner-only temporary
- * root that shares no path with the artifact directory or the checkout. That root and the build home
+ * `destination`. The candidate tree and its private staging are siblings in one temporary root,
+ * owner-only where POSIX modes are observable, that shares no path with the artifact directory or the
+ * checkout. That root and the build home
  * are removed whether production succeeds or fails. An interrupt (SIGINT, SIGTERM, SIGHUP) stops the
  * build's child trees, removes both directories and empties the artifact directory, which was empty
  * at the start, before the process exits with the signal's code — also when it arrives after the last

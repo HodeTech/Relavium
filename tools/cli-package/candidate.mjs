@@ -199,7 +199,8 @@ export async function candidateFiles(
 /**
  * Copy each listed ordinary file byte-for-byte into the empty `destination`. Links, special files,
  * escaping or noncanonical paths and oversized trees refuse; only the executable bit is kept, as an
- * exact 0755 or 0644 mode whatever the process umask.
+ * exact 0755 or 0644 mode under any umask that lets the owner write (one that removes the owner's
+ * write bit leaves the created directories unwritable, and the copy refuses before any build).
  * @param {{repository: string, destination: string, files: readonly string[],
  *   limits?: {fileBytes: number, totalBytes: number}}} options `limits` defaults to `CANDIDATE_LIMITS`
  */

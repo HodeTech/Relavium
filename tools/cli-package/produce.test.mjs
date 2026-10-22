@@ -37,7 +37,7 @@ const SHA = 'c'.repeat(40);
  * Fake ports that record what the producer composes. The fake emit writes into the candidate it is
  * given, runs the producer's seal wrapper and can plant a build-cache marker first.
  */
-function ports({ plantCache = false, failEmit = false } = {}) {
+function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
   const seen = {};
   return {
     seen,
@@ -53,13 +53,22 @@ function ports({ plantCache = false, failEmit = false } = {}) {
       },
       prepare: async (options) => {
         seen.prepare = options;
-        return { source: SHA, dirty: false, files: 7 };
+        return { source: SHA, dirty, files: 7 };
       },
       emit: async (options) => {
         seen.emit = options;
         seen.stagingMode = statSync(options.staging).mode & 0o777;
         seen.rootMode = statSync(join(options.staging, '..')).mode & 0o777;
         mkdirSync(join(options.repository, 'apps', 'cli', 'dist'), { recursive: true });
+        // Build state an engine package could carry; the emit removes it before each compile.
+        const core = join(options.repository, 'packages', 'core');
+        mkdirSync(join(core, 'dist'), { recursive: true });
+        writeFileSync(join(core, 'dist', 'stale.js'), 'stale\n');
+        writeFileSync(join(core, 'tsconfig.build.tsbuildinfo'), '{}\n');
+        await options.removeBuildState(core);
+        seen.buildStateLeft = ['dist', 'tsconfig.build.tsbuildinfo'].filter((name) =>
+          existsSync(join(core, name)),
+        );
         if (plantCache) writeFileSync(join(options.repository, '.turbo'), 'cache\n');
         if (failEmit) throw new Error('synthetic emit failure');
         writeFileSync(join(options.destination, 'relavium-0.1.1.tgz'), 'tarball');
@@ -132,6 +141,7 @@ test('the producer builds and seals only the owned candidate, never the original
   assert.equal(seen.emit.destination, destination);
   assert.equal(seen.emit.staging, join(candidate, '..', 'staging'));
   assert.equal(seen.noBuildCache, candidate);
+  assert.deepEqual(seen.buildStateLeft, []);
   assert.deepEqual(seen.seal, {
     artifactDirectory: destination,
     repository: candidate,
@@ -149,6 +159,19 @@ test('the producer builds and seals only the owned candidate, never the original
   assert.deepEqual(listeners(), before);
   assert.equal(existsSync(candidate), false);
   assert.deepEqual(readdirSync(destination), ['relavium-0.1.1.tgz']);
+});
+
+test('a dirty source identity reaches the seal and the returned identity', async () => {
+  const { seen, ports: fakes } = ports({ dirty: true });
+  const result = await producePackage({
+    repository: fresh('original-checkout'),
+    destination: join(fresh('artifact-parent'), 'artifact'),
+    environment: {},
+    temporary: fresh('tmp'),
+    ports: fakes,
+  });
+  assert.equal(seen.seal.dirty, true);
+  assert.equal(result.identity.dirty, true);
 });
 
 test('a build cache left in the candidate refuses before the seal, and nothing private remains', async () => {

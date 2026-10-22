@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,6 +26,10 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 let count = 0;
 
 const COPIED = Object.freeze([
+  'cli-bootstrap/child.mjs',
+  'cli-bootstrap/policy.mjs',
+  'cli-bootstrap/process.mjs',
+  'cli-package/smoke/index.mjs',
   'cli-package/check.mjs',
   'cli-package/candidate.mjs',
   'cli-package/consumer-lifetime.mjs',
@@ -52,12 +56,14 @@ function writer(directory, pidFile) {
 
 /** The consumer stand-in: the real consumer lifetime around a `pnpm add`-like writer in its home. */
 const CONSUMER = (markers) => `
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { completeConsumer } from './consumer-lifetime.mjs';
 import { isolatedEnvironment, runCommand } from './process.mjs';
 writeFileSync(${JSON.stringify(join(markers, 'consume-started'))}, String(process.pid));
+const reports = process.argv[3];
+mkdirSync(reports, { recursive: true });
 const home = mkdtempSync(join(tmpdir(), 'relavium-package-consumer-'));
 const writer = (${writer.toString()})(home, ${JSON.stringify(join(markers, 'writer.pid'))});
 await completeConsumer({
@@ -66,18 +72,49 @@ await completeConsumer({
       env: isolatedEnvironment(home),
       timeoutMs: 60_000,
     }),
-  abandon: () => {},
+  supportRoot: reports,
   cleanup: () => rmSync(home, { recursive: true, force: true, maxRetries: 3 }),
   cleanupFailed: () => {},
   publish: () => {},
 });
 `;
 
+/** A consumer stand-in that publishes the record `pnpm smoke:cli-package` summarizes. */
+const PUBLISHING_CONSUMER = (leg) => (markers) => `
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+writeFileSync(${JSON.stringify(join(markers, 'consume-started'))}, String(process.pid));
+const reports = process.argv[3];
+mkdirSync(reports, { recursive: true });
+writeFileSync(join(reports, 'installed-consumer.json'), ${JSON.stringify(
+  JSON.stringify({
+    leg,
+    source: 'c'.repeat(40),
+    tarballSha256: 'd'.repeat(64),
+    node: 'v22.0.0',
+    platform: 'synthetic',
+    bootstrap: { controls: 7 },
+    smoke: { cases: [{ id: 'one', passed: true }] },
+  }),
+)});
+`;
+
+/** A producer stand-in that records the store and excludes variables it received, then succeeds. */
+const RECORDING_PRODUCER = (markers) => `
+import { mkdirSync, writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(join(markers, 'pack-environment'))}, JSON.stringify({
+  store: process.env.RELAVIUM_PACKAGE_STORE_DIR ?? null,
+  excludes: process.env.RELAVIUM_GIT_EXCLUDES_FILE ?? null,
+}));
+mkdirSync(process.argv[2]);
+`;
+
 /**
- * Start the copied check with stand-ins for its producer and consumer. The store and the excludes
- * file are named explicitly, so the check runs neither pnpm nor Git.
+ * Start the copied check with stand-ins for its producer and consumer. The store is named
+ * explicitly, so the check runs no pnpm; so is the excludes file unless `excludes` is false, when
+ * the check's Git lookup sees an empty home and no global or system configuration.
  */
-function check({ pack }) {
+function check({ pack, consume = CONSUMER, excludes: named = true }) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of COPIED) {
@@ -95,14 +132,18 @@ function check({ pack }) {
   for (const directory of [markers, temporary, store]) mkdirSync(directory);
   const excludes = join(root, 'ignore');
   writeFileSync(excludes, '');
+  const home = join(root, 'home');
+  mkdirSync(home);
   writeFileSync(join(root, 'tools', 'cli-package', 'pack.mjs'), pack(markers));
-  writeFileSync(join(root, 'tools', 'cli-package', 'consume.mjs'), CONSUMER(markers));
+  writeFileSync(join(root, 'tools', 'cli-package', 'consume.mjs'), consume(markers));
   const child = spawn(process.execPath, [join(root, 'tools', 'cli-package', 'check.mjs')], {
     env: {
       PATH: process.env.PATH,
       TMPDIR: temporary,
       RELAVIUM_PACKAGE_STORE_DIR: store,
-      RELAVIUM_GIT_EXCLUDES_FILE: excludes,
+      ...(named
+        ? { RELAVIUM_GIT_EXCLUDES_FILE: excludes }
+        : { HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -111,7 +152,7 @@ function check({ pack }) {
   const exited = new Promise((resolve) =>
     child.once('exit', (code, signal) => resolve({ code, signal, stdout })),
   );
-  return { child, exited, markers, temporary };
+  return { child, exited, markers, temporary, store, excludes };
 }
 
 async function waitForFile(file) {
@@ -228,3 +269,69 @@ setTimeout(() => process.exit(0), 500);
     }
   },
 );
+
+test('a successful producer and consumer give the summary and leave no check root', async () => {
+  const run = check({ pack: RECORDING_PRODUCER, consume: PUBLISHING_CONSUMER('local') });
+  try {
+    const outcome = await run.exited;
+    assert.equal(outcome.signal, null);
+    assert.equal(outcome.code, 0);
+    assert.deepEqual(JSON.parse(outcome.stdout), {
+      scope: 'actual local host only; required CI owns four platform legs',
+      source: 'c'.repeat(40),
+      sha256: 'd'.repeat(64),
+      node: 'v22.0.0',
+      platform: 'synthetic',
+      controls: 7,
+      smokeCases: 1,
+    });
+    // The isolated producer receives the store and the excludes file the check found.
+    assert.deepEqual(JSON.parse(readFileSync(join(run.markers, 'pack-environment'), 'utf8')), {
+      store: run.store,
+      excludes: run.excludes,
+    });
+    assert.deepEqual(checkRoots(run.temporary), []);
+  } finally {
+    stopAll(run);
+  }
+});
+
+test('without a global excludes file the producer receives none', async () => {
+  const run = check({
+    pack: RECORDING_PRODUCER,
+    consume: PUBLISHING_CONSUMER('local'),
+    excludes: false,
+  });
+  try {
+    assert.equal((await run.exited).code, 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(run.markers, 'pack-environment'), 'utf8')), {
+      store: run.store,
+      excludes: null,
+    });
+  } finally {
+    stopAll(run);
+  }
+});
+
+for (const [label, options] of [
+  ['a failed producer', { pack: () => 'process.exit(3);\n' }],
+  ['a failed consumer', { pack: RECORDING_PRODUCER, consume: () => 'process.exit(4);\n' }],
+  [
+    'a record from another leg',
+    { pack: RECORDING_PRODUCER, consume: PUBLISHING_CONSUMER('linux') },
+  ],
+])
+  test(`${label} fails the check without a summary and leaves no check root`, async () => {
+    const run = check(options);
+    try {
+      const outcome = await run.exited;
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 1);
+      assert.equal(outcome.stdout, '');
+      if (label === 'a failed producer')
+        assert.equal(existsSync(join(run.markers, 'consume-started')), false);
+      assert.deepEqual(checkRoots(run.temporary), []);
+    } finally {
+      stopAll(run);
+    }
+  });

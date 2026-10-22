@@ -258,10 +258,10 @@ describes the implemented mechanism; independent acceptance is recorded in the
   directory it then runs the ordinary closure guard, as before. The CLI configuration
   emits external maps with `sourcesContent` disabled whenever
   `RELAVIUM_CLI_CANDIDATE_STAGING` is defined; prepack first refuses unless it names an
-  absolute, canonical, empty, owner-only directory outside the candidate (both compared by
-  the real paths and letter case the filesystem stores), and then runs the finalizer
-  in place of the ordinary guard. That guard refuses any map a build outside prepack
-  leaves in `dist`.
+  absolute, canonical, empty directory outside the candidate (both compared by the real
+  paths and letter case the filesystem stores), owner-only where POSIX modes are
+  observable, and then runs the finalizer in place of the ordinary guard. That guard
+  refuses any map a build outside prepack leaves in `dist`.
 - **Finalizer.** Before any write it accounts for every emitted file (each runtime JS
   output paired with exactly one map, plus the metafile, nothing else). It validates every
   consumed upstream tsc map: exact terminal map link, version 3, matching `file`, empty
@@ -291,12 +291,18 @@ producer succeeds, fails or is interrupted (SIGINT, SIGTERM, SIGHUP); an interru
 the build's child processes and empties the artifact directory, which was empty at the start,
 before the producer exits with the signal's code — also when it arrives after the build's last
 child exited, during the seal or the final removal. An interrupted consumer likewise stops its
-child processes, including the bootstrap witness's, and removes its installation and fixtures.
-The local `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
+child processes, including the bootstrap witness's, and removes its installation, the witness's
+fixtures and the installed smoke's working directory; the native fixture targets the installed CLI
+starts in their own process groups end on their own once the smoke worker that owns their case is
+gone. The local `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
 rather than ending first, starts no later stage once one arrived, and exits with the signal's
 code after removing its root. A producer killed outright, a crash or a lost host can leave the
-owner-only root in the temporary directory, and no secure erasure is claimed. The private map manifest, actual packed CLI and engine
-symbolication, `check:map-controls` and the `package_test` receipt flip are Step 9a.2;
+owner-only root in the temporary directory, and no secure erasure is claimed. "Owner-only" in this
+section means mode 0700 for directories and 0600 for staged files, set — and for the staging
+directory verified together with this process's uid — where POSIX modes are observable. On Windows
+no mode evidence is claimed: the candidate root and staging inherit the temporary directory's ACL,
+which is not verified, as the graph checks above claim no unobservable POSIX mode bits. The
+private map manifest, actual packed CLI and engine symbolication, `check:map-controls` and the `package_test` receipt flip are Step 9a.2;
 recipient custody, the release state controller and the workflow graph are Steps 9b–9d.
 Until those and Wave 4b's production recipient exist, the release workflow's publish job
 refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).

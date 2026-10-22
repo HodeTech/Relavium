@@ -2,7 +2,17 @@
 const assert = require('node:assert/strict');
 const { appendFileSync } = require('node:fs');
 const { setInterval } = require('node:timers');
-assert.equal(process.argv.length, 3);
+assert.equal(process.argv.length, 4);
+const owner = Number(process.argv[3]);
+assert.ok(Number.isSafeInteger(owner) && owner > 0);
+// Like its parent, it never outlives the smoke worker that owns its case.
+setInterval(() => {
+  try {
+    process.kill(owner, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') process.exit(0);
+  }
+}, 100).unref();
 appendFileSync(
   process.argv[2],
   JSON.stringify({

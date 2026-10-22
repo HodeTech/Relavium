@@ -25,6 +25,7 @@ import {
   pendingNativeFixturePids,
 } from './native-process.mjs';
 import { explicitEnvironment, ndjson, poll } from './process.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 function observedGroupRefusal() {
   return {
@@ -206,6 +207,7 @@ test(
         log,
         node: descendantNode,
         descendant: fileURLToPath(new URL('./native-descendant.cjs', import.meta.url)),
+        owner: process.pid,
       }),
     );
     const child = spawn(executable, ['status'], {
@@ -310,6 +312,81 @@ test(
       rmSync(root, { recursive: true, force: true });
     }
     assert.equal(expired, false, 'External fixture watchdog supplied regression cleanup');
+  },
+);
+
+/** Whether `pid` still names a live process. */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+test(
+  'the fixture target and its descendant end once the worker that owns their case is gone',
+  { timeout: 15000 },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-status-owner-test-'));
+    const log = join(root, 'native.ndjson');
+    // A stand-in for the smoke worker that an interrupted consumer kills.
+    const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    copyFileSync(
+      fileURLToPath(new URL('./native-status.cjs', import.meta.url)),
+      join(root, 'status'),
+    );
+    writeFileSync(
+      join(root, 'native-fixture.json'),
+      JSON.stringify({
+        mode: 'injected-error',
+        log,
+        node: process.execPath,
+        descendant: fileURLToPath(new URL('./native-descendant.cjs', import.meta.url)),
+        owner: owner.pid,
+      }),
+    );
+    // Detached, as the installed CLI starts its native target, so nothing stops its group but the
+    // fixture's own watch of its owner.
+    const target = spawn(process.execPath, [join(root, 'status')], {
+      cwd: root,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    target.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    const pids = [];
+    try {
+      await poll(
+        () => stdout.includes('RELAVIUM_NATIVE_FIXTURE_READY\n'),
+        5000,
+        'Fixture descendant readiness missing',
+      );
+      const descendant = ndjson(readFileSync(log, 'utf8')).find(
+        (item) => item.operation === 'native-fixture-descendant',
+      )?.pid;
+      assert.ok(Number.isSafeInteger(descendant) && descendant > 0);
+      pids.push(target.pid, descendant);
+      // Both stay while their owner lives.
+      await sleep(400);
+      assert.ok(pids.every(alive));
+      owner.kill('SIGKILL');
+      await poll(
+        () => !pids.some(alive),
+        5000,
+        'A fixture process outlived the worker that owns it',
+      );
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
   },
 );
 

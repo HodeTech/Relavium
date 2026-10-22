@@ -556,9 +556,11 @@ test('a candidate build leaves no build cache behind', () => {
 
 /** A source repository plus fake git and pnpm ports; the fake install creates the workspace links. */
 function preparation({
-  statusAfterCopy = '',
+  status = '',
+  statusAfterCopy = status,
   headAfterCopy = SHA,
-  uncheckedAfterCopy = '',
+  unchecked = '',
+  uncheckedAfterCopy = unchecked,
   excludes,
 } = {}) {
   const repository = fresh('source');
@@ -588,14 +590,14 @@ function preparation({
     }
     if (key === `${prefix}status --porcelain=v1 -z --untracked-files=all`) {
       statuses += 1;
-      return { stdout: statuses === 1 ? '' : statusAfterCopy };
+      return { stdout: statuses === 1 ? status : statusAfterCopy };
     }
     if (key === `${prefix}ls-files -z --cached --others --exclude-standard`)
       return { stdout: files.join('\0') };
     if (key === 'ls-files -z --deleted') return { stdout: '' };
     if (key === 'ls-files -v -z') {
       flags += 1;
-      return { stdout: `H package.json\0${flags === 1 ? '' : uncheckedAfterCopy}` };
+      return { stdout: `H package.json\0${flags === 1 ? unchecked : uncheckedAfterCopy}` };
     }
     throw new Error(`unexpected git ${key}`);
   };
@@ -643,6 +645,25 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
       readFileSync(join(ports.repository, 'package.json')),
     ),
   );
+});
+
+test('a modified or unchecked source makes the prepared identity dirty', async () => {
+  for (const source of [
+    { status: ' M package.json\0' },
+    { unchecked: 'S packages/core/package.json\0' },
+  ]) {
+    const ports = preparation(source);
+    const identity = await prepareCandidate({
+      repository: ports.repository,
+      candidate: ports.candidate,
+      environment: {},
+      home: ports.home,
+      env: {},
+      run: ports.run,
+      pnpm: ports.pnpm,
+    });
+    assert.deepEqual(identity, { source: SHA, dirty: true, files: 6 });
+  }
 });
 
 test('a source change during the copy refuses before anything is installed', async () => {
