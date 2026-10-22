@@ -161,19 +161,36 @@ test("the developer's global excludes file is located without the rest of the gl
     error.result = { code: 1, stdout: '', stderr: '' };
     throw error;
   };
+  // Every variable Git uses to locate its configuration is forwarded, and nothing else.
+  const locations = {
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CONFIG_HOME: join(home, 'xdg-absent'),
+    GIT_CONFIG_GLOBAL: join(home, 'global-config'),
+    GIT_CONFIG_SYSTEM: join(home, 'system-config'),
+    GIT_CONFIG_NOSYSTEM: '1',
+    SystemRoot: 'C:\\Windows',
+    WINDIR: 'C:\\Windows',
+  };
   const environment = {
     PATH: '/usr/bin',
-    HOME: home,
+    ...locations,
     NPM_TOKEN: 'synthetic-secret',
     NODE_OPTIONS: '--require=/tmp/preload.cjs',
     GIT_DIR: '/elsewhere',
   };
   assert.equal(
-    await globalExcludesFile({ repository: '/repository', environment, run: unset }),
+    await globalExcludesFile({
+      repository: '/repository',
+      environment: { ...environment, XDG_CONFIG_HOME: '' },
+      run: unset,
+    }),
     ignore,
   );
   assert.deepEqual(calls[0].args, ['config', '--path', '--get', 'core.excludesFile']);
-  assert.deepEqual(calls[0].env, { PATH: '/usr/bin', HOME: home });
+  assert.deepEqual(calls[0].env, { PATH: '/usr/bin', ...locations, XDG_CONFIG_HOME: '' });
+  await globalExcludesFile({ repository: '/repository', environment, run: unset });
+  assert.deepEqual(calls[1].env, { PATH: '/usr/bin', ...locations });
   // Git's default prefers XDG_CONFIG_HOME, and a missing file means no global excludes.
   const xdg = fresh('xdg');
   write(join(xdg, 'git', 'ignore'), '*.local\n');
@@ -299,6 +316,41 @@ test('a real developer configuration with an empty core.excludesFile applies no 
     undefined,
   );
 });
+
+for (const [label, place] of [
+  [
+    'an XDG configuration directory',
+    (root, ignore) => {
+      write(join(root, 'xdg', 'git', 'config'), `[core]\n\texcludesFile = ${ignore}\n`);
+      return { XDG_CONFIG_HOME: join(root, 'xdg') };
+    },
+  ],
+  [
+    'a GIT_CONFIG_GLOBAL file',
+    (root, ignore) => {
+      write(join(root, 'dotfiles', 'gitconfig'), `[core]\n\texcludesFile = ${ignore}\n`);
+      return { GIT_CONFIG_GLOBAL: join(root, 'dotfiles', 'gitconfig') };
+    },
+  ],
+])
+  test(`a real core.excludesFile set only in ${label} is found`, async () => {
+    const root = fresh('developer');
+    const ignore = join(root, 'my-ignore');
+    write(ignore, 'secret.local\n');
+    mkdirSync(join(root, 'empty-home'));
+    assert.equal(
+      await globalExcludesFile({
+        repository: fresh('repository'),
+        environment: {
+          PATH: process.env.PATH,
+          HOME: join(root, 'empty-home'),
+          GIT_CONFIG_NOSYSTEM: '1',
+          ...place(root, ignore),
+        },
+      }),
+      ignore,
+    );
+  });
 
 /** A real repository with one committed file, `kept.ts`, created with Git's own configuration off. */
 async function committedRepository(name) {

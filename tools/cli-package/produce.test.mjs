@@ -161,6 +161,61 @@ test('the producer builds and seals only the owned candidate, never the original
   assert.deepEqual(readdirSync(destination), ['relavium-0.1.1.tgz']);
 });
 
+test('another pnpm than the pinned one refuses before anything is prepared', async () => {
+  const temporary = fresh('tmp');
+  const { seen, ports: fakes } = ports();
+  fakes.pnpm = async () => ({ stdout: '9.12.4\n', stderr: '' });
+  await assert.rejects(
+    producePackage({
+      repository: fresh('original-checkout'),
+      destination: join(fresh('artifact-parent'), 'artifact'),
+      environment: {},
+      temporary,
+      ports: fakes,
+    }),
+    /PACKED_CLI_PNPM_VERSION/u,
+  );
+  assert.equal(seen.prepare, undefined);
+  assert.deepEqual(leftovers(temporary), []);
+});
+
+test(
+  'the private root and staging are exactly 0700 under a umask without the owner write bit',
+  { skip: !posixModes },
+  async () => {
+    const seen = {};
+    // The test's own directories exist before the umask applies.
+    const repository = fresh('original-checkout');
+    const destination = join(fresh('artifact-parent'), 'artifact');
+    const temporary = fresh('tmp');
+    const previous = process.umask(0o277);
+    try {
+      await producePackage({
+        repository,
+        destination,
+        environment: {},
+        temporary,
+        ports: {
+          pnpm: async () => ({ stdout: '9.12.3\n', stderr: '' }),
+          excludesFile: async () => undefined,
+          prepare: async () => ({ source: SHA, dirty: false, files: 1 }),
+          emit: async ({ staging, destination, seal }) => {
+            seen.staging = statSync(staging).mode & 0o777;
+            seen.root = statSync(join(staging, '..')).mode & 0o777;
+            return seal(destination);
+          },
+          noBuildCache: () => {},
+          seal: () => ({ mode: 'compiled_package_test' }),
+        },
+      });
+    } finally {
+      process.umask(previous);
+    }
+    assert.deepEqual(seen, { staging: 0o700, root: 0o700 });
+    assert.deepEqual(leftovers(temporary), []);
+  },
+);
+
 test('a dirty source identity reaches the seal and the returned identity', async () => {
   const { seen, ports: fakes } = ports({ dirty: true });
   const result = await producePackage({

@@ -255,6 +255,7 @@ for (const [label, change, code] of [
   ['another file', (map) => (map.file = 'other.js'), 'UPSTREAM_MAP_SHAPE'],
   ['no sources', (map) => (map.sources = []), 'UPSTREAM_MAP_SHAPE'],
   ['malformed mappings', (map) => (map.mappings = 'AAAA!'), 'UPSTREAM_MAP_SHAPE'],
+  ['a non-string name', (map) => (map.names = [1]), 'UPSTREAM_MAP_SHAPE'],
   // Only a module whose types all erase (`export {};`, as types.js is) may map nothing.
   ['no mappings for executable code', (map) => (map.mappings = ''), 'UPSTREAM_MAP_UNMAPPED'],
   [
@@ -456,10 +457,52 @@ test('refuses an orphan map entry and validates the upstream map of a zero-byte 
     metafile.outputs['dist/orphan.js.map'] = { imports: [], exports: [], inputs: {}, bytes: 1 };
   });
   refusesBeforeWriting(orphan, 'MAP_PAIRING');
+  // A runtime output whose own map entry was swapped for another keeps the entry count even.
+  const swapped = await fixture();
+  editJson(join(swapped.dist, 'metafile-esm.json'), (metafile) => {
+    metafile.outputs['dist/orphan.js.map'] = metafile.outputs['dist/index.js.map'];
+    delete metafile.outputs['dist/index.js.map'];
+  });
+  refusesBeforeWriting(swapped, 'MAP_PAIRING');
+  // A runtime output must be a flat dist/<name>.js, even when its basename matches the inventory.
+  const nested = await fixture();
+  editJson(join(nested.dist, 'metafile-esm.json'), (metafile) => {
+    const path = Object.keys(metafile.outputs).find(
+      (key) => key.endsWith('.js') && key !== 'dist/index.js',
+    );
+    const moved = `dist/x/../${basename(path)}`;
+    metafile.outputs[moved] = metafile.outputs[path];
+    metafile.outputs[`${moved}.map`] = metafile.outputs[`${path}.map`];
+    delete metafile.outputs[path];
+    delete metafile.outputs[`${path}.map`];
+  });
+  refusesBeforeWriting(nested, 'OUTPUT_INVENTORY');
   // types.js contributes no byte to any output, yet its map is a consumed upstream map.
   const zero = await fixture();
   editJson(join(zero.core, 'dist', 'types.js.map'), (map) => (map.sourceRoot = 'src'));
   refusesBeforeWriting(zero, 'UPSTREAM_MAP_SHAPE');
+});
+
+test('refuses a metafile without outputs or inputs', async () => {
+  for (const field of ['outputs', 'inputs']) {
+    const candidate = await fixture();
+    editJson(join(candidate.dist, 'metafile-esm.json'), (metafile) => delete metafile[field]);
+    refusesBeforeWriting(candidate, 'METAFILE_SHAPE');
+  }
+});
+
+test('refuses a metafile, an upstream map or a final map over its byte bound', async () => {
+  // Valid JSON padded past each bound, so only the bound refuses it.
+  for (const [path, bound] of [
+    [(candidate) => join(candidate.dist, 'metafile-esm.json'), 4 * 1024 * 1024],
+    [(candidate) => join(candidate.core, 'dist', 'index.js.map'), 4 * 1024 * 1024],
+    [(candidate) => join(candidate.dist, 'index.js.map'), 16 * 1024 * 1024],
+  ]) {
+    const candidate = await fixture();
+    const file = path(candidate);
+    writeFileSync(file, readFileSync(file, 'utf8') + ' '.repeat(bound));
+    refusesBeforeWriting(candidate, 'UNREADABLE_FILE');
+  }
 });
 
 test('requires an empty private staging directory outside the candidate', async (t) => {
