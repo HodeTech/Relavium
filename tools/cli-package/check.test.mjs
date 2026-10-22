@@ -335,3 +335,26 @@ for (const [label, options] of [
       stopAll(run);
     }
   });
+
+test(
+  'an interrupt the consumer outlives still gives no summary',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // The consumer signals the check, ignores the interrupt forwarded back to it and publishes.
+    const outliving = (markers) =>
+      PUBLISHING_CONSUMER('local')(markers) +
+      `process.on('SIGINT', () => writeFileSync(${JSON.stringify(join(markers, 'consume-forwarded'))}, 'SIGINT'));\n` +
+      `process.kill(process.ppid, 'SIGINT');\nsetTimeout(() => process.exit(0), 500);\n`;
+    const run = check({ pack: RECORDING_PRODUCER, consume: outliving });
+    try {
+      const outcome = await run.exited;
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 130);
+      assert.equal(outcome.stdout, '');
+      assert.equal(readFileSync(join(run.markers, 'consume-forwarded'), 'utf8'), 'SIGINT');
+      assert.deepEqual(checkRoots(run.temporary), []);
+    } finally {
+      stopAll(run);
+    }
+  },
+);

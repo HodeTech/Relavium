@@ -322,6 +322,17 @@ test('refuses an unparsable upstream map and an inexact upstream map link', asyn
   }
 });
 
+test('accepts empty upstream mappings only for exactly the JS tsc emits for erased types', async () => {
+  // `export {};` followed by executable code is not a module whose types all erase.
+  const candidate = await fixture();
+  writeFileSync(
+    join(candidate.core, 'dist', 'index.js'),
+    `export {};\nconsole.log(1);\n${mapTrailer('index.js')}`,
+  );
+  editJson(join(candidate.core, 'dist', 'index.js.map'), (map) => (map.mappings = ''));
+  refusesBeforeWriting(candidate, 'UPSTREAM_MAP_UNMAPPED');
+});
+
 test('refuses final maps that embed sources, lose coverage or carry unreviewed fields', async () => {
   refusesBeforeWriting(await fixture({ sourcesContent: true }), 'EMBEDDED_SOURCES');
   for (const [change, code] of [
@@ -347,12 +358,16 @@ test('refuses final maps that embed sources, lose coverage or carry unreviewed f
     editJson(join(candidate.dist, 'index.js.map'), change);
     refusesBeforeWriting(candidate, code);
   }
-  const candidate = await fixture();
-  editJson(join(candidate.dist, `${facadeNames(candidate)[0]}.map`), (map) => {
-    map.sources = ['../src/facade.ts'];
-    map.mappings = 'AAAA';
-  });
-  refusesBeforeWriting(candidate, 'MAP_SHAPE');
+  // A facade's map stays empty in every field: sources, mappings and names each refuse alone.
+  for (const change of [
+    (map) => (map.sources = ['../src/facade.ts']),
+    (map) => (map.mappings = 'AAAA'),
+    (map) => (map.names = ['x']),
+  ]) {
+    const candidate = await fixture();
+    editJson(join(candidate.dist, `${facadeNames(candidate)[0]}.map`), change);
+    refusesBeforeWriting(candidate, 'MAP_SHAPE');
+  }
 });
 
 test('removes only the exact terminal trailer that tsup appended after esbuild sized the output', async () => {

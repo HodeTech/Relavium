@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -213,6 +214,15 @@ test("the developer's global excludes file is located without the rest of the gl
     }),
     join(repository, 'local-ignore'),
   );
+  // A setting present but empty disables Git's global excludes: the default file no longer applies.
+  assert.equal(
+    await globalExcludesFile({
+      repository: '/repository',
+      environment: { HOME: home },
+      run: answer('\n'),
+    }),
+    undefined,
+  );
   // Any other Git failure refuses, and an explicit file from an isolating caller must exist.
   const broken = async () => {
     const error = new Error('PACKED_CLI_CHILD_FAILED: 128');
@@ -276,6 +286,19 @@ test('a real checkout copies nothing its developer ignores globally', async () =
   assert.equal((await sourceIdentity(repository)).dirty, true);
 });
 
+test('a real developer configuration with an empty core.excludesFile applies no global excludes', async () => {
+  const home = fresh('developer-home');
+  write(join(home, '.gitconfig'), '[core]\n\texcludesFile =\n');
+  write(join(home, '.config', 'git', 'ignore'), 'secret.local\n');
+  assert.equal(
+    await globalExcludesFile({
+      repository: fresh('repository'),
+      environment: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' },
+    }),
+    undefined,
+  );
+});
+
 /** A real repository with one committed file, `kept.ts`, created with Git's own configuration off. */
 async function committedRepository(name) {
   const repository = fresh(name);
@@ -314,6 +337,39 @@ test("no configuration found inside the checkout acts as Git's global configurat
   ]);
   assert.equal((await sourceIdentity(repository)).dirty, true);
 });
+
+for (const ignoredBy of ['.gitignore', '.git/info/exclude'])
+  test(
+    `a tracked directory replaced by a link ignored through ${ignoredBy} refuses the copy`,
+    { skip: !posixModes },
+    async () => {
+      const { repository, inRepository } = await committedRepository('linked-parent');
+      write(join(repository, 'a', 'b'), 'tracked\n');
+      await inRepository(['add', 'a/b']);
+      await inRepository([
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@example.invalid',
+        'commit',
+        '--quiet',
+        '-m',
+        'two',
+      ]);
+      // The directory moves outside the checkout and comes back as a link that Git ignores.
+      const outside = join(fresh('outside'), 'a');
+      renameSync(join(repository, 'a'), outside);
+      write(join(outside, 'b'), 'outside bytes\n');
+      symlinkSync(outside, join(repository, 'a'), linkKind);
+      write(join(repository, ...ignoredBy.split('/')), 'a\n');
+      const files = await candidateFiles(repository);
+      assert.ok(files.includes('a/b'));
+      assert.throws(
+        () => copyCandidateTree({ repository, destination: fresh('copy'), files }),
+        /CANDIDATE_PATH/u,
+      );
+    },
+  );
 
 for (const flag of ['--skip-worktree', '--assume-unchanged'])
   test(`a tracked file marked ${flag} makes the identity dirty`, async () => {
@@ -368,6 +424,19 @@ test('the candidate copy is byte-exact, keeps only the executable bit and refuse
     );
   }
   if (posixModes) {
+    // A link as a parent directory refuses too, not only as the file itself.
+    const elsewhere = fresh('elsewhere');
+    write(join(elsewhere, 'inner.ts'), 'outside\n');
+    symlinkSync(elsewhere, join(repository, 'linked-directory'), linkKind);
+    assert.throws(
+      () =>
+        copyCandidateTree({
+          repository,
+          destination: fresh('copy'),
+          files: ['linked-directory/inner.ts'],
+        }),
+      /CANDIDATE_PATH/u,
+    );
     symlinkSync(join(repository, 'package.json'), join(repository, 'linked.json'));
     assert.throws(
       () => copyCandidateTree({ repository, destination: fresh('copy'), files: ['linked.json'] }),
@@ -562,6 +631,7 @@ function preparation({
   unchecked = '',
   uncheckedAfterCopy = unchecked,
   excludes,
+  misLink,
 } = {}) {
   const repository = fresh('source');
   write(join(repository, 'package.json'), '{}\n');
@@ -605,11 +675,16 @@ function preparation({
     events.push(`pnpm ${args.join(' ')}`);
     if (args[0] === 'store') return { stdout: `${store}\n` };
     assert.equal(options.cwd, candidate);
-    mkdirSync(join(candidate, 'node_modules'), { recursive: true });
+    // `misLink` makes the install resolve one engine package, or the root dependency directory, to
+    // the original checkout instead of the candidate.
+    if (misLink === 'root')
+      symlinkSync(fresh('borrowed-modules'), join(candidate, 'node_modules'), linkKind);
+    else mkdirSync(join(candidate, 'node_modules'), { recursive: true });
     const scope = join(candidate, 'apps', 'cli', 'node_modules', '@relavium');
     mkdirSync(scope, { recursive: true });
     for (const name of ['shared', 'llm', 'core', 'db', 'mcp']) {
-      symlinkSync(join(candidate, 'packages', name), join(scope, name), linkKind);
+      const owner = misLink === 'engine' && name === 'core' ? repository : candidate;
+      symlinkSync(join(owner, 'packages', name), join(scope, name), linkKind);
     }
     return { stdout: '' };
   };
@@ -663,6 +738,25 @@ test('a modified or unchecked source makes the prepared identity dirty', async (
       pnpm: ports.pnpm,
     });
     assert.deepEqual(identity, { source: SHA, dirty: true, files: 6 });
+  }
+});
+
+test('an installed link outside the candidate refuses after the install', async () => {
+  for (const misLink of ['engine', 'root']) {
+    const ports = preparation({ misLink });
+    await assert.rejects(
+      prepareCandidate({
+        repository: ports.repository,
+        candidate: ports.candidate,
+        environment: {},
+        home: ports.home,
+        env: {},
+        run: ports.run,
+        pnpm: ports.pnpm,
+      }),
+      /CANDIDATE_LINK/u,
+    );
+    assert.match(ports.events.at(-1), /^pnpm install /u);
   }
 });
 

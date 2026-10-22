@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -329,6 +330,12 @@ async function interruptedConsumer(t, { cleanupFails = false } = {}) {
   const smoke = join(support, 'installed-smoke-planted');
   mkdirSync(smoke);
   writeFileSync(join(smoke, 'guard.ndjson'), '{}\n');
+  // Report entries that are not worker roots, a near miss included, which the interrupt keeps.
+  const kept = ['install.log', 'installed-smoke.json', 'installed-smokeX', 'bootstrap'];
+  writeFileSync(join(support, 'install.log'), 'log\n');
+  writeFileSync(join(support, 'installed-smoke.json'), '{}\n');
+  writeFileSync(join(support, 'installed-smokeX'), 'near miss\n');
+  mkdirSync(join(support, 'bootstrap'));
   const log = join(root, 'events');
   const fixtureFile = join(root, 'fixture-root');
   const pids = ['install.pid', 'bounded.pid', 'grandchild.pid'].map((name) => join(root, name));
@@ -391,6 +398,8 @@ await completeConsumer({
       smoke,
       fixture: readFileSync(fixtureFile, 'utf8'),
       events: readFileSync(log, 'utf8'),
+      support: readdirSync(support).sort(),
+      kept: kept.sort(),
     };
   } finally {
     if (consumer.exitCode === null && consumer.signalCode === null) consumer.kill('SIGKILL');
@@ -407,6 +416,8 @@ test(
     assert.equal(outcome.code, 130);
     for (const path of [outcome.installation, outcome.smoke, outcome.fixture])
       assert.equal(existsSync(path), false, path);
+    // Only the worker roots go: every other report entry stays.
+    assert.deepEqual(outcome.support, outcome.kept);
     assert.equal(outcome.events, 'cleanup fixture:gone smoke:gone\n');
   },
 );

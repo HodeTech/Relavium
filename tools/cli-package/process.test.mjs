@@ -21,6 +21,7 @@ import {
   resolvePnpm,
   runCommand,
   runPnpm,
+  stopLiveCommands,
 } from './process.mjs';
 
 test('Git reading the original checkout gets no home, global or system configuration', () => {
@@ -282,5 +283,25 @@ console.log('not interrupted');
     assert.equal(signal, null);
     assert.equal(code, 130);
     assert.equal(stdout, '');
+  },
+);
+
+test(
+  'a settled child leaves nothing for an interrupt to kill',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    // A finished child's process group may be recycled; an interrupt must never signal it.
+    await runCommand(process.execPath, ['-e', ''], { timeoutMs: 20_000 });
+    await assert.rejects(
+      runCommand(process.execPath, ['-e', 'process.exit(3)'], { timeoutMs: 20_000 }),
+      /PACKED_CLI_CHILD_FAILED/u,
+    );
+    await assert.rejects(
+      runCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 200 }),
+      /PACKED_CLI_CHILD_TIMEOUT/u,
+    );
+    const kill = t.mock.method(process, 'kill', () => true);
+    stopLiveCommands();
+    assert.equal(kill.mock.callCount(), 0);
   },
 );

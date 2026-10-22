@@ -18,7 +18,7 @@ import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
-import { spawnBounded } from './process.mjs';
+import { spawnBounded, stopBoundedChildren } from './process.mjs';
 import { BOOTSTRAP_CONTROL_COUNT, controlName, grammarCases, metaCases } from './inventory.mjs';
 import ts from 'typescript';
 
@@ -487,5 +487,20 @@ await withFixture((fixture) =>
       if (caller.exitCode === null && caller.signalCode === null) caller.kill('SIGKILL');
       for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
     }
+  },
+);
+test(
+  'a closed bounded child leaves nothing for an interrupted caller to kill',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    // A closed child's process group may be recycled; abandoning must never signal it.
+    assert.equal((await spawnBounded(['-e', ''], {})).code, 0);
+    assert.equal(
+      (await spawnBounded(['-e', 'setInterval(() => {}, 1000)'], {}, { timeoutMs: 100 })).timedOut,
+      true,
+    );
+    const kill = t.mock.method(process, 'kill', () => true);
+    stopBoundedChildren();
+    assert.equal(kill.mock.callCount(), 0);
   },
 );

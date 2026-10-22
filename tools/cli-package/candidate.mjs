@@ -65,7 +65,8 @@ const GIT_CONFIG_VARIABLES = Object.freeze([
  * The developer's global Git excludes file, so that the candidate's isolated Git ignores what the
  * developer's own `git status` ignores: the explicit `RELAVIUM_GIT_EXCLUDES_FILE` when a caller
  * already isolated this process's environment, otherwise `core.excludesFile` as the developer's Git
- * reads it, else Git's default `$XDG_CONFIG_HOME/git/ignore` or `$HOME/.config/git/ignore`; undefined
+ * reads it (present but empty: none, as Git then applies no global excludes), else, when the setting
+ * is absent, Git's default `$XDG_CONFIG_HOME/git/ignore` or `$HOME/.config/git/ignore`; undefined
  * when no such file exists. Only that location is read from the developer's configuration: every
  * candidate Git command runs without global or system configuration (`isolatedGitEnvironment`), so no
  * global hook, fsmonitor or other setting applies, wherever it is stored.
@@ -82,7 +83,7 @@ export async function globalExcludesFile({ repository, environment, run = runCom
   for (const key of GIT_CONFIG_VARIABLES) {
     if (environment[key] !== undefined) env[key] = environment[key];
   }
-  let configured = '';
+  let configured;
   try {
     configured = (
       await run('git', ['config', '--path', '--get', 'core.excludesFile'], { cwd: repository, env })
@@ -94,7 +95,9 @@ export async function globalExcludesFile({ repository, environment, run = runCom
   const xdg = environment.XDG_CONFIG_HOME;
   const home = environment.HOME ?? environment.USERPROFILE;
   let path;
-  if (configured !== '') path = resolve(repository, configured);
+  // A setting present but empty disables Git's global excludes; only an absent one has a default.
+  if (configured !== undefined)
+    path = configured === '' ? undefined : resolve(repository, configured);
   else if (xdg !== undefined && xdg !== '') path = join(xdg, 'git', 'ignore');
   else if (home !== undefined && home !== '') path = join(home, '.config', 'git', 'ignore');
   return path !== undefined && existsSync(path) && statSync(path).isFile() ? path : undefined;
@@ -197,8 +200,9 @@ export async function candidateFiles(
 }
 
 /**
- * Copy each listed ordinary file byte-for-byte into the empty `destination`. Links, special files,
- * escaping or noncanonical paths and oversized trees refuse; only the executable bit is kept, as an
+ * Copy each listed ordinary file byte-for-byte into the empty `destination`. Links (also as a parent
+ * directory of a listed path), special files, escaping or noncanonical paths and oversized trees
+ * refuse; only the executable bit is kept, as an
  * exact 0755 or 0644 mode under any umask that lets the owner write (one that removes the owner's
  * write bit leaves the created directories unwritable, and the copy refuses before any build).
  * @param {{repository: string, destination: string, files: readonly string[],
@@ -210,6 +214,7 @@ export function copyCandidateTree({ repository, destination, files, limits = CAN
     'PACKED_CLI_CANDIDATE_ROOT',
   );
   let total = 0;
+  const directories = new Set();
   for (const path of files) {
     assert.ok(
       typeof path === 'string' &&
@@ -218,7 +223,19 @@ export function copyCandidateTree({ repository, destination, files, limits = CAN
         path.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
       'PACKED_CLI_CANDIDATE_PATH',
     );
-    const source = join(repository, ...path.split('/'));
+    const parts = path.split('/');
+    // Every parent below the checkout must be an ordinary directory: Git lists the tracked children
+    // of a directory replaced by an (ignored) link, and reading through it would copy outside bytes.
+    for (let depth = 1; depth < parts.length; depth += 1) {
+      const parent = parts.slice(0, depth).join('/');
+      if (directories.has(parent)) continue;
+      assert.ok(
+        lstatSync(join(repository, ...parts.slice(0, depth))).isDirectory(),
+        'PACKED_CLI_CANDIDATE_PATH',
+      );
+      directories.add(parent);
+    }
+    const source = join(repository, ...parts);
     const executable = (lstatSync(source).mode & 0o111) !== 0;
     const bytes = readOrdinaryFile(source, limits.fileBytes);
     total += bytes.length;

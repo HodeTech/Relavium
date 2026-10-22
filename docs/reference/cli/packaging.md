@@ -242,7 +242,9 @@ describes the implemented mechanism; independent acceptance is recorded in the
   plus untracked-but-not-ignored, minus deletions, by the repository's ignore rules and
   the developer's global excludes file, passed explicitly; that Git reads no home, global
   or system configuration) into a fresh owner-only tree, and refuses if any of the three
-  changed during the copy.
+  changed during the copy. A link, as a listed file or as any parent directory of one
+  below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
+  cannot bring in bytes from outside the checkout.
   Ignored output, caches, dependencies and private notes never enter it. The locked
   closure is installed there offline, frozen and with `--ignore-scripts` from the
   existing content-addressed store, discovered with pnpm's store-location variables
