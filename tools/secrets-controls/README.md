@@ -178,7 +178,7 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core projection phase executes the complete 218-case bounding file (the journal-identity
+Every core projection phase executes the complete 221-case bounding file (the journal-identity
 control's phases the complete 115-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
@@ -261,7 +261,7 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 26
-complete files / 1,648 cases, with each control's exact workload and named target
+complete files / 1,651 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
@@ -553,7 +553,9 @@ kept opening and both of its reading sets. Two mutations are output-neutral and 
 nor a control: the condition that the filled view holds no backslash at the opening and the
 condition that the kept view holds one, since a mask the kept view keeps ends before a delimiter,
 where a view that keeps the backslashes closes no later than the filled one. The round's other
-findings are recorded in deferred-tasks.md.
+findings are recorded in deferred-tasks.md. After the closure, CI's coverage job took round 9's
+linear-views case past the case deadline, since instrumented coverage slows every projection, so that
+case became one case per shape (four cases, the same inputs and assertions).
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

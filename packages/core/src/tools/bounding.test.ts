@@ -2961,19 +2961,28 @@ describe('PR95 review round 9: closing views, unwalked members, wrapped markers 
     ).toBe('https://[redacted]@host.example/x?q=1');
   });
 
-  it(
-    'keeps every projection linear where masks share a run of backslashes or end in one',
-    async () => {
-      // Each view of a quoted value is built once per pass, and a run of backslashes that many masks
-      // end in is read once.
-      for (const [input, summary] of [
-        [`password="x\n${'token='.repeat(1_000_000)}${'\\'.repeat(1_000_000)} end`, '[redacted]'],
-        [`${'password="abcdefgh\n'.repeat(400_000)}token=abcdef\\ end`, '[redacted]'],
-        [
-          `${'"password": "abc", '.repeat(400_000)}\\"https://h.example/x?sig=${'a'.repeat(30)}\\" end`,
-          '"[redacted], "[redacted],',
-        ],
-      ] as const) {
+  // Each view of a quoted value is built once per pass, and a run of backslashes that many masks end in
+  // is read once. One shape per case, so that each keeps the case deadline under coverage instrumentation.
+  for (const [shape, input, summary] of [
+    [
+      'nested keys share a run of backslashes',
+      `password="x\n${'token='.repeat(1_000_000)}${'\\'.repeat(1_000_000)} end`,
+      '[redacted]',
+    ],
+    [
+      'many values stop at a line break',
+      `${'password="abcdefgh\n'.repeat(400_000)}token=abcdef\\ end`,
+      '[redacted]',
+    ],
+    [
+      'many values precede a mask that ends in a backslash',
+      `${'"password": "abc", '.repeat(400_000)}\\"https://h.example/x?sig=${'a'.repeat(30)}\\" end`,
+      '"[redacted], "[redacted],',
+    ],
+  ] as const) {
+    it(
+      `keeps every projection linear where ${shape}`,
+      async () => {
         expect(redactSecretShapedText(input).endsWith(' end'), 'SECRETS_B9_CORE_LINEAR_VIEWS').toBe(
           true,
         );
@@ -2985,7 +2994,14 @@ describe('PR95 review round 9: closing views, unwalked members, wrapped markers 
           (await boundForModel(input, BIG, {})).summary.startsWith(summary),
           'SECRETS_B9_CORE_LINEAR_VIEWS',
         ).toBe(true);
-      }
+      },
+      ADMITTED_SIZE_CASE_TIMEOUT_MS,
+    );
+  }
+
+  it(
+    "keeps a structured summary linear where a value's later closer is far away",
+    async () => {
       const structured = {
         stdout: `password="first\nsecond" ${'log line ok\n'.repeat(600_000)}echo "token=abcdef12"\n`,
       };

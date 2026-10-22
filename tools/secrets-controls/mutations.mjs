@@ -334,7 +334,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 218;
+const CORE_PROJECTION_CASES = 221;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
