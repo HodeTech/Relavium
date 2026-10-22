@@ -31,6 +31,7 @@ function fixture({ buildExit = 0 } = {}) {
     'cli-package/prepack.mjs',
     'cli-package/finalize.mjs',
     'cli-package/files.mjs',
+    'cli-package/paths.mjs',
     'bundle-closure/closure.mjs',
     'bundle-closure/inventory.mjs',
     'bundle-closure/check.mjs',

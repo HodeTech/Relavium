@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -155,3 +165,74 @@ test('actual pnpm install command shim runs help/version and a broken or absent 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForFile(file) {
+  for (let waited = 0; !existsSync(file) || readFileSync(file, 'utf8') === ''; waited += 25) {
+    assert.ok(waited < 20_000, `${file} never appeared`);
+    await delay(25);
+  }
+  return readFileSync(file, 'utf8');
+}
+
+test(
+  'a tool forwards an interrupt to the detached children that clean up after themselves',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-forwarded-interrupt-')));
+    const pidFile = join(root, 'child.pid');
+    const marker = join(root, 'received');
+    // The child cleans up on SIGINT, as the producer does; a SIGKILL would leave no marker.
+    const childCode =
+      `const { writeFileSync } = require('node:fs');` +
+      `process.on('SIGINT', () => { writeFileSync(${JSON.stringify(marker)}, 'SIGINT'); process.exit(0); });` +
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      `setInterval(() => {}, 1000);`;
+    const harness = `
+import { constants } from 'node:os';
+import { forwardInterrupts, isolatedEnvironment, runCommand } from ${JSON.stringify(new URL('./process.mjs', import.meta.url).href)};
+const interrupts = forwardInterrupts();
+try {
+  await runCommand(process.execPath, ['-e', ${JSON.stringify(childCode)}], {
+    env: isolatedEnvironment(${JSON.stringify(root)}),
+    timeoutMs: 60_000,
+  });
+} catch (error) {
+  if (interrupts.received() === undefined) throw error;
+} finally {
+  interrupts.dispose();
+}
+const signal = interrupts.received();
+if (signal !== undefined) process.exit(128 + constants.signals[signal]);
+`;
+    const tool = spawn(process.execPath, ['--input-type=module', '-e', harness], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let child;
+    try {
+      child = Number(await waitForFile(pidFile));
+      assert.ok(alive(child));
+      const exited = new Promise((resolve) => tool.once('exit', resolve));
+      tool.kill('SIGINT');
+      const bound = delay(20_000).then(() => 'still running');
+      assert.equal(await Promise.race([exited, bound]), 130);
+      assert.equal(readFileSync(marker, 'utf8'), 'SIGINT');
+      for (let waited = 0; alive(child); waited += 25) {
+        assert.ok(waited < 5_000, 'the child outlived the forwarded interrupt');
+        await delay(25);
+      }
+    } finally {
+      if (tool.exitCode === null && tool.signalCode === null) tool.kill('SIGKILL');
+      if (child !== undefined && alive(child)) process.kill(child, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

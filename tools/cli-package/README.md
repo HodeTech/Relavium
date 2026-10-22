@@ -39,8 +39,9 @@ inventories. This deliberately supports the pinned packer's dialect, not general
 The resulting public `package-test-receipt.json` records `compiled_package_test`.
 The candidate's maps are built, validated and then removed with the rest of the
 private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP), which
-stops the build first; a producer killed outright can leave its owner-only root in the
-temporary directory. The receipt does **not** certify symbolication, a map manifest,
+stops the build first, and `pnpm smoke:cli-package` forwards an interrupt to the producer
+and the consumer it started instead of ending before them; a producer killed outright can
+leave its owner-only root in the temporary directory. The receipt does **not** certify symbolication, a map manifest,
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
 metafile or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it

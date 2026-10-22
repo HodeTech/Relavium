@@ -1,15 +1,19 @@
 /** Local full-CI counterpart: one new candidate and one actual-host consumer, never a platform aggregate. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dependencyStore, globalExcludesFile, producerEnvironment } from './candidate.mjs';
-import { isolatedEnvironment, runCommand } from './process.mjs';
+import { forwardInterrupts, isolatedEnvironment, runCommand } from './process.mjs';
 
 assert.equal(process.argv.length, 2, 'no arguments required');
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-local-package-check-')));
+// The producer and the consumer run detached and clean up after themselves (the producer removes its
+// private root on an interrupt), so an interrupt reaches them instead of ending this check first; the
+// check root, which holds their temporary directories, goes once they have exited.
+const interrupts = forwardInterrupts();
 try {
   // The producer runs with an isolated HOME, so the store and the developer's global Git excludes
   // file are found here, from the caller's own location variables, and handed over explicitly.
@@ -37,6 +41,11 @@ try {
       smokeCases: record.smoke.cases.length,
     }),
   );
+} catch (error) {
+  if (interrupts.received() === undefined) throw error;
 } finally {
   rmSync(root, { recursive: true, force: true });
+  interrupts.dispose();
 }
+const signal = interrupts.received();
+if (signal !== undefined) process.exit(128 + (constants.signals[signal] ?? 0));

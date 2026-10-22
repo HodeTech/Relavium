@@ -374,17 +374,21 @@ test('the dependency store is discovered with store-location variables only', as
 
 test('store discovery refuses a private home inside the original checkout', async () => {
   const repository = fresh('checkout');
-  await assert.rejects(
-    dependencyStore({
-      repository,
-      environment: { HOME: '/home/someone' },
-      home: join(repository, 'home'),
-      pnpm: async () => {
-        throw new Error('store discovery must not run');
-      },
-    }),
-    /PRIVATE_HOME/u,
-  );
+  // A child whose name merely starts with two dots is inside the checkout too.
+  for (const home of [join(repository, 'home'), join(repository, '..home')]) {
+    await assert.rejects(
+      dependencyStore({
+        repository,
+        environment: { HOME: '/home/someone' },
+        home,
+        pnpm: async () => {
+          throw new Error('store discovery must not run');
+        },
+      }),
+      /PRIVATE_HOME/u,
+      home,
+    );
+  }
 });
 
 test('the candidate installs offline, frozen and without lifecycle scripts', async () => {

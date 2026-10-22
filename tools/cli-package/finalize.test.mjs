@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -279,6 +280,11 @@ for (const [label, change, code] of [
     'MAP_SOURCE_NOT_ORIGINAL',
   ],
   ['a missing source', (map) => (map.sources = ['../src/missing.ts']), 'MAP_SOURCE_MISSING'],
+  [
+    'more sources than the bound',
+    (map) => (map.sources = Array.from({ length: 4097 }, (_, i) => `../src/s${i}.ts`)),
+    'UPSTREAM_MAP_SHAPE',
+  ],
 ]) {
   test(`refuses an upstream map with ${label}`, async () => {
     const candidate = await fixture();
@@ -326,6 +332,13 @@ test('refuses final maps that embed sources, lose coverage or carry unreviewed f
     [(map) => (map.file = 'other.js'), 'MAP_SHAPE'],
     [(map) => (map.mappings = ''), 'MAP_SHAPE'],
     [(map) => (map.version = 2), 'MAP_SHAPE'],
+    [(map) => (map.mappings = 'AAAA!'), 'MAP_SHAPE'],
+    [(map) => (map.names = [1]), 'MAP_SHAPE'],
+    [
+      (map) => (map.sources = Array.from({ length: 4097 }, (_, i) => `../src/s${i}.ts`)),
+      'MAP_SHAPE',
+    ],
+    [(map) => (map.names = Array.from({ length: 1_000_001 }, () => '')), 'MAP_SHAPE'],
     [(map) => (map.sources = ['https://example.invalid/a.ts']), 'MAP_SOURCE_PATH'],
   ]) {
     const candidate = await fixture();
@@ -376,6 +389,19 @@ test('accounts for every emitted file and every consumed input', async () => {
     delete metafile.outputs['dist/index.js.map'];
   });
   refusesBeforeWriting(unpaired, 'MAP_PAIRING');
+  const crowded = await fixture();
+  editJson(join(crowded.dist, 'metafile-esm.json'), (metafile) => {
+    for (let i = 0; i < 257; i += 1) {
+      metafile.outputs[`dist/extra${i}.js`] = { imports: [], exports: [], inputs: {}, bytes: 1 };
+    }
+  });
+  refusesBeforeWriting(crowded, 'OUTPUT_INVENTORY');
+  const unsized = await fixture();
+  editJson(join(unsized.dist, 'metafile-esm.json'), (metafile) => {
+    const contribution = Object.values(metafile.outputs['dist/index.js'].inputs)[0];
+    delete contribution.bytesInOutput;
+  });
+  refusesBeforeWriting(unsized, 'METAFILE_SHAPE');
   const foreign = await fixture();
   editJson(join(foreign.dist, 'metafile-esm.json'), (metafile) => {
     metafile.inputs['../../node_modules/left-pad/index.js'] = {
@@ -463,6 +489,15 @@ test('requires an empty private staging directory outside the candidate', async 
       (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
     );
     rmSync(inside, { recursive: true });
+    // A child whose name merely starts with two dots is inside the candidate.
+    const dotted = join(candidate.root, '..private');
+    mkdirSync(dotted, { mode: 0o700 });
+    chmodSync(dotted, 0o700);
+    assert.throws(
+      () => finalizeCandidate({ repository: candidate.root, staging: dotted }),
+      (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+    );
+    rmSync(dotted, { recursive: true });
     // Staging must be named canonically even outside the candidate.
     const outside = join(scratch, `outside-staging-${count}`);
     mkdirSync(outside, { mode: 0o700 });
@@ -525,4 +560,56 @@ test('ordinary package and CLI builds stay map-free outside a named candidate', 
   );
   assert.deepEqual(config.match(/^\s*sourcemap:.*$/gmu), ['  sourcemap: CANDIDATE,']);
   assert.match(config, /if \(CANDIDATE\) options\.sourcesContent = false;/u);
+});
+
+test('keeps exact staged and public modes whatever the umask', { skip: !posixModes }, async () => {
+  const candidate = await fixture();
+  // A umask that removes the owner's write bit would leave every file read-only without exact modes.
+  const previous = process.umask(0o277);
+  try {
+    finalizeCandidate({ repository: candidate.root, staging: candidate.staging });
+  } finally {
+    process.umask(previous);
+  }
+  assert.equal(statSync(join(candidate.staging, 'maps')).mode & 0o777, 0o700);
+  for (const name of ['metafile-esm.json', 'finalized.json']) {
+    assert.equal(statSync(join(candidate.staging, name)).mode & 0o777, 0o600, name);
+  }
+  for (const name of readdirSync(join(candidate.staging, 'maps'))) {
+    assert.equal(statSync(join(candidate.staging, 'maps', name)).mode & 0o777, 0o600, name);
+  }
+  for (const name of Object.keys(candidate.emitted)) {
+    assert.equal(
+      statSync(join(candidate.dist, name)).mode & 0o777,
+      name === 'index.js' ? 0o755 : 0o644,
+      name,
+    );
+  }
+});
+
+test('compares staging and the candidate by the letter case the filesystem stores', async (t) => {
+  const candidate = await fixture();
+  const parent = dirname(candidate.root);
+  const variant = join(parent, basename(candidate.root).toUpperCase());
+  if (!existsSync(variant)) {
+    t.skip('case-sensitive filesystem');
+    return;
+  }
+  const inside = join(candidate.cli, 'private');
+  mkdirSync(inside, { mode: 0o700 });
+  chmodSync(inside, 0o700);
+  // Another letter case of a path inside the candidate is not its canonical name.
+  assert.throws(
+    () =>
+      finalizeCandidate({
+        repository: candidate.root,
+        staging: join(variant, 'apps', 'cli', 'private'),
+      }),
+    (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+  );
+  // Nor does another letter case of the repository hide the canonical staging inside it.
+  assert.throws(
+    () => finalizeCandidate({ repository: variant, staging: inside }),
+    (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+  );
 });

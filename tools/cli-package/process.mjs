@@ -93,6 +93,39 @@ export function stopLiveCommands() {
   liveChildren.clear();
 }
 
+/** The interrupts a tool forwards to the children that own their cleanup. */
+const FORWARDED_INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
+
+/**
+ * While a tool waits on children that clean up after themselves (the producer), forward SIGINT,
+ * SIGTERM and SIGHUP to every child tree `runCommand` owns instead of dying first: a detached child
+ * shares no terminal process group, so it would never receive the interrupt. On Windows the children
+ * share the console and receive Ctrl-C themselves. The caller runs its own cleanup, calls `dispose`
+ * and exits with 128 + the number of the signal `received` reports.
+ * @returns {{received: () => string | undefined, dispose: () => void}}
+ */
+export function forwardInterrupts() {
+  let received;
+  const forward = (signal) => {
+    received ??= signal;
+    for (const child of liveChildren) {
+      if (!child.grouped) continue;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // The group already exited.
+      }
+    }
+  };
+  for (const signal of FORWARDED_INTERRUPTS) process.on(signal, forward);
+  return {
+    received: () => received,
+    dispose: () => {
+      for (const signal of FORWARDED_INTERRUPTS) process.off(signal, forward);
+    },
+  };
+}
+
 export function runCommand(command, args, options = {}) {
   const { timeoutMs = 300_000, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);

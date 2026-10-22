@@ -12,6 +12,7 @@
  */
 import { Buffer } from 'node:buffer';
 import {
+  chmodSync,
   closeSync,
   fchmodSync,
   fsyncSync,
@@ -24,11 +25,12 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
-import { basename, isAbsolute, join, posix, relative } from 'node:path';
+import { basename, isAbsolute, join, posix } from 'node:path';
 import { TextDecoder, isDeepStrictEqual } from 'node:util';
 import { checkBundleClosure } from '../bundle-closure/closure.mjs';
 import { MODE_EVIDENCE, emittedInventory } from '../bundle-closure/inventory.mjs';
 import { flatFiles, readOrdinaryFile, sha256 } from './files.mjs';
+import { within } from './paths.mjs';
 
 /**
  * Names the private staging directory of a trusted candidate build. Only the package producer sets
@@ -74,12 +76,6 @@ function isRecord(value) {
 
 /** The map-link trailer tsc and tsup write for an external map beside its JS file. */
 export const mapTrailer = (/** @type {string} */ jsName) => `//# sourceMappingURL=${jsName}.map`;
-
-/** @param {string} parent @param {string} child */
-function within(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
 
 /** @param {string} root @param {string} path repository-relative POSIX path */
 function onDisk(root, path) {
@@ -292,10 +288,11 @@ function finalMap(repository, jsName, map, expected) {
 }
 
 /**
- * A private staging directory must be absolute and canonical (no link anywhere in its path), empty, an
- * ordinary directory outside the candidate repository and, where POSIX modes are observable, owner-only
- * and owned by this process. The repository is compared by its real path too, so no alias of either
- * side lets staging sit inside the candidate.
+ * A private staging directory must be absolute and canonical (no link in its path and the letter case
+ * the filesystem stores, `realpathSync.native`), empty, an ordinary directory outside the candidate
+ * repository and, where POSIX modes are observable, owner-only and owned by this process. The
+ * repository is compared by its native real path too, so no alias of either side (a link or, on a
+ * case-insensitive filesystem, another letter case) lets staging sit inside the candidate.
  * @param {string} staging @param {string} repository
  */
 export function assertPrivateStaging(staging, repository) {
@@ -305,8 +302,8 @@ export function assertPrivateStaging(staging, repository) {
   let root;
   try {
     info = lstatSync(staging);
-    real = realpathSync(staging);
-    root = realpathSync(repository);
+    real = realpathSync.native(staging);
+    root = realpathSync.native(repository);
   } catch {
     refuse('STAGING_PATH');
   }
@@ -432,6 +429,8 @@ export function finalizeCandidate({ repository, staging }) {
 
   // 3. Stage maps and build metadata owner-only outside the package, then finalize the JS.
   mkdirSync(join(staging, 'maps'), { mode: 0o700 });
+  // The creation mode passes through the umask; the staged directory keeps the exact owner-only mode.
+  if (MODE_EVIDENCE === 'posix') chmodSync(join(staging, 'maps'), 0o700);
   for (const item of prepared) writePrivate(join(staging, 'maps', `${item.jsName}.map`), item.map);
   writePrivate(join(staging, 'metafile-esm.json'), metafileBytes);
   for (const item of prepared) replaceOutput(join(dist, item.jsName), item.code, item.mode);

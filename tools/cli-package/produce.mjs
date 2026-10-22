@@ -11,20 +11,15 @@
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { join } from 'node:path';
 import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './candidate.mjs';
+import { within } from './paths.mjs';
 import { isolatedEnvironment, runPnpm, stopLiveCommands } from './process.mjs';
 import { sealPackage } from './seal.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
 
 /** The interrupts after which the producer still removes everything private before it exits. */
 const INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
-
-/** @param {string} parent @param {string} child */
-function within(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
 
 /**
  * Produce one package-test artifact from the original checkout `repository` into the empty
@@ -36,7 +31,8 @@ function within(parent, child) {
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
- *   excludesFile?: typeof globalExcludesFile, pnpm?: typeof runPnpm}}} options
+ *   excludesFile?: typeof globalExcludesFile, pnpm?: typeof runPnpm,
+ *   remove?: (path: string) => void}}} options
  */
 export async function producePackage({
   repository,
@@ -52,14 +48,15 @@ export async function producePackage({
     noBuildCache = assertNoBuildCache,
     excludesFile = globalExcludesFile,
     pnpm = runPnpm,
+    remove = (path) => rmSync(path, { recursive: true, force: true }),
   } = ports;
   mkdirSync(destination, { recursive: true });
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
-  const home = realpathSync(mkdtempSync(join(temporary, 'relavium-package-build-')));
+  const home = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-build-')));
   let root;
   const discard = () => {
-    if (root !== undefined) rmSync(root, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    if (root !== undefined) remove(root);
+    remove(home);
   };
   const interrupt = (signal) => {
     stopLiveCommands();
@@ -71,16 +68,18 @@ export async function producePackage({
   };
   for (const signal of INTERRUPTS) process.on(signal, interrupt);
   try {
-    root = realpathSync(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
+    root = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
     chmodSync(root, 0o700);
     const candidate = join(root, 'source');
     const staging = join(root, 'staging');
     mkdirSync(candidate, { mode: 0o700 });
     mkdirSync(staging, { mode: 0o700 });
     chmodSync(staging, 0o700);
-    const published = realpathSync(destination);
+    // Native real paths carry the letter case the filesystem stores, so no alias passes for elsewhere.
+    const published = realpathSync.native(destination);
+    const checkout = realpathSync.native(repository);
     assert.ok(
-      !within(root, published) && !within(published, root) && !within(repository, root),
+      !within(root, published) && !within(published, root) && !within(checkout, root),
       'PACKED_CLI_PRIVATE_STAGING_PLACEMENT',
     );
     const env = isolatedEnvironment(home);
@@ -111,7 +110,9 @@ export async function producePackage({
     });
     return { receipt, identity };
   } finally {
-    for (const signal of INTERRUPTS) process.off(signal, interrupt);
+    // The handlers stay until everything private is gone: a late interrupt waits for the removal
+    // instead of ending the process in the middle of it.
     discard();
+    for (const signal of INTERRUPTS) process.off(signal, interrupt);
   }
 }

@@ -17,9 +17,10 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ENGINE_PACKAGES } from './finalize.mjs';
 import { readOrdinaryFile } from './files.mjs';
+import { within } from './paths.mjs';
 import { isolatedEnvironment, runCommand, runPnpm } from './process.mjs';
 
 export const CANDIDATE_LIMITS = Object.freeze({
@@ -38,12 +39,6 @@ const STORE_DISCOVERY_VARIABLES = Object.freeze([
   'APPDATA',
   'PNPM_HOME',
 ]);
-
-/** @param {string} parent @param {string} child */
-function within(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
 
 /** @param {string} output NUL-separated Git path list */
 function gitPaths(output) {

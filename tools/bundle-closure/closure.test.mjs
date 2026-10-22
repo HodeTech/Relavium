@@ -594,6 +594,11 @@ for (const [label, mutate, code] of [
     'MAP_OUTPUT',
   ],
   [
+    'map metadata with exports',
+    (value) => (value.metafile.outputs['dist/index.js.map'].exports = ['run']),
+    'MAP_OUTPUT',
+  ],
+  [
     'a nested map',
     (value) =>
       (value.metafile.outputs['dist/nested/index.js.map'] = {

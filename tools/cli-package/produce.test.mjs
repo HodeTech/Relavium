@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assertNoBuildCache } from './candidate.mjs';
@@ -79,11 +79,15 @@ function leftovers(temporary) {
   return readdirSync(temporary).filter((name) => name.startsWith('relavium-package-'));
 }
 
+const INTERRUPTS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const listeners = () => INTERRUPTS.map((signal) => process.listenerCount(signal));
+
 test('the producer builds and seals only the owned candidate, never the original checkout', async () => {
   const repository = fresh('original-checkout');
   const destination = join(fresh('artifact-parent'), 'artifact');
   const temporary = fresh('tmp');
   const { seen, ports: fakes } = ports();
+  const before = listeners();
   const result = await producePackage({
     repository,
     destination,
@@ -115,6 +119,8 @@ test('the producer builds and seals only the owned candidate, never the original
   }
   // The private root and the build home are gone, and only the tarball remains in the artifact.
   assert.deepEqual(leftovers(temporary), []);
+  // The interrupt handlers are gone too.
+  assert.deepEqual(listeners(), before);
   assert.equal(existsSync(candidate), false);
   assert.deepEqual(readdirSync(destination), ['relavium-0.1.1.tgz']);
 });
@@ -139,6 +145,7 @@ test('a build cache left in the candidate refuses before the seal, and nothing p
 test('a failure inside the build still removes the private root', async () => {
   const temporary = fresh('tmp');
   const { ports: fakes } = ports({ failEmit: true });
+  const before = listeners();
   await assert.rejects(
     producePackage({
       repository: fresh('original-checkout'),
@@ -150,6 +157,7 @@ test('a failure inside the build still removes the private root', async () => {
     /synthetic emit failure/u,
   );
   assert.deepEqual(leftovers(temporary), []);
+  assert.deepEqual(listeners(), before);
 });
 
 test('private staging never shares a path with the checkout or the artifact', async () => {
@@ -170,6 +178,35 @@ test('private staging never shares a path with the checkout or the artifact', as
   );
   assert.equal(seen.prepare, undefined);
   assert.deepEqual(leftovers(inside), []);
+  // A directory whose name merely starts with two dots is inside the checkout too.
+  const dotted = join(repository, '..tmp');
+  mkdirSync(dotted);
+  await assert.rejects(
+    producePackage({
+      repository,
+      destination: join(fresh('artifact-parent'), 'artifact'),
+      environment: {},
+      temporary: dotted,
+      ports: ports().ports,
+    }),
+    /PRIVATE_STAGING_PLACEMENT/u,
+  );
+  assert.deepEqual(leftovers(dotted), []);
+  // On a case-insensitive filesystem, another letter case of the checkout is the checkout.
+  const variant = join(dirname(repository), basename(repository).toUpperCase());
+  if (existsSync(variant)) {
+    await assert.rejects(
+      producePackage({
+        repository,
+        destination: join(fresh('artifact-parent'), 'artifact'),
+        environment: {},
+        temporary: join(variant, 'tmp'),
+        ports: ports().ports,
+      }),
+      /PRIVATE_STAGING_PLACEMENT/u,
+    );
+    assert.deepEqual(leftovers(inside), []);
+  }
   // So would a temporary directory inside the artifact directory.
   const artifact = join(fresh('artifact-parent'), 'artifact');
   mkdirSync(artifact);
@@ -198,7 +235,7 @@ test('private staging never shares a path with the checkout or the artifact', as
 });
 
 /** A producer run whose build is a long-lived child, as `pnpm pack` is, behind fake ports. */
-function interruptedProducer(temporary, destination, pidFile) {
+function interruptedProducer(temporary, destination, pidFile, grandchildFile) {
   const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
   const script = `
 import { writeFileSync } from 'node:fs';
@@ -218,7 +255,14 @@ await producePackage({
       writeFileSync(join(staging, 'index.js.map'), 'private map');
       writeFileSync(join(destination, 'relavium-0.1.1.tgz'), 'unsealed');
       await runCommand(process.execPath, ['-e', ${JSON.stringify(
-        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+        `const { spawn } = require('node:child_process');` +
+          `const { writeFileSync } = require('node:fs');` +
+          // A grandchild in the same process group, as tsup is under pnpm pack and prepack.
+          `spawn(process.execPath, ['-e', ${JSON.stringify(
+            `require('node:fs').writeFileSync(${JSON.stringify(grandchildFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+          )}], { stdio: 'ignore' });` +
+          `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+          `setInterval(() => {}, 1000);`,
       )}], { env: isolatedEnvironment(${JSON.stringify(temporary)}), timeoutMs: 60_000 });
     },
   },
@@ -241,6 +285,7 @@ function alive(pid) {
 for (const [signal, code] of [
   ['SIGINT', 130],
   ['SIGTERM', 143],
+  ['SIGHUP', 129],
 ]) {
   test(
     `an interrupted producer (${signal}) stops its build and removes everything private`,
@@ -249,33 +294,79 @@ for (const [signal, code] of [
       const temporary = fresh('tmp');
       mkdirSync(join(temporary, 'checkout'));
       const destination = join(fresh('artifact-parent'), 'artifact');
-      const pidFile = join(fresh('pid'), 'sleeper.pid');
-      const child = interruptedProducer(temporary, destination, pidFile);
-      let sleeper;
+      const pids = fresh('pid');
+      const pidFile = join(pids, 'sleeper.pid');
+      const grandchildFile = join(pids, 'grandchild.pid');
+      const child = interruptedProducer(temporary, destination, pidFile, grandchildFile);
+      const tree = [];
       try {
-        for (
-          let waited = 0;
-          !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
-          waited += 25
-        ) {
-          assert.ok(waited < 20_000, 'the fake build never started');
-          await delay(25);
+        for (const file of [pidFile, grandchildFile]) {
+          for (
+            let waited = 0;
+            !existsSync(file) || readFileSync(file, 'utf8') === '';
+            waited += 25
+          ) {
+            assert.ok(waited < 20_000, 'the fake build never started');
+            await delay(25);
+          }
+          tree.push(Number(readFileSync(file, 'utf8')));
         }
-        sleeper = Number(readFileSync(pidFile, 'utf8'));
-        assert.ok(alive(sleeper));
+        assert.ok(tree.every(alive));
         const exited = new Promise((resolve) => child.once('exit', resolve));
         child.kill(signal);
         assert.equal(await exited, code);
-        for (let waited = 0; alive(sleeper); waited += 25) {
-          assert.ok(waited < 5_000, 'the build child outlived the interrupt');
+        // The whole build tree is stopped, not only the process the producer started.
+        for (let waited = 0; tree.some(alive); waited += 25) {
+          assert.ok(waited < 5_000, 'part of the build tree outlived the interrupt');
           await delay(25);
         }
         assert.deepEqual(leftovers(temporary), []);
         assert.deepEqual(readdirSync(destination), []);
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        if (sleeper !== undefined && alive(sleeper)) process.kill(sleeper, 'SIGKILL');
+        for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
       }
     },
   );
 }
+
+test(
+  'an interrupt during the final removal waits for it instead of ending the process',
+  { skip: !posixModes },
+  async () => {
+    const temporary = fresh('tmp');
+    mkdirSync(join(temporary, 'checkout'));
+    const destination = join(fresh('artifact-parent'), 'artifact');
+    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+    // The private root's removal itself is interrupted; the handlers must still be installed then.
+    const script = `
+import { rmSync } from 'node:fs';
+import { producePackage } from ${url('./produce.mjs')};
+await producePackage({
+  repository: ${JSON.stringify(join(temporary, 'checkout'))},
+  destination: ${JSON.stringify(destination)},
+  environment: {},
+  temporary: ${JSON.stringify(temporary)},
+  ports: {
+    pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
+    excludesFile: async () => undefined,
+    prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
+    emit: async ({ staging }) => ({ staging }),
+    remove: (path) => {
+      if (path.includes('relavium-package-candidate-')) process.kill(process.pid, 'SIGINT');
+      rmSync(path, { recursive: true, force: true });
+    },
+  },
+});
+`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const [code, signal] = await new Promise((resolve) =>
+      child.once('exit', (exitCode, signalCode) => resolve([exitCode, signalCode])),
+    );
+    assert.equal(signal, null);
+    assert.equal(code, 0);
+    assert.deepEqual(leftovers(temporary), []);
+  },
+);
