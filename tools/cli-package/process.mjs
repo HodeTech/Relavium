@@ -30,10 +30,16 @@ export function isolatedEnvironment(home) {
  * Git with no global or system configuration, for reading the original checkout: its own `.git/config`
  * and ignore rules still apply and a caller passes the developer's global excludes explicitly, but no
  * `.gitconfig`, `git/config`, `git/ignore` or `git/attributes` in a home, configuration or system
- * location is read — not even one inside the checkout itself.
+ * location is read — not even one inside the checkout itself. Replace refs are ignored, so a status
+ * compares the working tree with the commit HEAD names, never a substitute for it.
  */
 export function isolatedGitEnvironment() {
-  return { ...isolatedEnvironment(devNull), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull };
+  return {
+    ...isolatedEnvironment(devNull),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_NO_REPLACE_OBJECTS: '1',
+  };
 }
 
 /** Resolve reviewed pnpm JS shims or the action's standalone executable, without cmd.exe. */

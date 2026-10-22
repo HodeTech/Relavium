@@ -24,12 +24,13 @@ import {
   stopLiveCommands,
 } from './process.mjs';
 
-test('Git reading the original checkout gets no home, global or system configuration', () => {
+test('Git reading the original checkout gets no home, global or system configuration nor replace refs', () => {
   const env = isolatedGitEnvironment();
   assert.deepEqual(env, {
     ...isolatedEnvironment(devNull),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: devNull,
+    GIT_NO_REPLACE_OBJECTS: '1',
   });
   for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(env[key], devNull);
 });

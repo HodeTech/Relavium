@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -338,38 +339,61 @@ test("no configuration found inside the checkout acts as Git's global configurat
   assert.equal((await sourceIdentity(repository)).dirty, true);
 });
 
+const COMMIT = ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid'];
+
 for (const ignoredBy of ['.gitignore', '.git/info/exclude'])
-  test(
-    `a tracked directory replaced by a link ignored through ${ignoredBy} refuses the copy`,
-    { skip: !posixModes },
-    async () => {
-      const { repository, inRepository } = await committedRepository('linked-parent');
-      write(join(repository, 'a', 'b'), 'tracked\n');
-      await inRepository(['add', 'a/b']);
-      await inRepository([
-        '-c',
-        'user.name=t',
-        '-c',
-        'user.email=t@example.invalid',
-        'commit',
-        '--quiet',
-        '-m',
-        'two',
-      ]);
-      // The directory moves outside the checkout and comes back as a link that Git ignores.
-      const outside = join(fresh('outside'), 'a');
-      renameSync(join(repository, 'a'), outside);
-      write(join(outside, 'b'), 'outside bytes\n');
-      symlinkSync(outside, join(repository, 'a'), linkKind);
-      write(join(repository, ...ignoredBy.split('/')), 'a\n');
-      const files = await candidateFiles(repository);
-      assert.ok(files.includes('a/b'));
-      assert.throws(
-        () => copyCandidateTree({ repository, destination: fresh('copy'), files }),
-        /CANDIDATE_PATH/u,
-      );
-    },
+  for (const linked of ['a', 'a/b'])
+    test(
+      `a tracked directory ${linked} replaced by a link ignored through ${ignoredBy} refuses the copy`,
+      { skip: !posixModes },
+      async () => {
+        const { repository, inRepository } = await committedRepository('linked-parent');
+        write(join(repository, 'a', 'b', 'c'), 'tracked\n');
+        await inRepository(['add', 'a/b/c']);
+        await inRepository([...COMMIT, 'commit', '--quiet', '-m', 'two']);
+        // The directory moves outside the checkout and comes back as a link that Git ignores; a link
+        // above the listed file's own directory must refuse as well as its direct parent.
+        const outside = join(fresh('outside'), 'moved');
+        renameSync(join(repository, ...linked.split('/')), outside);
+        write(join(outside, ...'a/b/c'.slice(linked.length + 1).split('/')), 'outside bytes\n');
+        symlinkSync(outside, join(repository, ...linked.split('/')), linkKind);
+        write(join(repository, ...ignoredBy.split('/')), `/${linked}\n`);
+        const files = await candidateFiles(repository);
+        assert.ok(files.includes('a/b/c'));
+        const destination = fresh('copy');
+        assert.throws(
+          () => copyCandidateTree({ repository, destination, files }),
+          /CANDIDATE_PATH/u,
+        );
+        assert.equal(existsSync(join(destination, 'a', 'b', 'c')), false);
+      },
+    );
+
+test('a replace ref on HEAD cannot hide a substituted tree from the identity', async () => {
+  const { repository, inRepository } = await committedRepository('replaced');
+  const reviewed = (await inRepository(['rev-parse', 'HEAD'])).stdout.trim();
+  // An unrelated commit with other bytes, then a replace ref that substitutes it for HEAD and an
+  // index and working tree that match it, as `git reset --hard` under that ref would leave them.
+  write(join(repository, 'kept.ts'), 'export const substituted = true;\n');
+  await inRepository(['add', 'kept.ts']);
+  const tree = (await inRepository(['write-tree'])).stdout.trim();
+  const other = (await inRepository([...COMMIT, 'commit-tree', tree, '-m', 'other'])).stdout.trim();
+  await inRepository(['replace', reviewed, other]);
+  await inRepository(['read-tree', '--reset', '-u', other]);
+  // Git honouring the replace ref sees a clean tree; the identity must not.
+  const honouring = Object.fromEntries(
+    Object.entries(isolatedGitEnvironment()).filter(([key]) => key !== 'GIT_NO_REPLACE_OBJECTS'),
   );
+  const status = await runCommand('git', ['status', '--porcelain=v1'], {
+    cwd: repository,
+    env: honouring,
+  });
+  assert.equal(status.stdout, '');
+  const identity = await sourceIdentity(repository);
+  assert.equal(identity.source, reviewed);
+  assert.match(identity.status, /kept\.ts/u);
+  assert.equal(identity.dirty, true);
+});
 
 for (const flag of ['--skip-worktree', '--assume-unchanged'])
   test(`a tracked file marked ${flag} makes the identity dirty`, async () => {
@@ -427,16 +451,22 @@ test('the candidate copy is byte-exact, keeps only the executable bit and refuse
     // A link as a parent directory refuses too, not only as the file itself.
     const elsewhere = fresh('elsewhere');
     write(join(elsewhere, 'inner.ts'), 'outside\n');
+    write(join(elsewhere, 'sub', 'inner.ts'), 'outside\n');
     symlinkSync(elsewhere, join(repository, 'linked-directory'), linkKind);
-    assert.throws(
-      () =>
-        copyCandidateTree({
-          repository,
-          destination: fresh('copy'),
-          files: ['linked-directory/inner.ts'],
-        }),
-      /CANDIDATE_PATH/u,
-    );
+    mkdirSync(join(repository, 'real'));
+    symlinkSync(elsewhere, join(repository, 'real', 'linked'), linkKind);
+    // The link may be the file's direct parent, a directory above it or a directory below the root.
+    for (const path of [
+      'linked-directory/inner.ts',
+      'linked-directory/sub/inner.ts',
+      'real/linked/inner.ts',
+    ]) {
+      assert.throws(
+        () => copyCandidateTree({ repository, destination: fresh('copy'), files: [path] }),
+        /CANDIDATE_PATH/u,
+        path,
+      );
+    }
     symlinkSync(join(repository, 'package.json'), join(repository, 'linked.json'));
     assert.throws(
       () => copyCandidateTree({ repository, destination: fresh('copy'), files: ['linked.json'] }),

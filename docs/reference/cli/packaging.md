@@ -241,7 +241,7 @@ describes the implemented mechanism; independent acceptance is recorded in the
   the identity `dirty` whatever their bytes), copies every file Git would ship (tracked
   plus untracked-but-not-ignored, minus deletions, by the repository's ignore rules and
   the developer's global excludes file, passed explicitly; that Git reads no home, global
-  or system configuration) into a fresh owner-only tree, and refuses if any of the three
+  or system configuration and ignores replace refs) into a fresh owner-only tree, and refuses if any of the three
   changed during the copy. A link, as a listed file or as any parent directory of one
   below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
   cannot bring in bytes from outside the checkout.
