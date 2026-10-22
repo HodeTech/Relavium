@@ -18,10 +18,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { ENGINE_PACKAGES } from './finalize.mjs';
 import { readOrdinaryFile } from './files.mjs';
 import { within } from './paths.mjs';
-import { isolatedEnvironment, runCommand, runPnpm } from './process.mjs';
+import { isolatedEnvironment, isolatedGitEnvironment, runCommand, runPnpm } from './process.mjs';
 
 export const CANDIDATE_LIMITS = Object.freeze({
   files: 20_000,
@@ -66,8 +67,8 @@ const GIT_CONFIG_VARIABLES = Object.freeze([
  * already isolated this process's environment, otherwise `core.excludesFile` as the developer's Git
  * reads it, else Git's default `$XDG_CONFIG_HOME/git/ignore` or `$HOME/.config/git/ignore`; undefined
  * when no such file exists. Only that location is read from the developer's configuration: every
- * candidate Git command keeps the isolated environment, so no global hook, fsmonitor or other setting
- * applies.
+ * candidate Git command runs without global or system configuration (`isolatedGitEnvironment`), so no
+ * global hook, fsmonitor or other setting applies, wherever it is stored.
  * @param {{repository: string, environment: Record<string, string | undefined>, run?: typeof runCommand}} options
  * @returns {Promise<string | undefined>}
  */
@@ -121,13 +122,26 @@ function excludesArguments(excludes) {
 }
 
 /**
- * The source identity of the original checkout: its exact commit and its full porcelain status, so
- * a candidate copied from a modified tree records `dirty` and a status change during the copy
- * refuses. Untracked files are judged with the developer's global excludes (`globalExcludesFile`).
+ * The tracked paths whose working-tree changes `git status` cannot see: entries marked skip-worktree
+ * (`S`) or assume-unchanged (a lowercase tag) in `git ls-files -v`.
+ * @param {string} output NUL-separated `git ls-files -v -z` entries
+ */
+function uncheckedPaths(output) {
+  return gitPaths(output)
+    .filter((entry) => entry[0] === 'S' || /^[a-z]$/u.test(entry[0]))
+    .map((entry) => entry.slice(2));
+}
+
+/**
+ * The source identity of the original checkout: its exact commit, its full porcelain status and the
+ * tracked files Git is told not to check, so a candidate copied from a modified tree records `dirty`
+ * and a change to either during the copy refuses. A skip-worktree or assume-unchanged file counts as
+ * dirty whatever its bytes, since its copy is never compared with the commit. Untracked files are
+ * judged with the developer's global excludes (`globalExcludesFile`).
  * @param {string} repository @param {typeof runCommand} [run] @param {string} [excludes]
  */
 export async function sourceIdentity(repository, run = runCommand, excludes = undefined) {
-  const options = { cwd: repository, env: isolatedEnvironment(repository) };
+  const options = { cwd: repository, env: isolatedGitEnvironment() };
   const source = (
     await run('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], options)
   ).stdout.trim();
@@ -139,7 +153,8 @@ export async function sourceIdentity(repository, run = runCommand, excludes = un
       options,
     )
   ).stdout;
-  return { source, status, dirty: status !== '' };
+  const unchecked = uncheckedPaths((await run('git', ['ls-files', '-v', '-z'], options)).stdout);
+  return { source, status, unchecked, dirty: status !== '' || unchecked.length > 0 };
 }
 
 /**
@@ -156,7 +171,7 @@ export async function candidateFiles(
   excludes = undefined,
   limits = CANDIDATE_LIMITS,
 ) {
-  const options = { cwd: repository, env: isolatedEnvironment(repository) };
+  const options = { cwd: repository, env: isolatedGitEnvironment() };
   const listed = gitPaths(
     (
       await run(
@@ -343,7 +358,9 @@ export async function prepareCandidate({
   });
   const after = await sourceIdentity(repository, run, excludes);
   assert.ok(
-    after.source === identity.source && after.status === identity.status,
+    after.source === identity.source &&
+      after.status === identity.status &&
+      isDeepStrictEqual(after.unchecked, identity.unchecked),
     'PACKED_CLI_SOURCE_CHANGED_DURING_COPY',
   );
   const store = await dependencyStore({ repository, environment, home, pnpm });

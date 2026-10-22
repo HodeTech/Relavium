@@ -255,6 +255,8 @@ for (const [label, change, code] of [
   ['another file', (map) => (map.file = 'other.js'), 'UPSTREAM_MAP_SHAPE'],
   ['no sources', (map) => (map.sources = []), 'UPSTREAM_MAP_SHAPE'],
   ['malformed mappings', (map) => (map.mappings = 'AAAA!'), 'UPSTREAM_MAP_SHAPE'],
+  // Only a module whose types all erase (`export {};`, as types.js is) may map nothing.
+  ['no mappings for executable code', (map) => (map.mappings = ''), 'UPSTREAM_MAP_UNMAPPED'],
   [
     'a URL source',
     (map) => (map.sources = ['https://example.invalid/index.ts']),

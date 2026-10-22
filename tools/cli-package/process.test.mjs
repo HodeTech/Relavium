@@ -11,15 +11,27 @@ import {
   rmSync,
   realpathSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   exerciseInstalledCommand,
   isolatedEnvironment,
+  isolatedGitEnvironment,
   resolvePnpm,
   runCommand,
   runPnpm,
 } from './process.mjs';
+
+test('Git reading the original checkout gets no home, global or system configuration', () => {
+  const env = isolatedGitEnvironment();
+  assert.deepEqual(env, {
+    ...isolatedEnvironment(devNull),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: devNull,
+  });
+  for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(env[key], devNull);
+});
 
 test('installer receives an explicit credential/config/preload-free environment', () => {
   const home = join(tmpdir(), 'synthetic-installer-home');
@@ -208,7 +220,7 @@ try {
 } catch (error) {
   if (interrupts.received() === undefined) throw error;
 } finally {
-  interrupts.dispose();
+  await interrupts.dispose();
 }
 const signal = interrupts.received();
 if (signal !== undefined) process.exit(128 + constants.signals[signal]);
@@ -234,5 +246,41 @@ if (signal !== undefined) process.exit(128 + constants.signals[signal]);
       if (child !== undefined && alive(child)) process.kill(child, 'SIGKILL');
       rmSync(root, { recursive: true, force: true });
     }
+  },
+);
+
+test(
+  'an interrupt caught during the cleanup after the last child is still recorded',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // The last await completes from an I/O callback, so the cleanup runs inside the loop's poll
+    // phase: a listener removed after one more turn would drop the caught signal.
+    const harness = `
+import { readFile } from 'node:fs/promises';
+import { constants } from 'node:os';
+import { forwardInterrupts } from ${JSON.stringify(new URL('./process.mjs', import.meta.url).href)};
+const interrupts = forwardInterrupts();
+try {
+  await readFile(${JSON.stringify(fileURLToPath(import.meta.url))});
+} finally {
+  process.kill(process.pid, 'SIGINT');
+  for (const until = Date.now() + 50; Date.now() < until; );
+  await interrupts.dispose();
+}
+const signal = interrupts.received();
+if (signal !== undefined) process.exit(128 + constants.signals[signal]);
+console.log('not interrupted');
+`;
+    const tool = spawn(process.execPath, ['--input-type=module', '-e', harness], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    tool.stdout.on('data', (chunk) => (stdout += chunk));
+    const [code, signal] = await new Promise((resolve) =>
+      tool.once('exit', (exitCode, signalCode) => resolve([exitCode, signalCode])),
+    );
+    assert.equal(signal, null);
+    assert.equal(code, 130);
+    assert.equal(stdout, '');
   },
 );

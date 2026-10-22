@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { constants, devNull } from 'node:os';
 import { delimiter, extname, isAbsolute, join } from 'node:path';
-import { clearTimeout, setTimeout } from 'node:timers';
+import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
 
 export function isolatedEnvironment(home) {
   const env = {
@@ -23,6 +24,16 @@ export function isolatedEnvironment(home) {
   for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'LANG'])
     if (process.env[key] !== undefined) env[key] = process.env[key];
   return env;
+}
+
+/**
+ * Git with no global or system configuration, for reading the original checkout: its own `.git/config`
+ * and ignore rules still apply and a caller passes the developer's global excludes explicitly, but no
+ * `.gitconfig`, `git/config`, `git/ignore` or `git/attributes` in a home, configuration or system
+ * location is read — not even one inside the checkout itself.
+ */
+export function isolatedGitEnvironment() {
+  return { ...isolatedEnvironment(devNull), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull };
 }
 
 /** Resolve reviewed pnpm JS shims or the action's standalone executable, without cmd.exe. */
@@ -93,16 +104,54 @@ export function stopLiveCommands() {
   liveChildren.clear();
 }
 
-/** The interrupts a tool forwards to the children that own their cleanup. */
-const FORWARDED_INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
+/** The interrupts after which a tool still stops its children and cleans up before it exits. */
+const INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
 
 /**
- * While a tool waits on children that clean up after themselves (the producer), forward SIGINT,
- * SIGTERM and SIGHUP to every child tree `runCommand` owns instead of dying first: a detached child
- * shares no terminal process group, so it would never receive the interrupt. On Windows the children
- * share the console and receive Ctrl-C themselves. The caller runs its own cleanup, calls `dispose`
+ * Let the event loop poll for I/O once more. Node hands a caught signal to its listener only when the
+ * loop next polls, and work that ran from an I/O callback (a child's exit, a file read) can end its
+ * first turn before that poll: a listener removed then drops the signal. After two turns the loop has
+ * polled. A signal caught in the instant between that poll and the listener's removal is still lost;
+ * Node offers no way to drain it.
+ */
+async function deliverCaughtSignals() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Run `body` while SIGINT, SIGTERM and SIGHUP stop every child tree `runCommand` owns, run the
+ * synchronous `interrupted` and end the process with 128 + the signal's number. The handlers stay
+ * until the loop has polled once after `body` settled (`deliverCaughtSignals`), so an interrupt caught
+ * during the body's synchronous tail or its own final cleanup is honoured, never dropped with its
+ * listener. A process killed outright runs nothing.
+ * @template T
+ * @param {() => void} interrupted
+ * @param {() => Promise<T>} body
+ * @returns {Promise<T>}
+ */
+export async function exitOnInterrupt(interrupted, body) {
+  const handler = (signal) => {
+    stopLiveCommands();
+    interrupted();
+    process.exit(128 + (constants.signals[signal] ?? 0));
+  };
+  for (const signal of INTERRUPTS) process.on(signal, handler);
+  try {
+    return await body();
+  } finally {
+    await deliverCaughtSignals();
+    for (const signal of INTERRUPTS) process.off(signal, handler);
+  }
+}
+
+/**
+ * While a tool waits on children that clean up after themselves (the producer, the consumer),
+ * forward SIGINT, SIGTERM and SIGHUP to every child tree `runCommand` owns instead of dying first: a
+ * detached child shares no terminal process group, so it would never receive the interrupt. On
+ * Windows the children share the console and receive Ctrl-C themselves. The caller runs its own cleanup, awaits `dispose`
  * and exits with 128 + the number of the signal `received` reports.
- * @returns {{received: () => string | undefined, dispose: () => void}}
+ * @returns {{received: () => string | undefined, dispose: () => Promise<void>}}
  */
 export function forwardInterrupts() {
   let received;
@@ -117,11 +166,13 @@ export function forwardInterrupts() {
       }
     }
   };
-  for (const signal of FORWARDED_INTERRUPTS) process.on(signal, forward);
+  for (const signal of INTERRUPTS) process.on(signal, forward);
   return {
     received: () => received,
-    dispose: () => {
-      for (const signal of FORWARDED_INTERRUPTS) process.off(signal, forward);
+    // An interrupt caught during the caller's cleanup is still recorded (`deliverCaughtSignals`).
+    dispose: async () => {
+      await deliverCaughtSignals();
+      for (const signal of INTERRUPTS) process.off(signal, forward);
     },
   };
 }

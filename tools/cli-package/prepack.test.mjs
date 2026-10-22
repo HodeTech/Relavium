@@ -24,7 +24,7 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-prepack-orches
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let count = 0;
 
-function fixture({ buildExit = 0 } = {}) {
+function fixture({ buildExit = 0, tsup: installed = true } = {}) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of [
@@ -46,13 +46,15 @@ function fixture({ buildExit = 0 } = {}) {
   );
   const cli = join(root, 'apps', 'cli');
   const tsup = join(cli, 'node_modules', 'tsup');
-  mkdirSync(join(tsup, 'dist'), { recursive: true });
+  const marker = join(root, 'build-ran');
+  mkdirSync(cli, { recursive: true });
   writeFileSync(join(cli, 'package.json'), JSON.stringify({ name: 'relavium', dependencies: {} }));
+  if (!installed) return { root, cli, marker };
+  mkdirSync(join(tsup, 'dist'), { recursive: true });
   writeFileSync(
     join(tsup, 'package.json'),
     JSON.stringify({ name: 'tsup', type: 'module', bin: { tsup: 'dist/cli.js' } }),
   );
-  const marker = join(root, 'build-ran');
   writeFileSync(
     join(tsup, 'dist', 'cli.js'),
     `import { appendFileSync } from 'node:fs';\n` +
@@ -131,4 +133,16 @@ test('one build runs, then the ordinary closure gate or the candidate finalizer 
     /✗ CLI candidate finalization refused: UNREADABLE_FILE \(metafile\)/u,
   );
   assert.doesNotMatch(mapped.stdout, /CLI candidate finalized/u);
+});
+
+test('an unexpected error prints only its code, never its message or a host path', () => {
+  // Without an installed tsup the resolution fails with an error whose message names absolute
+  // fixture paths; only its code may reach the pack log.
+  const candidate = fixture({ tsup: false });
+  const staging = privateStaging();
+  const result = prepack(candidate, { staging });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '✗ CLI candidate finalization failed: MODULE_NOT_FOUND\n');
+  assert.equal(existsSync(candidate.marker), false);
 });

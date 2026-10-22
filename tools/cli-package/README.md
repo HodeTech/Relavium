@@ -17,8 +17,10 @@ pnpm smoke:cli-package
 
 The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
 It copies the files Git would ship, by the repository's ignore rules and the developer's
-global excludes file, into a fresh owner-only candidate tree, refusing if the original
-checkout's commit or status changes during the copy, and installs the locked closure there offline, frozen and
+global excludes file (its Git reads no other home, global or system configuration), into a
+fresh owner-only candidate tree, refusing if the original checkout's commit, status or set of
+files Git is told not to check changes during the copy (such a skip-worktree or assume-unchanged
+file makes the source `dirty`), and installs the locked closure there offline, frozen and
 without lifecycle scripts from the existing store. In that tree it emits the five
 inlined dependency packages in order with the installed compiler, upstream maps and no
 build cache. Prepack (`prepack.mjs`) performs the sole final CLI build in candidate
@@ -39,9 +41,11 @@ inventories. This deliberately supports the pinned packer's dialect, not general
 The resulting public `package-test-receipt.json` records `compiled_package_test`.
 The candidate's maps are built, validated and then removed with the rest of the
 private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP), which
-stops the build first, and `pnpm smoke:cli-package` forwards an interrupt to the producer
-and the consumer it started instead of ending before them; a producer killed outright can
-leave its owner-only root in the temporary directory. The receipt does **not** certify symbolication, a map manifest,
+stops the build first and empties the artifact directory, even after the last build child
+exited. An interrupted consumer stops its children, the bootstrap witness's included, and
+removes its installation. `pnpm smoke:cli-package` forwards an interrupt to the producer or
+consumer it started instead of ending before them and starts no later stage after one; a
+producer killed outright can leave its owner-only root in the temporary directory. The receipt does **not** certify symbolication, a map manifest,
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
 metafile or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it

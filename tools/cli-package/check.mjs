@@ -10,10 +10,13 @@ import { forwardInterrupts, isolatedEnvironment, runCommand } from './process.mj
 assert.equal(process.argv.length, 2, 'no arguments required');
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-local-package-check-')));
-// The producer and the consumer run detached and clean up after themselves (the producer removes its
-// private root on an interrupt), so an interrupt reaches them instead of ending this check first; the
-// check root, which holds their temporary directories, goes once they have exited.
+// The producer and the consumer run detached, and each stops its own child trees and removes its
+// temporary directories on an interrupt, so the interrupt is forwarded to them instead of ending this
+// check first. The check root, which holds those directories, goes once they have exited, and no
+// later stage starts after an interrupt arrived.
 const interrupts = forwardInterrupts();
+const proceed = () =>
+  assert.equal(interrupts.received(), undefined, 'PACKED_CLI_LOCAL_CHECK_INTERRUPTED');
 try {
   // The producer runs with an isolated HOME, so the store and the developer's global Git excludes
   // file are found here, from the caller's own location variables, and handed over explicitly.
@@ -23,11 +26,14 @@ try {
   const artifact = join(root, 'artifact'),
     reports = join(root, 'reports');
   const options = { env: isolatedEnvironment(root), timeoutMs: 600_000 };
+  proceed();
   await runCommand(process.execPath, [join(directory, 'pack.mjs'), artifact], {
     ...options,
     env: producerEnvironment(options.env, { store, excludes }),
   });
+  proceed();
   await runCommand(process.execPath, [join(directory, 'consume.mjs'), artifact, reports], options);
+  proceed();
   const record = JSON.parse(readFileSync(join(reports, 'installed-consumer.json'), 'utf8'));
   assert.equal(record.leg, 'local');
   console.log(
@@ -44,8 +50,9 @@ try {
 } catch (error) {
   if (interrupts.received() === undefined) throw error;
 } finally {
-  rmSync(root, { recursive: true, force: true });
-  interrupts.dispose();
+  // Retries absorb a child killed by the interrupt that was still finishing a write.
+  rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  await interrupts.dispose();
 }
 const signal = interrupts.received();
 if (signal !== undefined) process.exit(128 + (constants.signals[signal] ?? 0));

@@ -159,7 +159,9 @@ function originalSource(repository, mapDirectory, source, allowedRoots, subject)
 
 /**
  * Validate one consumed upstream (tsc) map. The JS must end with its exact trailer and the map must
- * name only this package's original TypeScript, without embedded sources or a source root.
+ * name only this package's original TypeScript, without embedded sources or a source root. Its
+ * mappings may be empty only for a module whose types all erase, which tsc emits as exactly
+ * `export {};`.
  * @param {string} repository
  * @param {string} packageName
  * @param {string} jsPath repository-relative POSIX path of the consumed compiled JS
@@ -201,6 +203,9 @@ function upstreamSources(repository, packageName, jsPath) {
     map.sources.length > LIMITS.sourcesPerMap
   ) {
     refuse('UPSTREAM_MAP_SHAPE', mapPath);
+  }
+  if (map.mappings === '' && js !== `export {};\n${mapTrailer(name)}`) {
+    refuse('UPSTREAM_MAP_UNMAPPED', mapPath);
   }
   const directory = posix.dirname(jsPath);
   return map.sources.map((source) =>

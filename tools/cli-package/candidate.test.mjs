@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import {
   assertNoBuildCache,
   candidateFiles,
@@ -26,7 +27,7 @@ import {
   sourceIdentity,
   verifyCandidateLinks,
 } from './candidate.mjs';
-import { isolatedEnvironment, runCommand } from './process.mjs';
+import { isolatedEnvironment, isolatedGitEnvironment, runCommand } from './process.mjs';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-candidate-tree-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -72,27 +73,47 @@ test('source identity records the exact commit and the complete porcelain status
   const clean = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
     'status --porcelain=v1 -z --untracked-files=all': '',
+    'ls-files -v -z': 'H a.ts\0H b.ts\0',
   });
   assert.deepEqual(await sourceIdentity('/repository', clean.run), {
     source: SHA,
     status: '',
+    unchecked: [],
     dirty: false,
   });
   assert.ok(clean.calls.every((call) => call.command === 'git' && call.cwd === '/repository'));
-  // The original checkout is queried with an isolated environment, never the caller's.
+  // The original checkout is queried with an isolated environment without any home, global or
+  // system configuration, never the caller's.
   assert.ok(
-    clean.calls.every((call) => call.env.HOME === '/repository' && !('NPM_TOKEN' in call.env)),
+    clean.calls.every(
+      (call) => isDeepStrictEqual(call.env, isolatedGitEnvironment()) && !('NPM_TOKEN' in call.env),
+    ),
   );
   const modified = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
     'status --porcelain=v1 -z --untracked-files=all': '?? notes.txt\0',
+    'ls-files -v -z': 'H a.ts\0',
   });
   assert.equal((await sourceIdentity('/repository', modified.run)).dirty, true);
+  // A file Git is told not to check — skip-worktree (S) or assume-unchanged (a lowercase tag) — is
+  // copied unchecked, so it counts as dirty even when the status is empty.
+  const unchecked = git({
+    '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
+    'status --porcelain=v1 -z --untracked-files=all': '',
+    'ls-files -v -z': 'H a.ts\0S sparse.ts\0h assumed.ts\0s both.ts\0M merged.ts\0',
+  });
+  assert.deepEqual(await sourceIdentity('/repository', unchecked.run), {
+    source: SHA,
+    status: '',
+    unchecked: ['sparse.ts', 'assumed.ts', 'both.ts'],
+    dirty: true,
+  });
   // The developer's global excludes file judges untracked files.
   const excluded = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
     '-c core.excludesFile=/home/someone/.config/git/ignore status --porcelain=v1 -z --untracked-files=all':
       '',
+    'ls-files -v -z': '',
   });
   assert.equal(
     (await sourceIdentity('/repository', excluded.run, '/home/someone/.config/git/ignore')).dirty,
@@ -102,6 +123,7 @@ test('source identity records the exact commit and the complete porcelain status
     const malformed = git({
       '--no-replace-objects rev-parse HEAD': head,
       'status --porcelain=v1 -z --untracked-files=all': '',
+      'ls-files -v -z': '',
     });
     await assert.rejects(sourceIdentity('/repository', malformed.run), /SOURCE_IDENTITY/u);
   }
@@ -113,6 +135,7 @@ test('candidate files are tracked plus unignored untracked files, minus deletion
     'ls-files -z --deleted': 'gone.ts\0',
   });
   assert.deepEqual(await candidateFiles('/repository', listing.run), ['a.ts', 'b.ts', 'new.ts']);
+  assert.ok(listing.calls.every((call) => isDeepStrictEqual(call.env, isolatedGitEnvironment())));
   const empty = git({
     'ls-files -z --cached --others --exclude-standard': '',
     'ls-files -z --deleted': '',
@@ -252,6 +275,58 @@ test('a real checkout copies nothing its developer ignores globally', async () =
   assert.deepEqual(await candidateFiles(repository), ['kept.ts', 'secret.local']);
   assert.equal((await sourceIdentity(repository)).dirty, true);
 });
+
+/** A real repository with one committed file, `kept.ts`, created with Git's own configuration off. */
+async function committedRepository(name) {
+  const repository = fresh(name);
+  const inRepository = (args) =>
+    runCommand('git', args, { cwd: repository, env: isolatedGitEnvironment(), timeoutMs: 30_000 });
+  await inRepository(['init', '--quiet']);
+  write(join(repository, 'kept.ts'), 'export {};\n');
+  await inRepository(['add', 'kept.ts']);
+  await inRepository([
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'one',
+  ]);
+  return { repository, inRepository };
+}
+
+test("no configuration found inside the checkout acts as Git's global configuration", async () => {
+  const { repository } = await committedRepository('planted-configuration');
+  write(join(repository, 'secret.local'), 'private\n');
+  // A home-style .gitconfig and an XDG-style git/ignore at the checkout root, untracked, each of
+  // which would hide files if Git took the checkout for its home or configuration directory.
+  write(join(repository, 'hide'), 'secret.local\n.gitconfig\nhide\ngit/\n');
+  write(join(repository, '.gitconfig'), `[core]\n\texcludesFile = ${join(repository, 'hide')}\n`);
+  write(join(repository, 'git', 'ignore'), 'secret.local\ngit/\nhide\n.gitconfig\n');
+  assert.deepEqual(await candidateFiles(repository), [
+    '.gitconfig',
+    'git/ignore',
+    'hide',
+    'kept.ts',
+    'secret.local',
+  ]);
+  assert.equal((await sourceIdentity(repository)).dirty, true);
+});
+
+for (const flag of ['--skip-worktree', '--assume-unchanged'])
+  test(`a tracked file marked ${flag} makes the identity dirty`, async () => {
+    const { repository, inRepository } = await committedRepository('unchecked');
+    await inRepository(['update-index', flag, 'kept.ts']);
+    write(join(repository, 'kept.ts'), 'export const changed = true;\n');
+    // Git's own status cannot see the change, and the copy would take the changed bytes.
+    assert.equal((await inRepository(['status', '--porcelain=v1'])).stdout, '');
+    assert.deepEqual(await candidateFiles(repository), ['kept.ts']);
+    const identity = await sourceIdentity(repository);
+    assert.deepEqual(identity.unchecked, ['kept.ts']);
+    assert.equal(identity.dirty, true);
+  });
 
 test('the candidate copy is byte-exact, keeps only the executable bit and refuses links', () => {
   const repository = fresh('repository');
@@ -480,7 +555,12 @@ test('a candidate build leaves no build cache behind', () => {
 });
 
 /** A source repository plus fake git and pnpm ports; the fake install creates the workspace links. */
-function preparation({ statusAfterCopy = '', headAfterCopy = SHA, excludes } = {}) {
+function preparation({
+  statusAfterCopy = '',
+  headAfterCopy = SHA,
+  uncheckedAfterCopy = '',
+  excludes,
+} = {}) {
   const repository = fresh('source');
   write(join(repository, 'package.json'), '{}\n');
   for (const name of ['shared', 'llm', 'core', 'db', 'mcp']) {
@@ -496,6 +576,7 @@ function preparation({ statusAfterCopy = '', headAfterCopy = SHA, excludes } = {
   const events = [];
   let statuses = 0;
   let heads = 0;
+  let flags = 0;
   // With an excludes file, the listing and both status calls answer only when they carry it.
   const prefix = excludes === undefined ? '' : `-c core.excludesFile=${excludes} `;
   const run = async (command, args) => {
@@ -512,6 +593,10 @@ function preparation({ statusAfterCopy = '', headAfterCopy = SHA, excludes } = {
     if (key === `${prefix}ls-files -z --cached --others --exclude-standard`)
       return { stdout: files.join('\0') };
     if (key === 'ls-files -z --deleted') return { stdout: '' };
+    if (key === 'ls-files -v -z') {
+      flags += 1;
+      return { stdout: `H package.json\0${flags === 1 ? '' : uncheckedAfterCopy}` };
+    }
     throw new Error(`unexpected git ${key}`);
   };
   const pnpm = async (args, options) => {
@@ -544,10 +629,12 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
   assert.deepEqual(ports.events, [
     'git --no-replace-objects rev-parse HEAD',
     'git status --porcelain=v1 -z --untracked-files=all',
+    'git ls-files -v -z',
     'git ls-files -z --cached --others --exclude-standard',
     'git ls-files -z --deleted',
     'git --no-replace-objects rev-parse HEAD',
     'git status --porcelain=v1 -z --untracked-files=all',
+    'git ls-files -v -z',
     'pnpm store path',
     `pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir ${ports.store}`,
   ]);
@@ -559,10 +646,12 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
 });
 
 test('a source change during the copy refuses before anything is installed', async () => {
-  // A changed status, or a commit that moved while the status stayed the same.
+  // A changed status, a commit that moved while the status stayed the same, or a file Git was told
+  // not to check during the copy.
   for (const change of [
     { statusAfterCopy: ' M package.json\0' },
     { headAfterCopy: 'b'.repeat(40) },
+    { uncheckedAfterCopy: 'h tools/run.mjs\0' },
   ]) {
     const ports = preparation(change);
     await assert.rejects(

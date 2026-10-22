@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBootstrap } from '../cli-bootstrap/check.mjs';
+import { abandonFixtures } from '../cli-bootstrap/child.mjs';
 import { inspectPackageArchive } from './archive.mjs';
 import {
   originFromEnvironment,
@@ -22,7 +23,13 @@ import {
   validateConsumerRecord,
 } from './binding.mjs';
 import { installedInventory, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
-import { exerciseInstalledCommand, isolatedEnvironment, runCommand, runPnpm } from './process.mjs';
+import {
+  exerciseInstalledCommand,
+  isolatedEnvironment,
+  isolatedGitEnvironment,
+  runCommand,
+  runPnpm,
+} from './process.mjs';
 import { runInstalledSmoke } from './smoke/index.mjs';
 import { completeConsumer } from './consumer-lifetime.mjs';
 
@@ -40,7 +47,7 @@ const source =
   (
     await runCommand('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], {
       cwd: repository,
-      env: isolatedEnvironment(repository),
+      env: isolatedGitEnvironment(),
     })
   ).stdout.trim();
 const nodeMajor = Number(readFileSync(join(repository, '.nvmrc'), 'utf8').trim());
@@ -176,7 +183,10 @@ await completeConsumer({
     validateConsumerRecord(record, receipt, { ...expected, allowLocal: true });
     return record;
   },
-  cleanup: () => rmSync(home, { recursive: true, force: true }),
+  // An interrupt stops the bootstrap's own children and fixtures too; retries absorb a killed child
+  // that was still finishing a write.
+  abandon: abandonFixtures,
+  cleanup: () => rmSync(home, { recursive: true, force: true, maxRetries: 3 }),
   cleanupFailed: () => writeSync(2, 'PACKED_CLI_SECONDARY_INSTALLATION_CLEANUP_FAILED\n'),
   publish(record) {
     writeFileSync(

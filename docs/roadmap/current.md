@@ -171,7 +171,7 @@ bar and round cap, as its
 medium findings through round 9 are corrected, and after round 10, the last round, only GEN-R10-1, which the
 maintainer counted as high on 2026-10-22, is corrected (in the summary, by the author alone). Its other findings
 are recorded in
-[deferred-tasks.md](deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is implemented on `development` and under review ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22)); its
+[deferred-tasks.md](deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is implemented on `development` and under review ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22)); the substrate's
 9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
 [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) and end with
 whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the

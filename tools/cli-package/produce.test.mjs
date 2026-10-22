@@ -16,6 +16,7 @@ import { basename, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assertNoBuildCache } from './candidate.mjs';
+import { isolatedEnvironment } from './process.mjs';
 import { producePackage } from './produce.mjs';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-produce-')));
@@ -41,8 +42,9 @@ function ports({ plantCache = false, failEmit = false } = {}) {
   return {
     seen,
     ports: {
-      pnpm: async (args) => {
+      pnpm: async (args, options) => {
         assert.deepEqual(args, ['--version']);
+        seen.pnpm = options;
         return { stdout: '9.12.3\n', stderr: '' };
       },
       excludesFile: async ({ repository }) => {
@@ -82,20 +84,44 @@ function leftovers(temporary) {
 const INTERRUPTS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const listeners = () => INTERRUPTS.map((signal) => process.listenerCount(signal));
 
-test('the producer builds and seals only the owned candidate, never the original checkout', async () => {
+/** Credentials, a preload and a registry in the caller's own environment, which no build may see. */
+const PLANTED = Object.freeze({
+  NPM_TOKEN: 'planted-npm-token',
+  NODE_OPTIONS: '--require=/planted/preload.cjs',
+  npm_config_registry: 'https://registry.planted.invalid/',
+});
+
+test('the producer builds and seals only the owned candidate, never the original checkout', async (t) => {
   const repository = fresh('original-checkout');
   const destination = join(fresh('artifact-parent'), 'artifact');
   const temporary = fresh('tmp');
   const { seen, ports: fakes } = ports();
   const before = listeners();
+  const saved = Object.fromEntries(Object.keys(PLANTED).map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  Object.assign(process.env, PLANTED);
   const result = await producePackage({
     repository,
     destination,
-    environment: { HOME: '/home/someone' },
+    environment: { HOME: '/home/someone', NPM_TOKEN: 'environment-npm-token' },
     temporary,
     ports: fakes,
   });
   assert.deepEqual(result.identity, { source: SHA, dirty: false, files: 7 });
+  // The whole build — pnpm, the candidate's preparation and the emit with its pack — runs in the
+  // isolated environment of the private build home, never with the caller's own variables.
+  const home = seen.prepare.home;
+  assert.equal(dirname(home), temporary);
+  assert.match(basename(home), /^relavium-package-build-/u);
+  assert.deepEqual(seen.prepare.env, isolatedEnvironment(home));
+  assert.deepEqual(seen.emit.env, seen.prepare.env);
+  assert.deepEqual(seen.pnpm.env, seen.prepare.env);
+  for (const key of Object.keys(PLANTED)) assert.equal(key in seen.prepare.env, false);
   const candidate = seen.prepare.candidate;
   // The candidate and its staging are siblings in one private root outside the checkout and the artifact.
   assert.notEqual(candidate, repository);
@@ -205,6 +231,20 @@ test('private staging never shares a path with the checkout or the artifact', as
       }),
       /PRIVATE_STAGING_PLACEMENT/u,
     );
+    assert.deepEqual(leftovers(inside), []);
+    // The same holds when the checkout itself is named in another letter case.
+    const { seen: cased, ports: casedFakes } = ports();
+    await assert.rejects(
+      producePackage({
+        repository: variant,
+        destination: join(fresh('artifact-parent'), 'artifact'),
+        environment: {},
+        temporary: inside,
+        ports: casedFakes,
+      }),
+      /PRIVATE_STAGING_PLACEMENT/u,
+    );
+    assert.equal(cased.prepare, undefined);
     assert.deepEqual(leftovers(inside), []);
   }
   // So would a temporary directory inside the artifact directory.
@@ -330,18 +370,23 @@ for (const [signal, code] of [
   );
 }
 
-test(
-  'an interrupt during the final removal waits for it instead of ending the process',
-  { skip: !posixModes },
-  async () => {
-    const temporary = fresh('tmp');
-    mkdirSync(join(temporary, 'checkout'));
-    const destination = join(fresh('artifact-parent'), 'artifact');
-    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
-    // The private root's removal itself is interrupted; the handlers must still be installed then.
-    const script = `
-import { rmSync } from 'node:fs';
+/**
+ * A producer whose interrupt arrives after its build's last child exited: during the seal or during
+ * the private root's removal, both synchronous. The fake emit's last await completes from an I/O
+ * callback, as pnpm pack's exit does, so the producer's tail runs inside the event loop's poll phase.
+ */
+function lateInterrupt(temporary, destination, during) {
+  const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+  const script = `
+import { readFile } from 'node:fs/promises';
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { producePackage } from ${url('./produce.mjs')};
+const interrupt = () => {
+  process.kill(process.pid, 'SIGINT');
+  // The rest of the synchronous work, during which the signal is only caught.
+  for (const until = Date.now() + 50; Date.now() < until; );
+};
 await producePackage({
   repository: ${JSON.stringify(join(temporary, 'checkout'))},
   destination: ${JSON.stringify(destination)},
@@ -351,22 +396,51 @@ await producePackage({
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
-    emit: async ({ staging }) => ({ staging }),
+    emit: async ({ staging, destination, seal }) => {
+      writeFileSync(join(staging, 'index.js.map'), 'private map');
+      writeFileSync(join(destination, 'relavium-0.1.1.tgz'), 'tarball');
+      await readFile(join(staging, 'index.js.map'));
+      return seal(destination);
+    },
+    noBuildCache: () => {},
+    seal: () => {
+      if (${JSON.stringify(during)} === 'seal') interrupt();
+      return { mode: 'compiled_package_test' };
+    },
     remove: (path) => {
-      if (path.includes('relavium-package-candidate-')) process.kill(process.pid, 'SIGINT');
+      if (${JSON.stringify(during)} === 'removal' && path.includes('relavium-package-candidate-'))
+        interrupt();
       rmSync(path, { recursive: true, force: true });
     },
   },
 });
+console.log('produced');
 `;
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const [code, signal] = await new Promise((resolve) =>
-      child.once('exit', (exitCode, signalCode) => resolve([exitCode, signalCode])),
-    );
-    assert.equal(signal, null);
-    assert.equal(code, 0);
-    assert.deepEqual(leftovers(temporary), []);
-  },
-);
+  return spawn(process.execPath, ['--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+for (const during of ['seal', 'removal'])
+  test(
+    `an interrupt during the ${during}, after the last child exited, still ends the producer`,
+    { skip: !posixModes },
+    async () => {
+      const temporary = fresh('tmp');
+      mkdirSync(join(temporary, 'checkout'));
+      const destination = join(fresh('artifact-parent'), 'artifact');
+      const child = lateInterrupt(temporary, destination, during);
+      let stdout = '';
+      child.stdout.on('data', (chunk) => (stdout += chunk));
+      const [code, signal] = await new Promise((resolve) =>
+        child.once('exit', (exitCode, signalCode) => resolve([exitCode, signalCode])),
+      );
+      // Honoured once the synchronous work is done: the removal completes, the artifact is emptied
+      // and the producer exits with the signal's code instead of reporting success.
+      assert.equal(signal, null);
+      assert.equal(code, 130);
+      assert.equal(stdout, '');
+      assert.deepEqual(leftovers(temporary), []);
+      assert.deepEqual(readdirSync(destination), []);
+    },
+  );

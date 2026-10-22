@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { spawnBounded } from './process.mjs';
+import { spawnBounded, stopBoundedChildren } from './process.mjs';
 import { maxWitnessBytes } from './policy.mjs';
 
 function snapshot(root) {
@@ -34,9 +34,24 @@ function snapshot(root) {
   return entries;
 }
 
+/** Every fixture root a running control still owns. */
+const liveFixtures = new Set();
+
+/**
+ * For a caller that an interrupt ends before `withFixture` can remove its own root: synchronously kill
+ * every bounded child, then remove every fixture root still in use.
+ */
+export function abandonFixtures() {
+  stopBoundedChildren();
+  // Retries absorb a killed child that was still finishing a write.
+  for (const root of liveFixtures) rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  liveFixtures.clear();
+}
+
 /** Each child receives a synthetic HOME/cwd, no ambient credentials or Node preload. */
 export async function withFixture(run) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-bootstrap-')));
+  liveFixtures.add(root);
   try {
     const home = join(root, 'home'),
       workspace = join(root, 'workspace'),
@@ -118,6 +133,7 @@ export async function withFixture(run) {
     return result;
   } finally {
     // This exact mkdtemp-owned directory is the sole cleanup target, including failing controls.
+    liveFixtures.delete(root);
     rmSync(root, { recursive: true, force: true });
   }
 }

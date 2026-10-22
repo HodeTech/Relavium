@@ -236,10 +236,13 @@ describes the implemented mechanism; independent acceptance is recorded in the
 [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
 
 - **Owned candidate tree.** `pnpm package:cli:pack` never builds in the developer's
-  workspace. It records the original checkout's commit and full porcelain status, copies
-  every file Git would ship (tracked plus untracked-but-not-ignored, minus deletions, by
-  the repository's ignore rules and the developer's global excludes file) into a fresh
-  owner-only tree, and refuses if that commit or status changed during the copy.
+  workspace. It records the original checkout's commit, full porcelain status and the
+  tracked files Git is told not to check (skip-worktree or assume-unchanged, which make
+  the identity `dirty` whatever their bytes), copies every file Git would ship (tracked
+  plus untracked-but-not-ignored, minus deletions, by the repository's ignore rules and
+  the developer's global excludes file, passed explicitly; that Git reads no home, global
+  or system configuration) into a fresh owner-only tree, and refuses if any of the three
+  changed during the copy.
   Ignored output, caches, dependencies and private notes never enter it. The locked
   closure is installed there offline, frozen and with `--ignore-scripts` from the
   existing content-addressed store, discovered with pnpm's store-location variables
@@ -263,7 +266,8 @@ describes the implemented mechanism; independent acceptance is recorded in the
   output paired with exactly one map, plus the metafile, nothing else). It validates every
   consumed upstream tsc map: exact terminal map link, version 3, matching `file`, empty
   `sourceRoot`, no embedded sources, and only that package's existing original
-  TypeScript (a type-only module may have empty mappings). It validates every final map:
+  TypeScript; its mappings may be empty only when the module's types all erase, which tsc
+  emits as exactly `export {};`. It validates every final map:
   version 3, no embedded sources or unreviewed fields, and sources resolving to existing
   `apps/cli/src` or engine `src` TypeScript that equal exactly the original sources of
   the inputs contributing bytes to that output, so a bundler fallback to compiled JS
@@ -285,9 +289,13 @@ describes the implemented mechanism; independent acceptance is recorded in the
 Private maps, the metafile, the hash record and the candidate tree are removed when the
 producer succeeds, fails or is interrupted (SIGINT, SIGTERM, SIGHUP); an interrupt also stops
 the build's child processes and empties the artifact directory, which was empty at the start,
-and the local `pnpm smoke:cli-package` forwards an interrupt to the producer it started rather than
-ending first. A producer killed outright, a crash or a lost host can leave the owner-only root in the
-temporary directory, and no secure erasure is claimed. The private map manifest, actual packed CLI and engine
+before the producer exits with the signal's code — also when it arrives after the build's last
+child exited, during the seal or the final removal. An interrupted consumer likewise stops its
+child processes, including the bootstrap witness's, and removes its installation and fixtures.
+The local `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
+rather than ending first, starts no later stage once one arrived, and exits with the signal's
+code after removing its root. A producer killed outright, a crash or a lost host can leave the
+owner-only root in the temporary directory, and no secure erasure is claimed. The private map manifest, actual packed CLI and engine
 symbolication, `check:map-controls` and the `package_test` receipt flip are Step 9a.2;
 recipient custody, the release state controller and the workflow graph are Steps 9b–9d.
 Until those and Wave 4b's production recipient exist, the release workflow's publish job

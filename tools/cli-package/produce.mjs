@@ -10,24 +10,22 @@
  */
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { constants, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './candidate.mjs';
 import { within } from './paths.mjs';
-import { isolatedEnvironment, runPnpm, stopLiveCommands } from './process.mjs';
+import { exitOnInterrupt, isolatedEnvironment, runPnpm } from './process.mjs';
 import { sealPackage } from './seal.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
-
-/** The interrupts after which the producer still removes everything private before it exits. */
-const INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
 
 /**
  * Produce one package-test artifact from the original checkout `repository` into the empty
  * `destination`. The candidate tree and its private staging are siblings in one owner-only temporary
  * root that shares no path with the artifact directory or the checkout. That root and the build home
- * are removed whether production succeeds or fails; an interrupt also stops the build's child trees
- * and empties the artifact directory, which was empty at the start, before the process exits with
- * the signal's code.
+ * are removed whether production succeeds or fails. An interrupt (SIGINT, SIGTERM, SIGHUP) stops the
+ * build's child trees, removes both directories and empties the artifact directory, which was empty
+ * at the start, before the process exits with the signal's code — also when it arrives after the last
+ * child exited, during the seal or during the final removal (`exitOnInterrupt`).
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
@@ -48,7 +46,8 @@ export async function producePackage({
     noBuildCache = assertNoBuildCache,
     excludesFile = globalExcludesFile,
     pnpm = runPnpm,
-    remove = (path) => rmSync(path, { recursive: true, force: true }),
+    // Retries absorb a child killed by the interrupt that was still finishing a write.
+    remove = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 3 }),
   } = ports;
   mkdirSync(destination, { recursive: true });
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
@@ -58,61 +57,59 @@ export async function producePackage({
     if (root !== undefined) remove(root);
     remove(home);
   };
-  const interrupt = (signal) => {
-    stopLiveCommands();
+  const interrupted = () => {
     discard();
     for (const name of readdirSync(destination)) {
-      rmSync(join(destination, name), { recursive: true, force: true });
+      rmSync(join(destination, name), { recursive: true, force: true, maxRetries: 3 });
     }
-    process.exit(128 + (constants.signals[signal] ?? 0));
   };
-  for (const signal of INTERRUPTS) process.on(signal, interrupt);
-  try {
-    root = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
-    chmodSync(root, 0o700);
-    const candidate = join(root, 'source');
-    const staging = join(root, 'staging');
-    mkdirSync(candidate, { mode: 0o700 });
-    mkdirSync(staging, { mode: 0o700 });
-    chmodSync(staging, 0o700);
-    // Native real paths carry the letter case the filesystem stores, so no alias passes for elsewhere.
-    const published = realpathSync.native(destination);
-    const checkout = realpathSync.native(repository);
-    assert.ok(
-      !within(root, published) && !within(published, root) && !within(checkout, root),
-      'PACKED_CLI_PRIVATE_STAGING_PLACEMENT',
-    );
-    const env = isolatedEnvironment(home);
-    const version = await pnpm(['--version'], { cwd: repository, env });
-    assert.equal(version.stdout.trim(), '9.12.3', 'PACKED_CLI_PNPM_VERSION');
+  return exitOnInterrupt(interrupted, async () => {
+    try {
+      root = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
+      chmodSync(root, 0o700);
+      const candidate = join(root, 'source');
+      const staging = join(root, 'staging');
+      mkdirSync(candidate, { mode: 0o700 });
+      mkdirSync(staging, { mode: 0o700 });
+      chmodSync(staging, 0o700);
+      // Native real paths carry the letter case the filesystem stores, so no alias passes for elsewhere.
+      const published = realpathSync.native(destination);
+      const checkout = realpathSync.native(repository);
+      assert.ok(
+        !within(root, published) && !within(published, root) && !within(checkout, root),
+        'PACKED_CLI_PRIVATE_STAGING_PLACEMENT',
+      );
+      const env = isolatedEnvironment(home);
+      const version = await pnpm(['--version'], { cwd: repository, env });
+      assert.equal(version.stdout.trim(), '9.12.3', 'PACKED_CLI_PNPM_VERSION');
 
-    const excludes = await excludesFile({ repository, environment });
-    const identity = await prepare({ repository, candidate, environment, home, env, excludes });
-    const receipt = await emit({
-      repository: candidate,
-      destination,
-      staging,
-      env,
-      pnpm,
-      removeBuildState: (cwd) => {
-        rmSync(join(cwd, 'dist'), { recursive: true, force: true });
-        rmSync(join(cwd, 'tsconfig.build.tsbuildinfo'), { force: true });
-      },
-      seal: (artifactDirectory) => {
-        noBuildCache(candidate);
-        return seal(artifactDirectory, {
-          repository: candidate,
-          staging,
-          source: identity.source,
-          dirty: identity.dirty,
-        });
-      },
-    });
-    return { receipt, identity };
-  } finally {
-    // The handlers stay until everything private is gone: a late interrupt waits for the removal
-    // instead of ending the process in the middle of it.
-    discard();
-    for (const signal of INTERRUPTS) process.off(signal, interrupt);
-  }
+      const excludes = await excludesFile({ repository, environment });
+      const identity = await prepare({ repository, candidate, environment, home, env, excludes });
+      const receipt = await emit({
+        repository: candidate,
+        destination,
+        staging,
+        env,
+        pnpm,
+        removeBuildState: (cwd) => {
+          rmSync(join(cwd, 'dist'), { recursive: true, force: true });
+          rmSync(join(cwd, 'tsconfig.build.tsbuildinfo'), { force: true });
+        },
+        seal: (artifactDirectory) => {
+          noBuildCache(candidate);
+          return seal(artifactDirectory, {
+            repository: candidate,
+            staging,
+            source: identity.source,
+            dirty: identity.dirty,
+          });
+        },
+      });
+      return { receipt, identity };
+    } finally {
+      // The interrupt handler is still installed: an interrupt during this removal is honoured once
+      // it is done, never in the middle of it.
+      discard();
+    }
+  });
 }

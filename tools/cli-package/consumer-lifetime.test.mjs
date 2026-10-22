@@ -6,13 +6,16 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { completeConsumer } from './consumer-lifetime.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
@@ -44,6 +47,7 @@ async function fixture(
     join(smoke, 'worker.mjs'),
     `
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { closeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -107,6 +111,7 @@ test('real addon worker closes before installation removal and success publicati
         // On Windows an in-process or still-running addon owner keeps this copy locked.
         rmSync(own.installation, { recursive: true, force: true });
       },
+      abandon: () => {},
       cleanupFailed: () => assert.fail('unexpected secondary cleanup failure'),
       publish: (report) => {
         assert.equal(existsSync(own.installation), false);
@@ -141,6 +146,7 @@ for (const diagnosticSinkFailure of [false, true])
           assert.equal(readFileSync(join(own.support, 'worker-exit'), 'utf8'), 'observed');
           rmSync(own.installation, { recursive: true, force: true });
         },
+        abandon: () => {},
         cleanupFailed: () => assert.fail('unexpected secondary cleanup failure'),
         publish: () => {
           published = true;
@@ -186,6 +192,7 @@ for (const [name, options, expected] of [
       completeConsumer({
         exercise: own.run,
         cleanup: () => rmSync(own.installation, { recursive: true, force: true }),
+        abandon: () => {},
         cleanupFailed: () => assert.fail('unexpected secondary cleanup failure'),
         publish: () => {
           published = true;
@@ -207,6 +214,7 @@ test('failed required cleanup prevents publication of a successful exercise', as
       cleanup: () => {
         throw cleanupFailure;
       },
+      abandon: () => {},
       cleanupFailed: () => assert.fail('cleanup is primary here'),
       publish: () => {
         published = true;
@@ -231,6 +239,7 @@ for (const primary of [new Error('synthetic worker refusal'), undefined, null])
           cleaned = true;
           throw new Error('synthetic secondary cleanup refusal');
         },
+        abandon: () => {},
         cleanupFailed: () => {
           diagnosed = true;
           throw new Error('synthetic failed diagnostic sink');
@@ -245,3 +254,116 @@ for (const primary of [new Error('synthetic worker refusal'), undefined, null])
     assert.equal(diagnosed, true);
     assert.equal(published, false);
   });
+
+test('a consumer without an interrupt cleanup for the children runCommand does not own refuses', async () => {
+  let exercised = false;
+  await assert.rejects(
+    completeConsumer({
+      exercise: async () => {
+        exercised = true;
+      },
+      cleanup: () => {},
+      cleanupFailed: () => {},
+      publish: () => {},
+    }),
+    /PACKED_CLI_CONSUMER_ABANDON/u,
+  );
+  assert.equal(exercised, false);
+});
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A consumer process whose exercise is a long-lived `runCommand` child that keeps writing into the
+ * owned installation, as `pnpm add` does, and outlives the installation's removal unless it is killed;
+ * the test interrupts the consumer once the child is running.
+ */
+async function interruptedConsumer(t, { cleanupFails = false } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-consumer-interrupt-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const installation = join(root, 'installation');
+  mkdirSync(installation);
+  const log = join(root, 'events');
+  const pidFile = join(root, 'child.pid');
+  const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+  const writer =
+    `const { writeFileSync } = require('node:fs');` +
+    `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+    `let n = 0; setInterval(() => { try { writeFileSync(require('node:path').join(${JSON.stringify(installation)}, 'f' + n++), 'x'); } catch {} }, 5);`;
+  const script = `
+import { appendFileSync, rmSync } from 'node:fs';
+import { completeConsumer } from ${url('./consumer-lifetime.mjs')};
+import { isolatedEnvironment, runCommand } from ${url('./process.mjs')};
+const record = (event) => appendFileSync(${JSON.stringify(log)}, event + '\\n');
+await completeConsumer({
+  exercise: () => runCommand(process.execPath, ['-e', ${JSON.stringify(writer)}], {
+    env: isolatedEnvironment(${JSON.stringify(root)}),
+    timeoutMs: 60_000,
+  }),
+  abandon: () => record('abandon'),
+  cleanup: () => {
+    record('cleanup');
+    if (${cleanupFails}) throw new Error('synthetic cleanup refusal');
+    rmSync(${JSON.stringify(installation)}, { recursive: true, force: true, maxRetries: 3 });
+  },
+  cleanupFailed: () => record('cleanupFailed'),
+  publish: () => record('publish'),
+});
+`;
+  const consumer = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let child;
+  try {
+    for (
+      let waited = 0;
+      !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
+      waited += 25
+    ) {
+      assert.ok(waited < 20_000, 'the exercise never started');
+      await delay(25);
+    }
+    child = Number(readFileSync(pidFile, 'utf8'));
+    const exited = new Promise((resolve) =>
+      consumer.once('exit', (code, signal) => resolve([code, signal])),
+    );
+    consumer.kill('SIGINT');
+    const [code, signal] = await exited;
+    return { code, signal, child, installation, events: readFileSync(log, 'utf8') };
+  } finally {
+    if (consumer.exitCode === null && consumer.signalCode === null) consumer.kill('SIGKILL');
+    if (child !== undefined && alive(child)) process.kill(child, 'SIGKILL');
+  }
+}
+
+test(
+  'an interrupted consumer stops its children, abandons the rest, removes its installation and exits',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const outcome = await interruptedConsumer(t);
+    assert.equal(outcome.signal, null);
+    assert.equal(outcome.code, 130);
+    // The writer was stopped before the removal, which therefore leaves nothing behind.
+    assert.equal(alive(outcome.child), false);
+    assert.equal(existsSync(outcome.installation), false);
+    assert.equal(outcome.events, 'abandon\ncleanup\n');
+  },
+);
+
+test(
+  'a failed removal after an interrupt is only the secondary diagnostic',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const outcome = await interruptedConsumer(t, { cleanupFails: true });
+    assert.equal(outcome.signal, null);
+    assert.equal(outcome.code, 130);
+    assert.equal(outcome.events, 'abandon\ncleanup\ncleanupFailed\n');
+  },
+);

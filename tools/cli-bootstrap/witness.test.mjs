@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { test } from 'node:test';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -400,3 +412,83 @@ test('output cap counts UTF-8 bytes and joins the killed child', async () => {
   assert.equal(result.joined, true);
   assert.equal(result.signal, 'SIGKILL');
 });
+test(
+  'an interrupted caller abandons a running control: its bounded child is killed, its fixture removed',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-bootstrap-abandon-')));
+    t.after(() => rmSync(temporary, { recursive: true, force: true }));
+    const pidFile = join(temporary, 'child.pid');
+    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+    // The bounded child keeps writing into its fixture, as a running control does, and outlives the
+    // fixture's removal unless it is killed.
+    const writer =
+      `const { writeFileSync } = require('node:fs');` +
+      `const { join } = require('node:path');` +
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      `let n = 0; setInterval(() => { try { writeFileSync(join(process.env.TMPDIR, 'f' + n++), 'x'); } catch {} }, 5);`;
+    const script = `
+import { abandonFixtures, withFixture } from ${url('./child.mjs')};
+import { spawnBounded } from ${url('./process.mjs')};
+process.on('SIGINT', () => {
+  abandonFixtures();
+  process.exit(130);
+});
+await withFixture((fixture) =>
+  spawnBounded(['-e', ${JSON.stringify(writer)}], { env: { TMPDIR: fixture.temporary } }, {
+    timeoutMs: 60_000,
+  }),
+);
+`;
+    const caller = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: { PATH: process.env.PATH, TMPDIR: temporary },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let child;
+    try {
+      for (
+        let waited = 0;
+        !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
+        waited += 25
+      ) {
+        assert.ok(waited < 20_000, 'the bounded child never started');
+        await delay(25);
+      }
+      child = Number(readFileSync(pidFile, 'utf8'));
+      assert.equal(
+        readdirSync(temporary).filter((name) => name.startsWith('relavium-bootstrap-')).length,
+        1,
+      );
+      const exited = new Promise((resolve) =>
+        caller.once('exit', (code, signal) => resolve([code, signal])),
+      );
+      caller.kill('SIGINT');
+      assert.deepEqual(await exited, [130, null]);
+      const alive = () => {
+        try {
+          process.kill(child, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let waited = 0; alive(); waited += 25) {
+        assert.ok(waited < 5_000, 'the bounded child outlived the abandoned control');
+        await delay(25);
+      }
+      assert.deepEqual(
+        readdirSync(temporary).filter((name) => name.startsWith('relavium-bootstrap-')),
+        [],
+      );
+    } finally {
+      if (caller.exitCode === null && caller.signalCode === null) caller.kill('SIGKILL');
+      if (child !== undefined) {
+        try {
+          process.kill(child, 'SIGKILL');
+        } catch {
+          // Already stopped.
+        }
+      }
+    }
+  },
+);
