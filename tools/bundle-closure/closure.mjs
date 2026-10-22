@@ -1,11 +1,13 @@
 /**
  * Finite emitted ESM graph guard (ADR-0111). No filesystem reads or process state:
  * the CLI supplies an inventory, and controls can remove/change any independent
- * witness. This checks emitted files, not a tarball or Step 9 map custody.
+ * witness. This checks emitted files, not a tarball. A finalized candidate's maps are
+ * checked here only for pairing; the candidate finalizer owns their content and custody.
  */
 import { Buffer } from 'node:buffer';
 import { isBuiltin } from 'node:module';
 import { posix } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
 
 export class BundleClosureError extends Error {
@@ -204,10 +206,54 @@ function actualImports(contents, path) {
 }
 
 /**
+ * Separate external maps from runtime outputs. An ordinary build is map-free. A finalized
+ * candidate pairs every runtime output with exactly one map, staged outside the package, whose
+ * metadata entry carries no graph information of its own.
+ */
+function runtimeOutputs(outputs, directory, maps) {
+  const runtime = {};
+  const staged = new Set();
+  for (const [path, output] of Object.entries(outputs)) {
+    if (!path.endsWith('.map')) {
+      runtime[path] = output;
+      continue;
+    }
+    if (maps !== 'staged') refuse('MAP_OUTPUT', `ordinary build emitted a source map: ${path}`);
+    outputPath(path.slice(0, -'.map'.length), directory);
+    const entry = record(output, `map output ${path}`);
+    bytes(entry.bytes, `map output ${path}.bytes`);
+    if (
+      !isDeepStrictEqual(Object.keys(entry).sort(), ['bytes', 'exports', 'imports', 'inputs']) ||
+      Object.keys(record(entry.inputs, `map output ${path}.inputs`)).length > 0 ||
+      strings(entry.exports, `map output ${path}.exports`).length > 0 ||
+      imports(entry.imports, `map output ${path}`).length > 0
+    ) {
+      refuse('MAP_OUTPUT', `staged map metadata carries graph information: ${path}`);
+    }
+    staged.add(path);
+  }
+  if (maps === 'staged') {
+    for (const path of Object.keys(runtime)) {
+      if (!staged.has(`${path}.map`)) {
+        refuse('MAP_PAIRING', `runtime output has no staged map: ${path}`);
+      }
+    }
+    for (const path of staged) {
+      if (!Object.hasOwn(runtime, path.slice(0, -'.map'.length))) {
+        refuse('MAP_PAIRING', `staged map has no runtime output: ${path}`);
+      }
+    }
+  }
+  return runtime;
+}
+
+/**
  * @param {{metafile: unknown, manifest: unknown,
  * files: Record<string, {contents: string, mode?: number, kind?: string}>,
  * outputDirectory?: string, entryPoint?: string,
- * modeEvidence?: "posix" | "not-observable-windows"}} options
+ * modeEvidence?: "posix" | "not-observable-windows",
+ * maps?: "none" | "staged"}} options `staged` admits a finalized candidate's paired map
+ * metadata; the map files themselves must already be outside the inventoried package.
  * @returns {{outputs: string[], dependencies: string[], inputs: string[], modeEvidence: string}}
  * @throws {BundleClosureError} when an emitted graph invariant fails.
  */
@@ -218,6 +264,7 @@ export function checkBundleClosure({
   outputDirectory = 'dist',
   entryPoint = 'src/index.ts',
   modeEvidence = 'posix',
+  maps = 'none',
 }) {
   if (!/^[a-zA-Z0-9_-]+$/u.test(outputDirectory)) {
     refuse('OUTPUT_PATH', 'outputDirectory must be one plain directory name');
@@ -225,10 +272,13 @@ export function checkBundleClosure({
   if (!['posix', 'not-observable-windows'].includes(modeEvidence)) {
     refuse('MODE_EVIDENCE', 'mode evidence must name its observable platform scope');
   }
+  if (!['none', 'staged'].includes(maps)) {
+    refuse('MAP_MODE', 'map mode must be none or staged');
+  }
   sourcePath(entryPoint, 'entryPoint');
   const meta = record(metafile, 'metafile');
   const inputs = record(meta.inputs, 'metafile.inputs');
-  const outputs = record(meta.outputs, 'metafile.outputs');
+  const outputs = runtimeOutputs(record(meta.outputs, 'metafile.outputs'), outputDirectory, maps);
   const dependencies = record(record(manifest, 'manifest').dependencies, 'manifest.dependencies');
   record(files, 'files');
   const declared = new Set(Object.keys(dependencies));
@@ -309,6 +359,10 @@ export function checkBundleClosure({
         refuse('OUTPUT_MODE', `unexpected or missing POSIX mode: ${path}`);
     } else if (file.mode !== undefined) {
       refuse('MODE_EVIDENCE', 'Windows graph evidence cannot assert unobservable POSIX modes');
+    }
+    // Neither an ordinary build nor a finalized candidate may link a map from runtime code.
+    if (/sourceMappingURL\s*=/u.test(file.contents)) {
+      refuse('MAP_LINK', `runtime output links a source map: ${path}`);
     }
     if (Buffer.byteLength(file.contents, 'utf8') !== output.bytes) {
       refuse('OUTPUT_BYTES', `output byte inventory disagrees: ${path}`);

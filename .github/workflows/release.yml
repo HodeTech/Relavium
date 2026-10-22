@@ -3,6 +3,13 @@
 # Step 7b reuses the required installed-package runner, including the exact Node 22.0.0 runtime floor.
 # Step 9 retains ownership of original-TS maps, release custody and their permission/discovery redesign.
 #
+# PUBLICATION IS REFUSED until that custody exists (Wave 3 Step 9a.1, the Interim release guard ruling of
+# 2026-10-19): `publish` first runs a fail-closed guard that refuses every artifact. Only a verified release
+# candidate (exact tarball, original ciphertext and release binding receipt) may publish, and Step 9d's custody
+# validator, which replaces the guard, is what will verify one; Wave 4b supplies the production recipient. Until
+# both exist every tag push stops at the guard, after the cross-OS smoke, so not even a v0.1.x patch publishes.
+# The flow description below is the pre-custody shape the guard now blocks.
+#
 # Flow: `pack` builds the engine-inlined bundle and `pnpm pack`s it (resolving catalog:/workspace: to
 # concrete versions) into a tarball artifact → `smoke` installs THAT SAME tarball outside the workspace on ubuntu /
 # macOS / Windows and the minimum Node runtime and asserts the binary works (prebuilt native addons load, the bundled engine runs) →
@@ -92,8 +99,9 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # The same required package runner owns fresh dependencies and the sole prepack CLI build.
-      # Original-TS maps and encrypted release custody are staged separately in Wave 3 Step 9.
+      # The same required package runner owns fresh dependencies and the sole prepack CLI build in an owned
+      # candidate tree, where original-TS maps are built, validated, staged privately and discarded (Wave 3
+      # Step 9a.1); their encrypted release custody is Steps 9b–9d.
       - name: Pack once and independently inspect the public package
         env:
           RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
@@ -215,13 +223,18 @@ jobs:
       contents: read
       id-token: write # npm provenance attestation
     steps:
-      # Checkout ONLY `.nvmrc` (sparse, non-cone) so `setup-node` can read the single Node-version source the
-      # pack/smoke jobs use too; publish needs no other repo files — it pushes the downloaded tarball, not a
-      # fresh build. (fetch-depth defaults to 1, so it is not set again.)
+      # Checkout ONLY `.nvmrc` and the dependency-free publication guard, its entry point and its rule (sparse,
+      # non-cone): `setup-node` reads the single Node-version source the pack/smoke jobs use too, and the guard
+      # runs before any publish.
+      # Publish needs no other repo files — it pushes the downloaded tarball, not a fresh build.
+      # (fetch-depth defaults to 1, so it is not set again.)
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-          sparse-checkout: .nvmrc
+          sparse-checkout: |
+            .nvmrc
+            tools/cli-package/release-guard.mjs
+            tools/cli-package/release-guard-core.mjs
           sparse-checkout-cone-mode: false
       - name: Set up Node (npm registry)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -233,6 +246,12 @@ jobs:
         with:
           name: ${{ needs.packed-cli.outputs.artifact-name }}
           path: artifact
+      # Interim fail-closed guard (Wave 3 Step 9a.1, the Interim release guard ruling of 2026-10-19): only a
+      # verified release candidate may publish, and none can exist before Step 9d's custody graph and Wave 4b's
+      # production recipient. Every artifact, including this package-test tarball, therefore stops here; the
+      # entry point exits 1 before it evaluates anything, so no way of invoking it can skip the refusal.
+      - name: Refuse anything but a verified release candidate
+        run: node tools/cli-package/release-guard.mjs ./artifact
       # Publish the EXACT artifact the smoke matrix proved — not a fresh build. catalog:/workspace: are already
       # resolved in the packed manifest, so `npm publish <tarball>` is correct here (pnpm-pack did the resolving).
       - name: Publish

@@ -39,7 +39,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepack": "tsup && pnpm -w run lint:bundle-closure",
+    "prepack": "node ../../tools/cli-package/prepack.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run"

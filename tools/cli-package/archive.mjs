@@ -123,7 +123,6 @@ function readHeader(header) {
     [265, 329],
     [345, 512],
   ]) {
-    if (start === undefined || end === undefined) refuse('TAR_FORMAT');
     if (header.subarray(start, end).some((byte) => byte !== 0)) refuse('TAR_METADATA');
   }
   for (const [start, end] of [
@@ -132,7 +131,6 @@ function readHeader(header) {
     [329, 337],
     [337, 345],
   ]) {
-    if (start === undefined || end === undefined) refuse('TAR_FORMAT');
     if (octal(header.subarray(start, end)) !== 0) refuse('TAR_METADATA');
   }
   octal(header.subarray(136, 148)); // Validate mtime syntax without requiring a clock value.

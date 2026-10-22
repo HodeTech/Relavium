@@ -434,7 +434,7 @@ measured or counted here.
   `apps/cli/src/harness/concurrency.e2e.test.ts:434-441` uses a fixed 100 ms contention margin;
   `tools/cli-package/consumer-lifetime.test.mjs:54-59` pre-marks every synthetic case `passed: true` (by design;
   real detection is the packed-consumer CI). *(nit · the files above)*
-- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
+- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *Implemented in Wave 3 Step 9a.1 on 2026-10-22, acceptance pending:* the unreachable `TAR_FORMAT` branches are removed, and `installedModulesOwner` (`tools/cli-package/smoke/installation.mjs`) replaces the ancestor loop; the duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
   `tools/cli-package/archive.mjs:126,135`; no `break` in the ancestor loop at `tools/cli-package/smoke/worker.mjs:64-65`
   (the outermost `node_modules` wins); and repeated heading texts in the phase register, whose later occurrences
   take a `-1` slug suffix. *(author)* A scan finds repeated H2–H4 headings (the 2.5.5.B–I sub-stream headings and the

@@ -17,10 +17,18 @@ const { version } = JSON.parse(
  * are bundler-hostile). `tools/bundle-closure/check.mjs` guards that this `external` list equals the declared
  * runtime `dependencies`, so the two can never drift.
  *
- * `sourcemap: false` + `minify: true`: the published `dist/` must ship no source tree or maps. This is the npm
+ * `minify: true` and no maps in `dist/`: the published package ships no source tree or maps. This is the npm
  * distribution boundary, not a claim that the public repository's sources are secret (ADR-0111).
  * The entry-source shebang makes `dist/index.js` directly executable as the `relavium` bin.
+ *
+ * Ordinary builds are map-free. A candidate build — this build with `RELAVIUM_CLI_CANDIDATE_STAGING` defined, which
+ * the prepack lifecycle (`tools/cli-package/prepack.mjs`, Wave 3 Step 9a.1) runs only after it validates that
+ * directory as private staging — emits external maps without embedded sources. The prepack finalizer
+ * (`tools/cli-package/finalize.mjs`) then checks that they chain to original TypeScript, moves them and the
+ * metafile out of the package and removes their link trailers before anything is hashed or packed; the ordinary
+ * closure guard refuses any map that a build outside prepack leaves in `dist`.
  */
+const CANDIDATE = process.env.RELAVIUM_CLI_CANDIDATE_STAGING !== undefined;
 const THIRD_PARTY_EXTERNAL = [
   '@anthropic-ai/sdk',
   '@clack/prompts',
@@ -51,7 +59,11 @@ export default defineConfig({
   target: 'node22',
   platform: 'node',
   clean: true,
-  sourcemap: false,
+  sourcemap: CANDIDATE,
+  esbuildOptions(options) {
+    // Original sources never enter a candidate map; the finalizer refuses any that does.
+    if (CANDIDATE) options.sourcesContent = false;
+  },
   minify: true,
   splitting: true,
   // Emit esbuild's metafile (`dist/metafile-esm.json`) — the authoritative record of every externalized import,

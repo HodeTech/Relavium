@@ -268,8 +268,36 @@ test('release keeps main ancestry, version, real-push publication and npm proven
   );
   assert.deepEqual(
     jobs.publish.steps.filter((step) => step.run).map((step) => step.run),
-    ['npm publish ./artifact/*.tgz --provenance --access public'],
+    [
+      'node tools/cli-package/release-guard.mjs ./artifact',
+      'npm publish ./artifact/*.tgz --provenance --access public',
+    ],
   );
+});
+
+test('release publication is refused fail-closed until a verified release candidate exists', () => {
+  const steps = readWorkflow('release').jobs.publish.steps;
+  const checkout = steps.find((step) => step.uses === actions.checkout);
+  assert.deepEqual(checkout.with, {
+    'persist-credentials': false,
+    'sparse-checkout':
+      '.nvmrc\ntools/cli-package/release-guard.mjs\ntools/cli-package/release-guard-core.mjs\n',
+    'sparse-checkout-cone-mode': false,
+  });
+  const guard = steps.find(
+    (step) => step.name === 'Refuse anything but a verified release candidate',
+  );
+  const publish = steps.find((step) => step.name === 'Publish');
+  assert.equal(guard.run, 'node tools/cli-package/release-guard.mjs ./artifact');
+  // An unconditional, non-advisory guard runs after the download and before any publish.
+  assert.equal(guard.if, undefined);
+  assert.equal(guard['continue-on-error'], undefined);
+  assert.equal(guard.env, undefined);
+  assert.ok(
+    steps.indexOf(steps.find((step) => step.uses === actions.download)) < steps.indexOf(guard),
+  );
+  assert.equal(steps.indexOf(guard) + 1, steps.indexOf(publish));
+  assert.equal(publish.if, undefined);
 });
 
 for (const [label, alter] of [

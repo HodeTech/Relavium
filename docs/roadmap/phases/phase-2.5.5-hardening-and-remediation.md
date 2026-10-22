@@ -3697,7 +3697,7 @@ No credential values or request captures belong in tracked evidence.
 | PR95 | **Recorded plan amendment, 2026-10-19 (maintainer-approved; new scope from the [PR #95 independent review](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18), not a split of rows 1–19) — scrubber residuals, before 9a:** the `api-key:Bearer`/`Basic` label erasure that leaks the token; raw `?`/`#` URL userinfo masked unless the text before it is host-shaped **and** an `=` assignment separates it from the authority `@`, applied to the LLM leaf and core's twin predicate; an extended finite scheme list (postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp, smtps) masking colon-bearing userinfo for the new schemes; module-load checks of the split-credential scanner's two invariants, a start prefilter, joined-view and glued-scheme witnesses, the load-sensitive 8 MiB timing case, and the causal-control pins. One increment with ordered commits, two NEW clean complete cumulative rounds and a separate security sitting. *Acceptance amended on 2026-10-21 by the maintainer's masker acceptance bar and round cap; closed under the round cap on 2026-10-22 ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)).* |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
 | 9a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage #46/ADR-0111 unchanged, no new contract) — release maps, final build and symbolication:** fresh uncached upstream original-TypeScript maps, the sole prepack final CLI build, final trailer removal before hashes, map and private-graph staging outside public artifacts and caches, exact tarball-to-final-JS binding, and real packed CLI and engine frame symbolication with wrong JS/map/source and missing-map negative controls. Ordinary builds remain map-free. *Split again on 2026-10-19 into 9a.1 and 9a.2 below, which replace it as increments ([Plan shape](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)).* |
-| 9a.1 | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — candidate build and finalizer:** an owned isolated candidate copy, fresh uncached upstream maps, candidate-mode tsup selection with absent `sourcesContent`, the prepack finalizer (upstream and final map validation, repository-relative sources, exact trailer removal before hashes), owner-only private staging outside public artifacts and caches, closure/seal adaptation, the ordinary map-free control, the PR #95 archive/worker fold-ins, and a fail-closed `release.yml` publish guard that refuses any non-release candidate until 9d and Wave 4b custody exist. The receipt stays `compiled_package_test`. |
+| 9a.1 | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — candidate build and finalizer:** an owned isolated candidate copy, fresh uncached upstream maps, candidate-mode tsup selection with absent `sourcesContent`, the prepack finalizer (upstream and final map validation, repository-relative sources, exact trailer removal before hashes), owner-only private staging outside public artifacts and caches, closure/seal adaptation, the ordinary map-free control, the PR #95 archive/worker fold-ins, and a fail-closed `release.yml` publish guard that refuses any non-release candidate until 9d and Wave 4b custody exist. The receipt stays `compiled_package_test`. *Implemented on `development` on 2026-10-22; acceptance pending ([checkpoint](#wave-3-step-9a1-implementation-checkpoint--2026-10-22)).* |
 | 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
@@ -9510,3 +9510,65 @@ was verified by the author alone, as the round cap provides; every finding it di
 `development` is pushed and its CI observed, and the PR95 items in
 [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) are
 closed. Step 9a.1 follows.
+
+**Post-closure CI correction, 2026-10-22.** `development` was pushed at `9eb38156`, and every CI job
+passed except the separate engine coverage floor job, which `pnpm run ci` does not include: under
+instrumented coverage, round 9's admitted-size linear-views case ran ten 8-MiB projections in one case
+and passed its 15 s case deadline on the runner (3.7 s plain and 7.2 s under local coverage). `2a1f7359`
+makes it one case per shape with the same inputs, assertions and deadline (1.1–2.8 s each under local
+coverage; 221 core projection cases), and the local enforced coverage gate passes at llm 97.79 % lines
+and 95.69 % branches, mcp 96.56 % and 91.29 %, core (measured) 96.71 % and 91.06 %. The author now also
+runs the coverage gate before a push. CI at `2a1f7359` then passed every job but the filesystem causal
+controls, whose export refused: each phase retains a manifest of the whole source graph (203,421 bytes
+once PR95 grew it), and the 330 manifests of one export passed the unchanged 64-MiB bound by 20,066
+bytes. `4c3cafe9` runs that family as two exporting shards, as PR95's round 7 did for the secrets family
+([filesystem controls README](../../../tools/fs-policy-controls/README.md)), and CI at `4c3cafe9` passed
+every job, both shards of each control family, the coverage floor and the four installed-CLI consumers
+included.
+
+### Wave 3 Step 9a.1 implementation checkpoint — 2026-10-22
+
+**Scope and source.** Step 9a.1 (the 9a.1 row of the increment table; #46, ADR-0111) implements the
+candidate build and finalizer on `development`, on top of `4c3cafe9`, the PR95 closure and its two CI
+corrections. It changes
+`tools/cli-package` (the owned candidate tree `candidate.mjs`; the producer `produce.mjs` and its entry
+point `pack.mjs`; the prepack orchestrator `prepack.mjs`; the finalizer `finalize.mjs`; the seal; the
+archive and smoke fold-ins; the interim publication guard `release-guard.mjs` with its rule
+`release-guard-core.mjs`), `tools/bundle-closure` (map-aware closure and a shared emitted inventory),
+`apps/cli` (the prepack script and the candidate-mode tsup selection) and `.github/workflows/release.yml`
+(the guard before npm publication), with the
+[packaging contract](../../reference/cli/packaging.md#candidate-build-and-finalizer-implementation-boundary--step-9a1),
+the release runbook, an ADR-0051 amendment and the tooling README. It adds no runtime dependency, and
+the receipt stays `compiled_package_test`; the contract section is the canonical description of the
+mechanism.
+
+**Before the commit.** An internal read-only pre-review of the prepared change (five lenses, adversarial
+verification of every finding and a completeness critic; the detailed record is local) found seventeen
+issues, none high once verified. The publication guard refused only when it recognized itself as the
+entry point, so a symlinked or otherwise non-canonical path would have let a tag push reach
+`npm publish`; the producer's composition had no test; the candidate's file list ignored the developer's
+global Git excludes, so a globally ignored private file entered the candidate; and smaller gaps in tests,
+modes and wording. All are corrected: the guard's entry point exits 1 before it evaluates its rule, the
+producer is a tested module, the candidate reads the developer's global excludes file and nothing else
+of the global configuration, the candidate copy's modes are exact under any umask, and each gap has a
+killing test. A mutation run of twenty mutants over the new code kills all of them. The full local CI
+then found one more defect in the change itself: `tools/bundle-closure/closure.test.mjs` built its
+staged fixture with a top-level `await` after most of its tests were registered, so a slow build let the
+runner finish those tests and run the file's `after` hook, which removed the scratch directory a later
+test needed (intermittent under load; reproduced deterministically with a delayed fixture). Both
+fixtures are now built before the first test is registered, as the file's first fixture already was.
+
+**Author gates.** `lint:tools` and `typecheck:tools` pass, the 259 cases of the changed tooling tests
+pass, and the full `pnpm run ci` on top of `4c3cafe9` passes, both exporting secrets shards included
+(65 controls each, 50.39 MiB and 50.28 MiB), with the producer running for real in `smoke:cli-package`.
+Under `CI=true GITHUB_ACTIONS=true`, 709 of the 710 acceptance tooling tests pass; the other one,
+unchanged by this step, installs through the corepack pnpm shim in an empty home, which needs the
+registry, and corepack hung for 45 s on this host while the same tree had passed it in the full run an
+hour earlier.
+
+**Remaining gates.** The increment is not independently accepted. Two NEW consecutive clean complete
+cumulative rounds after the last material fix and a separate security sitting remain (the Acceptance
+row of the 2026-10-19 rulings). Then `development` is pushed and its CI observed, and the PR #95
+tooling nits in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18)
+close.

@@ -1,17 +1,18 @@
-/** Bind the sole prepack result to independently inspected bytes. No build or archive extraction. */
+/**
+ * Bind the sole prepack result to independently inspected bytes. No build or archive extraction.
+ * Every input is explicit: the owned candidate root, its private staging directory and the source
+ * identity the producer captured from the original checkout. Nothing resolves a repository from
+ * this module's own location, so a candidate copy cannot be sealed against different files.
+ */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { basename, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
 import { originFromEnvironment, validatePackageReceipt } from './binding.mjs';
-import { flatFiles, oneTarball, readOrdinaryFile } from './files.mjs';
-import { isolatedEnvironment, runCommand } from './process.mjs';
+import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
 
-const repository = fileURLToPath(new URL('../../', import.meta.url));
-
-export function producerNodeMajor(root = repository) {
+export function producerNodeMajor(root) {
   const declared = readOrdinaryFile(join(root, '.nvmrc'), 20).toString('utf8').trim();
   assert.match(declared, /^[1-9]\d*$/u, 'PACKED_CLI_INVALID_PRODUCER_NODE');
   const major = Number(declared);
@@ -22,7 +23,7 @@ export function producerNodeMajor(root = repository) {
   return major;
 }
 
-export function expectedPackManifest(root = repository) {
+export function expectedPackManifest(root) {
   const require = createRequire(join(root, 'apps/cli/package.json'));
   const { parse } = require('yaml');
   const catalog = parse(readFileSync(join(root, 'pnpm-workspace.yaml'), 'utf8')).catalog;
@@ -48,20 +49,37 @@ export function expectedPackManifest(root = repository) {
   return manifest;
 }
 
-export function finalizedPublicFiles(root = repository) {
+/**
+ * The finalized public files of a candidate: exactly the runtime outputs named by its staged
+ * metafile, byte-identical to the finalizer's private hash record, plus canonical migrations and
+ * the public documents. The finalized dist holds no map and no build metadata.
+ */
+export function finalizedPublicFiles(root, staging) {
   const cli = join(root, 'apps/cli');
   const files = new Map();
-  const graph = JSON.parse(readOrdinaryFile(join(cli, 'dist/metafile-esm.json'), 4 * 1024 * 1024));
-  const outputs = Object.keys(graph.outputs).map((path) => path.replaceAll('\\', '/'));
+  const graph = JSON.parse(readOrdinaryFile(join(staging, 'metafile-esm.json'), 4 * 1024 * 1024));
+  const outputs = Object.keys(graph.outputs)
+    .map((path) => path.replaceAll('\\', '/'))
+    .filter((path) => !path.endsWith('.map'));
   assert.ok(outputs.length > 0 && outputs.length <= 256);
+  const actual = [];
   for (const path of outputs) {
     assert.match(path, /^dist\/[A-Za-z0-9_-]+\.js$/u, 'PACKED_CLI_UNREVIEWED_GRAPH_OUTPUT');
-    files.set(`package/${path}`, readOrdinaryFile(join(cli, path), 8 * 1024 * 1024));
+    const bytes = readOrdinaryFile(join(cli, path), 8 * 1024 * 1024);
+    files.set(`package/${path}`, bytes);
+    actual.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
   }
   assert.deepEqual(
     readdirSync(join(cli, 'dist')).sort(),
-    [...outputs.map((path) => basename(path)), 'metafile-esm.json'].sort(),
+    outputs.map((path) => basename(path)).sort(),
     'PACKED_CLI_EXTRA_FINAL_OUTPUT',
+  );
+  const record = JSON.parse(readOrdinaryFile(join(staging, 'finalized.json'), 1024 * 1024));
+  const byPath = (left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  assert.deepEqual(
+    [...record.outputs].sort(byPath),
+    actual.sort(byPath),
+    'PACKED_CLI_FINALIZED_RECORD_DRIFT',
   );
   const canonical = flatFiles(join(root, 'packages/db/drizzle'), 'package/drizzle');
   const copied = flatFiles(join(cli, 'drizzle'), 'package/drizzle');
@@ -73,25 +91,17 @@ export function finalizedPublicFiles(root = repository) {
   return files;
 }
 
-export async function sealPackage(artifactDirectory) {
+/**
+ * @param {string} artifactDirectory the public artifact directory holding exactly one tarball
+ * @param {{repository: string, staging: string, source: string, dirty: boolean}} candidate
+ */
+export async function sealPackage(artifactDirectory, { repository, staging, source, dirty }) {
   const tarball = oneTarball(artifactDirectory);
-  const source = (
-    await runCommand('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], {
-      cwd: repository,
-      env: isolatedEnvironment(repository),
-    })
-  ).stdout.trim();
-  assert.match(source, /^[0-9a-f]{40}$/u);
-  const dirty =
-    (
-      await runCommand('git', ['status', '--porcelain'], {
-        cwd: repository,
-        env: isolatedEnvironment(repository),
-      })
-    ).stdout !== '';
+  assert.match(source, /^[0-9a-f]{40}$/u, 'PACKED_CLI_SOURCE_IDENTITY');
+  assert.equal(typeof dirty, 'boolean', 'PACKED_CLI_SOURCE_IDENTITY');
   const archive = inspectPackageArchive(readOrdinaryFile(tarball, 16 * 1024 * 1024), {
-    expectedFiles: finalizedPublicFiles(),
-    expectedPackage: expectedPackManifest(),
+    expectedFiles: finalizedPublicFiles(repository, staging),
+    expectedPackage: expectedPackManifest(repository),
   });
   const origin = originFromEnvironment(process.env);
   const pnpm = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).packageManager;
@@ -113,7 +123,7 @@ export async function sealPackage(artifactDirectory) {
   validatePackageReceipt(receipt, {
     source,
     origin,
-    nodeMajor: producerNodeMajor(),
+    nodeMajor: producerNodeMajor(repository),
     allowLocal: origin.kind === 'local',
   });
   writeFileSync(
@@ -122,9 +132,4 @@ export async function sealPackage(artifactDirectory) {
     { flag: 'wx' },
   );
   return receipt;
-}
-
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  assert.equal(process.argv.length, 3, 'one artifact directory required');
-  console.log(JSON.stringify(await sealPackage(resolve(process.argv[2]))));
 }

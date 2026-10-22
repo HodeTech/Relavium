@@ -1,21 +1,44 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { finalizedPublicFiles, producerNodeMajor } from './seal.mjs';
 
+/** A finalized candidate: public JS only in dist, its metafile and hash record in private staging. */
 function withFinalizedFixture(body) {
   const root = mkdtempSync(join(tmpdir(), 'relavium-seal-fixture-'));
+  const staging = join(root, 'staging');
   const write = (path, bytes) => {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), bytes);
   };
-  const graph = (outputs) => write('apps/cli/dist/metafile-esm.json', JSON.stringify({ outputs }));
+  const graph = (outputs) => write('staging/metafile-esm.json', JSON.stringify({ outputs }));
+  const record = (paths) => {
+    const outputs = paths.map((path) => {
+      const bytes = readFileSync(join(root, 'apps/cli', path));
+      return {
+        path,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+    });
+    write(
+      'staging/finalized.json',
+      JSON.stringify({ version: 1, outputs, maps: [], upstreamMaps: 0 }),
+    );
+  };
   try {
-    graph({ 'dist/index.js': {}, 'dist/chunk-ABC.js': {} });
+    graph({
+      'dist/index.js': {},
+      'dist/index.js.map': {},
+      'dist/chunk-ABC.js': {},
+      'dist/chunk-ABC.js.map': {},
+    });
     write('apps/cli/dist/index.js', '#!/usr/bin/env node\nimport "./chunk-ABC.js";\n');
     write('apps/cli/dist/chunk-ABC.js', 'export {};\n');
+    record(['dist/index.js', 'dist/chunk-ABC.js']);
     for (const path of ['0000_first.sql', 'meta/_journal.json', 'meta/0000_snapshot.json']) {
       write(`packages/db/drizzle/${path}`, `canonical ${path}\n`);
       write(`apps/cli/drizzle/${path}`, `canonical ${path}\n`);
@@ -23,7 +46,14 @@ function withFinalizedFixture(body) {
     for (const name of ['package.json', 'README.md', 'CHANGELOG.md'])
       write(`apps/cli/${name}`, name);
     write('LICENSE', 'canonical repository license\n');
-    return body({ root, write, graph, remove: (path) => rmSync(join(root, path)) });
+    return body({
+      root,
+      staging,
+      write,
+      graph,
+      record,
+      remove: (path) => rmSync(join(root, path)),
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -42,9 +72,9 @@ test('producer runtime follows the declared toolchain independently of the fixed
   });
 });
 
-test('finalized seal inventory contains exact graph bytes, canonical migrations and public documents', () => {
-  withFinalizedFixture(({ root }) => {
-    const files = finalizedPublicFiles(root);
+test('finalized seal inventory contains exact recorded JS bytes, canonical migrations and public documents', () => {
+  withFinalizedFixture(({ root, staging }) => {
+    const files = finalizedPublicFiles(root, staging);
     assert.deepEqual(
       [...files.keys()].sort(),
       [
@@ -69,6 +99,7 @@ test('finalized seal inventory contains exact graph bytes, canonical migrations 
     );
     assert.equal(files.get('package/LICENSE').toString(), 'canonical repository license\n');
     assert.equal(files.has('package/dist/metafile-esm.json'), false);
+    assert.equal(files.has('package/dist/index.js.map'), false);
   });
 });
 
@@ -94,7 +125,6 @@ for (const [name, mutate, refusal] of [
     undefined,
   ],
   ...[
-    'dist/index.js.map',
     'dist/nested/index.js',
     '../outside.js',
     '/dist/index.js',
@@ -112,10 +142,27 @@ for (const [name, mutate, refusal] of [
     /PACKED_CLI_EXTRA_FINAL_OUTPUT/,
   ],
   [
-    'unlisted emitted map',
+    'a map left in the public package',
     ({ write }) => write('apps/cli/dist/index.js.map', '{}'),
     /PACKED_CLI_EXTRA_FINAL_OUTPUT/,
   ],
+  [
+    'build metadata left in the public package',
+    ({ write }) => write('apps/cli/dist/metafile-esm.json', '{}'),
+    /PACKED_CLI_EXTRA_FINAL_OUTPUT/,
+  ],
+  [
+    'JS changed after the finalizer recorded it',
+    ({ write }) => write('apps/cli/dist/chunk-ABC.js', 'export const late = 1;\n'),
+    /PACKED_CLI_FINALIZED_RECORD_DRIFT/,
+  ],
+  [
+    'a hash record missing an output',
+    ({ record }) => record(['dist/index.js']),
+    /PACKED_CLI_FINALIZED_RECORD_DRIFT/,
+  ],
+  ['a missing hash record', ({ remove }) => remove('staging/finalized.json'), undefined],
+  ['a missing staged metafile', ({ remove }) => remove('staging/metafile-esm.json'), undefined],
   [
     'changed migration',
     ({ write }) => write('apps/cli/drizzle/0000_first.sql', 'changed'),
@@ -156,7 +203,7 @@ for (const [name, mutate, refusal] of [
   test(`finalized seal refuses ${name}`, () => {
     withFinalizedFixture((fixture) => {
       mutate(fixture);
-      assert.throws(() => finalizedPublicFiles(fixture.root), refusal);
+      assert.throws(() => finalizedPublicFiles(fixture.root, fixture.staging), refusal);
     });
   });
 }
@@ -165,10 +212,10 @@ test(
   'finalized seal refuses a symlink masquerading as an emitted file',
   { skip: process.platform === 'win32' },
   () => {
-    withFinalizedFixture(({ root, remove }) => {
+    withFinalizedFixture(({ root, staging, remove }) => {
       remove('apps/cli/dist/chunk-ABC.js');
       symlinkSync(join(root, 'LICENSE'), join(root, 'apps/cli/dist/chunk-ABC.js'));
-      assert.throws(() => finalizedPublicFiles(root), /PACKED_CLI_FILE_KIND_OR_BOUND/);
+      assert.throws(() => finalizedPublicFiles(root, staging), /PACKED_CLI_FILE_KIND_OR_BOUND/);
     });
   },
 );

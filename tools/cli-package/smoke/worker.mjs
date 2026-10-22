@@ -20,6 +20,7 @@ import { assertInstalledMcp, assertInstalledWorkflows } from './workflows.mjs';
 import { assertExit, explicitEnvironment, invoke, ndjson } from './process.mjs';
 import { assertInstalledNativeProcesses, InstalledNativeControlError } from './native-process.mjs';
 import { emitInstalledWorkerFailure } from './failure-diagnostic.mjs';
+import { installedModulesOwner } from './installation.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(directory, '../../..');
@@ -60,9 +61,7 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
   const require = createRequire(join(packageRoot, 'package.json'));
   const entry = join(packageRoot, 'dist/index.js');
   const before = snapshot(packageRoot);
-  let installedModules;
-  for (let parent = dirname(packageRoot); parent !== dirname(parent); parent = dirname(parent))
-    if (parent.endsWith(`${sep}node_modules`)) installedModules = parent;
+  const installedModules = installedModulesOwner(packageRoot);
   assert.ok(installedModules, 'Installed package must have an explicit node_modules owner');
   const root = mkdtempSync(join(supportRoot, 'installed-smoke-'));
   const log = join(root, 'guard.ndjson');

@@ -6,7 +6,8 @@ The canonical package and release contract lives in
 [packaging.md](../../docs/reference/cli/packaging.md).
 Step 8b adds required creation-owned native process controls to the same installed
 artifact cohort. Step 8d adds installed global fatal/background/output-hook
-controls; complete Step 8d acceptance remains separate.
+controls; complete Step 8d acceptance remains separate. Step 9a.1 makes the producer
+build an owned map-bearing candidate and finalize it before packing.
 
 ```sh
 pnpm package:cli:pack /absolute/empty/artifact-directory
@@ -14,9 +15,17 @@ pnpm package:cli:consume /absolute/artifact-directory /absolute/fresh/report-dir
 pnpm smoke:cli-package
 ```
 
-The producer emits the five inlined dependency packages in order with the installed
-compiler and no build cache. Prepack performs the sole final CLI build. The runner
-observes one actual prepack build-start record, checks the emitted graph, and
+The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
+It copies the files Git would ship, by the repository's ignore rules and the developer's
+global excludes file, into a fresh owner-only candidate tree, refusing if the original
+checkout's commit or status changes during the copy, and installs the locked closure there offline, frozen and
+without lifecycle scripts from the existing store. In that tree it emits the five
+inlined dependency packages in order with the installed compiler, upstream maps and no
+build cache. Prepack (`prepack.mjs`) performs the sole final CLI build in candidate
+mode and runs the finalizer (`finalize.mjs`), which validates every upstream and final
+map, removes only the exact map-link trailers and stages maps, metafile and its hash
+record in a private directory outside the artifact. The runner observes one actual
+prepack build-start record and one finalization, checks the emitted graph, and
 independently inspects the produced gzip/USTAR bytes. The inspector never extracts
 the archive. Every JS and migration byte must match the finalized build and
 canonical migrations; package metadata must match pnpm's publication transform.
@@ -28,9 +37,13 @@ controls exclude links, traversal, duplicates, extra files, maps and private bui
 inventories. This deliberately supports the pinned packer's dialect, not general tar.
 
 The resulting public `package-test-receipt.json` records `compiled_package_test`.
-It does **not** certify original-TypeScript maps, symbolication, encrypted custody
-or a production release candidate. Those are Step 9 obligations. No private map,
-metafile or per-source inventory enters the public artifact.
+The candidate's maps are built, validated and then discarded with the rest of the
+private staging; the receipt does **not** certify symbolication, a map manifest,
+encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
+metafile or per-source inventory enters the public artifact. The release workflow's
+`release-guard.mjs` refuses every artifact until verified release custody exists: it
+exits 1 before it evaluates its rule (`release-guard-core.mjs`), so no way of invoking it
+can skip the refusal.
 
 The consumer verifies the chosen bytes before installation, installs a copy outside
 the workspace, and compares every installed public file with the archive receipt.
