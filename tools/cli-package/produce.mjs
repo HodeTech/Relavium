@@ -9,7 +9,15 @@
  * are tooling seams for tests, never shipped product hooks.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './candidate.mjs';
@@ -22,11 +30,12 @@ import { emitFreshPackage } from './pipeline.mjs';
  * Produce one package-test artifact from the original checkout `repository` into the empty
  * `destination`. The candidate tree and its private staging are siblings in one temporary root,
  * owner-only where POSIX modes are observable, that shares no path with the artifact directory or the
- * checkout. That root and the build home
- * are removed whether production succeeds or fails. An interrupt (SIGINT, SIGTERM, SIGHUP) stops the
+ * checkout. That root and the build home are removed whether production succeeds or fails, each
+ * attempted even when the other's removal fails. An interrupt (SIGINT, SIGTERM, SIGHUP) stops the
  * build's child trees, removes both directories and empties the artifact directory, which was empty
  * at the start, before the process exits with the signal's code — also when it arrives after the last
- * child exited, during the seal or during the final removal (`exitOnInterrupt`).
+ * child exited, during the seal or during the final removal (`exitOnInterrupt`). A step of that
+ * cleanup that fails leaves one fixed line, never a path, and the exit code stays the signal's.
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
@@ -54,15 +63,42 @@ export async function producePackage({
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
   const home = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-build-')));
   let root;
+  // Every removal is attempted even when an earlier one fails; the first failure is rethrown.
   const discard = () => {
-    if (root !== undefined) remove(root);
-    remove(home);
-  };
-  const interrupted = () => {
-    discard();
-    for (const name of readdirSync(destination)) {
-      rmSync(join(destination, name), { recursive: true, force: true, maxRetries: 3 });
+    let failure;
+    for (const path of [root, home]) {
+      if (path === undefined) continue;
+      try {
+        remove(path);
+      } catch (error) {
+        failure ??= error;
+      }
     }
+    if (failure !== undefined) throw failure;
+  };
+  // An interrupt's cleanup never throws: a failed step leaves one fixed line, without a path, and
+  // the producer still exits with the signal's code.
+  const interrupted = () => {
+    let failed = false;
+    const attempt = (step) => {
+      try {
+        step();
+      } catch {
+        failed = true;
+      }
+    };
+    attempt(discard);
+    let names = [];
+    attempt(() => {
+      names = readdirSync(destination);
+    });
+    for (const name of names) {
+      attempt(() =>
+        rmSync(join(destination, name), { recursive: true, force: true, maxRetries: 3 }),
+      );
+    }
+    if (failed)
+      attempt(() => writeSync(2, '✗ CLI package production interrupted: CLEANUP_FAILED\n'));
   };
   return exitOnInterrupt(interrupted, async () => {
     try {

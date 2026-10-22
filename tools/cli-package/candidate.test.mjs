@@ -148,6 +148,15 @@ test('candidate files are tracked plus unignored untracked files, minus deletion
     'ls-files -z --deleted': '',
   });
   assert.deepEqual(await candidateFiles('/repository', excluded.run, '/ignore'), ['a.ts']);
+  // An untracked nested repository is listed only as its directory and refuses by name.
+  const nested = git({
+    'ls-files -z --cached --others --exclude-standard': 'a.ts\0vendor/clone/\0',
+    'ls-files -z --deleted': '',
+  });
+  await assert.rejects(
+    candidateFiles('/repository', nested.run),
+    /PACKED_CLI_CANDIDATE_NESTED_REPOSITORY/u,
+  );
 });
 
 test("the developer's global excludes file is located without the rest of the global configuration", async () => {

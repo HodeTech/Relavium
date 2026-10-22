@@ -11,10 +11,11 @@ import {
   rmSync,
   realpathSync,
 } from 'node:fs';
-import { devNull, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { devNull, homedir, tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  corepackHome,
   exerciseInstalledCommand,
   isolatedEnvironment,
   isolatedGitEnvironment,
@@ -304,5 +305,62 @@ test(
     const kill = t.mock.method(process, 'kill', () => true);
     stopLiveCommands();
     assert.equal(kill.mock.callCount(), 0);
+  },
+);
+
+test('the corepack cache is computed as corepack computes it, and isolated children keep it', () => {
+  assert.equal(
+    corepackHome({ COREPACK_HOME: '/explicit/corepack' }),
+    resolve('/explicit/corepack'),
+  );
+  assert.equal(
+    corepackHome({ XDG_CACHE_HOME: '/xdg', LOCALAPPDATA: '/local' }),
+    resolve('/xdg', 'node', 'corepack'),
+  );
+  assert.equal(corepackHome({ LOCALAPPDATA: '/local' }), resolve('/local', 'node', 'corepack'));
+  assert.equal(
+    corepackHome({}),
+    resolve(
+      homedir(),
+      process.platform === 'win32' ? join('AppData', 'Local') : '.cache',
+      'node',
+      'corepack',
+    ),
+  );
+  // An isolated child carries this process's corepack cache, never one inside its own home.
+  const home = join(tmpdir(), 'synthetic-installer-home');
+  const env = isolatedEnvironment(home);
+  assert.equal(env.COREPACK_HOME, corepackHome());
+  assert.equal(env.COREPACK_HOME.startsWith(`${home}${sep}`), false);
+});
+
+test(
+  'a corepack-managed pnpm never runs from the temporary directory an isolated home sits in',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // A module another local user could plant in the shared temporary directory, on the lookup
+    // path of code that runs from a home inside it.
+    const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-corepack-temporary-')));
+    try {
+      const marker = join(temporary, 'planted-module-ran');
+      for (const name of ['v8-compile-cache', 'supports-color']) {
+        mkdirSync(join(temporary, 'node_modules', name), { recursive: true });
+        writeFileSync(
+          join(temporary, 'node_modules', name, 'index.js'),
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)}, ${JSON.stringify(name)});`,
+        );
+      }
+      const home = realpathSync(mkdtempSync(join(temporary, 'relavium-package-build-')));
+      writeFileSync(join(home, 'package.json'), '{"packageManager":"pnpm@9.12.3"}\n');
+      const version = await runPnpm(['--version'], {
+        cwd: home,
+        env: isolatedEnvironment(home),
+        timeoutMs: 120_000,
+      });
+      assert.equal(version.stdout.trim(), '9.12.3');
+      assert.equal(existsSync(marker), false, 'a module planted in the temporary directory ran');
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   },
 );

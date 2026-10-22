@@ -449,6 +449,106 @@ for (const [signal, code] of [
   );
 }
 
+test('a failed removal still removes the other private directory and rethrows', async () => {
+  const temporary = fresh('tmp');
+  const { ports: fakes } = ports();
+  const refusal = Object.assign(new Error('EACCES: synthetic refusal'), { code: 'EACCES' });
+  fakes.remove = (path) => {
+    if (path.includes('relavium-package-candidate-')) throw refusal;
+    rmSync(path, { recursive: true, force: true });
+  };
+  const before = listeners();
+  await assert.rejects(
+    producePackage({
+      repository: fresh('original-checkout'),
+      destination: join(fresh('artifact-parent'), 'artifact'),
+      environment: {},
+      temporary,
+      ports: fakes,
+    }),
+    (error) => error === refusal,
+  );
+  // The build home is gone although the private root's removal failed first.
+  assert.deepEqual(
+    leftovers(temporary).map((name) => name.replace(/-[^-]+$/u, '')),
+    ['relavium-package-candidate'],
+  );
+  assert.deepEqual(listeners(), before);
+});
+
+test(
+  'a failed removal during an interrupt leaves one fixed line and still exits with the signal',
+  { skip: !posixModes },
+  async () => {
+    const temporary = fresh('tmp');
+    mkdirSync(join(temporary, 'checkout'));
+    const destination = join(fresh('artifact-parent'), 'artifact');
+    const pidFile = join(fresh('pid'), 'build.pid');
+    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+    const script = `
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { producePackage } from ${url('./produce.mjs')};
+import { isolatedEnvironment, runCommand } from ${url('./process.mjs')};
+await producePackage({
+  repository: ${JSON.stringify(join(temporary, 'checkout'))},
+  destination: ${JSON.stringify(destination)},
+  environment: {},
+  temporary: ${JSON.stringify(temporary)},
+  ports: {
+    pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
+    excludesFile: async () => undefined,
+    prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
+    emit: async ({ destination }) => {
+      writeFileSync(join(destination, 'relavium-0.1.1.tgz'), 'unsealed');
+      await runCommand(process.execPath, ['-e', ${JSON.stringify(
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      )}], { env: isolatedEnvironment(${JSON.stringify(temporary)}), timeoutMs: 60_000 });
+    },
+    remove: (path) => {
+      if (path.includes('relavium-package-candidate-'))
+        throw Object.assign(new Error('EACCES: permission denied, unlink ' + JSON.stringify(path)), { code: 'EACCES' });
+      rmSync(path, { recursive: true, force: true });
+    },
+  },
+});
+`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    let build;
+    try {
+      for (
+        let waited = 0;
+        !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
+        waited += 25
+      ) {
+        assert.ok(waited < 20_000, 'the fake build never started');
+        await delay(25);
+      }
+      build = Number(readFileSync(pidFile, 'utf8'));
+      const exited = new Promise((resolve) =>
+        child.once('exit', (code, signal) => resolve([code, signal])),
+      );
+      child.kill('SIGINT');
+      assert.deepEqual(await exited, [130, null]);
+      assert.equal(stderr, '✗ CLI package production interrupted: CLEANUP_FAILED\n');
+      assert.equal(alive(build), false);
+      // The other steps still ran: the build home is gone and the artifact directory is empty.
+      assert.deepEqual(
+        leftovers(temporary).map((name) => name.replace(/-[^-]+$/u, '')),
+        ['relavium-package-candidate'],
+      );
+      assert.deepEqual(readdirSync(destination), []);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (build !== undefined && alive(build)) process.kill(build, 'SIGKILL');
+    }
+  },
+);
+
 /**
  * A producer whose interrupt arrives after its build's last child exited: during the seal or during
  * the private root's removal, both synchronous. The fake emit's last await completes from an I/O

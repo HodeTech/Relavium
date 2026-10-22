@@ -244,7 +244,11 @@ describes the implemented mechanism; independent acceptance is recorded in the
   or system configuration and ignores replace refs) into a fresh owner-only tree, and refuses if any of the three
   changed during the copy. A link, as a listed file or as any parent directory of one
   below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
-  cannot bring in bytes from outside the checkout.
+  cannot bring in bytes from outside the checkout; so does an untracked nested repository,
+  which Git lists only as its directory. Every pnpm call runs in the private home's
+  isolated environment, but a corepack-managed pnpm runs from the developer's own corepack
+  cache (`COREPACK_HOME`, as corepack computes it), never from the temporary directory,
+  where another local user could plant a module on its lookup path.
   Ignored output, caches, dependencies and private notes never enter it. The locked
   closure is installed there offline, frozen and with `--ignore-scripts` from the
   existing content-addressed store, discovered with pnpm's store-location variables
@@ -294,7 +298,8 @@ the build's child processes and empties the artifact directory, which was empty 
 before the producer exits with the signal's code — also when it arrives after the build's last
 child exited, during the seal or the final removal. A failed production prints only prepack's own
 fixed `✗ CLI …` lines and one fixed code, never a build child's captured output, which can quote a
-malformed map. An interrupted consumer likewise stops its
+malformed map. A step of an interrupt's cleanup that fails leaves one fixed line, never a path,
+and the producer still exits with the signal's code. An interrupted consumer likewise stops its
 child processes, including the bootstrap witness's, and removes its installation, the witness's
 fixtures and the installed smoke's working directory; the native fixture targets the installed CLI
 starts in their own process groups end on their own once the smoke worker that owns their case is

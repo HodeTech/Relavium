@@ -483,6 +483,21 @@ test('refuses an orphan map entry and validates the upstream map of a zero-byte 
   refusesBeforeWriting(zero, 'UPSTREAM_MAP_SHAPE');
 });
 
+test('a source root is a whole directory: a sibling that only shares its prefix is not original', async () => {
+  // An upstream map naming packages/core/srcxx and a final map naming apps/cli/srcxx, both existing.
+  const upstream = await fixture();
+  write(join(upstream.core, 'srcxx', 'index.ts'), 'export const x = 1;\n');
+  editJson(
+    join(upstream.core, 'dist', 'index.js.map'),
+    (map) => (map.sources = ['../srcxx/index.ts']),
+  );
+  refusesBeforeWriting(upstream, 'MAP_SOURCE_NOT_ORIGINAL');
+  const final = await fixture();
+  write(join(final.cli, 'srcxx', 'x.ts'), 'export const x = 1;\n');
+  editJson(join(final.dist, 'index.js.map'), (map) => (map.sources = ['../srcxx/x.ts']));
+  refusesBeforeWriting(final, 'MAP_SOURCE_NOT_ORIGINAL');
+});
+
 test('refuses a metafile without outputs or inputs', async () => {
   for (const field of ['outputs', 'inputs']) {
     const candidate = await fixture();

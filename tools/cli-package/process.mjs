@@ -3,9 +3,31 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { constants, devNull } from 'node:os';
-import { delimiter, extname, isAbsolute, join } from 'node:path';
+import { constants, devNull, homedir } from 'node:os';
+import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
+
+/**
+ * Corepack's own cache, computed as corepack computes it (`COREPACK_HOME`, else `XDG_CACHE_HOME`, else
+ * `LOCALAPPDATA`, else the home directory's `.cache` or `AppData/Local`, plus `node/corepack`), from
+ * this process's environment, which is the developer's own or carries a `COREPACK_HOME` a caller
+ * computed from it. An isolated child passes it on, so a corepack-managed pnpm runs from that cache —
+ * never from an isolated home in the shared temporary directory, where its optional module lookups
+ * would reach a `node_modules` that another local user can create.
+ * @param {Record<string, string | undefined>} [environment]
+ */
+export function corepackHome(environment = process.env) {
+  return resolve(
+    environment.COREPACK_HOME ??
+      join(
+        environment.XDG_CACHE_HOME ??
+          environment.LOCALAPPDATA ??
+          join(homedir(), process.platform === 'win32' ? join('AppData', 'Local') : '.cache'),
+        'node',
+        'corepack',
+      ),
+  );
+}
 
 export function isolatedEnvironment(home) {
   const env = {
@@ -20,6 +42,8 @@ export function isolatedEnvironment(home) {
     NO_COLOR: '1',
     TERM: 'dumb',
     COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+    // A location only, never configuration: see `corepackHome`.
+    COREPACK_HOME: corepackHome(),
   };
   for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'LANG'])
     if (process.env[key] !== undefined) env[key] = process.env[key];

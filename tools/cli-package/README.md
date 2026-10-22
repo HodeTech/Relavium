@@ -49,7 +49,9 @@ installed CLI's detached native fixture targets end once the smoke worker that o
 consumer it started instead of ending before them and starts no later stage after one; a
 producer killed outright can leave its owner-only root in the temporary directory. A failed
 production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
-(`production-failure.mjs`), never a build child's captured output, which can quote a map. The receipt does **not** certify symbolication, a map manifest,
+(`production-failure.mjs`), never a build child's captured output, which can quote a map. A
+corepack-managed pnpm always runs from the developer's own corepack cache, never from the shared
+temporary directory that holds the isolated homes (`corepackHome` in `process.mjs`). The receipt does **not** certify symbolication, a map manifest,
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
 metafile or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it

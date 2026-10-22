@@ -164,7 +164,7 @@ export async function sourceIdentity(repository, run = runCommand, excludes = un
  * Every file Git would ship from the working tree: tracked plus untracked-but-not-ignored, minus
  * deletions, by the repository's ignore rules and the developer's global excludes
  * (`globalExcludesFile`). Ignored output, caches, dependencies and private notes never enter a
- * candidate.
+ * candidate; an untracked nested repository, which Git lists only as its directory, refuses.
  * @param {string} repository @param {typeof runCommand} [run] @param {string} [excludes]
  * @param {{files: number}} [limits] the bounds (`CANDIDATE_LIMITS`; smaller ones in tests)
  */
@@ -190,6 +190,11 @@ export async function candidateFiles(
         options,
       )
     ).stdout,
+  );
+  // Git lists an untracked nested repository as its directory (`dir/`), never its files.
+  assert.ok(
+    listed.every((path) => !path.endsWith('/')),
+    'PACKED_CLI_CANDIDATE_NESTED_REPOSITORY',
   );
   const deleted = new Set(
     gitPaths((await run('git', ['ls-files', '-z', '--deleted'], options)).stdout),
