@@ -635,7 +635,9 @@ jobs:
           node-version-file: .nvmrc
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # The runner builds inlined dependencies fresh, then prepack performs the sole final CLI build.
+      # The runner builds inlined dependencies fresh in an owned candidate tree, then prepack performs the sole
+      # final CLI build, where original-TS maps are built, validated, staged privately and discarded (Wave 3
+      # Step 9a.1); only the tarball and its receipt leave this job.
       - name: Pack once and independently inspect the public package
         env:
           RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}

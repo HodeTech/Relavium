@@ -9511,20 +9511,24 @@ was verified by the author alone, as the round cap provides; every finding it di
 [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) are
 closed. Step 9a.1 follows.
 
-**Post-closure CI correction, 2026-10-22.** `development` was pushed at `9eb38156`, and every CI job
-passed except the separate engine coverage floor job, which `pnpm run ci` does not include: under
-instrumented coverage, round 9's admitted-size linear-views case ran ten 8-MiB projections in one case
-and passed its 15 s case deadline on the runner (3.7 s plain and 7.2 s under local coverage). `2a1f7359`
-makes it one case per shape with the same inputs, assertions and deadline (1.1–2.8 s each under local
-coverage; 221 core projection cases), and the local enforced coverage gate passes at llm 97.79 % lines
-and 95.69 % branches, mcp 96.56 % and 91.29 %, core (measured) 96.71 % and 91.06 %. The author now also
-runs the coverage gate before a push. CI at `2a1f7359` then passed every job but the filesystem causal
-controls, whose export refused: each phase retains a manifest of the whole source graph (203,421 bytes
-once PR95 grew it), and the 330 manifests of one export passed the unchanged 64-MiB bound by 20,066
-bytes. `4c3cafe9` runs that family as two exporting shards, as PR95's round 7 did for the secrets family
-([filesystem controls README](../../../tools/fs-policy-controls/README.md)), and CI at `4c3cafe9` passed
-every job, both shards of each control family, the coverage floor and the four installed-CLI consumers
-included.
+**Post-closure CI corrections, 2026-10-22.** `development` was pushed at `9eb38156` (run 39693684654).
+Its separate engine coverage floor job, which `pnpm run ci` does not include, failed: under instrumented
+coverage, round 9's admitted-size linear-views case ran ten 8-MiB projections in one case and passed its
+15 s case deadline on the runner (3.7 s plain and 7.2 s under local coverage). The next push cancelled
+that run before the filesystem controls and the second secrets shard finished, and its aggregating
+`lint · typecheck · test` job failed at the step that requires the filesystem controls. `2a1f7359` (run
+39698522813) makes the case one case per shape with the same inputs, assertions and deadline (1.1–2.8 s
+each under local coverage; 221 core projection cases); its coverage job passed, and the local enforced
+coverage gate passes at llm 97.79 % lines and 95.69 % branches, mcp 96.56 % and 91.29 %, core (measured)
+96.71 % and 91.06 %. In that run the filesystem causal controls failed at export, and the aggregating
+job failed with them: each phase retains a manifest of the whole source graph (203,421 bytes once PR95
+grew it), and the 330 manifests of one export passed the unchanged 64-MiB bound by 20,066 bytes, an
+overflow already present at `9eb38156` because `2a1f7359` added no source file. `4c3cafe9` (run
+39706480450) runs that family as two exporting shards, as PR95's round 7 did for the secrets family
+([filesystem controls README](../../../tools/fs-policy-controls/README.md)), and that run passed all 17
+jobs, both shards of each control family, the coverage floor and the four installed-CLI consumers
+included. The author now also runs the coverage gate before a push and checks each control family's
+export arithmetic.
 
 ### Wave 3 Step 9a.1 implementation checkpoint — 2026-10-22
 
@@ -9565,6 +9569,16 @@ Under `CI=true GITHUB_ACTIONS=true`, 709 of the 710 acceptance tooling tests pas
 unchanged by this step, installs through the corepack pnpm shim in an empty home, which needs the
 registry, and corepack hung for 45 s on this host while the same tree had passed it in the full run an
 hour earlier.
+
+**Review rounds.** Each round is a NEW independent complete cumulative review of `4c3cafe9..HEAD`,
+every reviewer in its own worktree detached at the reviewed head: plan and contract conformance, a
+separate security sitting, producer and finalizer correctness (running the real producer), tests and
+causal adequacy, integration and documentation, and a completeness critic. Every finding is
+adversarially verified; the detailed reports stay local and Git-ignored.
+
+| Round | Reviewed head | Verdict | Verified findings | Main corrections |
+| --- | --- | --- | --- | --- |
+| 1 | `a72c7ecd` | NONCLEAN (plan lens clean) | 9 (2 medium, 6 low, 1 nit) | an interrupted producer (SIGINT, SIGTERM, SIGHUP) left its private maps and candidate tree in the temporary directory while its detached build ran on, so the producer now stops the child trees `runCommand` tracks and removes the private root, the build home and the artifact directory's contents before exiting with the signal's code (a producer killed outright is a named limit); private staging must be canonical and outside the candidate by real path; the global-excludes wiring, the producer environment, the placement check's artifact half, the candidate's bounds and three finalizer refusals gained killing tests; the status lines, the CI pack-step comment and the post-closure CI record were corrected |
 
 **Remaining gates.** The increment is not independently accepted. Two NEW consecutive clean complete
 cumulative rounds after the last material fix and a separate security sitting remain (the Acceptance

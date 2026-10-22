@@ -104,6 +104,22 @@ export async function globalExcludesFile({ repository, environment, run = runCom
   return path !== undefined && existsSync(path) && statSync(path).isFile() ? path : undefined;
 }
 
+/**
+ * The environment of a producer that a caller has isolated: `base` plus the dependency store and, when
+ * the caller found one, the developer's global Git excludes file, both found in the caller's own
+ * environment (`dependencyStore`, `globalExcludesFile`).
+ * @param {Record<string, string>} base
+ * @param {{store: string, excludes?: string}} found
+ * @returns {Record<string, string>}
+ */
+export function producerEnvironment(base, { store, excludes }) {
+  return {
+    ...base,
+    [PACKAGE_STORE_ENV]: store,
+    ...(excludes === undefined ? {} : { [GIT_EXCLUDES_ENV]: excludes }),
+  };
+}
+
 /** @param {string | undefined} excludes @returns {string[]} */
 function excludesArguments(excludes) {
   return excludes === undefined ? [] : ['-c', `core.excludesFile=${excludes}`];
@@ -137,8 +153,14 @@ export async function sourceIdentity(repository, run = runCommand, excludes = un
  * (`globalExcludesFile`). Ignored output, caches, dependencies and private notes never enter a
  * candidate.
  * @param {string} repository @param {typeof runCommand} [run] @param {string} [excludes]
+ * @param {{files: number}} [limits] the bounds (`CANDIDATE_LIMITS`; smaller ones in tests)
  */
-export async function candidateFiles(repository, run = runCommand, excludes = undefined) {
+export async function candidateFiles(
+  repository,
+  run = runCommand,
+  excludes = undefined,
+  limits = CANDIDATE_LIMITS,
+) {
   const options = { cwd: repository, env: isolatedEnvironment(repository) };
   const listed = gitPaths(
     (
@@ -160,10 +182,7 @@ export async function candidateFiles(repository, run = runCommand, excludes = un
     gitPaths((await run('git', ['ls-files', '-z', '--deleted'], options)).stdout),
   );
   const files = [...new Set(listed)].filter((path) => !deleted.has(path)).sort();
-  assert.ok(
-    files.length > 0 && files.length <= CANDIDATE_LIMITS.files,
-    'PACKED_CLI_CANDIDATE_FILES',
-  );
+  assert.ok(files.length > 0 && files.length <= limits.files, 'PACKED_CLI_CANDIDATE_FILES');
   return files;
 }
 
@@ -171,9 +190,10 @@ export async function candidateFiles(repository, run = runCommand, excludes = un
  * Copy each listed ordinary file byte-for-byte into the empty `destination`. Links, special files,
  * escaping or noncanonical paths and oversized trees refuse; only the executable bit is kept, as an
  * exact 0755 or 0644 mode whatever the process umask.
- * @param {{repository: string, destination: string, files: readonly string[]}} options
+ * @param {{repository: string, destination: string, files: readonly string[],
+ *   limits?: {fileBytes: number, totalBytes: number}}} options `limits` defaults to `CANDIDATE_LIMITS`
  */
-export function copyCandidateTree({ repository, destination, files }) {
+export function copyCandidateTree({ repository, destination, files, limits = CANDIDATE_LIMITS }) {
   assert.ok(
     isAbsolute(destination) && readdirSync(destination).length === 0,
     'PACKED_CLI_CANDIDATE_ROOT',
@@ -189,9 +209,9 @@ export function copyCandidateTree({ repository, destination, files }) {
     );
     const source = join(repository, ...path.split('/'));
     const executable = (lstatSync(source).mode & 0o111) !== 0;
-    const bytes = readOrdinaryFile(source, CANDIDATE_LIMITS.fileBytes);
+    const bytes = readOrdinaryFile(source, limits.fileBytes);
     total += bytes.length;
-    assert.ok(total <= CANDIDATE_LIMITS.totalBytes, 'PACKED_CLI_CANDIDATE_BYTES');
+    assert.ok(total <= limits.totalBytes, 'PACKED_CLI_CANDIDATE_BYTES');
     const target = join(destination, ...path.split('/'));
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     const mode = executable ? 0o755 : 0o644;

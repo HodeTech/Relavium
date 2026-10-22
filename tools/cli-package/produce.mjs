@@ -2,18 +2,23 @@
  * The package producer (ADR-0111, Wave 3 Step 9a.1): owned candidate copy, fresh mapped dependency
  * emit, sole CLI prepack with candidate finalization, independent seal. It never builds in the
  * developer's workspace and never calls a cached build. The private maps, metafile and hash record
- * are staged owner-only outside the artifact directory and discarded on every path; only the tarball
- * and its public receipt are published. `pack.mjs` is its command-line entry point; the ports are
- * tooling seams for tests, never shipped product hooks.
+ * are staged owner-only outside the artifact directory and removed when production succeeds, fails or
+ * is interrupted (SIGINT, SIGTERM, SIGHUP); a producer killed outright, a crash or a lost host can
+ * leave its owner-only root in the temporary directory, and no secure erasure is claimed. Only the
+ * tarball and its public receipt are published. `pack.mjs` is its command-line entry point; the ports
+ * are tooling seams for tests, never shipped product hooks.
  */
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './candidate.mjs';
-import { isolatedEnvironment, runPnpm } from './process.mjs';
+import { isolatedEnvironment, runPnpm, stopLiveCommands } from './process.mjs';
 import { sealPackage } from './seal.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
+
+/** The interrupts after which the producer still removes everything private before it exits. */
+const INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
 
 /** @param {string} parent @param {string} child */
 function within(parent, child) {
@@ -24,8 +29,10 @@ function within(parent, child) {
 /**
  * Produce one package-test artifact from the original checkout `repository` into the empty
  * `destination`. The candidate tree and its private staging are siblings in one owner-only temporary
- * root that shares no path with the artifact directory or the checkout, and that root is removed
- * whether production succeeds or fails; no secure erasure is claimed.
+ * root that shares no path with the artifact directory or the checkout. That root and the build home
+ * are removed whether production succeeds or fails; an interrupt also stops the build's child trees
+ * and empties the artifact directory, which was empty at the start, before the process exits with
+ * the signal's code.
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
@@ -50,6 +57,19 @@ export async function producePackage({
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
   const home = realpathSync(mkdtempSync(join(temporary, 'relavium-package-build-')));
   let root;
+  const discard = () => {
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  };
+  const interrupt = (signal) => {
+    stopLiveCommands();
+    discard();
+    for (const name of readdirSync(destination)) {
+      rmSync(join(destination, name), { recursive: true, force: true });
+    }
+    process.exit(128 + (constants.signals[signal] ?? 0));
+  };
+  for (const signal of INTERRUPTS) process.on(signal, interrupt);
   try {
     root = realpathSync(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
     chmodSync(root, 0o700);
@@ -91,8 +111,7 @@ export async function producePackage({
     });
     return { receipt, identity };
   } finally {
-    // Private maps never outlive the producer.
-    if (root !== undefined) rmSync(root, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
+    for (const signal of INTERRUPTS) process.off(signal, interrupt);
+    discard();
   }
 }

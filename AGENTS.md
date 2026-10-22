@@ -129,7 +129,7 @@ give every open PR #95 finding an owner and record 29 increments (no new ADR). T
 maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)): rounds 1–10 were
 NONCLEAN; the high and medium findings through round 9 are corrected, and after round 10, the last
 round, only GEN-R10-1, which the maintainer counted as high on 2026-10-22, is corrected (in the summary,
-by the author alone). The other findings are recorded in deferred-tasks.md. Step 9a.1 (release map/custody substrate, #46/ADR-0111) is implemented on `development` and under review ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22)). `development` is pushed after each accepted increment. No provider,
+by the author alone). The other findings are recorded in deferred-tasks.md. Step 9a.1 (the candidate build and finalizer, the first increment of the release map/custody substrate, #46/ADR-0111) is implemented on `development` and under review ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22)). `development` is pushed after each accepted increment. No provider,
 credential, billing or new ADR approval is pending for the approved implementation plan.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

@@ -1,6 +1,6 @@
 /** Native tooling boundary. Never starts a shell or inherits credentials/config/preloads. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, extname, isAbsolute, join } from 'node:path';
@@ -58,6 +58,41 @@ export function resolvePnpm(path = process.env.PATH ?? '', platform = process.pl
   throw new Error('PACKED_CLI_PINNED_PNPM_NOT_FOUND');
 }
 
+/** Every child tree a `runCommand` call still owns, so that an interrupted tool can stop them first. */
+const liveChildren = new Set();
+
+/**
+ * Synchronously kill every child tree that `runCommand` still owns: a POSIX process group, or a
+ * Windows tree through taskkill. For a signal handler that must stop detached builds before it exits.
+ */
+export function stopLiveCommands() {
+  for (const child of liveChildren) {
+    if (child.grouped) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The group already exited.
+      }
+      continue;
+    }
+    const systemRoot = process.env.SystemRoot;
+    if (systemRoot && isAbsolute(systemRoot)) {
+      spawnSync(
+        join(systemRoot, 'System32', 'taskkill.exe'),
+        ['/PID', String(child.pid), '/T', '/F'],
+        { shell: false, stdio: 'ignore' },
+      );
+    } else {
+      try {
+        process.kill(child.pid, 'SIGKILL');
+      } catch {
+        // The child already exited.
+      }
+    }
+  }
+  liveChildren.clear();
+}
+
 export function runCommand(command, args, options = {}) {
   const { timeoutMs = 300_000, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
@@ -70,6 +105,8 @@ export function runCommand(command, args, options = {}) {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const live = { pid: child.pid, grouped };
+    if (child.pid !== undefined) liveChildren.add(live);
     let bytes = 0,
       fault,
       closed = false,
@@ -118,6 +155,7 @@ export function runCommand(command, args, options = {}) {
     });
     child.once('close', async (code, signal) => {
       closed = true;
+      liveChildren.delete(live);
       clearTimeout(timer);
       if (killer && killer.exitCode === null && killer.signalCode === null)
         await new Promise((done) => killer.once('close', done));

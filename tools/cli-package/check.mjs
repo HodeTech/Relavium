@@ -4,12 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  GIT_EXCLUDES_ENV,
-  PACKAGE_STORE_ENV,
-  dependencyStore,
-  globalExcludesFile,
-} from './candidate.mjs';
+import { dependencyStore, globalExcludesFile, producerEnvironment } from './candidate.mjs';
 import { isolatedEnvironment, runCommand } from './process.mjs';
 
 assert.equal(process.argv.length, 2, 'no arguments required');
@@ -26,11 +21,7 @@ try {
   const options = { env: isolatedEnvironment(root), timeoutMs: 600_000 };
   await runCommand(process.execPath, [join(directory, 'pack.mjs'), artifact], {
     ...options,
-    env: {
-      ...options.env,
-      [PACKAGE_STORE_ENV]: store,
-      ...(excludes === undefined ? {} : { [GIT_EXCLUDES_ENV]: excludes }),
-    },
+    env: producerEnvironment(options.env, { store, excludes }),
   });
   await runCommand(process.execPath, [join(directory, 'consume.mjs'), artifact, reports], options);
   const record = JSON.parse(readFileSync(join(reports, 'installed-consumer.json'), 'utf8'));

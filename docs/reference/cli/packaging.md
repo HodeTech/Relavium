@@ -255,7 +255,8 @@ describes the implemented mechanism; independent acceptance is recorded in the
   directory it then runs the ordinary closure guard, as before. The CLI configuration
   emits external maps with `sourcesContent` disabled whenever
   `RELAVIUM_CLI_CANDIDATE_STAGING` is defined; prepack first refuses unless it names an
-  absolute, empty, owner-only directory outside the candidate, and then runs the finalizer
+  absolute, canonical, empty, owner-only directory outside the candidate (both compared by
+  their real paths), and then runs the finalizer
   in place of the ordinary guard. That guard refuses any map a build outside prepack
   leaves in `dist`.
 - **Finalizer.** Before any write it accounts for every emitted file (each runtime JS
@@ -281,8 +282,11 @@ describes the implemented mechanism; independent acceptance is recorded in the
   unreviewed file in `dist`, and the five build configurations and the CLI configuration
   are pinned map-free outside a named candidate.
 
-Private maps, the metafile and the hash record are discarded on every path after the
-seal; no secure erasure is claimed. The private map manifest, actual packed CLI and engine
+Private maps, the metafile, the hash record and the candidate tree are removed when the
+producer succeeds, fails or is interrupted (SIGINT, SIGTERM, SIGHUP); an interrupt also stops
+the build's child processes and empties the artifact directory, which was empty at the start.
+A producer killed outright, a crash or a lost host can leave the owner-only root in the
+temporary directory, and no secure erasure is claimed. The private map manifest, actual packed CLI and engine
 symbolication, `check:map-controls` and the `package_test` receipt flip are Step 9a.2;
 recipient custody, the release state controller and the workflow graph are Steps 9b–9d.
 Until those and Wave 4b's production recipient exist, the release workflow's publish job

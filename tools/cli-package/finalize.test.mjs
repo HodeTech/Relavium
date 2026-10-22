@@ -287,6 +287,16 @@ for (const [label, change, code] of [
   });
 }
 
+test('refuses an upstream map source that exists but is not a file', async () => {
+  const candidate = await fixture();
+  mkdirSync(join(candidate.core, 'src', 'dir.ts'));
+  editJson(
+    join(candidate.core, 'dist', 'index.js.map'),
+    (map) => (map.sources = ['../src/dir.ts']),
+  );
+  refusesBeforeWriting(candidate, 'MAP_SOURCE_MISSING');
+});
+
 test('refuses an unparsable upstream map and an inexact upstream map link', async () => {
   const unparsable = await fixture();
   writeFileSync(join(unparsable.core, 'dist', 'index.js.map'), '{');
@@ -375,6 +385,14 @@ test('accounts for every emitted file and every consumed input', async () => {
     };
   });
   refusesBeforeWriting(foreign, 'UNSUPPORTED_INPUT');
+  // Only the five inlined engine packages and the CLI's own TypeScript are supported inputs.
+  for (const input of ['../../packages/ui/dist/x.js', 'src/types.d.ts']) {
+    const unsupported = await fixture();
+    editJson(join(unsupported.dist, 'metafile-esm.json'), (metafile) => {
+      metafile.inputs[input] = { bytes: 1, imports: [], format: 'esm' };
+    });
+    refusesBeforeWriting(unsupported, 'UNSUPPORTED_INPUT');
+  }
   if (posixModes) {
     const linked = await fixture();
     symlinkSync(join(linked.dist, 'index.js'), join(linked.dist, 'alias.js'));
@@ -425,6 +443,38 @@ test('requires an empty private staging directory outside the candidate', async 
     symlinkSync(candidate.staging, link);
     assert.throws(
       () => finalizeCandidate({ repository: candidate.root, staging: link }),
+      (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+    );
+    // A real owner-only directory inside the candidate, named through a linked parent outside it.
+    const inside = join(candidate.cli, 'private');
+    mkdirSync(inside, { mode: 0o700 });
+    chmodSync(inside, 0o700);
+    const alias = join(scratch, `alias-parent-${count}`);
+    symlinkSync(candidate.cli, alias);
+    assert.throws(
+      () => finalizeCandidate({ repository: candidate.root, staging: join(alias, 'private') }),
+      (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+    );
+    // The same real directory refuses when the repository itself is named through a link.
+    const aliasRoot = join(scratch, `alias-root-${count}`);
+    symlinkSync(candidate.root, aliasRoot);
+    assert.throws(
+      () => finalizeCandidate({ repository: aliasRoot, staging: inside }),
+      (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+    );
+    rmSync(inside, { recursive: true });
+    // Staging must be named canonically even outside the candidate.
+    const outside = join(scratch, `outside-staging-${count}`);
+    mkdirSync(outside, { mode: 0o700 });
+    chmodSync(outside, 0o700);
+    const outsideAlias = join(scratch, `outside-alias-${count}`);
+    symlinkSync(scratch, outsideAlias);
+    assert.throws(
+      () =>
+        finalizeCandidate({
+          repository: candidate.root,
+          staging: join(outsideAlias, `outside-staging-${count}`),
+        }),
       (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
     );
   }

@@ -19,6 +19,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeSync,
@@ -291,19 +292,31 @@ function finalMap(repository, jsName, map, expected) {
 }
 
 /**
- * A private staging directory must be absolute, empty, an ordinary directory outside the candidate
- * repository and, where POSIX modes are observable, owner-only and owned by this process.
+ * A private staging directory must be absolute and canonical (no link anywhere in its path), empty, an
+ * ordinary directory outside the candidate repository and, where POSIX modes are observable, owner-only
+ * and owned by this process. The repository is compared by its real path too, so no alias of either
+ * side lets staging sit inside the candidate.
  * @param {string} staging @param {string} repository
  */
 export function assertPrivateStaging(staging, repository) {
   if (typeof staging !== 'string' || !isAbsolute(staging)) refuse('STAGING_PATH');
   let info;
+  let real;
+  let root;
   try {
     info = lstatSync(staging);
+    real = realpathSync(staging);
+    root = realpathSync(repository);
   } catch {
     refuse('STAGING_PATH');
   }
-  if (!info.isDirectory() || within(repository, staging) || within(staging, repository)) {
+  if (
+    !info.isDirectory() ||
+    real !== staging ||
+    within(root, real) ||
+    within(real, root) ||
+    within(repository, staging)
+  ) {
     refuse('STAGING_PATH');
   }
   if (readdirSync(staging).length !== 0) refuse('STAGING_NOT_EMPTY');

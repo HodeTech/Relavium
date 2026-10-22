@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -12,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { assertNoBuildCache } from './candidate.mjs';
 import { producePackage } from './produce.mjs';
 
@@ -167,6 +170,22 @@ test('private staging never shares a path with the checkout or the artifact', as
   );
   assert.equal(seen.prepare, undefined);
   assert.deepEqual(leftovers(inside), []);
+  // So would a temporary directory inside the artifact directory.
+  const artifact = join(fresh('artifact-parent'), 'artifact');
+  mkdirSync(artifact);
+  const { seen: inArtifact, ports: artifactFakes } = ports();
+  await assert.rejects(
+    producePackage({
+      repository,
+      destination: artifact,
+      environment: {},
+      temporary: artifact,
+      ports: artifactFakes,
+    }),
+    /PRIVATE_STAGING_PLACEMENT/u,
+  );
+  assert.equal(inArtifact.prepare, undefined);
+  assert.deepEqual(readdirSync(artifact), []);
   // A non-empty artifact directory refuses before anything private exists.
   const temporary = fresh('tmp');
   const destination = fresh('artifact');
@@ -177,3 +196,86 @@ test('private staging never shares a path with the checkout or the artifact', as
   );
   assert.deepEqual(leftovers(temporary), []);
 });
+
+/** A producer run whose build is a long-lived child, as `pnpm pack` is, behind fake ports. */
+function interruptedProducer(temporary, destination, pidFile) {
+  const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+  const script = `
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { producePackage } from ${url('./produce.mjs')};
+import { isolatedEnvironment, runCommand } from ${url('./process.mjs')};
+await producePackage({
+  repository: ${JSON.stringify(join(temporary, 'checkout'))},
+  destination: ${JSON.stringify(destination)},
+  environment: {},
+  temporary: ${JSON.stringify(temporary)},
+  ports: {
+    pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
+    excludesFile: async () => undefined,
+    prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
+    emit: async ({ staging, destination }) => {
+      writeFileSync(join(staging, 'index.js.map'), 'private map');
+      writeFileSync(join(destination, 'relavium-0.1.1.tgz'), 'unsealed');
+      await runCommand(process.execPath, ['-e', ${JSON.stringify(
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      )}], { env: isolatedEnvironment(${JSON.stringify(temporary)}), timeoutMs: 60_000 });
+    },
+  },
+});
+`;
+  return spawn(process.execPath, ['--input-type=module', '-e', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+for (const [signal, code] of [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+]) {
+  test(
+    `an interrupted producer (${signal}) stops its build and removes everything private`,
+    { skip: !posixModes },
+    async () => {
+      const temporary = fresh('tmp');
+      mkdirSync(join(temporary, 'checkout'));
+      const destination = join(fresh('artifact-parent'), 'artifact');
+      const pidFile = join(fresh('pid'), 'sleeper.pid');
+      const child = interruptedProducer(temporary, destination, pidFile);
+      let sleeper;
+      try {
+        for (
+          let waited = 0;
+          !existsSync(pidFile) || readFileSync(pidFile, 'utf8') === '';
+          waited += 25
+        ) {
+          assert.ok(waited < 20_000, 'the fake build never started');
+          await delay(25);
+        }
+        sleeper = Number(readFileSync(pidFile, 'utf8'));
+        assert.ok(alive(sleeper));
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        child.kill(signal);
+        assert.equal(await exited, code);
+        for (let waited = 0; alive(sleeper); waited += 25) {
+          assert.ok(waited < 5_000, 'the build child outlived the interrupt');
+          await delay(25);
+        }
+        assert.deepEqual(leftovers(temporary), []);
+        assert.deepEqual(readdirSync(destination), []);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        if (sleeper !== undefined && alive(sleeper)) process.kill(sleeper, 'SIGKILL');
+      }
+    },
+  );
+}

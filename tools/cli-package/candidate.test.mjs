@@ -22,6 +22,7 @@ import {
   globalExcludesFile,
   installCandidateDependencies,
   prepareCandidate,
+  producerEnvironment,
   sourceIdentity,
   verifyCandidateLinks,
 } from './candidate.mjs';
@@ -475,7 +476,7 @@ test('a candidate build leaves no build cache behind', () => {
 });
 
 /** A source repository plus fake git and pnpm ports; the fake install creates the workspace links. */
-function preparation({ statusAfterCopy = '', headAfterCopy = SHA } = {}) {
+function preparation({ statusAfterCopy = '', headAfterCopy = SHA, excludes } = {}) {
   const repository = fresh('source');
   write(join(repository, 'package.json'), '{}\n');
   for (const name of ['shared', 'llm', 'core', 'db', 'mcp']) {
@@ -491,6 +492,8 @@ function preparation({ statusAfterCopy = '', headAfterCopy = SHA } = {}) {
   const events = [];
   let statuses = 0;
   let heads = 0;
+  // With an excludes file, the listing and both status calls answer only when they carry it.
+  const prefix = excludes === undefined ? '' : `-c core.excludesFile=${excludes} `;
   const run = async (command, args) => {
     const key = args.join(' ');
     events.push(`git ${key}`);
@@ -498,11 +501,11 @@ function preparation({ statusAfterCopy = '', headAfterCopy = SHA } = {}) {
       heads += 1;
       return { stdout: `${heads === 1 ? SHA : headAfterCopy}\n` };
     }
-    if (key === 'status --porcelain=v1 -z --untracked-files=all') {
+    if (key === `${prefix}status --porcelain=v1 -z --untracked-files=all`) {
       statuses += 1;
       return { stdout: statuses === 1 ? '' : statusAfterCopy };
     }
-    if (key === 'ls-files -z --cached --others --exclude-standard')
+    if (key === `${prefix}ls-files -z --cached --others --exclude-standard`)
       return { stdout: files.join('\0') };
     if (key === 'ls-files -z --deleted') return { stdout: '' };
     throw new Error(`unexpected git ${key}`);
@@ -575,4 +578,91 @@ test('a source change during the copy refuses before anything is installed', asy
       false,
     );
   }
+});
+
+test("candidate preparation applies the developer's global excludes to every listing and status", async () => {
+  const ports = preparation({ excludes: '/developer/ignore' });
+  const identity = await prepareCandidate({
+    repository: ports.repository,
+    candidate: ports.candidate,
+    environment: {},
+    home: ports.home,
+    env: {},
+    excludes: '/developer/ignore',
+    run: ports.run,
+    pnpm: ports.pnpm,
+  });
+  assert.deepEqual(identity, { source: SHA, dirty: false, files: 6 });
+  assert.deepEqual(
+    ports.events.filter((event) => event.includes('status') || event.includes('--cached')),
+    [
+      'git -c core.excludesFile=/developer/ignore status --porcelain=v1 -z --untracked-files=all',
+      'git -c core.excludesFile=/developer/ignore ls-files -z --cached --others --exclude-standard',
+      'git -c core.excludesFile=/developer/ignore status --porcelain=v1 -z --untracked-files=all',
+    ],
+  );
+});
+
+test('an isolated producer receives the store and, when found, the excludes file', () => {
+  assert.deepEqual(producerEnvironment({ HOME: '/isolated' }, { store: '/store' }), {
+    HOME: '/isolated',
+    RELAVIUM_PACKAGE_STORE_DIR: '/store',
+  });
+  assert.deepEqual(
+    producerEnvironment({ HOME: '/isolated' }, { store: '/store', excludes: '/developer/ignore' }),
+    {
+      HOME: '/isolated',
+      RELAVIUM_PACKAGE_STORE_DIR: '/store',
+      RELAVIUM_GIT_EXCLUDES_FILE: '/developer/ignore',
+    },
+  );
+});
+
+test('the candidate refuses a file list or a tree over its bounds', async () => {
+  const listing = git({
+    'ls-files -z --cached --others --exclude-standard': 'a.ts\0b.ts\0c.ts\0',
+    'ls-files -z --deleted': '',
+  });
+  assert.deepEqual(await candidateFiles('/repository', listing.run, undefined, { files: 3 }), [
+    'a.ts',
+    'b.ts',
+    'c.ts',
+  ]);
+  await assert.rejects(
+    candidateFiles('/repository', listing.run, undefined, { files: 2 }),
+    /CANDIDATE_FILES/u,
+  );
+  const repository = fresh('bounded');
+  write(join(repository, 'a.ts'), 'abcdef');
+  write(join(repository, 'b.ts'), 'ghijkl');
+  const files = ['a.ts', 'b.ts'];
+  assert.deepEqual(
+    copyCandidateTree({
+      repository,
+      destination: fresh('copy'),
+      files,
+      limits: { fileBytes: 6, totalBytes: 12 },
+    }),
+    { files: 2, bytes: 12 },
+  );
+  assert.throws(
+    () =>
+      copyCandidateTree({
+        repository,
+        destination: fresh('copy'),
+        files,
+        limits: { fileBytes: 6, totalBytes: 11 },
+      }),
+    /CANDIDATE_BYTES/u,
+  );
+  assert.throws(
+    () =>
+      copyCandidateTree({
+        repository,
+        destination: fresh('copy'),
+        files,
+        limits: { fileBytes: 5, totalBytes: 12 },
+      }),
+    /FILE_KIND_OR_BOUND/u,
+  );
 });
