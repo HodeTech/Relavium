@@ -181,6 +181,18 @@ projecting 1,987 retained files (110 × 18 + 7) under the unchanged
 2,000-file /64-MiB ceilings. This is capacity arithmetic, not a measured export or
 completed capture; historical captures retain their own source heads and actual counts.
 
+That arithmetic counted files only. Every phase also retains its exact source manifest,
+one per phase and about 200 KB each because it lists the whole source graph, and the
+export's raw manifests share the 64-MiB bound. Once Wave 3's PR95 increment grew that
+graph, a manifest measured 203,421 bytes and the 330 manifests of one export
+67,128,930 bytes, 20,066 over the bound, so CI's export refused (2026-10-22). Like the
+secrets family, the declaration now runs as two round-robin shards of 55 controls
+(`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: 165 manifests
+(33,564,465 bytes) and 997 retained files (55 × 18 + 7). Both shards ran locally with
+`RELAVIUM_ACCEPTANCE_EVIDENCE` set at `2a1f7359`'s source; every control passed, and
+the exports measured 25.65 MiB and 25.59 MiB. That is one local measurement, not a CI
+capture.
+
 The declaration is not acceptance evidence by itself. The complete matrix
 still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,

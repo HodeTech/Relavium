@@ -89,7 +89,12 @@ test('the actual required workflow joins both full offline controls and checks t
   );
   assert.equal(secretsGuard.if, undefined);
   assert.equal(secretsGuard['continue-on-error'], undefined);
-  for (const kind of ['secrets']) {
+  // Both families run as two legs that each run and export a disjoint half under the unchanged
+  // 64-MiB retained-evidence bound, which one export of either whole cohort no longer fits.
+  for (const [kind, directory] of [
+    ['fs', 'filesystem'],
+    ['secrets', 'secrets'],
+  ]) {
     const job = workflow.jobs[`${kind}-mutations`];
     assert.equal(job['continue-on-error'], undefined);
     assert.equal(job.if, undefined);
@@ -107,24 +112,13 @@ test('the actual required workflow joins both full offline controls and checks t
     assert.equal(command.env.RELAVIUM_ACCEPTANCE_EVIDENCE, '${{ runner.temp }}/wave2-acceptance');
     const artifact = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     assert.equal(artifact.if, '${{ always() }}');
-    assert.equal(artifact.with.path, '${{ runner.temp }}/wave2-acceptance/secrets');
-    assert.match(artifact.with.name, /^wave2-secrets-\$\{\{ matrix\.shard \}\}-of-2-/);
+    assert.equal(artifact.with.path, `\${{ runner.temp }}/wave2-acceptance/${directory}`);
+    assert.ok(
+      artifact.with.name.startsWith(`wave2-${directory}-\${{ matrix.shard }}-of-2-`),
+      artifact.with.name,
+    );
     assert.equal(artifact.with['retention-days'], 7);
   }
-  const filesystem = workflow.jobs['fs-mutations'];
-  assert.equal(filesystem['continue-on-error'], undefined);
-  assert.equal(filesystem.if, undefined);
-  assert.equal(filesystem['timeout-minutes'], 60);
-  assert.ok(filesystem.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
-  const fsCommand = filesystem.steps.find((step) => step.run === 'pnpm check:fs-mutations');
-  assert.equal(fsCommand['continue-on-error'], undefined);
-  assert.equal(fsCommand.env.RELAVIUM_ACCEPTANCE_EVIDENCE, '${{ runner.temp }}/wave2-acceptance');
-  const fsArtifact = filesystem.steps.find((step) =>
-    step.uses?.startsWith('actions/upload-artifact@'),
-  );
-  assert.equal(fsArtifact.if, '${{ always() }}');
-  assert.equal(fsArtifact.with.path, '${{ runner.temp }}/wave2-acceptance/filesystem');
-  assert.equal(fsArtifact.with['retention-days'], 7);
   const packageJson = JSON.parse(
     readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
   );

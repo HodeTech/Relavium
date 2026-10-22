@@ -245,13 +245,21 @@ jobs:
   # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
   # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
   fs-mutations:
-    name: Wave 2 filesystem causal controls
+    name: Wave 2 filesystem causal controls (shard ${{ matrix.shard }} of 2)
     # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
     # The 20-minute job historically reached only 46 of 93 controls; the later budget covered 99.
     # The current cohort is 110 controls (2026-10-15); this comment does not certify its execution.
     # Per-phase 90-second/test 15-second deadlines and output/evidence ceilings remain unchanged.
+    # Every phase retains a manifest of the whole source graph (about 200 KB each), so the 330 phase
+    # manifests of one export passed the unchanged 64-MiB retained-evidence bound once Wave 3's PR95
+    # increment grew that graph (2026-10-22). As for the secrets controls, two legs each run and
+    # export a disjoint round-robin half (`--shard k/2`) under the unchanged bounds.
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -268,12 +276,12 @@ jobs:
       - name: Run filesystem removal and restoration controls
         env:
           RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
-        run: pnpm check:fs-mutations
+        run: pnpm check:fs-mutations --shard ${{ matrix.shard }}/2
       - name: Retain bounded filesystem control metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wave2-filesystem-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wave2-filesystem-${{ matrix.shard }}-of-2-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/filesystem
           if-no-files-found: warn
           retention-days: 7
