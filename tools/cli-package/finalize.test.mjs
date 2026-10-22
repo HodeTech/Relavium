@@ -462,7 +462,7 @@ test('refuses an orphan map entry and validates the upstream map of a zero-byte 
   refusesBeforeWriting(zero, 'UPSTREAM_MAP_SHAPE');
 });
 
-test('requires an empty private staging directory outside the candidate', async () => {
+test('requires an empty private staging directory outside the candidate', async (t) => {
   const candidate = await fixture();
   for (const [staging, code] of [
     ['relative-staging', 'STAGING_PATH'],
@@ -482,6 +482,14 @@ test('requires an empty private staging directory outside the candidate', async 
     chmodSync(candidate.staging, 0o755);
     refusesBeforeWriting(candidate, 'STAGING_NOT_PRIVATE');
     chmodSync(candidate.staging, 0o700);
+    // An owner-only directory another account owns refuses too, before anything is written.
+    const realUid = process.getuid();
+    const uid = t.mock.method(process, 'getuid', () => realUid + 1);
+    try {
+      refusesBeforeWriting(candidate, 'STAGING_NOT_PRIVATE');
+    } finally {
+      uid.mock.restore();
+    }
     const link = join(scratch, `staging-link-${count}`);
     symlinkSync(candidate.staging, link);
     assert.throws(

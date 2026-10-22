@@ -390,6 +390,56 @@ test(
   },
 );
 
+test(
+  'a leader-exit descendant outlives its exited parent until the worker that owns it is gone',
+  { timeout: 15000, skip: process.platform === 'win32' },
+  async () => {
+    // Leader-exit mode reparents the descendant by design; it must watch the worker, never its parent,
+    // or it would end on its own and the product's group reap would go unproven.
+    const root = mkdtempSync(join(tmpdir(), 'relavium-status-leader-test-'));
+    const log = join(root, 'native.ndjson');
+    const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    copyFileSync(
+      fileURLToPath(new URL('./native-status.cjs', import.meta.url)),
+      join(root, 'status'),
+    );
+    writeFileSync(
+      join(root, 'native-fixture.json'),
+      JSON.stringify({
+        mode: 'leader-exit',
+        log,
+        node: process.execPath,
+        descendant: fileURLToPath(new URL('./native-descendant.cjs', import.meta.url)),
+        owner: owner.pid,
+      }),
+    );
+    const target = spawn(process.execPath, [join(root, 'status')], {
+      cwd: root,
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    const leaderExit = new Promise((resolve) => target.once('exit', (code) => resolve(code)));
+    let descendant;
+    try {
+      assert.equal(await leaderExit, 0);
+      descendant = ndjson(readFileSync(log, 'utf8')).find(
+        (item) => item.operation === 'native-fixture-descendant',
+      )?.pid;
+      assert.ok(Number.isSafeInteger(descendant) && descendant > 0);
+      await sleep(600);
+      assert.equal(alive(descendant), true, 'the descendant ended with its parent, not its owner');
+      owner.kill('SIGKILL');
+      await poll(() => !alive(descendant), 5000, 'The descendant outlived the worker that owns it');
+    } finally {
+      if (descendant !== undefined && alive(descendant)) process.kill(descendant, 'SIGKILL');
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test('shared fixture runtime support reuses read-only identical bytes and refuses replacement content or links', () => {
   const root = mkdtempSync(join(tmpdir(), 'relavium-shared-runtime-test-'));
   const source = join(root, 'source.dylib');

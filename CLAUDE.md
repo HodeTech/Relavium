@@ -205,8 +205,9 @@ explicit; source CI does not certify later documentation commits. The
 [acceptance register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 joins exact evidence and historical corrections. Steps 1–8 are accepted;
 **Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
-itself is NOT complete: Steps 9–19 have NOT STARTED and whole-wave acceptance remains
-Step 19. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
+itself is NOT complete: Steps 9–19 had not started at that merge (Step 9a.1, the first, is now
+under review below; Steps 9a.2–19 have not started) and whole-wave acceptance remains Step 19.
+The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
 records what merged and its review attributions. The final head `a3e164b5` (corrections from a
 further independent review, including a secret-scrubbing rule) merged with author verification
 only and was then independently reviewed (four rounds and a security sitting, with follow-up

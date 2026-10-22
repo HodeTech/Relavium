@@ -137,8 +137,9 @@ The [deferred register](deferred-tasks.md) retains its existing limits; closure 
 ## Wave 3 Steps 1–8 merged — PR #95
 
 **Wave 3 Steps 1–8 merged to `main` on 2026-10-18 as [PR #95](https://github.com/HodeTech/Relavium/pull/95),
-merge commit `6d2a7372` (22:44 UTC). Wave 3 itself is not complete: Steps 9–19 have NOT STARTED and
-whole-wave acceptance remains Step 19.** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
+merge commit `6d2a7372` (22:44 UTC). Wave 3 itself is not complete: Steps 9–19 had not started at
+that merge (Step 9a.1 is now under review; Steps 9a.2–19 have not started) and whole-wave acceptance
+remains Step 19.** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
 joins the completed scope, every review attribution, the independent review's dispositions and the
 publication state observed at merge. It was the maintainer-authorized, scoped publication checkpoint.
 
@@ -1140,7 +1141,7 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Steps 9–19 NOT STARTED — 2026-10-19.**
+**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Step 9a.1 implemented on `development` and under review, Steps 9a.2–19 NOT STARTED — 2026-10-22.**
 ADR-0110–0113, their linked contracts and the nineteen-increment plan were approved on 2026-10-16.
 [Steps 1–8 were independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 on `development`, with whole Step 8 reviewed at `c83c8575`, and published as the scoped checkpoint

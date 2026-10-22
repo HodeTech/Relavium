@@ -155,6 +155,15 @@ function check({ pack, consume = CONSUMER, excludes: named = true }) {
   return { child, exited, markers, temporary, store, excludes };
 }
 
+/** The check's exit, bounded so that a regressed check fails its test instead of hanging it. */
+async function exitOf(run) {
+  // Unreferenced, so a pending bound never keeps the test process alive after the check exits.
+  const bound = delay(60_000, undefined, { ref: false }).then(() => undefined);
+  const outcome = await Promise.race([run.exited, bound]);
+  assert.ok(outcome !== undefined, 'the check did not exit within 60 s');
+  return outcome;
+}
+
 async function waitForFile(file) {
   for (let waited = 0; !existsSync(file) || readFileSync(file, 'utf8') === ''; waited += 25) {
     assert.ok(waited < 20_000, `${file} never appeared`);
@@ -200,7 +209,7 @@ test(
       pid = Number(await waitForFile(join(run.markers, 'writer.pid')));
       assert.equal(checkRoots(run.temporary).length, 1);
       run.child.kill('SIGINT');
-      const outcome = await run.exited;
+      const outcome = await exitOf(run);
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 130);
       assert.equal(outcome.stdout, '');
@@ -231,7 +240,7 @@ setInterval(() => {}, 1000);
     try {
       await waitForFile(join(run.markers, 'pack.pid'));
       run.child.kill('SIGINT');
-      const outcome = await run.exited;
+      const outcome = await exitOf(run);
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 130);
       assert.equal(readFileSync(join(run.markers, 'pack-interrupted'), 'utf8'), 'SIGINT');
@@ -258,7 +267,7 @@ setTimeout(() => process.exit(0), 500);
 `,
     });
     try {
-      const outcome = await run.exited;
+      const outcome = await exitOf(run);
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 130);
       assert.equal(readFileSync(join(run.markers, 'pack-forwarded'), 'utf8'), 'SIGINT');
@@ -273,7 +282,7 @@ setTimeout(() => process.exit(0), 500);
 test('a successful producer and consumer give the summary and leave no check root', async () => {
   const run = check({ pack: RECORDING_PRODUCER, consume: PUBLISHING_CONSUMER('local') });
   try {
-    const outcome = await run.exited;
+    const outcome = await exitOf(run);
     assert.equal(outcome.signal, null);
     assert.equal(outcome.code, 0);
     assert.deepEqual(JSON.parse(outcome.stdout), {
@@ -303,7 +312,7 @@ test('without a global excludes file the producer receives none', async () => {
     excludes: false,
   });
   try {
-    assert.equal((await run.exited).code, 0);
+    assert.equal((await exitOf(run)).code, 0);
     assert.deepEqual(JSON.parse(readFileSync(join(run.markers, 'pack-environment'), 'utf8')), {
       store: run.store,
       excludes: null,
@@ -324,7 +333,7 @@ for (const [label, options] of [
   test(`${label} fails the check without a summary and leaves no check root`, async () => {
     const run = check(options);
     try {
-      const outcome = await run.exited;
+      const outcome = await exitOf(run);
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 1);
       assert.equal(outcome.stdout, '');
@@ -347,7 +356,7 @@ test(
       `process.kill(process.ppid, 'SIGINT');\nsetTimeout(() => process.exit(0), 500);\n`;
     const run = check({ pack: RECORDING_PRODUCER, consume: outliving });
     try {
-      const outcome = await run.exited;
+      const outcome = await exitOf(run);
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 130);
       assert.equal(outcome.stdout, '');
