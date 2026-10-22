@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -18,6 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { assertNoBuildCache } from './candidate.mjs';
 import { isolatedEnvironment } from './process.mjs';
 import { producePackage } from './produce.mjs';
+import { productionFailure } from './production-failure.mjs';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-produce-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -522,3 +523,59 @@ for (const during of ['seal', 'removal'])
       assert.deepEqual(readdirSync(destination), []);
     },
   );
+
+/** Output a failed build child could carry: a pnpm lifecycle header and esbuild quoting a map. */
+const QUOTED_MAP = 'zzMAPMARKERzz';
+const REFUSAL =
+  '✗ CLI candidate finalization refused: UPSTREAM_MAP_SHAPE (packages/core/dist/index.js.map)';
+function failedChild() {
+  const error = new Error('PACKED_CLI_CHILD_FAILED: 1');
+  error.result = {
+    stdout: `> relavium@0.1.1 prepack /private/candidate/apps/cli\n1 │ {"names":["${QUOTED_MAP}"],"mappings":"AAAA;!!"}\n`,
+    stderr: `${REFUSAL}\n✗ CLI ${QUOTED_MAP} │ {"names":[]}\n${QUOTED_MAP}\n`,
+  };
+  return error;
+}
+
+test('a failed production prints only prepack diagnostics and a fixed code, never child output', () => {
+  assert.deepEqual(productionFailure(failedChild()), [
+    REFUSAL,
+    '✗ CLI package production failed: PACKED_CLI_CHILD_FAILED',
+  ]);
+  // A system error gives its code, never its message with a host path; anything else is unexpected.
+  const missing = Object.assign(new Error("ENOENT: no such file, open '/private/x'"), {
+    code: 'ENOENT',
+  });
+  assert.deepEqual(productionFailure(missing), ['✗ CLI package production failed: ENOENT']);
+  for (const other of [new Error('a message with /private/paths'), 'thrown text', undefined])
+    assert.deepEqual(productionFailure(other), ['✗ CLI package production failed: UNEXPECTED']);
+});
+
+test('the producer entry point prints only the fixed failure lines and exits 1', () => {
+  // The real entry point and failure report, with a producer stand-in that fails as a build child.
+  const directory = fresh('entry');
+  for (const name of ['pack.mjs', 'production-failure.mjs'])
+    writeFileSync(join(directory, name), readFileSync(new URL(name, import.meta.url)));
+  writeFileSync(
+    join(directory, 'produce.mjs'),
+    `export async function producePackage() {\n` +
+      `  const error = new Error('PACKED_CLI_CHILD_FAILED: 1');\n` +
+      `  error.result = ${JSON.stringify(failedChild().result)};\n` +
+      `  throw error;\n}\n`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    [join(directory, 'pack.mjs'), join(directory, 'out')],
+    {
+      encoding: 'utf8',
+      timeout: 20_000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(
+    result.stderr,
+    `${REFUSAL}\n✗ CLI package production failed: PACKED_CLI_CHILD_FAILED\n`,
+  );
+  assert.equal(result.stderr.includes(QUOTED_MAP), false);
+});

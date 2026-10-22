@@ -47,7 +47,9 @@ exited. An interrupted consumer stops its children, the bootstrap witness's incl
 removes its installation, the witness's fixtures and the installed smoke's working directory; the
 installed CLI's detached native fixture targets end once the smoke worker that owns them is gone. `pnpm smoke:cli-package` forwards an interrupt to the producer or
 consumer it started instead of ending before them and starts no later stage after one; a
-producer killed outright can leave its owner-only root in the temporary directory. The receipt does **not** certify symbolication, a map manifest,
+producer killed outright can leave its owner-only root in the temporary directory. A failed
+production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
+(`production-failure.mjs`), never a build child's captured output, which can quote a map. The receipt does **not** certify symbolication, a map manifest,
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
 metafile or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it

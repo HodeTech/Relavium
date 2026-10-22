@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { devNull, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -114,7 +114,7 @@ mkdirSync(process.argv[2]);
  * explicitly, so the check runs no pnpm; so is the excludes file unless `excludes` is false, when
  * the check's Git lookup sees an empty home and no global or system configuration.
  */
-function check({ pack, consume = CONSUMER, excludes: named = true }) {
+function check({ pack, consume = CONSUMER, excludes: named = true, git }) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of COPIED) {
@@ -134,11 +134,17 @@ function check({ pack, consume = CONSUMER, excludes: named = true }) {
   writeFileSync(excludes, '');
   const home = join(root, 'home');
   mkdirSync(home);
+  // An optional `git` stand-in, first on PATH, for the check's own excludes lookup.
+  const bin = join(root, 'bin');
+  if (git !== undefined) {
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), git, { mode: 0o755 });
+  }
   writeFileSync(join(root, 'tools', 'cli-package', 'pack.mjs'), pack(markers));
   writeFileSync(join(root, 'tools', 'cli-package', 'consume.mjs'), consume(markers));
   const child = spawn(process.execPath, [join(root, 'tools', 'cli-package', 'check.mjs')], {
     env: {
-      PATH: process.env.PATH,
+      PATH: git === undefined ? process.env.PATH : `${bin}${delimiter}${process.env.PATH}`,
       TMPDIR: temporary,
       RELAVIUM_PACKAGE_STORE_DIR: store,
       ...(named
@@ -361,6 +367,32 @@ test(
       assert.equal(outcome.code, 130);
       assert.equal(outcome.stdout, '');
       assert.equal(readFileSync(join(run.markers, 'consume-forwarded'), 'utf8'), 'SIGINT');
+      assert.deepEqual(checkRoots(run.temporary), []);
+    } finally {
+      stopAll(run);
+    }
+  },
+);
+
+test(
+  'an interrupt during discovery stops the check before the producer',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // The excludes lookup's Git signals the check, ignores the interrupt forwarded back to it and
+    // exits 1 (no setting), so discovery itself completes normally.
+    const run = check({
+      pack: RECORDING_PRODUCER,
+      consume: PUBLISHING_CONSUMER('local'),
+      excludes: false,
+      git: `#!/bin/sh\ntrap 'exit 1' INT\nkill -INT "$PPID"\nsleep 1 &\nwait\nexit 1\n`,
+    });
+    try {
+      const outcome = await exitOf(run);
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 130);
+      assert.equal(outcome.stdout, '');
+      assert.equal(existsSync(join(run.markers, 'pack-environment')), false);
+      assert.equal(existsSync(join(run.markers, 'consume-started')), false);
       assert.deepEqual(checkRoots(run.temporary), []);
     } finally {
       stopAll(run);

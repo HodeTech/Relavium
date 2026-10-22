@@ -292,7 +292,9 @@ Private maps, the metafile, the hash record and the candidate tree are removed w
 producer succeeds, fails or is interrupted (SIGINT, SIGTERM, SIGHUP); an interrupt also stops
 the build's child processes and empties the artifact directory, which was empty at the start,
 before the producer exits with the signal's code — also when it arrives after the build's last
-child exited, during the seal or the final removal. An interrupted consumer likewise stops its
+child exited, during the seal or the final removal. A failed production prints only prepack's own
+fixed `✗ CLI …` lines and one fixed code, never a build child's captured output, which can quote a
+malformed map. An interrupted consumer likewise stops its
 child processes, including the bootstrap witness's, and removes its installation, the witness's
 fixtures and the installed smoke's working directory; the native fixture targets the installed CLI
 starts in their own process groups end on their own once the smoke worker that owns their case is

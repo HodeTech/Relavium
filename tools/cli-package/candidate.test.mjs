@@ -29,7 +29,7 @@ import {
   sourceIdentity,
   verifyCandidateLinks,
 } from './candidate.mjs';
-import { isolatedEnvironment, isolatedGitEnvironment, runCommand } from './process.mjs';
+import { isolatedGitEnvironment, runCommand } from './process.mjs';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-candidate-tree-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -273,9 +273,9 @@ test("the developer's global excludes file is located without the rest of the gl
 
 test('a real checkout copies nothing its developer ignores globally', async () => {
   const repository = fresh('real-checkout');
-  const env = isolatedEnvironment(repository);
+  // The fixture and the lookup both run without the host's system configuration.
   const inRepository = (args) =>
-    runCommand('git', args, { cwd: repository, env, timeoutMs: 30_000 });
+    runCommand('git', args, { cwd: repository, env: isolatedGitEnvironment(), timeoutMs: 30_000 });
   await inRepository(['init', '--quiet']);
   write(join(repository, 'kept.ts'), 'export {};\n');
   write(join(repository, 'secret.local'), 'private\n');
@@ -294,7 +294,7 @@ test('a real checkout copies nothing its developer ignores globally', async () =
   write(join(home, '.config', 'git', 'ignore'), 'secret.local\n');
   const excludes = await globalExcludesFile({
     repository,
-    environment: { PATH: process.env.PATH, HOME: home },
+    environment: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' },
   });
   assert.equal(excludes, join(home, '.config', 'git', 'ignore'));
   assert.deepEqual(await candidateFiles(repository, runCommand, excludes), ['kept.ts']);
