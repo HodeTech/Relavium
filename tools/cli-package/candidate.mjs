@@ -262,8 +262,9 @@ export const PACKAGE_STORE_ENV = 'RELAVIUM_PACKAGE_STORE_DIR';
  * The developer's existing content-addressed dependency store: the explicit
  * `RELAVIUM_PACKAGE_STORE_DIR` when a caller already isolated this process's environment,
  * otherwise discovered by the pinned pnpm with only the store-location variables of `environment`.
- * Everything else — temporary files, caches, corepack state — goes to the private `home`, never
- * into the original checkout.
+ * Temporary files and pnpm's caches go to the private `home`, never into the original checkout; a
+ * corepack-managed pnpm runs from the developer's own corepack cache (`COREPACK_HOME`, see
+ * `corepackHome` in process.mjs), never from the shared temporary directory.
  * @param {{repository: string, environment: Record<string, string | undefined>, home: string,
  *   pnpm?: typeof runPnpm}} options
  */

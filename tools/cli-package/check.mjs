@@ -8,6 +8,8 @@ import { dependencyStore, globalExcludesFile, producerEnvironment } from './cand
 import { forwardInterrupts, isolatedEnvironment, runCommand } from './process.mjs';
 
 assert.equal(process.argv.length, 2, 'no arguments required');
+/** Shortens each stage's deadline (milliseconds, at most the default 600000). */
+const DEADLINE_ENV = 'RELAVIUM_LOCAL_CHECK_DEADLINE_MS';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-local-package-check-')));
 // The producer and the consumer run detached, and each stops its own child trees and removes its
@@ -25,7 +27,15 @@ try {
   const excludes = await globalExcludesFile({ repository, environment: process.env });
   const artifact = join(root, 'artifact'),
     reports = join(root, 'reports');
-  const options = { env: isolatedEnvironment(root), timeoutMs: 600_000 };
+  // A stage past its deadline is interrupted first (SIGTERM), so it stops its own detached build
+  // children and removes its private directories; only a stage that ignores that is killed. The
+  // deadline can only be shortened, for the tests.
+  const deadline = Number(process.env[DEADLINE_ENV] ?? 600_000);
+  assert.ok(
+    Number.isSafeInteger(deadline) && deadline > 0 && deadline <= 600_000,
+    'PACKED_CLI_LOCAL_CHECK_DEADLINE',
+  );
+  const options = { env: isolatedEnvironment(root), timeoutMs: deadline, graceMs: 30_000 };
   proceed();
   await runCommand(process.execPath, [join(directory, 'pack.mjs'), artifact], {
     ...options,

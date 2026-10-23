@@ -46,7 +46,8 @@ stops the build first and empties the artifact directory, even after the last bu
 exited. An interrupted consumer stops its children, the bootstrap witness's included, and
 removes its installation, the witness's fixtures and the installed smoke's working directory; the
 installed CLI's detached native fixture targets end once the smoke worker that owns them is gone. `pnpm smoke:cli-package` forwards an interrupt to the producer or
-consumer it started instead of ending before them and starts no later stage after one; a
+consumer it started instead of ending before them and starts no later stage after one, and it
+interrupts a stage past its deadline before it kills it, so the stage stops its own children; a
 producer killed outright can leave its owner-only root in the temporary directory. A failed
 production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
 (`production-failure.mjs`), never a build child's captured output, which can quote a map. A

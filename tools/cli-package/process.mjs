@@ -207,9 +207,16 @@ export function forwardInterrupts() {
   };
 }
 
+/**
+ * Run one tool child in its own process group (POSIX) and settle when it closed. Past `timeoutMs` its
+ * group (on Windows its whole tree) is killed. On POSIX with a positive `graceMs` the group first gets
+ * SIGTERM and `graceMs` more, so a child that stops its own detached children and removes its private
+ * directories on an interrupt (the producer, the consumer) does so before anything is killed.
+ */
 export function runCommand(command, args, options = {}) {
-  const { timeoutMs = 300_000, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
+  const { timeoutMs = 300_000, graceMs = 0, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
+  assert.ok(Number.isSafeInteger(graceMs) && graceMs >= 0);
   assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0);
   return new Promise((resolve, reject) => {
     const grouped = process.platform !== 'win32';
@@ -225,7 +232,8 @@ export function runCommand(command, args, options = {}) {
       fault,
       closed = false,
       killer,
-      killerTimer;
+      killerTimer,
+      graceTimer;
     const output = { stdout: [], stderr: [] };
     function stop() {
       if (closed || child.pid === undefined) return;
@@ -254,7 +262,16 @@ export function runCommand(command, args, options = {}) {
     }
     const timer = setTimeout(() => {
       fault ??= new Error('PACKED_CLI_CHILD_TIMEOUT');
-      stop();
+      if (graceMs === 0 || !grouped || child.pid === undefined) {
+        stop();
+        return;
+      }
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch (error) {
+        if (error.code !== 'ESRCH') fault ??= error;
+      }
+      graceTimer = setTimeout(stop, graceMs);
     }, timeoutMs);
     for (const sink of ['stdout', 'stderr'])
       child[sink].on('data', (chunk) => {
@@ -271,6 +288,7 @@ export function runCommand(command, args, options = {}) {
       closed = true;
       liveChildren.delete(live);
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       if (killer && killer.exitCode === null && killer.signalCode === null)
         await new Promise((done) => killer.once('close', done));
       clearTimeout(killerTimer);

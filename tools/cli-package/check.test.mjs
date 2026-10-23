@@ -114,7 +114,7 @@ mkdirSync(process.argv[2]);
  * explicitly, so the check runs no pnpm; so is the excludes file unless `excludes` is false, when
  * the check's Git lookup sees an empty home and no global or system configuration.
  */
-function check({ pack, consume = CONSUMER, excludes: named = true, git }) {
+function check({ pack, consume = CONSUMER, excludes: named = true, git, env: extra = {} }) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of COPIED) {
@@ -150,6 +150,7 @@ function check({ pack, consume = CONSUMER, excludes: named = true, git }) {
       ...(named
         ? { RELAVIUM_GIT_EXCLUDES_FILE: excludes }
         : { HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull }),
+      ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -193,7 +194,13 @@ function alive(pid) {
  */
 function stopAll(run) {
   if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
-  for (const name of ['pack.pid', 'consume-started', 'writer.pid']) {
+  for (const name of [
+    'pack.pid',
+    'consume-started',
+    'writer.pid',
+    'grandchild.pid',
+    'helper.pid',
+  ]) {
     const file = join(run.markers, name);
     const pid = existsSync(file) ? Number(readFileSync(file, 'utf8')) : NaN;
     if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
@@ -393,6 +400,106 @@ test(
       assert.equal(outcome.stdout, '');
       assert.equal(existsSync(join(run.markers, 'pack-environment')), false);
       assert.equal(existsSync(join(run.markers, 'consume-started')), false);
+      assert.deepEqual(checkRoots(run.temporary), []);
+    } finally {
+      stopAll(run);
+    }
+  },
+);
+
+test(
+  'a stage past its deadline is interrupted first, so its own children never outlive the check',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // A producer that handles the interrupt as the real one does, around a detached build child that
+    // would write a map into the check root after the check removed it.
+    const run = check({
+      env: { RELAVIUM_LOCAL_CHECK_DEADLINE_MS: '1500' },
+      pack: (markers) => `
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { exitOnInterrupt, isolatedEnvironment, runCommand } from './process.mjs';
+const late = join(tmpdir(), 'late');
+await exitOnInterrupt(
+  () => writeFileSync(${JSON.stringify(join(markers, 'pack-interrupted'))}, 'cleaned'),
+  () =>
+    runCommand(process.execPath, ['-e', ${JSON.stringify(
+      `const fs = require('node:fs');` +
+        `fs.writeFileSync(${JSON.stringify(join(markers, 'grandchild.pid'))}, String(process.pid));`,
+    )} + 'setTimeout(() => { require("node:fs").mkdirSync(' + JSON.stringify(late) + ', { recursive: true }); require("node:fs").writeFileSync(' + JSON.stringify(join(late, 'index.js.map')) + ', "map"); }, 3000); setInterval(() => {}, 1000);'], {
+      env: isolatedEnvironment(tmpdir()),
+      timeoutMs: 60_000,
+    }),
+);
+`,
+    });
+    try {
+      const grandchild = Number(await waitForFile(join(run.markers, 'grandchild.pid')));
+      const [checkRoot] = checkRoots(run.temporary);
+      assert.ok(checkRoot !== undefined);
+      const outcome = await exitOf(run);
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 1);
+      assert.equal(outcome.stdout, '');
+      assert.equal(readFileSync(join(run.markers, 'pack-interrupted'), 'utf8'), 'cleaned');
+      assert.equal(alive(grandchild), false);
+      // Past the moment the build child would have written: nothing recreated the check root.
+      await delay(3500);
+      assert.equal(existsSync(join(run.temporary, checkRoot)), false);
+    } finally {
+      stopAll(run);
+    }
+  },
+);
+
+test('only a shorter, positive stage deadline is admitted', async () => {
+  for (const deadline of ['0', '-1', '600001', 'soon', '']) {
+    const run = check({
+      env: { RELAVIUM_LOCAL_CHECK_DEADLINE_MS: deadline },
+      pack: RECORDING_PRODUCER,
+      consume: PUBLISHING_CONSUMER('local'),
+    });
+    try {
+      const outcome = await exitOf(run);
+      assert.equal(outcome.code, 1, deadline);
+      assert.equal(existsSync(join(run.markers, 'pack-environment')), false, deadline);
+      assert.deepEqual(checkRoots(run.temporary), []);
+    } finally {
+      stopAll(run);
+    }
+  }
+});
+
+test(
+  'an interrupt during the root removal of the check still ends it with the signal',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // The consumer publishes, leaves a large tree in the check root and starts a helper that signals
+    // the check as soon as that tree starts to shrink, that is during the check's own removal.
+    const removal = (markers) =>
+      PUBLISHING_CONSUMER('local')(markers) +
+      `
+const bulk = join(reports, 'bulk');
+mkdirSync(bulk);
+for (let i = 0; i < 20000; i += 1) writeFileSync(join(bulk, String(i)), '');
+const { spawn } = await import('node:child_process');
+const helper = spawn(process.execPath, ['-e', ${JSON.stringify(
+        `const fs = require('node:fs');` +
+          `const [bulk, check, marker] = process.argv.slice(1);` +
+          `const poll = () => { let count; try { count = fs.readdirSync(bulk).length; } catch { process.exit(0); }` +
+          ` if (count < 20000) { process.kill(Number(check), 'SIGINT'); fs.writeFileSync(marker, 'sent'); process.exit(0); }` +
+          ` setTimeout(poll, 1); }; poll();`,
+      )}, bulk, String(process.ppid), ${JSON.stringify(join(markers, 'removal-signalled'))}], { detached: true, stdio: 'ignore' });
+writeFileSync(${JSON.stringify(join(markers, 'helper.pid'))}, String(helper.pid));
+helper.unref();
+`;
+    const run = check({ pack: RECORDING_PRODUCER, consume: removal });
+    try {
+      const outcome = await exitOf(run);
+      assert.equal(readFileSync(join(run.markers, 'removal-signalled'), 'utf8'), 'sent');
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 130);
       assert.deepEqual(checkRoots(run.temporary), []);
     } finally {
       stopAll(run);

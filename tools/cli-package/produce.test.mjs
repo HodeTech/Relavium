@@ -48,8 +48,9 @@ function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
         seen.pnpm = options;
         return { stdout: '9.12.3\n', stderr: '' };
       },
-      excludesFile: async ({ repository }) => {
+      excludesFile: async ({ repository, environment }) => {
         seen.excludesRepository = repository;
+        seen.excludesEnvironment = environment;
         return '/developer/excludes';
       },
       prepare: async (options) => {
@@ -115,13 +116,18 @@ test('the producer builds and seals only the owned candidate, never the original
     }
   });
   Object.assign(process.env, PLANTED);
+  const environment = { HOME: '/home/someone', NPM_TOKEN: 'environment-npm-token' };
   const result = await producePackage({
     repository,
     destination,
-    environment: { HOME: '/home/someone', NPM_TOKEN: 'environment-npm-token' },
+    environment,
     temporary,
     ports: fakes,
   });
+  // The developer's global excludes and dependency store are looked up in the caller's own
+  // environment, never in the isolated build environment.
+  assert.equal(seen.excludesEnvironment, environment);
+  assert.equal(seen.prepare.environment, environment);
   assert.deepEqual(result.identity, { source: SHA, dirty: false, files: 7 });
   // The whole build — pnpm, the candidate's preparation and the emit with its pack — runs in the
   // isolated environment of the private build home, never with the caller's own variables.

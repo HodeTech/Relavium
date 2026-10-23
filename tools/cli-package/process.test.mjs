@@ -364,3 +364,65 @@ test(
     }
   },
 );
+
+test(
+  'past its deadline a child is interrupted first, stops its own children and then settles',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-graceful-deadline-')));
+    const marker = join(root, 'cleaned');
+    const pidFile = join(root, 'grandchild.pid');
+    try {
+      // A child that handles the interrupt as the producer does, around a detached grandchild.
+      const child = `
+import { writeFileSync } from 'node:fs';
+import { exitOnInterrupt, isolatedEnvironment, runCommand } from ${JSON.stringify(new URL('./process.mjs', import.meta.url).href)};
+await exitOnInterrupt(
+  () => writeFileSync(${JSON.stringify(marker)}, 'cleaned'),
+  () => runCommand(process.execPath, ['-e', ${JSON.stringify(
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+  )}], { env: isolatedEnvironment(${JSON.stringify(root)}), timeoutMs: 60_000 }),
+);
+`;
+      const started = Date.now();
+      await assert.rejects(
+        runCommand(process.execPath, ['--input-type=module', '-e', child], {
+          timeoutMs: 3000,
+          graceMs: 20_000,
+        }),
+        /PACKED_CLI_CHILD_TIMEOUT/u,
+      );
+      // It settled when the child exited on the interrupt, long before the grace ran out.
+      assert.ok(Date.now() - started < 15_000);
+      assert.equal(readFileSync(marker, 'utf8'), 'cleaned');
+      const grandchild = Number(readFileSync(pidFile, 'utf8'));
+      for (let waited = 0; alive(grandchild); waited += 25) {
+        assert.ok(waited < 5_000, 'the grandchild outlived the cleanup of its parent');
+        await delay(25);
+      }
+    } finally {
+      // A regressed deadline leaves the detached grandchild running: it never outlives the test.
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : NaN;
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'a child that ignores the interrupt is killed once the grace runs out',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const started = Date.now();
+    await assert.rejects(
+      runCommand(
+        process.execPath,
+        ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+        { timeoutMs: 500, graceMs: 1000 },
+      ),
+      (error) =>
+        /PACKED_CLI_CHILD_TIMEOUT/u.test(error.message) && error.result.signal === 'SIGKILL',
+    );
+    assert.ok(Date.now() - started >= 1500);
+  },
+);

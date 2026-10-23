@@ -305,7 +305,8 @@ fixtures and the installed smoke's working directory; the native fixture targets
 starts in their own process groups end on their own once the smoke worker that owns their case is
 gone. The local `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
 rather than ending first, starts no later stage once one arrived, and exits with the signal's
-code after removing its root. A producer killed outright, a crash or a lost host can leave the
+code after removing its root; a stage past its deadline is interrupted (SIGTERM) first and killed
+only after a grace period, so it stops its own build children before the root goes. A producer killed outright, a crash or a lost host can leave the
 owner-only root in the temporary directory, and no secure erasure is claimed. "Owner-only" in this
 section means mode 0700 for directories and 0600 for staged files, set — and for the staging
 directory verified together with this process's uid — where POSIX modes are observable. On Windows
