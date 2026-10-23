@@ -506,3 +506,58 @@ helper.unref();
     }
   },
 );
+
+test(
+  'a consumer past its deadline is interrupted first too, so its own children never outlive the check',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // The real consumer lifetime around a detached child that would write into the check root later.
+    const lateConsumer = (markers) => `
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { completeConsumer } from './consumer-lifetime.mjs';
+import { isolatedEnvironment, runCommand } from './process.mjs';
+const reports = process.argv[3];
+mkdirSync(reports, { recursive: true });
+const home = mkdtempSync(join(tmpdir(), 'relavium-package-consumer-'));
+const late = join(tmpdir(), 'late');
+await completeConsumer({
+  supportRoot: reports,
+  exercise: () =>
+    runCommand(process.execPath, ['-e', ${JSON.stringify(
+      `require('node:fs').writeFileSync(${JSON.stringify(join(markers, 'grandchild.pid'))}, String(process.pid));`,
+    )} + 'setTimeout(() => { require("node:fs").mkdirSync(' + JSON.stringify(late) + ', { recursive: true }); require("node:fs").writeFileSync(' + JSON.stringify(join(late, 'installed.log')) + ', "late"); }, 3000); setInterval(() => {}, 1000);'], {
+      env: isolatedEnvironment(home),
+      timeoutMs: 60_000,
+    }),
+  cleanup: () => {
+    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    writeFileSync(${JSON.stringify(join(markers, 'consume-cleaned'))}, 'cleaned');
+  },
+  cleanupFailed: () => {},
+  publish: () => {},
+});
+`;
+    const run = check({
+      env: { RELAVIUM_LOCAL_CHECK_DEADLINE_MS: '1500' },
+      pack: RECORDING_PRODUCER,
+      consume: lateConsumer,
+    });
+    try {
+      const grandchild = Number(await waitForFile(join(run.markers, 'grandchild.pid')));
+      const [checkRoot] = checkRoots(run.temporary);
+      assert.ok(checkRoot !== undefined);
+      const outcome = await exitOf(run);
+      assert.equal(outcome.signal, null);
+      assert.equal(outcome.code, 1);
+      assert.equal(outcome.stdout, '');
+      assert.equal(readFileSync(join(run.markers, 'consume-cleaned'), 'utf8'), 'cleaned');
+      assert.equal(alive(grandchild), false);
+      await delay(3500);
+      assert.equal(existsSync(join(run.temporary, checkRoot)), false);
+    } finally {
+      stopAll(run);
+    }
+  },
+);

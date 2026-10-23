@@ -11,7 +11,7 @@ import {
   rmSync,
   realpathSync,
 } from 'node:fs';
-import { devNull, homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -28,12 +28,13 @@ import {
 test('Git reading the original checkout gets no home, global or system configuration nor replace refs', () => {
   const env = isolatedGitEnvironment();
   assert.deepEqual(env, {
-    ...isolatedEnvironment(devNull),
+    ...isolatedEnvironment('/dev/null'),
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_NO_REPLACE_OBJECTS: '1',
   });
-  for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(env[key], devNull);
+  // The literal Git maps to the null device on every platform, never Node's Windows `\\.\nul`.
+  for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(env[key], '/dev/null');
 });
 
 test('installer receives an explicit credential/config/preload-free environment', () => {
@@ -412,17 +413,35 @@ await exitOnInterrupt(
 test(
   'a child that ignores the interrupt is killed once the grace runs out',
   { skip: process.platform === 'win32' },
-  async () => {
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-ignored-interrupt-')));
+    const pidFile = join(root, 'child.pid');
+    // A regressed grace leaves the child running: the bound fails the test and this stops it.
+    t.after(() => {
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : NaN;
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    });
     const started = Date.now();
-    await assert.rejects(
-      runCommand(
-        process.execPath,
-        ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
-        { timeoutMs: 500, graceMs: 1000 },
-      ),
-      (error) =>
-        /PACKED_CLI_CHILD_TIMEOUT/u.test(error.message) && error.result.signal === 'SIGKILL',
+    const settled = runCommand(
+      process.execPath,
+      [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+          "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
+      ],
+      { timeoutMs: 500, graceMs: 1000 },
+    ).then(
+      () => 'resolved',
+      (error) => error,
     );
+    const outcome = await Promise.race([
+      settled,
+      delay(30_000, undefined, { ref: false }).then(() => 'still running'),
+    ]);
+    assert.ok(outcome instanceof Error, String(outcome));
+    assert.match(outcome.message, /PACKED_CLI_CHILD_TIMEOUT/u);
+    assert.equal(outcome.result.signal, 'SIGKILL');
     assert.ok(Date.now() - started >= 1500);
   },
 );

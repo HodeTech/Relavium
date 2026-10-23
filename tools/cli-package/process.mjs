@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { constants, devNull, homedir } from 'node:os';
+import { constants, homedir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
 
@@ -51,6 +51,13 @@ export function isolatedEnvironment(home) {
 }
 
 /**
+ * The null device as Git names it on every platform. Git for Windows maps only `nul` and this literal
+ * to the device; Node's `os.devNull` there (`\\.\nul`) reaches the C runtime, which refuses it, and
+ * Git then exits rather than read no configuration.
+ */
+const GIT_NULL_DEVICE = '/dev/null';
+
+/**
  * Git with no global or system configuration, for reading the original checkout: its own `.git/config`
  * and ignore rules still apply and a caller passes the developer's global excludes explicitly, but no
  * `.gitconfig`, `git/config`, `git/ignore` or `git/attributes` in a home, configuration or system
@@ -59,9 +66,9 @@ export function isolatedEnvironment(home) {
  */
 export function isolatedGitEnvironment() {
   return {
-    ...isolatedEnvironment(devNull),
+    ...isolatedEnvironment(GIT_NULL_DEVICE),
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
     GIT_NO_REPLACE_OBJECTS: '1',
   };
 }

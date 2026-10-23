@@ -245,10 +245,11 @@ describes the implemented mechanism; independent acceptance is recorded in the
   changed during the copy. A link, as a listed file or as any parent directory of one
   below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
   cannot bring in bytes from outside the checkout; so does an untracked nested repository,
-  which Git lists only as its directory. Every pnpm call runs in the private home's
-  isolated environment, but a corepack-managed pnpm runs from the developer's own corepack
-  cache (`COREPACK_HOME`, as corepack computes it), never from the temporary directory,
-  where another local user could plant a module on its lookup path.
+  which Git lists only as its directory. Every build and install pnpm call runs in the
+  private home's isolated environment (only the store discovery below also sees the
+  caller's store-location variables), and a corepack-managed pnpm runs from the developer's
+  own corepack cache (`COREPACK_HOME`, as corepack computes it), never from the temporary
+  directory, where another local user could plant a module on its lookup path.
   Ignored output, caches, dependencies and private notes never enter it. The locked
   closure is installed there offline, frozen and with `--ignore-scripts` from the
   existing content-addressed store, discovered with pnpm's store-location variables

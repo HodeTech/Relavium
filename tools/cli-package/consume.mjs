@@ -41,6 +41,7 @@ const receipt = JSON.parse(
   readOrdinaryFile(join(artifactDirectory, 'package-test-receipt.json'), 512 * 1024),
 );
 const origin = originFromEnvironment(process.env);
+// CI always names the source; only a local run asks Git.
 const source =
   process.env.RELAVIUM_PACKAGE_SOURCE_SHA ??
   (
