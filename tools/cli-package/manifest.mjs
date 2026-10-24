@@ -10,6 +10,7 @@ import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
 import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { isPackageVersion } from './binding.mjs';
 import { ENGINE_PACKAGES, writePrivateFile } from './finalize.mjs';
 import { readOrdinaryFile, sha256 } from './files.mjs';
 import { isolatedGitEnvironment, runCommand } from './process.mjs';
@@ -117,8 +118,7 @@ export function validateManifest(value) {
     !GIT_OBJECT.test(String(source.commit)) ||
     !GIT_OBJECT.test(String(source.tree)) ||
     typeof source.dirty !== 'boolean' ||
-    typeof value.packageVersion !== 'string' ||
-    !VERSION.test(value.packageVersion) ||
+    !isPackageVersion(value.packageVersion) ||
     typeof value.target !== 'string' ||
     !/^node\d{2,3}$/u.test(value.target) ||
     !exact(toolchain, ['node', 'pnpm', 'typescript', 'tsup', 'esbuild']) ||

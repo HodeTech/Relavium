@@ -5,18 +5,26 @@
  * instance the CLI's import and require both reach — and records V8's structured call sites for the
  * canary document alone, so one synchronous stack crosses the CLI and the inlined `@relavium/core`. It
  * writes one owner-only record when the process exits; the producer refuses unless exactly one stack
- * was captured. The keyring binding is replaced by a refusing module (frame-capture-hooks.mjs) and
- * any native module load refuses.
+ * was captured. The keyring binding is replaced by a refusing module, no module may resolve outside
+ * the candidate (frame-capture-hooks.mjs), and any native module load refuses.
  */
-import { closeSync, openSync, writeSync } from 'node:fs';
-import { createRequire, register } from 'node:module';
+import { closeSync, openSync, realpathSync, writeSync } from 'node:fs';
+import { createRequire, registerHooks } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { confinedResolve } from './frame-capture-hooks.mjs';
 
 const log = process.env.RELAVIUM_FRAME_CAPTURE_LOG;
 const manifest = process.env.RELAVIUM_FRAME_CAPTURE_PACKAGE;
 const canary = process.env.RELAVIUM_FRAME_CAPTURE_CANARY;
 if (!log || !manifest || !canary) throw new Error('The symbolication preload is not configured');
+if (typeof registerHooks !== 'function') {
+  throw new Error('The symbolication preload needs module.registerHooks');
+}
 
-register(new URL('./frame-capture-hooks.mjs', import.meta.url));
+// The candidate root holds `apps/cli/package.json`; pnpm installs the CLI's dependencies below it.
+registerHooks({
+  resolve: confinedResolve(realpathSync.native(resolve(dirname(manifest), '..', '..'))),
+});
 // The import route needs no native module; any addon load refuses instead of running native code
 // beside the private staging.
 process.dlopen = () => {

@@ -172,6 +172,9 @@ test('the anchors keep the coverage ruling and resolve in the real repository', 
     ANCHORS.slice(1),
     ANCHORS.slice(0, 4),
     ANCHORS.filter((anchor) => !anchor.source.startsWith('packages/core/')),
+    // A repeated entry is one call site.
+    [ANCHORS[0], ANCHORS[0], ANCHORS[2], ANCHORS[2], ANCHORS[2]],
+    [...ANCHORS.slice(1), ANCHORS[1]],
     // Call sites in other engine packages, or outside a package's sources, are not core anchors.
     [
       ...cli,
@@ -476,7 +479,7 @@ test('only synchronous frames inside the finalized dist count, and an unrecorded
   // resolution cache would still answer for one that already resolved it.
   const untooled = await candidate();
   await seal(untooled);
-  rmSync(join(untooled.cli, 'node_modules'));
+  rmSync(join(untooled.cli, 'node_modules'), { recursive: true, force: true });
   await assert.rejects(
     symbolicate(untooled, { capture: async () => frames }),
     refuses('TOOLCHAIN'),
@@ -939,6 +942,48 @@ test('the preload refuses the keyring and native modules and leaves V8’s stack
     assert.equal(existsSync(marker), false, missing);
     assert.equal(existsSync(log), false, missing);
   }
+});
+
+test('the preload refuses any module that resolves outside the candidate', async () => {
+  const fixture = await candidate();
+  // A module another local user could plant in a `node_modules` above the candidate, as ws's optional
+  // `bufferutil` would find one in a shared temporary directory.
+  const name = `relavium-planted-${process.pid}`;
+  const planted = join(dirname(fixture.root), 'node_modules', name);
+  mkdirSync(planted, { recursive: true });
+  const marker = join(fixture.work, 'planted-ran');
+  writeFileSync(join(planted, 'package.json'), JSON.stringify({ name, main: 'index.js' }));
+  writeFileSync(
+    join(planted, 'index.js'),
+    `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x');\n`,
+  );
+  const entry =
+    "import { createRequire } from 'node:module';\n" +
+    `let required; try { createRequire(import.meta.url)(${JSON.stringify(name)}); required = 'loaded'; } catch (error) { required = error.message; }\n` +
+    `let imported; try { await import(${JSON.stringify(name)}); imported = 'loaded'; } catch (error) { imported = error.message; }\n` +
+    'process.stdout.write(JSON.stringify({ required, imported }));\n';
+  // Without the preload, Node's resolution walks up and runs it.
+  writeFileSync(join(fixture.cli, 'dist', 'index.js'), entry);
+  let run = spawnSync(process.execPath, [join(fixture.cli, 'dist', 'index.js')], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: { PATH: process.env.PATH },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { required: 'loaded', imported: 'loaded' });
+  assert.equal(existsSync(marker), true);
+  rmSync(marker);
+  // Under the preload both a require and an import refuse, and it never runs.
+  const canary = 'frames-canary-confined';
+  run = preload(fixture, entry, {
+    RELAVIUM_FRAME_CAPTURE_LOG: join(fixture.work, 'frames.json'),
+    RELAVIUM_FRAME_CAPTURE_PACKAGE: join(fixture.cli, 'package.json'),
+    RELAVIUM_FRAME_CAPTURE_CANARY: canary,
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const refusal = 'The symbolication run refuses a module outside the candidate';
+  assert.deepEqual(JSON.parse(run.stdout), { required: refusal, imported: refusal });
+  assert.equal(existsSync(marker), false);
 });
 
 test('the keyring stand-in has every export the real package declares, and each refuses', () => {

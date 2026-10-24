@@ -10,6 +10,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -30,7 +31,8 @@ import { MANIFEST_INPUTS, sealPrivateManifest } from './manifest.mjs';
 export const cliRequire = createRequire(new URL('../../apps/cli/package.json', import.meta.url));
 const { build } = createRequire(cliRequire.resolve('tsup/package.json'))('esbuild');
 export const ts = cliRequire('typescript');
-const cliModules = fileURLToPath(new URL('../../apps/cli/node_modules', import.meta.url));
+/** The directory of an installed package the CLI resolves. */
+const installed = (name) => dirname(cliRequire.resolve(`${name}/package.json`));
 export const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-candidate-fixture-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 export const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -152,7 +154,18 @@ export async function candidate({ sources = SOURCES, parent = scratch } = {}) {
   }
   put(root, 'apps/cli/tsup.config.ts', "export default {\n  target: 'node22',\n};\n");
   put(root, 'apps/cli/package.json', JSON.stringify({ name: 'relavium', type: 'module' }));
-  symlinkSync(cliModules, join(root, 'apps', 'cli', 'node_modules'), 'junction');
+  // The CLI's installation: the build tools the test process reads link to the repository's, and
+  // `yaml`, the one runtime package the packed CLI loads, is a copy inside the candidate laid out as
+  // pnpm installs it (the package below the root's `node_modules/.pnpm`, linked from the CLI's), because
+  // the preload refuses any module outside the candidate.
+  const modules = join(root, 'apps', 'cli', 'node_modules');
+  mkdirSync(join(modules, '@napi-rs'), { recursive: true });
+  for (const name of ['typescript', 'tsup', '@napi-rs/keyring']) {
+    symlinkSync(installed(name), join(modules, ...name.split('/')), 'junction');
+  }
+  const store = join(root, 'node_modules', '.pnpm', 'yaml', 'node_modules', 'yaml');
+  cpSync(installed('yaml'), store, { recursive: true });
+  symlinkSync(store, join(modules, 'yaml'), 'junction');
   const cli = join(root, 'apps', 'cli');
   const built = await build({
     absWorkingDir: cli,

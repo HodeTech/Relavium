@@ -347,6 +347,9 @@ refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/
 Step 9a.2a (a [recorded split](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)
 of 9a.2, maintainer-approved on 2026-10-24) implements items 4 and 5 above for the package-test
 producer. The receipt stays `compiled_package_test` until 9a.2b's product map controls exist.
+"Owner-only" in this section has the meaning the 9a.1 section gives it: mode 0700 or 0600 where
+POSIX modes are observable; on Windows the private root inherits the temporary directory's ACL,
+which is not verified.
 
 - **Strict maps.** The finalizer decodes every consumed upstream map's and every final map's
   `mappings` strictly — base64 VLQ only, no truncated or oversized value, segments of one, four or
@@ -361,11 +364,12 @@ producer. The receipt stays `compiled_package_test` until 9a.2b's product map co
   staging (owner-only, never overwritten): version 1; the source commit, the commit's Git tree and
   the `dirty` flag; the package version; the build target; Node, pnpm, TypeScript, tsup and esbuild
   versions from the installed tools; SHA-256 digests of the lockfile, every package manifest and
-  every build configuration with the configurations it extends; every final JS file keyed as `dist/<chunk>.js` with its SHA-256, its map's
-  package-relative path (`dist/<chunk>.js.map`) and the staged map's SHA-256; a SHA-256 for every original source a final map names (repository-relative, no
-  content); and the tarball's SHA-256. The staged maps must still be the bytes the finalizer recorded
-  and each JS digest must be the tarball entry's. It holds no host path, credential or source text
-  and is removed with the staging.
+  every build configuration with the configurations it extends; every final JS file keyed as
+  `dist/<chunk>.js` with its SHA-256, its map's package-relative path (`dist/<chunk>.js.map`) and
+  the staged map's SHA-256; a SHA-256 for every original source a final map names
+  (repository-relative, no content); and the tarball's SHA-256. The staged maps must still be the
+  bytes the finalizer recorded and each JS digest must be the tarball entry's. It holds no host path,
+  credential or source text and is removed with the staging.
 - **Actual frames.** The seal then runs the finalized `dist` — which the inspection has proven
   byte-equal to the tarball entry by entry — under a tooling-only `node --import` preload while it
   imports a canary workflow (`relavium import`, with its home, project and captured frames in an
@@ -376,13 +380,18 @@ producer. The receipt stays `compiled_package_test` until 9a.2b's product map co
   `yaml` package's `parse`, records V8's structured call sites for the canary document alone,
   restores the stack formatter and limit, replaces the keyring package with a module that refuses
   every use, and makes any native addon load refuse, so the run loads no native module and reads no
-  secret. Exactly one captured stack is required.
+  secret. Through a synchronous resolution hook that sees `require` as well as `import`, it also
+  refuses any module that resolves outside the candidate, so an optional dependency the candidate
+  does not install (ws's `bufferutil`, for example) can never be satisfied by a `node_modules` that
+  another local user creates above it in a shared temporary directory. Exactly one captured stack is
+  required.
 - **Symbolication.** Each frame inside the finalized `dist` must be a file the manifest and the
   tarball record (re-hashed after the run), its map must be the staged bytes the manifest records,
   and only a frame that lands exactly on a mapping segment counts. Five named call sites must be
   reached — three in the CLI and two in the inlined `@relavium/core`, each the one call to a named
-  function inside another, and the table itself refuses fewer than two core or three CLI call sites
-  — at the line and UTF-16 column that the matching source revision's syntax tree gives: for a
+  function inside another, and the table itself refuses fewer than two distinct core or three
+  distinct CLI call sites — at the line and UTF-16 column that the matching source revision's
+  syntax tree gives: for a
   clean candidate the checkout's Git objects at the recorded commit, read as the raw blob (no filter
   or text conversion) by Git without home, global or system configuration and without replace refs
   (the checkout's own configuration is still read), and for a dirty local one the candidate copy,
@@ -393,7 +402,8 @@ producer. The receipt stays `compiled_package_test` until 9a.2b's product map co
 
 The capture child is not sandboxed: it runs the candidate CLI's runtime import closure as the
 producer's user, with network access, beside the private staging, confined only by its isolated
-environment, its owner-only work directory and the refused keyring and native modules. `relavium
+environment, its owner-only work directory, the refusal of any module outside the candidate and the
+refused keyring and native modules. `relavium
 import` makes no network request, but nothing enforces that. This is a named limit of the
 package-test producer, owned by
 [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).

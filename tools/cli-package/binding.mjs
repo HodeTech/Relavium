@@ -65,9 +65,19 @@ function sha(value) {
 function sourceSha(value) {
   return string(value, /^[0-9a-f]{40}$/u);
 }
+const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
+/**
+ * Whether `value` is a package version a receipt admits: a SemVer core with an optional prerelease and
+ * build, at most 100 characters. The private manifest admits exactly the same versions.
+ * @param {unknown} value @returns {value is string}
+ */
+export function isPackageVersion(value) {
+  return typeof value === 'string' && value.length <= 100 && PACKAGE_VERSION.test(value);
+}
 /** @param {unknown} value */
 function version(value) {
-  return string(value, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u, 100);
+  if (!isPackageVersion(value)) refuse('VALUE');
+  return value;
 }
 /** @param {unknown} value */
 function nodeVersion(value) {

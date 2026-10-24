@@ -128,6 +128,12 @@ test('the package version and tarball digest are the inspected archive’s', asy
   const manifest = await seal(fixture);
   assert.equal(manifest.packageVersion, '9.8.7');
   assert.equal(manifest.tarballSha256, 'e'.repeat(64));
+  // Every version a receipt admits: a prerelease with build metadata, and exactly 100 characters.
+  for (const version of ['1.0.0-rc.1+build.5', `0.1.1-${'a'.repeat(94)}`]) {
+    const admitted = await candidate();
+    admitted.archive.package.version = version;
+    assert.equal((await seal(admitted)).packageVersion, version);
+  }
 });
 
 test('the tree is asked of the original checkout through isolated Git', async () => {
@@ -272,7 +278,8 @@ test('the manifest refuses drifted maps and tarball entries, unpaired records an
     ],
     [
       'an uninstalled toolchain',
-      (fixture) => rmSync(join(fixture.root, 'apps', 'cli', 'node_modules')),
+      (fixture) =>
+        rmSync(join(fixture.root, 'apps', 'cli', 'node_modules'), { recursive: true, force: true }),
       'TOOLCHAIN',
     ],
   ]) {
@@ -418,7 +425,9 @@ test('a sealed manifest that is not exactly the validated shape refuses on read'
     ['packageVersion as array', (m) => (m.packageVersion = ['0.1.1'])],
     ['packageVersion not semver', (m) => (m.packageVersion = '0.1')],
     ['packageVersion with trailing text', (m) => (m.packageVersion = '0.1.1 x')],
-    ['packageVersion oversized suffix', (m) => (m.packageVersion = `0.1.1-${'a'.repeat(65)}`)],
+    ['packageVersion over 100 characters', (m) => (m.packageVersion = `0.1.1-${'a'.repeat(95)}`)],
+    ['packageVersion with a plus in its build', (m) => (m.packageVersion = '0.1.1+a+b')],
+    ['packageVersion with an empty prerelease', (m) => (m.packageVersion = '0.1.1-')],
     ['target as array', (m) => (m.target = ['node22'])],
     ['target not nodeNN', (m) => (m.target = 'es2022')],
     ['toolchain extra key', (m) => (m.toolchain.extra = '1.0.0')],

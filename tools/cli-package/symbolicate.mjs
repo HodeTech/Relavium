@@ -279,8 +279,14 @@ export async function symbolicateCandidate({
   revision = readSourceRevision,
   anchors = ANCHORS,
 }) {
-  // The maintainer's coverage ruling: at least two `@relavium/core` and three CLI call sites.
-  const within = (root) => anchors.filter((anchor) => anchor.source.startsWith(root)).length;
+  // The maintainer's coverage ruling: at least two `@relavium/core` and three CLI call sites, counted
+  // as distinct call sites, so a repeated entry does not count twice.
+  const within = (root) =>
+    new Set(
+      anchors
+        .filter((anchor) => anchor.source.startsWith(root))
+        .map((anchor) => JSON.stringify([anchor.source, anchor.within, anchor.call])),
+    ).size;
   if (within('packages/core/src/') < 2 || within('apps/cli/src/') < 3) refuse('ANCHORS');
   const manifest = readPrivateManifest(staging);
   const frames = await capture({ candidate, work, run });

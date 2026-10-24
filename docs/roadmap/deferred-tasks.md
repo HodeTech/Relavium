@@ -598,7 +598,8 @@ real run that shows the shape.
   emptiness check (`mkdirSync` recursive plus `readdirSync`), so one seal can read the other's tarball. It
   needs user error: the local check always uses a fresh root. **Re-check:** require that the directory does
   not exist yet and create it without `recursive`, or take an exclusive lock file first.
-  *(nit · tools/cli-package/produce.mjs)*
+  *(nit · tools/cli-package/produce.mjs)* *Re-checked in Step 9a.2a (2026-10-24), which changed
+  `produce.mjs` only to add the symbolication work directory: unchanged, still needs user error.*
 - [ ] **The consumer's and the smoke worker's composition has no node test.** *Low, unchanged since Step 7b.*
   *(rigor pass, F6 and F7)* `consume.mjs` hands `completeConsumer` the `supportRoot` that
   `runInstalledSmoke` uses and gives the local source lookup `isolatedGitEnvironment()`, and the worker picks

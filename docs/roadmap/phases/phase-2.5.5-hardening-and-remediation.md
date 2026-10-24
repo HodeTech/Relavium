@@ -9722,5 +9722,25 @@ and of the corrections were then run against the corrected tests: 509 are killed
 changed and are replaced by new mutants, and the 41 survivors are equivalent or defensive (unreachable defaults,
 caches, a redundant clause, parser options, constants and the binary search's arithmetic).
 
-**Remaining gates.** The full `pnpm run ci`, then one NEW complete cumulative round with no blocker, high or medium
-finding and no regression, together with the separate scoped security sitting at the same head and bar.
+**Author evidence at `fd6cd1cd`.** The full `pnpm run ci` (exit 0, about 70 minutes, with the real producer
+and consumer smoke and every causal-control family) and `test:acceptance-tools` (881 of 881, plain and under
+`CI=true GITHUB_ACTIONS=true`); on the clean tree, the package smoke and a direct production whose receipt
+records `dirty: false` and whose anchors were read from the commit's Git objects.
+
+**Round 1 at `fd6cd1cd` — NONCLEAN.** Five lenses and a critic, every finding adversarially verified. The security
+sitting reported one confirmed medium (SEC-9A2A-R1-1): the capture child ran the candidate CLI from the producer's
+root in the shared temporary directory, so ws's optional `require('bufferutil')` resolved a module another local
+user could plant in `<tmpdir>/node_modules`, which ran beside the private staging while the production still
+succeeded. Corrected: the preload registers a synchronous resolution hook (`module.registerHooks`, which sees
+`require` as well as `import`) that refuses any module resolving outside the candidate; a test plants such a module
+and shows that Node loads it without the preload and refuses it, by `require` and by `import`, with it. The test
+fixture now installs `yaml` inside the candidate in pnpm's layout. Lows corrected in the same commit: the anchor
+ruling counts distinct call sites (PLAN-9A2A-R1-1 = DMCS-9A2A-R1-1); the contract's 9a.2a section carries the
+Windows caveat of "owner-only" (PLAN-9A2A-R1-2); the manifest admits exactly the package versions a receipt admits,
+through one shared rule (CRIT-9A2A-R1-1); the triggered 9a.1 PLAT-9 deferral records its re-check (CRIT-9A2A-R1-2);
+and this checkpoint records the author's CI evidence (CRIT-9A2A-R1-3). Of thirteen mutants over the corrections, ten
+are killed and three are defensive: a prefix-sibling comparison that no resolution path reaches, a real-path call
+on paths the resolver already returns real, and the hook API check on a Node that has the API.
+
+**Remaining gates.** Round 2 — one NEW complete cumulative round with no blocker, high or medium finding and no
+regression, with the separate scoped security sitting at the same head and bar — then the push CI.
