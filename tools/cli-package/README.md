@@ -39,7 +39,8 @@ An exact public allowlist, checksums, modes, hashbangs, byte ceilings and negati
 controls exclude links, traversal, duplicates, extra files, maps and private build
 inventories. This deliberately supports the pinned packer's dialect, not general tar.
 
-The resulting public `package-test-receipt.json` records `compiled_package_test`.
+The resulting public `package-test-receipt.json` records `package_test` (Step 9a.2b; it recorded
+`compiled_package_test` before the product map controls existed).
 The candidate's maps are built, validated and then removed with the rest of the
 private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP), which
 stops the build first and empties the artifact directory, even after the last build child
@@ -68,7 +69,12 @@ native addons in its own process, and needs Node 22.15 or later; an older produc
 the matching source revision (`symbolicate.mjs`). The manifest is discarded with the staging, and
 the capture's home, project and frames with the private root. The
 receipt does **not** certify encrypted custody or a production release candidate (Steps 9b–9d),
-and it stays `compiled_package_test` until the product map controls of Step 9a.2b. No private map,
+and its `package_test` mode is a claim, backed by the required `ci` run at the same commit. A sealed
+candidate is never sealed again (`PACKED_CLI_ALREADY_SEALED`), and `dist` and the tarball must still be
+the manifest's when the receipt is written (`verifySealedDist`). `pnpm check:map-controls`
+(`map-controls.mjs`) runs every named negative control on product copies of one real production and
+prints one JSON summary of codes, never a path or map byte; the required `map-controls` CI job runs it
+uncached and uploads nothing. No private map,
 metafile, manifest or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
 sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule

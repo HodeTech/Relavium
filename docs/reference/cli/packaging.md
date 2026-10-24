@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); the remaining Step 9 map/custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are implemented, with independent acceptance pending; the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -149,8 +149,8 @@ removal precedes success receipt/summary publication. Worker or cleanup failure
 prevents publication, and secondary cleanup/diagnostic failure preserves the
 primary outcome. Private worker identity stays outside public receipts.
 
-Required workflows share one public tarball and a `compiled_package_test` receipt
-with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
+Required workflows share one public tarball and a package-test receipt (mode `package_test`
+since Step 9a.2b, `compiled_package_test` before it) with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
 untouched-entry bootstrap controls and actual workflow, gate, budget, chat/resume,
 SQLite, native-load, MCP-version and media-cleanup behavior. Their aggregate checks
 all four actual success records and immutable artifact/source/origin identities.
@@ -159,9 +159,9 @@ The [tooling guide](../../../tools/cli-package/README.md) describes invocation a
 bounded retry evidence. These runners are implemented; required platform execution
 and independent acceptance are recorded separately in the Wave 3 register.
 
-This intermediate receipt does not claim the full map-bearing package-test mode
-below. Original-TypeScript symbolication, private staging and release custody
-remain Step 9. Native fatal-owner integration is covered by [Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+Since Step 9a.2b the receipt records `package_test`: before writing it the producer verified its
+maps and symbolicated actual packed frames (Steps 9a.1 and 9a.2a), and the required `ci` at the
+same commit runs the product map controls (below). Release custody remains Steps 9b–9d. Native fatal-owner integration is covered by [Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 No intermediate local result closes Step 9 or certifies a release.
 
 ### Candidate finalization — Step 9
@@ -299,8 +299,8 @@ describes the implemented mechanism; independent acceptance is recorded in the
 - **Seal.** The seal takes the candidate root, the staging directory and the original
   checkout's identity explicitly and never resolves a repository from its own location.
   Public JS must be exactly the staged metafile's runtime outputs, byte-identical to the
-  finalizer's record; the actual tarball is inspected as in Step 7b. The receipt remains
-  `compiled_package_test`.
+  finalizer's record; the actual tarball is inspected as in Step 7b. The receipt remained
+  `compiled_package_test` until Step 9a.2b flipped it to `package_test`.
 - **Ordinary map-free control.** The ordinary closure guard refuses any map, map link or
   unreviewed file in `dist`, and the five build configurations and the CLI configuration
   are pinned map-free outside a named candidate.
@@ -346,7 +346,7 @@ refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/
 
 Step 9a.2a (a [recorded split](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)
 of 9a.2, maintainer-approved on 2026-10-24) implements items 4 and 5 above for the package-test
-producer. The receipt stays `compiled_package_test` until 9a.2b's product map controls exist.
+producer. The receipt stayed `compiled_package_test` until 9a.2b's product map controls existed.
 "Owner-only" in this section has the meaning the 9a.1 section gives it: mode 0700 or 0600 where
 POSIX modes are observable; on Windows the private root inherits the temporary directory's ACL,
 which is not verified. The producer needs Node 22.15 or later, whose `module.registerHooks` the
@@ -412,6 +412,65 @@ import` makes no network request, but nothing enforces that. This is a named lim
 package-test producer, owned by
 [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).
 
+### Product map controls and the package-test receipt — Step 9a.2b
+
+Step 9a.2b (the [preflight decisions](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-preflight-decisions--2026-10-24),
+maintainer-approved on 2026-10-24) closes ADR-0111's post-receipt rebuild refusal for the
+package-test producer, adds the product map controls and only then flips the receipt.
+
+- **Rebuild refusals.** A second prepack into a sealed staging refuses before any build
+  (`STAGING_NOT_EMPTY`). `sealPackage` refuses with `PACKED_CLI_ALREADY_SEALED` at its entry,
+  before the inspection and any capture, when the artifact directory holds anything besides the one
+  tarball or the staging already holds a manifest (checked without following a link); a receipt
+  another seal wrote meanwhile refuses with the same code. Immediately before the receipt is written,
+  `verifySealedDist` compares the whole `dist` inventory, every output's digest and the tarball's
+  digest with the manifest just sealed (`PACKED_CLI_MANIFEST_DIST_DRIFT`,
+  `PACKED_CLI_MANIFEST_TARBALL_CHANGED`), so a `dist` rebuilt or changed after the inspection refuses,
+  also in a chunk no frame lands in. Release-mode retry and no-rebuild rules stay with Steps 9c and 9d.
+- **Product map controls.** `pnpm check:map-controls` (`tools/cli-package/map-controls.mjs`) runs one
+  real package-test production at the checked-out commit through the producer's own ports. Inside its
+  seal, after the baseline receipt and while the private staging still exists, each control corrupts
+  one product copy — the owned candidate tree, or a copy of its private staging re-recorded so that
+  only the layer under test can refuse — requires that control's exact refusal and restores the file
+  by digest:
+  - a second prepack into the sealed staging, and a re-seal of the artifact directory or of the
+    sealed staging beside a copied tarball;
+  - on every anchor-bearing chunk, wrong JS by line and by column, a map from a build one line apart
+    and rotated map sources (`PACKED_CLI_SYMBOLICATION_ANCHOR_UNMAPPED`), after a re-recorded
+    unchanged copy is accepted;
+  - a wrong source revision, clean (`PACKED_CLI_SYMBOLICATION_SOURCE_REVISION`) and dirty
+    (`ANCHOR_UNMAPPED`);
+  - a changed chunk no frame lands in, and a real rebuild from a changed source, against the sealed
+    manifest (`PACKED_CLI_MANIFEST_DIST_DRIFT`), after the sealed `dist` verifies;
+  - an upstream map that is missing, malformed (an extra `sourcesContent`, an out-of-range source
+    index) or cut inside a VLQ value, each refused by the finalizer with its own fixed line after the
+    bundler silently succeeded (one build, nothing finalized, staged or packed); a byte-truncated
+    upstream map, which fails the bundler's own build; and a shifted but strictly valid upstream map,
+    which the finalizer accepts and symbolication refuses.
+
+  A restoration production must then seal again; its tarball digest is not compared with the
+  baseline's (see deferred-tasks.md, "Two packs of one source"). Every copy stays under the private
+  staging, which the producer removes first on success, failure and interrupt, and the developer's
+  checkout must be unchanged before and after. The runner prints one JSON summary of control ids and
+  expected and observed codes or fixed prepack lines — never a path, frame, position, map byte or
+  child output — and exits 1 on any mismatch. It runs in `pnpm run ci` right after
+  `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at most 20 minutes, read-only
+  permissions, no remote cache credentials, no pnpm cache, no build step and no upload, inside `ci`'s
+  needs with a guard that refuses every result except success (the required contexts stay `ci` and
+  `coverage`). That job's production is a second, independent build that is never shipped, not a
+  retry of the packed candidate, so ADR-0111's no-rebuild rule for a candidate is not touched.
+- **The `package_test` receipt.** The seal and both receipt validators share one constant, the earlier
+  `compiled_package_test` is refused, and the receipt keeps version 1 and its twelve fields;
+  consumers and the aggregate verify identity through the shared validator. The mode is a claim, not
+  evidence of the map checks: what backs it is the required `ci` run at the same commit, and Steps
+  9c and 9d must not read it as proof. `release.yml` runs no map controls of its own (its graph is
+  Step 9d's); a manual dry-run's `package_test` artifact is backed by the required `ci` run at the same
+  commit, and the interim guard refuses every release-workflow artifact anyway.
+
+The runner keeps private maps and manifests longer than the producer does, always under the staging; a
+runner killed outright can leave the owner-only root behind, the producer's existing named limit. The
+CI job runs on Linux only; a local run on Windows claims no mode evidence, as above.
+
 ## Recipient custody
 
 The maintainer selected encrypted CI archival. GnuPG is release tooling, never a
@@ -439,9 +498,10 @@ This wave creates no automatic deletion policy or production key.
 **Package-test mode** is required on PR/push and manual dry-run. In its isolated
 uncached originating pack job, build once, inspect exact tarball, verify maps and
 CLI/engine symbolication locally, then discard all private maps/manifests/metafiles.
-Share only the tarball and a nonsecret package-test receipt (version, mode
-package_test, source SHA, package version, tarball digest and originating workflow
-identity) with platform consumers. It needs no production recipient. GPG fixture
+Share only the tarball and a nonsecret package-test receipt (version 1 with mode
+`package_test`; the source SHA and dirty flag; the package version; the tarball's name,
+digest and size; the public file inventory and package metadata; the originating workflow
+identity and the producer toolchain) with platform consumers. It needs no production recipient. GPG fixture
 controls remain separate and use synthetic map payloads only.
 
 A package-test artifact is never promoted to a release candidate after private

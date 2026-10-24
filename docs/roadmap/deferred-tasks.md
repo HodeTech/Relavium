@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Steps 9a.2b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is implemented and under review, Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
