@@ -419,29 +419,35 @@ maintainer-approved on 2026-10-24) closes ADR-0111's post-receipt rebuild refusa
 package-test producer, adds the product map controls and only then flips the receipt.
 
 - **Rebuild refusals.** A second prepack into a sealed staging refuses before any build
-  (`STAGING_NOT_EMPTY`). `sealPackage` refuses with `PACKED_CLI_ALREADY_SEALED` at its entry,
-  before the inspection and any capture, when the artifact directory holds anything besides the one
-  tarball or the staging already holds a manifest (checked without following a link); a receipt
-  another seal wrote meanwhile refuses with the same code. Immediately before the receipt is written,
-  `verifySealedDist` compares the whole `dist` inventory, every output's digest and the tarball's
-  digest with the manifest just sealed (`PACKED_CLI_MANIFEST_DIST_DRIFT`,
+  (`STAGING_NOT_EMPTY`). `sealPackage` refuses with `PACKED_CLI_ALREADY_SEALED` at its entry, before
+  the inspection and any capture, when a receipt already lies beside the tarball or the staging already
+  holds a manifest (checked without following a link); any other extra file in the artifact directory
+  keeps the public artifact check's own refusal (`PACKED_CLI_UNEXPECTED_PUBLIC_ARTIFACT`), and a receipt
+  another seal wrote meanwhile refuses with the same code. The refusal is keyed on the artifact
+  directory and the staging, not on the candidate's identity. Immediately before the receipt is
+  written, `verifySealedDist` compares the whole `dist` inventory, every output's digest and the
+  tarball's digest with the manifest just sealed (`PACKED_CLI_MANIFEST_DIST_DRIFT`,
   `PACKED_CLI_MANIFEST_TARBALL_CHANGED`), so a `dist` rebuilt or changed after the inspection refuses,
-  also in a chunk no frame lands in. Release-mode retry and no-rebuild rules stay with Steps 9c and 9d.
-- **Product map controls.** `pnpm check:map-controls` (`tools/cli-package/map-controls.mjs`) runs one
-  real package-test production at the checked-out commit through the producer's own ports. Inside its
-  seal, after the baseline receipt and while the private staging still exists, each control corrupts
-  one product copy — the owned candidate tree, or a copy of its private staging re-recorded so that
-  only the layer under test can refuse — requires that control's exact refusal and restores the file
-  by digest:
-  - a second prepack into the sealed staging, and a re-seal of the artifact directory or of the
-    sealed staging beside a copied tarball;
+  also in a chunk whose map names no anchor source. Release-mode retry and no-rebuild rules stay with
+  Steps 9c and 9d.
+- **Product map controls.** `pnpm check:map-controls` (`tools/cli-package/map-controls.mjs`, an
+  unconditional entry point over `map-controls-core.mjs`) runs one real package-test production at the
+  checked-out commit through the producer's own ports. A half-configured CI environment refuses before
+  anything is built (`PACKED_CLI_MAP_CONTROL_ORIGIN`). Inside the seal, after the baseline receipt and
+  while the private staging still exists, each control corrupts one product copy — the owned candidate
+  tree, or a copy of its private staging re-recorded so that only the layer under test can refuse —
+  requires that control's exact refusal and restores the file by digest:
+  - a second prepack into the sealed staging; a re-seal of the artifact directory against a copy of
+    the staging without its manifest, and of the sealed staging beside a tarball copied without its
+    receipt, each isolating one half of `PACKED_CLI_ALREADY_SEALED` with no capture run;
   - on every anchor-bearing chunk, wrong JS by line and by column, a map from a build one line apart
-    and rotated map sources (`PACKED_CLI_SYMBOLICATION_ANCHOR_UNMAPPED`), after a re-recorded
-    unchanged copy is accepted;
+    and rotated map sources (`PACKED_CLI_SYMBOLICATION_ANCHOR_UNMAPPED`), each checked to have changed
+    exactly its own chunk in the way it names, after a re-recorded unchanged copy is accepted;
   - a wrong source revision, clean (`PACKED_CLI_SYMBOLICATION_SOURCE_REVISION`) and dirty
     (`ANCHOR_UNMAPPED`);
-  - a changed chunk no frame lands in, and a real rebuild from a changed source, against the sealed
-    manifest (`PACKED_CLI_MANIFEST_DIST_DRIFT`), after the sealed `dist` verifies;
+  - a changed chunk whose map names no anchor source, and a real rebuild from a changed source, against
+    the sealed manifest (`PACKED_CLI_MANIFEST_DIST_DRIFT`), after the sealed `dist` verifies; and the
+    seal's own check, which refuses a chunk the run changes after the inspection, writing no receipt;
   - an upstream map that is missing, malformed (an extra `sourcesContent`, an out-of-range source
     index) or cut inside a VLQ value, each refused by the finalizer with its own fixed line after the
     bundler silently succeeded (one build, nothing finalized, staged or packed); a byte-truncated
@@ -449,27 +455,38 @@ package-test producer, adds the product map controls and only then flips the rec
     which the finalizer accepts and symbolication refuses.
 
   A restoration production must then seal again; its tarball digest is not compared with the
-  baseline's (see deferred-tasks.md, "Two packs of one source"). Every copy stays under the private
-  staging, which the producer removes first on success, failure and interrupt, and the developer's
-  checkout must be unchanged before and after. The runner prints one JSON summary of control ids and
-  expected and observed codes or fixed prepack lines — never a path, frame, position, map byte or
-  child output — and exits 1 on any mismatch. It runs in `pnpm run ci` right after
-  `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at most 20 minutes, read-only
-  permissions, no remote cache credentials, no pnpm cache, no build step and no upload, inside `ci`'s
-  needs with a guard that refuses every result except success (the required contexts stay `ci` and
-  `coverage`). That job's production is a second, independent build that is never shipped, not a
-  retry of the packed candidate, so ADR-0111's no-rebuild rule for a candidate is not touched.
-- **The `package_test` receipt.** The seal and both receipt validators share one constant, the earlier
-  `compiled_package_test` is refused, and the receipt keeps version 1 and its twelve fields;
-  consumers and the aggregate verify identity through the shared validator. The mode is a claim, not
-  evidence of the map checks: what backs it is the required `ci` run at the same commit, and Steps
-  9c and 9d must not read it as proof. `release.yml` runs no map controls of its own (its graph is
-  Step 9d's); a manual dry-run's `package_test` artifact is backed by the required `ci` run at the same
-  commit, and the interim guard refuses every release-workflow artifact anyway.
+  baseline's (see deferred-tasks.md, "Two packs of one source"). Staging copies stay under the private
+  staging, which the producer removes first on success, failure and interrupt; a refused control
+  build's `dist`, which holds the bundler's maps, is removed at once. The developer's checkout is read,
+  never written (Git may refresh its own index's stat cache), and its identity must be unchanged
+  afterwards. The runner prints one JSON summary of control ids, expected and observed codes and
+  prepack's fixed lines with their repository-relative subjects — never an absolute path, frame,
+  position, map byte or raw child output — and exits 1 unless every expected control (seventeen, plus
+  four for each anchor-bearing chunk) ran exactly once with its expected outcome. It runs in
+  `pnpm run ci` right after `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at
+  most 20 minutes, read-only permissions, no remote cache credentials, no pnpm cache, no build step, no
+  custom shell and no upload, inside `ci`'s needs with a guard that refuses every result except success
+  (the required contexts stay `ci` and `coverage`). That job's production is a second, independent
+  build that is never shipped, not a retry of the packed candidate, so ADR-0111's no-rebuild rule for a
+  candidate is not touched.
+- **The `package_test` receipt.** The seal and the shared receipt validator (in its check and its
+  normalized record) use one constant, the earlier `compiled_package_test` is refused, and the receipt
+  keeps version 1 and its twelve fields; consumers and the aggregate verify identity through that
+  validator. The mode is a claim, not evidence of the map checks. The `ci` workflow at a commit
+  requires the controls, but a given artifact is backed only where a successful `ci` run exists at
+  exactly its commit: `pack-cli` uploads its artifact whatever the same run's `map-controls` job
+  concludes, a pull request's `ci` runs at its merge commit, not its head, and a release dispatch with
+  `allow_off_main` or of an intermediate commit has no `ci` run at all; a local dirty production writes
+  `package_test` too. Steps 9c and 9d must therefore never read the mode as proof. `release.yml` runs
+  no map controls of its own and its pack job keeps its `pnpm` dependency cache (public registry
+  packages only) until Step 9d rebuilds that graph, and the interim guard refuses every
+  release-workflow artifact.
 
-The runner keeps private maps and manifests longer than the producer does, always under the staging; a
-runner killed outright can leave the owner-only root behind, the producer's existing named limit. The
-CI job runs on Linux only; a local run on Windows claims no mode evidence, as above.
+The runner keeps private maps and manifests longer than the producer does, always inside the
+producer's owner-only root; a runner killed outright can leave that root behind, the producer's
+existing named limit, and an interrupted runner leaves its own empty temporary directory (see
+deferred-tasks.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
+evidence, as above.
 
 ## Recipient custody
 

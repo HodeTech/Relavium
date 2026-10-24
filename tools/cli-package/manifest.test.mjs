@@ -467,6 +467,60 @@ test('the dist and the tarball are verified against the manifest just sealed', a
   }
 });
 
+test('every output is checked, each read is bounded, and so is the tarball', async () => {
+  // A same-length change in any output refuses, the first as much as the last.
+  const sealed = await sealedWithTarball();
+  assert.ok(sealed.manifest.outputs.length >= 2);
+  for (const output of sealed.manifest.outputs) {
+    const path = join(sealed.fixture.cli, ...output.path.split('/'));
+    const saved = readFileSync(path);
+    const changed = Buffer.from(saved);
+    changed[changed.length - 1] = changed[changed.length - 1] === 0x0a ? 0x20 : 0x0a;
+    writeFileSync(path, changed);
+    assert.throws(
+      () =>
+        verifySealedDist({
+          candidate: sealed.fixture.root,
+          manifest: sealed.manifest,
+          tarball: sealed.tarball,
+        }),
+      refuses('DIST_DRIFT'),
+      output.path,
+    );
+    writeFileSync(path, saved);
+  }
+  // An output over 8 MiB, or a tarball over 16 MiB, refuses even when the manifest records its digest.
+  const big = Buffer.alloc(8 * 1024 * 1024 + 1, 0x20);
+  const output = sealed.manifest.outputs[0];
+  writeFileSync(join(sealed.fixture.cli, ...output.path.split('/')), big);
+  assert.throws(
+    () =>
+      verifySealedDist({
+        candidate: sealed.fixture.root,
+        manifest: {
+          ...sealed.manifest,
+          outputs: sealed.manifest.outputs.map((entry) =>
+            entry === output ? { ...entry, sha256: digest(big) } : entry,
+          ),
+        },
+        tarball: sealed.tarball,
+      }),
+    refuses('DIST_DRIFT'),
+  );
+  const fresh = await sealedWithTarball();
+  const bigger = Buffer.alloc(16 * 1024 * 1024 + 1, 0x20);
+  writeFileSync(fresh.tarball, bigger);
+  assert.throws(
+    () =>
+      verifySealedDist({
+        candidate: fresh.fixture.root,
+        manifest: { ...fresh.manifest, tarballSha256: digest(bigger) },
+        tarball: fresh.tarball,
+      }),
+    refuses('TARBALL_CHANGED'),
+  );
+});
+
 test('a refusal is a ManifestError naming only its fixed code', () => {
   const empty = fresh('no-manifest');
   mkdirSync(empty);

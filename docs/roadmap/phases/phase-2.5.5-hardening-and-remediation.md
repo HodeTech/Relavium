@@ -9827,7 +9827,31 @@ controls job, as ruled. On this host the runner's 24 controls pass in about 30 s
 `smoke:cli-package` passes with the flipped receipt through the real producer and consumers, and
 `test:acceptance-tools` passes 911 of 911.
 
-**Remaining gates.** The internal rigor pass (a whole-increment mutation sweep in which each control must fail
-when its refusal is removed, the claims, platform and security lenses), the full `pnpm run ci`, then one NEW
-complete cumulative round with no blocker, high or medium finding and no regression, together with the separate
-scoped security sitting at the same head and bar, and the `map-controls` job green on the push CI.
+**Internal rigor pass, 2026-10-24.** Under the rigor-before-review rule a pass covered the whole increment at
+`77ee5d0a` before its first round: three mutation sweeps (the seal refusals and the flip; the runner, including
+removing each production refusal a control is meant to prove and running the real runner; the CI pins) and
+claims, platform, security and integration lenses with a completeness critic; the detailed record is local. It
+confirmed one high finding: the re-seal-receipt control re-sealed against the sealed staging, so the staging half
+of `PACKED_CLI_ALREADY_SEALED` refused for it and the artifact half it claimed to prove could be removed with the
+runner still passing. Corrected: it now re-seals against a copy of the staging without its manifest. Medium
+findings corrected: nothing tested the seal's default `verify` port (a seal test now runs the real check, and a new
+`seal-verify` control changes a chunk during the seal's own run); the runner accepted whatever controls ran and
+its exit gate was untested (it now requires the seventeen fixed controls plus four per anchor-bearing chunk, each
+exactly once, through a tested `verdict` and `report`); its entry guard compared two differently resolved paths
+and could exit 0 on Windows without running (the entry point is now an unconditional `map-controls.mjs` over
+`map-controls-core.mjs`); the per-chunk controls were not checked to corrupt their own chunk in their own way (each
+re-recorded copy must now differ from the sealed record in exactly its chunk, and a line or column shift must
+change the line count as it names); the workflow pins did not pin the step shells, the job environment or several
+properties' negative cases (they do now); and the contract's statement that a manual dry-run's `package_test`
+artifact is backed by the required `ci` run at the same commit, recorded in the preflight table above, did not hold
+for every dispatch — corrected in the contract and the workflow comments, with Step 9d's binding to a successful
+`ci` run recorded in deferred-tasks.md. Lows corrected include an early refusal of a half-configured CI
+environment, removing a refused control build's `dist`, tests of the already-sealed refusal's order, of a failed
+receipt write, of the version's start anchor and of `verifySealedDist`'s every output and read bounds, and the
+summary, checkout and already-sealed wording. Five lows are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24). The five mutants the
+corrections target now fail the real runner, each on its own control or self-check.
+
+**Remaining gates.** The full `pnpm run ci`, then one NEW complete cumulative round with no blocker, high or medium
+finding and no regression, together with the separate scoped security sitting at the same head and bar, and the
+`map-controls` job green on the push CI.

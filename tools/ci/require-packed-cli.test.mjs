@@ -234,6 +234,11 @@ const mapControlsGuard = 'Require complete product map controls';
 function checkMapControls(workflow) {
   const job = workflow.jobs['map-controls'];
   requiredJob(job);
+  // Every step runs in the default shell with only the job's own environment.
+  assert.equal(workflow.defaults, undefined);
+  assert.equal(job.defaults, undefined);
+  assert.equal(workflow.jobs.ci.defaults, undefined);
+  assert.deepEqual(job.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
   assert.equal(job.needs, undefined);
   assert.equal(job.strategy, undefined);
   assert.equal(job['runs-on'], 'ubuntu-latest');
@@ -253,15 +258,16 @@ function checkMapControls(workflow) {
     job.steps.filter((step) => step.run).map((step) => step.run),
     ['pnpm install --frozen-lockfile', mapControlsCommand],
   );
-  assert.deepEqual(job.steps.find((step) => step.run === mapControlsCommand).env, {
-    RELAVIUM_PACKAGE_SOURCE_SHA: '${{ github.sha }}',
-  });
+  const controls = job.steps.find((step) => step.run === mapControlsCommand);
+  assert.deepEqual(Object.keys(controls).sort(), ['env', 'name', 'run']);
+  assert.deepEqual(controls.env, { RELAVIUM_PACKAGE_SOURCE_SHA: '${{ github.sha }}' });
   // Required CI waits for it and refuses every result except success; the package aggregate does not.
   const ci = workflow.jobs.ci;
   assert.ok(ci.needs.includes('map-controls'));
   assert.ok(![workflow.jobs['packed-cli'].needs].flat().includes('map-controls'));
   const guard = ci.steps.find((step) => step.name === mapControlsGuard);
   assert.ok(guard, mapControlsGuard);
+  assert.deepEqual(Object.keys(guard).sort(), ['env', 'name', 'run']);
   assert.deepEqual(guard.env, { MAP_CONTROLS_RESULT: '${{ needs.map-controls.result }}' });
   assert.equal(
     guard.run,
@@ -303,6 +309,25 @@ for (const [name, mutate] of [
     'no source identity',
     (job) => delete job.steps.find((step) => step.run === mapControlsCommand).env,
   ],
+  [
+    'a tolerated controls step',
+    (job) =>
+      (job.steps.find((step) => step.run === mapControlsCommand)['continue-on-error'] = true),
+  ],
+  [
+    'a custom shell on the controls step',
+    (job) => (job.steps.find((step) => step.run === mapControlsCommand).shell = 'true {0}'),
+  ],
+  ['a default shell for the job', (job) => (job.defaults = { run: { shell: 'true {0}' } })],
+  ['a preload in the job environment', (job) => (job.env.NODE_OPTIONS = '--import ./x.mjs')],
+  ['write permissions', (job) => (job.permissions = { contents: 'write' })],
+  ['another platform', (job) => (job['runs-on'] = 'macos-latest')],
+  ['a dependency', (job) => (job.needs = 'pack-cli')],
+  ['a matrix', (job) => (job.strategy = { matrix: { os: ['ubuntu-latest'] } })],
+  [
+    'pnpm setup inputs',
+    (job) => (job.steps.find((step) => step.uses === actions.pnpm).with = { version: '9.12.3' }),
+  ],
 ])
   test(`map controls job refuses ${name}`, () => {
     const workflow = readWorkflow('ci');
@@ -331,12 +356,35 @@ for (const [name, mutate] of [
     'a guard that admits other results',
     (jobs) => (jobs.ci.steps.find((step) => step.name === mapControlsGuard).run = 'true'),
   ],
+  [
+    'a guard reading another result',
+    (jobs) =>
+      (jobs.ci.steps.find((step) => step.name === mapControlsGuard).env = {
+        MAP_CONTROLS_RESULT: '${{ needs.packed-cli.result }}',
+      }),
+  ],
+  [
+    'a tolerated guard',
+    (jobs) =>
+      (jobs.ci.steps.find((step) => step.name === mapControlsGuard)['continue-on-error'] = true),
+  ],
+  [
+    'a custom shell on the guard',
+    (jobs) => (jobs.ci.steps.find((step) => step.name === mapControlsGuard).shell = 'true {0}'),
+  ],
+  ['a default shell for ci', (jobs) => (jobs.ci.defaults = { run: { shell: 'true {0}' } })],
 ])
   test(`required CI refuses ${name} of the map controls`, () => {
     const workflow = readWorkflow('ci');
     mutate(workflow.jobs);
     assert.throws(() => checkMapControls(workflow), assert.AssertionError);
   });
+
+test('a workflow-wide default shell refuses the map controls', () => {
+  const workflow = readWorkflow('ci');
+  workflow.defaults = { run: { shell: 'true {0}' } };
+  assert.throws(() => checkMapControls(workflow), assert.AssertionError);
+});
 
 test('required CI joins packed acceptance and explicitly refuses every result except success', () => {
   const job = readWorkflow('ci').jobs.ci;

@@ -14,6 +14,7 @@ import {
   REQUIRED_CONSUMER_LEGS,
   requirePackageJobResults,
   validateConsumerRecord,
+  isPackageVersion,
   validatePackageReceipt,
 } from './binding.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
@@ -106,6 +107,13 @@ test('one actual artifact binds every required OS/minimum-runtime consumer', () 
     [...REQUIRED_CONSUMER_LEGS].sort(),
   );
   assert.equal(result.tarballSha256, digest);
+});
+
+test('a package version is a SemVer core from its first character', () => {
+  assert.equal(isPackageVersion('0.1.1'), true);
+  for (const version of ['v0.1.1', 'x0.1.1', '../0.1.1', 'relavium-0.1.1', ' 0.1.1', '0.1.1 ']) {
+    assert.equal(isPackageVersion(version), false, version);
+  }
 });
 
 test('strict receipt refuses omitted or added private/custody claims', () => {

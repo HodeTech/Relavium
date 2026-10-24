@@ -107,8 +107,9 @@ function present(path) {
 /**
  * Inspect the tarball, then seal the candidate's private map manifest, then symbolicate actual packed
  * frames against it, then verify that `dist` and the tarball are still the manifest's, and only then
- * write the receipt: a refusal at any step leaves no receipt. A candidate is sealed once: a receipt
- * beside the tarball or a manifest in the staging refuses before anything is read or run.
+ * write the receipt: a refusal at any step leaves no receipt. An artifact directory that already holds
+ * a receipt, or a staging that already holds a manifest, is never sealed again: either refuses before
+ * the inspection and any capture.
  * @param {string} artifactDirectory the public artifact directory holding exactly one tarball
  * @param {{repository: string, staging: string, source: string, dirty: boolean, checkout: string,
  *   work: string, ports?: {manifest?: typeof sealPrivateManifest,

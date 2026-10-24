@@ -633,6 +633,120 @@ test('a sealed candidate is never sealed again, and nothing is read or run first
   });
 });
 
+/** The manifest a real seal would hold for the fixture's bytes: its sorted outputs and the tarball. */
+function sealedManifest(root, artifact) {
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const dist = join(root, 'apps/cli/dist');
+  return {
+    outputs: readdirSync(dist)
+      .sort()
+      .map((name) => ({ path: `dist/${name}`, sha256: digest(readFileSync(join(dist, name))) })),
+    tarballSha256: digest(readFileSync(join(artifact, 'relavium-0.1.1.tgz'))),
+  };
+}
+const sealInputs = (root, staging) => ({
+  repository: root,
+  staging,
+  source: SOURCE,
+  dirty: false,
+  checkout: root,
+  work: join(dirname(staging), 'work'),
+});
+
+test('without a verify port the seal checks dist and the tarball before the receipt', async () => {
+  // Unchanged, they verify and the receipt is written.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    const manifest = sealedManifest(root, artifact);
+    await withOrigin({}, () =>
+      sealPackage(artifact, {
+        ...sealInputs(root, staging),
+        ports: { manifest: async () => manifest, symbolicate: async () => {} },
+      }),
+    );
+    assert.equal(existsSync(receiptPath(artifact)), true);
+  });
+  // A chunk or the tarball changed during the capture refuses, and no receipt is written.
+  for (const [change, code] of [
+    [
+      (root) => writeFileSync(join(root, 'apps/cli/dist/chunk-ABC.js'), 'export {}; \n'),
+      'DIST_DRIFT',
+    ],
+    [
+      (_root, artifact) => writeFileSync(join(artifact, 'relavium-0.1.1.tgz'), 'other'),
+      'TARBALL_CHANGED',
+    ],
+  ]) {
+    await withCandidate(async ({ root, staging, artifact }) => {
+      const manifest = sealedManifest(root, artifact);
+      await withOrigin({}, () =>
+        assert.rejects(
+          sealPackage(artifact, {
+            ...sealInputs(root, staging),
+            ports: {
+              manifest: async () => manifest,
+              symbolicate: async () => change(root, artifact),
+            },
+          }),
+          (error) => error instanceof ManifestError && error.code === code,
+        ),
+      );
+      assert.equal(existsSync(receiptPath(artifact)), false);
+    });
+  }
+});
+
+test('the already-sealed refusal precedes the inspection, and other extras keep their own code', async () => {
+  // A staged manifest beside an archive the inspection would refuse: the seal refusal comes first.
+  await withCandidate(async ({ root, staging, artifact, files }) => {
+    writeFileSync(join(staging, 'manifest.json'), '{}');
+    files.set('package/LICENSE', Buffer.from('changed\n'));
+    writeFileSync(join(artifact, 'relavium-0.1.1.tgz'), gzipSync(ustar(files)));
+    await withOrigin({}, () =>
+      assert.rejects(sealPackage(artifact, sealInputs(root, staging)), {
+        message: 'PACKED_CLI_ALREADY_SEALED',
+      }),
+    );
+  });
+  // A receipt beside the tarball and no candidate at all: still the seal refusal.
+  await withCandidate(async ({ staging, artifact }) => {
+    writeFileSync(receiptPath(artifact), '{}');
+    await withOrigin({}, () =>
+      assert.rejects(sealPackage(artifact, sealInputs(join(artifact, 'no-candidate'), staging)), {
+        message: 'PACKED_CLI_ALREADY_SEALED',
+      }),
+    );
+  });
+  // Any other extra file is the public artifact check's refusal, never ALREADY_SEALED.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    writeFileSync(join(artifact, 'notes.txt'), 'extra');
+    await withOrigin({}, () =>
+      assert.rejects(sealPackage(artifact, sealInputs(root, staging)), {
+        message: 'PACKED_CLI_UNEXPECTED_PUBLIC_ARTIFACT',
+      }),
+    );
+  });
+});
+
+test('a receipt write failing other than EEXIST keeps its own error and leaves no receipt', async () => {
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealPackage(artifact, {
+          ...sealInputs(root, staging),
+          ports: {
+            manifest: async () => SEALED,
+            symbolicate: async () => {},
+            // The artifact directory disappears before the receipt is written.
+            verify: async () => rmSync(artifact, { recursive: true, force: true }),
+          },
+        }),
+        (error) => error?.code === 'ENOENT',
+      ),
+    );
+    assert.equal(existsSync(receiptPath(artifact)), false);
+  });
+});
+
 test('both steps receive the candidate, the original checkout and the dirty flag as given', async () => {
   await withCandidate(async ({ root, staging, artifact }) => {
     const calls = [];

@@ -139,6 +139,7 @@ test('the actual required workflow joins both full offline controls and checks t
     'node tools/cli-package/map-controls.mjs',
   );
   const chain = packageJson.scripts.ci.split(' && ');
+  assert.ok(chain.indexOf('pnpm smoke:cli-package') >= 0);
   assert.equal(
     chain.indexOf('pnpm check:map-controls'),
     chain.indexOf('pnpm smoke:cli-package') + 1,

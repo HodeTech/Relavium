@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  FIXED_CONTROLS,
   cutInsideValue,
   encodeMappings,
+  report,
   rotateSources,
   shiftColumns,
   shiftLines,
   shiftOriginalColumns,
-} from './map-controls.mjs';
+  verdict,
+} from './map-controls-core.mjs';
 import { SourceMapError, decodeMappings } from './source-map.mjs';
 
 // Importing the runner runs no control: only its command-line entry point does.
@@ -127,4 +130,74 @@ test('a value cut after its first continuation digit never ends', () => {
     () => cutInsideValue('AAAA;CAAA'),
     refuses('PACKED_CLI_MAP_CONTROL_NO_CONTINUATION'),
   );
+});
+
+/** A passing run's results: every fixed control and four for each of `chunks` anchor-bearing chunks. */
+function passing(chunks) {
+  const ids = [
+    ...FIXED_CONTROLS,
+    ...Array.from({ length: chunks }, (_, index) =>
+      ['js-line', 'js-column', 'map-line', 'sources-rotated'].map((kind) => `${kind}-${index + 1}`),
+    ).flat(),
+  ];
+  return ids.map((id) => ({ id, expected: 'CODE', observed: 'CODE' }));
+}
+
+test('the verdict passes only a complete run whose every control had its expected outcome', () => {
+  assert.equal(verdict({ results: passing(2), chunks: 2 }).passed, true);
+  assert.equal(verdict({ results: passing(2), chunks: 2 }).expected, FIXED_CONTROLS.length + 8);
+  // No anchor-bearing chunk.
+  assert.equal(verdict({ results: passing(0), chunks: 0 }).passed, false);
+  // A control that did not run, here a fixed one and a per-chunk one.
+  for (const id of ['dist-plain-chunk', 'sources-rotated-2']) {
+    const judged = verdict({ results: passing(2).filter((result) => result.id !== id), chunks: 2 });
+    assert.deepEqual([judged.passed, judged.missing], [false, [id]]);
+  }
+  // A control that ran twice, or one that is not expected.
+  const twice = verdict({
+    results: [...passing(1), { id: 'restoration', expected: 'A', observed: 'A' }],
+    chunks: 1,
+  });
+  assert.deepEqual([twice.passed, twice.unexpected], [false, ['restoration']]);
+  const stray = verdict({
+    results: [...passing(1), { id: 'js-line-2', expected: 'A', observed: 'A' }],
+    chunks: 1,
+  });
+  assert.deepEqual([stray.passed, stray.unexpected], [false, ['js-line-2']]);
+  // An observed outcome other than the expected one.
+  const results = passing(1);
+  results[3] = { ...results[3], observed: 'OTHER' };
+  const failed = verdict({ results, chunks: 1 });
+  assert.deepEqual([failed.passed, failed.failed], [false, [results[3].id]]);
+});
+
+test('the report prints one summary and returns 0 only for a passing run', () => {
+  const run = (outcome) => {
+    const written = [];
+    const warned = [];
+    const code = report(outcome, {
+      seconds: 3,
+      write: (line) => written.push(line),
+      warn: (line) => warned.push(line),
+    });
+    return { code, written, warned };
+  };
+  const passed = run({ source: 'a'.repeat(40), dirty: false, results: passing(1), chunks: 1 });
+  assert.deepEqual([passed.code, passed.warned], [0, []]);
+  assert.equal(passed.written.length, 1);
+  const summary = JSON.parse(passed.written[0]);
+  assert.deepEqual(
+    [summary.failed, summary.missing, summary.unexpected, summary.chunks],
+    [[], [], [], 1],
+  );
+  const results = passing(1).filter((result) => result.id !== 'seal-verify');
+  results[0] = { ...results[0], observed: 'OTHER' };
+  const failed = run({ source: 'a'.repeat(40), dirty: false, results, chunks: 1 });
+  assert.equal(failed.code, 1);
+  assert.deepEqual(failed.warned, [
+    `✗ CLI product map controls failed: ${results[0].id}, seal-verify (missing)`,
+  ]);
+  const empty = run({ source: 'a'.repeat(40), dirty: false, results: [], chunks: 0 });
+  assert.equal(empty.code, 1);
+  assert.equal(empty.warned.length, 1);
 });

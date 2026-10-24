@@ -719,6 +719,42 @@ names both `produce.mjs` changes, INT-9A2A-R3-1); the two test gaps are recorded
   **Re-check:** add an anchor whose source the manifest maps and whose call site resolves in the source revision
   but that no captured frame reaches, and expect `ANCHOR_UNMAPPED`. *(nit · tools/cli-package/symbolicate.test.mjs)*
 
+## Wave 3 Step 9a.2b — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.2b at `77ee5d0a`, run before its first review round under the
+2026-10-23 acceptance amendment, corrected its high finding, every medium one and the lows it could close
+inside the increment
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-implementation-checkpoint--2026-10-24)).
+These are recorded instead. **Trigger for every entry:** the next change to the file it names, or Step 9d
+for the two release entries.
+
+- [ ] **The runner's cleanup and its copies' placement have no test.** *Low.* *(rigor pass, F5)* Removing
+  `runMapControls`' removal of its own temporary root, or moving a control's copies out of the staging, passes
+  every test; the real runner shows the placement, but nothing asserts it. **Re-check:** a test that runs the
+  runner's composition with recording ports (as `produce.test.mjs` does) and asserts every `scratch` path lies
+  under the staging and the temporary root is gone afterwards. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **An interrupted runner leaves its own empty temporary directory.** *Low.* *(rigor pass, PLAT-9A2B-6 =
+  SEC-9a2b-5 = INT-2)* The producer's interrupt handler empties the artifact directory and exits, so
+  `runMapControls`' `finally` never removes `relavium-map-controls-*/artifact`; it holds nothing private.
+  **Re-check:** remove the runner's root from the interrupt path too (for example with `exitOnInterrupt` around
+  the run), with an interrupt test. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **The runner's own self-check refusals have no test.** *Low.* *(rigor pass, CRIT-9A2B-2)*
+  `PACKED_CLI_MAP_CONTROL_CHECKOUT_CHANGED`, `_RESTORE`, `_NO_ANCHOR_CHUNK`, `_TARGET`, `_KIND` and `_ORIGIN` are
+  checked only by reading and, for the target and kind checks, by a runner mutation run. **Re-check:** unit
+  tests that drive each refusal through the runner's composition with stubbed ports. *(low ·
+  tools/cli-package/map-controls-core.mjs)*
+- [ ] **Release artifacts are not bound to a successful `ci` run at their commit.** *Medium, for Step 9d.*
+  *(rigor pass, PLAT-9A2B-2 = CLM-9A2B-4 = INT-1)* A release dispatch with `allow_off_main`, or of an intermediate
+  commit, writes a `package_test` receipt at a commit no `ci` run (so no map-controls run) ever covered;
+  packaging.md now says the mode is a claim and when it is backed, and the interim guard refuses every such
+  artifact. **Re-check:** Step 9d's release graph or custody validator requires a successful `ci` run (with
+  `map-controls`) at exactly the candidate's commit. *(medium · .github/workflows/release.yml)*
+- [ ] **The release pack job keeps its `pnpm` dependency cache.** *Low, for Step 9d.* *(rigor pass,
+  CLM-9A2B-8)* `release.yml`'s pack job sets `cache: pnpm` while `ci.yml`'s `pack-cli` and `map-controls` refuse
+  it; the store holds only content-addressed public registry packages, which packaging.md permits, so no map
+  can enter it. **Re-check:** when Step 9d rebuilds the release graph, drop the cache or record why the release
+  pack keeps it. *(low · .github/workflows/release.yml)*
+
 ## Native file identity on Windows — approved increment (2026-10-24)
 
 Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate

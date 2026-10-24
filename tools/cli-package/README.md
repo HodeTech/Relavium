@@ -13,6 +13,7 @@ build an owned map-bearing candidate and finalize it before packing.
 pnpm package:cli:pack /absolute/empty/artifact-directory
 pnpm package:cli:consume /absolute/artifact-directory /absolute/fresh/report-directory
 pnpm smoke:cli-package
+pnpm check:map-controls
 ```
 
 The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
@@ -69,12 +70,14 @@ native addons in its own process, and needs Node 22.15 or later; an older produc
 the matching source revision (`symbolicate.mjs`). The manifest is discarded with the staging, and
 the capture's home, project and frames with the private root. The
 receipt does **not** certify encrypted custody or a production release candidate (Steps 9b–9d),
-and its `package_test` mode is a claim, backed by the required `ci` run at the same commit. A sealed
-candidate is never sealed again (`PACKED_CLI_ALREADY_SEALED`), and `dist` and the tarball must still be
-the manifest's when the receipt is written (`verifySealedDist`). `pnpm check:map-controls`
-(`map-controls.mjs`) runs every named negative control on product copies of one real production and
-prints one JSON summary of codes, never a path or map byte; the required `map-controls` CI job runs it
-uncached and uploads nothing. No private map,
+and its `package_test` mode is a claim, never evidence (packaging.md says when a `ci` run backs it). An
+artifact directory with a receipt, or a staging with a manifest, is never sealed again
+(`PACKED_CLI_ALREADY_SEALED`), and `dist` and the tarball must still be the manifest's when the receipt
+is written (`verifySealedDist`). `pnpm check:map-controls` (`map-controls.mjs` over
+`map-controls-core.mjs`) runs every named negative control on product copies of one real production,
+prints one JSON summary of codes and fixed lines (no absolute path, frame or map byte) and exits 1
+unless every expected control ran once with its expected outcome; the required `map-controls` CI job
+runs it uncached and uploads nothing. No private map,
 metafile, manifest or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
 sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule
