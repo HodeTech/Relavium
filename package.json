@@ -19,7 +19,7 @@
     "coverage": "vitest run --coverage",
     "coverage:enforced": "node tools/coverage-gate/run.mjs",
     "ci:workspaces": "turbo run lint typecheck && turbo run test --concurrency=1",
-    "ci": "pnpm lint:test-isolation && pnpm ci:workspaces && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli-package && pnpm smoke:cli-bootstrap && pnpm smoke:cli && pnpm smoke:media-packaging && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations && pnpm check:fs-mutations && pnpm check:secrets-mutations",
+    "ci": "pnpm lint:test-isolation && pnpm ci:workspaces && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli-package && pnpm check:map-controls && pnpm smoke:cli-bootstrap && pnpm smoke:cli && pnpm smoke:media-packaging && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations && pnpm check:fs-mutations && pnpm check:secrets-mutations",
     "lint:test-isolation": "node tools/test-isolation/check.mjs && node tools/test-isolation/check-ownership.mjs",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",

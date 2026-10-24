@@ -4,7 +4,7 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Wire, usage, filesystem, secrets and packed CLI jobs feed `ci` through an explicit
+# status checks to merge into `main`. Wire, usage, filesystem, secrets, packed CLI and product map control jobs feed `ci` through an explicit
 # success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
 # self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
@@ -57,7 +57,8 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations, packed-cli]
+    needs:
+      [wire-mutations, usage-mutations, fs-mutations, secrets-mutations, packed-cli, map-controls]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
@@ -101,6 +102,11 @@ jobs:
         env:
           PACKED_CLI_RESULT: ${{ needs.packed-cli.result }}
         run: node -e "require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')"
+
+      - name: Require complete product map controls
+        env:
+          MAP_CONTROLS_RESULT: ${{ needs.map-controls.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.MAP_CONTROLS_RESULT, 'success')"
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -652,6 +658,35 @@ jobs:
             ${{ runner.temp }}/packed-cli-artifact/package-test-receipt.json
           retention-days: 7
           if-no-files-found: error
+
+  # Product map controls (Wave 3 Step 9a.2b): a second, independent real production at this commit whose
+  # every named corruption must refuse with its exact code; its private maps, manifests and copies stay in
+  # the producer's owner-only root and are removed with it. Uncached, and nothing is uploaded.
+  map-controls:
+    name: product map controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Corrupt product copies and require each exact refusal
+        env:
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: pnpm check:map-controls
 
   packed-cli-consumer:
     name: installed CLI (${{ matrix.id }})

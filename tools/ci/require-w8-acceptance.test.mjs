@@ -42,6 +42,7 @@ test('the actual required workflow joins both full offline controls and checks t
     'fs-mutations',
     'secrets-mutations',
     'packed-cli',
+    'map-controls',
   ]);
   const packedGuard = ci.steps.find((step) => step.name === 'Require complete packed CLI controls');
   assert.equal(packedGuard.env.PACKED_CLI_RESULT, '${{ needs.packed-cli.result }}');
@@ -132,4 +133,15 @@ test('the actual required workflow joins both full offline controls and checks t
   );
   for (const kind of ['wire', 'usage', 'fs', 'secrets'])
     assert.ok(packageJson.scripts.ci.split(' && ').includes(`pnpm check:${kind}-mutations`));
+  // The product map controls run locally right after the producer and consumer smoke.
+  assert.equal(
+    packageJson.scripts['check:map-controls'],
+    'node tools/cli-package/map-controls.mjs',
+  );
+  const chain = packageJson.scripts.ci.split(' && ');
+  assert.equal(
+    chain.indexOf('pnpm check:map-controls'),
+    chain.indexOf('pnpm smoke:cli-package') + 1,
+  );
+  assert.equal(chain.filter((step) => step === 'pnpm check:map-controls').length, 1);
 });
