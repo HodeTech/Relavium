@@ -9773,7 +9773,7 @@ second) matched this checkpoint. The round's three verified findings (one low, t
 corrected in the acceptance commit, which changes no code, and the two test gaps stay open there. The receipt
 stays `compiled_package_test`; Step 9a.2b is next.
 
-**Push CI.** `development` was pushed at `f65999a6` (the acceptance commit on top of `a92a7602`). All sixteen
+**Push CI.** `development` was pushed at `f65999a6` (the acceptance commit on top of `a92a7602`). All fourteen
 required jobs of [run 40105286543](https://github.com/HodeTech/Relavium/actions/runs/40105286543) passed, among them
 the originating pack, the four same-tarball installed-CLI consumers and their aggregate, lint, typecheck and test,
 the engine coverage floor and the causal-control families. The advisory Windows job failed on a security assertion
@@ -9823,9 +9823,10 @@ step after `smoke:cli-package` and the workflow pins; and only then the `package
 `PACKAGE_TEST_MODE` shared by the seal and both receipt validators, `compiled_package_test` refused), with the
 [packaging contract](../../reference/cli/packaging.md#product-map-controls-and-the-package-test-receipt--step-9a2b),
 the tooling README and the status lines. No runtime dependency or ADR is added; `release.yml` gets no map
-controls job, as ruled. On this host the runner's 24 controls pass in about 30 seconds on one real production,
-`smoke:cli-package` passes with the flipped receipt through the real producer and consumers, and
-`test:acceptance-tools` passes 911 of 911.
+controls job, as ruled. At the implementation head (`77ee5d0a`) the runner's 24 controls passed in about 30 seconds
+on one real production, `smoke:cli-package` passed with the flipped receipt through the real producer and
+consumers, and `test:acceptance-tools` passed 911 of 911; after the rigor pass the runner records 25 (the
+seventeen fixed controls plus four for each of the two anchor-bearing chunks) and the suite runs 932 tests.
 
 **Internal rigor pass, 2026-10-24.** Under the rigor-before-review rule a pass covered the whole increment at
 `77ee5d0a` before its first round: three mutation sweeps (the seal refusals and the flip; the runner, including
@@ -9848,10 +9849,28 @@ for every dispatch — corrected in the contract and the workflow comments, with
 `ci` run recorded in deferred-tasks.md. Lows corrected include an early refusal of a half-configured CI
 environment, removing a refused control build's `dist`, tests of the already-sealed refusal's order, of a failed
 receipt write, of the version's start anchor and of `verifySealedDist`'s every output and read bounds, and the
-summary, checkout and already-sealed wording. Five lows are recorded in
+summary, checkout and already-sealed wording. Four lows, and one medium for Step 9d, are recorded in
 [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24). The five mutants the
 corrections target now fail the real runner, each on its own control or self-check.
 
-**Remaining gates.** The full `pnpm run ci`, then one NEW complete cumulative round with no blocker, high or medium
-finding and no regression, together with the separate scoped security sitting at the same head and bar, and the
-`map-controls` job green on the push CI.
+**Author evidence at `3e6ae33c`.** The full `pnpm run ci` (exit 0, about 73 minutes, with `check:map-controls`
+recording 25 of 25 expected controls on a clean tree, the real producer and consumer smoke and every causal-control
+family).
+
+**Round 1 at `3e6ae33c` — NONCLEAN.** Five lenses and a critic, every finding adversarially verified. Four lenses
+reported a regression in the author's own record (medium): commit `9f8b0890`, which recorded the native-identity
+increment, replaced the start of deferred-tasks.md's "Phase 2.6.5 deferrals" heading instead of inserting before it,
+so the approved CR-70, CR-93 and CR-95 deferrals fell under the new section; the heading is restored exactly, and an
+audit of every line any 9a.2b commit removed found no other loss. The tests lens reported that nothing tested the
+entry point's exit code (medium): a test now runs the real `map-controls.mjs` beside a stand-in core and requires
+exit 0 for a passing run, exit 1 naming the control for a failed or missing one, and exit 1 with only the fixed code
+for a run that throws. Lows corrected: the contract's earlier sentence that the same commit's `ci` runs the controls
+now says when an artifact is backed; the runner no longer aborts without a summary when a refusal breaks (an
+`aborted` entry and every missing control are reported, and the broken control is named); every refused control
+build that ran the bundler has its `dist` removed; the seventeen fixed controls are pinned in a test; the "restores
+the file" wording excepts `dist`; the checkpoint's counts (25 controls, 932 tests, four lows and one medium) and the
+9a.2a push-CI job count (fourteen required jobs) are corrected; and the status lines name the NI increment.
+
+**Remaining gates.** Round 2 — one NEW complete cumulative round with no blocker, high or medium finding and no
+regression, with the separate scoped security sitting at the same head and bar — then the full `pnpm run ci` and
+the `map-controls` job green on the push CI.

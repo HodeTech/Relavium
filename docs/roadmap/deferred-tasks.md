@@ -772,7 +772,8 @@ increment, after 9a.2b and before 9b (register row NI), rather than a deferral; 
   `nativeFile`). **Re-check:** every identity is read with `{ bigint: true }` and compared as `bigint` (or its exact
   string), with a replacement test per site that fails when the comparison goes back to a number; the Windows job
   passes the fs-policy test repeatedly. *(high · the five files above)*
-, recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
+
+## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
 with approved deferrals, 49/51 items closed. The

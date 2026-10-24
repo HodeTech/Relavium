@@ -160,8 +160,10 @@ bounded retry evidence. These runners are implemented; required platform executi
 and independent acceptance are recorded separately in the Wave 3 register.
 
 Since Step 9a.2b the receipt records `package_test`: before writing it the producer verified its
-maps and symbolicated actual packed frames (Steps 9a.1 and 9a.2a), and the required `ci` at the
-same commit runs the product map controls (below). Release custody remains Steps 9b–9d. Native fatal-owner integration is covered by [Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+maps and symbolicated actual packed frames (Steps 9a.1 and 9a.2a), and the `ci` workflow requires the
+product map controls; an artifact is backed by them only where a successful `ci` run exists at exactly
+its commit (below). Release custody remains Steps 9b–9d. Native fatal-owner integration is covered by
+[Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 No intermediate local result closes Step 9 or certifies a release.
 
 ### Candidate finalization — Step 9
@@ -436,7 +438,8 @@ package-test producer, adds the product map controls and only then flips the rec
   anything is built (`PACKED_CLI_MAP_CONTROL_ORIGIN`). Inside the seal, after the baseline receipt and
   while the private staging still exists, each control corrupts one product copy — the owned candidate
   tree, or a copy of its private staging re-recorded so that only the layer under test can refuse —
-  requires that control's exact refusal and restores the file by digest:
+  requires that control's exact refusal and restores every file it corrupted by digest (`dist` itself
+  is replaced by the next build):
   - a second prepack into the sealed staging; a re-seal of the artifact directory against a copy of
     the staging without its manifest, and of the sealed staging beside a tarball copied without its
     receipt, each isolating one half of `PACKED_CLI_ALREADY_SEALED` with no capture run;

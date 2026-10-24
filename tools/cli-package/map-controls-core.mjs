@@ -4,7 +4,8 @@
  * production runs at the checked-out commit. Inside its seal, after the baseline receipt and while the
  * private staging still exists, every named negative control corrupts one product copy — the
  * producer's own owned candidate tree, or a re-recorded copy of its private staging — and requires that
- * control's exact refusal; each corrupted file is restored and checked by digest, and a restoration
+ * control's exact refusal; each corrupted file is restored and checked by digest (dist itself is
+ * replaced by the next build), and a restoration
  * production must then seal again. Staging copies stay under the staging, which the producer removes
  * first on success, failure and interrupt; a refused control build's `dist`, which holds the bundler's
  * maps, is removed at once. The developer's checkout is read, never written (Git may refresh its own
@@ -207,14 +208,14 @@ function inventory(directory, skip = new Set()) {
 }
 
 /**
- * Run every control inside the baseline seal. `context` holds the seal's own inputs, its receipt, the
- * baseline artifact directory and the emitter's isolated environment and pnpm.
- * @returns {Promise<{id: string, expected: string, observed: string}[]>}
+ * Run every control inside the baseline seal, recording into `state` as it goes, so a run that stops
+ * early still reports what ran. `context` holds the seal's own inputs, its receipt, the baseline
+ * artifact directory and the emitter's isolated environment and pnpm.
+ * @param {{results: {id: string, expected: string, observed: string}[], chunks: number}} state
  */
-async function runControls(context) {
+async function runControls(context, state) {
   const { candidate, staging, checkout, source, dirty, receipt, artifact, env, pnpm } = context;
-  const results = [];
-  const record = (id, expected, observed) => results.push({ id, expected, observed });
+  const record = (id, expected, observed) => state.results.push({ id, expected, observed });
   const controls = privateDirectory(join(staging, 'controls'));
   let count = 0;
   const scratch = (id) =>
@@ -222,7 +223,14 @@ async function runControls(context) {
   const cli = join(candidate, 'apps', 'cli');
   const tarball = join(artifact, receipt.tarball);
   const sealed = readPrivateManifest(staging);
-  const distDigests = () => inventory(join(cli, 'dist'));
+  // The dist's digests, or null once a broken refusal let a build replace or remove it.
+  const distDigests = () => {
+    try {
+      return inventory(join(cli, 'dist'));
+    } catch {
+      return null;
+    }
+  };
 
   // The chunks the anchors' sources lie in, by their staged maps; the anchor sources' upstream map.
   const anchorSources = new Set(ANCHORS.map((anchor) => anchor.source));
@@ -233,6 +241,7 @@ async function runControls(context) {
     .map((name) => name.slice(0, -'.map'.length))
     .sort();
   assert.ok(chunks.length > 0, 'PACKED_CLI_MAP_CONTROL_NO_ANCHOR_CHUNK');
+  state.chunks = chunks.length;
   const plain = sealed.outputs
     .map((output) => basename(output.path))
     .filter((name) => !chunks.includes(name))
@@ -317,6 +326,11 @@ async function runControls(context) {
         env: { ...env, [CANDIDATE_STAGING_ENV]: fresh },
       }),
     );
+    // A refused build left the bundler's own maps in dist: none outlives the control. A refusal before
+    // any build (a second prepack into a sealed staging) leaves the sealed dist as it is.
+    if (observed.code !== 'ACCEPTED' && observed.builds > 0) {
+      rmSync(join(cli, 'dist'), { recursive: true, force: true });
+    }
     return { observed, destination, staging: fresh, root };
   };
 
@@ -598,8 +612,6 @@ async function runControls(context) {
       );
     } finally {
       restore(saved);
-      // The refused build left the bundler's own maps in dist: none outlives the control.
-      rmSync(join(cli, 'dist'), { recursive: true, force: true });
     }
   }
   try {
@@ -681,7 +693,6 @@ async function runControls(context) {
       ? (await seal(restored)).code
       : `MARKERS_${restored.observed.code}`,
   );
-  return { results, chunks: chunks.length };
 }
 
 /**
@@ -700,7 +711,7 @@ export async function runMapControls({ repository, environment, temporary = tmpd
   const before = await sourceIdentity(repository);
   const root = realpathSync.native(mkdtempSync(join(temporary, 'relavium-map-controls-')));
   chmodSync(root, 0o700);
-  let ran = { results: [], chunks: 0 };
+  const ran = { results: [], chunks: 0 };
   let emitted;
   try {
     const produced = await producePackage({
@@ -715,16 +726,30 @@ export async function runMapControls({ repository, environment, temporary = tmpd
         },
         seal: async (artifact, inputs) => {
           const receipt = await sealPackage(artifact, inputs);
-          ran = await runControls({
-            candidate: inputs.repository,
-            staging: inputs.staging,
-            checkout: inputs.checkout,
-            source: inputs.source,
-            dirty: inputs.dirty,
-            receipt,
-            artifact,
-            ...emitted,
-          });
+          try {
+            await runControls(
+              {
+                candidate: inputs.repository,
+                staging: inputs.staging,
+                checkout: inputs.checkout,
+                source: inputs.source,
+                dirty: inputs.dirty,
+                receipt,
+                artifact,
+                ...emitted,
+              },
+              ran,
+            );
+          } catch (error) {
+            // A harness self-check or an unexpected error stops the controls; the summary still names
+            // it, with only its fixed code, and every control that did not run is reported missing.
+            const line = productionFailure(error).at(-1);
+            ran.results.push({
+              id: 'aborted',
+              expected: 'none',
+              observed: line.slice(line.lastIndexOf(': ') + 2),
+            });
+          }
           return receipt;
         },
       },

@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   FIXED_CONTROLS,
   cutInsideValue,
@@ -200,4 +205,85 @@ test('the report prints one summary and returns 0 only for a passing run', () =>
   const empty = run({ source: 'a'.repeat(40), dirty: false, results: [], chunks: 0 });
   assert.equal(empty.code, 1);
   assert.equal(empty.warned.length, 1);
+});
+
+test('the required control set is exactly the seventeen the contract names', () => {
+  assert.deepEqual(
+    [...FIXED_CONTROLS],
+    [
+      'second-prepack',
+      're-seal-receipt',
+      're-seal-staging',
+      're-recorded-baseline',
+      'source-clean',
+      'source-dirty',
+      'sealed-dist',
+      'dist-plain-chunk',
+      'dist-rebuilt',
+      'upstream-missing',
+      'upstream-shape',
+      'upstream-index',
+      'upstream-cut-bytes',
+      'upstream-cut-value',
+      'upstream-shifted',
+      'seal-verify',
+      'restoration',
+    ],
+  );
+  assert.equal(Object.isFrozen(FIXED_CONTROLS), true);
+});
+
+test('the entry point exits with the verdict and prints only fixed lines when the run fails', () => {
+  // The real entry point beside a stand-in core whose run returns or throws as each case needs; the
+  // report itself is the real one.
+  const here = (name) => fileURLToPath(new URL(`./${name}`, import.meta.url));
+  const directory = mkdtempSync(join(tmpdir(), 'relavium-map-controls-entry-'));
+  try {
+    copyFileSync(here('map-controls.mjs'), join(directory, 'map-controls.mjs'));
+    copyFileSync(here('production-failure.mjs'), join(directory, 'production-failure.mjs'));
+    const outcome = (results) => ({ source: 'a'.repeat(40), dirty: false, results, chunks: 1 });
+    const broken = passing(1);
+    broken[0] = { ...broken[0], observed: 'OTHER' };
+    for (const [label, body, status, stderr] of [
+      ['a passing run', `return ${JSON.stringify(outcome(passing(1)))};`, 0, /^$/u],
+      [
+        'a failed control',
+        `return ${JSON.stringify(outcome(broken))};`,
+        1,
+        /^✗ CLI product map controls failed: second-prepack\n$/u,
+      ],
+      [
+        'a missing control',
+        `return ${JSON.stringify(outcome(passing(1).slice(1)))};`,
+        1,
+        /^✗ CLI product map controls failed: second-prepack \(missing\)\n$/u,
+      ],
+      [
+        'a run that throws',
+        "throw new Error('PACKED_CLI_MAP_CONTROL_ORIGIN at /private/host/path');",
+        1,
+        /^✗ CLI package production failed: PACKED_CLI_MAP_CONTROL_ORIGIN\n$/u,
+      ],
+    ]) {
+      writeFileSync(
+        join(directory, 'map-controls-core.mjs'),
+        `export { report } from ${JSON.stringify(pathToFileURL(here('map-controls-core.mjs')).href)};\n` +
+          `export async function runMapControls() {\n  ${body}\n}\n`,
+      );
+      const run = spawnSync(process.execPath, [join(directory, 'map-controls.mjs')], {
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(run.status, status, label);
+      assert.match(run.stderr, stderr, label);
+      // A completed run prints one summary line; a run that throws prints none.
+      assert.equal(
+        run.stdout.split('\n').filter(Boolean).length,
+        label === 'a run that throws' ? 0 : 1,
+        label,
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
