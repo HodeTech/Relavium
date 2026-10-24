@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
-import { originFromEnvironment, validatePackageReceipt } from './binding.mjs';
+import { PACKAGE_TEST_MODE, originFromEnvironment, validatePackageReceipt } from './binding.mjs';
 import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
 import { MANIFEST_FILE, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
 import { symbolicateCandidate } from './symbolicate.mjs';
@@ -162,7 +162,7 @@ export async function sealPackage(
   await verify({ candidate: repository, manifest: sealed, tarball });
   const receipt = {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: PACKAGE_TEST_MODE,
     source,
     dirty,
     packageVersion: archive.package.version,

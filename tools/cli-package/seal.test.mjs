@@ -395,7 +395,7 @@ test('the seal binds a locally produced candidate it is given, never the reposit
     const receipt = await withOrigin({}, () =>
       sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
     );
-    assert.equal(receipt.mode, 'compiled_package_test');
+    assert.equal(receipt.mode, 'package_test');
     assert.equal(receipt.source, SOURCE);
     assert.equal(receipt.dirty, true);
     assert.equal(receipt.packageVersion, '0.1.1');

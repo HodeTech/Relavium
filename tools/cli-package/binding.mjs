@@ -7,6 +7,13 @@ import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
 /** @typedef {{path: string, bytes: number, sha256: string, mode: number}} PublicFile */
 /** @typedef {{source: string, origin: Origin, nodeMajor: number, allowLocal?: boolean}} Expected */
 
+/**
+ * The package-test receipt's mode (Step 9a.2b): the producer verified the maps and symbolicated actual
+ * packed frames before writing it, and the product map controls are required by the same commit's
+ * `ci`. The mode is a claim, not evidence of those checks; the earlier `compiled_package_test` is refused.
+ */
+export const PACKAGE_TEST_MODE = 'package_test';
+
 export const REQUIRED_CONSUMER_LEGS = Object.freeze([
   'current-linux',
   'current-macos',
@@ -245,7 +252,7 @@ export function validatePackageReceipt(value, expected) {
   ]);
   if (
     receipt.version !== 1 ||
-    receipt.mode !== 'compiled_package_test' ||
+    receipt.mode !== PACKAGE_TEST_MODE ||
     receipt.source !== expected.source ||
     typeof receipt.dirty !== 'boolean'
   )
@@ -268,7 +275,7 @@ export function validatePackageReceipt(value, expected) {
   if (manifest.version !== packageVersion) refuse('PACKAGE');
   return {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: PACKAGE_TEST_MODE,
     source: expected.source,
     dirty: receipt.dirty,
     packageVersion,

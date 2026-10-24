@@ -25,7 +25,7 @@ const expected = { source, origin: { kind: 'local' }, nodeMajor: 24 };
 function receipt() {
   return {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: 'package_test',
     source,
     dirty: false,
     packageVersion: '0.1.1',
@@ -122,6 +122,8 @@ test('strict receipt refuses omitted or added private/custody claims', () => {
   }
   for (const changed of [
     { mode: 'release' },
+    // The mode before the product map controls existed.
+    { mode: 'compiled_package_test' },
     { source: '0'.repeat(40) },
     { dirty: 'false' },
     { version: 2 },

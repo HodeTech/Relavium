@@ -36,7 +36,7 @@ function runGuard(script, args, cwd = scratch) {
 
 const PACKAGE_TEST = {
   'relavium-0.1.1.tgz': 'tarball',
-  'package-test-receipt.json': JSON.stringify({ mode: 'compiled_package_test' }),
+  'package-test-receipt.json': JSON.stringify({ mode: 'package_test' }),
 };
 
 for (const [label, files, code] of [

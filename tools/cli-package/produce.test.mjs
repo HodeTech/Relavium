@@ -86,7 +86,7 @@ function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
       seal: async (artifactDirectory, candidate) => {
         seen.seal = { artifactDirectory, ...candidate };
         seen.workMode = statSync(candidate.work).mode & 0o777;
-        return { mode: 'compiled_package_test', source: candidate.source, files: [] };
+        return { mode: 'package_test', source: candidate.source, files: [] };
       },
     },
   };
@@ -282,7 +282,7 @@ test(
             return seal(destination);
           },
           noBuildCache: () => {},
-          seal: () => ({ mode: 'compiled_package_test' }),
+          seal: () => ({ mode: 'package_test' }),
         },
       });
     } finally {
@@ -843,7 +843,7 @@ await producePackage({
     noBuildCache: () => {},
     seal: () => {
       if (${JSON.stringify(during)} === 'seal') interrupt();
-      return { mode: 'compiled_package_test' };
+      return { mode: 'package_test' };
     },
     remove: (path) => {
       if (${JSON.stringify(during)} === 'removal' && path.includes('relavium-package-candidate-'))
@@ -991,7 +991,7 @@ test('the producer entry point hands the checkout, the artifact directory and it
     `import { writeFileSync } from 'node:fs';\n` +
       `export async function producePackage({ repository, destination, environment }) {\n` +
       `  writeFileSync(process.env.RELAVIUM_ENTRY_MARKER, JSON.stringify({ repository, destination, marker: environment.RELAVIUM_ENTRY_MARKER, same: environment === process.env }));\n` +
-      `  return { receipt: { mode: 'compiled_package_test', source: 's', tarballSha256: 'h', files: [1, 2] }, identity: { files: 3 } };\n` +
+      `  return { receipt: { mode: 'package_test', source: 's', tarballSha256: 'h', files: [1, 2] }, identity: { files: 3 } };\n` +
       `}\n`,
   );
   const cwd = fresh('entry-cwd');
@@ -1013,7 +1013,7 @@ test('the producer entry point hands the checkout, the artifact directory and it
     same: true,
   });
   assert.deepEqual(JSON.parse(result.stdout), {
-    mode: 'compiled_package_test',
+    mode: 'package_test',
     source: 's',
     sha256: 'h',
     files: 2,

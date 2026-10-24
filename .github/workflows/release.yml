@@ -102,7 +102,8 @@ jobs:
       # The same required package runner owns fresh dependencies and the sole prepack CLI build in an owned
       # candidate tree, where original-TS maps are built, validated, staged privately and discarded (Wave 3
       # Step 9a.1), with the private manifest and the packed-frame symbolication (Step 9a.2a); their
-      # encrypted release custody is Steps 9b–9d.
+      # encrypted release custody is Steps 9b–9d. The receipt records package_test; the product map controls
+      # behind that mode run in the required CI workflow at the same commit (Step 9a.2b), not in this one.
       - name: Pack once and independently inspect the public package
         env:
           RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
