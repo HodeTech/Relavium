@@ -9888,3 +9888,42 @@ acceptance commit, which changes no code: the plan's increment count now include
 line names it, and the contract and the interrupted-runner record say that directory can still hold the baseline
 public tarball and receipt. The receipt now records `package_test`; the native-identity increment NI is next, then
 Step 9b.
+
+### Wave 3 NI preflight decisions — 2026-10-25
+
+A read-only preflight (three readers and a synthesis at `10993bb8`; the detailed record and a Turkish decision
+register are local and Git-ignored) mapped every file and directory identity comparison in the tree. The maintainer
+approved each recommendation on 2026-10-25; no new ADR or runtime dependency follows, and ADR-0105 and ADR-0106
+receive dated correction notes after the precedent of ADR-0106's 2026-10-13 exact temporary claim identity
+correction. The sites are the row's five files: the filesystem policy's canonical and lexical root pins; the
+workflow catalog's open check, the only swap guard on Windows, where `O_NOFOLLOW` is undefined; and the media
+store's root pin, its file snapshot and owned-file check (the authority to delete), its read check, its publish
+handle and the temporary sweep's claim directory, child, marker and moved-blob checks with the `Number` cross-check
+inside `nativeFile`. One test precondition reads number identities as well. No persisted format changes:
+`media-claim-v2` names already carry exact base-36 tokens, and the v1 reader admits only safe tokens, whose bigint
+form is identical.
+
+Three facts were verified after the preflight. Node 22 fills bigint stats from a signed `BigInt64Array`, so a 64-bit
+file ID with its top bit set (an NTFS sequence number of 0x8000 or more) reads negative; exact equality is
+unaffected, but the claim token refused it and such a temporary was retained forever. The defect is not
+Windows-only: Linux overlayfs's `xino` feature "uses the high inode number bits for fsid" (kernel documentation).
+And on ReFS, including Dev Drive, Microsoft documents that the 64-bit file identifier "is not guaranteed to be
+unique" (ReFS uses 128-bit identifiers).
+
+| Decision | Ruling |
+| --- | --- |
+| Snapshot shape | The media store reads each identity with one bigint stat and projects it once into an internal record: bigint `dev` and `ino`, number `nlink`, `size` and `mtimeMs` (from `mtimeNs`, so today's sub-millisecond values stay), and the type predicates of the same stat. A path is never stat'ed twice for one snapshot. The CLI sites keep `BigIntStats`, since no other field there meets an identity check. |
+| Permanent proof | Five filesystem causal controls, one per site: the policy pins, the catalog open check, the root pin, the owned-file check and the temporary sweep's `same`. Each mutant returns that site's whole comparison to `Number` and is witnessed by a real replacement under injected identities above 2^60, where adjacent numbers are 256 apart. The read check, the `nativeFile` cross-check and the per-read variants are covered by the recorded mutation sweep and the type checks. |
+| Windows evidence | Acceptance rests on the deterministic proof. `fs-policy.test.ts` gains a Windows-only probe (about 200 rename-and-`mkdir` pairs, each distinct as bigints, logging how many collide as numbers or read negative) and `{ repeats: 20 }` on its real replacement tests. The Windows clause closes after three consecutive green advisory Windows runs on pushed heads, with the logged counts recorded; the existing Windows steps are unchanged. |
+| Tooling sites | The three same-class tooling checks are fixed in NI after the `tools/cli-package/files.mjs` pattern, each with an injected-identity check: the overflow capture's destination check, the budget-replay evidence retention's directory identity (it deletes recursively) and that tool's lifecycle-smoke precondition. |
+| Read check | Converted for uniformity. Its second-stat comparison is tested with a faked second stat and recorded as a consistency check that a real filesystem cannot fail; its `dev` comparisons are exact on every platform. No permanent control. |
+| Sign and ReFS | `nativeIdentityToken` maps each value with `BigInt.asUintN(64, …)`, in one place: tokens compare with tokens, and every value without its top bit set keeps a byte-identical token, so existing names stay compatible. A test shows that a negative identity can be claimed. ReFS is recorded in deferred-tasks.md as a scoped limit, since a fix needs native code or a dependency. The claim becomes exact identity on filesystems whose 64-bit file indexes are unique, such as NTFS, ext4 and APFS. |
+
+Engineering defaults recorded with the rulings:
+- No identity helper is shared across packages, and the shards get no pin.
+- `nativeFile` keeps its second `lstat`.
+- The temporary sweep's token comparison line stays byte-identical, since its precision control anchors on it.
+- New witnesses go into new test files, so no pinned count moves.
+- `CAS_COOPERATIVE_READ` is the one anchor that drifts; it is updated in the same commit.
+- No identity value enters an error, event, log or JSON.
+- ADR-0105's cooperative-parent assumption is unchanged.
