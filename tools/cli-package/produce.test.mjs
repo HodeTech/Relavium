@@ -84,6 +84,7 @@ function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
       },
       seal: async (artifactDirectory, candidate) => {
         seen.seal = { artifactDirectory, ...candidate };
+        seen.workMode = statSync(candidate.work).mode & 0o777;
         return { mode: 'compiled_package_test', source: candidate.source, files: [] };
       },
     },
@@ -154,13 +155,18 @@ test('the producer builds and seals only the owned candidate, never the original
   assert.equal(seen.emit.staging, join(candidate, '..', 'staging'));
   assert.equal(seen.noBuildCache, candidate);
   assert.deepEqual(seen.buildStateLeft, []);
+  // The seal symbolicates against the original checkout's objects, in a private work directory
+  // beside the candidate and its staging.
   assert.deepEqual(seen.seal, {
     artifactDirectory: destination,
     repository: candidate,
     staging: seen.emit.staging,
     source: SHA,
     dirty: false,
+    checkout: repository,
+    work: join(candidate, '..', 'symbolication'),
   });
+  if (posixModes) assert.equal(seen.workMode, 0o700);
   if (posixModes) {
     assert.equal(seen.stagingMode, 0o700);
     assert.equal(seen.rootMode, 0o700);
@@ -895,6 +901,17 @@ test('the producer entry point prints only the fixed failure lines and exits 1',
   assert.equal(result.stderr.includes(QUOTED_MAP), false);
 });
 
+test('a refused manifest or symbolication prints its own fixed code', async () => {
+  const { ManifestError } = await import('./manifest.mjs');
+  const { SymbolicationError } = await import('./symbolicate.mjs');
+  assert.deepEqual(productionFailure(new SymbolicationError('ANCHOR_UNMAPPED')), [
+    '✗ CLI package production failed: PACKED_CLI_SYMBOLICATION_ANCHOR_UNMAPPED',
+  ]);
+  assert.deepEqual(productionFailure(new ManifestError('MAP_DRIFT')), [
+    '✗ CLI package production failed: PACKED_CLI_MANIFEST_MAP_DRIFT',
+  ]);
+});
+
 test('the failure report bounds what it forwards and forwards nothing but anchored diagnostics', () => {
   const failed = (stdout, stderr) =>
     Object.assign(new Error('PACKED_CLI_CHILD_FAILED: 1'), { result: { stdout, stderr } });
@@ -962,7 +979,8 @@ test('the producer entry point hands the checkout, the artifact directory and it
     files: 2,
     candidateFiles: 3,
     privateMaps: 'staged privately, then discarded',
-    symbolication: 'not implemented until Wave 3 Step 9a.2',
+    privateManifest: 'sealed privately, then discarded',
+    symbolication: 'actual packed CLI and core frames verified',
   });
   // Exactly one artifact directory: any other count refuses before the producer runs.
   rmSync(marker);

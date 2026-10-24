@@ -1,10 +1,12 @@
 /**
- * Candidate finalizer (ADR-0111, Step 9a.1). It runs inside the CLI's prepack after the sole
- * candidate tsup build and before pnpm packs. It accounts for every emitted output, validates every
- * consumed upstream TypeScript map and every final map, rewrites final map sources to
- * repository-relative original TypeScript, removes only tsup's exact terminal map-link trailers,
- * stages the maps and the build metadata owner-only outside the package, re-checks the finite
- * closure and the public file/mode inventory, and only then hashes. Nothing writes JS afterwards.
+ * Candidate finalizer (ADR-0111, Steps 9a.1 and 9a.2a). It runs inside the CLI's prepack after the
+ * sole candidate tsup build and before pnpm packs. It accounts for every emitted output, validates
+ * every consumed upstream TypeScript map and every final map — decoding their mappings strictly and
+ * keeping every position inside its generated and original text (source-map.mjs) — rewrites final
+ * map sources to repository-relative original TypeScript, removes only tsup's exact terminal map-link
+ * trailers, stages the maps and the build metadata owner-only outside the package, re-checks the
+ * finite closure and the public file/mode inventory, and only then hashes. Nothing writes JS
+ * afterwards.
  *
  * Refusals name a fixed code and at most a fixed label or a repository-relative path that has passed
  * validation, never map or source contents and never a host path: a metafile string that escapes
@@ -33,6 +35,13 @@ import { checkBundleClosure } from '../bundle-closure/closure.mjs';
 import { MODE_EVIDENCE, emittedInventory } from '../bundle-closure/inventory.mjs';
 import { flatFiles, readOrdinaryFile, sha256 } from './files.mjs';
 import { within } from './paths.mjs';
+import {
+  SourceMapError,
+  assertGeneratedRange,
+  assertOriginalRange,
+  decodeMappings,
+  lineLengths,
+} from './source-map.mjs';
 
 /**
  * Names the private staging directory of a trusted candidate build. Only the package producer sets
@@ -161,6 +170,46 @@ function originalSource(repository, mapDirectory, source, allowedRoots, subject)
 }
 
 /**
+ * Decode a map's mappings strictly and require every generated position inside the text it was
+ * generated for and every original position inside its source: a well-formed charset alone admits
+ * truncated values, out-of-range indices and positions past a file's end, which the bundler would
+ * otherwise drop or chain silently.
+ * @param {string} repository
+ * @param {{mappings: string, sources: unknown[], names: unknown[]}} map
+ * @param {string} generated the generated text
+ * @param {readonly string[]} sources repository-relative original sources, by index
+ * @param {Map<string, number[]>} texts source line lengths, shared by every map of one run
+ * @param {'UPSTREAM_MAP' | 'MAP'} kind @param {string} subject
+ */
+function checkMappings(repository, map, generated, sources, texts, kind, subject) {
+  /** @param {() => void} check @param {string} code */
+  const strictly = (check, code) => {
+    try {
+      check();
+    } catch (error) {
+      if (error instanceof SourceMapError) refuse(code, subject);
+      throw error;
+    }
+  };
+  let lines = [];
+  strictly(() => {
+    lines = decodeMappings(map.mappings, { sources: map.sources.length, names: map.names.length });
+  }, `${kind}_MAPPINGS`);
+  const originals = sources.map((source) => {
+    let lengths = texts.get(source);
+    if (lengths === undefined) {
+      lengths = lineLengths(readText(onDisk(repository, source), source));
+      texts.set(source, lengths);
+    }
+    return lengths;
+  });
+  strictly(() => {
+    assertGeneratedRange(lines, lineLengths(generated));
+    assertOriginalRange(lines, originals);
+  }, `${kind}_RANGE`);
+}
+
+/**
  * Validate one consumed upstream (tsc) map. The JS must end with its exact trailer and the map must
  * name only this package's original TypeScript, without embedded sources or a source root. Its
  * mappings may be empty only for a module whose types all erase, which tsc emits as exactly
@@ -168,8 +217,9 @@ function originalSource(repository, mapDirectory, source, allowedRoots, subject)
  * @param {string} repository
  * @param {string} packageName
  * @param {string} jsPath repository-relative POSIX path of the consumed compiled JS
+ * @param {Map<string, number[]>} texts source line lengths, shared by every map of one run
  */
-function upstreamSources(repository, packageName, jsPath) {
+function upstreamSources(repository, packageName, jsPath, texts) {
   const name = posix.basename(jsPath);
   const js = readText(onDisk(repository, jsPath), jsPath);
   if (!js.endsWith(mapTrailer(name)) || js.split('sourceMappingURL').length !== 2) {
@@ -211,9 +261,11 @@ function upstreamSources(repository, packageName, jsPath) {
     refuse('UPSTREAM_MAP_UNMAPPED', mapPath);
   }
   const directory = posix.dirname(jsPath);
-  return map.sources.map((source) =>
+  const sources = map.sources.map((source) =>
     originalSource(repository, directory, source, [`packages/${packageName}/src`], mapPath),
   );
+  checkMappings(repository, map, js, sources, texts, 'UPSTREAM_MAP', mapPath);
+  return sources;
 }
 
 /**
@@ -232,8 +284,9 @@ function inputSubject(input) {
  * package's compiled JS through its tsc map. Any other input kind refuses.
  * @param {string} repository @param {string} input metafile input relative to apps/cli
  * @param {Map<string, string[]>} cache
+ * @param {Map<string, number[]>} texts source line lengths, shared by every map of one run
  */
-function inputSources(repository, input, cache) {
+function inputSources(repository, input, cache, texts) {
   const cached = cache.get(input);
   if (cached) return cached;
   let sources;
@@ -247,7 +300,12 @@ function inputSources(repository, input, cache) {
     ENGINE_PACKAGES.includes(engine[1]) &&
     /^(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.js$/u.test(engine[2])
   ) {
-    sources = upstreamSources(repository, engine[1], `packages/${engine[1]}/dist/${engine[2]}`);
+    sources = upstreamSources(
+      repository,
+      engine[1],
+      `packages/${engine[1]}/dist/${engine[2]}`,
+      texts,
+    );
   } else {
     refuse('UNSUPPORTED_INPUT', inputSubject(input));
   }
@@ -259,8 +317,10 @@ function inputSources(repository, input, cache) {
  * Validate one final map against the original sources of the inputs that contributed bytes to its
  * runtime output, and return it with repository-relative sources. Mappings and names are kept.
  * @param {string} repository @param {string} jsName @param {unknown} map @param {Set<string>} expected
+ * @param {string} code the runtime output without its map-link trailer
+ * @param {Map<string, number[]>} texts source line lengths, shared by every map of one run
  */
-function finalMap(repository, jsName, map, expected) {
+function finalMap(repository, jsName, map, expected, code, texts) {
   const subject = `apps/cli/dist/${jsName}.map`;
   const keys = isRecord(map) ? Object.keys(map) : [];
   if (
@@ -305,6 +365,7 @@ function finalMap(repository, jsName, map, expected) {
   if (!isDeepStrictEqual([...sources].sort(), [...expected].sort())) {
     refuse('MAP_SOURCE_COVERAGE', subject);
   }
+  checkMappings(repository, map, code, sources, texts, 'MAP', subject);
   return { ...map, sources };
 }
 
@@ -360,8 +421,8 @@ function writeNew(path, bytes, mode) {
   }
 }
 
-/** Write bytes to a new owner-only staging file. */
-function writePrivate(path, bytes) {
+/** Write bytes to a new owner-only staging file; an existing file refuses. */
+export function writePrivateFile(path, bytes) {
   writeNew(path, bytes, 0o600);
 }
 
@@ -413,7 +474,8 @@ export function finalizeCandidate({ repository, staging }) {
   // 2. Validate every consumed upstream map and every final map, and strip each exact trailer.
   //    No file is written until every output has been accepted.
   const cache = new Map();
-  for (const input of Object.keys(metafile.inputs)) inputSources(repository, input, cache);
+  const texts = new Map();
+  for (const input of Object.keys(metafile.inputs)) inputSources(repository, input, cache, texts);
   const prepared = runtime.map((path) => {
     const jsName = basename(path);
     const output = metafile.outputs[path];
@@ -443,6 +505,8 @@ export function finalizeCandidate({ repository, staging }) {
       jsName,
       readJson(join(dist, `${jsName}.map`), LIMITS.finalMapBytes, `apps/cli/${path}.map`),
       expected,
+      js.slice(0, -trailer.length),
+      texts,
     );
     const mode = lstatSync(join(dist, jsName)).mode & 0o777;
     return { path, jsName, code, map: Buffer.from(JSON.stringify(map), 'utf8'), mode };
@@ -452,8 +516,9 @@ export function finalizeCandidate({ repository, staging }) {
   mkdirSync(join(staging, 'maps'), { mode: 0o700 });
   // The creation mode passes through the umask; the staged directory keeps the exact owner-only mode.
   if (MODE_EVIDENCE === 'posix') chmodSync(join(staging, 'maps'), 0o700);
-  for (const item of prepared) writePrivate(join(staging, 'maps', `${item.jsName}.map`), item.map);
-  writePrivate(join(staging, 'metafile-esm.json'), metafileBytes);
+  for (const item of prepared)
+    writePrivateFile(join(staging, 'maps', `${item.jsName}.map`), item.map);
+  writePrivateFile(join(staging, 'metafile-esm.json'), metafileBytes);
   for (const item of prepared) replaceOutput(join(dist, item.jsName), item.code, item.mode);
   for (const item of prepared) unlinkSync(join(dist, `${item.jsName}.map`));
   unlinkSync(join(dist, 'metafile-esm.json'));
@@ -487,7 +552,7 @@ export function finalizeCandidate({ repository, staging }) {
   }));
   const upstreamMaps = [...cache.keys()].filter((input) => !input.startsWith('src/')).length;
   const record = { version: 1, outputs, maps, upstreamMaps };
-  writePrivate(
+  writePrivateFile(
     join(staging, 'finalized.json'),
     Buffer.from(JSON.stringify(record, null, 2) + '\n'),
   );

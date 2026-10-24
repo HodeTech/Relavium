@@ -31,6 +31,7 @@ console.log(
     files: receipt.files.length,
     candidateFiles: identity.files,
     privateMaps: 'staged privately, then discarded',
-    symbolication: 'not implemented until Wave 3 Step 9a.2',
+    privateManifest: 'sealed privately, then discarded',
+    symbolication: 'actual packed CLI and core frames verified',
   }),
 );

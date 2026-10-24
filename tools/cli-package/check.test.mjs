@@ -35,6 +35,7 @@ const COPIED = Object.freeze([
   'cli-package/consumer-lifetime.mjs',
   'cli-package/files.mjs',
   'cli-package/finalize.mjs',
+  'cli-package/source-map.mjs',
   'cli-package/paths.mjs',
   'cli-package/process.mjs',
   'bundle-closure/closure.mjs',

@@ -627,7 +627,7 @@ documentation-only ones were also corrected in the acceptance commit, which chan
   detached into its own group, so the real composition behaves the same. **Re-check:** in the forwarding
   harness, have the detached child start a non-detached grandchild in its group that writes a marker on
   SIGINT, and assert both markers. *(low · tools/cli-package/process.mjs)*
-- [ ] **The map-source length bound is pinned on its admitted side only.** *Nit.* *(round 13, TCA-9A1-R13-2)*
+- [x] **The map-source length bound is pinned on its admitted side only.** *Nit; closed in Step 9a.2a (2026-10-24), whose finalizer tests add the 1025-character source.* *(round 13, TCA-9A1-R13-2)*
   `finalize.test.mjs` admits a 1024-character source and refuses a 1031-character one, so loosening
   `source.length > 1024` to any bound up to 1030 passes. The source must still resolve to an existing original
   file, so nothing is exposed. **Re-check:** add a 1025-character source (`../src/${'a/'.repeat(507)}x.ts`)

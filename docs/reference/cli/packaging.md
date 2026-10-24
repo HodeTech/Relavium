@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); the remaining Step 9 map/custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's private manifest and symbolication are implemented, with independent acceptance pending; the remaining Step 9 map/custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -331,10 +331,54 @@ section means mode 0700 for directories and 0600 for staged files, set — and f
 directory verified together with this process's uid — where POSIX modes are observable. On Windows
 no mode evidence is claimed: the candidate root and staging inherit the temporary directory's ACL,
 which is not verified, as the graph checks above claim no unobservable POSIX mode bits. The
-private map manifest, actual packed CLI and engine symbolication, `check:map-controls` and the `package_test` receipt flip are Step 9a.2;
+private map manifest and actual packed CLI and engine symbolication are Step 9a.2a (below);
+`check:map-controls` and the `package_test` receipt flip are Step 9a.2b;
 recipient custody, the release state controller and the workflow graph are Steps 9b–9d.
 Until those and Wave 4b's production recipient exist, the release workflow's publish job
 refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).
+
+### Private manifest and symbolication implementation boundary — Step 9a.2a
+
+Step 9a.2a (a [recorded split](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)
+of 9a.2, maintainer-approved on 2026-10-24) implements items 4 and 5 above for the package-test
+producer. The receipt stays `compiled_package_test` until 9a.2b's product map controls exist.
+
+- **Strict maps.** The finalizer decodes every consumed upstream map's and every final map's
+  `mappings` strictly — base64 VLQ only, no truncated or oversized value, segments of one, four or
+  five fields, increasing generated columns, in-range source and name indices, no negative position —
+  and requires every generated position inside the text the map was generated for and every
+  original position inside its source text (a position at a line's end is a caret position). A
+  violation refuses with its own code (`UPSTREAM_MAP_MAPPINGS`, `UPSTREAM_MAP_RANGE`,
+  `MAP_MAPPINGS`, `MAP_RANGE`) before anything is written; a well-formed charset alone no longer
+  decides, and the bundler's silent fallback for a malformed upstream map is not relied on. Node's
+  built-in source map decoder is lenient, so it serves only as an independent test oracle.
+- **Private manifest.** After the archive inspection the seal writes `manifest.json` into private
+  staging (owner-only, never overwritten): version 1; the source commit, the commit's Git tree and
+  the `dirty` flag; the package version; the build target; Node, pnpm, TypeScript, tsup and esbuild
+  versions from the installed tools; SHA-256 digests of the lockfile and every manifest and build
+  configuration; every final JS file keyed as `dist/<chunk>.js` with its SHA-256 and its staged map's
+  path and SHA-256; a SHA-256 for every original source a final map names (repository-relative, no
+  content); and the tarball's SHA-256. The staged maps must still be the bytes the finalizer recorded
+  and each JS digest must be the tarball entry's. It holds no host path, credential or source text
+  and is removed with the staging.
+- **Actual frames.** The seal then runs the finalized `dist` — which the inspection has proven
+  byte-equal to the tarball entry by entry — under a tooling-only `node --import` preload while it
+  imports a canary workflow (`relavium import`, offline, with its home, project and captured frames
+  in an owner-only directory of the private root). The preload wraps the external `yaml` package's
+  `parse`, records V8's structured call sites for the canary document alone, restores the stack
+  formatter and limit, and replaces the keyring binding with a refusing module, so no native module
+  loads and no secret is read. Exactly one captured stack is required.
+- **Symbolication.** Each frame inside the finalized `dist` must be a file the manifest and the
+  tarball record (re-hashed at capture), its map must be the staged bytes the manifest records, and
+  only a frame that lands exactly on a mapping segment counts. Five named call sites must be reached
+  — three in the CLI and two in the inlined `@relavium/core`, each the one call to a named function
+  inside another — at the line and UTF-16 column that the matching source revision's syntax tree
+  gives: the checkout's Git objects at the recorded commit, read by Git without configuration,
+  filters or replace refs, for a clean candidate, and the candidate copy for a dirty local one, both
+  bound to the manifest's per-source digests. Wrong JS, a wrong map, permuted map sources and a wrong
+  source revision therefore cannot reach the anchors. A refusal prints one fixed code
+  (`PACKED_CLI_MANIFEST_*`, `PACKED_CLI_SYMBOLICATION_*`) and never a frame, path or source text, and
+  no receipt is written.
 
 ## Recipient custody
 

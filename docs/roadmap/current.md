@@ -172,7 +172,7 @@ bar and round cap, as its
 medium findings through round 9 are corrected, and after round 10, the last round, only GEN-R10-1, which the
 maintainer counted as high on 2026-10-22, is corrected (in the summary, by the author alone). Its other findings
 are recorded in
-[deferred-tasks.md](deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is independently accepted on `development` at `cf97b7f1` (2026-10-24): its round 13 reported no blocker, high or medium finding and its security sitting was clean, and the round's low findings are recorded in deferred-tasks.md ([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-acceptance--2026-10-24)); Step 9a.2 is next; the substrate's
+[deferred-tasks.md](deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is independently accepted on `development` at `cf97b7f1` (2026-10-24): its round 13 reported no blocker, high or medium finding and its security sitting was clean, and the round's low findings are recorded in deferred-tasks.md ([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-acceptance--2026-10-24)); Step 9a.2 is split into 9a.2a and 9a.2b, and Step 9a.2a (the private manifest and symbolication) is implemented on `development` and under review ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2a-implementation-checkpoint--2026-10-24)); the substrate's
 9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
 [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) and end with
 whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the
@@ -1141,7 +1141,7 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Step 9a.1 accepted on `development` (2026-10-24), Steps 9a.2–19 NOT STARTED — 2026-10-24.**
+**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Step 9a.1 accepted on `development` (2026-10-24), Step 9a.2a under review, Steps 9a.2b–19 NOT STARTED — 2026-10-24.**
 ADR-0110–0113, their linked contracts and the nineteen-increment plan were approved on 2026-10-16.
 [Steps 1–8 were independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 on `development`, with whole Step 8 reviewed at `c83c8575`, and published as the scoped checkpoint

@@ -7,10 +7,12 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
 import { originFromEnvironment, validatePackageReceipt } from './binding.mjs';
 import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
+import { sealPrivateManifest } from './manifest.mjs';
+import { symbolicateCandidate } from './symbolicate.mjs';
 
 export function producerNodeMajor(root) {
   const declared = readOrdinaryFile(join(root, '.nvmrc'), 20).toString('utf8').trim();
@@ -92,13 +94,29 @@ export function finalizedPublicFiles(root, staging) {
 }
 
 /**
+ * Inspect the tarball, then seal the candidate's private map manifest, then symbolicate actual packed
+ * frames against it, and only then write the receipt: a refusal at any step leaves no receipt.
  * @param {string} artifactDirectory the public artifact directory holding exactly one tarball
- * @param {{repository: string, staging: string, source: string, dirty: boolean}} candidate
+ * @param {{repository: string, staging: string, source: string, dirty: boolean, checkout: string,
+ *   work: string, ports?: {manifest?: typeof sealPrivateManifest,
+ *   symbolicate?: typeof symbolicateCandidate}}} candidate the candidate root and its private
+ *   staging, the original checkout's identity and object store, and a private work directory
  */
-export async function sealPackage(artifactDirectory, { repository, staging, source, dirty }) {
+export async function sealPackage(
+  artifactDirectory,
+  { repository, staging, source, dirty, checkout, work, ports = {} },
+) {
+  const { manifest = sealPrivateManifest, symbolicate = symbolicateCandidate } = ports;
   const tarball = oneTarball(artifactDirectory);
   assert.match(source, /^[0-9a-f]{40}$/u, 'PACKED_CLI_SOURCE_IDENTITY');
   assert.equal(typeof dirty, 'boolean', 'PACKED_CLI_SOURCE_IDENTITY');
+  assert.ok(
+    typeof checkout === 'string' &&
+      isAbsolute(checkout) &&
+      typeof work === 'string' &&
+      isAbsolute(work),
+    'PACKED_CLI_SEAL_INPUTS',
+  );
   const archive = inspectPackageArchive(readOrdinaryFile(tarball, 16 * 1024 * 1024), {
     expectedFiles: finalizedPublicFiles(repository, staging),
     expectedPackage: expectedPackManifest(repository),
@@ -106,6 +124,10 @@ export async function sealPackage(artifactDirectory, { repository, staging, sour
   const origin = originFromEnvironment(process.env);
   const pnpm = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).packageManager;
   assert.equal(pnpm, 'pnpm@9.12.3');
+  // Only now, with the packed bytes proven to be the finalized ones, the private manifest is sealed;
+  // actual packed frames are then symbolicated against it before any receipt exists.
+  await manifest({ candidate: repository, staging, checkout, source, dirty, archive });
+  await symbolicate({ candidate: repository, staging, checkout, work, archive });
   const receipt = {
     version: 1,
     mode: 'compiled_package_test',

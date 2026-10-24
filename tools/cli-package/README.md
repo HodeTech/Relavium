@@ -58,9 +58,14 @@ consumer installs under the temporary directory, so a shared `/tmp` is a named l
 production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
 (`production-failure.mjs`), never a build child's captured output, which can quote a map. A
 corepack-managed pnpm always runs from the developer's own corepack cache, never from the shared
-temporary directory that holds the isolated homes (`corepackHome` in `process.mjs`). The receipt does **not** certify symbolication, a map manifest,
-encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
-metafile or per-source inventory enters the public artifact. The release workflow's
+temporary directory that holds the isolated homes (`corepackHome` in `process.mjs`). Before the
+receipt is written, the seal decodes the private maps strictly (`source-map.mjs`; the finalizer does
+too), seals the private manifest (`manifest.mjs`) and symbolicates actual packed CLI and core
+frames, captured by a tooling-only preload during an offline import (`frame-capture.mjs`), against
+the matching source revision (`symbolicate.mjs`); all of it is discarded with the staging. The
+receipt does **not** certify encrypted custody or a production release candidate (Steps 9b–9d),
+and it stays `compiled_package_test` until the product map controls of Step 9a.2b. No private map,
+metafile, manifest or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
 sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule
 that returns, throws or cannot load still refuses, and no way of invoking it can skip the

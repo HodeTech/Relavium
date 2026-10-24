@@ -30,6 +30,7 @@ function fixture({ buildExit = 0, tsup: installed = true, finalizer } = {}) {
   for (const path of [
     'cli-package/prepack.mjs',
     'cli-package/finalize.mjs',
+    'cli-package/source-map.mjs',
     'cli-package/files.mjs',
     'cli-package/paths.mjs',
     'bundle-closure/closure.mjs',

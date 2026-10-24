@@ -710,6 +710,12 @@ test('a map source must be a plain path of at most 1024 characters to an origina
   assert.equal(longest.length, 1024);
   editJson(join(bounded.core, 'dist', 'index.js.map'), (map) => (map.sources = [longest]));
   refusesBeforeWriting(bounded, 'MAP_SOURCE_MISSING');
+  // One character more is refused as a path, before any lookup.
+  const over = await fixture();
+  const tooLong = `../src/${'a/'.repeat(507)}x.ts`;
+  assert.equal(tooLong.length, 1025);
+  editJson(join(over.core, 'dist', 'index.js.map'), (map) => (map.sources = [tooLong]));
+  refusesBeforeWriting(over, 'MAP_SOURCE_PATH');
   // A source under a dot directory is not original TypeScript, even when the file exists.
   const dotted = await fixture();
   write(join(dotted.core, 'src', '.hidden', 'x.ts'), 'export const x = 1;\n');
@@ -728,6 +734,48 @@ test('a map source must be a plain path of at most 1024 characters to an origina
       (map) => (map.sources = ['../src/linked.ts']),
     );
     refusesBeforeWriting(linked, 'MAP_SOURCE_MISSING');
+  }
+});
+
+/** Base64 VLQ for one signed value, as a source map writer encodes it. */
+function vlq(value) {
+  const digits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let rest = value < 0 ? -value * 2 + 1 : value * 2;
+  let out = '';
+  do {
+    let digit = rest % 32;
+    rest = Math.floor(rest / 32);
+    if (rest > 0) digit += 32;
+    out += digits[digit];
+  } while (rest > 0);
+  return out;
+}
+
+test('refuses mappings that are malformed or point outside their texts, upstream and final', async () => {
+  // Each mapping string passes the character check; only strict decoding or a range check refuses it.
+  const pastLastLine = `AAAA;${';'.repeat(5000)}AAAA`;
+  for (const [label, mappings, code] of [
+    ['a truncated value', 'AAAg', 'MAPPINGS'],
+    ['a two-field segment', 'AA', 'MAPPINGS'],
+    ['a source index past the sources', `A${vlq(1)}AA`, 'MAPPINGS'],
+    ['an empty segment', 'AAAA,,CAAC', 'MAPPINGS'],
+    ['a generated column that goes back', 'EAAA,DAAC', 'MAPPINGS'],
+    ['an original line past the source', `AA${vlq(100000)}A`, 'RANGE'],
+    ['an original column past its line', `AAA${vlq(100000)}`, 'RANGE'],
+    ['a generated line past the text', pastLastLine, 'RANGE'],
+    ['a generated column past its line', `${vlq(100000)}AAA`, 'RANGE'],
+  ]) {
+    const upstream = await fixture();
+    editJson(join(upstream.core, 'dist', 'index.js.map'), (map) => (map.mappings = mappings));
+    const upstreamError = refusal(upstream);
+    assert.equal(upstreamError.code, `UPSTREAM_MAP_${code}`, `upstream ${label}`);
+    assert.equal(
+      upstreamError.message,
+      `CLI candidate finalization refused: UPSTREAM_MAP_${code} (packages/core/dist/index.js.map)`,
+    );
+    const final = await fixture();
+    editJson(join(final.dist, 'index.js.map'), (map) => (map.mappings = mappings));
+    refusesBeforeWriting(final, `MAP_${code}`);
   }
 });
 

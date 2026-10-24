@@ -366,10 +366,26 @@ async function withCandidate(body, { packageManager = 'pnpm@9.12.3' } = {}) {
 
 const receiptPath = (artifact) => join(artifact, 'package-test-receipt.json');
 
+/**
+ * The seal with recording stand-ins for the private manifest and symbolication, whose own tests
+ * (symbolicate.test.mjs) run them for real.
+ */
+function sealWith(artifact, candidate, calls = []) {
+  return sealPackage(artifact, {
+    checkout: candidate.repository,
+    work: join(dirname(candidate.staging), 'work'),
+    ...candidate,
+    ports: {
+      manifest: async (options) => void calls.push(['manifest', options]),
+      symbolicate: async (options) => void calls.push(['symbolicate', options]),
+    },
+  });
+}
+
 test('the seal binds a locally produced candidate it is given, never the repository holding seal.mjs', async () => {
   await withCandidate(async ({ root, staging, artifact, tarball, files, published }) => {
     const receipt = await withOrigin({}, () =>
-      sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
+      sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
     );
     assert.equal(receipt.mode, 'compiled_package_test');
     assert.equal(receipt.source, SOURCE);
@@ -395,11 +411,11 @@ test('the seal records the trusted job origin and refuses a dirty source there',
   await withCandidate(async ({ root, staging, artifact }) => {
     await withOrigin(GITHUB_ORIGIN, async () => {
       await assert.rejects(
-        sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
+        sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
         /DIRTY_SOURCE/,
       );
       assert.equal(existsSync(receiptPath(artifact)), false);
-      const receipt = await sealPackage(artifact, {
+      const receipt = await sealWith(artifact, {
         repository: root,
         staging,
         source: SOURCE,
@@ -423,7 +439,7 @@ test('the seal refuses a candidate that pins a different pnpm, writing no receip
     async ({ root, staging, artifact }) => {
       await withOrigin({}, () =>
         assert.rejects(
-          sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
+          sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
           /pnpm@9\.12\.4/,
         ),
       );
@@ -442,7 +458,7 @@ test('the seal refuses an invalid source identity before it reads the candidate'
       { source: SOURCE, dirty: 'false' },
     ])
       await assert.rejects(
-        sealPackage(artifact, { repository: missing, staging, ...identity }),
+        sealWith(artifact, { repository: missing, staging, ...identity }),
         /PACKED_CLI_SOURCE_IDENTITY/,
       );
     assert.equal(existsSync(receiptPath(artifact)), false);
@@ -455,10 +471,108 @@ test('the seal refuses archive bytes that differ from the finalized candidate', 
     writeFileSync(join(artifact, 'relavium-0.1.1.tgz'), gzipSync(ustar(files)));
     await withOrigin({}, () =>
       assert.rejects(
-        sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
+        sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
         /FILE_DRIFT/,
       ),
     );
     assert.equal(existsSync(receiptPath(artifact)), false);
+  });
+});
+
+test('the seal seals the private manifest after the inspection and symbolicates before any receipt', async () => {
+  await withCandidate(async ({ root, staging, artifact }) => {
+    const calls = [];
+    const work = join(dirname(staging), 'work');
+    const receipt = await withOrigin({}, () =>
+      sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }, calls),
+    );
+    assert.deepEqual(
+      calls.map(([step]) => step),
+      ['manifest', 'symbolicate'],
+    );
+    const [[, manifest], [, symbolicate]] = calls;
+    // Both steps receive the inspected archive: the bytes the receipt then records.
+    assert.equal(manifest.archive.sha256, receipt.tarballSha256);
+    assert.deepEqual(manifest.archive.files, receipt.files);
+    assert.deepEqual(
+      { ...manifest, archive: undefined },
+      {
+        candidate: root,
+        staging,
+        checkout: root,
+        source: SOURCE,
+        dirty: false,
+        archive: undefined,
+      },
+    );
+    assert.deepEqual(
+      { ...symbolicate, archive: undefined },
+      { candidate: root, staging, checkout: root, work, archive: undefined },
+    );
+    assert.equal(symbolicate.archive, manifest.archive);
+  });
+});
+
+test('a refused manifest or symbolication leaves no receipt, and an unproven archive reaches neither', async () => {
+  for (const failing of ['manifest', 'symbolicate']) {
+    await withCandidate(async ({ root, staging, artifact }) => {
+      const steps = [];
+      const refusal = new Error(`synthetic ${failing} refusal`);
+      const step = (name) => async () => {
+        steps.push(name);
+        if (name === failing) throw refusal;
+      };
+      await withOrigin({}, () =>
+        assert.rejects(
+          sealPackage(artifact, {
+            repository: root,
+            staging,
+            source: SOURCE,
+            dirty: false,
+            checkout: root,
+            work: join(dirname(staging), 'work'),
+            ports: { manifest: step('manifest'), symbolicate: step('symbolicate') },
+          }),
+          (error) => error === refusal,
+        ),
+      );
+      assert.deepEqual(steps, failing === 'manifest' ? ['manifest'] : ['manifest', 'symbolicate']);
+      assert.equal(existsSync(receiptPath(artifact)), false);
+    });
+  }
+  await withCandidate(async ({ root, staging, artifact, files }) => {
+    files.set('package/README.md', Buffer.from('changed\n'));
+    writeFileSync(join(artifact, 'relavium-0.1.1.tgz'), gzipSync(ustar(files)));
+    const calls = [];
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }, calls),
+        /FILE_DRIFT/,
+      ),
+    );
+    assert.deepEqual(calls, []);
+  });
+});
+
+test('the seal requires the checkout and a private work directory before it reads the candidate', async () => {
+  await withCandidate(async ({ staging, artifact }) => {
+    const missing = join(artifact, 'no-candidate');
+    for (const inputs of [
+      { checkout: undefined, work: '/private/work' },
+      { checkout: 'relative', work: '/private/work' },
+      { checkout: '/checkout', work: undefined },
+      { checkout: '/checkout', work: 'relative' },
+    ]) {
+      await assert.rejects(
+        sealPackage(artifact, {
+          repository: missing,
+          staging,
+          source: SOURCE,
+          dirty: false,
+          ...inputs,
+        }),
+        /PACKED_CLI_SEAL_INPUTS/,
+      );
+    }
   });
 });

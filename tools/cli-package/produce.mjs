@@ -115,9 +115,13 @@ export async function producePackage({
       chmodSync(root, 0o700);
       const candidate = join(root, 'source');
       const [privateStaging] = staging();
+      // The symbolication run's home, project and captured frames: owner-only, outside the candidate.
+      const work = join(root, 'symbolication');
       mkdirSync(candidate, { mode: 0o700 });
-      mkdirSync(privateStaging, { mode: 0o700 });
-      chmodSync(privateStaging, 0o700);
+      for (const directory of [privateStaging, work]) {
+        mkdirSync(directory, { mode: 0o700 });
+        chmodSync(directory, 0o700);
+      }
       // Native real paths carry the letter case the filesystem stores, so no alias passes for elsewhere.
       const published = realpathSync.native(destination);
       const checkout = realpathSync.native(repository);
@@ -148,6 +152,8 @@ export async function producePackage({
             staging: privateStaging,
             source: identity.source,
             dirty: identity.dirty,
+            checkout: repository,
+            work,
           });
         },
       });
