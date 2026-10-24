@@ -22,6 +22,7 @@ import {
   copyFixtureRuntimeSupport,
   createFixtureSentinel,
   InstalledNativeControlError,
+  nativeFixtureConfig,
   pendingNativeFixturePids,
 } from './native-process.mjs';
 import { explicitEnvironment, ndjson, poll } from './process.mjs';
@@ -354,13 +355,7 @@ function ownedFixture(t, mode) {
   );
   writeFileSync(
     join(root, 'native-fixture.json'),
-    JSON.stringify({
-      mode,
-      log,
-      node: process.execPath,
-      descendant: fileURLToPath(new URL('./native-descendant.cjs', import.meta.url)),
-      owner: owner.pid,
-    }),
+    JSON.stringify({ ...nativeFixtureConfig({ mode, log }), owner: owner.pid }),
   );
   const target = spawn(process.execPath, [join(root, 'status')], {
     cwd: root,
@@ -428,6 +423,47 @@ test(
     await poll(() => !alive(descendant), 5000, 'The descendant outlived the worker that owns it');
   },
 );
+
+test('a fixture target is owned by the smoke worker that writes its configuration', () => {
+  const descendant = fileURLToPath(new URL('./native-descendant.cjs', import.meta.url));
+  const common = { log: '/case/native.ndjson', node: process.execPath, descendant };
+  assert.deepEqual(nativeFixtureConfig({ mode: 'exit-fallback', log: common.log }), {
+    mode: 'exit-fallback',
+    ...common,
+    owner: process.pid,
+  });
+  assert.deepEqual(
+    nativeFixtureConfig({ mode: 'bootstrap-fatal', log: common.log, release: '/case/release' }),
+    { mode: 'bootstrap-fatal', ...common, owner: process.pid, release: '/case/release' },
+  );
+});
+
+test('a fixture target without an owner refuses at once instead of running unwatched', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-status-unowned-test-'));
+  const log = join(root, 'native.ndjson');
+  copyFileSync(
+    fileURLToPath(new URL('./native-status.cjs', import.meta.url)),
+    join(root, 'status'),
+  );
+  const unowned = nativeFixtureConfig({ mode: 'exit-fallback', log });
+  delete unowned.owner;
+  writeFileSync(join(root, 'native-fixture.json'), JSON.stringify(unowned));
+  const target = spawn(process.execPath, [join(root, 'status')], {
+    cwd: root,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  t.after(() => {
+    if (target.exitCode === null && target.signalCode === null) target.kill('SIGKILL');
+    rmSync(root, { recursive: true, force: true });
+  });
+  const outcome = await Promise.race([
+    new Promise((resolve) => target.once('exit', (code) => resolve(code))),
+    sleep(5000, 'still running', { ref: false }),
+  ]);
+  assert.notEqual(outcome, 'still running');
+  assert.notEqual(outcome, 0);
+  assert.equal(existsSync(log), false);
+});
 
 test('shared fixture runtime support reuses read-only identical bytes and refuses replacement content or links', () => {
   const root = mkdtempSync(join(tmpdir(), 'relavium-shared-runtime-test-'));

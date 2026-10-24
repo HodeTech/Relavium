@@ -9538,14 +9538,17 @@ corrections. It changes
 `tools/cli-package` (the owned candidate tree `candidate.mjs`; the producer `produce.mjs` and its entry
 point `pack.mjs`; the prepack orchestrator `prepack.mjs`; the finalizer `finalize.mjs`; the seal; the
 archive and smoke fold-ins; the interim publication guard `release-guard.mjs` with its rule
-`release-guard-core.mjs`), `tools/bundle-closure` (map-aware closure and a shared emitted inventory),
+`release-guard-core.mjs`; the interrupt, corepack and Git-isolation substrate in `process.mjs`; the local
+check `check.mjs`; the consumer lifetime `consume.mjs` and `consumer-lifetime.mjs`; `paths.mjs` and
+`production-failure.mjs`), `tools/bundle-closure` (map-aware closure and a shared emitted inventory),
 `apps/cli` (the prepack script and the candidate-mode tsup selection), `.github/workflows/release.yml`
 (the guard before npm publication) and, through the review rounds, `tools/cli-bootstrap` (stopping the
 bootstrap witness's bounded children and removing its live fixtures for an interrupted consumer), the
 installed smoke's native fixtures and worker root, the `ci.yml` pack-step comment, the acceptance-tools
 list in `package.json` and `tools/ci/require-packed-cli.test.mjs`, with the
 [packaging contract](../../reference/cli/packaging.md#candidate-build-and-finalizer-implementation-boundary--step-9a1),
-the release runbook, an ADR-0051 amendment and the tooling README. It adds no runtime dependency, and
+the release runbook, an ADR-0051 amendment, the tooling and smoke READMEs, the CLI reference index and the
+`CLAUDE.md`, `AGENTS.md`, `current.md` and `deferred-tasks.md` status lines. It adds no runtime dependency, and
 the receipt stays `compiled_package_test`; the contract section is the canonical description of the
 mechanism.
 
@@ -9594,10 +9597,40 @@ adversarially verified; the detailed reports stay local and Git-ignored.
 | 11 | `d890abf0` | NONCLEAN (plan, security, correctness and integration lenses clean) | 4 (1 medium, 3 low) | nothing pinned that the producer looks up the developer's global excludes in the caller's own environment rather than the isolated build environment, which would have dropped them silently: the composition test now requires the very environment object. The local check's deadline killed only a stage's own process group, so a producer's detached build child could recreate the removed root with a map: a stage past its deadline is now interrupted first (`runCommand`'s `graceMs`) and killed only after a grace period, tested with a late-writing build child. The check's wait for an interrupt caught during its own root removal gained a killing test, and `dependencyStore`'s docblock says where corepack runs |
 | 12 | `78623964` | NONCLEAN (plan, security and correctness lenses clean) | 7 (1 medium, 2 low, 4 nits; 5 distinct) | Git reading the checkout got Node's null device, `\\.\nul` on Windows, which Git for Windows refuses (it maps only `nul` and the literal `/dev/null`), so every isolated Git call would exit on a Windows host — the local producer and a local consumer; the CI producer runs on Linux and every CI consumer names its source: it now gets the literal `/dev/null`. The consumer stage's deadline grace and a bounded grace test gained killing tests, and the store discovery's exception is stated. The author gate statements of rounds 3–11 said the filesystem and secrets families' captured sources were unchanged, but both capture the root `package.json`, which round 3 changed (one acceptance-tools entry); this round runs the full `pnpm run ci`, every family included |
 
+**Internal rigor pass, 2026-10-24.** After the twelfth round the maintainer asked for maximum care before
+any further round, so an internal read-only pass covered the whole increment at `1f247772` before round
+13: five mutation sweeps (the candidate and paths, the finalizer, the producer and seal, the process and
+interrupt lifetime, and the closure and guard; each mutant applied in place, run in its own process group
+and restored by digest) and claims, platform and security lenses; the detailed record is local. It
+reported 84 raw findings (6 medium, 69 low, 9 nits). Code defects corrected: past its deadline, a group
+member that ignored SIGTERM outlived a leader that exited on it, so the group is now killed when the leader
+closes inside the grace; the excludes lookup ran Git from the checkout when the caller had no `PATH`, and
+missed command-scope `GIT_CONFIG_*` configuration; Git reading the checkout still read the system
+attributes and, on Windows, default attribute and ignore locations under the null-device home, so it now
+sets `GIT_ATTR_NOSYSTEM` and names both files; the store discovery dropped `npm_config_store_dir`; the
+candidate copy treated a group or other execute bit as executable, unlike Git; the consumer compared its
+placement by real paths that keep the given letter case; the producer removed the private maps last on an
+interrupt, and an ordinary failure let a removal error replace the primary refusal and left a refused
+tarball in the artifact directory; two finalizer refusals echoed an unvalidated metafile string as their
+subject; and one bootstrap fixture that could not be removed stopped the others' removal. Each test gap
+gained a killing test, among them a composed `sealPackage` run on a candidate that is not the repository,
+a behavioural evaluation of the tsup configuration, exact finalizer bounds and refusal subjects, the
+release guard's handling of a rule that returns, exits or throws a foreign error, the publish job's exact
+keys, and the completeness of the acceptance-tools list. The 260 mutants that had survived the five sweeps,
+and new mutants over the corrections, were then run against the corrected tests. All are killed except the
+ones the sweeps judged equivalent or defensive and the consumer and worker composition lines that no node
+test reaches by design; two of the old survivors needed further killing tests first (the producer's default
+temporary directory, and a deadline interrupt that reaches every member of the process group, not only its
+leader). One of those runs left a test's detached build stand-in behind under a mutant that hung the test,
+so every wait for a spawned tool's exit in the interrupt tests is now bounded and a regressed tool fails its
+test instead. Five low findings that need a change of scope are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
+
 **Remaining gates.** The increment is not independently accepted. Under the Acceptance row as amended
 on 2026-10-23, one NEW complete cumulative round with no blocker, high or medium finding and no
-regression, its security lens serving as the separate security sitting, remains; that round's low
-findings go to deferred-tasks.md. Then `development` is pushed and its CI observed, and the PR #95
+regression remains, together with the separate scoped security sitting the Acceptance row requires, at
+the same head and with the same bar (it runs alongside that round as its own reviewer and report, as in
+every round so far); their low findings go to deferred-tasks.md. Then `development` is pushed and its CI observed, and the PR #95
 tooling nits in
 [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18)
 close.

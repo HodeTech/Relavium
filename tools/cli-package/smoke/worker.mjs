@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -21,7 +20,7 @@ import { assertExit, explicitEnvironment, invoke, ndjson } from './process.mjs';
 import { assertInstalledNativeProcesses, InstalledNativeControlError } from './native-process.mjs';
 import { emitInstalledWorkerFailure } from './failure-diagnostic.mjs';
 import { installedModulesOwner } from './installation.mjs';
-import { INSTALLED_SMOKE_ROOT_PREFIX } from './index.mjs';
+import { createInstalledSmokeRoot } from './index.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(directory, '../../..');
@@ -64,7 +63,7 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
   const before = snapshot(packageRoot);
   const installedModules = installedModulesOwner(packageRoot);
   assert.ok(installedModules, 'Installed package must have an explicit node_modules owner');
-  const root = mkdtempSync(join(supportRoot, INSTALLED_SMOKE_ROOT_PREFIX));
+  const root = createInstalledSmokeRoot(supportRoot);
   const log = join(root, 'guard.ndjson');
   const report = {
     schemaVersion: 1,

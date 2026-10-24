@@ -6,9 +6,11 @@
  * stages the maps and the build metadata owner-only outside the package, re-checks the finite
  * closure and the public file/mode inventory, and only then hashes. Nothing writes JS afterwards.
  *
- * Refusals name a fixed code and at most a repository-relative output or source path, never map or
- * source contents. A successful bundle is no evidence by itself: a missing upstream map makes the
- * bundler silently map engine frames to compiled JS, so every source set is checked explicitly.
+ * Refusals name a fixed code and at most a fixed label or a repository-relative path that has passed
+ * validation, never map or source contents and never a host path: a metafile string that escapes
+ * the repository or is not a plain path is left out. A successful bundle is no evidence by itself: a
+ * missing upstream map makes the bundler silently map engine frames to compiled JS, so every source
+ * set is checked explicitly.
  */
 import { Buffer } from 'node:buffer';
 import {
@@ -51,9 +53,10 @@ const LIMITS = Object.freeze({
 });
 const SOURCE_TAIL = /^(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.tsx?$/u;
 const MAPPINGS = /^[A-Za-z0-9+/,;]*$/u;
+const PLAIN_PATH = /^(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$/u;
 
 export class CandidateFinalizationError extends Error {
-  /** @param {string} code @param {string} [subject] a repository-relative path, never contents */
+  /** @param {string} code @param {string} [subject] a fixed label or a validated repository-relative path */
   constructor(code, subject) {
     super(
       `CLI candidate finalization refused: ${code}` +
@@ -214,6 +217,17 @@ function upstreamSources(repository, packageName, jsPath) {
 }
 
 /**
+ * A metafile input (relative to apps/cli) as a refusal subject: its repository-relative path when
+ * that is a plain path inside the repository, otherwise nothing.
+ * @param {string} input
+ */
+function inputSubject(input) {
+  if (input.startsWith('/')) return undefined;
+  const path = posix.normalize(posix.join('apps/cli', input));
+  return path.length <= 200 && PLAIN_PATH.test(path) ? path : undefined;
+}
+
+/**
  * Original TypeScript sources behind one metafile input: the CLI's own source directly, an engine
  * package's compiled JS through its tsc map. Any other input kind refuses.
  * @param {string} repository @param {string} input metafile input relative to apps/cli
@@ -225,7 +239,9 @@ function inputSources(repository, input, cache) {
   let sources;
   const engine = /^\.\.\/\.\.\/packages\/([a-z]+)\/dist\/(.+\.js)$/u.exec(input);
   if (input.startsWith('src/') && SOURCE_TAIL.test(input.slice(4)) && !input.endsWith('.d.ts')) {
-    sources = [originalSource(repository, 'apps/cli', input, ['apps/cli/src'], input)];
+    sources = [
+      originalSource(repository, 'apps/cli', input, ['apps/cli/src'], `apps/cli/${input}`),
+    ];
   } else if (
     engine &&
     ENGINE_PACKAGES.includes(engine[1]) &&
@@ -233,7 +249,7 @@ function inputSources(repository, input, cache) {
   ) {
     sources = upstreamSources(repository, engine[1], `packages/${engine[1]}/dist/${engine[2]}`);
   } else {
-    refuse('UNSUPPORTED_INPUT', input);
+    refuse('UNSUPPORTED_INPUT', inputSubject(input));
   }
   cache.set(input, sources);
   return sources;
@@ -381,7 +397,7 @@ export function finalizeCandidate({ repository, staging }) {
   if (runtime.length === 0 || runtime.length > LIMITS.outputs) refuse('OUTPUT_INVENTORY');
   const expectedEntries = ['metafile-esm.json'];
   for (const path of runtime) {
-    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY', `apps/cli/${path}`);
+    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY');
     if (!Object.hasOwn(metafile.outputs, `${path}.map`)) refuse('MAP_PAIRING', `apps/cli/${path}`);
     expectedEntries.push(basename(path), `${basename(path)}.map`);
   }
@@ -419,7 +435,7 @@ export function finalizeCandidate({ repository, staging }) {
       }
       if (contribution.bytesInOutput === 0) continue;
       const sources = cache.get(input);
-      if (!sources) refuse('UNSUPPORTED_INPUT', input);
+      if (!sources) refuse('UNSUPPORTED_INPUT', inputSubject(input));
       for (const source of sources) expected.add(source);
     }
     const map = finalMap(

@@ -14,9 +14,11 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { exitWithin } from './child-exit.mjs';
 import {
   corepackHome,
   exerciseInstalledCommand,
+  forwardInterrupts,
   isolatedEnvironment,
   isolatedGitEnvironment,
   resolvePnpm,
@@ -30,6 +32,7 @@ test('Git reading the original checkout gets no home, global or system configura
   assert.deepEqual(env, {
     ...isolatedEnvironment('/dev/null'),
     GIT_CONFIG_NOSYSTEM: '1',
+    GIT_ATTR_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_NO_REPLACE_OBJECTS: '1',
   });
@@ -236,10 +239,9 @@ if (signal !== undefined) process.exit(128 + constants.signals[signal]);
     try {
       child = Number(await waitForFile(pidFile));
       assert.ok(alive(child));
-      const exited = new Promise((resolve) => tool.once('exit', resolve));
+      const exited = exitWithin(tool);
       tool.kill('SIGINT');
-      const bound = delay(20_000).then(() => 'still running');
-      assert.equal(await Promise.race([exited, bound]), 130);
+      assert.deepEqual(await exited, [130, null]);
       assert.equal(readFileSync(marker, 'utf8'), 'SIGINT');
       for (let waited = 0; alive(child); waited += 25) {
         assert.ok(waited < 5_000, 'the child outlived the forwarded interrupt');
@@ -280,9 +282,7 @@ console.log('not interrupted');
     });
     let stdout = '';
     tool.stdout.on('data', (chunk) => (stdout += chunk));
-    const [code, signal] = await new Promise((resolve) =>
-      tool.once('exit', (exitCode, signalCode) => resolve([exitCode, signalCode])),
-    );
+    const [code, signal] = await exitWithin(tool);
     assert.equal(signal, null);
     assert.equal(code, 130);
     assert.equal(stdout, '');
@@ -319,6 +319,8 @@ test('the corepack cache is computed as corepack computes it, and isolated child
     resolve('/xdg', 'node', 'corepack'),
   );
   assert.equal(corepackHome({ LOCALAPPDATA: '/local' }), resolve('/local', 'node', 'corepack'));
+  // A relative location is resolved here, never by a child against its own working directory.
+  assert.equal(corepackHome({ COREPACK_HOME: 'relative/cache' }), resolve('relative/cache'));
   assert.equal(
     corepackHome({}),
     resolve(
@@ -445,3 +447,172 @@ test(
     assert.ok(Date.now() - started >= 1500);
   },
 );
+
+test('an isolated child of an isolated tool keeps the corepack cache its caller named', async () => {
+  // check.mjs isolates the producer's HOME and caches in the temporary check root and names the
+  // developer's cache explicitly; the producer's own children must keep that cache.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-corepack-inherited-')));
+  try {
+    const script = `import { isolatedEnvironment } from ${JSON.stringify(new URL('./process.mjs', import.meta.url).href)};
+console.log(isolatedEnvironment('/isolated-home').COREPACK_HOME);`;
+    const result = await runCommand(process.execPath, ['--input-type=module', '-e', script], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        XDG_CACHE_HOME: home,
+        COREPACK_HOME: '/developer/corepack',
+      },
+      timeoutMs: 20_000,
+    });
+    assert.equal(result.stdout.trim(), resolve('/developer/corepack'));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Code for a group leader that starts a member in its own process group (not detached), records the
+ * member's pid and stays alive until a SIGTERM ends it; the member ignores SIGTERM.
+ */
+function groupWithStubbornMember(pidFile) {
+  const member = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+  return (
+    `const { spawn } = require('node:child_process');` +
+    `const member = spawn(process.execPath, ['-e', ${JSON.stringify(member)}], { stdio: 'ignore' });` +
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(member.pid));` +
+    'setInterval(() => {}, 1000);'
+  );
+}
+
+test(
+  'past its deadline the whole group is killed when the leader exits on the interrupt first',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-group-deadline-')));
+    const pidFile = join(root, 'member.pid');
+    t.after(() => {
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : NaN;
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    });
+    await assert.rejects(
+      runCommand(process.execPath, ['-e', groupWithStubbornMember(pidFile)], {
+        timeoutMs: 1000,
+        graceMs: 4000,
+      }),
+      /PACKED_CLI_CHILD_TIMEOUT/u,
+    );
+    // The leader exited on the SIGTERM; its member, which ignored it, goes with the settlement.
+    const member = Number(readFileSync(pidFile, 'utf8'));
+    for (let waited = 0; alive(member); waited += 25) {
+      assert.ok(waited < 2_000, 'a member of the group outlived its deadline');
+      await delay(25);
+    }
+  },
+);
+
+test(
+  'past its deadline every member of the group is interrupted, not only the leader',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-group-interrupt-')));
+    const pidFile = join(root, 'member.pid');
+    const marker = join(root, 'member-interrupted');
+    t.after(() => {
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : NaN;
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    });
+    const member =
+      `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(marker)}, 'SIGTERM'); process.exit(0); });` +
+      'setInterval(() => {}, 1000);';
+    // The leader ignores the interrupt, so nothing but the grace's end kills the group.
+    const leader =
+      `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(member)}], { stdio: 'ignore' });` +
+      "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    await assert.rejects(
+      runCommand(process.execPath, ['-e', leader], { timeoutMs: 2000, graceMs: 1500 }),
+      (error) =>
+        /PACKED_CLI_CHILD_TIMEOUT/u.test(error.message) && error.result.signal === 'SIGKILL',
+    );
+    assert.equal(readFileSync(marker, 'utf8'), 'SIGTERM');
+  },
+);
+
+test(
+  'without a grace a child past its deadline is killed outright, never interrupted first',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-no-grace-')));
+    const marker = join(root, 'interrupted');
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    await assert.rejects(
+      runCommand(
+        process.execPath,
+        [
+          '-e',
+          `process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'SIGTERM'));` +
+            'setInterval(() => {}, 1000);',
+        ],
+        { timeoutMs: 500 },
+      ),
+      (error) =>
+        /PACKED_CLI_CHILD_TIMEOUT/u.test(error.message) && error.result.signal === 'SIGKILL',
+    );
+    assert.equal(existsSync(marker), false);
+  },
+);
+
+test('the grace is a non-negative whole number of milliseconds', () => {
+  for (const graceMs of [-1, 1.5, Number.NaN])
+    assert.throws(() => runCommand(process.execPath, ['-e', ''], { graceMs }), String(graceMs));
+});
+
+test(
+  'an interrupt stops a child tree that ignores SIGTERM',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    // The tool's children are killed outright: a build that traps SIGTERM cannot outlive it.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-stubborn-child-')));
+    const pidFile = join(root, 'child.pid');
+    t.after(() => {
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : NaN;
+      if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) process.kill(pid, 'SIGKILL');
+      rmSync(root, { recursive: true, force: true });
+    });
+    const harness = `
+import { exitOnInterrupt, runCommand } from ${JSON.stringify(new URL('./process.mjs', import.meta.url).href)};
+await exitOnInterrupt(() => {}, () =>
+  runCommand(process.execPath, ['-e', ${JSON.stringify(
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
+  )}], { timeoutMs: 60_000 }),
+);
+`;
+    const tool = spawn(process.execPath, ['--input-type=module', '-e', harness], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const child = Number(await waitForFile(pidFile));
+    const exited = exitWithin(tool);
+    tool.kill('SIGINT');
+    assert.deepEqual(await exited, [130, null]);
+    for (let waited = 0; alive(child); waited += 25) {
+      assert.ok(waited < 3_000, 'the child outlived the interrupt');
+      await delay(25);
+    }
+  },
+);
+
+test('forwarding interrupts adds one listener per signal and disposing removes them', async () => {
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  const counts = () => signals.map((signal) => process.listenerCount(signal));
+  const before = counts();
+  const interrupts = forwardInterrupts();
+  assert.deepEqual(
+    counts(),
+    before.map((count) => count + 1),
+  );
+  await interrupts.dispose();
+  assert.deepEqual(counts(), before);
+});

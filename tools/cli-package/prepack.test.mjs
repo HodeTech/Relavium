@@ -24,7 +24,7 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-prepack-orches
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let count = 0;
 
-function fixture({ buildExit = 0, tsup: installed = true } = {}) {
+function fixture({ buildExit = 0, tsup: installed = true, finalizer } = {}) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of [
@@ -44,6 +44,20 @@ function fixture({ buildExit = 0, tsup: installed = true } = {}) {
     join(root, 'node_modules'),
     process.platform === 'win32' ? 'junction' : 'dir',
   );
+  if (finalizer !== undefined) {
+    // The real staging check and error class, with a stand-in for the finalization itself.
+    const tools = join(root, 'tools', 'cli-package');
+    copyFileSync(join(tools, 'finalize.mjs'), join(tools, 'finalize-real.mjs'));
+    writeFileSync(
+      join(tools, 'finalize.mjs'),
+      `export { CANDIDATE_STAGING_ENV, CandidateFinalizationError, assertPrivateStaging } from './finalize-real.mjs';\n` +
+        `import { BundleClosureError } from '../bundle-closure/closure.mjs';\n` +
+        `import { AssertionError } from 'node:assert/strict';\n` +
+        `import { writeFileSync } from 'node:fs';\n` +
+        `export function finalizeCandidate(options) {\n${finalizer}\n}\n` +
+        `void BundleClosureError, AssertionError, writeFileSync;\n`,
+    );
+  }
   const cli = join(root, 'apps', 'cli');
   const tsup = join(cli, 'node_modules', 'tsup');
   const marker = join(root, 'build-ran');
@@ -146,3 +160,59 @@ test('an unexpected error prints only its code, never its message or a host path
   assert.equal(result.stderr, '✗ CLI candidate finalization failed: MODULE_NOT_FOUND\n');
   assert.equal(existsSync(candidate.marker), false);
 });
+
+test('a staging directory inside the repository but outside the CLI refuses before the build', () => {
+  const candidate = fixture();
+  const staging = join(candidate.root, `staging-${count}`);
+  mkdirSync(staging);
+  chmodSync(staging, 0o700);
+  const result = prepack(candidate, { staging });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /CLI candidate finalization refused: STAGING_PATH/u);
+  assert.equal(existsSync(candidate.marker), false);
+});
+
+test('a successful finalization gets the repository and staging and reports on stdout', () => {
+  const record = join(scratch, `finalizer-options-${count + 1}.json`);
+  const candidate = fixture({
+    finalizer:
+      `writeFileSync(${JSON.stringify(record)}, JSON.stringify(options));\n` +
+      `return { outputs: [1, 2], maps: [1, 2], upstreamMaps: 5 };`,
+  });
+  const staging = privateStaging();
+  const result = prepack(candidate, { staging });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(record, 'utf8')), {
+    repository: candidate.root,
+    staging,
+  });
+  // The pipeline counts exactly this line on stdout.
+  assert.equal(
+    (result.stdout.match(/^✓ CLI candidate finalized: /gmu) ?? []).length,
+    1,
+    result.stdout,
+  );
+  assert.match(
+    result.stdout,
+    /^✓ CLI candidate finalized: 2 output\(s\), 2 private map\(s\), 5 upstream map\(s\)$/mu,
+  );
+});
+
+for (const [label, thrown, printed] of [
+  [
+    'a closure refusal',
+    `throw new BundleClosureError('MAP_LINK', 'runtime output links a source map: dist/index.js');`,
+    '✗ CLI candidate closure: MAP_LINK: runtime output links a source map: dist/index.js\n',
+  ],
+  [
+    'an assertion',
+    `throw new AssertionError({ message: 'PACKED_CLI_SYNTHETIC_ASSERTION' });`,
+    '✗ CLI candidate finalization: PACKED_CLI_SYNTHETIC_ASSERTION\n',
+  ],
+])
+  test(`${label} prints its fixed line and nothing else`, () => {
+    const candidate = fixture({ finalizer: thrown });
+    const result = prepack(candidate, { staging: privateStaging() });
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, printed);
+  });

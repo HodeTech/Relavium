@@ -66,6 +66,13 @@ test('fresh pipeline orders five mapped dependency emits before the sole candida
     ]),
   );
   assert.deepEqual(CANDIDATE_TSC_ARGS, commands[0].args);
+  // Each package's build state goes immediately before that package compiles, never after.
+  assert.deepEqual(
+    ports.calls
+      .slice(0, 10)
+      .map((call) => (call.remove ? `remove ${call.remove}` : `exec ${call.cwd}`)),
+    packages.flatMap((path) => [`remove ${path}`, `exec ${path}`]),
+  );
   // Only the sole prepack learns the private staging directory.
   assert.ok(commands.slice(0, 5).every((call) => call.env === ports.env));
   assert.deepEqual(commands[5].args, ['pack', '--pack-destination', ports.destination]);

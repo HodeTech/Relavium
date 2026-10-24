@@ -12,7 +12,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBootstrap } from '../cli-bootstrap/check.mjs';
 import { inspectPackageArchive } from './archive.mjs';
@@ -22,6 +22,7 @@ import {
   validateConsumerRecord,
 } from './binding.mjs';
 import { installedInventory, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
+import { placedWithin, within } from './paths.mjs';
 import {
   exerciseInstalledCommand,
   isolatedEnvironment,
@@ -64,11 +65,8 @@ inspectPackageArchive(bytes, {
   expectedPackage: receipt.package,
 });
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-package-consumer-')));
-const inside = (parent, child) => {
-  const part = relative(parent, child);
-  return part === '' || (!isAbsolute(part) && part !== '..' && !part.startsWith(`..${sep}`));
-};
-assert.equal(inside(realpathSync(repository), home), false, 'PACKED_CLI_INSTALL_IN_WORKSPACE');
+// Compared on the stored letter case, so a TMPDIR naming the checkout in another case is refused.
+assert.equal(placedWithin(repository, home), false, 'PACKED_CLI_INSTALL_IN_WORKSPACE');
 await completeConsumer({
   async exercise() {
     const env = isolatedEnvironment(home);
@@ -99,7 +97,7 @@ await completeConsumer({
     );
     writeFileSync(join(reportDirectory, 'install.log'), installation.stdout + installation.stderr);
     const packageRoot = realpathSync(join(home, 'node_modules/relavium'));
-    assert.ok(inside(home, packageRoot), 'PACKED_CLI_INSTALL_ESCAPED');
+    assert.ok(within(home, packageRoot), 'PACKED_CLI_INSTALL_ESCAPED');
     const before = installedInventory(packageRoot);
     const wanted = receipt.files
       .map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }))
@@ -123,10 +121,10 @@ await completeConsumer({
           name === '@modelcontextprotocol/sdk' ? '@modelcontextprotocol/sdk/client/index.js' : name,
         ),
       );
-      assert.ok(inside(home, entry), 'PACKED_CLI_DEPENDENCY_OUTSIDE_INSTALL');
+      assert.ok(within(home, entry), 'PACKED_CLI_DEPENDENCY_OUTSIDE_INSTALL');
       let directory = dirname(entry),
         found = false;
-      while (inside(home, directory)) {
+      while (within(home, directory)) {
         let content;
         try {
           content = readOrdinaryFile(join(directory, 'package.json'), 1024 * 1024);

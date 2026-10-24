@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  ftruncateSync,
+  openSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -28,6 +31,7 @@ import {
   producerEnvironment,
   sourceIdentity,
   verifyCandidateLinks,
+  CANDIDATE_LIMITS,
 } from './candidate.mjs';
 import { isolatedGitEnvironment, runCommand } from './process.mjs';
 
@@ -63,6 +67,9 @@ function git(answers) {
 }
 
 const SHA = 'a'.repeat(40);
+/** The explicit attributes and excludes arguments of a checkout-reading status or listing. */
+const READ = (excludes = '/dev/null') =>
+  `-c core.attributesFile=/dev/null -c core.excludesFile=${excludes} `;
 
 test('source identity records the exact commit and the complete porcelain status', async (t) => {
   // A credential in the caller's environment must not reach the isolated Git.
@@ -74,7 +81,7 @@ test('source identity records the exact commit and the complete porcelain status
   });
   const clean = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
-    'status --porcelain=v1 -z --untracked-files=all': '',
+    [`${READ()}status --porcelain=v1 -z --untracked-files=all`]: '',
     'ls-files -v -z': 'H a.ts\0H b.ts\0',
   });
   assert.deepEqual(await sourceIdentity('/repository', clean.run), {
@@ -93,7 +100,7 @@ test('source identity records the exact commit and the complete porcelain status
   );
   const modified = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
-    'status --porcelain=v1 -z --untracked-files=all': '?? notes.txt\0',
+    [`${READ()}status --porcelain=v1 -z --untracked-files=all`]: '?? notes.txt\0',
     'ls-files -v -z': 'H a.ts\0',
   });
   assert.equal((await sourceIdentity('/repository', modified.run)).dirty, true);
@@ -101,7 +108,7 @@ test('source identity records the exact commit and the complete porcelain status
   // copied unchecked, so it counts as dirty even when the status is empty.
   const unchecked = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
-    'status --porcelain=v1 -z --untracked-files=all': '',
+    [`${READ()}status --porcelain=v1 -z --untracked-files=all`]: '',
     'ls-files -v -z': 'H a.ts\0S sparse.ts\0h assumed.ts\0s both.ts\0M merged.ts\0',
   });
   assert.deepEqual(await sourceIdentity('/repository', unchecked.run), {
@@ -113,7 +120,7 @@ test('source identity records the exact commit and the complete porcelain status
   // The developer's global excludes file judges untracked files.
   const excluded = git({
     '--no-replace-objects rev-parse HEAD': `${SHA}\n`,
-    '-c core.excludesFile=/home/someone/.config/git/ignore status --porcelain=v1 -z --untracked-files=all':
+    [`${READ('/home/someone/.config/git/ignore')}status --porcelain=v1 -z --untracked-files=all`]:
       '',
     'ls-files -v -z': '',
   });
@@ -124,7 +131,7 @@ test('source identity records the exact commit and the complete porcelain status
   for (const head of ['', 'HEAD\n', `${SHA.slice(1)}\n`, `${SHA}${SHA}\n`]) {
     const malformed = git({
       '--no-replace-objects rev-parse HEAD': head,
-      'status --porcelain=v1 -z --untracked-files=all': '',
+      [`${READ()}status --porcelain=v1 -z --untracked-files=all`]: '',
       'ls-files -v -z': '',
     });
     await assert.rejects(sourceIdentity('/repository', malformed.run), /SOURCE_IDENTITY/u);
@@ -133,24 +140,25 @@ test('source identity records the exact commit and the complete porcelain status
 
 test('candidate files are tracked plus unignored untracked files, minus deletions, sorted once', async () => {
   const listing = git({
-    'ls-files -z --cached --others --exclude-standard': 'b.ts\0a.ts\0gone.ts\0a.ts\0new.ts\0',
+    [`${READ()}ls-files -z --cached --others --exclude-standard`]:
+      'b.ts\0a.ts\0gone.ts\0a.ts\0new.ts\0',
     'ls-files -z --deleted': 'gone.ts\0',
   });
   assert.deepEqual(await candidateFiles('/repository', listing.run), ['a.ts', 'b.ts', 'new.ts']);
   assert.ok(listing.calls.every((call) => isDeepStrictEqual(call.env, isolatedGitEnvironment())));
   const empty = git({
-    'ls-files -z --cached --others --exclude-standard': '',
+    [`${READ()}ls-files -z --cached --others --exclude-standard`]: '',
     'ls-files -z --deleted': '',
   });
   await assert.rejects(candidateFiles('/repository', empty.run), /CANDIDATE_FILES/u);
   const excluded = git({
-    '-c core.excludesFile=/ignore ls-files -z --cached --others --exclude-standard': 'a.ts\0',
+    [`${READ('/ignore')}ls-files -z --cached --others --exclude-standard`]: 'a.ts\0',
     'ls-files -z --deleted': '',
   });
   assert.deepEqual(await candidateFiles('/repository', excluded.run, '/ignore'), ['a.ts']);
   // An untracked nested repository is listed only as its directory and refuses by name.
   const nested = git({
-    'ls-files -z --cached --others --exclude-standard': 'a.ts\0vendor/clone/\0',
+    [`${READ()}ls-files -z --cached --others --exclude-standard`]: 'a.ts\0vendor/clone/\0',
     'ls-files -z --deleted': '',
   });
   await assert.rejects(
@@ -165,7 +173,7 @@ test("the developer's global excludes file is located without the rest of the gl
   write(ignore, 'secret.local\n');
   const calls = [];
   const unset = async (command, args, options) => {
-    calls.push({ args, env: options.env });
+    calls.push({ args, env: options.env, cwd: options.cwd });
     const error = new Error('PACKED_CLI_CHILD_FAILED: 1');
     error.result = { code: 1, stdout: '', stderr: '' };
     throw error;
@@ -178,6 +186,11 @@ test("the developer's global excludes file is located without the rest of the gl
     GIT_CONFIG_GLOBAL: join(home, 'global-config'),
     GIT_CONFIG_SYSTEM: join(home, 'system-config'),
     GIT_CONFIG_NOSYSTEM: '1',
+    // Command-scope configuration the developer's Git takes from the environment.
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.excludesFile',
+    GIT_CONFIG_VALUE_0: '/env/ignore',
+    GIT_CONFIG_PARAMETERS: "'core.quotepath'='false'",
     SystemRoot: 'C:\\Windows',
     WINDIR: 'C:\\Windows',
   };
@@ -187,6 +200,7 @@ test("the developer's global excludes file is located without the rest of the gl
     NPM_TOKEN: 'synthetic-secret',
     NODE_OPTIONS: '--require=/tmp/preload.cjs',
     GIT_DIR: '/elsewhere',
+    GIT_CONFIG_KEY_X: 'not an entry',
   };
   assert.equal(
     await globalExcludesFile({
@@ -197,9 +211,50 @@ test("the developer's global excludes file is located without the rest of the gl
     ignore,
   );
   assert.deepEqual(calls[0].args, ['config', '--path', '--get', 'core.excludesFile']);
+  // It reads the checkout's own configuration as the developer's Git there would.
+  assert.equal(calls[0].cwd, '/repository');
   assert.deepEqual(calls[0].env, { PATH: '/usr/bin', ...locations, XDG_CONFIG_HOME: '' });
   await globalExcludesFile({ repository: '/repository', environment, run: unset });
   assert.deepEqual(calls[1].env, { PATH: '/usr/bin', ...locations });
+  // With no PATH the lookup gets no PATH either, never an empty one that names the checkout.
+  await globalExcludesFile({ repository: '/repository', environment: { HOME: home }, run: unset });
+  assert.equal('PATH' in calls.at(-1).env, false);
+  // Without HOME, Git's default uses USERPROFILE; with both, HOME wins.
+  const profile = fresh('profile');
+  write(join(profile, '.config', 'git', 'ignore'), '*.profile\n');
+  assert.equal(
+    await globalExcludesFile({
+      repository: '/repository',
+      environment: { USERPROFILE: profile },
+      run: unset,
+    }),
+    join(profile, '.config', 'git', 'ignore'),
+  );
+  assert.equal(
+    await globalExcludesFile({
+      repository: '/repository',
+      environment: { HOME: home, USERPROFILE: profile },
+      run: unset,
+    }),
+    ignore,
+  );
+  // An empty HOME names no default, not one relative to this process's working directory.
+  const cwd = process.cwd();
+  const relativeDefault = fresh('relative-default');
+  write(join(relativeDefault, '.config', 'git', 'ignore'), '*.relative\n');
+  process.chdir(relativeDefault);
+  try {
+    assert.equal(
+      await globalExcludesFile({
+        repository: '/repository',
+        environment: { HOME: '' },
+        run: unset,
+      }),
+      undefined,
+    );
+  } finally {
+    process.chdir(cwd);
+  }
   // Git's default prefers XDG_CONFIG_HOME, and a missing file means no global excludes.
   const xdg = fresh('xdg');
   write(join(xdg, 'git', 'ignore'), '*.local\n');
@@ -241,6 +296,15 @@ test("the developer's global excludes file is located without the rest of the gl
     }),
     join(repository, 'local-ignore'),
   );
+  // A configured path that is a directory names no excludes file.
+  assert.equal(
+    await globalExcludesFile({
+      repository: '/repository',
+      environment: { HOME: home },
+      run: answer(`${fresh('directory-excludes')}\n`),
+    }),
+    undefined,
+  );
   // A setting present but empty disables Git's global excludes: the default file no longer applies.
   assert.equal(
     await globalExcludesFile({
@@ -268,7 +332,8 @@ test("the developer's global excludes file is located without the rest of the gl
     }),
     ignore,
   );
-  for (const bad of ['relative/ignore', join(home, 'absent-ignore')]) {
+  // A relative explicit file refuses even when it exists from this process's working directory.
+  for (const bad of ['relative/ignore', 'package.json', join(home, 'absent-ignore')]) {
     await assert.rejects(
       globalExcludesFile({
         repository: '/repository',
@@ -474,15 +539,18 @@ test('the candidate copy is byte-exact, keeps only the executable bit and refuse
   write(join(repository, 'package.json'), '{"name":"root"}\n');
   write(join(repository, 'tools', 'run.mjs'), '#!/usr/bin/env node\n', 0o775);
   write(join(repository, 'docs', 'note.md'), 'note\n', 0o640);
+  // Group and other execute bits alone do not make a file executable, as in Git's index.
+  write(join(repository, 'docs', 'group.sh'), 'x\n', 0o654);
   const destination = fresh('copy');
-  const files = ['docs/note.md', 'package.json', 'tools/run.mjs'];
-  assert.deepEqual(copyCandidateTree({ repository, destination, files }), { files: 3, bytes: 41 });
+  const files = ['docs/group.sh', 'docs/note.md', 'package.json', 'tools/run.mjs'];
+  assert.deepEqual(copyCandidateTree({ repository, destination, files }), { files: 4, bytes: 43 });
   for (const path of files) {
     assert.ok(readFileSync(join(destination, path)).equals(readFileSync(join(repository, path))));
   }
   if (posixModes) {
     assert.equal(statSync(join(destination, 'tools', 'run.mjs')).mode & 0o777, 0o755);
     assert.equal(statSync(join(destination, 'docs', 'note.md')).mode & 0o777, 0o644);
+    assert.equal(statSync(join(destination, 'docs', 'group.sh')).mode & 0o777, 0o644);
   }
   if (posixModes) {
     // The modes are exact whatever the process umask.
@@ -570,6 +638,28 @@ test('the dependency store is discovered with store-location variables only', as
   ]) {
     assert.equal(key in env, false, key);
   }
+  // Every store-location variable reaches the discovery, which runs in the original checkout.
+  const locations = {
+    HOME: '/l/home',
+    USERPROFILE: '/l/profile',
+    XDG_DATA_HOME: '/l/data',
+    XDG_CONFIG_HOME: '/l/config',
+    LOCALAPPDATA: '/l/local',
+    APPDATA: '/l/appdata',
+    PNPM_HOME: '/l/pnpm',
+    npm_config_store_dir: '/l/store-lower',
+    NPM_CONFIG_STORE_DIR: '/l/store-upper',
+  };
+  await dependencyStore({
+    repository: '/repository',
+    environment: { ...locations, NPM_TOKEN: 'synthetic-secret' },
+    home,
+    pnpm,
+  });
+  assert.equal(calls[1].options.cwd, '/repository');
+  for (const [key, value] of Object.entries(locations))
+    assert.equal(calls[1].options.env[key], value, key);
+  assert.equal('NPM_TOKEN' in calls[1].options.env, false);
   // A caller that already isolated this process names the store explicitly; pnpm is not asked.
   const explicit = fresh('explicit-store');
   assert.equal(
@@ -583,7 +673,8 @@ test('the dependency store is discovered with store-location variables only', as
     }),
     explicit,
   );
-  for (const bad of ['relative/store', join(scratch, 'absent-store')]) {
+  // A relative store refuses even when it exists from this process's working directory.
+  for (const bad of ['relative/store', 'tools', join(scratch, 'absent-store')]) {
     await assert.rejects(
       dependencyStore({
         repository: '/repository',
@@ -594,7 +685,7 @@ test('the dependency store is discovered with store-location variables only', as
       /DEPENDENCY_STORE/u,
     );
   }
-  for (const answer of ['relative/store\n', `${join(scratch, 'absent-store')}\n`]) {
+  for (const answer of ['relative/store\n', 'tools\n', `${join(scratch, 'absent-store')}\n`]) {
     await assert.rejects(
       dependencyStore({
         repository: '/repository',
@@ -610,7 +701,7 @@ test('the dependency store is discovered with store-location variables only', as
 test('store discovery refuses a private home inside the original checkout', async () => {
   const repository = fresh('checkout');
   // A child whose name merely starts with two dots is inside the checkout too.
-  for (const home of [join(repository, 'home'), join(repository, '..home')]) {
+  for (const home of [join(repository, 'home'), join(repository, '..home'), 'relative-home']) {
     await assert.rejects(
       dependencyStore({
         repository,
@@ -741,7 +832,7 @@ function preparation({
   let heads = 0;
   let flags = 0;
   // With an excludes file, the listing and both status calls answer only when they carry it.
-  const prefix = excludes === undefined ? '' : `-c core.excludesFile=${excludes} `;
+  const prefix = READ(excludes);
   const run = async (command, args) => {
     const key = args.join(' ');
     events.push(`git ${key}`);
@@ -762,10 +853,12 @@ function preparation({
     }
     throw new Error(`unexpected git ${key}`);
   };
+  let installOptions;
   const pnpm = async (args, options) => {
     events.push(`pnpm ${args.join(' ')}`);
     if (args[0] === 'store') return { stdout: `${store}\n` };
     assert.equal(options.cwd, candidate);
+    installOptions = options;
     // `misLink` makes the install resolve one engine package, or the root dependency directory, to
     // the original checkout instead of the candidate.
     if (misLink === 'root')
@@ -779,29 +872,45 @@ function preparation({
     }
     return { stdout: '' };
   };
-  return { repository, candidate, store, home, events, run, pnpm };
+  return {
+    repository,
+    candidate,
+    store,
+    home,
+    events,
+    run,
+    pnpm,
+    installOptions: () => installOptions,
+  };
 }
 
 test('candidate preparation copies, re-checks identity, installs and verifies links in order', async () => {
   const ports = preparation();
+  const env = { HOME: '/isolated' };
   const identity = await prepareCandidate({
     repository: ports.repository,
     candidate: ports.candidate,
-    environment: { HOME: '/home/someone' },
+    environment: {
+      HOME: '/home/someone',
+      NPM_TOKEN: 'synthetic-secret',
+      NODE_OPTIONS: '--require=/x.cjs',
+    },
     home: ports.home,
-    env: { HOME: '/isolated' },
+    env,
     run: ports.run,
     pnpm: ports.pnpm,
   });
+  // The install runs in the isolated environment it was given, never the caller's own.
+  assert.equal(ports.installOptions().env, env);
   assert.deepEqual(identity, { source: SHA, dirty: false, files: 6 });
   assert.deepEqual(ports.events, [
     'git --no-replace-objects rev-parse HEAD',
-    'git status --porcelain=v1 -z --untracked-files=all',
+    `git ${READ()}status --porcelain=v1 -z --untracked-files=all`,
     'git ls-files -v -z',
-    'git ls-files -z --cached --others --exclude-standard',
+    `git ${READ()}ls-files -z --cached --others --exclude-standard`,
     'git ls-files -z --deleted',
     'git --no-replace-objects rev-parse HEAD',
-    'git status --porcelain=v1 -z --untracked-files=all',
+    `git ${READ()}status --porcelain=v1 -z --untracked-files=all`,
     'git ls-files -v -z',
     'pnpm store path',
     `pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir ${ports.store}`,
@@ -810,6 +919,28 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
     readFileSync(join(ports.candidate, 'package.json')).equals(
       readFileSync(join(ports.repository, 'package.json')),
     ),
+  );
+});
+
+test('a store the caller names reaches the install, and pnpm is never asked to discover one', async () => {
+  const ports = preparation();
+  const explicit = fresh('explicit-store');
+  const pnpm = async (args, options) => {
+    if (args[0] === 'store') throw new Error('store discovery must not run');
+    return ports.pnpm(args, options);
+  };
+  await prepareCandidate({
+    repository: ports.repository,
+    candidate: ports.candidate,
+    environment: { RELAVIUM_PACKAGE_STORE_DIR: explicit },
+    home: ports.home,
+    env: {},
+    run: ports.run,
+    pnpm,
+  });
+  assert.equal(
+    ports.events.at(-1),
+    `pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir ${explicit}`,
   );
 });
 
@@ -895,9 +1026,9 @@ test("candidate preparation applies the developer's global excludes to every lis
   assert.deepEqual(
     ports.events.filter((event) => event.includes('status') || event.includes('--cached')),
     [
-      'git -c core.excludesFile=/developer/ignore status --porcelain=v1 -z --untracked-files=all',
-      'git -c core.excludesFile=/developer/ignore ls-files -z --cached --others --exclude-standard',
-      'git -c core.excludesFile=/developer/ignore status --porcelain=v1 -z --untracked-files=all',
+      `git ${READ('/developer/ignore')}status --porcelain=v1 -z --untracked-files=all`,
+      `git ${READ('/developer/ignore')}ls-files -z --cached --others --exclude-standard`,
+      `git ${READ('/developer/ignore')}status --porcelain=v1 -z --untracked-files=all`,
     ],
   );
 });
@@ -919,7 +1050,7 @@ test('an isolated producer receives the store and, when found, the excludes file
 
 test('the candidate refuses a file list or a tree over its bounds', async () => {
   const listing = git({
-    'ls-files -z --cached --others --exclude-standard': 'a.ts\0b.ts\0c.ts\0',
+    [`${READ()}ls-files -z --cached --others --exclude-standard`]: 'a.ts\0b.ts\0c.ts\0',
     'ls-files -z --deleted': '',
   });
   assert.deepEqual(await candidateFiles('/repository', listing.run, undefined, { files: 3 }), [
@@ -965,3 +1096,109 @@ test('the candidate refuses a file list or a tree over its bounds', async () => 
     /FILE_KIND_OR_BOUND/u,
   );
 });
+
+test('the production bounds are the documented ones and apply by default', () => {
+  assert.deepEqual(
+    { ...CANDIDATE_LIMITS },
+    { files: 20_000, fileBytes: 64 * 1024 * 1024, totalBytes: 512 * 1024 * 1024 },
+  );
+});
+
+test('candidate files and the copy apply the production bounds by default', async () => {
+  const names = Array.from({ length: 20_001 }, (_, index) => `f${index}.ts`).join('\0');
+  const listing = git({
+    [`${READ()}ls-files -z --cached --others --exclude-standard`]: names,
+    'ls-files -z --deleted': '',
+  });
+  await assert.rejects(candidateFiles('/repository', listing.run), /CANDIDATE_FILES/u);
+  // A sparse file one byte over the per-file bound is refused from its size, before any read.
+  const repository = fresh('sparse');
+  const descriptor = openSync(join(repository, 'large.bin'), 'w');
+  try {
+    ftruncateSync(descriptor, 64 * 1024 * 1024 + 1);
+  } finally {
+    closeSync(descriptor);
+  }
+  assert.throws(
+    () => copyCandidateTree({ repository, destination: fresh('copy'), files: ['large.bin'] }),
+    /FILE_KIND_OR_BOUND/u,
+  );
+});
+
+test('the copy needs an absolute, empty destination', () => {
+  const repository = fresh('repository');
+  write(join(repository, 'a.ts'), 'a\n');
+  assert.throws(
+    () =>
+      copyCandidateTree({
+        repository,
+        destination: relative(process.cwd(), fresh('copy')),
+        files: ['a.ts'],
+      }),
+    /CANDIDATE_ROOT/u,
+  );
+  const occupied = fresh('copy');
+  writeFileSync(join(occupied, 'one'), '');
+  assert.throws(
+    () => copyCandidateTree({ repository, destination: occupied, files: ['a.ts'] }),
+    /CANDIDATE_ROOT/u,
+  );
+});
+
+test('only the five engine packages may be linked as @relavium workspace packages', () => {
+  // A link to another workspace package, even one inside the candidate, refuses.
+  for (const owner of [join('apps', 'cli'), join('packages', 'core')]) {
+    const root = linkedCandidate();
+    mkdirSync(join(root, 'packages', 'ui'), { recursive: true });
+    const scope = join(root, ...owner.split('/'), 'node_modules', '@relavium');
+    mkdirSync(scope, { recursive: true });
+    symlinkSync(join(root, 'packages', 'ui'), join(scope, 'ui'), linkKind);
+    assert.throws(() => verifyCandidateLinks(root), /CANDIDATE_LINK/u, owner);
+  }
+});
+
+test(
+  'the excludes lookup never runs a git found in the checkout when the caller has no PATH',
+  { skip: !posixModes },
+  async () => {
+    // With an empty PATH a spawn would look the command up in its working directory, the checkout.
+    const repository = fresh('planted-git');
+    const marker = join(fresh('marker'), 'ran');
+    write(join(repository, 'git'), `#!/bin/sh\necho ran > ${JSON.stringify(marker)}\n`, 0o755);
+    await globalExcludesFile({ repository, environment: { HOME: fresh('home') } }).catch(() => {});
+    assert.equal(existsSync(marker), false);
+  },
+);
+
+for (const [label, scope] of [
+  [
+    'GIT_CONFIG_COUNT',
+    (ignore) => ({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.excludesFile',
+      GIT_CONFIG_VALUE_0: ignore,
+    }),
+  ],
+  [
+    'GIT_CONFIG_PARAMETERS',
+    (ignore) => ({ GIT_CONFIG_PARAMETERS: `'core.excludesFile'='${ignore}'` }),
+  ],
+])
+  test(`a real core.excludesFile set through ${label} is found`, async () => {
+    const root = fresh('scoped');
+    const ignore = join(root, 'scoped-ignore');
+    write(ignore, 'secret.local\n');
+    mkdirSync(join(root, 'empty-home'));
+    assert.equal(
+      await globalExcludesFile({
+        repository: fresh('repository'),
+        environment: {
+          PATH: process.env.PATH,
+          HOME: join(root, 'empty-home'),
+          GIT_CONFIG_NOSYSTEM: '1',
+          ...scope(ignore),
+        },
+      }),
+      ignore,
+    );
+  });

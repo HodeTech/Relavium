@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readOrdinaryFile } from '../files.mjs';
@@ -7,6 +7,15 @@ import { isolatedEnvironment, runCommand } from '../process.mjs';
 
 /** The prefix of the worker's own temporary root under the support directory. */
 export const INSTALLED_SMOKE_ROOT_PREFIX = 'installed-smoke-';
+
+/**
+ * Create the worker's own temporary root under `supportRoot`, named so that
+ * `abandonInstalledSmoke` finds it.
+ * @param {string} supportRoot
+ */
+export function createInstalledSmokeRoot(supportRoot) {
+  return mkdtempSync(join(supportRoot, INSTALLED_SMOKE_ROOT_PREFIX));
+}
 
 /**
  * For a caller that an interrupt ends while the worker runs: the worker is killed before its own

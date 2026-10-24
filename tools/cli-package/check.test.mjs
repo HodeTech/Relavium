@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { devNull, tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -111,10 +111,11 @@ mkdirSync(process.argv[2]);
 
 /**
  * Start the copied check with stand-ins for its producer and consumer. The store is named
- * explicitly, so the check runs no pnpm; so is the excludes file unless `excludes` is false, when
- * the check's Git lookup sees an empty home and no global or system configuration.
+ * explicitly, so the check runs no pnpm, unless a `pnpm` stand-in is given for its store discovery;
+ * so is the excludes file unless `excludes` is false, when the check's Git lookup sees an empty home
+ * and no global or system configuration.
  */
-function check({ pack, consume = CONSUMER, excludes: named = true, git, env: extra = {} }) {
+function check({ pack, consume = CONSUMER, excludes: named = true, git, pnpm, env: extra = {} }) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   for (const path of COPIED) {
@@ -134,19 +135,19 @@ function check({ pack, consume = CONSUMER, excludes: named = true, git, env: ext
   writeFileSync(excludes, '');
   const home = join(root, 'home');
   mkdirSync(home);
-  // An optional `git` stand-in, first on PATH, for the check's own excludes lookup.
+  // Optional `git` and `pnpm` stand-ins, first on PATH, for the check's own excludes lookup and
+  // store discovery.
   const bin = join(root, 'bin');
-  if (git !== undefined) {
-    mkdirSync(bin);
-    writeFileSync(join(bin, 'git'), git, { mode: 0o755 });
-  }
+  mkdirSync(bin);
+  if (git !== undefined) writeFileSync(join(bin, 'git'), git, { mode: 0o755 });
+  if (pnpm !== undefined) writeFileSync(join(bin, 'pnpm'), pnpm(markers, store), { mode: 0o755 });
   writeFileSync(join(root, 'tools', 'cli-package', 'pack.mjs'), pack(markers));
   writeFileSync(join(root, 'tools', 'cli-package', 'consume.mjs'), consume(markers));
   const child = spawn(process.execPath, [join(root, 'tools', 'cli-package', 'check.mjs')], {
     env: {
-      PATH: git === undefined ? process.env.PATH : `${bin}${delimiter}${process.env.PATH}`,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
       TMPDIR: temporary,
-      RELAVIUM_PACKAGE_STORE_DIR: store,
+      ...(pnpm === undefined ? { RELAVIUM_PACKAGE_STORE_DIR: store } : {}),
       ...(named
         ? { RELAVIUM_GIT_EXCLUDES_FILE: excludes }
         : { HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull }),
@@ -155,11 +156,13 @@ function check({ pack, consume = CONSUMER, excludes: named = true, git, env: ext
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', (chunk) => (stdout += chunk));
+  child.stderr.on('data', (chunk) => (stderr += chunk));
   const exited = new Promise((resolve) =>
-    child.once('exit', (code, signal) => resolve({ code, signal, stdout })),
+    child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr })),
   );
-  return { child, exited, markers, temporary, store, excludes };
+  return { child, exited, root, markers, temporary, store, excludes };
 }
 
 /** The check's exit, bounded so that a regressed check fails its test instead of hanging it. */
@@ -185,6 +188,14 @@ function alive(pid) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** A killed process can still answer for a moment after its killer exits: wait, with a bound. */
+async function assertGone(pid, message) {
+  for (let waited = 0; alive(pid); waited += 25) {
+    assert.ok(waited < 5_000, message);
+    await delay(25);
   }
 }
 
@@ -227,7 +238,7 @@ test(
       assert.equal(outcome.code, 130);
       assert.equal(outcome.stdout, '');
       // The consumer received the forwarded interrupt and stopped its writer before its home went.
-      assert.equal(alive(pid), false);
+      await assertGone(pid, 'the consumer writer outlived the interrupt');
       assert.deepEqual(checkRoots(run.temporary), []);
     } finally {
       stopAll(run);
@@ -313,6 +324,43 @@ test('a successful producer and consumer give the summary and leave no check roo
       excludes: run.excludes,
     });
     assert.deepEqual(checkRoots(run.temporary), []);
+  } finally {
+    stopAll(run);
+  }
+});
+
+test('without a named store the check asks pnpm in the repository, with its own private home', async () => {
+  // The private home must lie outside the repository, so the temporary directory does too.
+  const outside = mkdtempSync(join(scratch, 'outside-'));
+  const developer = join(outside, 'developer-home');
+  const run = check({
+    env: { TMPDIR: outside, HOME: developer },
+    pack: RECORDING_PRODUCER,
+    consume: PUBLISHING_CONSUMER('local'),
+    pnpm: (markers, store) =>
+      '#!/usr/bin/env node\n' +
+      `require('node:fs').writeFileSync(${JSON.stringify(join(markers, 'pnpm-call'))}, ` +
+      'JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), ' +
+      'home: process.env.HOME, temporary: process.env.TMPDIR, cache: process.env.XDG_CACHE_HOME }));\n' +
+      `process.stdout.write(${JSON.stringify(`${store}\n`)});\n`,
+  });
+  try {
+    const outcome = await exitOf(run);
+    assert.equal(outcome.code, 0, outcome.stderr);
+    const call = JSON.parse(readFileSync(join(run.markers, 'pnpm-call'), 'utf8'));
+    assert.deepEqual(call.args, ['store', 'path']);
+    assert.equal(realpathSync(call.cwd), realpathSync(run.root));
+    // The store location follows the developer's own HOME; temporary files and caches go to the
+    // check's owner-only root.
+    assert.equal(call.home, developer);
+    assert.equal(dirname(call.temporary), outside);
+    assert.match(basename(call.temporary), /^relavium-local-package-check-/u);
+    assert.equal(call.cache, call.temporary);
+    assert.equal(
+      JSON.parse(readFileSync(join(run.markers, 'pack-environment'), 'utf8')).store,
+      run.store,
+    );
+    assert.deepEqual(checkRoots(outside), []);
   } finally {
     stopAll(run);
   }
@@ -443,7 +491,7 @@ await exitOnInterrupt(
       assert.equal(outcome.code, 1);
       assert.equal(outcome.stdout, '');
       assert.equal(readFileSync(join(run.markers, 'pack-interrupted'), 'utf8'), 'cleaned');
-      assert.equal(alive(grandchild), false);
+      await assertGone(grandchild, 'the stage build child outlived the deadline');
       // Past the moment the build child would have written: nothing recreated the check root.
       await delay(3500);
       assert.equal(existsSync(join(run.temporary, checkRoot)), false);
@@ -553,7 +601,7 @@ await completeConsumer({
       assert.equal(outcome.code, 1);
       assert.equal(outcome.stdout, '');
       assert.equal(readFileSync(join(run.markers, 'consume-cleaned'), 'utf8'), 'cleaned');
-      assert.equal(alive(grandchild), false);
+      await assertGone(grandchild, 'the stage build child outlived the deadline');
       await delay(3500);
       assert.equal(existsSync(join(run.temporary, checkRoot)), false);
     } finally {

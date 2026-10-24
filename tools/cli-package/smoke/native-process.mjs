@@ -290,6 +290,22 @@ export function assertNativeBootstrapDiagnostic(diagnostics, mode) {
   );
 }
 
+/**
+ * The private configuration beside a fixture target's `status` script. Its owner is this smoke
+ * worker: the fixture's processes end once it is gone (an interrupted consumer).
+ * @param {{mode: string, log: string, release?: string}} options
+ */
+export function nativeFixtureConfig({ mode, log, release }) {
+  return {
+    mode,
+    log,
+    node: process.execPath,
+    descendant: fixture('native-descendant.cjs'),
+    owner: process.pid,
+    ...(release === undefined ? {} : { release }),
+  };
+}
+
 export async function assertInstalledNativeProcesses(context, { bootstrap = false } = {}) {
   const { root, cli, environment, calls } = context;
   const home = join(root, bootstrap ? 'bootstrap-home' : 'native-home');
@@ -339,15 +355,7 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
       copyFileSync(fixture('native-status.cjs'), join(cwd, 'status'));
       writeFileSync(
         join(cwd, 'native-fixture.json'),
-        JSON.stringify({
-          mode,
-          log,
-          node: process.execPath,
-          descendant: fixture('native-descendant.cjs'),
-          // This worker: the fixture's processes end once it is gone (an interrupted consumer).
-          owner: process.pid,
-          ...(bootstrap ? { release } : {}),
-        }),
+        JSON.stringify(nativeFixtureConfig({ mode, log, ...(bootstrap ? { release } : {}) })),
         { mode: 0o600 },
       );
       writeFileSync(

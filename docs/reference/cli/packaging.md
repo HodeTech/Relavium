@@ -240,9 +240,10 @@ describes the implemented mechanism; independent acceptance is recorded in the
   tracked files Git is told not to check (skip-worktree or assume-unchanged, which make
   the identity `dirty` whatever their bytes), copies every file Git would ship (tracked
   plus untracked-but-not-ignored, minus deletions, by the repository's ignore rules and
-  the developer's global excludes file, passed explicitly; that Git reads no home, global
-  or system configuration and ignores replace refs) into a fresh owner-only tree, and refuses if any of the three
-  changed during the copy. A link, as a listed file or as any parent directory of one
+  the developer's global excludes file, as the developer's own Git finds it (also through
+  command-scope `GIT_CONFIG_*` configuration) and passed explicitly; that Git reads no home,
+  global or system configuration or attributes and ignores replace refs) into a fresh
+  owner-only tree, and refuses if any of the three changed during the copy. A link, as a listed file or as any parent directory of one
   below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
   cannot bring in bytes from outside the checkout; so does an untracked nested repository,
   which Git lists only as its directory. Every build and install pnpm call runs in the
@@ -252,9 +253,12 @@ describes the implemented mechanism; independent acceptance is recorded in the
   directory, where another local user could plant a module on its lookup path.
   Ignored output, caches, dependencies and private notes never enter it. The locked
   closure is installed there offline, frozen and with `--ignore-scripts` from the
-  existing content-addressed store, discovered with pnpm's store-location variables
-  only, and every `@relavium/*` link of the CLI and the five inlined engine packages must
-  resolve inside the tree.
+  existing content-addressed store, which pnpm discovers in the repository with only
+  `HOME`, `USERPROFILE`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `LOCALAPPDATA`, `APPDATA`,
+  `PNPM_HOME` and `npm_config_store_dir` of the caller's environment. Every `@relavium/*`
+  link of the CLI and the five inlined engine packages must resolve to that package inside
+  the tree, no other `@relavium/*` link is admitted, and the root `node_modules` must
+  resolve inside the tree too.
 - **Fresh upstream maps.** The five engine packages compile in order with the installed
   compiler's `--sourceMap true --inlineSources false --incremental false` overrides after
   their `dist` and incremental files are removed. No Turbo or other build cache is
@@ -284,6 +288,9 @@ describes the implemented mechanism; independent acceptance is recorded in the
   rewritten maps (repository-relative sources; mappings and names unchanged) and the
   metafile owner-only outside the package, re-runs the finite closure and the
   migration-copy check on the finalized files, and only then hashes into a private record.
+  A refusal names a fixed code and at most a fixed label or a repository-relative path that
+  has passed validation: a metafile string that escapes the repository or is not a plain
+  path is left out, and no map or source content is ever printed.
 - **Seal.** The seal takes the candidate root, the staging directory and the original
   checkout's identity explicitly and never resolves a repository from its own location.
   Public JS must be exactly the staged metafile's runtime outputs, byte-identical to the
@@ -304,11 +311,22 @@ and the producer still exits with the signal's code. An interrupted consumer lik
 child processes, including the bootstrap witness's, and removes its installation, the witness's
 fixtures and the installed smoke's working directory; the native fixture targets the installed CLI
 starts in their own process groups end on their own once the smoke worker that owns their case is
-gone. The local `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
-rather than ending first, starts no later stage once one arrived, and exits with the signal's
-code after removing its root; a stage past its deadline is interrupted (SIGTERM) first and killed
-only after a grace period, so it stops its own build children before the root goes. A producer killed outright, a crash or a lost host can leave the
-owner-only root in the temporary directory, and no secure erasure is claimed. "Owner-only" in this
+gone. On POSIX the local `pnpm smoke:cli-package` forwards an interrupt to the producer or
+consumer it started rather than ending first (on Windows they share the console and receive
+Ctrl-C themselves), starts no later stage once one arrived, and exits with the signal's code after
+removing its root. On POSIX a stage past its deadline is interrupted (SIGTERM) first and killed,
+with its whole process group, only after a grace period, so it stops its own build children before
+the root goes; on Windows its whole tree is killed at the deadline, and its private directories go
+with the check's root. These Windows interrupt and deadline paths are not exercised by any CI job:
+the tooling tests run on Linux only. SIGHUP aborts and cleans up like the other two signals even
+under `nohup`, which these listeners replace; detach a long local run with `setsid` or a terminal
+multiplexer instead. A producer killed outright, a crash or a lost host can leave the
+owner-only root in the temporary directory, and no secure erasure is claimed. The local consumer
+installs the CLI under the temporary directory, so on a host whose temporary directory other
+local users can write to (a shared `/tmp`), a module another user plants in its `node_modules`
+could satisfy an optional `require` of the installed CLI; CI runners are single-tenant and macOS's
+per-user temporary directory is not shared. This is a named limit of the local consumer, owned
+by [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). "Owner-only" in this
 section means mode 0700 for directories and 0600 for staged files, set — and for the staging
 directory verified together with this process's uid — where POSIX modes are observable. On Windows
 no mode evidence is claimed: the candidate root and staging inherit the temporary directory's ACL,

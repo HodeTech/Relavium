@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
@@ -276,7 +276,8 @@ test('release keeps main ancestry, version, real-push publication and npm proven
 });
 
 test('release publication is refused fail-closed until a verified release candidate exists', () => {
-  const steps = readWorkflow('release').jobs.publish.steps;
+  const workflow = readWorkflow('release');
+  const steps = workflow.jobs.publish.steps;
   const checkout = steps.find((step) => step.uses === actions.checkout);
   assert.deepEqual(checkout.with, {
     'persist-credentials': false,
@@ -289,10 +290,21 @@ test('release publication is refused fail-closed until a verified release candid
   );
   const publish = steps.find((step) => step.name === 'Publish');
   assert.equal(guard.run, 'node tools/cli-package/release-guard.mjs ./artifact');
-  // An unconditional, non-advisory guard runs after the download and before any publish.
-  assert.equal(guard.if, undefined);
-  assert.equal(guard['continue-on-error'], undefined);
-  assert.equal(guard.env, undefined);
+  // An unconditional, non-advisory guard runs after the download and before any publish, under the
+  // runner's default shell and directory: no condition, shell, environment or defaults at the step,
+  // job or workflow level, and no earlier `run` step that could write the job's environment.
+  assert.deepEqual(Object.keys(guard).sort(), ['name', 'run']);
+  assert.deepEqual(Object.keys(workflow.jobs.publish).sort(), [
+    'if',
+    'name',
+    'needs',
+    'permissions',
+    'runs-on',
+    'steps',
+    'timeout-minutes',
+  ]);
+  assert.deepEqual(Object.keys(workflow).sort(), ['concurrency', 'jobs', 'name', 'on']);
+  assert.ok(steps.slice(0, steps.indexOf(guard)).every((step) => step.run === undefined));
   assert.ok(
     steps.indexOf(steps.find((step) => step.uses === actions.download)) < steps.indexOf(guard),
   );
@@ -428,3 +440,20 @@ for (const command of ['pnpm smoke:cli-bootstrap', 'pnpm smoke:budget-replay']) 
     });
   }
 }
+
+test('every CLI package, closure, bootstrap and CI tooling test runs in test:acceptance-tools', () => {
+  // The list is the only place CI runs these files, so an unlisted test would silently never run.
+  const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+  const listed = new Set(manifest.scripts['test:acceptance-tools'].split(' '));
+  for (const directory of [
+    'tools/cli-package',
+    'tools/cli-package/smoke',
+    'tools/bundle-closure',
+    'tools/cli-bootstrap',
+    'tools/ci',
+  ]) {
+    for (const name of readdirSync(new URL(directory, root))) {
+      if (name.endsWith('.test.mjs')) assert.ok(listed.has(`${directory}/${name}`), name);
+    }
+  }
+});

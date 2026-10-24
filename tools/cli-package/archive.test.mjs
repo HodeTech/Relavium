@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { ARCHIVE_LIMITS, inspectPackageArchive, PackageArchiveError } from './archive.mjs';
+import { checksum, entry, ustar } from './ustar-fixture.mjs';
 
 const expectedPackage = {
   name: 'relavium',
@@ -30,40 +31,9 @@ function inventory() {
   ]);
 }
 
-/** @param {Buffer} header */
-function checksum(header) {
-  header.fill(32, 148, 156);
-  header.write(
-    header
-      .reduce((sum, byte) => sum + byte, 0)
-      .toString(8)
-      .padStart(6, '0'),
-    148,
-  );
-  header[154] = 0;
-  header[155] = 32;
-}
-
-/** @param {string} path @param {Uint8Array} bytes */
-function entry(path, bytes) {
-  const header = Buffer.alloc(512);
-  header.write(path, 0, 100);
-  for (const offset of [100, 108, 116, 329, 337]) header.write('000000 \0', offset);
-  header.write(path === 'package/dist/index.js' ? '000755' : '000644', 100);
-  header.write(bytes.length.toString(8).padStart(11, '0') + ' ', 124);
-  header.write('00000000000 ', 136);
-  header[156] = 48;
-  header.write('ustar\0' + '00', 257);
-  checksum(header);
-  return Buffer.concat([header, bytes, Buffer.alloc((512 - (bytes.length % 512)) % 512)]);
-}
-
 /** @param {Map<string, Uint8Array>} [files] */
 function tar(files = inventory()) {
-  return Buffer.concat([
-    ...[...files].map(([path, bytes]) => entry(path, bytes)),
-    Buffer.alloc(1024),
-  ]);
+  return ustar(files);
 }
 
 /** @param {Buffer} input @param {string} code @param {Map<string, Uint8Array>} [files] */

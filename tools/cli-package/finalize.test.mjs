@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,7 +20,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { BundleClosureError } from '../bundle-closure/closure.mjs';
 import { CandidateFinalizationError, finalizeCandidate, mapTrailer } from './finalize.mjs';
@@ -25,7 +29,7 @@ import { CandidateFinalizationError, finalizeCandidate, mapTrailer } from './fin
 // upstream and final maps from tiny fixtures; tsup's writer is reproduced exactly (trailer appended
 // to the chunk code, map JSON re-serialized beside it). No product build runs here.
 const cliRequire = createRequire(new URL('../../apps/cli/package.json', import.meta.url));
-const { build } = createRequire(cliRequire.resolve('tsup/package.json'))('esbuild');
+const { build, transformSync } = createRequire(cliRequire.resolve('tsup/package.json'))('esbuild');
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-candidate-finalizer-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 const posixModes = process.platform !== 'win32';
@@ -54,7 +58,7 @@ function snapshot(directory) {
  * facade: a statically and dynamically imported module (no inputs) and a pure re-export module
  * (a zero-byte input).
  */
-async function fixture({ upstreamMapAtBundle = true, sourcesContent = false } = {}) {
+async function fixture({ upstreamMapAtBundle = true, sourcesContent = false, tsx = false } = {}) {
   count += 1;
   const root = join(scratch, `repository-${count}`);
   const core = join(root, 'packages', 'core');
@@ -101,6 +105,14 @@ async function fixture({ upstreamMapAtBundle = true, sourcesContent = false } = 
     join(cli, 'src', 'facade.ts'),
     "export { greet } from '../../../packages/core/dist/index.js';\n",
   );
+  if (tsx) {
+    write(join(cli, 'src', 'view.tsx'), "export const view = (): string => 'view';\n");
+    write(
+      join(cli, 'src', 'index.ts'),
+      readFileSync(join(cli, 'src', 'index.ts'), 'utf8') +
+        "import { view } from './view.js';\nconsole.log(view());\n",
+    );
+  }
   const built = await build({
     absWorkingDir: cli,
     entryPoints: { index: 'src/index.ts' },
@@ -149,6 +161,18 @@ function refusesBeforeWriting(candidate, code) {
   assert.deepEqual(snapshot(candidate.root), before);
   assert.deepEqual(readdirSync(candidate.staging), []);
 }
+
+/** The finalizer's refusal of `candidate`; accepting it fails the test. */
+function refusal(candidate) {
+  try {
+    finalizeCandidate({ repository: candidate.root, staging: candidate.staging });
+  } catch (error) {
+    return error;
+  }
+  assert.fail('the finalizer accepted the candidate');
+}
+
+const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function editJson(path, change) {
   const value = JSON.parse(readFileSync(path, 'utf8'));
@@ -213,9 +237,23 @@ test('finalizes a chained candidate into private repository-relative maps and pu
     JSON.parse(readFileSync(join(candidate.staging, 'finalized.json'), 'utf8')),
     record,
   );
+  // The private record hashes exactly the finalized JS and the staged maps.
+  assert.equal(record.version, 1);
+  assert.deepEqual(
+    record.outputs.map((output) => output.path).sort(),
+    names.map((name) => `dist/${name}`),
+  );
   for (const output of record.outputs) {
     const bytes = readFileSync(join(candidate.cli, output.path));
-    assert.equal(output.bytes, bytes.length);
+    assert.deepEqual(output, { path: output.path, bytes: bytes.length, sha256: digest(bytes) });
+  }
+  assert.deepEqual(
+    record.maps.map((map) => map.path).sort(),
+    names.map((name) => `dist/${name}.map`),
+  );
+  for (const map of record.maps) {
+    const bytes = readFileSync(join(candidate.staging, 'maps', basename(map.path)));
+    assert.deepEqual(map, { path: map.path, bytes: bytes.length, sha256: digest(bytes) });
   }
   const facades = facadeNames(candidate);
   assert.equal(facades.length, 2, 'both facade kinds are exercised');
@@ -407,13 +445,22 @@ test('accounts for every emitted file and every consumed input', async () => {
     delete metafile.outputs['dist/index.js.map'];
   });
   refusesBeforeWriting(unpaired, 'MAP_PAIRING');
-  const crowded = await fixture();
-  editJson(join(crowded.dist, 'metafile-esm.json'), (metafile) => {
-    for (let i = 0; i < 257; i += 1) {
-      metafile.outputs[`dist/extra${i}.js`] = { imports: [], exports: [], inputs: {}, bytes: 1 };
-    }
-  });
-  refusesBeforeWriting(crowded, 'OUTPUT_INVENTORY');
+  // Exactly 256 runtime outputs pass the bound (and then lack the last one's map entry); 257 refuse.
+  for (const [total, code] of [
+    [257, 'OUTPUT_INVENTORY'],
+    [256, 'MAP_PAIRING'],
+  ]) {
+    const crowded = await fixture();
+    editJson(join(crowded.dist, 'metafile-esm.json'), (metafile) => {
+      const runtime = Object.keys(metafile.outputs).filter((key) => !key.endsWith('.map'));
+      const extra = { imports: [], exports: [], inputs: {}, bytes: 1 };
+      for (let i = 0; i < total - runtime.length; i += 1) {
+        metafile.outputs[`dist/extra${i}.js`] = extra;
+        if (i < total - runtime.length - 1) metafile.outputs[`dist/extra${i}.js.map`] = extra;
+      }
+    });
+    refusesBeforeWriting(crowded, code);
+  }
   const unsized = await fixture();
   editJson(join(unsized.dist, 'metafile-esm.json'), (metafile) => {
     const contribution = Object.values(metafile.outputs['dist/index.js'].inputs)[0];
@@ -429,14 +476,36 @@ test('accounts for every emitted file and every consumed input', async () => {
     };
   });
   refusesBeforeWriting(foreign, 'UNSUPPORTED_INPUT');
-  // Only the five inlined engine packages and the CLI's own TypeScript are supported inputs.
-  for (const input of ['../../packages/ui/dist/x.js', 'src/types.d.ts']) {
+  // Only the five inlined engine packages' canonical compiled JS and the CLI's own TypeScript are
+  // supported inputs, even where a non-canonical spelling names a real compiled file.
+  for (const input of [
+    '../../packages/ui/dist/x.js',
+    'src/types.d.ts',
+    'src/x.js',
+    '../../packages/core/dist/../dist/index.js',
+    'src/../../../packages/core/dist/index.js',
+    'x/../../packages/core/dist/index.js',
+  ]) {
     const unsupported = await fixture();
+    write(join(unsupported.cli, 'src', 'x.js'), 'export {};\n');
     editJson(join(unsupported.dist, 'metafile-esm.json'), (metafile) => {
       metafile.inputs[input] = { bytes: 1, imports: [], format: 'esm' };
     });
     refusesBeforeWriting(unsupported, 'UNSUPPORTED_INPUT');
   }
+  // An input contributing bytes to an output must be one of the metafile's inputs.
+  const ghost = await fixture();
+  editJson(join(ghost.dist, 'metafile-esm.json'), (metafile) => {
+    metafile.outputs['dist/index.js'].inputs['src/ghost.ts'] = { bytesInOutput: 1 };
+  });
+  refusesBeforeWriting(ghost, 'UNSUPPORTED_INPUT');
+  // A build with no runtime output refuses before anything is written.
+  const empty = await fixture();
+  for (const name of readdirSync(empty.dist)) {
+    if (name !== 'metafile-esm.json') rmSync(join(empty.dist, name));
+  }
+  editJson(join(empty.dist, 'metafile-esm.json'), (metafile) => (metafile.outputs = {}));
+  refusesBeforeWriting(empty, 'OUTPUT_INVENTORY');
   if (posixModes) {
     const linked = await fixture();
     symlinkSync(join(linked.dist, 'index.js'), join(linked.dist, 'alias.js'));
@@ -498,25 +567,273 @@ test('a source root is a whole directory: a sibling that only shares its prefix 
   refusesBeforeWriting(final, 'MAP_SOURCE_NOT_ORIGINAL');
 });
 
-test('refuses a metafile without outputs or inputs', async () => {
-  for (const field of ['outputs', 'inputs']) {
+test('refuses a metafile whose records have the wrong type', async () => {
+  for (const change of [
+    (metafile) => delete metafile.outputs,
+    (metafile) => delete metafile.inputs,
+    (metafile) => (metafile.outputs = []),
+    (metafile) => (metafile.inputs = []),
+    (metafile) => (metafile.outputs['dist/index.js'] = null),
+    (metafile) => delete metafile.outputs['dist/index.js'].inputs,
+    (metafile) => (metafile.outputs['dist/index.js'].inputs = []),
+    (metafile) => (metafile.outputs['dist/index.js'].bytes = '12'),
+    (metafile) => {
+      const inputs = metafile.outputs['dist/index.js'].inputs;
+      inputs[Object.keys(inputs)[0]] = null;
+    },
+  ]) {
     const candidate = await fixture();
-    editJson(join(candidate.dist, 'metafile-esm.json'), (metafile) => delete metafile[field]);
+    editJson(join(candidate.dist, 'metafile-esm.json'), change);
     refusesBeforeWriting(candidate, 'METAFILE_SHAPE');
   }
+  const absent = await fixture();
+  writeFileSync(join(absent.dist, 'metafile-esm.json'), 'null');
+  refusesBeforeWriting(absent, 'METAFILE_SHAPE');
 });
 
-test('refuses a metafile, an upstream map or a final map over its byte bound', async () => {
-  // Valid JSON padded past each bound, so only the bound refuses it.
+test('reads a metafile, an upstream map or a final map of exactly its byte bound, and no more', async () => {
+  // Valid JSON padded to each bound, so only the bound decides.
   for (const [path, bound] of [
     [(candidate) => join(candidate.dist, 'metafile-esm.json'), 4 * 1024 * 1024],
     [(candidate) => join(candidate.core, 'dist', 'index.js.map'), 4 * 1024 * 1024],
     [(candidate) => join(candidate.dist, 'index.js.map'), 16 * 1024 * 1024],
   ]) {
+    for (const extra of [0, 1]) {
+      const candidate = await fixture();
+      const file = path(candidate);
+      const text = readFileSync(file, 'utf8');
+      writeFileSync(file, text + ' '.repeat(bound - Buffer.byteLength(text) + extra));
+      if (extra === 0)
+        finalizeCandidate({ repository: candidate.root, staging: candidate.staging });
+      else refusesBeforeWriting(candidate, 'UNREADABLE_FILE');
+    }
+  }
+  // Final and upstream JS over the JS bound.
+  for (const path of [
+    (candidate) => join(candidate.dist, 'index.js'),
+    (candidate) => join(candidate.core, 'dist', 'index.js'),
+  ]) {
     const candidate = await fixture();
     const file = path(candidate);
-    writeFileSync(file, readFileSync(file, 'utf8') + ' '.repeat(bound));
+    writeFileSync(file, ' '.repeat(8 * 1024 * 1024) + readFileSync(file, 'utf8'));
     refusesBeforeWriting(candidate, 'UNREADABLE_FILE');
+  }
+});
+
+test('decodes JS and maps strictly: no byte-order mark is removed or admitted, no invalid UTF-8', async () => {
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  // The leading mark would change the public bytes, so the recorded size no longer matches.
+  const js = await fixture();
+  writeFileSync(
+    join(js.dist, 'index.js'),
+    Buffer.concat([bom, readFileSync(join(js.dist, 'index.js'))]),
+  );
+  refusesBeforeWriting(js, 'TRAILER_BYTES');
+  const map = await fixture();
+  writeFileSync(
+    join(map.dist, 'index.js.map'),
+    Buffer.concat([bom, readFileSync(join(map.dist, 'index.js.map'))]),
+  );
+  refusesBeforeWriting(map, 'MALFORMED_JSON');
+  const invalidMap = await fixture();
+  const text = readFileSync(join(invalidMap.dist, 'index.js.map'), 'utf8');
+  writeFileSync(
+    join(invalidMap.dist, 'index.js.map'),
+    Buffer.concat([Buffer.from(`${text.slice(0, -1)},"file":"`), Buffer.from([0xff, 0x22, 0x7d])]),
+  );
+  refusesBeforeWriting(invalidMap, 'MALFORMED_JSON');
+  const invalidUpstream = await fixture();
+  const upstream = join(invalidUpstream.core, 'dist', 'index.js');
+  writeFileSync(
+    upstream,
+    Buffer.concat([Buffer.from([0x2f, 0x2f, 0xff, 0x0a]), readFileSync(upstream)]),
+  );
+  refusesBeforeWriting(invalidUpstream, 'UNREADABLE_FILE');
+});
+
+test('refuses upstream and final maps whose fields have the wrong type', async () => {
+  for (const change of [
+    (map) => (map.mappings = 1234),
+    (map) => (map.names = 'x'),
+    (map) => (map.names = {}),
+    (map) => (map.sources = 'x'),
+    (map) => (map.sources = {}),
+  ]) {
+    const upstream = await fixture();
+    editJson(join(upstream.core, 'dist', 'index.js.map'), change);
+    refusesBeforeWriting(upstream, 'UPSTREAM_MAP_SHAPE');
+    const final = await fixture();
+    editJson(join(final.dist, 'index.js.map'), change);
+    refusesBeforeWriting(final, 'MAP_SHAPE');
+  }
+  const upstream = await fixture();
+  writeFileSync(join(upstream.core, 'dist', 'index.js.map'), 'null');
+  refusesBeforeWriting(upstream, 'UPSTREAM_MAP_SHAPE');
+  const final = await fixture();
+  writeFileSync(join(final.dist, 'index.js.map'), 'null');
+  refusesBeforeWriting(final, 'MAP_SHAPE');
+  if (posixModes) {
+    // A link standing in for an upstream map is not one.
+    const linked = await fixture();
+    const map = join(linked.core, 'dist', 'index.js.map');
+    writeFileSync(join(linked.root, 'elsewhere.map'), readFileSync(map));
+    rmSync(map);
+    symlinkSync(join(linked.root, 'elsewhere.map'), map);
+    refusesBeforeWriting(linked, 'UPSTREAM_MAP_MISSING');
+  }
+});
+
+test('a map source must be a plain path of at most 1024 characters to an original file', async () => {
+  for (const source of [
+    '../src/index%2Ets',
+    '../src/index.ts?x',
+    '../src/index.ts#x',
+    '../src/in\u0001dex.ts',
+    '',
+    `../src/${'a/'.repeat(510)}x.ts`,
+    1,
+    null,
+    ['../src/index.ts'],
+  ]) {
+    const upstream = await fixture();
+    editJson(join(upstream.core, 'dist', 'index.js.map'), (map) => (map.sources = [source]));
+    refusesBeforeWriting(upstream, 'MAP_SOURCE_PATH');
+    if (typeof source !== 'string') {
+      const final = await fixture();
+      editJson(join(final.dist, 'index.js.map'), (map) => (map.sources[0] = source));
+      refusesBeforeWriting(final, 'MAP_SOURCE_PATH');
+    }
+  }
+  // A source of exactly 1024 characters passes the path check and is then looked up.
+  const bounded = await fixture();
+  const longest = `../src/${'a/'.repeat(506)}xy.ts`;
+  assert.equal(longest.length, 1024);
+  editJson(join(bounded.core, 'dist', 'index.js.map'), (map) => (map.sources = [longest]));
+  refusesBeforeWriting(bounded, 'MAP_SOURCE_MISSING');
+  // A source under a dot directory is not original TypeScript, even when the file exists.
+  const dotted = await fixture();
+  write(join(dotted.core, 'src', '.hidden', 'x.ts'), 'export const x = 1;\n');
+  editJson(
+    join(dotted.core, 'dist', 'index.js.map'),
+    (map) => (map.sources = ['../src/.hidden/x.ts']),
+  );
+  refusesBeforeWriting(dotted, 'MAP_SOURCE_NOT_ORIGINAL');
+  if (posixModes) {
+    // A link to TypeScript elsewhere is not an original source file.
+    const linked = await fixture();
+    writeFileSync(join(linked.root, 'real.ts'), 'export const x = 1;\n');
+    symlinkSync(join(linked.root, 'real.ts'), join(linked.core, 'src', 'linked.ts'));
+    editJson(
+      join(linked.core, 'dist', 'index.js.map'),
+      (map) => (map.sources = ['../src/linked.ts']),
+    );
+    refusesBeforeWriting(linked, 'MAP_SOURCE_MISSING');
+  }
+});
+
+test('admits original .tsx CLI sources', async () => {
+  const candidate = await fixture({ tsx: true });
+  finalizeCandidate({ repository: candidate.root, staging: candidate.staging });
+  const map = JSON.parse(readFileSync(join(candidate.staging, 'maps', 'index.js.map'), 'utf8'));
+  assert.ok(map.sources.includes('apps/cli/src/view.tsx'), JSON.stringify(map.sources));
+});
+
+test('a refusal names at most a validated repository-relative subject, never a host path', async () => {
+  const input = (path) => (candidate) =>
+    editJson(join(candidate.dist, 'metafile-esm.json'), (metafile) => {
+      metafile.inputs[typeof path === 'function' ? path(candidate) : path] = {
+        bytes: 1,
+        imports: [],
+        format: 'esm',
+      };
+    });
+  const upstreamMap = (candidate) => join(candidate.core, 'dist', 'index.js.map');
+  const finalMap = (candidate) => join(candidate.dist, 'index.js.map');
+  for (const [change, code, subject] of [
+    [(c) => rmSync(upstreamMap(c)), 'UPSTREAM_MAP_MISSING', 'packages/core/dist/index.js'],
+    [
+      (c) => editJson(upstreamMap(c), (map) => (map.version = 2)),
+      'UPSTREAM_MAP_SHAPE',
+      'packages/core/dist/index.js.map',
+    ],
+    [
+      (c) => editJson(upstreamMap(c), (map) => (map.sources = ['../src/missing.ts'])),
+      'MAP_SOURCE_MISSING',
+      'packages/core/dist/index.js.map',
+    ],
+    [
+      (c) => editJson(upstreamMap(c), (map) => (map.sources = [`${c.root}/x.ts`])),
+      'MAP_SOURCE_PATH',
+      'packages/core/dist/index.js.map',
+    ],
+    [
+      (c) => writeFileSync(upstreamMap(c), '{'),
+      'MALFORMED_JSON',
+      'packages/core/dist/index.js.map',
+    ],
+    [
+      (c) => writeFileSync(upstreamMap(c), ' '.repeat(4 * 1024 * 1024 + 1)),
+      'UNREADABLE_FILE',
+      'packages/core/dist/index.js.map',
+    ],
+    [
+      (c) => rmSync(join(c.core, 'dist', 'types.js')),
+      'UNREADABLE_FILE',
+      'packages/core/dist/types.js',
+    ],
+    [
+      (c) => editJson(finalMap(c), (map) => (map.version = 2)),
+      'MAP_SHAPE',
+      'apps/cli/dist/index.js.map',
+    ],
+    [
+      (c) => writeFileSync(finalMap(c), ' '.repeat(16 * 1024 * 1024 + 1)),
+      'UNREADABLE_FILE',
+      'apps/cli/dist/index.js.map',
+    ],
+    [
+      (c) => writeFileSync(join(c.dist, 'index.js'), `${c.emitted['index.js']}\n`),
+      'FINAL_MAP_LINK',
+      'apps/cli/dist/index.js',
+    ],
+    [(c) => writeFileSync(join(c.dist, 'metafile-esm.json'), '{'), 'MALFORMED_JSON', 'metafile'],
+    [input('src/missing.ts'), 'MAP_SOURCE_MISSING', 'apps/cli/src/missing.ts'],
+    [input('../../node_modules/x/index.js'), 'UNSUPPORTED_INPUT', 'node_modules/x/index.js'],
+    [
+      (c) =>
+        editJson(join(c.dist, 'metafile-esm.json'), (metafile) => {
+          metafile.outputs['dist/index.js'].inputs['src/ghost.ts'] = { bytesInOutput: 1 };
+        }),
+      'UNSUPPORTED_INPUT',
+      'apps/cli/src/ghost.ts',
+    ],
+    // Metafile strings that escape the repository, are absolute or are not plain paths: no subject.
+    [input(`${'../'.repeat(12)}private-notes.js`), 'UNSUPPORTED_INPUT', undefined],
+    [input((c) => `../../..${c.root}/private-notes.js`), 'UNSUPPORTED_INPUT', undefined],
+    [input((c) => `${c.root}/private-notes.js`), 'UNSUPPORTED_INPUT', undefined],
+    [input('../../node_modules/x y/index.js'), 'UNSUPPORTED_INPUT', undefined],
+    [input(`../../${'x'.repeat(200)}.js`), 'UNSUPPORTED_INPUT', undefined],
+    [
+      (c) =>
+        editJson(join(c.dist, 'metafile-esm.json'), (metafile) => {
+          const extra = { imports: [], exports: [], inputs: {}, bytes: 1 };
+          metafile.outputs[`${c.root}/x.js`] = extra;
+          metafile.outputs[`${c.root}/x.js.map`] = extra;
+        }),
+      'OUTPUT_INVENTORY',
+      undefined,
+    ],
+  ]) {
+    const candidate = await fixture();
+    change(candidate);
+    const error = refusal(candidate);
+    assert.ok(error instanceof CandidateFinalizationError, `${code}: ${error}`);
+    assert.equal(
+      error.message,
+      `CLI candidate finalization refused: ${code}` +
+        (subject === undefined ? '' : ` (${subject})`),
+    );
+    assert.equal(error.message.includes(scratch), false);
   }
 });
 
@@ -527,6 +844,8 @@ test('requires an empty private staging directory outside the candidate', async 
     [join(scratch, 'absent-staging'), 'STAGING_PATH'],
     [join(candidate.root, 'apps'), 'STAGING_PATH'],
     [scratch, 'STAGING_PATH'],
+    [undefined, 'STAGING_PATH'],
+    [join(candidate.root, 'apps', 'cli', 'package.json'), 'STAGING_PATH'],
   ]) {
     assert.throws(
       () => finalizeCandidate({ repository: candidate.root, staging }),
@@ -537,9 +856,22 @@ test('requires an empty private staging directory outside the candidate', async 
   refusesBeforeWritingIgnoringStaging(candidate, 'STAGING_NOT_EMPTY');
   rmSync(join(candidate.staging, 'left-over'));
   if (posixModes) {
-    chmodSync(candidate.staging, 0o755);
-    refusesBeforeWriting(candidate, 'STAGING_NOT_PRIVATE');
-    chmodSync(candidate.staging, 0o700);
+    // A file outside the candidate is not a directory, however private its mode.
+    const file = join(scratch, `staging-file-${count}`);
+    writeFileSync(file, '');
+    chmodSync(file, 0o700);
+    assert.throws(
+      () => finalizeCandidate({ repository: candidate.root, staging: file }),
+      (error) => error instanceof CandidateFinalizationError && error.code === 'STAGING_PATH',
+    );
+    for (const mode of [0o755, 0o500]) {
+      chmodSync(candidate.staging, mode);
+      try {
+        refusesBeforeWriting(candidate, 'STAGING_NOT_PRIVATE');
+      } finally {
+        chmodSync(candidate.staging, 0o700);
+      }
+    }
     // An owner-only directory another account owns refuses too, before anything is written.
     const realUid = process.getuid();
     const uid = t.mock.method(process, 'getuid', () => realUid + 1);
@@ -624,7 +956,7 @@ test('re-checks the finite closure and the migration copy on the finalized files
   );
 });
 
-test('ordinary package and CLI builds stay map-free outside a named candidate', () => {
+test('ordinary engine package builds stay map-free', () => {
   const root = new URL('../../', import.meta.url);
   for (const name of ['shared', 'llm', 'core', 'db', 'mcp']) {
     const path = fileURLToPath(new URL(`packages/${name}/tsconfig.build.json`, root));
@@ -636,13 +968,44 @@ test('ordinary package and CLI builds stay map-free outside a named candidate', 
     assert.notEqual(options.inlineSourceMap, true, name);
     assert.notEqual(options.inlineSources, true, name);
   }
-  const config = readFileSync(new URL('apps/cli/tsup.config.ts', root), 'utf8');
-  assert.match(
-    config,
-    /^const CANDIDATE = process\.env\.RELAVIUM_CLI_CANDIDATE_STAGING !== undefined;$/mu,
+});
+
+test('only a named candidate CLI build emits maps, and those maps embed no sources', () => {
+  // The real tsup config, compiled by tsup's own esbuild and evaluated beside a copy of the CLI
+  // manifest and installation, with and without the candidate variable.
+  const cli = fileURLToPath(new URL('../../apps/cli/', import.meta.url));
+  const directory = join(scratch, 'tsup-config');
+  mkdirSync(directory);
+  const source = readFileSync(join(cli, 'tsup.config.ts'), 'utf8');
+  writeFileSync(
+    join(directory, 'config.mjs'),
+    transformSync(source, { loader: 'ts', format: 'esm' }).code,
   );
-  assert.deepEqual(config.match(/^\s*sourcemap:.*$/gmu), ['  sourcemap: CANDIDATE,']);
-  assert.match(config, /if \(CANDIDATE\) options\.sourcesContent = false;/u);
+  copyFileSync(join(cli, 'package.json'), join(directory, 'package.json'));
+  symlinkSync(join(cli, 'node_modules'), join(directory, 'node_modules'), 'junction');
+  const evaluate = (staging) => {
+    const env = { ...process.env };
+    delete env.RELAVIUM_CLI_CANDIDATE_STAGING;
+    if (staging !== undefined) env.RELAVIUM_CLI_CANDIDATE_STAGING = staging;
+    const script = `const { default: config } = await import(${JSON.stringify(
+      pathToFileURL(join(directory, 'config.mjs')).href,
+    )});
+const options = {};
+config.esbuildOptions?.(options, { format: 'esm' });
+process.stdout.write(JSON.stringify({ sourcemap: config.sourcemap, options }));`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  assert.deepEqual(evaluate(join(scratch, 'private-staging')), {
+    sourcemap: true,
+    options: { sourcesContent: false },
+  });
+  assert.deepEqual(evaluate(undefined), { sourcemap: false, options: {} });
 });
 
 test('keeps exact staged and public modes whatever the umask', { skip: !posixModes }, async () => {

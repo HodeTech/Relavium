@@ -39,13 +39,22 @@ const liveFixtures = new Set();
 
 /**
  * For a caller that an interrupt ends before `withFixture` can remove its own root: synchronously kill
- * every bounded child, then remove every fixture root still in use.
+ * every bounded child, then remove every fixture root still in use. One root that cannot be removed
+ * neither keeps the children alive nor the other roots in place; the first failure is rethrown after.
  */
 export function abandonFixtures() {
   stopBoundedChildren();
-  // Retries absorb a killed child that was still finishing a write.
-  for (const root of liveFixtures) rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  let failure;
+  for (const root of liveFixtures) {
+    try {
+      // Retries absorb a killed child that was still finishing a write.
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      failure ??= error;
+    }
+  }
   liveFixtures.clear();
+  if (failure !== undefined) throw failure;
 }
 
 /** Each child receives a synthetic HOME/cwd, no ambient credentials or Node preload. */

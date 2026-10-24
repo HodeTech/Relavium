@@ -109,3 +109,31 @@ test('the guard refuses when its rule cannot be loaded', () => {
   assert.equal(run.stdout, '');
   assert.equal(run.stderr, '::error::CLI publication refused: GUARD_FAILURE\n');
 });
+
+for (const [label, rule, stderr] of [
+  ['returns', '', '::error::CLI publication refused: GUARD_FAILURE\n'],
+  [
+    'throws an error that is not its own',
+    "const error = new Error('x'); error.code = 'ENOENT'; throw error;",
+    '::error::CLI publication refused: GUARD_FAILURE\n',
+  ],
+  // Whatever the rule does to the process, the exit code was already 1 before it ran.
+  ['exits the process itself', 'process.exit();', ''],
+]) {
+  test(`the guard refuses when its rule ${label}`, () => {
+    const directory = join(scratch, `rule-${label.replaceAll(' ', '-')}`);
+    mkdirSync(directory);
+    copyFileSync(guard, join(directory, 'release-guard.mjs'));
+    writeFileSync(
+      join(directory, 'release-guard-core.mjs'),
+      'export class ReleaseGuardError extends Error {\n' +
+        '  constructor(code) { super(code); this.code = code; }\n' +
+        '}\n' +
+        `export function requireReleaseCandidate() { ${rule} }\n`,
+    );
+    const run = runGuard(join(directory, 'release-guard.mjs'), [artifact(PACKAGE_TEST)]);
+    assert.equal(run.status, 1);
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr, stderr);
+  });
+}

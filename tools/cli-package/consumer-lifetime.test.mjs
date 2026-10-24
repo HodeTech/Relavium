@@ -18,8 +18,10 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { exitWithin } from './child-exit.mjs';
 import { completeConsumer } from './consumer-lifetime.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
+import { abandonInstalledSmoke, createInstalledSmokeRoot } from './smoke/index.mjs';
 
 // A support directory for the cases that never reach an interrupt.
 const synthetic = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-consumer-support-')));
@@ -382,9 +384,7 @@ await completeConsumer({
   const children = [];
   try {
     for (const file of pids) children.push(await waitForPid(file));
-    const exited = new Promise((resolve) =>
-      consumer.once('exit', (code, signal) => resolve([code, signal])),
-    );
+    const exited = exitWithin(consumer);
     consumer.kill('SIGINT');
     const [code, signal] = await exited;
     for (let waited = 0; children.some(alive); waited += 25) {
@@ -432,3 +432,66 @@ test(
     assert.equal(outcome.events, 'cleanup fixture:gone smoke:gone\ncleanupFailed\n');
   },
 );
+
+test(
+  'an interrupt still removes the installation when an earlier abandonment step fails',
+  { skip: process.platform === 'win32' },
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-consumer-steps-')));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const installation = join(root, 'installation');
+    mkdirSync(installation);
+    const log = join(root, 'events');
+    const pidFile = join(root, 'child.pid');
+    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+    // An absolute support directory that does not exist, so abandoning the smoke roots throws.
+    const script = `
+import { appendFileSync, rmSync } from 'node:fs';
+import { completeConsumer } from ${url('./consumer-lifetime.mjs')};
+import { isolatedEnvironment, runCommand } from ${url('./process.mjs')};
+const record = (event) => appendFileSync(${JSON.stringify(log)}, event + '\\n');
+await completeConsumer({
+  supportRoot: ${JSON.stringify(join(root, 'missing-support'))},
+  exercise: () =>
+    runCommand(process.execPath, ['-e', ${JSON.stringify(writer(JSON.stringify(installation), pidFile))}], {
+      env: isolatedEnvironment(${JSON.stringify(root)}),
+      timeoutMs: 60_000,
+    }),
+  cleanup: () => {
+    rmSync(${JSON.stringify(installation)}, { recursive: true, force: true, maxRetries: 3 });
+    record('cleanup');
+  },
+  cleanupFailed: () => record('cleanupFailed'),
+  publish: () => record('publish'),
+});
+`;
+    const consumer = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let child;
+    try {
+      child = await waitForPid(pidFile);
+      const exited = exitWithin(consumer);
+      consumer.kill('SIGINT');
+      assert.deepEqual(await exited, [130, null]);
+      assert.equal(existsSync(installation), false);
+      assert.equal(readFileSync(log, 'utf8'), 'cleanup\ncleanupFailed\n');
+    } finally {
+      if (consumer.exitCode === null && consumer.signalCode === null) consumer.kill('SIGKILL');
+      if (child !== undefined && alive(child)) process.kill(child, 'SIGKILL');
+    }
+  },
+);
+
+test('abandoning the installed smoke removes exactly the roots the worker creates', (t) => {
+  const support = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-smoke-roots-')));
+  t.after(() => rmSync(support, { recursive: true, force: true }));
+  const roots = [createInstalledSmokeRoot(support), createInstalledSmokeRoot(support)];
+  for (const root of roots) {
+    assert.equal(dirname(root), support);
+    writeFileSync(join(root, 'guard.ndjson'), '{}\n');
+  }
+  writeFileSync(join(support, 'installed-smoke.json'), '{}\n');
+  abandonInstalledSmoke(support);
+  assert.deepEqual(readdirSync(support), ['installed-smoke.json']);
+});

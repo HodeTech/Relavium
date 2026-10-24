@@ -17,7 +17,7 @@ pnpm smoke:cli-package
 
 The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
 It copies the files Git would ship, by the repository's ignore rules and the developer's
-global excludes file (its Git reads no other home, global or system configuration), into a
+global excludes file (its Git reads no other home, global or system configuration or attributes), into a
 fresh owner-only candidate tree (owner-only where POSIX modes are observable; on Windows it
 inherits the temporary directory's ACL, which is not verified), refusing if the original checkout's commit, status or set of
 files Git is told not to check changes during the copy (such a skip-worktree or assume-unchanged
@@ -25,8 +25,8 @@ file makes the source `dirty`), and installs the locked closure there offline, f
 without lifecycle scripts from the existing store. In that tree it emits the five
 inlined dependency packages in order with the installed compiler, upstream maps and no
 build cache. Prepack (`prepack.mjs`) performs the sole final CLI build in candidate
-mode and runs the finalizer (`finalize.mjs`), which validates every upstream and final
-map, removes only the exact map-link trailers and stages maps, metafile and its hash
+mode and runs the finalizer (`finalize.mjs`), which validates every consumed upstream map and every
+final map, removes only the exact map-link trailers and stages maps, metafile and its hash
 record in a private directory outside the artifact. The runner observes one actual
 prepack build-start record and one finalization, checks the emitted graph, and
 independently inspects the produced gzip/USTAR bytes. The inspector never extracts
@@ -45,10 +45,16 @@ private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP)
 stops the build first and empties the artifact directory, even after the last build child
 exited. An interrupted consumer stops its children, the bootstrap witness's included, and
 removes its installation, the witness's fixtures and the installed smoke's working directory; the
-installed CLI's detached native fixture targets end once the smoke worker that owns them is gone. `pnpm smoke:cli-package` forwards an interrupt to the producer or
-consumer it started instead of ending before them and starts no later stage after one, and it
-interrupts a stage past its deadline before it kills it, so the stage stops its own children; a
-producer killed outright can leave its owner-only root in the temporary directory. A failed
+installed CLI's detached native fixture targets end once the smoke worker that owns them is gone.
+On POSIX `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
+instead of ending before them, and it interrupts a stage past its deadline before it kills the
+stage's process group, so the stage stops its own children; on Windows the stages receive Ctrl-C
+from the shared console and a stage past its deadline is killed with its tree at once (no CI job
+exercises these Windows paths). It starts no later stage after an interrupt. SIGHUP aborts and
+cleans up even under `nohup`; use `setsid` or a terminal multiplexer to detach a long run. A
+producer killed outright can leave its owner-only root in the temporary directory. The local
+consumer installs under the temporary directory, so a shared `/tmp` is a named limit
+(packaging.md). A failed
 production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
 (`production-failure.mjs`), never a build child's captured output, which can quote a map. A
 corepack-managed pnpm always runs from the developer's own corepack cache, never from the shared

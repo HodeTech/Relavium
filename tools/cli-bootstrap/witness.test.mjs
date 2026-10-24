@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -16,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { exitWithin } from '../cli-package/child-exit.mjs';
 import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
 import { spawnBounded, stopBoundedChildren } from './process.mjs';
@@ -469,9 +471,7 @@ await withFixture((fixture) =>
         readdirSync(temporary).filter((name) => name.startsWith('relavium-bootstrap-')).length,
         1,
       );
-      const exited = new Promise((resolve) =>
-        caller.once('exit', (code, signal) => resolve([code, signal])),
-      );
+      const exited = exitWithin(caller);
       caller.kill('SIGINT');
       assert.deepEqual(await exited, [130, null]);
       // The whole process group goes, not only the process spawnBounded started.
@@ -487,6 +487,95 @@ await withFixture((fixture) =>
       if (caller.exitCode === null && caller.signalCode === null) caller.kill('SIGKILL');
       for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
     }
+  },
+);
+test(
+  'abandoning kills a group that ignores SIGTERM and removes the other fixtures when one removal fails',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
+  async (t) => {
+    const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-bootstrap-locked-')));
+    const pidFiles = ['locked.pid', 'grandchild.pid', 'plain.pid'].map((name) =>
+      join(temporary, name),
+    );
+    const roots = () =>
+      readdirSync(temporary).filter((name) => name.startsWith('relavium-bootstrap-'));
+    const url = (name) => JSON.stringify(new URL(name, import.meta.url).href);
+    const idle = (pidFile) =>
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
+    // The first control's child makes its fixture unremovable (a file in a read-only directory)
+    // and, like its grandchild, ignores SIGTERM; the second control's fixture is ordinary.
+    const locked =
+      `const fs = require('node:fs'); const path = require('node:path');` +
+      `const directory = path.join(process.env.TMPDIR, 'locked'); fs.mkdirSync(directory);` +
+      `fs.writeFileSync(path.join(directory, 'file'), 'x'); fs.chmodSync(directory, 0o500);` +
+      `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+        idle(pidFiles[1]),
+      )}], { stdio: 'ignore' });` +
+      idle(pidFiles[0]);
+    const script = `
+import { writeSync } from 'node:fs';
+import { abandonFixtures, withFixture } from ${url('./child.mjs')};
+import { spawnBounded } from ${url('./process.mjs')};
+process.on('SIGINT', () => {
+  try {
+    abandonFixtures();
+  } catch {
+    writeSync(2, 'ABANDON_FAILED\\n');
+  }
+  process.exit(130);
+});
+const control = (code) => (fixture) =>
+  spawnBounded(['-e', code], { env: { TMPDIR: fixture.temporary } }, { timeoutMs: 60_000 });
+await Promise.all([
+  withFixture(control(${JSON.stringify(locked)})),
+  withFixture(control(${JSON.stringify(idle(pidFiles[2]))})),
+]);
+`;
+    const caller = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: { PATH: process.env.PATH, TMPDIR: temporary },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    caller.stderr.on('data', (chunk) => (stderr += chunk));
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const tree = [];
+    t.after(() => {
+      if (caller.exitCode === null && caller.signalCode === null) caller.kill('SIGKILL');
+      for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
+      for (const name of roots()) {
+        const directory = join(temporary, name, 'temporary', 'locked');
+        if (existsSync(directory)) chmodSync(directory, 0o700);
+      }
+      rmSync(temporary, { recursive: true, force: true });
+    });
+    for (const file of pidFiles) {
+      for (let waited = 0; !existsSync(file) || readFileSync(file, 'utf8') === ''; waited += 25) {
+        assert.ok(waited < 20_000, 'a bounded control never started');
+        await delay(25);
+      }
+      tree.push(Number(readFileSync(file, 'utf8')));
+    }
+    assert.equal(roots().length, 2);
+    const exited = exitWithin(caller);
+    caller.kill('SIGINT');
+    assert.deepEqual(await exited, [130, null]);
+    for (let waited = 0; tree.some(alive); waited += 25) {
+      assert.ok(waited < 5_000, 'a bounded control outlived an abandonment whose removal failed');
+      await delay(25);
+    }
+    // Only the unremovable fixture is left, and the failure was reported, not swallowed.
+    const left = roots();
+    assert.equal(left.length, 1);
+    assert.equal(existsSync(join(temporary, left[0], 'temporary', 'locked')), true);
+    assert.equal(stderr, 'ABANDON_FAILED\n');
   },
 );
 test(

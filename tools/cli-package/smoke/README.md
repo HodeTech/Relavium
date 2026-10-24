@@ -48,7 +48,8 @@ aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
   the fixed extensionless fixture script, which creates only its recorded child.
   The fixture's processes also end once the smoke worker that owns their case is
   gone, so a consumer interrupted mid-case leaves no orphaned target; while the
-  worker lives, only the product's own cleanup stops them. Inject a synthetic error on the real target after readiness, then observe actual
+  worker lives, their owner watch never ends them: the product's own cleanup does, or
+  on failure the smoke's watchdog and exact-PID cleanup, which remain failure evidence. Inject a synthetic error on the real target after readiness, then observe actual
   target and descendant closure. Delay delivery of real close events to distinguish
   an error/request from the owned native acknowledgement. POSIX additionally covers
   natural leader exit while a descendant holds inherited pipes. Windows runs the

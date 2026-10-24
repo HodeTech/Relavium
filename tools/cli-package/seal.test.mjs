@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { finalizedPublicFiles, producerNodeMajor } from './seal.mjs';
+import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
+import { finalizedPublicFiles, producerNodeMajor, sealPackage } from './seal.mjs';
+import { ustar } from './ustar-fixture.mjs';
 
 /** A finalized candidate: public JS only in dist, its metafile and hash record in private staging. */
 function withFinalizedFixture(body) {
@@ -219,3 +232,233 @@ test(
     });
   },
 );
+
+const repository = fileURLToPath(new URL('../..', import.meta.url));
+const SOURCE = 'a'.repeat(40);
+const ORIGIN_VARIABLES = [
+  'GITHUB_ACTIONS',
+  'GITHUB_REPOSITORY',
+  'GITHUB_WORKFLOW',
+  'GITHUB_RUN_ID',
+  'GITHUB_RUN_ATTEMPT',
+  'GITHUB_EVENT_NAME',
+  'GITHUB_SHA',
+  'RELAVIUM_PACKAGE_SOURCE_SHA',
+];
+const GITHUB_ORIGIN = {
+  GITHUB_ACTIONS: 'true',
+  GITHUB_REPOSITORY: 'owner/name',
+  GITHUB_WORKFLOW: 'CI',
+  GITHUB_RUN_ID: '42',
+  GITHUB_RUN_ATTEMPT: '1',
+  GITHUB_EVENT_NAME: 'push',
+  GITHUB_SHA: 'b'.repeat(40),
+  RELAVIUM_PACKAGE_SOURCE_SHA: SOURCE,
+};
+
+/** Run `body` with exactly `variables` as the origin environment, restoring the job's own after. */
+async function withOrigin(variables, body) {
+  const saved = ORIGIN_VARIABLES.map((name) => [name, process.env[name]]);
+  for (const name of ORIGIN_VARIABLES) delete process.env[name];
+  Object.assign(process.env, variables);
+  try {
+    return await body();
+  } finally {
+    for (const [name, value] of saved)
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+  }
+}
+
+/**
+ * A finalized candidate that is not the repository holding seal.mjs: its own toolchain pins,
+ * catalog, CLI manifest, migrations and documents, a private staging directory outside the
+ * candidate root, and pnpm's tarball of exactly the finalized public files.
+ */
+async function withCandidate(body, { packageManager = 'pnpm@9.12.3' } = {}) {
+  const temporary = mkdtempSync(join(tmpdir(), 'relavium-seal-candidate-'));
+  const root = join(temporary, 'candidate');
+  const staging = join(temporary, 'private-staging');
+  const artifact = join(temporary, 'artifact');
+  const write = (path, bytes) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  };
+  const published = {
+    name: 'relavium',
+    version: '0.1.1',
+    type: 'module',
+    bin: { relavium: 'dist/index.js' },
+    engines: { node: '>=22' },
+    scripts: { start: 'node dist/index.js' },
+    dependencies: { commander: '^14.0.0' },
+  };
+  const js = {
+    'dist/index.js': '#!/usr/bin/env node\nimport "./chunk-ABC.js";\n',
+    'dist/chunk-ABC.js': 'export {};\n',
+  };
+  const migrations = ['0000_first.sql', 'meta/_journal.json', 'meta/0000_snapshot.json'];
+  try {
+    write(join(root, '.nvmrc'), `${process.versions.node.split('.')[0]}\n`);
+    write(join(root, 'package.json'), JSON.stringify({ packageManager }));
+    write(join(root, 'pnpm-workspace.yaml'), 'packages: []\ncatalog:\n  commander: ^14.0.0\n');
+    write(join(root, 'LICENSE'), 'candidate license\n');
+    write(
+      join(root, 'apps/cli/package.json'),
+      JSON.stringify({
+        ...published,
+        scripts: { ...published.scripts, prepack: 'node prepack.mjs' },
+        dependencies: { commander: 'catalog:' },
+      }),
+    );
+    // The copied tree's own installation resolves `yaml` for the catalog read.
+    symlinkSync(
+      join(repository, 'apps/cli/node_modules'),
+      join(root, 'apps/cli/node_modules'),
+      'junction',
+    );
+    write(join(root, 'apps/cli/README.md'), 'candidate readme\n');
+    write(join(root, 'apps/cli/CHANGELOG.md'), 'candidate changes\n');
+    for (const [path, text] of Object.entries(js)) write(join(root, 'apps/cli', path), text);
+    for (const path of migrations) {
+      write(join(root, 'packages/db/drizzle', path), `candidate ${path}\n`);
+      write(join(root, 'apps/cli/drizzle', path), `candidate ${path}\n`);
+    }
+    write(
+      join(staging, 'metafile-esm.json'),
+      JSON.stringify({
+        outputs: Object.fromEntries(
+          Object.keys(js).flatMap((path) => [
+            [path, {}],
+            [`${path}.map`, {}],
+          ]),
+        ),
+      }),
+    );
+    write(
+      join(staging, 'finalized.json'),
+      JSON.stringify({
+        version: 1,
+        outputs: Object.entries(js).map(([path, text]) => ({
+          path,
+          bytes: Buffer.byteLength(text),
+          sha256: createHash('sha256').update(text).digest('hex'),
+        })),
+        maps: [],
+        upstreamMaps: 0,
+      }),
+    );
+    const files = new Map([
+      ...Object.entries(js).map(([path, text]) => [`package/${path}`, Buffer.from(text)]),
+      ...migrations.map((path) => [`package/drizzle/${path}`, Buffer.from(`candidate ${path}\n`)]),
+      ['package/package.json', Buffer.from(JSON.stringify(published))],
+      ['package/README.md', Buffer.from('candidate readme\n')],
+      ['package/CHANGELOG.md', Buffer.from('candidate changes\n')],
+      ['package/LICENSE', Buffer.from('candidate license\n')],
+    ]);
+    const tarball = gzipSync(ustar(files));
+    write(join(artifact, 'relavium-0.1.1.tgz'), tarball);
+    return await body({ root, staging, artifact, tarball, files, published });
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+const receiptPath = (artifact) => join(artifact, 'package-test-receipt.json');
+
+test('the seal binds a locally produced candidate it is given, never the repository holding seal.mjs', async () => {
+  await withCandidate(async ({ root, staging, artifact, tarball, files, published }) => {
+    const receipt = await withOrigin({}, () =>
+      sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
+    );
+    assert.equal(receipt.mode, 'compiled_package_test');
+    assert.equal(receipt.source, SOURCE);
+    assert.equal(receipt.dirty, true);
+    assert.equal(receipt.packageVersion, '0.1.1');
+    assert.equal(receipt.tarball, 'relavium-0.1.1.tgz');
+    assert.equal(receipt.tarballSha256, createHash('sha256').update(tarball).digest('hex'));
+    assert.equal(receipt.archiveBytes, tarball.length);
+    assert.deepEqual(receipt.files.map((file) => file.path).sort(), [...files.keys()].sort());
+    // The catalog dependency resolved from the candidate's own workspace; prepack removed.
+    assert.deepEqual(receipt.package, published);
+    assert.deepEqual(receipt.origin, { kind: 'local' });
+    assert.deepEqual(receipt.toolchain, { node: process.version, pnpm: '9.12.3' });
+    assert.deepEqual(JSON.parse(readFileSync(receiptPath(artifact), 'utf8')), receipt);
+    assert.deepEqual(readdirSync(artifact).sort(), [
+      'package-test-receipt.json',
+      'relavium-0.1.1.tgz',
+    ]);
+  });
+});
+
+test('the seal records the trusted job origin and refuses a dirty source there', async () => {
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin(GITHUB_ORIGIN, async () => {
+      await assert.rejects(
+        sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: true }),
+        /DIRTY_SOURCE/,
+      );
+      assert.equal(existsSync(receiptPath(artifact)), false);
+      const receipt = await sealPackage(artifact, {
+        repository: root,
+        staging,
+        source: SOURCE,
+        dirty: false,
+      });
+      assert.deepEqual(receipt.origin, {
+        kind: 'github',
+        repository: 'owner/name',
+        workflow: 'CI',
+        runId: '42',
+        runAttempt: '1',
+        event: 'push',
+        source: SOURCE,
+      });
+    });
+  });
+});
+
+test('the seal refuses a candidate that pins a different pnpm, writing no receipt', async () => {
+  await withCandidate(
+    async ({ root, staging, artifact }) => {
+      await withOrigin({}, () =>
+        assert.rejects(
+          sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
+          /pnpm@9\.12\.4/,
+        ),
+      );
+      assert.equal(existsSync(receiptPath(artifact)), false);
+    },
+    { packageManager: 'pnpm@9.12.4' },
+  );
+});
+
+test('the seal refuses an invalid source identity before it reads the candidate', async () => {
+  await withCandidate(async ({ staging, artifact }) => {
+    const missing = join(artifact, 'no-candidate');
+    for (const identity of [
+      { source: 'A'.repeat(40), dirty: false },
+      { source: SOURCE.slice(1), dirty: false },
+      { source: SOURCE, dirty: 'false' },
+    ])
+      await assert.rejects(
+        sealPackage(artifact, { repository: missing, staging, ...identity }),
+        /PACKED_CLI_SOURCE_IDENTITY/,
+      );
+    assert.equal(existsSync(receiptPath(artifact)), false);
+  });
+});
+
+test('the seal refuses archive bytes that differ from the finalized candidate', async () => {
+  await withCandidate(async ({ root, staging, artifact, files }) => {
+    files.set('package/LICENSE', Buffer.from('repository license\n'));
+    writeFileSync(join(artifact, 'relavium-0.1.1.tgz'), gzipSync(ustar(files)));
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealPackage(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
+        /FILE_DRIFT/,
+      ),
+    );
+    assert.equal(existsSync(receiptPath(artifact)), false);
+  });
+});

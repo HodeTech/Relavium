@@ -22,7 +22,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { ENGINE_PACKAGES } from './finalize.mjs';
 import { readOrdinaryFile } from './files.mjs';
 import { within } from './paths.mjs';
-import { isolatedEnvironment, isolatedGitEnvironment, runCommand, runPnpm } from './process.mjs';
+import {
+  GIT_NULL_DEVICE,
+  isolatedEnvironment,
+  isolatedGitEnvironment,
+  runCommand,
+  runPnpm,
+} from './process.mjs';
 
 export const CANDIDATE_LIMITS = Object.freeze({
   files: 20_000,
@@ -39,6 +45,8 @@ const STORE_DISCOVERY_VARIABLES = Object.freeze([
   'LOCALAPPDATA',
   'APPDATA',
   'PNPM_HOME',
+  'npm_config_store_dir',
+  'NPM_CONFIG_STORE_DIR',
 ]);
 
 /** @param {string} output NUL-separated Git path list */
@@ -49,7 +57,12 @@ function gitPaths(output) {
 /** Names the developer's global Git excludes file for a producer whose own environment is isolated. */
 export const GIT_EXCLUDES_ENV = 'RELAVIUM_GIT_EXCLUDES_FILE';
 
-/** Only the variables Git uses to locate its global configuration; never credentials or hooks. */
+/**
+ * Only the variables Git uses to locate its global configuration, plus the command-scope configuration
+ * the developer's Git takes from the environment (`GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_n` and
+ * `GIT_CONFIG_VALUE_n`, and `GIT_CONFIG_PARAMETERS`); never credentials or hooks. They reach only the
+ * read-only lookup of `core.excludesFile`, which runs nothing.
+ */
 const GIT_CONFIG_VARIABLES = Object.freeze([
   'HOME',
   'USERPROFILE',
@@ -57,9 +70,12 @@ const GIT_CONFIG_VARIABLES = Object.freeze([
   'GIT_CONFIG_GLOBAL',
   'GIT_CONFIG_SYSTEM',
   'GIT_CONFIG_NOSYSTEM',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
   'SystemRoot',
   'WINDIR',
 ]);
+const GIT_CONFIG_ENTRY = /^GIT_CONFIG_(?:KEY|VALUE)_(?:0|[1-9][0-9]{0,3})$/u;
 
 /**
  * The developer's global Git excludes file, so that the candidate's isolated Git ignores what the
@@ -79,9 +95,13 @@ export async function globalExcludesFile({ repository, environment, run = runCom
     assert.ok(isAbsolute(explicit) && existsSync(explicit), 'PACKED_CLI_GIT_EXCLUDES');
     return explicit;
   }
-  const env = { PATH: environment.PATH ?? '' };
+  // No PATH means no PATH: an empty one would make the spawn look the command up in the checkout.
+  const env = environment.PATH === undefined ? {} : { PATH: environment.PATH };
   for (const key of GIT_CONFIG_VARIABLES) {
     if (environment[key] !== undefined) env[key] = environment[key];
+  }
+  for (const [key, value] of Object.entries(environment)) {
+    if (GIT_CONFIG_ENTRY.test(key) && value !== undefined) env[key] = value;
   }
   let configured;
   try {
@@ -119,9 +139,18 @@ export function producerEnvironment(base, { store, excludes }) {
   };
 }
 
-/** @param {string | undefined} excludes @returns {string[]} */
-function excludesArguments(excludes) {
-  return excludes === undefined ? [] : ['-c', `core.excludesFile=${excludes}`];
+/**
+ * The attributes and excludes files a checkout-reading Git uses, named explicitly so that no default
+ * location applies — not even one Git derives from the null-device home on Windows.
+ * @param {string | undefined} excludes @returns {string[]}
+ */
+function readArguments(excludes) {
+  return [
+    '-c',
+    `core.attributesFile=${GIT_NULL_DEVICE}`,
+    '-c',
+    `core.excludesFile=${excludes ?? GIT_NULL_DEVICE}`,
+  ];
 }
 
 /**
@@ -138,9 +167,9 @@ function uncheckedPaths(output) {
 /**
  * The source identity of the original checkout: its exact commit, its full porcelain status and the
  * tracked files Git is told not to check, so a candidate copied from a modified tree records `dirty`
- * and a change to either during the copy refuses. A skip-worktree or assume-unchanged file counts as
- * dirty whatever its bytes, since its copy is never compared with the commit. Untracked files are
- * judged with the developer's global excludes (`globalExcludesFile`).
+ * and a change to any of the three during the copy refuses. A skip-worktree or assume-unchanged file
+ * counts as dirty whatever its bytes, since its copy is never compared with the commit. Untracked
+ * files are judged with the developer's global excludes (`globalExcludesFile`).
  * @param {string} repository @param {typeof runCommand} [run] @param {string} [excludes]
  */
 export async function sourceIdentity(repository, run = runCommand, excludes = undefined) {
@@ -152,7 +181,7 @@ export async function sourceIdentity(repository, run = runCommand, excludes = un
   const status = (
     await run(
       'git',
-      [...excludesArguments(excludes), 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      [...readArguments(excludes), 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
       options,
     )
   ).stdout;
@@ -180,7 +209,7 @@ export async function candidateFiles(
       await run(
         'git',
         [
-          ...excludesArguments(excludes),
+          ...readArguments(excludes),
           'ls-files',
           '-z',
           '--cached',
@@ -207,7 +236,7 @@ export async function candidateFiles(
 /**
  * Copy each listed ordinary file byte-for-byte into the empty `destination`. Links (also as a parent
  * directory of a listed path), special files, escaping or noncanonical paths and oversized trees
- * refuse; only the executable bit is kept, as an
+ * refuse; only the owner's executable bit is kept, as Git records it, as an
  * exact 0755 or 0644 mode under any umask that lets the owner write (one that removes the owner's
  * write bit leaves the created directories unwritable, and the copy refuses before any build).
  * @param {{repository: string, destination: string, files: readonly string[],
@@ -241,7 +270,8 @@ export function copyCandidateTree({ repository, destination, files, limits = CAN
       directories.add(parent);
     }
     const source = join(repository, ...parts);
-    const executable = (lstatSync(source).mode & 0o111) !== 0;
+    // Git records a file as executable by its owner's execute bit alone.
+    const executable = (lstatSync(source).mode & 0o100) !== 0;
     const bytes = readOrdinaryFile(source, limits.fileBytes);
     total += bytes.length;
     assert.ok(total <= limits.totalBytes, 'PACKED_CLI_CANDIDATE_BYTES');

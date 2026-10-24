@@ -55,19 +55,21 @@ export function isolatedEnvironment(home) {
  * to the device; Node's `os.devNull` there (`\\.\nul`) reaches the C runtime, which refuses it, and
  * Git then exits rather than read no configuration.
  */
-const GIT_NULL_DEVICE = '/dev/null';
+export const GIT_NULL_DEVICE = '/dev/null';
 
 /**
  * Git with no global or system configuration, for reading the original checkout: its own `.git/config`
  * and ignore rules still apply and a caller passes the developer's global excludes explicitly, but no
  * `.gitconfig`, `git/config`, `git/ignore` or `git/attributes` in a home, configuration or system
- * location is read — not even one inside the checkout itself. Replace refs are ignored, so a status
+ * location is read — not even one inside the checkout itself (the callers also name the attributes and
+ * excludes files explicitly, so no default location applies either). Replace refs are ignored, so a status
  * compares the working tree with the commit HEAD names, never a substitute for it.
  */
 export function isolatedGitEnvironment() {
   return {
     ...isolatedEnvironment(GIT_NULL_DEVICE),
     GIT_CONFIG_NOSYSTEM: '1',
+    GIT_ATTR_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
     GIT_NO_REPLACE_OBJECTS: '1',
   };
@@ -218,7 +220,8 @@ export function forwardInterrupts() {
  * Run one tool child in its own process group (POSIX) and settle when it closed. Past `timeoutMs` its
  * group (on Windows its whole tree) is killed. On POSIX with a positive `graceMs` the group first gets
  * SIGTERM and `graceMs` more, so a child that stops its own detached children and removes its private
- * directories on an interrupt (the producer, the consumer) does so before anything is killed.
+ * directories on an interrupt (the producer, the consumer) does so before anything is killed; the group
+ * is killed when the grace ends or as soon as the child closes, whichever comes first.
  */
 export function runCommand(command, args, options = {}) {
   const { timeoutMs = 300_000, graceMs = 0, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
@@ -275,10 +278,13 @@ export function runCommand(command, args, options = {}) {
       }
       try {
         process.kill(-child.pid, 'SIGTERM');
-      } catch (error) {
-        if (error.code !== 'ESRCH') fault ??= error;
+      } catch {
+        // The group already exited; the timeout fault already stands.
       }
-      graceTimer = setTimeout(stop, graceMs);
+      graceTimer = setTimeout(() => {
+        graceTimer = undefined;
+        stop();
+      }, graceMs);
     }, timeoutMs);
     for (const sink of ['stdout', 'stderr'])
       child[sink].on('data', (chunk) => {
@@ -295,7 +301,16 @@ export function runCommand(command, args, options = {}) {
       closed = true;
       liveChildren.delete(live);
       clearTimeout(timer);
-      clearTimeout(graceTimer);
+      if (graceTimer !== undefined) {
+        // The leader exited on the SIGTERM before the grace ran out: a group member that ignored it
+        // is killed now, as it would have been when the grace ended.
+        clearTimeout(graceTimer);
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') fault ??= error;
+        }
+      }
       if (killer && killer.exitCode === null && killer.signalCode === null)
         await new Promise((done) => killer.once('close', done));
       clearTimeout(killerTimer);

@@ -568,6 +568,54 @@ the repository, so each entry names the input and the property to re-check by ha
   [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
   *(packages/core/src/tools/bounding.ts)*
 
+## Wave 3 Step 9a.1 — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.1 at `1f247772`, run before its round 13 under the
+[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
+corrected every verified code defect and test gap it could close inside the increment. These low findings are
+recorded instead: each needs a change of scope (a new CI leg, a refactor of a Step 7b script) or concerns a
+local-only path no claim covers. **Trigger for every entry:** the next change to the file it names, or a
+real run that shows the shape.
+
+- [ ] **The local consumer installs under the shared temporary directory.** *Low, unchanged since Step 7b.*
+  *(rigor pass, SEC-1/PLAT-6)* `consume.mjs` installs the packed CLI under `mkdtemp(tmpdir())`, so the
+  installed CLI's optional bare requires (for example `ws`'s `require('bufferutil')`, loaded by the
+  `provider list` smoke case) fall through to `<tmpdir>/node_modules`, which another local user can create on
+  a POSIX host with a shared `/tmp`. CI runners are single-tenant and macOS's per-user temporary directory is
+  not shared; packaging.md names the limit. **Re-check:** install under a per-user parent no other user can
+  write (for example a 0700 directory in the user's cache directory), with a test that plants
+  `<temporary>/node_modules/bufferutil` and shows it never runs, as round 10's corepack test does.
+  *(low · tools/cli-package/consume.mjs)*
+- [ ] **An interrupt during the consumer's publication leaves its receipt.** *Low.* *(rigor pass, PLAT-4)*
+  `publish()` runs inside `completeConsumer`'s interrupt scope, and the interrupt path removes the fixtures,
+  smoke roots and installation but not `installed-consumer.json`, so a consumer interrupted while publishing
+  exits 130 beside a success receipt (the producer empties its artifact directory in the same case). A later
+  local run into the same report directory then fails on the `wx` write; CI uploads only on success.
+  **Re-check:** write the receipt under a temporary name and rename it after the interrupt scope returns, or
+  retract it on the interrupt path, with a test that interrupts during `publish`.
+  *(low · tools/cli-package/consumer-lifetime.mjs)*
+- [ ] **Two producers can share one artifact directory.** *Nit.* *(rigor pass, PLAT-9)* Both pass the
+  emptiness check (`mkdirSync` recursive plus `readdirSync`), so one seal can read the other's tarball. It
+  needs user error: the local check always uses a fresh root. **Re-check:** require that the directory does
+  not exist yet and create it without `recursive`, or take an exclusive lock file first.
+  *(nit · tools/cli-package/produce.mjs)*
+- [ ] **The consumer's and the smoke worker's composition has no node test.** *Low, unchanged since Step 7b.*
+  *(rigor pass, F6 and F7)* `consume.mjs` hands `completeConsumer` the `supportRoot` that
+  `runInstalledSmoke` uses and gives the local source lookup `isolatedGitEnvironment()`, and the worker picks
+  its `node_modules` owner with `installedModulesOwner` and its root with `createInstalledSmokeRoot`; each
+  line can be changed wrongly without a node test failing, and a CI consumer, never interrupted, would not
+  notice a wrong `supportRoot`. The helpers themselves are tested. **Re-check:** export the consumer's
+  composition with ports, as `produce.mjs` is, and assert that one `supportRoot` binding reaches both calls and
+  that the Git call's environment equals `isolatedGitEnvironment()`.
+  *(low · tools/cli-package/consume.mjs, tools/cli-package/smoke/worker.mjs)*
+- [ ] **The Windows interrupt, deadline and mode branches are not exercised.** *Low.* *(rigor pass, F14 and
+  MCG-9)* `stopLiveCommands`' taskkill path, `runCommand`'s ungrouped deadline, `forwardInterrupts`' skip of
+  ungrouped children, `stopBoundedChildren`'s fallback and the inventory's `not-observable-windows` mode
+  evidence run only on Windows, and `pnpm test:acceptance-tools` runs only on Linux; packaging.md says so.
+  **Re-check:** a Windows leg of the interrupt-free lifecycle checks (a stage past its deadline is killed at
+  once with `graceMs > 0`) and of `tools/bundle-closure/closure.test.mjs`.
+  *(low · tools/cli-package/process.mjs, tools/cli-bootstrap/process.mjs, tools/bundle-closure/inventory.mjs)*
+
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete

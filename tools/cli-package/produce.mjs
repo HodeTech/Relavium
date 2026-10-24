@@ -30,12 +30,15 @@ import { emitFreshPackage } from './pipeline.mjs';
  * Produce one package-test artifact from the original checkout `repository` into the empty
  * `destination`. The candidate tree and its private staging are siblings in one temporary root,
  * owner-only where POSIX modes are observable, that shares no path with the artifact directory or the
- * checkout. That root and the build home are removed whether production succeeds or fails, each
- * attempted even when the other's removal fails. An interrupt (SIGINT, SIGTERM, SIGHUP) stops the
- * build's child trees, removes both directories and empties the artifact directory, which was empty
- * at the start, before the process exits with the signal's code — also when it arrives after the last
- * child exited, during the seal or during the final removal (`exitOnInterrupt`). A step of that
- * cleanup that fails leaves one fixed line, never a path, and the exit code stays the signal's.
+ * checkout. That root and the build home are removed whether production succeeds or fails — the
+ * staging directory, which holds the private maps, first — each removal attempted even when another
+ * fails. A failed production keeps its own error, also empties the artifact directory, which was empty
+ * at the start, and reports a failed removal only as one fixed line. An interrupt (SIGINT, SIGTERM,
+ * SIGHUP) stops the build's child trees, removes the staging directory, empties the artifact directory
+ * and only then removes the candidate tree and the build home, before the process exits with the
+ * signal's code — also when it arrives after the last child exited, during the seal or during the
+ * final removal (`exitOnInterrupt`). A step of that cleanup that fails leaves one fixed line, never a
+ * path, and the exit code stays the signal's.
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
@@ -63,52 +66,58 @@ export async function producePackage({
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
   const home = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-build-')));
   let root;
-  // Every removal is attempted even when an earlier one fails; the first failure is rethrown.
-  const discard = () => {
+  /** Remove each of `paths`, attempting every one; the first failure, if any. */
+  const removeAll = (paths) => {
     let failure;
-    for (const path of [root, home]) {
-      if (path === undefined) continue;
+    for (const path of paths) {
       try {
         remove(path);
       } catch (error) {
         failure ??= error;
       }
     }
-    if (failure !== undefined) throw failure;
+    return failure;
+  };
+  const staging = () => (root === undefined ? [] : [join(root, 'staging')]);
+  const rest = () => (root === undefined ? [home] : [root, home]);
+  /** Empty the artifact directory, which was empty at the start; the first failure, if any. */
+  const emptyArtifact = () => {
+    let names;
+    try {
+      names = readdirSync(destination);
+    } catch (error) {
+      return error;
+    }
+    return removeAll(names.map((name) => join(destination, name)));
+  };
+  /** One fixed diagnostic line; a failed write cannot replace the outcome it reports. */
+  const report = (line) => {
+    try {
+      writeSync(2, line);
+    } catch {
+      // Nothing else can carry it.
+    }
   };
   // An interrupt's cleanup never throws: a failed step leaves one fixed line, without a path, and
-  // the producer still exits with the signal's code.
+  // the producer still exits with the signal's code. The maps go first, then the artifact directory,
+  // then the large candidate tree and the build home.
   const interrupted = () => {
-    let failed = false;
-    const attempt = (step) => {
-      try {
-        step();
-      } catch {
-        failed = true;
-      }
-    };
-    attempt(discard);
-    let names = [];
-    attempt(() => {
-      names = readdirSync(destination);
-    });
-    for (const name of names) {
-      attempt(() =>
-        rmSync(join(destination, name), { recursive: true, force: true, maxRetries: 3 }),
-      );
-    }
-    if (failed)
-      attempt(() => writeSync(2, '✗ CLI package production interrupted: CLEANUP_FAILED\n'));
+    const failures = [removeAll(staging()), emptyArtifact(), removeAll(rest())];
+    if (failures.some((failure) => failure !== undefined))
+      report('✗ CLI package production interrupted: CLEANUP_FAILED\n');
   };
   return exitOnInterrupt(interrupted, async () => {
+    let failed = false;
+    let failure;
+    let produced;
     try {
       root = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-candidate-')));
       chmodSync(root, 0o700);
       const candidate = join(root, 'source');
-      const staging = join(root, 'staging');
+      const [privateStaging] = staging();
       mkdirSync(candidate, { mode: 0o700 });
-      mkdirSync(staging, { mode: 0o700 });
-      chmodSync(staging, 0o700);
+      mkdirSync(privateStaging, { mode: 0o700 });
+      chmodSync(privateStaging, 0o700);
       // Native real paths carry the letter case the filesystem stores, so no alias passes for elsewhere.
       const published = realpathSync.native(destination);
       const checkout = realpathSync.native(repository);
@@ -125,7 +134,7 @@ export async function producePackage({
       const receipt = await emit({
         repository: candidate,
         destination,
-        staging,
+        staging: privateStaging,
         env,
         pnpm,
         removeBuildState: (cwd) => {
@@ -136,17 +145,32 @@ export async function producePackage({
           noBuildCache(candidate);
           return seal(artifactDirectory, {
             repository: candidate,
-            staging,
+            staging: privateStaging,
             source: identity.source,
             dirty: identity.dirty,
           });
         },
       });
-      return { receipt, identity };
-    } finally {
-      // The interrupt handler is still installed: an interrupt during this removal is honoured once
-      // it is done, never in the middle of it.
-      discard();
+      produced = { receipt, identity };
+    } catch (error) {
+      failed = true;
+      failure = error;
     }
+    // The interrupt handler is still installed: an interrupt during this removal is honoured once it
+    // is done, never in the middle of it.
+    const removal = removeAll([...staging(), ...rest()]);
+    if (failed) {
+      // A failed production leaves no artifact and keeps its own error.
+      const emptied = emptyArtifact();
+      if (removal !== undefined || emptied !== undefined)
+        report('✗ CLI package production cleanup failed: CLEANUP_FAILED\n');
+      throw failure;
+    }
+    if (removal !== undefined) {
+      // Without its cleanup the production failed: no artifact remains, and the removal's error is it.
+      emptyArtifact();
+      throw removal;
+    }
+    return produced;
   });
 }

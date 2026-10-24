@@ -425,6 +425,10 @@ test('JS byte drift, unexpected permissions and hashbang drift each refuse', () 
     const path = entry ? 'dist/index.js' : lazyFile(value);
     value.files[path].mode = entry ? 0o644 : 0o755;
     refuses(value, 'OUTPUT_MODE');
+    // A set-id or sticky bit is part of the mode, not ignored beside it.
+    const special = candidate();
+    special.files[path].mode = entry ? 0o4755 : 0o2644;
+    refuses(special, 'OUTPUT_MODE');
     const other = candidate();
     setContents(
       other,
@@ -609,6 +613,11 @@ for (const [label, mutate, code] of [
       }),
     'OUTPUT_PATH',
   ],
+  ...[-1, 1.5, '7'].map((bytes) => [
+    `map metadata with malformed bytes ${JSON.stringify(bytes)}`,
+    (value) => (value.metafile.outputs['dist/index.js.map'].bytes = bytes),
+    'METADATA_SHAPE',
+  ]),
   ['an unknown map mode', (value) => (value.maps = 'external'), 'MAP_MODE'],
 ]) {
   test(`staged closure refuses ${label}`, () => {
@@ -619,13 +628,16 @@ for (const [label, mutate, code] of [
 }
 
 test('runtime code may never link a map, in an ordinary build or a finalized candidate', () => {
-  for (const value of [candidate(), staged()]) {
-    setContents(
-      value,
-      'dist/index.js',
-      `${value.files['dist/index.js'].contents}//# sourceMappingURL=index.js.map`,
-    );
-    refuses(value, 'MAP_LINK');
+  // Node honours both comment forms; V8 and DevTools also honour the legacy `@` marker.
+  for (const link of [
+    '//# sourceMappingURL=index.js.map',
+    '//@ sourceMappingURL=index.js.map',
+    '/*# sourceMappingURL=index.js.map */',
+  ]) {
+    for (const value of [candidate(), staged()]) {
+      setContents(value, 'dist/index.js', `${value.files['dist/index.js'].contents}${link}`);
+      refuses(value, 'MAP_LINK');
+    }
   }
 });
 
@@ -658,3 +670,55 @@ test('the emitted inventory refuses maps and unreviewed files and admits only na
     rmSync(join(pkg, path));
   }
 });
+
+test('the emitted inventory never lists dist through a link', () => {
+  const pkg = mkdtempSync(join(scratch, 'linked-dist-'));
+  mkdirSync(join(pkg, 'real-dist'));
+  writeFileSync(join(pkg, 'real-dist', 'index.js'), '#!/usr/bin/env node\n');
+  symlinkSync(
+    join(pkg, 'real-dist'),
+    join(pkg, 'dist'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  assert.throws(
+    () => emittedInventory(pkg),
+    (error) => error instanceof BundleClosureError && error.code === 'OUTPUT_KIND',
+  );
+});
+
+test(
+  'the emitted inventory records a special file named like a chunk without reading it',
+  { skip: process.platform === 'win32' },
+  () => {
+    const pkg = mkdtempSync(join(scratch, 'fifo-'));
+    mkdirSync(join(pkg, 'dist'));
+    assert.equal(spawnSync('mkfifo', [join(pkg, 'dist', 'chunk.js')]).status, 0);
+    // Reading a FIFO would block until a writer appears, so the inventory runs in a bounded child.
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `import { emittedInventory } from ${JSON.stringify(new URL('inventory.mjs', import.meta.url).href)};
+process.stdout.write(JSON.stringify(emittedInventory(${JSON.stringify(pkg)})));`,
+      ],
+      { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL' },
+    );
+    assert.equal(run.signal, null, 'the inventory blocked on a FIFO');
+    assert.equal(run.status, 0, run.stderr);
+    const { kind, contents } = JSON.parse(run.stdout)['dist/chunk.js'];
+    assert.deepEqual({ kind, contents }, { kind: 'other', contents: '' });
+  },
+);
+
+test(
+  'the emitted inventory reports set-id and sticky bits in the mode',
+  { skip: process.platform === 'win32' },
+  () => {
+    const pkg = mkdtempSync(join(scratch, 'special-mode-'));
+    mkdirSync(join(pkg, 'dist'));
+    writeFileSync(join(pkg, 'dist', 'index.js'), '#!/usr/bin/env node\n');
+    chmodSync(join(pkg, 'dist', 'index.js'), 0o4755);
+    assert.equal(emittedInventory(pkg)['dist/index.js'].mode, 0o4755);
+  },
+);
