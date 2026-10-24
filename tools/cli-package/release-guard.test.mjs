@@ -117,7 +117,7 @@ for (const [label, rule, stderr] of [
     "const error = new Error('x'); error.code = 'ENOENT'; throw error;",
     '::error::CLI publication refused: GUARD_FAILURE\n',
   ],
-  // Whatever the rule does to the process, the exit code was already 1 before it ran.
+  // The exit code was set to 1 before the rule ran, so a bare exit keeps it.
   ['exits the process itself', 'process.exit();', ''],
 ]) {
   test(`the guard refuses when its rule ${label}`, () => {

@@ -249,7 +249,8 @@ jobs:
       # Interim fail-closed guard (Wave 3 Step 9a.1, the Interim release guard ruling of 2026-10-19): only a
       # verified release candidate may publish, and none can exist before Step 9d's custody graph and Wave 4b's
       # production recipient. Every artifact, including this package-test tarball, therefore stops here; the
-      # entry point exits 1 before it evaluates anything, so no way of invoking it can skip the refusal.
+      # entry point sets its exit code to 1 before it evaluates anything, so a rule that returns, throws or
+      # cannot load still refuses, and no way of invoking it can skip the refusal.
       - name: Refuse anything but a verified release candidate
         run: node tools/cli-package/release-guard.mjs ./artifact
       # Publish the EXACT artifact the smoke matrix proved — not a fresh build. catalog:/workspace: are already

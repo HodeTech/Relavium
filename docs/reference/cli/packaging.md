@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are implemented, with independent acceptance pending; the remaining Step 9 map/custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); the remaining Step 9 map/custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -255,7 +255,7 @@ describes the implemented mechanism; independent acceptance is recorded in the
   closure is installed there offline, frozen and with `--ignore-scripts` from the
   existing content-addressed store, which pnpm discovers in the repository with only
   `HOME`, `USERPROFILE`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `LOCALAPPDATA`, `APPDATA`,
-  `PNPM_HOME` and `npm_config_store_dir` of the caller's environment. Every `@relavium/*`
+  `PNPM_HOME`, `npm_config_store_dir` and `NPM_CONFIG_STORE_DIR` of the caller's environment. Every `@relavium/*`
   link of the CLI and the five inlined engine packages must resolve to that package inside
   the tree, no other `@relavium/*` link is admitted, and the root `node_modules` must
   resolve inside the tree too.
@@ -314,9 +314,9 @@ starts in their own process groups end on their own once the smoke worker that o
 gone. On POSIX the local `pnpm smoke:cli-package` forwards an interrupt to the producer or
 consumer it started rather than ending first (on Windows they share the console and receive
 Ctrl-C themselves), starts no later stage once one arrived, and exits with the signal's code after
-removing its root. On POSIX a stage past its deadline is interrupted (SIGTERM) first and killed,
-with its whole process group, only after a grace period, so it stops its own build children before
-the root goes; on Windows its whole tree is killed at the deadline, and its private directories go
+removing its root. On POSIX a stage past its deadline is interrupted (SIGTERM) first, and its whole
+process group is killed when a grace period ends or as soon as the stage exits, whichever comes first,
+so it stops its own build children before the root goes; on Windows its whole tree is killed at the deadline, and its private directories go
 with the check's root. These Windows interrupt and deadline paths are not exercised by any CI job:
 the tooling tests run on Linux only. SIGHUP aborts and cleans up like the other two signals even
 under `nohup`, which these listeners replace; detach a long local run with `setsid` or a terminal

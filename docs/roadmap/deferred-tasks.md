@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-22 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is implemented on `development` and under review, Steps 9a.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Steps 9a.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -434,7 +434,7 @@ measured or counted here.
   `apps/cli/src/harness/concurrency.e2e.test.ts:434-441` uses a fixed 100 ms contention margin;
   `tools/cli-package/consumer-lifetime.test.mjs:54-59` pre-marks every synthetic case `passed: true` (by design;
   real detection is the packed-consumer CI). *(nit · the files above)*
-- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *Implemented in Wave 3 Step 9a.1 on 2026-10-22, acceptance pending:* the unreachable `TAR_FORMAT` branches are removed, and `installedModulesOwner` (`tools/cli-package/smoke/installation.mjs`) replaces the ancestor loop; the duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
+- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *The tooling half is accepted with Wave 3 Step 9a.1 (implemented 2026-10-22, accepted at `cf97b7f1` on 2026-10-24):* the unreachable `TAR_FORMAT` branches are removed, and `installedModulesOwner` (`tools/cli-package/smoke/installation.mjs`) replaces the ancestor loop; the duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
   `tools/cli-package/archive.mjs:126,135`; no `break` in the ancestor loop at `tools/cli-package/smoke/worker.mjs:64-65`
   (the outermost `node_modules` wins); and repeated heading texts in the phase register, whose later occurrences
   take a `-1` slug suffix. *(author)* A scan finds repeated H2–H4 headings (the 2.5.5.B–I sub-stream headings and the
@@ -615,6 +615,38 @@ real run that shows the shape.
   **Re-check:** a Windows leg of the interrupt-free lifecycle checks (a stage past its deadline is killed at
   once with `graceMs > 0`) and of `tools/bundle-closure/closure.test.mjs`.
   *(low · tools/cli-package/process.mjs, tools/cli-bootstrap/process.mjs, tools/bundle-closure/inventory.mjs)*
+
+Round 13, the acceptance round at `cf97b7f1` (no blocker, high or medium finding; security sitting clean),
+reported ten verified findings, six of them distinct. Under the 2026-10-23 bar they are recorded here; the
+documentation-only ones were also corrected in the acceptance commit, which changes no code.
+
+- [ ] **`forwardInterrupts`' group-wide forwarding has no test.** *Low.* *(round 13, TCA-9A1-R13-1)*
+  `forwardInterrupts` sends the signal to each child's process group (`process.kill(-child.pid, signal)`), as
+  its docblock says, but changing it to `process.kill(child.pid, signal)` passes `process.test.mjs` and
+  `check.test.mjs`: the forwarding test checks only the leader's own marker. Every stage child today is
+  detached into its own group, so the real composition behaves the same. **Re-check:** in the forwarding
+  harness, have the detached child start a non-detached grandchild in its group that writes a marker on
+  SIGINT, and assert both markers. *(low · tools/cli-package/process.mjs)*
+- [ ] **The map-source length bound is pinned on its admitted side only.** *Nit.* *(round 13, TCA-9A1-R13-2)*
+  `finalize.test.mjs` admits a 1024-character source and refuses a 1031-character one, so loosening
+  `source.length > 1024` to any bound up to 1030 passes. The source must still resolve to an existing original
+  file, so nothing is exposed. **Re-check:** add a 1025-character source (`../src/${'a/'.repeat(507)}x.ts`)
+  expecting `MAP_SOURCE_PATH`. *(nit · tools/cli-package/finalize.test.mjs)*
+- [ ] **A rule that lowers the exit code would let the guard exit 0.** *Nit, code half.* *(round 13,
+  CRIT-9A1-R13-N1)* `release-guard.mjs` sets `process.exitCode = 1` once, so a rule that set
+  `process.exitCode = 0` or called `process.exit(0)` would make the publish guard exit 0; today's rule always
+  throws, and the guarantee that no way of invoking the guard skips the refusal holds. The wording that said
+  the entry point "exits 1" is corrected. **Re-check:** when Step 9d replaces the rule, re-assert the code before
+  the final line and keep it with an `exit` listener, with a test for each variant.
+  *(nit · tools/cli-package/release-guard.mjs)*
+- [x] **Documentation corrected in the acceptance commit.** *(round 13)* The contract's store-discovery list
+  now names `NPM_CONFIG_STORE_DIR`, which the code forwards (low; PLAN-9A1-R13-1 = INT-9A1-R13-1, also
+  PFC-R13-N1 and TCA-9A1-R13-3); the deadline's group kill is described as happening when the grace ends or as
+  soon as the stage exits (PLAN-9A1-R13-N1); the guard's wording says it sets its exit code to 1 before its rule
+  runs (CRIT-9A1-R13-N1, wording half); and this file's freshness line is current (PLAN-9A1-R13-N2 =
+  INT-9A1-R13-N1). **Re-check:** the contract's list equals `STORE_DISCOVERY_VARIABLES` in
+  `tools/cli-package/candidate.mjs`. *(docs/reference/cli/packaging.md, tools/cli-package/README.md,
+  .github/workflows/release.yml)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

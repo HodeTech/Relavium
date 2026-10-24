@@ -62,8 +62,9 @@ temporary directory that holds the isolated homes (`corepackHome` in `process.mj
 encrypted custody or a production release candidate (Steps 9a.2–9d). No private map,
 metafile or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
-exits 1 before it evaluates its rule (`release-guard-core.mjs`), so no way of invoking it
-can skip the refusal.
+sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule
+that returns, throws or cannot load still refuses, and no way of invoking it can skip the
+refusal.
 
 The consumer verifies the chosen bytes before installation, installs a copy outside
 the workspace, and compares every installed public file with the archive receipt.
