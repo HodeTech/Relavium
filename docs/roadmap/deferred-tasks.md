@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is implemented and under review with its recorded low findings below, Steps 9a.2b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Steps 9a.2b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -599,7 +599,8 @@ real run that shows the shape.
   needs user error: the local check always uses a fresh root. **Re-check:** require that the directory does
   not exist yet and create it without `recursive`, or take an exclusive lock file first.
   *(nit · tools/cli-package/produce.mjs)* *Re-checked in Step 9a.2a (2026-10-24), which changed
-  `produce.mjs` only to add the symbolication work directory: unchanged, still needs user error.*
+  `produce.mjs` to add the symbolication work directory and the producer-Node refusal, which runs before the
+  emptiness check: unchanged, still needs user error.*
 - [ ] **The consumer's and the smoke worker's composition has no node test.** *Low, unchanged since Step 7b.*
   *(rigor pass, F6 and F7)* `consume.mjs` hands `completeConsumer` the `supportRoot` that
   `runInstalledSmoke` uses and gives the local source lookup `isolatedGitEnvironment()`, and the worker picks
@@ -698,6 +699,25 @@ that shows the shape.
   release candidate simply cannot be rebuilt to the same digest. **Re-check:** in Step 9c's no-rebuild rules,
   never compare a rebuilt digest, or make the published manifest's key order deterministic, with a test that
   packs twice and compares the digests. *(low · tools/cli-package/prepack.mjs and pnpm's pack step)*
+
+Round 3, the acceptance round at `a92a7602` (no blocker, high or medium finding and no regression; the security
+sitting, plan, correctness and integration lenses and the critic clean), reported three verified findings. The
+wording nit is corrected in the acceptance commit, which changes no code (the PLAT-9 re-check note above now
+names both `produce.mjs` changes, INT-9A2A-R3-1); the two test gaps are recorded here.
+
+- [ ] **Symbolication's three read bounds have no test.** *Low.* *(round 3, TCA-9A2A-R3-1)* `symbolicate.mjs`
+  reads the dirty source copy under 8 MiB (`readSourceRevision`), the staged map under 16 MiB (`mapsOf`) and
+  each re-hashed frame file under 16 MiB; raising all three tenfold leaves `symbolicate.test.mjs` passing. It is
+  defense in depth: the manifest step reads the same maps and sources under the same bounds, and every file is
+  bound by digest. **Re-check:** one case per site, as `manifest.test.mjs`'s bounded reads do — pad the dirty
+  copy, the staged map (re-recording its manifest digest) and a dist chunk (re-sealing) one byte past the bound
+  and expect a refusal before any digest comparison — then rerun the three mutants.
+  *(low · tools/cli-package/symbolicate.mjs, tools/cli-package/symbolicate.test.mjs)*
+- [ ] **No test shows that an injected anchor table is enforced.** *Nit.* *(round 3, TCA-9A2A-R3-2)* A mutant
+  that loops over the module's `ANCHORS` instead of the `anchors` argument survives: the only injected table
+  that reaches mapping, `[...ANCHORS, ANCHORS[0]]`, repeats a reached anchor. Production uses the default.
+  **Re-check:** add an anchor whose source the manifest maps and whose call site resolves in the source revision
+  but that no captured frame reaches, and expect `ANCHOR_UNMAPPED`. *(nit · tools/cli-package/symbolicate.test.mjs)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
