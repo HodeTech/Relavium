@@ -719,7 +719,24 @@ names both `produce.mjs` changes, INT-9A2A-R3-1); the two test gaps are recorded
   **Re-check:** add an anchor whose source the manifest maps and whose call site resolves in the source revision
   but that no captured frame reaches, and expect `ANCHOR_UNMAPPED`. *(nit · tools/cli-package/symbolicate.test.mjs)*
 
-## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
+## Native file identity on Windows — approved increment (2026-10-24)
+
+Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate
+increment, after 9a.2b and before 9b (register row NI), rather than a deferral; this entry tracks it until then.
+
+- [ ] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
+  Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a
+  number, but on Windows `ino` is the volume's 64-bit file ID; above 2^53 neighbouring IDs round to the same value,
+  so a replaced file or directory can compare as the original. `apps/cli/src/engine/tool-host/fs-policy.test.ts`,
+  "revokes a selected subdirectory replacement even when its enclosing grant is unchanged", read the replacement on
+  the Windows runner (its first failure in sixty runs). Sites: `apps/cli/src/engine/tool-host/fs-policy.ts`
+  (`pinDirectory`/`validatePin`), `apps/cli/src/workflows/catalog.ts` (the open check), and
+  `packages/db/src/media-store-paths.ts` (directory pins and `assertOwnedFile`), `media-store-read.ts` (the
+  read's before/after check) and `media-store-temporaries.ts` (`same` and the `Number(...)` comparison in
+  `nativeFile`). **Re-check:** every identity is read with `{ bigint: true }` and compared as `bigint` (or its exact
+  string), with a replacement test per site that fails when the comparison goes back to a number; the Windows job
+  passes the fs-policy test repeatedly. *(high · the five files above)*
+, recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
 with approved deferrals, 49/51 items closed. The
