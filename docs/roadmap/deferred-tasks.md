@@ -648,6 +648,25 @@ documentation-only ones were also corrected in the acceptance commit, which chan
   `tools/cli-package/candidate.mjs`. *(docs/reference/cli/packaging.md, tools/cli-package/README.md,
   .github/workflows/release.yml)*
 
+Observed in 9a.1's push CI and its preflight for 9a.2 (2026-10-24):
+
+- [ ] **A migration-running database test lacks the explicit timeout its siblings carry.** *Low.* *(author,
+  push CI run 40050981969)* In `packages/db/src/session-effect-turns.test.ts`, the parametrized case
+  `refuses issuance inside an outer %s transaction before any key can escape a rollback` runs every migration
+  per case under vitest's default 5 s, while its siblings that migrate pass `30_000`; on the advisory Windows
+  runner the `exclusive` case took 7.7 s and failed. 9a.1 changed no database source. The advisory Windows job
+  failed 6 times in the last 40 CI runs, each a default 5 s timeout on a different SQLite- or
+  process-heavy test (`fs-workspace-admission`, `concurrency.e2e`, the runner-abort ownership case and this
+  one); the job is advisory and every required job passed. **Re-check:** give the case its siblings' `30_000`
+  bound, and review the other three tests' bounds against the Windows runner, when the file is next edited or
+  the advisory job next fails. *(low · packages/db/src/session-effect-turns.test.ts)*
+- [ ] **`--verbose` never prints a real stack.** *Low, for Step 10a.* *(9a.2 preflight)*
+  `apps/cli/src/process/render-user-facing.ts` (`ownErrorStack`) prints a stack only when `stack` is an own
+  data property, but V8 defines a real error's `stack` as an accessor (get/set), so a thrown `Error` prints
+  nothing under `--verbose`; `render-error.test.ts` constructs a data `stack`, so the tests pass. Step 10a
+  replaces this raw-stack branch (row 10a). **Re-check:** the replacement prints a real error's frames, tested
+  with a thrown `Error` rather than a constructed property. *(low · apps/cli/src/process/render-user-facing.ts)*
+
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
