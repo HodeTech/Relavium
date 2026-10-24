@@ -371,14 +371,21 @@ const receiptPath = (artifact) => join(artifact, 'package-test-receipt.json');
  * The seal with recording stand-ins for the private manifest and symbolication, whose own tests
  * (manifest.test.mjs, symbolicate.test.mjs) run them for real.
  */
+/** What the manifest stand-in returns as the sealed manifest. */
+const SEALED = Object.freeze({ sealed: 'manifest' });
+
 function sealWith(artifact, candidate, calls = []) {
   return sealPackage(artifact, {
     checkout: candidate.repository,
     work: join(dirname(candidate.staging), 'work'),
     ...candidate,
     ports: {
-      manifest: async (options) => void calls.push(['manifest', options]),
+      manifest: async (options) => {
+        calls.push(['manifest', options]);
+        return SEALED;
+      },
       symbolicate: async (options) => void calls.push(['symbolicate', options]),
+      verify: async (options) => void calls.push(['verify', options]),
     },
   });
 }
@@ -489,9 +496,16 @@ test('the seal seals the private manifest after the inspection and symbolicates 
     );
     assert.deepEqual(
       calls.map(([step]) => step),
-      ['manifest', 'symbolicate'],
+      ['manifest', 'symbolicate', 'verify'],
     );
-    const [[, manifest], [, symbolicate]] = calls;
+    const [[, manifest], [, symbolicate], [, verify]] = calls;
+    // The dist and tarball check receives the manifest just sealed, in memory, and the inspected tarball.
+    assert.deepEqual(verify, {
+      candidate: root,
+      manifest: SEALED,
+      tarball: join(artifact, 'relavium-0.1.1.tgz'),
+    });
+    assert.equal(verify.manifest, SEALED);
     // Both steps receive the inspected archive: the bytes the receipt then records.
     assert.equal(manifest.archive.sha256, receipt.tarballSha256);
     assert.deepEqual(manifest.archive.files, receipt.files);
@@ -514,8 +528,9 @@ test('the seal seals the private manifest after the inspection and symbolicates 
   });
 });
 
-test('a refused manifest or symbolication leaves no receipt, and an unproven archive reaches neither', async () => {
-  for (const failing of ['manifest', 'symbolicate']) {
+test('a refused manifest, symbolication or dist check leaves no receipt, and an unproven archive reaches none', async () => {
+  const order = ['manifest', 'symbolicate', 'verify'];
+  for (const failing of order) {
     await withCandidate(async ({ root, staging, artifact }) => {
       const steps = [];
       const refusal = new Error(`synthetic ${failing} refusal`);
@@ -532,12 +547,16 @@ test('a refused manifest or symbolication leaves no receipt, and an unproven arc
             dirty: false,
             checkout: root,
             work: join(dirname(staging), 'work'),
-            ports: { manifest: step('manifest'), symbolicate: step('symbolicate') },
+            ports: {
+              manifest: step('manifest'),
+              symbolicate: step('symbolicate'),
+              verify: step('verify'),
+            },
           }),
           (error) => error === refusal,
         ),
       );
-      assert.deepEqual(steps, failing === 'manifest' ? ['manifest'] : ['manifest', 'symbolicate']);
+      assert.deepEqual(steps, order.slice(0, order.indexOf(failing) + 1));
       assert.equal(existsSync(receiptPath(artifact)), false);
     });
   }
@@ -552,6 +571,65 @@ test('a refused manifest or symbolication leaves no receipt, and an unproven arc
       ),
     );
     assert.deepEqual(calls, []);
+  });
+});
+
+test('a sealed candidate is never sealed again, and nothing is read or run first', async () => {
+  // A receipt beside the tarball: the candidate was sealed.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin({}, () =>
+      sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }),
+    );
+    const receipt = readFileSync(receiptPath(artifact));
+    const calls = [];
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }, calls),
+        { message: 'PACKED_CLI_ALREADY_SEALED' },
+      ),
+    );
+    assert.deepEqual(calls, []);
+    assert.deepEqual(readFileSync(receiptPath(artifact)), receipt);
+  });
+  // A manifest in the staging, even a dangling link, refuses the same way.
+  for (const plant of [
+    (path) => writeFileSync(path, '{}'),
+    (path) => symlinkSync(join(dirname(path), 'absent'), path),
+  ]) {
+    await withCandidate(async ({ root, staging, artifact }) => {
+      plant(join(staging, 'manifest.json'));
+      const calls = [];
+      await withOrigin({}, () =>
+        assert.rejects(
+          sealWith(artifact, { repository: root, staging, source: SOURCE, dirty: false }, calls),
+          { message: 'PACKED_CLI_ALREADY_SEALED' },
+        ),
+      );
+      assert.deepEqual(calls, []);
+      assert.equal(existsSync(receiptPath(artifact)), false);
+    });
+  }
+  // Another seal that writes its receipt meanwhile wins, and this one refuses with the same code.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealPackage(artifact, {
+          repository: root,
+          staging,
+          source: SOURCE,
+          dirty: false,
+          checkout: root,
+          work: join(dirname(staging), 'work'),
+          ports: {
+            manifest: async () => SEALED,
+            symbolicate: async () => writeFileSync(receiptPath(artifact), 'the other seal'),
+            verify: async () => {},
+          },
+        }),
+        { message: 'PACKED_CLI_ALREADY_SEALED' },
+      ),
+    );
+    assert.equal(readFileSync(receiptPath(artifact), 'utf8'), 'the other seal');
   });
 });
 
@@ -570,6 +648,7 @@ test('both steps receive the candidate, the original checkout and the dirty flag
         ports: {
           manifest: async (options) => void calls.push(options),
           symbolicate: async (options) => void calls.push(options),
+          verify: async () => {},
         },
       }),
     );

@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, posix } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +35,7 @@ import {
   ManifestError,
   readPrivateManifest,
   sealPrivateManifest,
+  verifySealedDist,
 } from './manifest.mjs';
 
 const refuses = (code) => (error) => error instanceof ManifestError && error.code === code;
@@ -390,6 +399,72 @@ test('every manifest read is bounded', async () => {
   const empty = fresh('no-manifest');
   mkdirSync(empty);
   assert.throws(() => readPrivateManifest(empty), refuses('UNREADABLE'));
+});
+
+/** A sealed fixture whose manifest records the digest of an actual tarball file. */
+async function sealedWithTarball() {
+  const fixture = await candidate();
+  const artifact = fresh('artifact');
+  mkdirSync(artifact);
+  const tarball = join(artifact, 'relavium-0.1.1.tgz');
+  writeFileSync(tarball, 'synthetic tarball bytes');
+  fixture.archive.sha256 = digest(readFileSync(tarball));
+  return { fixture, tarball, manifest: await seal(fixture) };
+}
+
+test('the dist and the tarball are verified against the manifest just sealed', async () => {
+  const sealed = await sealedWithTarball();
+  verifySealedDist({
+    candidate: sealed.fixture.root,
+    manifest: sealed.manifest,
+    tarball: sealed.tarball,
+  });
+  for (const [label, change, code] of [
+    [
+      'one more byte in a chunk no anchor lies in',
+      (fixture) => {
+        const path = join(fixture.cli, 'dist', 'index.js');
+        writeFileSync(path, `${readFileSync(path, 'utf8')} `);
+      },
+      'DIST_DRIFT',
+    ],
+    [
+      'an extra file',
+      (fixture) => writeFileSync(join(fixture.cli, 'dist', 'extra.js'), ''),
+      'DIST_DRIFT',
+    ],
+    [
+      'a removed chunk',
+      (fixture) => rmSync(join(fixture.cli, 'dist', coreChunk(fixture))),
+      'DIST_DRIFT',
+    ],
+    [
+      'a chunk replaced by a link to the same bytes',
+      (fixture) => {
+        const path = join(fixture.cli, 'dist', 'index.js');
+        const copy = join(fixture.work, 'index.js');
+        writeFileSync(copy, readFileSync(path));
+        rmSync(path);
+        symlinkSync(copy, path);
+      },
+      'DIST_DRIFT',
+    ],
+    ['no dist', (fixture) => rmSync(join(fixture.cli, 'dist'), { recursive: true }), 'DIST_DRIFT'],
+    [
+      'a replaced tarball',
+      (_fixture, tarball) => writeFileSync(tarball, 'other bytes'),
+      'TARBALL_CHANGED',
+    ],
+    ['a missing tarball', (_fixture, tarball) => rmSync(tarball), 'TARBALL_CHANGED'],
+  ]) {
+    const { fixture, tarball, manifest } = await sealedWithTarball();
+    change(fixture, tarball);
+    assert.throws(
+      () => verifySealedDist({ candidate: fixture.root, manifest, tarball }),
+      refuses(code),
+      label,
+    );
+  }
 });
 
 test('a refusal is a ManifestError naming only its fixed code', () => {

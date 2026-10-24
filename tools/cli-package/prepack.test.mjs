@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -117,6 +118,30 @@ test('an unusable staging directory refuses before anything is built', () => {
     assert.match(result.stderr, /CLI candidate finalization refused: STAGING_PATH/u);
     assert.equal(existsSync(candidate.marker), false);
   }
+});
+
+test('a second prepack into a sealed staging refuses before anything is built', () => {
+  // The staging of a sealed candidate: the finalizer's record, the metafile, the staged maps and the
+  // private manifest (ADR-0111's post-receipt rebuild refusal; Step 9a.2b).
+  const candidate = fixture();
+  const staging = privateStaging();
+  const sealed = {
+    'finalized.json': '{"version":1}',
+    'metafile-esm.json': '{"outputs":{}}',
+    'manifest.json': '{"version":1}',
+  };
+  for (const [name, text] of Object.entries(sealed)) writeFileSync(join(staging, name), text);
+  mkdirSync(join(staging, 'maps'));
+  writeFileSync(join(staging, 'maps', 'index.js.map'), '{"version":3}');
+  const result = prepack(candidate, { staging });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /CLI candidate finalization refused: STAGING_NOT_EMPTY/u);
+  assert.equal(existsSync(candidate.marker), false);
+  assert.deepEqual(readdirSync(staging).sort(), [...Object.keys(sealed), 'maps'].sort());
+  for (const [name, text] of Object.entries(sealed)) {
+    assert.equal(readFileSync(join(staging, name), 'utf8'), text);
+  }
+  assert.equal(readFileSync(join(staging, 'maps', 'index.js.map'), 'utf8'), '{"version":3}');
 });
 
 test('a failed build stops before the closure gate or finalization', () => {

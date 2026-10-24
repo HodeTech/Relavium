@@ -7,6 +7,7 @@
  * staging; Step 9b carries it into ciphertext.
  */
 import { Buffer } from 'node:buffer';
+import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -281,6 +282,42 @@ export async function sealPrivateManifest({
     Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8'),
   );
   return manifest;
+}
+
+/**
+ * Verify that the finalized `dist` and the tarball are still the ones `manifest` records: exactly its
+ * outputs, each with its digest, and the tarball's digest (ADR-0111's post-receipt rebuild refusal;
+ * Step 9a.2b). The seal runs it with the manifest it has just sealed, after symbolication and
+ * immediately before the receipt is written, so a `dist` rebuilt or changed after the inspection — in
+ * a chunk no frame lands in as well — refuses.
+ * @param {{candidate: string, manifest: PrivateManifest, tarball: string}} options
+ */
+export function verifySealedDist({ candidate, manifest, tarball }) {
+  const cli = join(candidate, 'apps', 'cli');
+  let names;
+  try {
+    names = readdirSync(join(cli, 'dist')).sort();
+  } catch {
+    refuse('DIST_DRIFT');
+  }
+  const expected = manifest.outputs.map((output) => basename(output.path)).sort();
+  if (!isDeepStrictEqual(names, expected)) refuse('DIST_DRIFT');
+  for (const output of manifest.outputs) {
+    let bytes;
+    try {
+      bytes = readOrdinaryFile(join(cli, ...output.path.split('/')), 8 * 1024 * 1024);
+    } catch {
+      refuse('DIST_DRIFT');
+    }
+    if (sha256(bytes) !== output.sha256) refuse('DIST_DRIFT');
+  }
+  let packed;
+  try {
+    packed = readOrdinaryFile(tarball, 16 * 1024 * 1024);
+  } catch {
+    refuse('TARBALL_CHANGED');
+  }
+  if (sha256(packed) !== manifest.tarballSha256) refuse('TARBALL_CHANGED');
 }
 
 /**

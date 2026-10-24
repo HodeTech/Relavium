@@ -6,12 +6,12 @@
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
 import { originFromEnvironment, validatePackageReceipt } from './binding.mjs';
 import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
-import { sealPrivateManifest } from './manifest.mjs';
+import { MANIFEST_FILE, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
 import { symbolicateCandidate } from './symbolicate.mjs';
 
 export function producerNodeMajor(root) {
@@ -93,20 +93,38 @@ export function finalizedPublicFiles(root, staging) {
   return files;
 }
 
+/** Whether anything exists at `path`, without following a link. */
+function present(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /**
  * Inspect the tarball, then seal the candidate's private map manifest, then symbolicate actual packed
- * frames against it, and only then write the receipt: a refusal at any step leaves no receipt.
+ * frames against it, then verify that `dist` and the tarball are still the manifest's, and only then
+ * write the receipt: a refusal at any step leaves no receipt. A candidate is sealed once: a receipt
+ * beside the tarball or a manifest in the staging refuses before anything is read or run.
  * @param {string} artifactDirectory the public artifact directory holding exactly one tarball
  * @param {{repository: string, staging: string, source: string, dirty: boolean, checkout: string,
  *   work: string, ports?: {manifest?: typeof sealPrivateManifest,
- *   symbolicate?: typeof symbolicateCandidate}}} candidate the candidate root and its private
- *   staging, the original checkout's identity and object store, and a private work directory
+ *   symbolicate?: typeof symbolicateCandidate, verify?: typeof verifySealedDist}}} candidate the
+ *   candidate root and its private staging, the original checkout's identity and object store, and a
+ *   private work directory
  */
 export async function sealPackage(
   artifactDirectory,
   { repository, staging, source, dirty, checkout, work, ports = {} },
 ) {
-  const { manifest = sealPrivateManifest, symbolicate = symbolicateCandidate } = ports;
+  const {
+    manifest = sealPrivateManifest,
+    symbolicate = symbolicateCandidate,
+    verify = verifySealedDist,
+  } = ports;
   const tarball = oneTarball(artifactDirectory);
   assert.match(source, /^[0-9a-f]{40}$/u, 'PACKED_CLI_SOURCE_IDENTITY');
   assert.equal(typeof dirty, 'boolean', 'PACKED_CLI_SOURCE_IDENTITY');
@@ -117,6 +135,11 @@ export async function sealPackage(
       isAbsolute(work),
     'PACKED_CLI_SEAL_INPUTS',
   );
+  // ADR-0111's post-receipt rebuild refusal (Step 9a.2b): a sealed candidate is never sealed again.
+  assert.ok(
+    readdirSync(artifactDirectory).length === 1 && !present(join(staging, MANIFEST_FILE)),
+    'PACKED_CLI_ALREADY_SEALED',
+  );
   const archive = inspectPackageArchive(readOrdinaryFile(tarball, 16 * 1024 * 1024), {
     expectedFiles: finalizedPublicFiles(repository, staging),
     expectedPackage: expectedPackManifest(repository),
@@ -126,8 +149,17 @@ export async function sealPackage(
   assert.equal(pnpm, 'pnpm@9.12.3');
   // Only now, with the packed bytes proven to be the finalized ones, the private manifest is sealed;
   // actual packed frames are then symbolicated against it before any receipt exists.
-  await manifest({ candidate: repository, staging, checkout, source, dirty, archive });
+  const sealed = await manifest({
+    candidate: repository,
+    staging,
+    checkout,
+    source,
+    dirty,
+    archive,
+  });
   await symbolicate({ candidate: repository, staging, checkout, work, archive });
+  // The capture ran the candidate: its dist and the tarball must still be the ones just sealed.
+  await verify({ candidate: repository, manifest: sealed, tarball });
   const receipt = {
     version: 1,
     mode: 'compiled_package_test',
@@ -148,10 +180,16 @@ export async function sealPackage(
     nodeMajor: producerNodeMajor(repository),
     allowLocal: origin.kind === 'local',
   });
-  writeFileSync(
-    join(artifactDirectory, 'package-test-receipt.json'),
-    JSON.stringify(receipt, null, 2) + '\n',
-    { flag: 'wx' },
-  );
+  try {
+    writeFileSync(
+      join(artifactDirectory, 'package-test-receipt.json'),
+      JSON.stringify(receipt, null, 2) + '\n',
+      { flag: 'wx' },
+    );
+  } catch (error) {
+    // Another seal wrote its receipt meanwhile.
+    if (error?.code === 'EEXIST') assert.fail('PACKED_CLI_ALREADY_SEALED');
+    throw error;
+  }
   return receipt;
 }
