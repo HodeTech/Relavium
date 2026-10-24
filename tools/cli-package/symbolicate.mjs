@@ -6,12 +6,13 @@
  * frames through the staged final maps. Each anchor below must be reached by a synchronous frame that
  * lands exactly on a mapping segment and resolves to the call site that the matching source
  * revision's syntax tree gives: the candidate copy for a dirty local build, the checkout's Git objects
- * at the recorded commit otherwise, both bound to the manifest's per-source digests. A refusal names a
- * fixed code; no frame, path, position or source text is ever printed.
+ * at the recorded commit otherwise, both bound to the manifest's per-source digests. Each frame file is
+ * re-hashed after the run. A refusal names a fixed code; no frame, path, position or source text is
+ * ever printed.
  */
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -81,6 +82,9 @@ function canaryDocument(canary) {
 /**
  * Run the finalized CLI's `import` of a canary workflow under the preload, with its home, project and
  * temporary files in `work` (owner-only, outside the candidate), and return the one captured stack.
+ * The project's own `.relavium/` exists before the run, so the CLI's upward search for a project stops
+ * there and never adopts an ancestor's — a developer's real one on Windows, where the temporary
+ * directory lies below the home; the run must have imported the canary into it.
  * @param {{candidate: string, work: string, run?: typeof runCommand}} options
  * @returns {Promise<Frame[]>}
  */
@@ -88,7 +92,8 @@ export async function captureFrames({ candidate, work, run = runCommand }) {
   const canary = `frames-canary-${randomBytes(6).toString('hex')}`;
   const home = join(work, 'home');
   const project = join(work, 'project');
-  for (const directory of [home, project]) mkdirSync(directory, { mode: 0o700 });
+  const catalog = join(project, '.relavium');
+  for (const directory of [home, project, catalog]) mkdirSync(directory, { mode: 0o700 });
   const document = join(work, `${canary}.relavium.yaml`);
   writeFileSync(document, canaryDocument(canary), { mode: 0o600, flag: 'wx' });
   const log = join(work, 'frames.json');
@@ -119,6 +124,13 @@ export async function captureFrames({ candidate, work, run = runCommand }) {
     // The child's own output is never printed: it can quote the candidate.
     refuse('CAPTURE_FAILED');
   }
+  let imported = false;
+  try {
+    imported = lstatSync(join(catalog, 'workflows', `${canary}.relavium.yaml`)).isFile();
+  } catch {
+    imported = false;
+  }
+  if (!imported) refuse('CAPTURE_PROJECT');
   let record;
   try {
     record = JSON.parse(readOrdinaryFile(log, 1024 * 1024).toString('utf8'));
@@ -153,7 +165,8 @@ export async function captureFrames({ candidate, work, run = runCommand }) {
 /**
  * The text of each path at the matching source revision, bound to the manifest's digest: the
  * candidate copy for a dirty local build, otherwise the blob at the recorded commit, read from the
- * original checkout's object store by Git without configuration, filters or replace refs.
+ * original checkout's object store by Git without home, global or system configuration, without
+ * filters or text conversion (`cat-file blob`) and without replace refs.
  * @param {{candidate: string, checkout: string, manifest: import('./manifest.mjs').PrivateManifest,
  *   paths: readonly string[], run?: typeof runCommand}} options
  * @returns {Promise<Map<string, string>>}
@@ -210,6 +223,7 @@ export function anchorPosition(ts, text, anchor) {
   const visit = (node) => {
     if (
       (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+      node.body !== undefined &&
       node.name !== undefined &&
       node.name.getText(file) === anchor.within
     ) {
@@ -265,7 +279,9 @@ export async function symbolicateCandidate({
   revision = readSourceRevision,
   anchors = ANCHORS,
 }) {
-  if (anchors.length === 0) refuse('ANCHORS');
+  // The maintainer's coverage ruling: at least two `@relavium/core` and three CLI call sites.
+  const within = (root) => anchors.filter((anchor) => anchor.source.startsWith(root)).length;
+  if (within('packages/core/src/') < 2 || within('apps/cli/src/') < 3) refuse('ANCHORS');
   const manifest = readPrivateManifest(staging);
   const frames = await capture({ candidate, work, run });
   const paths = [...new Set(anchors.map((anchor) => anchor.source))];

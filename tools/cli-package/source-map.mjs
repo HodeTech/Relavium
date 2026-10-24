@@ -24,6 +24,8 @@ const DIGITS = new Int8Array(128).fill(-1);
 for (let index = 0; index < BASE64.length; index += 1) DIGITS[BASE64.charCodeAt(index)] = index;
 /** The largest unsigned VLQ value (a signed 32-bit magnitude and its sign bit). */
 const VLQ_MAX = 0xffffffff;
+/** The most base64 digits a value up to `VLQ_MAX` can take (five bits each). */
+const MAX_DIGITS = 7;
 
 /**
  * One decoded segment: a generated column, and for a mapped segment its source index and 0-based
@@ -34,9 +36,10 @@ const VLQ_MAX = 0xffffffff;
 
 /**
  * Decode `mappings` into one array of segments per generated line. Refuses a character outside the
- * base64 alphabet, a truncated or oversized value, an empty segment, a segment of other than 1, 4 or 5
- * fields, a generated column that does not increase along its line, and a negative or out-of-range
- * source, name, line or column.
+ * base64 alphabet, a truncated, oversized or over-long value, an empty segment, a segment of other
+ * than 1, 4 or 5 fields, a generated column that does not increase along its line, a negative line or
+ * column, and an out-of-range source or name index. Upper bounds on positions are the range checks'
+ * (`assertGeneratedRange`, `assertOriginalRange`).
  * @param {string} mappings
  * @param {{sources: number, names: number}} counts the lengths of the map's `sources` and `names`
  * @returns {Segment[][]}
@@ -99,7 +102,7 @@ export function decodeMappings(mappings, { sources, names }) {
     }
     let value = 0;
     let scale = 1;
-    for (;;) {
+    for (let digits = 1; ; digits += 1) {
       if (position >= mappings.length) refuse('MAPPINGS_TRUNCATED');
       const code = mappings.charCodeAt(position);
       const digit = code < 128 ? DIGITS[code] : -1;
@@ -108,6 +111,9 @@ export function decodeMappings(mappings, { sources, names }) {
       value += (digit & 31) * scale;
       if (value > VLQ_MAX) refuse('MAPPINGS_RANGE');
       if ((digit & 32) === 0) break;
+      // A 32-bit value never needs more than seven digits; zero-valued padding beyond them would
+      // otherwise grow the scale to Infinity and the value to NaN, which no comparison refuses.
+      if (digits === MAX_DIGITS) refuse('MAPPINGS_RANGE');
       scale *= 32;
     }
     const magnitude = Math.floor(value / 2);

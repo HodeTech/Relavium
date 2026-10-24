@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { ManifestError } from './manifest.mjs';
 import { finalizedPublicFiles, producerNodeMajor, sealPackage } from './seal.mjs';
 import { ustar } from './ustar-fixture.mjs';
 
@@ -368,7 +369,7 @@ const receiptPath = (artifact) => join(artifact, 'package-test-receipt.json');
 
 /**
  * The seal with recording stand-ins for the private manifest and symbolication, whose own tests
- * (symbolicate.test.mjs) run them for real.
+ * (manifest.test.mjs, symbolicate.test.mjs) run them for real.
  */
 function sealWith(artifact, candidate, calls = []) {
   return sealPackage(artifact, {
@@ -551,6 +552,71 @@ test('a refused manifest or symbolication leaves no receipt, and an unproven arc
       ),
     );
     assert.deepEqual(calls, []);
+  });
+});
+
+test('both steps receive the candidate, the original checkout and the dirty flag as given', async () => {
+  await withCandidate(async ({ root, staging, artifact }) => {
+    const calls = [];
+    const checkout = join(dirname(staging), 'original-checkout');
+    await withOrigin({}, () =>
+      sealPackage(artifact, {
+        repository: root,
+        staging,
+        source: SOURCE,
+        dirty: true,
+        checkout,
+        work: join(dirname(staging), 'work'),
+        ports: {
+          manifest: async (options) => void calls.push(options),
+          symbolicate: async (options) => void calls.push(options),
+        },
+      }),
+    );
+    const [manifest, symbolicate] = calls;
+    assert.deepEqual(
+      [manifest.candidate, manifest.checkout, manifest.dirty],
+      [root, checkout, true],
+    );
+    assert.deepEqual([symbolicate.candidate, symbolicate.checkout], [root, checkout]);
+  });
+});
+
+test('without ports the seal runs the real private manifest and the real symbolication', async () => {
+  // The real manifest refuses this candidate's record, which stages no maps.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealPackage(artifact, {
+          repository: root,
+          staging,
+          source: SOURCE,
+          dirty: false,
+          checkout: root,
+          work: join(dirname(staging), 'work'),
+        }),
+        (error) => error instanceof ManifestError && error.code === 'RECORD',
+      ),
+    );
+    assert.equal(existsSync(receiptPath(artifact)), false);
+  });
+  // The real symbolication reads the manifest that a stand-in never sealed.
+  await withCandidate(async ({ root, staging, artifact }) => {
+    await withOrigin({}, () =>
+      assert.rejects(
+        sealPackage(artifact, {
+          repository: root,
+          staging,
+          source: SOURCE,
+          dirty: false,
+          checkout: root,
+          work: join(dirname(staging), 'work'),
+          ports: { manifest: async () => {} },
+        }),
+        (error) => error instanceof ManifestError && error.code === 'UNREADABLE',
+      ),
+    );
+    assert.equal(existsSync(receiptPath(artifact)), false);
   });
 });
 

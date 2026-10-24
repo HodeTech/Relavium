@@ -779,6 +779,132 @@ test('refuses mappings that are malformed or point outside their texts, upstream
   }
 });
 
+/** Encode absolute segments ([column] or [column, source, line, column, name?]) per generated line. */
+function encode(lines) {
+  let source = 0;
+  let line = 0;
+  let column = 0;
+  let name = 0;
+  return lines
+    .map((segments) => {
+      let generated = 0;
+      return segments
+        .map((segment) => {
+          let out = vlq(segment[0] - generated);
+          generated = segment[0];
+          if (segment.length >= 4) {
+            out += vlq(segment[1] - source) + vlq(segment[2] - line) + vlq(segment[3] - column);
+            [source, line, column] = [segment[1], segment[2], segment[3]];
+          }
+          if (segment.length === 5) {
+            out += vlq(segment[4] - name);
+            name = segment[4];
+          }
+          return out;
+        })
+        .join(',');
+    })
+    .join(';');
+}
+
+test('refuses a name past the names, NaN padding and positions one past their texts', async () => {
+  const upstreamMap = (candidate) => join(candidate.core, 'dist', 'index.js.map');
+  const finalMap = (candidate) => join(candidate.dist, 'index.js.map');
+  // A name index one past the names: upstream, which records none, and final.
+  const unnamed = await fixture();
+  editJson(upstreamMap(unnamed), (map) => {
+    assert.deepEqual(map.names, []);
+    map.mappings = 'AAAAA';
+  });
+  assert.equal(refusal(unnamed).code, 'UPSTREAM_MAP_MAPPINGS');
+  const named = await fixture();
+  let names = 0;
+  editJson(finalMap(named), (map) => {
+    names = map.names.length;
+    map.mappings = `AAAA${vlq(names)}`;
+  });
+  assert.ok(names > 0);
+  refusesBeforeWriting(named, 'MAP_MAPPINGS');
+  // Zero-payload padding that would decode NaN: an upstream name index, and a final generated
+  // column followed by a segment far past its line, which a NaN column would hide.
+  const padding = `${'g'.repeat(205)}A`;
+  const paddedUpstream = await fixture();
+  editJson(upstreamMap(paddedUpstream), (map) => (map.mappings = `AAAA${padding}`));
+  assert.equal(refusal(paddedUpstream).code, 'UPSTREAM_MAP_MAPPINGS');
+  const paddedFinal = await fixture();
+  editJson(finalMap(paddedFinal), (map) => (map.mappings = `${padding}AAA,${vlq(100000)}`));
+  refusesBeforeWriting(paddedFinal, 'MAP_MAPPINGS');
+  // The final text is measured without the stripped trailer: the finalized index.js ends with a
+  // newline, so column 1 of its empty last line is past it.
+  const trailer = await fixture();
+  editJson(finalMap(trailer), (map) => {
+    const code = trailer.emitted['index.js'];
+    assert.ok(code.endsWith('\n'));
+    map.mappings += `${';'.repeat(code.split('\n').length - map.mappings.split(';').length)}C`;
+  });
+  refusesBeforeWriting(trailer, 'MAP_RANGE');
+  // A segment one line past the generated text, final and upstream.
+  const pastFinal = await fixture();
+  editJson(finalMap(pastFinal), (map) => {
+    const lines = pastFinal.emitted['index.js'].split('\n').length;
+    map.mappings += `${';'.repeat(lines - map.mappings.split(';').length + 1)}A`;
+  });
+  refusesBeforeWriting(pastFinal, 'MAP_RANGE');
+  const pastUpstream = await fixture();
+  const js = readFileSync(join(pastUpstream.core, 'dist', 'index.js'), 'utf8');
+  editJson(upstreamMap(pastUpstream), (map) => {
+    map.mappings += `${';'.repeat(js.split('\n').length - map.mappings.split(';').length + 1)}A`;
+  });
+  assert.equal(refusal(pastUpstream).code, 'UPSTREAM_MAP_RANGE');
+  // An original line one past its source, and a column one past its line's end.
+  const source = readFileSync(join(pastUpstream.core, 'src', 'index.ts'), 'utf8').split('\n');
+  for (const mappings of [`AA${vlq(source.length)}A`, `AAA${vlq(source[0].length + 1)}`]) {
+    const candidate = await fixture();
+    editJson(upstreamMap(candidate), (map) => (map.mappings = mappings));
+    assert.equal(refusal(candidate).code, 'UPSTREAM_MAP_RANGE', mappings);
+  }
+});
+
+test('checks each original position against its own source, upstream and final', async () => {
+  // The .tsx fixture bundles index.ts and the one-line view.tsx into index.js: two sources.
+  const invalid = await fixture({ tsx: true });
+  let view = -1;
+  editJson(join(invalid.dist, 'index.js.map'), (map) => {
+    assert.equal(map.sources.length, 2);
+    view = map.sources.findIndex((source) => source.endsWith('view.tsx'));
+    // Line 5 exists in index.ts but not in view.tsx.
+    map.mappings = encode([[], [[0, view, 5, 0]]]);
+  });
+  assert.ok(view >= 0);
+  refusesBeforeWriting(invalid, 'MAP_RANGE');
+  // The last line of index.ts and the caret end of view.tsx's only line are inside their own source.
+  const valid = await fixture({ tsx: true });
+  editJson(join(valid.dist, 'index.js.map'), (map) => {
+    const index = map.sources.findIndex((source) => source.endsWith('index.ts'));
+    const indexLines = readFileSync(join(valid.cli, 'src', 'index.ts'), 'utf8').split('\n');
+    const viewLines = readFileSync(join(valid.cli, 'src', 'view.tsx'), 'utf8').split('\n');
+    assert.ok(indexLines.length > viewLines.length + 2);
+    map.mappings = encode([
+      [],
+      [
+        [0, index, indexLines.length - 2, indexLines[indexLines.length - 2].length],
+        [1, 1 - index, 0, viewLines[0].length],
+      ],
+    ]);
+  });
+  finalizeCandidate({ repository: valid.root, staging: valid.staging });
+  // An upstream map with two sources: column 25 of the first line is inside index.ts, not types.ts.
+  const upstream = await fixture();
+  const types = readFileSync(join(upstream.core, 'src', 'types.ts'), 'utf8').split('\n');
+  const index = readFileSync(join(upstream.core, 'src', 'index.ts'), 'utf8').split('\n');
+  assert.ok(types[0].length < 25 && index[0].length >= 25);
+  editJson(join(upstream.core, 'dist', 'index.js.map'), (map) => {
+    map.sources = ['../src/index.ts', '../src/types.ts'];
+    map.mappings = encode([[[0, 1, 0, 25]]]);
+  });
+  assert.equal(refusal(upstream).code, 'UPSTREAM_MAP_RANGE');
+});
+
 test('admits original .tsx CLI sources', async () => {
   const candidate = await fixture({ tsx: true });
   finalizeCandidate({ repository: candidate.root, staging: candidate.staging });

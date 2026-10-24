@@ -138,7 +138,7 @@ The [deferred register](deferred-tasks.md) retains its existing limits; closure 
 
 **Wave 3 Steps 1–8 merged to `main` on 2026-10-18 as [PR #95](https://github.com/HodeTech/Relavium/pull/95),
 merge commit `6d2a7372` (22:44 UTC). Wave 3 itself is not complete: Steps 9–19 had not started at
-that merge (Step 9a.1 is now accepted on `development`; Steps 9a.2–19 have not started) and whole-wave acceptance
+that merge (Step 9a.1 is now accepted on `development` and Step 9a.2a is implemented and under review; Steps 9a.2b–19 have not started) and whole-wave acceptance
 remains Step 19.** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
 joins the completed scope, every review attribution, the independent review's dispositions and the
 publication state observed at merge. It was the maintainer-authorized, scoped publication checkpoint.

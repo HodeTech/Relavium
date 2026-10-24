@@ -232,11 +232,44 @@ test('refuses every malformed mapping with its own code', () => {
     assert.throws(() => decodeMappings(mappings, counts), refuses(code), mappings);
   }
   assert.throws(() => decodeMappings(undefined, COUNTS), refuses('MAPPINGS_TYPE'));
+  assert.throws(() => decodeMappings('!', COUNTS), {
+    name: 'SourceMapError',
+    code: 'MAPPINGS_CHARACTER',
+    message: 'source map refused: MAPPINGS_CHARACTER',
+  });
   // A refusal never quotes the mappings it read.
   assert.throws(
     () => decodeMappings('secretAAAA!', COUNTS),
     (error) => !error.message.includes('secret'),
   );
+});
+
+test('bounds every value at exactly 0xffffffff in at most seven digits, and only base64 decodes', () => {
+  // The largest admitted value, 0xffffffff, is an original-line delta of -(2^31 - 1).
+  const back = `AA${vlq(2 ** 31 - 1)}A,CA${vlq(-(2 ** 31 - 1))}A`;
+  assert.equal(decodeMappings(back, COUNTS)[0][1].originalLine, 0);
+  // Seven digits decode; zero-payload padding past them refuses rather than growing the scale to
+  // Infinity, which would decode NaN and pass every later comparison.
+  assert.equal(decodeMappings(`${'g'.repeat(6)}A`, COUNTS)[0][0].generatedColumn, 0);
+  for (const [label, mappings, counts = COUNTS] of [
+    ['one past the bound', vlq(2 ** 31)],
+    ['eight digits', `${'g'.repeat(7)}A`],
+    ['seven full digits and more', `${'/'.repeat(7)}${'g'.repeat(198)}A`],
+    ['a padded generated column', `${'g'.repeat(205)}A`],
+    ['a padded original column', `AAA${'g'.repeat(205)}A`],
+    ['a padded name index', `AAAA${'g'.repeat(205)}A`, { sources: 1, names: 0 }],
+  ]) {
+    assert.throws(() => decodeMappings(mappings, counts), refuses('MAPPINGS_RANGE'), label);
+  }
+  // DEL and the first non-ASCII code unit are no digits.
+  for (const code of [0x7f, 0x80]) {
+    assert.throws(
+      () => decodeMappings(String.fromCharCode(code), COUNTS),
+      refuses('MAPPINGS_CHARACTER'),
+    );
+  }
+  // A column behind the previous segment refuses even when it is ahead of the line's first.
+  assert.throws(() => decodeMappings('A,K,F', COUNTS), refuses('MAPPINGS_ORDER'));
 });
 
 test('finds only the segment that starts exactly at a position', () => {
@@ -256,11 +289,17 @@ test('finds only the segment that starts exactly at a position', () => {
   ]) {
     assert.equal(segmentAt(lines, line, column), undefined, `${line}:${column}`);
   }
+  // A line's only segment is found exactly.
+  assert.equal(segmentAt(decodeMappings('A;;GAAA', COUNTS), 2, 3).generatedColumn, 3);
 });
 
 test('counts lines and UTF-16 columns as V8 and TypeScript do', () => {
   assert.deepEqual(lineLengths('ab\ncd\r\nefg\rh 😀 '), [2, 2, 3, 1, 2, 0]);
   assert.deepEqual(lineLengths(''), [0]);
+  // U+2028 and U+2029 end a line; NEL (U+0085) does not.
+  const [nel, ls, ps] = [0x85, 0x2028, 0x2029].map((code) => String.fromCharCode(code));
+  assert.deepEqual(lineLengths(`a${ls}b${ps}c`), [1, 1, 1]);
+  assert.deepEqual(lineLengths(`a${nel}b`), [3]);
 });
 
 test('requires generated and original positions inside their texts', () => {
@@ -276,4 +315,15 @@ test('requires generated and original positions inside their texts', () => {
   assert.throws(() => assertOriginalRange(lines, [[], []]), refuses('ORIGINAL_RANGE'));
   // Unmapped segments name no source and pass.
   assertOriginalRange(decodeMappings('A,C', COUNTS), []);
+  // Each original position is checked against its own source's lines, and a source with none
+  // refuses.
+  assertOriginalRange(decodeMappings('ACAA,CAAE', COUNTS), [[], [2]]);
+  assert.throws(
+    () => assertOriginalRange(decodeMappings('ACAE', COUNTS), [[5], [1]]),
+    refuses('ORIGINAL_RANGE'),
+  );
+  assert.throws(
+    () => assertOriginalRange(decodeMappings('AAAA', COUNTS), []),
+    refuses('ORIGINAL_RANGE'),
+  );
 });

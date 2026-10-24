@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Steps 9a.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is implemented and under review with its recorded low findings below, Steps 9a.2b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -666,6 +666,32 @@ Observed in 9a.1's push CI and its preflight for 9a.2 (2026-10-24):
   nothing under `--verbose`; `render-error.test.ts` constructs a data `stack`, so the tests pass. Step 10a
   replaces this raw-stack branch (row 10a). **Re-check:** the replacement prints a real error's frames, tested
   with a thrown `Error` rather than a constructed property. *(low · apps/cli/src/process/render-user-facing.ts)*
+
+## Wave 3 Step 9a.2a — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.2a at `1ab4c134`, run before its first review round under the
+[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
+corrected both high findings, every medium one and every low or nit it could close inside the increment
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2a-implementation-checkpoint--2026-10-24)).
+These are recorded instead. **Trigger for every entry:** the next change to the file it names, or a real run
+that shows the shape.
+
+- [ ] **The symbolication child is not sandboxed.** *Low; a named limit.* *(rigor pass, SEC-9A2A-2)*
+  `captureFrames` runs the candidate CLI's runtime import closure — packages that before 9a.2a ran only in the
+  consumer jobs — as the producer's user, with network access, in the job whose sibling `staging` directory
+  holds the private maps and manifest. Its isolated environment, owner-only work directory and the refused
+  keyring and native addons confine it; nothing enforces that `relavium import` stays offline. packaging.md
+  names the limit. **Re-check:** when Step 9b designs the custody job, run the capture child under an OS
+  sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
+- [ ] **Two packs of one source can differ in the packed manifest's key order.** *Low, for Step 9c.* *(rigor
+  pass, integration lens)* Two productions of the same tree packed the five `@relavium/*` `devDependencies`,
+  which pnpm rewrites from `workspace:*` to versions at pack time, in different orders (`core, llm, shared,
+  mcp, db` and `core, db, shared, llm, mcp`; the source order is alphabetical). Every other tarball entry was
+  byte-equal and the sorted contents agree, but the two tarballs' SHA-256 differ (`84065f84…` and
+  `d0f5b8da…`). The package-test receipt binds the one tarball it inspected, so nothing is wrong today; a
+  release candidate simply cannot be rebuilt to the same digest. **Re-check:** in Step 9c's no-rebuild rules,
+  never compare a rebuilt digest, or make the published manifest's key order deterministic, with a test that
+  packs twice and compares the digests. *(low · tools/cli-package/prepack.mjs and pnpm's pack step)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

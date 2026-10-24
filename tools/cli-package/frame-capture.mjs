@@ -5,7 +5,8 @@
  * instance the CLI's import and require both reach — and records V8's structured call sites for the
  * canary document alone, so one synchronous stack crosses the CLI and the inlined `@relavium/core`. It
  * writes one owner-only record when the process exits; the producer refuses unless exactly one stack
- * was captured. The keyring binding is replaced by a refusing module (frame-capture-hooks.mjs).
+ * was captured. The keyring binding is replaced by a refusing module (frame-capture-hooks.mjs) and
+ * any native module load refuses.
  */
 import { closeSync, openSync, writeSync } from 'node:fs';
 import { createRequire, register } from 'node:module';
@@ -16,6 +17,11 @@ const canary = process.env.RELAVIUM_FRAME_CAPTURE_CANARY;
 if (!log || !manifest || !canary) throw new Error('The symbolication preload is not configured');
 
 register(new URL('./frame-capture-hooks.mjs', import.meta.url));
+// The import route needs no native module; any addon load refuses instead of running native code
+// beside the private staging.
+process.dlopen = () => {
+  throw new Error('The symbolication run refuses native modules');
+};
 
 /** @type {{file: string | null, line: number | null, column: number | null, async: boolean}[][]} */
 const captures = [];

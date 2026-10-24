@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   closeSync,
@@ -24,6 +26,7 @@ import {
   assertNoBuildCache,
   candidateFiles,
   copyCandidateTree,
+  copyMatchesCommit,
   dependencyStore,
   globalExcludesFile,
   installCandidateDependencies,
@@ -806,6 +809,10 @@ test('a candidate build leaves no build cache behind', () => {
 });
 
 /** A source repository plus fake git and pnpm ports; the fake install creates the workspace links. */
+/** Git's blob object id for raw bytes. */
+const blobId = (bytes) =>
+  createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+
 function preparation({
   status = '',
   statusAfterCopy = status,
@@ -814,6 +821,7 @@ function preparation({
   uncheckedAfterCopy = unchecked,
   excludes,
   misLink,
+  convertedPath,
 } = {}) {
   const repository = fresh('source');
   write(join(repository, 'package.json'), '{}\n');
@@ -833,7 +841,7 @@ function preparation({
   let flags = 0;
   // With an excludes file, the listing and both status calls answer only when they carry it.
   const prefix = READ(excludes);
-  const run = async (command, args) => {
+  const run = async (command, args, options) => {
     const key = args.join(' ');
     events.push(`git ${key}`);
     if (key === '--no-replace-objects rev-parse HEAD') {
@@ -850,6 +858,22 @@ function preparation({
     if (key === 'ls-files -v -z') {
       flags += 1;
       return { stdout: `H package.json\0${flags === 1 ? unchecked : uncheckedAfterCopy}` };
+    }
+    // The commit's tree: each file's blob id, except `convertedPath`, whose committed blob differs
+    // from the working-tree bytes (as line-ending conversion leaves it while status stays clean).
+    if (key === `--no-replace-objects ls-tree -r -z --full-tree ${SHA}`) {
+      // Asked of the original checkout, through Git without home, global or system configuration.
+      assert.equal(options.cwd, repository);
+      assert.deepEqual(options.env, isolatedGitEnvironment());
+      return {
+        stdout: files
+          .map((path) => {
+            const bytes = readFileSync(join(repository, ...path.split('/')));
+            const committed = path === convertedPath ? Buffer.from('{}\r\n') : bytes;
+            return `100644 blob ${blobId(committed)}\t${path}`;
+          })
+          .join('\0'),
+      };
     }
     throw new Error(`unexpected git ${key}`);
   };
@@ -912,6 +936,7 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
     'git --no-replace-objects rev-parse HEAD',
     `git ${READ()}status --porcelain=v1 -z --untracked-files=all`,
     'git ls-files -v -z',
+    `git --no-replace-objects ls-tree -r -z --full-tree ${SHA}`,
     'pnpm store path',
     `pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir ${ports.store}`,
   ]);
@@ -919,6 +944,75 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
     readFileSync(join(ports.candidate, 'package.json')).equals(
       readFileSync(join(ports.repository, 'package.json')),
     ),
+  );
+});
+
+test('a copy that differs from the commit is dirty even when status reports the tree clean', async () => {
+  // Whichever copied file differs.
+  for (const convertedPath of [
+    'package.json',
+    ...['shared', 'llm', 'core', 'db', 'mcp'].map((name) => `packages/${name}/package.json`),
+  ]) {
+    const ports = preparation({ convertedPath });
+    const identity = await prepareCandidate({
+      repository: ports.repository,
+      candidate: ports.candidate,
+      environment: {},
+      home: ports.home,
+      env: {},
+      run: ports.run,
+      pnpm: ports.pnpm,
+    });
+    assert.deepEqual(identity, { source: SHA, dirty: true, files: 6 }, convertedPath);
+  }
+  // An identity that status already calls dirty is not checked again.
+  const dirty = preparation({ status: ' M package.json\0', statusAfterCopy: ' M package.json\0' });
+  await prepareCandidate({
+    repository: dirty.repository,
+    candidate: dirty.candidate,
+    environment: {},
+    home: dirty.home,
+    env: {},
+    run: dirty.run,
+    pnpm: dirty.pnpm,
+  });
+  assert.equal(
+    dirty.events.some((event) => event.includes('ls-tree')),
+    false,
+  );
+});
+
+test('a checkout whose line endings Git converts copies bytes that are not the commit', async () => {
+  const { repository, inRepository } = await committedRepository('converted-line-endings');
+  // core.autocrlf in the checkout's own configuration, which Git reading the checkout honours:
+  // the file is checked out with CRLF while its blob keeps LF, and status stays clean.
+  await inRepository(['config', 'core.autocrlf', 'true']);
+  rmSync(join(repository, 'kept.ts'));
+  await inRepository(['checkout', '--', 'kept.ts']);
+  assert.equal(readFileSync(join(repository, 'kept.ts'), 'utf8'), 'export {};\r\n');
+  const identity = await sourceIdentity(repository);
+  assert.equal(identity.dirty, false);
+  const candidate = fresh('converted-copy');
+  copyCandidateTree({ repository, destination: candidate, files: ['kept.ts'] });
+  assert.equal(
+    await copyMatchesCommit({ repository, candidate, source: identity.source, files: ['kept.ts'] }),
+    false,
+  );
+  // The committed bytes match; a file the commit does not hold does not.
+  writeFileSync(join(candidate, 'kept.ts'), 'export {};\n');
+  assert.equal(
+    await copyMatchesCommit({ repository, candidate, source: identity.source, files: ['kept.ts'] }),
+    true,
+  );
+  write(join(candidate, 'extra.ts'), 'export {};\n');
+  assert.equal(
+    await copyMatchesCommit({
+      repository,
+      candidate,
+      source: identity.source,
+      files: ['kept.ts', 'extra.ts'],
+    }),
+    false,
   );
 });
 

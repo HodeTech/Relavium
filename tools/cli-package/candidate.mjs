@@ -7,6 +7,7 @@
  * output, and no build cache is read or written.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -316,6 +317,40 @@ export async function dependencyStore({ repository, environment, home, pnpm = ru
 }
 
 /**
+ * Whether every copied file is byte for byte the commit's blob. A clean status does not prove it:
+ * line-ending conversion (`core.autocrlf`, the Git for Windows default) and Git's stat cache can report
+ * converted working-tree bytes as unchanged, and the candidate is built from those bytes. Each copy's
+ * Git blob id (SHA-1 of the blob header and its raw bytes, no filter) must equal the commit tree's
+ * entry for its path.
+ * @param {{repository: string, candidate: string, source: string, files: readonly string[],
+ *   run?: typeof runCommand}} options
+ */
+export async function copyMatchesCommit({
+  repository,
+  candidate,
+  source,
+  files,
+  run = runCommand,
+}) {
+  const listing = (
+    await run('git', ['--no-replace-objects', 'ls-tree', '-r', '-z', '--full-tree', source], {
+      cwd: repository,
+      env: isolatedGitEnvironment(),
+    })
+  ).stdout;
+  const blobs = new Map();
+  for (const entry of gitPaths(listing)) {
+    const match = /^[0-7]{6} blob ([0-9a-f]{40})\t(.+)$/su.exec(entry);
+    if (match !== null) blobs.set(match[2], match[1]);
+  }
+  return files.every((path) => {
+    const bytes = readOrdinaryFile(join(candidate, ...path.split('/')), CANDIDATE_LIMITS.fileBytes);
+    const id = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    return blobs.get(path) === id;
+  });
+}
+
+/**
  * Install the locked closure into the candidate from the store: offline, frozen and without any
  * lifecycle script, because building or packing the CLI never loads a native module.
  * @param {{candidate: string, store: string, env: Record<string, string>, pnpm: typeof runPnpm}} options
@@ -405,11 +440,8 @@ export async function prepareCandidate({
   pnpm = runPnpm,
 }) {
   const identity = await sourceIdentity(repository, run, excludes);
-  const copied = copyCandidateTree({
-    repository,
-    destination: candidate,
-    files: await candidateFiles(repository, run, excludes),
-  });
+  const files = await candidateFiles(repository, run, excludes);
+  const copied = copyCandidateTree({ repository, destination: candidate, files });
   const after = await sourceIdentity(repository, run, excludes);
   assert.ok(
     after.source === identity.source &&
@@ -417,8 +449,12 @@ export async function prepareCandidate({
       isDeepStrictEqual(after.unchecked, identity.unchecked),
     'PACKED_CLI_SOURCE_CHANGED_DURING_COPY',
   );
+  // A clean status is confirmed byte for byte: the candidate is built from the copied bytes.
+  const dirty =
+    identity.dirty ||
+    !(await copyMatchesCommit({ repository, candidate, source: identity.source, files, run }));
   const store = await dependencyStore({ repository, environment, home, pnpm });
   await installCandidateDependencies({ candidate, store, env, pnpm });
   verifyCandidateLinks(candidate);
-  return { source: identity.source, dirty: identity.dirty, files: copied.files };
+  return { source: identity.source, dirty, files: copied.files };
 }

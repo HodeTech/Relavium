@@ -243,7 +243,12 @@ describes the implemented mechanism; independent acceptance is recorded in the
   the developer's global excludes file, as the developer's own Git finds it (also through
   command-scope `GIT_CONFIG_*` configuration) and passed explicitly; that Git reads no home,
   global or system configuration or attributes and ignores replace refs) into a fresh
-  owner-only tree, and refuses if any of the three changed during the copy. A link, as a listed file or as any parent directory of one
+  owner-only tree, and refuses if any of the three changed during the copy. A clean status is
+  then confirmed byte for byte (Step 9a.2a): each copied file's Git blob id — the hash of its raw
+  bytes, no filter — must equal the commit tree's entry, because line-ending conversion
+  (`core.autocrlf`, the Git for Windows default) and Git's stat cache can report converted bytes as
+  unchanged; a copy that differs makes the identity `dirty`, so the build is symbolicated against
+  the bytes it was built from and a trusted origin refuses it. A link, as a listed file or as any parent directory of one
   below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
   cannot bring in bytes from outside the checkout; so does an untracked nested repository,
   which Git lists only as its directory. Every build and install pnpm call runs in the
@@ -355,30 +360,43 @@ producer. The receipt stays `compiled_package_test` until 9a.2b's product map co
 - **Private manifest.** After the archive inspection the seal writes `manifest.json` into private
   staging (owner-only, never overwritten): version 1; the source commit, the commit's Git tree and
   the `dirty` flag; the package version; the build target; Node, pnpm, TypeScript, tsup and esbuild
-  versions from the installed tools; SHA-256 digests of the lockfile and every manifest and build
-  configuration; every final JS file keyed as `dist/<chunk>.js` with its SHA-256 and its staged map's
-  path and SHA-256; a SHA-256 for every original source a final map names (repository-relative, no
+  versions from the installed tools; SHA-256 digests of the lockfile, every package manifest and
+  every build configuration with the configurations it extends; every final JS file keyed as `dist/<chunk>.js` with its SHA-256, its map's
+  package-relative path (`dist/<chunk>.js.map`) and the staged map's SHA-256; a SHA-256 for every original source a final map names (repository-relative, no
   content); and the tarball's SHA-256. The staged maps must still be the bytes the finalizer recorded
   and each JS digest must be the tarball entry's. It holds no host path, credential or source text
   and is removed with the staging.
 - **Actual frames.** The seal then runs the finalized `dist` — which the inspection has proven
   byte-equal to the tarball entry by entry — under a tooling-only `node --import` preload while it
-  imports a canary workflow (`relavium import`, offline, with its home, project and captured frames
-  in an owner-only directory of the private root). The preload wraps the external `yaml` package's
-  `parse`, records V8's structured call sites for the canary document alone, restores the stack
-  formatter and limit, and replaces the keyring binding with a refusing module, so no native module
-  loads and no secret is read. Exactly one captured stack is required.
+  imports a canary workflow (`relavium import`, with its home, project and captured frames in an
+  owner-only directory of the private root). The project's own `.relavium/` exists before the run,
+  so the CLI's upward search for a project stops there and never adopts an ancestor's — a
+  developer's real project on Windows, where the temporary directory lies below the home — and the
+  run must have imported the canary into it (`CAPTURE_PROJECT`). The preload wraps the external
+  `yaml` package's `parse`, records V8's structured call sites for the canary document alone,
+  restores the stack formatter and limit, replaces the keyring package with a module that refuses
+  every use, and makes any native addon load refuse, so the run loads no native module and reads no
+  secret. Exactly one captured stack is required.
 - **Symbolication.** Each frame inside the finalized `dist` must be a file the manifest and the
-  tarball record (re-hashed at capture), its map must be the staged bytes the manifest records, and
-  only a frame that lands exactly on a mapping segment counts. Five named call sites must be reached
-  — three in the CLI and two in the inlined `@relavium/core`, each the one call to a named function
-  inside another — at the line and UTF-16 column that the matching source revision's syntax tree
-  gives: the checkout's Git objects at the recorded commit, read by Git without configuration,
-  filters or replace refs, for a clean candidate, and the candidate copy for a dirty local one, both
-  bound to the manifest's per-source digests. Wrong JS, a wrong map, permuted map sources and a wrong
-  source revision therefore cannot reach the anchors. A refusal prints one fixed code
+  tarball record (re-hashed after the run), its map must be the staged bytes the manifest records,
+  and only a frame that lands exactly on a mapping segment counts. Five named call sites must be
+  reached — three in the CLI and two in the inlined `@relavium/core`, each the one call to a named
+  function inside another, and the table itself refuses fewer than two core or three CLI call sites
+  — at the line and UTF-16 column that the matching source revision's syntax tree gives: for a
+  clean candidate the checkout's Git objects at the recorded commit, read as the raw blob (no filter
+  or text conversion) by Git without home, global or system configuration and without replace refs
+  (the checkout's own configuration is still read), and for a dirty local one the candidate copy,
+  both bound to the manifest's per-source digests. Wrong JS, a wrong map, permuted map sources and a
+  wrong source revision therefore cannot reach the anchors. A refusal prints one fixed code
   (`PACKED_CLI_MANIFEST_*`, `PACKED_CLI_SYMBOLICATION_*`) and never a frame, path or source text, and
   no receipt is written.
+
+The capture child is not sandboxed: it runs the candidate CLI's runtime import closure as the
+producer's user, with network access, beside the private staging, confined only by its isolated
+environment, its owner-only work directory and the refused keyring and native modules. `relavium
+import` makes no network request, but nothing enforces that. This is a named limit of the
+package-test producer, owned by
+[deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).
 
 ## Recipient custody
 

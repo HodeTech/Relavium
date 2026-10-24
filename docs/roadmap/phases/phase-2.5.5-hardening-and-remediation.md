@@ -9698,6 +9698,29 @@ test oracle, and the receipt stays `compiled_package_test`. On the real product 
 oracle at all 245,806 final-map and 330,759 upstream-map segment starts, every position lies inside its text, and
 the real producer seals a 25-output, 404-source manifest and reaches all five anchors in about a second.
 
-**Remaining gates.** The internal rigor pass (whole-increment mutation sweep, claims, platform and security
-lenses), the full `pnpm run ci`, then one NEW complete cumulative round with no blocker, high or medium finding
-and no regression, together with the separate scoped security sitting at the same head and bar.
+**Internal rigor pass, 2026-10-24.** Under the maintainer's rigor-before-review rule, a read-only pass covered
+the whole increment at `1ab4c134` before its first round: claims, platform, security, integration and critic
+lenses and three mutation sweeps (the decoder and finalizer, the manifest, seal and producer, and symbolication and
+the preload); the detailed record is local. It reported two high findings. On a clean checkout with converted
+line endings (`core.autocrlf`, the Git for Windows default) Git status stays clean while the copy holds CRLF bytes,
+so every clean production refused `SOURCE_REVISION`: candidate preparation now confirms a clean status byte for
+byte, comparing each copy's Git blob id with the commit tree's entry, and records a differing copy as `dirty`. And
+`relavium import --cwd` walks up for a project, so an ancestor `.relavium/` of the temporary directory (a
+developer's real project on Windows) could receive the canary: the capture now creates the project's own
+`.relavium/` first and refuses `CAPTURE_PROJECT` unless the canary landed there. Medium findings corrected: the
+manifest inputs missed the configurations the engine build configurations extend; the two-core, three-CLI anchor
+ruling was enforced by nothing; zero-payload VLQ padding decoded as NaN, which passed every comparison, so an eighth
+digit now refuses; and many claimed guarantees had no killing test (a new `manifest.test.mjs`, a rewritten
+`symbolicate.test.mjs` on a shared test-only fixture whose CLI walks up for its project like the real one, and
+extended decoder, finalizer, seal and candidate tests). Lows corrected include a native-addon refusal in the
+preload beside the keyring stand-in, which now exports every export the package declares, owners without a body
+no longer counted as anchor owners, and the Git, re-hash, README and status wording. Two lows are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24): the capture child is not
+sandboxed (also a named limit in the contract), and two packs of one source can order the packed manifest's
+`@relavium/*` dependencies differently, so their digests differ (for Step 9c). All 554 mutants of the three sweeps
+and of the corrections were then run against the corrected tests: 509 are killed, 4 targeted code the pass
+changed and are replaced by new mutants, and the 41 survivors are equivalent or defensive (unreachable defaults,
+caches, a redundant clause, parser options, constants and the binary search's arithmetic).
+
+**Remaining gates.** The full `pnpm run ci`, then one NEW complete cumulative round with no blocker, high or medium
+finding and no regression, together with the separate scoped security sitting at the same head and bar.

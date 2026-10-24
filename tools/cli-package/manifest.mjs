@@ -16,7 +16,10 @@ import { isolatedGitEnvironment, runCommand } from './process.mjs';
 
 export const MANIFEST_FILE = 'manifest.json';
 
-/** The candidate files whose bytes decide the build: the lock and every manifest and build configuration. */
+/**
+ * The candidate files whose bytes decide the build: the lock, every package manifest, and every build
+ * configuration with the configurations it extends.
+ */
 export const MANIFEST_INPUTS = Object.freeze([
   '.npmrc',
   'package.json',
@@ -28,8 +31,10 @@ export const MANIFEST_INPUTS = Object.freeze([
   'apps/cli/tsup.config.ts',
   ...ENGINE_PACKAGES.flatMap((name) => [
     `packages/${name}/package.json`,
+    `packages/${name}/tsconfig.json`,
     `packages/${name}/tsconfig.build.json`,
   ]),
+  'packages/core/tsconfig.purity.json',
 ]);
 
 const SHA256 = /^[0-9a-f]{64}$/u;

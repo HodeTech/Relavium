@@ -130,7 +130,7 @@ throughout the registers describe their original checkpoints.
 CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
 and existing exact-capacity/scoped residuals retain their approved limits in
 [deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
-credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
+credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2-merged--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
 next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground).
 Phase 2.5.5 and Phase 2.6 remain in progress.
 
@@ -206,7 +206,7 @@ explicit; source CI does not certify later documentation commits. The
 joins exact evidence and historical corrections. Steps 1–8 are accepted;
 **Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
 itself is NOT complete: Steps 9–19 had not started at that merge (Step 9a.1, the first, is now
-accepted on `development`, below; Steps 9a.2–19 have not started) and whole-wave acceptance remains Step 19.
+accepted on `development`, below; Step 9a.2a is implemented and under review; Steps 9a.2b–19 have not started) and whole-wave acceptance remains Step 19.
 The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
 records what merged and its review attributions. The final head `a3e164b5` (corrections from a
 further independent review, including a secret-scrubbing rule) merged with author verification
