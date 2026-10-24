@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is implemented and under review, Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI (its approved entry below) and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -733,9 +733,11 @@ for the two release entries.
   every test; the real runner shows the placement, but nothing asserts it. **Re-check:** a test that runs the
   runner's composition with recording ports (as `produce.test.mjs` does) and asserts every `scratch` path lies
   under the staging and the temporary root is gone afterwards. *(low · tools/cli-package/map-controls-core.mjs)*
-- [ ] **An interrupted runner leaves its own empty temporary directory.** *Low.* *(rigor pass, PLAT-9A2B-6 =
-  SEC-9a2b-5 = INT-2)* The producer's interrupt handler empties the artifact directory and exits, so
-  `runMapControls`' `finally` never removes `relavium-map-controls-*/artifact`; it holds nothing private.
+- [ ] **An interrupted runner can leave its own temporary directory.** *Low.* *(rigor pass, PLAT-9A2B-6 =
+  SEC-9a2b-5 = INT-2; round 2, CRIT-9A2B-R2-1)* The producer's interrupt handler empties the artifact directory and
+  exits, so `runMapControls`' `finally` never removes `relavium-map-controls-*/artifact`; and an interrupt after
+  `producePackage` returned, during the final identity check, leaves the baseline public tarball and its
+  `package_test` receipt in it. Nothing private.
   **Re-check:** remove the runner's root from the interrupt path too (for example with `exitOnInterrupt` around
   the run), with an interrupt test. *(low · tools/cli-package/map-controls-core.mjs)*
 - [ ] **The runner's own self-check refusals have no test.** *Low.* *(rigor pass, CRIT-9A2B-2)*
@@ -754,6 +756,27 @@ for the two release entries.
   it; the store holds only content-addressed public registry packages, which packaging.md permits, so no map
   can enter it. **Re-check:** when Step 9d rebuilds the release graph, drop the cache or record why the release
   pack keeps it. *(low · .github/workflows/release.yml)*
+
+Round 2, the acceptance round at `0f73c253` (no blocker, high or medium finding and no regression; the plan and
+correctness lenses clean, the security sitting one low), reported seven verified findings. The plan's increment
+count, the freshness line and the interrupted-runner wording are corrected in the acceptance commit, which changes
+no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending the entry above); these are recorded.
+
+- [ ] **The workflow-level environment of the map-controls job is not pinned.** *Low.* *(round 2, SEC-9A2B-R2-1 =
+  TCA-9A2B-R2-3)* `checkMapControls` pins the job's own `env` but not ci.yml's top-level `env`, which every job
+  inherits, nor a job `container` or `services` key; a workflow-wide `NODE_OPTIONS` preload or a secret would reach
+  the controls step with every pin passing. **Re-check:** pin `Object.keys(workflow.env)` to the two Turbo keys the
+  job overrides, assert `job.container` and `job.services` are undefined, and add the negative cases.
+  *(low · tools/ci/require-packed-cli.test.mjs)*
+- [ ] **A narrowed set of anchor-bearing chunks goes unnoticed.** *Low.* *(round 2, TCA-9A2B-R2-1)* The verdict
+  derives the per-chunk ids from the runner's own chunk count, required only to be at least one, so a regression
+  that drops a chunk (for example `.slice(0, 1)` on the derivation) leaves the runner green with 21 controls.
+  **Re-check:** derive the expected count independently — every ANCHORS source covered by at least one controlled
+  chunk — or test the composition with recording ports. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **Removing a refused control build's `dist` has no test.** *Low.* *(round 2, TCA-9A2B-R2-2)* Deleting the
+  `rmSync` in `pack()` passes everything; the bundler's maps would stay in the candidate's `dist` (inside the
+  producer's owner-only root) until the next build. **Re-check:** with the composition test of the F5 entry, assert
+  `dist` holds no `.map` file after each refused control build. *(low · tools/cli-package/map-controls-core.mjs)*
 
 ## Native file identity on Windows — approved increment (2026-10-24)
 

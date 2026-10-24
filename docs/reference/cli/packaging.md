@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are implemented, with independent acceptance pending; the remaining Step 9 custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -487,8 +487,8 @@ package-test producer, adds the product map controls and only then flips the rec
 
 The runner keeps private maps and manifests longer than the producer does, always inside the
 producer's owner-only root; a runner killed outright can leave that root behind, the producer's
-existing named limit, and an interrupted runner leaves its own empty temporary directory (see
-deferred-tasks.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
+existing named limit, and an interrupted runner can leave its own temporary directory, which may still
+hold the baseline public tarball and its receipt (see deferred-tasks.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
 evidence, as above.
 
 ## Recipient custody
