@@ -12,6 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import nodeModule from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 import { after, test } from 'node:test';
@@ -214,6 +215,45 @@ test('another pnpm than the pinned one refuses before anything is prepared', asy
   );
   assert.equal(seen.prepare, undefined);
   assert.deepEqual(leftovers(temporary), []);
+});
+
+test('a producer Node that cannot run the capture refuses before anything exists', async () => {
+  const temporary = fresh('tmp');
+  const destination = join(fresh('artifact-parent'), 'artifact');
+  const { seen, ports: fakes } = ports();
+  fakes.capturable = () => false;
+  await assert.rejects(
+    producePackage({
+      repository: fresh('original-checkout'),
+      destination,
+      environment: {},
+      temporary,
+      ports: fakes,
+    }),
+    { message: 'PACKED_CLI_PRODUCER_NODE' },
+  );
+  assert.equal(seen.prepare, undefined);
+  assert.equal(existsSync(destination), false);
+  assert.deepEqual(leftovers(temporary), []);
+  // By default the producer asks this Node itself.
+  const registerHooks = nodeModule.registerHooks;
+  delete nodeModule.registerHooks;
+  try {
+    const { ports: defaults } = ports();
+    delete defaults.capturable;
+    await assert.rejects(
+      producePackage({
+        repository: fresh('original-checkout'),
+        destination: join(fresh('artifact-parent'), 'artifact'),
+        environment: {},
+        temporary,
+        ports: defaults,
+      }),
+      { message: 'PACKED_CLI_PRODUCER_NODE' },
+    );
+  } finally {
+    nodeModule.registerHooks = registerHooks;
+  }
 });
 
 test(

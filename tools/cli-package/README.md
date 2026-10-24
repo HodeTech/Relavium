@@ -63,7 +63,8 @@ decodes every private map strictly (`source-map.mjs`). Before the receipt is wri
 the private manifest (`manifest.mjs`) and symbolicates actual packed CLI and core frames, captured
 by a tooling-only preload while the CLI imports a canary into a private project
 (`frame-capture.mjs`, which refuses any module that resolves outside the candidate, the keyring and
-native addons), through the strictly decoded maps of the chunks those frames land in against
+native addons in its own process, and needs Node 22.15 or later; an older producer Node refuses with
+`PACKED_CLI_PRODUCER_NODE` before building), through the strictly decoded maps of the chunks those frames land in against
 the matching source revision (`symbolicate.mjs`). The manifest is discarded with the staging, and
 the capture's home, project and frames with the private root. The
 receipt does **not** certify encrypted custody or a production release candidate (Steps 9b–9d),

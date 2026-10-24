@@ -680,10 +680,15 @@ that shows the shape.
 - [ ] **The symbolication child is not sandboxed.** *Low; a named limit.* *(rigor pass, SEC-9A2A-2)*
   `captureFrames` runs the candidate CLI's runtime import closure — packages that before 9a.2a ran only in the
   consumer jobs — as the producer's user, with network access, in the job whose sibling `staging` directory
-  holds the private maps and manifest. Its isolated environment, owner-only work directory and the refused
-  keyring and native addons confine it; nothing enforces that `relavium import` stays offline. packaging.md
-  names the limit. **Re-check:** when Step 9b designs the custody job, run the capture child under an OS
-  sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
+  holds the private maps and manifest. Its isolated environment and owner-only work directory confine it,
+  and, within the capture process only, the refusal of any module outside the candidate and the refused
+  keyring and native addons (added after review round 1); a thread or subprocess the candidate started
+  without the preload (an eval Worker, a `node -e` child) would have none of them, and `relavium import`
+  starts none, though nothing enforces that or that it stays offline. packaging.md names the limit.
+  **Re-check:** when Step 9b designs the custody job, run the capture child and every descendant under an
+  OS sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
+  *Re-checked after rounds 1 and 2 (2026-10-24): the module confinement narrows the limit; the record and
+  packaging.md now say the refusals are in-process only.*
 - [ ] **Two packs of one source can differ in the packed manifest's key order.** *Low, for Step 9c.* *(rigor
   pass, integration lens)* Two productions of the same tree packed the five `@relavium/*` `devDependencies`,
   which pnpm rewrites from `workspace:*` to versions at pack time, in different orders (`core, llm, shared,

@@ -13,7 +13,7 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import nodeModule, { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readPrivateManifest } from './manifest.mjs';
@@ -57,6 +57,15 @@ export const ANCHORS = Object.freeze([
 ]);
 
 const PRELOAD = fileURLToPath(new URL('./frame-capture.mjs', import.meta.url));
+
+/**
+ * Whether this Node can run the capture: the preload confines module resolution through
+ * `module.registerHooks` (Node 22.15 and later), which the workspace's Node 22.13 floor lacks.
+ * @param {{registerHooks?: unknown}} [module]
+ */
+export function captureSupported(module = nodeModule) {
+  return typeof module.registerHooks === 'function';
+}
 const FRAME_LIMIT = 64;
 
 /** A workflow the CLI accepts, whose id carries the canary the preload watches for. */

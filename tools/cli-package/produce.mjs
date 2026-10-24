@@ -24,6 +24,7 @@ import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './cand
 import { within } from './paths.mjs';
 import { exitOnInterrupt, isolatedEnvironment, runPnpm } from './process.mjs';
 import { sealPackage } from './seal.mjs';
+import { captureSupported } from './symbolicate.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
 
 /**
@@ -42,6 +43,7 @@ import { emitFreshPackage } from './pipeline.mjs';
  * @param {{repository: string, destination: string, environment: Record<string, string | undefined>,
  *   temporary?: string, ports?: {prepare?: typeof prepareCandidate, emit?: typeof emitFreshPackage,
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
+ *   capturable?: typeof captureSupported,
  *   excludesFile?: typeof globalExcludesFile, pnpm?: typeof runPnpm,
  *   remove?: (path: string) => void}}} options
  */
@@ -57,11 +59,14 @@ export async function producePackage({
     emit = emitFreshPackage,
     seal = sealPackage,
     noBuildCache = assertNoBuildCache,
+    capturable = captureSupported,
     excludesFile = globalExcludesFile,
     pnpm = runPnpm,
     // Retries absorb a child killed by the interrupt that was still finishing a write.
     remove = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 3 }),
   } = ports;
+  // The seal's symbolication needs Node 22.15 or later; refuse an older producer before anything exists.
+  assert.ok(capturable(), 'PACKED_CLI_PRODUCER_NODE');
   mkdirSync(destination, { recursive: true });
   assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
   const home = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-build-')));

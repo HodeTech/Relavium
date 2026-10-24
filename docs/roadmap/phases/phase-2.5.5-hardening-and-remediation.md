@@ -9742,5 +9742,19 @@ and this checkpoint records the author's CI evidence (CRIT-9A2A-R1-3). Of thirte
 are killed and three are defensive: a prefix-sibling comparison that no resolution path reaches, a real-path call
 on paths the resolver already returns real, and the hook API check on a Node that has the API.
 
-**Remaining gates.** Round 2 — one NEW complete cumulative round with no blocker, high or medium finding and no
-regression, with the separate scoped security sitting at the same head and bar — then the push CI.
+**Round 2 at `990a5d16` — not accepted.** The plan lens was clean; the round reported no blocker, high or medium
+finding, and the security sitting one low. But three lenses independently found a regression the round-1
+correction introduced (DMCS-9A2A-R2-1 = TCA-9A2A-R2-1 = INT-9A2A-R2-1, rated low): `module.registerHooks` exists
+from Node 22.15, the workspace admits Node 22.13, and on 22.13 or 22.14 every local production now refused with the
+generic `CAPTURE_FAILED` code, because the preload's named import failed at link time and its guard never ran.
+Since the amended bar requires no regression, the increment is not accepted at round 2. Corrected: the producer
+refuses an unsupported Node with `PACKED_CLI_PRODUCER_NODE` before anything exists (`captureSupported`), the
+preload reads the API from the module object so its own guard runs, and the contract and README name the minimum.
+The security sitting's low (SEC-9A2A-R2-1) is corrected as wording: the keyring, native-addon and module refusals
+hold in the capture process itself, not in a thread or subprocess the candidate starts without the preload; the
+contract, the preload's docblock and the SEC-9A2A-2 record say so, and that record notes its re-check
+(CRIT-9A2A-R2-1).
+
+**Remaining gates.** Round 3 — one NEW complete cumulative round with no blocker, high or medium finding and no
+regression, with the separate scoped security sitting at the same head and bar — then the full `pnpm run ci` and
+the push CI.

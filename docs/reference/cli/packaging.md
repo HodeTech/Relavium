@@ -349,7 +349,9 @@ of 9a.2, maintainer-approved on 2026-10-24) implements items 4 and 5 above for t
 producer. The receipt stays `compiled_package_test` until 9a.2b's product map controls exist.
 "Owner-only" in this section has the meaning the 9a.1 section gives it: mode 0700 or 0600 where
 POSIX modes are observable; on Windows the private root inherits the temporary directory's ACL,
-which is not verified.
+which is not verified. The producer needs Node 22.15 or later, whose `module.registerHooks` the
+preload uses (CI's pack jobs run the `.nvmrc` major); on an older Node it refuses with
+`PACKED_CLI_PRODUCER_NODE` before anything is built.
 
 - **Strict maps.** The finalizer decodes every consumed upstream map's and every final map's
   `mappings` strictly — base64 VLQ only, no truncated or oversized value, segments of one, four or
@@ -383,8 +385,10 @@ which is not verified.
   secret. Through a synchronous resolution hook that sees `require` as well as `import`, it also
   refuses any module that resolves outside the candidate, so an optional dependency the candidate
   does not install (ws's `bufferutil`, for example) can never be satisfied by a `node_modules` that
-  another local user creates above it in a shared temporary directory. Exactly one captured stack is
-  required.
+  another local user creates above it in a shared temporary directory. These refusals are installed
+  in the capture process itself: a thread or subprocess the candidate starts without the preload (an
+  eval Worker or a `node -e` child, for example) is not covered, and `relavium import` starts none,
+  though nothing enforces that. Exactly one captured stack is required.
 - **Symbolication.** Each frame inside the finalized `dist` must be a file the manifest and the
   tarball record (re-hashed after the run), its map must be the staged bytes the manifest records,
   and only a frame that lands exactly on a mapping segment counts. Five named call sites must be
@@ -402,8 +406,8 @@ which is not verified.
 
 The capture child is not sandboxed: it runs the candidate CLI's runtime import closure as the
 producer's user, with network access, beside the private staging, confined only by its isolated
-environment, its owner-only work directory, the refusal of any module outside the candidate and the
-refused keyring and native modules. `relavium
+environment, its owner-only work directory and, within the capture process only, the refusal of any
+module outside the candidate and the refused keyring and native modules. `relavium
 import` makes no network request, but nothing enforces that. This is a named limit of the
 package-test producer, owned by
 [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).

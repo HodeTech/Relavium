@@ -38,6 +38,7 @@ import {
   SymbolicationError,
   anchorPosition,
   captureFrames,
+  captureSupported,
   readSourceRevision,
   symbolicateCandidate,
 } from './symbolicate.mjs';
@@ -983,6 +984,44 @@ test('the preload refuses any module that resolves outside the candidate', async
   assert.equal(run.status, 0, run.stderr);
   const refusal = 'The symbolication run refuses a module outside the candidate';
   assert.deepEqual(JSON.parse(run.stdout), { required: refusal, imported: refusal });
+  assert.equal(existsSync(marker), false);
+});
+
+test('the capture needs module.registerHooks, and the preload refuses without it', async () => {
+  assert.equal(captureSupported(), true);
+  assert.equal(captureSupported({}), false);
+  assert.equal(captureSupported({ registerHooks: () => {} }), true);
+  // On a Node without the API the preload's own guard runs: it refuses before the entry runs.
+  const fixture = await candidate();
+  const shim = join(fixture.work, 'no-register-hooks.cjs');
+  writeFileSync(shim, "delete require('node:module').registerHooks;\n");
+  const marker = join(fixture.work, 'ran');
+  writeFileSync(
+    join(fixture.cli, 'dist', 'index.js'),
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'x');\n`,
+  );
+  const run = spawnSync(
+    process.execPath,
+    [
+      '--require',
+      shim,
+      '--import',
+      pathToFileURL(PRELOAD).href,
+      join(fixture.cli, 'dist', 'index.js'),
+    ],
+    {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH,
+        RELAVIUM_FRAME_CAPTURE_LOG: join(fixture.work, 'frames.json'),
+        RELAVIUM_FRAME_CAPTURE_PACKAGE: join(fixture.cli, 'package.json'),
+        RELAVIUM_FRAME_CAPTURE_CANARY: 'frames-canary-old-node',
+      },
+    },
+  );
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /The symbolication preload needs module\.registerHooks/u);
   assert.equal(existsSync(marker), false);
 });
 
