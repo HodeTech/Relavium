@@ -238,6 +238,9 @@ async function exactIdentityClaims(): Promise<void> {
       first + 1n,
       11193352636847878000n,
       (1n << 64n) - 1n,
+      // Node's signed bigint stats: a 64-bit file ID with its top bit set reads negative (NI).
+      -1n,
+      -(1n << 63n),
     ].entries()) {
       const label = `exact-${index}`;
       const claim = await makeClaim(label, value);

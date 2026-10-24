@@ -1,6 +1,13 @@
 import { RelaviumError } from '@relavium/shared';
 
-import { lstatSync, mkdirSync, realpathSync, statSync, type Stats } from 'node:fs';
+import {
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  statSync,
+  type BigIntStats,
+  type Stats,
+} from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { transferStorageFailure, withOwnedFilesystem } from './storage-failure-facts.js';
 
@@ -27,11 +34,47 @@ function within(root: string, path: string): boolean {
 
 interface RootPin {
   readonly canonical: string;
-  readonly dev: number;
-  readonly ino: number;
-  readonly entryDev: number;
-  readonly entryIno: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly entryDev: bigint;
+  readonly entryIno: bigint;
   readonly linked: boolean;
+}
+
+/**
+ * One stat with an exact native identity. A 64-bit file ID (NTFS, overlayfs xino) exceeds a Number's
+ * precision, so `dev`/`ino` stay bigint; `nlink` and `size` are exact as Numbers for every value the
+ * guards admit, and `mtimeMs` repeats Node's number formula so it keeps its sub-millisecond fraction.
+ */
+export interface ExactStats {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly nlink: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+const NS_PER_SECOND = 1_000_000_000n;
+
+/** Project one bigint stat; a second stat of a path could observe a different file. */
+export function exactStats(info: BigIntStats): ExactStats {
+  const file = info.isFile();
+  const directory = info.isDirectory();
+  const link = info.isSymbolicLink();
+  const seconds = info.mtimeNs / NS_PER_SECOND - (info.mtimeNs % NS_PER_SECOND < 0n ? 1n : 0n);
+  return Object.freeze({
+    dev: info.dev,
+    ino: info.ino,
+    nlink: Number(info.nlink),
+    size: Number(info.size),
+    mtimeMs: Number(seconds) * 1000 + Number(info.mtimeNs - seconds * NS_PER_SECOND) / 1e6,
+    isFile: () => file,
+    isDirectory: () => directory,
+    isSymbolicLink: () => link,
+  });
 }
 
 /**
@@ -50,18 +93,18 @@ export class MediaStorePaths {
 
   root(create: boolean): string | undefined {
     try {
-      let entry: Stats;
+      let entry: BigIntStats;
       try {
-        entry = withOwnedFilesystem(() => lstatSync(this.#lexical));
+        entry = withOwnedFilesystem(() => lstatSync(this.#lexical, { bigint: true }));
       } catch (error) {
         if (!missing(error)) throw error;
         if (this.#pin !== undefined) throw new MediaStoreFilesystemError('unsafe_path');
         if (!create) return undefined;
         withOwnedFilesystem(() => mkdirSync(this.#lexical, { recursive: true, mode: 0o700 }));
-        entry = withOwnedFilesystem(() => lstatSync(this.#lexical));
+        entry = withOwnedFilesystem(() => lstatSync(this.#lexical, { bigint: true }));
       }
       const canonical = withOwnedFilesystem(() => realpathSync(this.#lexical));
-      const info = withOwnedFilesystem(() => statSync(canonical));
+      const info = withOwnedFilesystem(() => statSync(canonical, { bigint: true }));
       if (!info.isDirectory()) throw new MediaStoreFilesystemError('unsafe_path');
       const current = {
         canonical,
@@ -155,7 +198,7 @@ export class MediaStorePaths {
     }
   }
 
-  file(path: string): Stats | undefined {
+  file(path: string): ExactStats | undefined {
     const info = this.fileSnapshot(path);
     // fileSnapshot already excludes additional links; ownership also excludes detachment.
     if (info !== undefined && info.nlink === 0) throw new MediaStoreFilesystemError('unsafe_path');
@@ -167,10 +210,10 @@ export class MediaStorePaths {
    * between the kernel's lookup and attribute read. Accept that zero-link snapshot only
    * for non-owning reads/publication checks; temporary ownership and deletion stay strict.
    */
-  fileSnapshot(path: string): Stats | undefined {
+  fileSnapshot(path: string): ExactStats | undefined {
     this.assertParent(path);
     try {
-      const info = withOwnedFilesystem(() => lstatSync(path));
+      const info = exactStats(withOwnedFilesystem(() => lstatSync(path, { bigint: true })));
       if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 0 && info.nlink !== 1))
         throw new MediaStoreFilesystemError('unsafe_path');
       return info;
@@ -180,7 +223,7 @@ export class MediaStorePaths {
     }
   }
 
-  assertOwnedFile(path: string, opened: Stats): void {
+  assertOwnedFile(path: string, opened: ExactStats): void {
     const current = this.file(path);
     if (
       !opened.isFile() ||
@@ -202,7 +245,7 @@ export class MediaStorePaths {
    * owner-controlled-parent assumption; it is not a descriptor-relative parent-swap jail.
    * Temporary-file ownership and destructive operations must not use this read-only check.
    */
-  assertReadableFile(path: string, opened: Stats): void {
+  assertReadableFile(path: string, opened: ExactStats): void {
     const current = this.fileSnapshot(path);
     if (
       !opened.isFile() ||

@@ -186,8 +186,8 @@ mutations.push(
   control(
     'CAS_COOPERATIVE_READ',
     paths,
-    '  assertReadableFile(path: string, opened: Stats): void {\n    const current = this.fileSnapshot(path);',
-    '  assertReadableFile(path: string, opened: Stats): void {\n    this.assertOwnedFile(path, opened);\n    const current = this.fileSnapshot(path);',
+    '  assertReadableFile(path: string, opened: ExactStats): void {\n    const current = this.fileSnapshot(path);',
+    '  assertReadableFile(path: string, opened: ExactStats): void {\n    this.assertOwnedFile(path, opened);\n    const current = this.fileSnapshot(path);',
     'FS_CAUSAL_CAS_COOPERATIVE_READ',
     [cooperativeCases],
     'preserves native',

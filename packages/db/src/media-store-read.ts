@@ -10,7 +10,7 @@ import {
   type DurableMediaMeta,
 } from '@relavium/shared';
 
-import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import { exactStats, MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
 
 /** Internal typed cancellation; caller-provided abort reasons never become diagnostics. */
 class MediaReadCancelledError extends Error {
@@ -66,9 +66,11 @@ export async function scanMediaFile(
     let cleanupError: MediaStoreFilesystemError | undefined;
     try {
       checkAbort();
-      const opened = await file.stat().catch((error: unknown) => {
-        throw paths.error(error);
-      });
+      const opened = exactStats(
+        await file.stat({ bigint: true }).catch((error: unknown) => {
+          throw paths.error(error);
+        }),
+      );
       if (opened.dev !== admitted.dev) throw new MediaStoreFilesystemError('unsafe_path');
       paths.assertReadableFile(path, opened);
       // This check precedes even the fixed read buffer and every whole-body allocation.
@@ -118,9 +120,11 @@ export async function scanMediaFile(
         }
         total += bytesRead;
       }
-      const finished = await file.stat().catch((error: unknown) => {
-        throw paths.error(error);
-      });
+      const finished = exactStats(
+        await file.stat({ bigint: true }).catch((error: unknown) => {
+          throw paths.error(error);
+        }),
+      );
       checkAbort();
       if (finished.dev !== opened.dev || finished.ino !== opened.ino)
         throw new MediaStoreFilesystemError('unsafe_path');

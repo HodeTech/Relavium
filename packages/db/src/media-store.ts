@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
-import { constants, type Stats } from 'node:fs';
+import { constants } from 'node:fs';
 import { open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import {
+  exactStats,
+  MediaStoreFilesystemError,
+  MediaStorePaths,
+  type ExactStats,
+} from './media-store-paths.js';
 import { assertMediaNotAborted, scanMediaFile } from './media-store-read.js';
 import {
   MediaStoreTemporaries,
@@ -245,15 +250,17 @@ export class FilesystemMediaStore implements MediaStore {
     ).catch((error: unknown) => {
       throw this.#paths.error(error);
     });
-    let identity: Stats | undefined;
+    let identity: ExactStats | undefined;
     let closed = false;
     let published = false;
     let result: string | undefined;
     let cleanupError: MediaStoreFilesystemError | undefined;
     try {
-      identity = await file.stat().catch((error: unknown) => {
-        throw this.#paths.error(error);
-      });
+      identity = exactStats(
+        await file.stat({ bigint: true }).catch((error: unknown) => {
+          throw this.#paths.error(error);
+        }),
+      );
       this.#paths.assertOwnedFile(tmp, identity);
       this.#temporaries.assertProducerAllowed();
       const handle = await write(file);
