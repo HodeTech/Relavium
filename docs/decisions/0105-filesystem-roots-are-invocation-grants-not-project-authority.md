@@ -323,3 +323,17 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) is accepted by the maintainer. Meta operations deliberately skip directory existence/link/permission grant admission while retaining pure grammar/count/size checks; no filesystem authority is minted. Execution preserves filesystem admission before the one catalog seed and later model/cost admission. ADR-0112 separately narrows built-in chat HTTP authority without changing filesystem grants. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+## Exact native identity correction — 2026-10-25
+
+The root pins this decision requires compared device and inode as JavaScript numbers. On
+Windows `ino` is a 64-bit NTFS file ID, and Linux overlayfs's `xino` feature sets high inode
+bits; neither fits a Number's 53 bits, so a replaced root could compare equal (Step 9a.2a's
+push CI observed it once on the Windows runner). The policy pins and the workflow catalog's
+open check now read and compare exact bigints; the catalog comparison is Windows' only swap
+guard, since `O_NOFOLLOW` is undefined there. The decision is unchanged: this restores the
+identity the pins already claimed, and permanent causal controls substitute identities that
+differ only beyond a Number's precision. ReFS's 64-bit file IDs are not guaranteed unique;
+that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
+The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
+owns review and acceptance; this note claims neither.

@@ -9927,3 +9927,56 @@ Engineering defaults recorded with the rulings:
 - `CAS_COOPERATIVE_READ` is the one anchor that drifts; it is updated in the same commit.
 - No identity value enters an error, event, log or JSON.
 - ADR-0105's cooperative-parent assumption is unchanged.
+
+### Wave 3 NI implementation checkpoint — 2026-10-25
+
+**Scope and source.** The native-identity increment (register row NI; ADR-0105, ADR-0106) is implemented on
+`development` after the 9a.2b acceptance and the [NI preflight decisions](#wave-3-ni-preflight-decisions--2026-10-25)
+(`451223f7`), in six ordered commits and this record:
+
+1. **CLI fix.** The filesystem policy's canonical and lexical root pins and the workflow catalog's open check read
+   with `{ bigint: true }` into bigint fields. A witness file has four injected-identity real-replacement cases, and
+   the fs-invocation precondition reads exactly.
+2. **Windows evidence.** A Windows-only probe in `fs-policy.test.ts` makes 200 rename-and-`mkdir` pairs, asserts
+   each pair is distinct as exact identities and logs how many collide as Numbers or read negative. Its real
+   replacement tests repeat twenty times.
+3. **Media-store fix.** One internal `ExactStats` projection holds bigint `dev` and `ino` and number `nlink`, `size`
+   and `mtimeMs`; the last comes from `mtimeNs` by Node's own formula and was bit-identical on 307 checked files,
+   including fractional and negative times. It serves the root pin, file snapshots, the owned-file check, the
+   read's descriptor stats, the publish handle and the temporary sweep's claim directory, children, marker and
+   moved blob. `nativeFile` loses its `Number()`, and the claim token encodes the unsigned value
+   (`BigInt.asUintN(64, …)`). A witness file has seven cases, and the exact-claim vectors gain two negative
+   identities. `CAS_COOPERATIVE_READ`'s anchor follows the new parameter type.
+4. **Tooling fix.** The overflow capture's destination check, the budget-replay evidence retention's directory
+   identity and its lifecycle-smoke precondition, each with a substituted-identity mode in its smoke.
+5. **Permanent controls.** Five filesystem causal controls: `fs-root-identity-precision`,
+   `catalog-identity-precision`, `cas-root-pin-precision`, `cas-owned-identity-precision` and
+   `media-temp-same-precision`. Each passed its fixed, removal and restored phases through the real runner. The
+   declaration grows to 115 controls / 345 phases, in shards of 58 and 57.
+6. **Documents.** The policy and physical storage paragraphs of the
+   [built-in tools reference](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits),
+   dated corrections to ADR-0105 and ADR-0106, the NI entry and two scoped limits in
+   [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24), and
+   the status lines.
+
+No runtime dependency or ADR is added, and no persisted format changes.
+
+**Proof.** The witnesses substitute every identity the code reads with 2^60 + k. Adjacent substitutes there are
+distinct bigints but one Number. Each witness asserts that its fixture collides as Numbers only, keeps the original
+alive so the platform cannot recycle its inode, and asserts its outcome once with a named marker.
+
+A recorded sweep at the implementation commits applied 28 mutants, and each failed:
+
+- every comparison returned to a Number, which failed its named witness — the canonical and lexical reads and the
+  root pin's canonical and entry reads each have their own case;
+- every read without its option, which failed its witness and also fails typecheck and the projection;
+- the token's signed refusal restored, which failed on the negative vectors;
+- each tool's read or comparison reverted, which failed its smoke.
+
+Number mutants on `dev` alone are equivalent on every supported platform and are not claimed: Windows `dev` is a
+32-bit volume serial, and POSIX device numbers are small. The read's second-stat comparison is tested with a faked
+second stat; it is a consistency check that no real filesystem fails. By decision, one number comparison remains:
+the causal-control source graph's hard-link check, which can only refuse falsely. It is recorded as a scoped limit.
+
+**Windows evidence.** The advisory Windows job runs the probe and the repeated replacement tests after the push. The
+Windows clause closes after three consecutive green advisory runs on pushed heads, with the logged counts recorded.

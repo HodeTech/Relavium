@@ -276,7 +276,7 @@ A valid host-issued scratch descriptor conditionally adds only its exact subtree
 
 ### CLI authority and floors
 
-The CLI owns an immutable, process-local policy with pinned lexical/canonical directory identities, rechecked at each capability operation. Read/list/glob, mention/completion, discovery and write boundaries check lexical provenance and canonical targets; recursive enumeration prunes denied directories **before descent**. An ordinary extra-root grant never overrides confidentiality or protected-write floors, including full tier and auto mode.
+The CLI owns an immutable, process-local policy with pinned lexical/canonical directory identities, rechecked at each capability operation. Device and inode compare as exact bigints: a 64-bit file ID (NTFS, or an overlayfs `xino` inode) exceeds a Number's precision. Read/list/glob, mention/completion, discovery and write boundaries check lexical provenance and canonical targets; recursive enumeration prunes denied directories **before descent**. An ordinary extra-root grant never overrides confidentiality or protected-write floors, including full tier and auto mode.
 
 Synchronous root admission uses native canonical resolution, matching asynchronous file operations. Windows short-name and long-name spellings must resolve to the same canonical authority; lexical spellings remain separately pinned for provenance and confidentiality checks. Native path membership alone cannot equate two unresolved aliases.
 
@@ -307,7 +307,7 @@ Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automa
 
 ### Physical media storage and limits
 
-The filesystem CAS pins its canonical root on the first admitted operation; reads/GC do not create an unused store, and later absence/replacement/retargeting revokes access. Shards/final descendants cannot be symlinks; files must be regular without extra hard links, with exclusive no-follow temporary ownership, one-fd read identity checks, atomic publication and the same physical containment checked for read, delete and GC. CAS has no pnpm exemption. Handle/port semantics live in the [MediaStore reference](llm-provider-seam.md).
+The filesystem CAS pins its canonical root on the first admitted operation; reads/GC do not create an unused store, and later absence/replacement/retargeting revokes access. Every root pin, file snapshot, owned-file, claim-directory, marker and read identity check compares device and inode as exact bigints taken from one stat. Shards/final descendants cannot be symlinks; files must be regular without extra hard links, with exclusive no-follow temporary ownership, one-fd read identity checks, atomic publication and the same physical containment checked for read, delete and GC. CAS has no pnpm exemption. Handle/port semantics live in the [MediaStore reference](llm-provider-seam.md).
 
 An opened CAS read descriptor may become unlinked when a cooperating publisher atomically republishes the same handle. Reads validate the current root/shard/final-entry floor independently, retain the one opened regular descriptor (at most one remaining link), and verify its bytes against the requested hash before delivery. They do not require the final pathname to retain that descriptor's inode. Temporary ownership and destructive operations retain their stricter identity checks.
 
@@ -349,7 +349,10 @@ the fixed primary acquisition error or expose native diagnostics.
 
 New `media-claim-v2` records encode native bigint device/inode identities as bounded
 canonical unsigned 64-bit tokens. Claim creation, post-move admission and final recovery
-revalidation compare these exact identities without a Number conversion. Existing v1
+revalidation compare these exact identities without a Number conversion. Node reports a
+64-bit file ID with its top bit set as a negative bigint; its token is the unsigned value
+(`BigInt.asUintN(64, …)`), so such a temporary can be claimed, and every other value keeps
+its token. Existing v1
 claims retain their safe-integer/canonical validation; an ambiguous unsafe historical
 token is retained, never promoted to deletion authority. Producer, maintenance and
 recovery-marker layouts are unchanged. This targeted identity check supplements the

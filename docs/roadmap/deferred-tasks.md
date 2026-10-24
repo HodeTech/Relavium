@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-24 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI (its approved entry below) and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI implemented on `development` and under review (its entry and scoped limits below) and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -782,6 +782,9 @@ no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending th
 
 Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate
 increment, after 9a.2b and before 9b (register row NI), rather than a deferral; this entry tracks it until then.
+NI is implemented on `development` (2026-10-25) and under review
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)); the
+item stays open until NI's acceptance and the Windows clause below close it.
 
 - [ ] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
   Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a
@@ -795,6 +798,23 @@ increment, after 9a.2b and before 9b (register row NI), rather than a deferral; 
   `nativeFile`). **Re-check:** every identity is read with `{ bigint: true }` and compared as `bigint` (or its exact
   string), with a replacement test per site that fails when the comparison goes back to a number; the Windows job
   passes the fs-policy test repeatedly. *(high · the five files above)*
+
+Scoped limits recorded with NI (2026-10-25):
+
+- [ ] **ReFS and Dev Drive file IDs are 128-bit; the 64-bit index Node reads is not guaranteed unique there.**
+  *Low; Windows ReFS/Dev Drive.* Microsoft documents that the 64-bit identifier "is not guaranteed to be unique on
+  ReFS". NI makes every comparison exact, so the claim is exact identity on filesystems whose 64-bit file IDs are
+  unique, such as NTFS, ext4 and APFS; on ReFS two files could still share an index. Minimal example: a workspace
+  on a Dev Drive whose replaced subdirectory receives a colliding 64-bit index. FAT is out of scope too: its file
+  IDs can change on rename, which only makes a check refuse (fail closed). **Re-check:** if ReFS or Dev Drive
+  workspaces become a supported target, read the 128-bit `FILE_ID_INFO` identity, which needs native code or a
+  dependency and therefore an ADR. *(low · `apps/cli/src/engine/tool-host/fs-policy.ts`,
+  `packages/db/src/media-store-paths.ts`)*
+- [ ] **The causal-control source graph's hard-link check still compares `ino` as a number.** *Low; tooling,
+  fail-closed.* `tools/usage-coverage-controls/source-graph.mjs` asserts that each copied source file's `ino`
+  differs from its original's, so a collision can only refuse a copy falsely; four causal families share the
+  file, and NI left it unchanged rather than perturb them. **Re-check:** switch both reads to `{ bigint: true }`
+  the next time that file changes. *(low · `tools/usage-coverage-controls/source-graph.mjs`)*
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 

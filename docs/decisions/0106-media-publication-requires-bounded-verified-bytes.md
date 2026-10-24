@@ -547,3 +547,19 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+### Exact native identity correction — 2026-10-25
+
+The 2026-10-13 correction made the persisted claim token exact but left every live comparison
+on numbers: the root pin, file snapshots and the owned-file check that guards deletion, the
+read's descriptor stats, the publish handle, and the sweep's claim-directory, child, marker
+and moved-blob checks; `nativeFile` read a bigint but compared it through `Number()`. Each now
+compares exact bigint device and inode from a single stat projected once, while `nlink`, `size`
+and `mtimeMs` keep their number values (`mtimeMs` by Node's own formula). Node fills bigint
+stats from a signed array, so a 64-bit file ID with its top bit set read negative and its claim
+token refused it, retaining such a temporary forever. The token now encodes the unsigned value;
+every other value keeps a byte-identical token, so persisted claims stay compatible. The
+[physical storage contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns the rules. Permanent causal controls and the
+[NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
+own the proof and its gates. The cooperative root/path floor is unchanged.
