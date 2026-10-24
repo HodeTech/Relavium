@@ -1434,3 +1434,61 @@ mutations.push({
     },
   ],
 });
+
+// NI: every file and directory identity compares exact bigints. Each removal returns one site's whole
+// comparison to Number and must break a real replacement whose substituted identities (2^60 + k)
+// differ only beyond a Number's precision, as a 64-bit Windows file ID can.
+const nativeIdentityCli = 'apps/cli/src/engine/tool-host/native-identity.test.ts';
+const nativeIdentityMedia = 'packages/db/src/media-store-native-identity.test.ts';
+mutations.push(
+  mediaControl(
+    'FS_ROOT_IDENTITY_PRECISION',
+    policy,
+    '    current.dev !== pin.dev ||\n    current.ino !== pin.ino ||\n    current.lexicalDev !== pin.lexicalDev ||\n    current.lexicalIno !== pin.lexicalIno ||',
+    '    Number(current.dev) !== Number(pin.dev) ||\n    Number(current.ino) !== Number(pin.ino) ||\n    Number(current.lexicalDev) !== Number(pin.lexicalDev) ||\n    Number(current.lexicalIno) !== Number(pin.lexicalIno) ||',
+    'FS_ROOT_IDENTITY_PRECISION',
+    nativeIdentityCli,
+    'refuses a replaced selected directory whose identity collides as a Number',
+    4,
+  ),
+  mediaControl(
+    'CATALOG_IDENTITY_PRECISION',
+    'apps/cli/src/workflows/catalog.ts',
+    'opened.dev !== stats.dev || opened.ino !== stats.ino',
+    'Number(opened.dev) !== Number(stats.dev) || Number(opened.ino) !== Number(stats.ino)',
+    'CATALOG_IDENTITY_PRECISION',
+    nativeIdentityCli,
+    'refuses a catalog file swapped between its admission and its open',
+    4,
+  ),
+  mediaControl(
+    'CAS_ROOT_PIN_PRECISION',
+    paths,
+    '          pin.dev !== info.dev ||\n          pin.ino !== info.ino ||\n          pin.entryDev !== entry.dev ||\n          pin.entryIno !== entry.ino ||',
+    '          Number(pin.dev) !== Number(info.dev) ||\n          Number(pin.ino) !== Number(info.ino) ||\n          Number(pin.entryDev) !== Number(entry.dev) ||\n          Number(pin.entryIno) !== Number(entry.ino) ||',
+    'CAS_ROOT_PIN_PRECISION',
+    nativeIdentityMedia,
+    'refuses a replaced root directory whose identity collides as a Number',
+    7,
+  ),
+  mediaControl(
+    'CAS_OWNED_IDENTITY_PRECISION',
+    paths,
+    '      current.dev !== opened.dev ||\n      current.ino !== opened.ino',
+    '      Number(current.dev) !== Number(opened.dev) ||\n      Number(current.ino) !== Number(opened.ino)',
+    'CAS_OWNED_IDENTITY_PRECISION',
+    nativeIdentityMedia,
+    'refuses to publish a producer temporary replaced after its exclusive open',
+    7,
+  ),
+  mediaControl(
+    'MEDIA_TEMP_SAME_PRECISION',
+    mediaTemp,
+    'function same(a: ExactStats, b: ExactStats): boolean {\n  return a.dev === b.dev && a.ino === b.ino;\n}',
+    'function same(a: ExactStats, b: ExactStats): boolean {\n  return Number(a.dev) === Number(b.dev) && Number(a.ino) === Number(b.ino);\n}',
+    'MEDIA_TEMP_SAME_PRECISION',
+    nativeIdentityMedia,
+    'refuses to claim into a replaced claim directory',
+    7,
+  ),
+);

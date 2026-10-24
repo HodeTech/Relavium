@@ -254,7 +254,7 @@ jobs:
     name: Wave 2 filesystem causal controls (shard ${{ matrix.shard }} of 2)
     # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
     # The 20-minute job historically reached only 46 of 93 controls; the later budget covered 99.
-    # The current cohort is 110 controls (2026-10-15); this comment does not certify its execution.
+    # The current cohort is 115 controls (2026-10-25); this comment does not certify its execution.
     # Per-phase 90-second/test 15-second deadlines and output/evidence ceilings remain unchanged.
     # Every phase retains a manifest of the whole source graph (about 200 KB each), so the 330 phase
     # manifests of one export passed the unchanged 64-MiB retained-evidence bound once Wave 3's PR95
