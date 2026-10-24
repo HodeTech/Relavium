@@ -44,9 +44,26 @@ import { syncBuiltinESMExports } from 'node:module';
 // Delay-only regression: return the real lstat result after the parent swaps the pathname. The fixed
 // runner has no failure-path lstat/unlink, so it closes before this scheduling point can be reached.
 const rawLstat = fs.lstatSync;
+const rawFstat = fs.fstatSync;
+// Exact identity probe: every native identity becomes 2^60 + k, distinct as bigints but one Number.
+const fakes = new Map();
+const collision = process.env.CAPTURE_PROBE_MODE === 'replacement-collision';
+function substitute(info, exact) {
+  if (!collision || info === undefined || exact === undefined) return info;
+  const key = exact.dev + ':' + exact.ino;
+  const value = fakes.get(key) ?? (1n << 60n) + BigInt(fakes.size);
+  fakes.set(key, value);
+  Object.defineProperty(info, 'ino', { value: typeof info.ino === 'bigint' ? value : Number(value) });
+  return info;
+}
+if (collision)
+  process.on('exit', () => writeFileSync(process.env.CAPTURE_PROBE_MARKER + '.identities', JSON.stringify([...fakes.values()].map(String))));
+fs.fstatSync = function(fd, ...args) {
+  return substitute(rawFstat(fd, ...args), rawFstat(fd, { bigint: true }));
+};
 let scheduled = false;
 fs.lstatSync = function(path, ...args) {
-  const result = rawLstat(path, ...args);
+  const result = substitute(rawLstat(path, ...args), rawLstat(path, { bigint: true, throwIfNoEntry: false }));
   if (process.env.CAPTURE_PROBE_MODE === 'cleanup-race' && !scheduled && path === process.env.CAPTURE_PROBE_OUT) {
     scheduled = true;
     writeFileSync(process.env.CAPTURE_PROBE_RACE_READY, '1');
@@ -69,10 +86,11 @@ globalThis.fetch = async (url, init) => {
       queueMicrotask(() => process.emit('SIGTERM'));
       return new Promise(() => {});
     case 'replacement-success':
+    case 'replacement-collision':
     case 'replacement':
       unlinkSync(process.env.CAPTURE_PROBE_OUT);
       writeFileSync(process.env.CAPTURE_PROBE_OUT, 'replacement user file');
-      if (process.env.CAPTURE_PROBE_MODE === 'replacement-success') return new Response('{}', {headers:{'content-type':'application/json'}});
+      if (process.env.CAPTURE_PROBE_MODE !== 'replacement') return new Response('{}', {headers:{'content-type':'application/json'}});
       throw new Error('refused after replacement');
     case 'cleanup-race':
     case 'transport': throw new Error(${JSON.stringify(key)});
@@ -174,6 +192,17 @@ try {
   const replacedSuccess = await run(args, 'replacement-success');
   assert.equal(replacedSuccess.code, 1, 'success reported a response at an unowned destination');
   assert.ok(!replacedSuccess.stdout.includes('capture saved'));
+  assert.equal(readFileSync(out, 'utf8'), 'replacement user file');
+  rmSync(out);
+  // The replacement differs from the reserved file only beyond a Number's precision (NI).
+  const collided = await run(args, 'replacement-collision');
+  const identities = JSON.parse(readFileSync(`${marker}.identities`, 'utf8')).map(BigInt);
+  assert.ok(
+    identities.length >= 2 && identities.every((value) => Number(value) === Number(identities[0])),
+    'the identity fixture must collide as Numbers only',
+  );
+  assert.equal(collided.code, 1, 'success reported a response at a Number-colliding replacement');
+  assert.ok(!collided.stdout.includes('capture saved'));
   assert.equal(readFileSync(out, 'utf8'), 'replacement user file');
   console.log(
     '✓ overflow capture command passed offline stdin, file, secrecy and cancellation checks.',

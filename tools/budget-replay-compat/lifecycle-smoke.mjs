@@ -279,6 +279,28 @@ async function closedDiagnosticControl(root, environment, mode) {
   return { mode, pid: child.pid, closedPipe: true, actualCheckPrimaryRetained: true, ...ended };
 }
 
+/**
+ * Substitute every lstat identity with 2^60 + k: distinct as bigints but one Number (the spacing there
+ * is 256), so a lookalike differs from the completed directory only beyond a Number's precision.
+ */
+function exactIdentityLstat() {
+  const lstat = fs.lstatSync;
+  const fakes = new Map();
+  return (path, ...args) => {
+    const info = lstat(path, ...args);
+    const exact = lstat(path, { bigint: true, throwIfNoEntry: false });
+    if (info !== undefined && exact !== undefined) {
+      const key = `${exact.dev}:${exact.ino}`;
+      const value = fakes.get(key) ?? (1n << 60n) + BigInt(fakes.size);
+      fakes.set(key, value);
+      Object.defineProperty(info, 'ino', {
+        value: typeof info.ino === 'bigint' ? value : Number(value),
+      });
+    }
+    return info;
+  };
+}
+
 async function retirementIntervention(root, mode) {
   const fixture = join(root, `retirement-${mode}`);
   const repository = join(fixture, 'repository');
@@ -299,7 +321,8 @@ async function retirementIntervention(root, mode) {
   const current = allocateEvidence(repository, temporary);
   const owner = fs.readFileSync(join(candidate.owned, 'OWNER.json'));
   const completion = fs.readFileSync(join(candidate.owned, 'completion.json'));
-  const inode = fs.lstatSync(candidate.owned).ino;
+  const collision = mode === 'completed-replacement-collision';
+  let inode = fs.lstatSync(candidate.owned, { bigint: true }).ino;
   const read = fs.readFileSync;
   const readdir = fs.readdirSync;
   let validated = false;
@@ -307,6 +330,7 @@ async function retirementIntervention(root, mode) {
   let caught;
   await overrideBuiltins(
     [
+      ...(collision ? [[fs, 'lstatSync', exactIdentityLstat()]] : []),
       [
         fs,
         'readdirSync',
@@ -336,12 +360,15 @@ async function retirementIntervention(root, mode) {
                 JSON.stringify({ ...JSON.parse(owner.toString('utf8')), repository: fixture }),
               );
             } else {
+              if (collision) inode = fs.lstatSync(candidate.owned, { bigint: true }).ino;
               fs.renameSync(candidate.owned, join(fixture, 'saved-completed'));
               fs.mkdirSync(candidate.owned);
               fs.writeFileSync(join(candidate.owned, 'OWNER.json'), owner);
-              if (mode === 'completed-replacement')
+              if (mode !== 'active-replacement')
                 fs.writeFileSync(join(candidate.owned, 'completion.json'), completion);
-              assert.notEqual(fs.lstatSync(candidate.owned).ino, inode);
+              const replaced = fs.lstatSync(candidate.owned, { bigint: true }).ino;
+              assert.notEqual(replaced, inode);
+              if (collision) assert.equal(Number(replaced), Number(inode));
             }
             fs.writeFileSync(join(candidate.owned, 'sentinel'), 'preserve unexpected claim');
             intervened = true;
@@ -382,7 +409,12 @@ export async function checkLifecycleGuards(owned, environment) {
   };
   for (const mode of ['Error', 'undefined', 'null'])
     results.diagnosticPipes.push(await closedDiagnosticControl(root, environment, mode));
-  for (const mode of ['foreign-owner', 'active-replacement', 'completed-replacement'])
+  for (const mode of [
+    'foreign-owner',
+    'active-replacement',
+    'completed-replacement',
+    'completed-replacement-collision',
+  ])
     results.retirementClaims.push(await retirementIntervention(root, mode));
   fs.writeFileSync(join(root, 'results.json'), `${JSON.stringify(results, null, 2)}\n`);
   return results;
