@@ -7,6 +7,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -78,6 +79,9 @@ beforeEach(() => {
   observed.writeFile.mockClear();
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+// A real replacement could compare equal one run in sixty on Windows before identities were exact (NI).
+const REPLACEMENT_REPEATS = { repeats: 20 };
 
 function capability(policy: FsPathPolicy, tier: FsScopeTier = 'project') {
   return createNodeFsCapability({
@@ -160,6 +164,7 @@ describe('invocation authority and owned native identities', () => {
 
   it.each(['directory', 'alias'] as const)(
     'revokes a replaced %s after admission, before the first tool call',
+    REPLACEMENT_REPEATS,
     async (kind) => {
       const root = kind === 'directory' ? grant : join(base, 'alias');
       if (kind === 'alias') symlinkSync(grant, root, 'junction');
@@ -180,24 +185,30 @@ describe('invocation authority and owned native identities', () => {
     },
   );
 
-  it('pins workspace and selected-subroot identities and owns caller arrays/config', async () => {
-    const roots = [grant];
-    const input = {
-      tier: 'project' as const,
-      workspaceDir: workspace,
-      readOnly: true,
-      extraRoots: roots,
-    };
-    const fs = createNodeFsCapability(input);
-    roots.length = 0;
-    input.readOnly = false;
-    expect((await fs.readFile('../grant/ok.txt', {})).content).toBe('grant');
-    await expect(fs.writeFile('new.txt', 'denied', {})).rejects.toThrow(/read.only|not available/);
-    renameSync(workspace, `${workspace}-old`);
-    mkdirSync(workspace);
-    writeFileSync(join(workspace, 'ok.txt'), 'replacement');
-    await expect(fs.readFile('ok.txt', {})).rejects.toThrow(/pinned identities/);
-  });
+  it(
+    'pins workspace and selected-subroot identities and owns caller arrays/config',
+    REPLACEMENT_REPEATS,
+    async () => {
+      const roots = [grant];
+      const input = {
+        tier: 'project' as const,
+        workspaceDir: workspace,
+        readOnly: true,
+        extraRoots: roots,
+      };
+      const fs = createNodeFsCapability(input);
+      roots.length = 0;
+      input.readOnly = false;
+      expect((await fs.readFile('../grant/ok.txt', {})).content).toBe('grant');
+      await expect(fs.writeFile('new.txt', 'denied', {})).rejects.toThrow(
+        /read.only|not available/,
+      );
+      renameSync(workspace, `${workspace}-old`);
+      mkdirSync(workspace);
+      writeFileSync(join(workspace, 'ok.txt'), 'replacement');
+      await expect(fs.readFile('ok.txt', {})).rejects.toThrow(/pinned identities/);
+    },
+  );
 
   it('returns reusable extra-root paths through write, glob and mention without a doubled anchor', async () => {
     const fs = capability(
@@ -520,18 +531,22 @@ it.each(['workspace', 'grant', 'selector'] as const)(
   },
 );
 
-it('revokes a selected subdirectory replacement even when its enclosing grant is unchanged', async () => {
-  const selected = join(grant, 'selected');
-  mkdirSync(selected);
-  const fs = capability(
-    selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, [selected]),
-  );
-  renameSync(selected, selected + '-old');
-  mkdirSync(selected);
-  writeFileSync(join(selected, 'a.txt'), 'replacement');
-  await expect(fs.readFile(join(selected, 'a.txt'), {})).rejects.toThrow(/pinned identities/);
-  expect(observed.open).not.toHaveBeenCalled();
-});
+it(
+  'revokes a selected subdirectory replacement even when its enclosing grant is unchanged',
+  REPLACEMENT_REPEATS,
+  async () => {
+    const selected = join(grant, 'selected');
+    mkdirSync(selected);
+    const fs = capability(
+      selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, [selected]),
+    );
+    renameSync(selected, selected + '-old');
+    mkdirSync(selected);
+    writeFileSync(join(selected, 'a.txt'), 'replacement');
+    await expect(fs.readFile(join(selected, 'a.txt'), {})).rejects.toThrow(/pinned identities/);
+    expect(observed.open).not.toHaveBeenCalled();
+  },
+);
 
 it('never repairs a failed construction by later creating the missing workspace', async () => {
   const missing = join(base, 'missing-workspace');
@@ -571,5 +586,29 @@ it.runIf(process.platform === 'win32')(
       selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, undefined),
     );
     expect((await fs.readFile(join(grant, '*.txt'), { glob: true })).content).toContain('grant');
+  },
+);
+
+// NI: measures the diagnosed mechanism on the runner itself; the counts are evidence, not a pin.
+it.runIf(process.platform === 'win32')(
+  'native Windows replacement pairs stay distinct as exact identities',
+  () => {
+    let collisions = 0;
+    let negative = 0;
+    for (let index = 0; index < 200; index += 1) {
+      const path = join(base, `probe-${index}`);
+      mkdirSync(path);
+      const original = statSync(path, { bigint: true });
+      // The original stays alive, so its file ID cannot be reused for the replacement.
+      renameSync(path, `${path}-old`);
+      mkdirSync(path);
+      const replacement = statSync(path, { bigint: true });
+      expect([replacement.dev, replacement.ino]).not.toEqual([original.dev, original.ino]);
+      if (Number(replacement.ino) === Number(original.ino)) collisions += 1;
+      if (original.ino < 0n || replacement.ino < 0n) negative += 1;
+    }
+    console.log(
+      `NI probe: ${collisions} of 200 replacement pairs collide as Numbers; ${negative} read negative`,
+    );
   },
 );
