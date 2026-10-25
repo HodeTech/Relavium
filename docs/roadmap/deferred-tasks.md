@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI implemented on `development` and under review (its entry and scoped limits below) and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -778,13 +778,39 @@ no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending th
   producer's owner-only root) until the next build. **Re-check:** with the composition test of the F5 entry, assert
   `dist` holds no `.map` file after each refused control build. *(low · tools/cli-package/map-controls-core.mjs)*
 
+## Wave 3 NI — recorded low findings (2026-10-25)
+
+Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)). **Trigger for
+every entry:** the next change to the file it names.
+
+- [ ] **The lifecycle smoke's precondition reads can revert to numbers unnoticed.** *Low; test-side.* *(round 1,
+  PLAN-NI-R1-1)* Restoring `fs.lstatSync(candidate.owned).ino` at `tools/budget-replay-compat/lifecycle-smoke.mjs`
+  lines 325 and 369 still passes `pnpm smoke:budget-replay`: in the collision mode a bigint and a Number never
+  compare strictly equal, and in the other modes the real inodes differ. Production's retention identity is
+  witnessed separately. **Re-check:** assert both values are bigints before the comparison; reverting either read
+  must then fail the smoke. *(low · tools/budget-replay-compat/lifecycle-smoke.mjs)*
+- [ ] **Nothing tests the projection's `mtimeMs` formula.** *Low.* *(round 1, NI-T-1)* Replacing it in
+  `packages/db/src/media-store-paths.ts` `exactStats` with whole milliseconds (`Number(info.mtimeNs / 1_000_000n)`)
+  or whole seconds passes every media-store test. The bit-identical claim rests on an author probe of 307 files, and
+  a silent change could shift `listHandles()`'s `mtimeMs` and the sweep's age inputs by up to a second.
+  **Re-check:** a case that sets a fractional and a negative fractional mtime and asserts the projection is
+  `Object.is`-equal to `lstatSync(path).mtimeMs`; both mutants must fail. *(low ·
+  packages/db/src/media-store-paths.ts)*
+- [ ] **The catalog's dense-multibyte case catches only a byte bound below 1.5 times the character cap.** *Low.*
+  *(round 1, NI-T-2)* `apps/cli/src/workflows/catalog.test.ts` writes three-byte characters to about
+  1.5 × `MAX_SOURCE_CHARS` bytes, so `BigInt(MAX_SOURCE_CHARS * 3)`, `* 2` or a `>=` boundary in `catalog.ts`'s
+  precheck still pass, although a file of four-byte characters just under the character cap would then be refused.
+  **Re-check:** use four-byte characters to within one character of 4 × `MAX_SOURCE_CHARS` bytes; the 3×, 2× and
+  `>=` mutants must fail. *(low · apps/cli/src/workflows/catalog.test.ts)*
+
 ## Native file identity on Windows — approved increment (2026-10-24)
 
 Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate
 increment, after 9a.2b and before 9b (register row NI), rather than a deferral; this entry tracks it until then.
-NI is implemented on `development` (2026-10-25) and under review
-([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)); the
-item stays open until NI's acceptance and the Windows clause below close it.
+NI is independently accepted on `development` at `fc5af701` (2026-10-25,
+[acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the item stays
+open until the Windows clause below closes it after three consecutive green advisory Windows runs on pushed heads.
 
 - [ ] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
   Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a

@@ -148,7 +148,7 @@ finalization-only failures. Fifteen additional production-caller controls cover 
 faults, ten genuinely failed retention children, a native failed spawn, three real closed-stderr
 pipes retaining `Error`/`undefined`/`null`, and four post-scan owner/physical replacement claims.
 The completed replacement deliberately reuses the same owner/completion bytes and proves that
-directory identity is required. Its collision variant (NI) substitutes every lstat identity with
+directory identity is required. Its collision variant (NI) substitutes every lstat inode with
 2^60 + k, distinct as a bigint but one Number, so only an exact bigint directory identity refuses
 the lookalike. These controls execute the actual helpers/callers; they do not
 mirror their implementations. The ESM control uses the actual production loader

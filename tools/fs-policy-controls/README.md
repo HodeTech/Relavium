@@ -186,7 +186,7 @@ one per phase and about 200 KB each because it lists the whole source graph, and
 export's raw manifests share the 64-MiB bound. Once Wave 3's PR95 increment grew that
 graph, a manifest measured 203,421 bytes and the 330 manifests of one export
 67,128,930 bytes, 20,066 over the bound, so CI's export refused (2026-10-22). Like the
-secrets family, the declaration now runs as two round-robin shards of 55 controls
+secrets family, the 110-control declaration then ran as two round-robin shards of 55 controls
 (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: 165 manifests
 (33,564,465 bytes) and 997 retained files (55 × 18 + 7). Both shards ran locally with
 `RELAVIUM_ACCEPTANCE_EVIDENCE` set at `2a1f7359`'s source; every control passed, and
@@ -197,8 +197,8 @@ NI (2026-10-25) appends five precision controls: `fs-root-identity-precision`,
 `catalog-identity-precision`, `cas-root-pin-precision`, `cas-owned-identity-precision`
 and `media-temp-same-precision`. Each removal returns one site's whole native identity
 comparison to `Number`. Its complete witness file (four CLI cases or seven media-store
-cases) substitutes every identity the code reads with 2^60 + k, which stays distinct as a
-bigint but collapses to one Number, so a real replacement must refuse with the named
+cases) substitutes every inode the code reads, keyed by its real device and inode, with
+2^60 + k, which stays distinct as a bigint but collapses to one Number, so a real replacement must refuse with the named
 assertion. The declaration is now 115 controls /345 phases. Its round-robin shards hold
 58 and 57 controls, projecting 174 and 171 phase manifests and 1,051 and 1,033 retained
 files under the unchanged ceilings. One new control's export at `209e7193` measured a phase

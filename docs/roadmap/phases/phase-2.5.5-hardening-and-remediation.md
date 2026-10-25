@@ -3701,7 +3701,7 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. *Split on 2026-10-24 (maintainer-approved; ID coverage #46/ADR-0111 unchanged) into 9a.2a and 9a.2b below, which replace it as increments ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)).* |
 | 9a.2a | **Recorded split, 2026-10-24 (maintainer-approved) — decoder, private manifest and symbolication:** an in-house strict source-map decoder; strict mapping and range validation of upstream and final maps in the finalizer; the private map manifest (`staging/manifest.json`, keyed by `dist/<chunk>.js`, with a per-source digest inventory and the commit's tree), sealed after the archive inspection; real packed CLI and `@relavium/core` frame capture through a tooling-only preload during an offline `relavium import`, run on the finalized `dist` that the inspection proves byte-equal to the tarball; symbolication of those frames against the matching source revision (clean: the checkout's Git objects; dirty, local only: the candidate copy), wired into the seal before the receipt is written. The receipt stays `compiled_package_test`. Security sitting. *Independently accepted on `development` at `a92a7602` on 2026-10-24 ([checkpoint](#wave-3-step-9a2a-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)).* |
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
-| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); implemented on `development` and under review ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25)).* |
+| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
@@ -9968,8 +9968,8 @@ Engineering defaults recorded with the rulings:
 
 No runtime dependency or ADR is added, and no persisted format changes.
 
-**Proof.** The witnesses substitute every identity the code reads with 2^60 + k. Adjacent substitutes there are
-distinct bigints but one Number. Each witness asserts that its fixture collides as Numbers only, keeps the original
+**Proof.** The witnesses substitute every inode the code reads, keyed by its real device and inode, with
+2^60 + k; device numbers stay real. Adjacent substitutes there are distinct bigints but one Number. Each witness asserts that its fixture collides as Numbers only, keeps the original
 alive so the platform cannot recycle its inode, and asserts its outcome once with a named marker.
 
 A recorded sweep at the implementation commits applied 28 mutants, and each failed:
@@ -9978,7 +9978,8 @@ A recorded sweep at the implementation commits applied 28 mutants, and each fail
   root pin's canonical and entry reads each have their own case;
 - every read without its option, which failed its witness and also fails typecheck and the projection;
 - the token's signed refusal restored, which failed on the negative vectors;
-- each tool's read or comparison reverted, which failed its smoke.
+- each capture and retention read or comparison reverted, which failed its smoke (the lifecycle smoke's
+  precondition reads are test-side and were not swept; see the acceptance below).
 
 Number mutants on `dev` alone are equivalent on every supported platform and are not claimed: Windows `dev` is a
 32-bit volume serial, and POSIX device numbers are small. The read's second-stat comparison is tested with a faked
@@ -10015,3 +10016,36 @@ Low findings corrected:
 
 The pass measured the export capacity: one new control's phase manifest is 203,728 bytes, so a 58-control shard's
 174 manifests come to 35,448,672 bytes, 52.8 % of the 64-MiB bound.
+
+### Wave 3 NI acceptance — 2026-10-25
+
+**The native-identity increment NI is independently accepted on `development` at `fc5af701` (2026-10-25)** under
+the Acceptance row as amended on 2026-10-23. Round 1 was a NEW independent complete cumulative review of
+`451223f7..fc5af701`, with every reviewer in its own worktree detached at that head. It reported no blocker, high or
+medium finding and no regression. Its separate security sitting, run at the same head as its own reviewer and report,
+was clean. It verified that a replacement fails closed at the policy pins, the catalog open check, the media root pin,
+the owned-file check, the temporary sweep's checks and the tooling retention check, and that the unsigned token is a
+bijection on Node's reachable identities. It also verified that no identity value reaches an error, event, log, JSON
+or IPC. The plan, correctness and integration lenses were clean. The plan reviewer found every commit's anchors valid
+and its packages typechecked, with `CAS_COOPERATIVE_READ` moving in the same commit as its target. It also applied the
+five control removals, and each failed its named witness.
+
+**Author evidence at `fc5af701`.** The full `pnpm run ci` ran alongside the round and passed (exit 0). Every causal-control family completed, among them all 115 filesystem controls with the five NI controls. All 25 product map controls and both changed smokes passed.
+
+The round's verified findings were four lows and four nits:
+- Three lows are recorded in
+  [deferred-tasks.md](../deferred-tasks.md#wave-3-ni--recorded-low-findings-2026-10-25): the lifecycle smoke's
+  precondition reads can revert unnoticed; nothing tests the projection's `mtimeMs` formula; the catalog's
+  dense-multibyte case catches only a byte bound below 1.5 times the character cap.
+- The fourth low is corrected in the acceptance commit, which changes no code: the fs-policy-controls README's
+  110-control shard sentence is now dated.
+- Of the nits, the docs' wording now says the witnesses substitute inodes keyed by device and inode, not whole
+  identities, and the checkpoint's proof bullet no longer claims a lifecycle-smoke sweep.
+- The witness files' comments keep their wording: two nits, that devices stay real and that overlayfs inodes can
+  exceed 2^53.
+- The CLI witness stays off the pinned Windows list: one nit. Its proof uses injected identities and does not
+  depend on the platform.
+
+The NI entry stays open until its Windows clause closes: three consecutive green advisory Windows runs on pushed
+heads, with the probe's logged counts recorded. Step 9b is next.
+
