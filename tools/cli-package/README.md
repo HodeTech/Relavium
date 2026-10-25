@@ -80,8 +80,9 @@ unless every expected control ran once with its expected outcome; the required `
 runs it uncached and uploads nothing. Step 9b.1's custody library (synthetic recipients only; nothing
 calls it yet) builds one owner-only USTAR of the sealed staging (`container.mjs`, over the one strict
 dialect in `ustar.mjs`) and encrypts it once to one pinned recipient with GnuPG ≥ 2.2.8 in fresh
-isolated homes (`custody.mjs` over `gnupg.mjs`): a colon pre-check refuses missing, expired, revoked,
-unusable or unexpected recipients and secret material, the ciphertext must be SEIPDv1 with MDC and
+isolated homes (`custody.mjs` over `gnupg.mjs`; POSIX only, since no private root qualifies on
+Windows): a colon pre-check refuses missing, expired, revoked, unusable or unexpected recipients and the
+secret material it can detect, the ciphertext must be SEIPDv1 with MDC and
 AES-256 naming exactly the pinned subkey, an existing ciphertext is never overwritten, the plaintext
 work directory is removed on every path and every refusal is a fixed `PACKED_CLI_CUSTODY_*` code.
 `custody-fixtures/` holds the committed synthetic public keys; no secret key is committed. No private map,

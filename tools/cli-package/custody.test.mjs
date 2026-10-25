@@ -10,10 +10,11 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { candidate, fresh, posixModes, seal } from './candidate-fixture.mjs';
@@ -21,6 +22,7 @@ import { buildPrivateContainer } from './container.mjs';
 import { CustodyError } from './custody-error.mjs';
 import { ciphertextName, encryptOnce, inspectRecipient, parsePins } from './custody.mjs';
 import {
+  GNUPG_CALL,
   createGnupgHome,
   gnupgEnvironment,
   gnupgVersion,
@@ -55,7 +57,8 @@ before(async () => {
   staging = fixtureCandidate.staging;
   container = buildPrivateContainer(staging).bytes;
 });
-const NAME = () => ciphertextName(readPrivateManifest(staging).packageVersion);
+/** The contract's ciphertext name, spelled independently of `ciphertextName`. */
+const NAME = () => `relavium-${readPrivateManifest(staging).packageVersion}-private-maps.tar.gpg`;
 
 /** A fresh owner-only private root and an empty destination. */
 function places() {
@@ -94,6 +97,11 @@ function recording(hooks = {}) {
   const run = async (command, args, options) => {
     const kind = kindOf(args);
     calls.push(kind);
+    // Every call runs in the work directory's isolated C-locale environment, within the call bounds.
+    assert.deepEqual(options.env, gnupgEnvironment(options.env.HOME));
+    assert.match(basename(options.env.HOME), /^custody-/u);
+    assert.equal(options.timeoutMs, GNUPG_CALL.timeoutMs);
+    assert.equal(options.maxBytes, GNUPG_CALL.maxBytes);
     const hook = hooks[kind] ?? {};
     if (hook.before) await hook.before(args);
     if (hook.replace) return hook.replace(args);
@@ -169,6 +177,10 @@ test('pins are exactly two 40-digit uppercase fingerprints', () => {
     { primary: PRIMARY, subkey: SUBKEY.slice(-16) },
     { primary: 'good <good@fixture.invalid>', subkey: SUBKEY },
     { primary: 'C'.repeat(64), subkey: SUBKEY },
+    // A value that only converts to a fingerprint is not one.
+    { primary: [PRIMARY], subkey: [SUBKEY] },
+    { primary: PRIMARY, subkey: [SUBKEY] },
+    { primary: { toString: () => PRIMARY }, subkey: SUBKEY },
   ]) {
     assert.throws(() => parsePins(pins), refuses('PIN_FORMAT'), JSON.stringify(pins));
   }
@@ -179,6 +191,7 @@ test('the recipient classification refuses in its fixed order', () => {
   assert.equal(inspectRecipient(records(), pins, NOW), pins);
   for (const [code, listing, override] of [
     ['RECIPIENT_SECRET', [key('sec'), fpr(PRIMARY), key('ssb'), fpr(SUBKEY)]],
+    ['RECIPIENT_SECRET', [key('sec'), fpr(PRIMARY), key('sub'), fpr(SUBKEY)]],
     ['RECIPIENT_MISSING', []],
     ['RECIPIENT_MISSING', records(), { primary: 'C'.repeat(40), subkey: SUBKEY }],
     ['RECIPIENT_MISSING', records(), { primary: PRIMARY, subkey: 'C'.repeat(40) }],
@@ -318,6 +331,7 @@ test('encryption publishes exactly one ciphertext for the pinned subkey and leav
   assert.ok(Object.isFrozen(outcome.record) && Object.isFrozen(outcome.record.recipient));
   assert.deepEqual(calls, ['version', 'config', 'list', 'encrypt', 'recipients']);
   assert.deepEqual(readdirSync(outcome.root), []);
+  assert.equal(ciphertextName('1.2.3'), 'relavium-1.2.3-private-maps.tar.gpg');
 });
 
 test('an ephemeral key decrypts the ciphertext to the container, and tar extracts the staging', async () => {
@@ -407,6 +421,8 @@ test('the status must be exactly one pinned, completed SEIPDv1 AES-256 encryptio
     ),
     ['STATUS', (text) => `${text}[GNUPG:] END_ENCRYPTION\n`],
     ['STATUS', (text) => text.replace(/\[GNUPG:\] KEY_CONSIDERED[^\n]*\n/u, '')],
+    ['STATUS', (text) => text.replace(/(\[GNUPG:\] KEY_CONSIDERED[^\n]*\n)/u, '$1$1')],
+    ['STATUS', (text) => `${text}[GNUPG:] KEY_CONSIDERED ${'A'.repeat(40)} 0\n`],
     [
       'STATUS',
       (text) =>
@@ -564,13 +580,12 @@ test("a global GnuPG configuration in the installation's sysconfdir refuses befo
     refused(await attempt({ run }), 'GPG_CONFIG');
     assert.deepEqual(calls, ['version', 'config'], name);
   }
-  // gpgconf percent-escapes a directory name; a relative or malformed answer refuses.
-  const escaped = fresh('sys conf');
-  mkdirSync(escaped);
-  writeFileSync(join(escaped, 'gpg.conf'), 'throw-keyids\n');
-  refused(await attempt(recording(config(`${escaped.replaceAll(' ', '%20')}\n`))), 'GPG_CONFIG');
+  // gpgconf prints a named directory raw: a space or a literal `%41` is part of the path.
+  const raw = fresh('sys conf%41');
+  mkdirSync(raw);
+  writeFileSync(join(raw, 'gpg.conf'), 'throw-keyids\n');
+  refused(await attempt(recording(config(`${raw}\n`))), 'GPG_CONFIG');
   refused(await attempt(recording(config('relative/dir\n'))), 'GPG_CONFIG');
-  refused(await attempt(recording(config('%zz\n'))), 'GPG_CONFIG');
   refused(
     await attempt(
       recording({
@@ -681,11 +696,24 @@ test('the destination and the private root are separate directories, the root ow
       encryptOnce(options({ destination: linked, privateRoot: root })),
       refuses('PLACEMENT'),
     );
-    const open = fresh('open-root');
-    mkdirSync(open);
-    chmodSync(open, 0o755);
+    for (const mode of [0o755, 0o750, 0o770]) {
+      const open = fresh('open-root');
+      mkdirSync(open);
+      chmodSync(open, mode);
+      await assert.rejects(
+        encryptOnce(options({ destination, privateRoot: open })),
+        refuses('PRIVATE_ROOT'),
+        mode.toString(8),
+      );
+    }
+    // A link to an owner-only directory is not one.
+    const target = fresh('linked-root-target');
+    mkdirSync(target);
+    chmodSync(target, 0o700);
+    const linkedRoot = fresh('linked-root');
+    symlinkSync(target, linkedRoot);
     await assert.rejects(
-      encryptOnce(options({ destination, privateRoot: open })),
+      encryptOnce(options({ destination, privateRoot: linkedRoot })),
       refuses('PRIVATE_ROOT'),
     );
   }
@@ -697,6 +725,69 @@ test('the destination and the private root are separate directories, the root ow
   );
   assert.deepEqual(calls, []);
 });
+
+test('a private root of another user, or any on Windows, refuses before any GnuPG call', async () => {
+  const { root, destination } = places();
+  const { run, calls } = recording();
+  const attemptHere = () =>
+    encryptOnce({
+      container,
+      recipient: { file: fixture('good'), pins: PINS.good },
+      destination,
+      privateRoot: root,
+      run,
+    });
+  // Windows modes say nothing about access, and no ACL check exists.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  try {
+    await assert.rejects(attemptHere(), refuses('PRIVATE_ROOT'));
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+  if (posixModes) {
+    // An owner-only directory that belongs to someone else is not this user's.
+    const getuid = process.getuid;
+    process.getuid = () => getuid.call(process) + 1;
+    try {
+      await assert.rejects(attemptHere(), refuses('PRIVATE_ROOT'));
+    } finally {
+      process.getuid = getuid;
+    }
+  }
+  assert.deepEqual(calls, []);
+});
+
+test(
+  'the work directory, its homes and its plaintext files are owner-only',
+  { skip: !posixModes },
+  async () => {
+    /** @type {Record<string, number | number[]>} */
+    const modes = {};
+    const mode = (path) => statSync(path).mode & 0o777;
+    const { run } = recording({
+      encrypt: {
+        before: (args) => {
+          const work = dirname(valueOf(args, '--output'));
+          modes.work = mode(work);
+          modes.homes = ['listing', 'encryption', 'recipients'].map((name) =>
+            mode(join(work, name)),
+          );
+          modes.container = mode(args.at(-1));
+          modes.recipient = mode(valueOf(args, '--recipient-file'));
+        },
+      },
+    });
+    const outcome = await attempt({ run });
+    assert.equal(outcome.error, undefined, String(outcome.error));
+    assert.deepEqual(modes, {
+      work: 0o700,
+      homes: [0o700, 0o700, 0o700],
+      container: 0o600,
+      recipient: 0o600,
+    });
+  },
+);
 
 test('an overlap spelled differently on a case-insensitive volume still refuses', async (context) => {
   const base = fresh('case');
@@ -767,6 +858,36 @@ test(
       assert.deepEqual(readdirSync(destination), []);
     } finally {
       chmodSync(root, 0o700);
+    }
+    // A refusal whose work directory then cannot be removed reports CLEANUP, never its own code.
+    const failed = places();
+    const refusing = recording({
+      encrypt: {
+        after: (result) => {
+          chmodSync(failed.root, 0o500);
+          return { ...result, stdout: `${result.stdout}[GNUPG:] FAILURE encrypt 53\n` };
+        },
+      },
+    });
+    try {
+      await assert.rejects(
+        encryptOnce({
+          container,
+          recipient: { file: fixture('good'), pins: PINS.good },
+          destination: failed.destination,
+          privateRoot: failed.root,
+          run: refusing.run,
+        }),
+        (error) =>
+          error instanceof CustodyError &&
+          error.code === 'CLEANUP' &&
+          !JSON.stringify({ message: error.message, ...error }).includes(failed.root),
+      );
+      assert.deepEqual(refusing.calls, ['version', 'config', 'list', 'encrypt']);
+      assert.equal(readdirSync(failed.root).length, 1, 'the work directory was removed');
+      assert.deepEqual(readdirSync(failed.destination), []);
+    } finally {
+      chmodSync(failed.root, 0o700);
     }
   },
 );

@@ -3702,8 +3702,8 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2a | **Recorded split, 2026-10-24 (maintainer-approved) — decoder, private manifest and symbolication:** an in-house strict source-map decoder; strict mapping and range validation of upstream and final maps in the finalizer; the private map manifest (`staging/manifest.json`, keyed by `dist/<chunk>.js`, with a per-source digest inventory and the commit's tree), sealed after the archive inspection; real packed CLI and `@relavium/core` frame capture through a tooling-only preload during an offline `relavium import`, run on the finalized `dist` that the inspection proves byte-equal to the tarball; symbolication of those frames against the matching source revision (clean: the checkout's Git objects; dirty, local only: the candidate copy), wired into the seal before the receipt is written. The receipt stays `compiled_package_test`. Security sitting. *Independently accepted on `development` at `a92a7602` on 2026-10-24 ([checkpoint](#wave-3-step-9a2a-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)).* |
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
 | NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
-| 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
-| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each record's digest and size checked against the private manifest; an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring, agent or trustdb); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).* |
+| 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
+| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each record's digest and size checked against the private manifest; an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).* |
 | 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
@@ -10202,4 +10202,50 @@ Lows corrected:
 
 Two lows are recorded in deferred-tasks.md: secret material GnuPG neither lists nor reads is admitted, and the
 atomic publish has no fault-injection test. Every corrected guard's mutant now fails a test.
+
+**Author evidence at `dea32ea6`.** The full `pnpm run ci` passed alone (exit 0): `test:acceptance-tools` 975 of
+975. On Ubuntu 24.04 with GnuPG 2.4.4 (in Docker), the 41 USTAR, container, GnuPG and custody tests ran: 40
+passed and the case-insensitive-volume case skipped, as it does on a case-sensitive volume.
+
+**Round 2 at `dea32ea6` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan
+and integration lenses were clean. One medium, corrected:
+- **The outer `CLEANUP` override was untested.** Round 1 added a removal before publishing, and the only `CLEANUP`
+  test then reached that inner removal alone. Deleting the outer override, which turns an earlier refusal into
+  `CLEANUP` when its work directory cannot be removed, failed no test, so a caller could be told `STATUS` while
+  plaintext remained. A refusal whose work directory then cannot be removed is now tested to report `CLEANUP`.
+
+Lows corrected, none deferred:
+- **gpgconf's answer.** `gpgconf --list-dirs sysconfdir` prints a named directory raw; only the unnamed listing
+  is percent-escaped. The percent-decoding turned a literal `%41` in the path into another directory, so a global
+  configuration there was admitted. The answer is now taken as printed, and anything but exactly one absolute
+  path ended by one newline refuses (CRIT-9B1-R2-1; checked against the real gpgconf 2.5.21).
+- **Windows.** The owner-only check admitted any directory on Windows, where modes say nothing about access. No
+  private root qualifies there now, so `encryptOnce` refuses before any GnuPG call, and the named limit says so
+  (SEC-9B1-R2-2).
+- **Pins.** A pin that only converts to a fingerprint, such as a one-element array, passed. Pins must now be
+  strings (CRIT-9B1-R2-2).
+- **Record bounds.** The container admitted a `manifest.json` of up to 16 MiB, which the manifest reader refuses
+  over 4 MiB. Each record is now held to its own reader's bound, one `RECORD_BYTES` map shared by the readers
+  and the container (CRIT-9B1-R2-3).
+- **Fixture.** The ephemeral key's home was created before its path-length check, so a failed check left it
+  behind (T-9B1-R2-8).
+- **Tests.** New cases cover:
+  - a duplicated or second `KEY_CONSIDERED`, and a `sec` record without `ssb`;
+  - the environment and bounds of every GnuPG call;
+  - the private root's group bits, a linked root and another user's root;
+  - the work directory's, homes' and plaintext files' modes;
+  - the ciphertext name as the contract spells it;
+  - every container bound met exactly, and the entry bound on reading;
+  - the build's read-back self-check, through a chunk name too long for the dialect's name field;
+  - empty and block-aligned USTAR entries;
+  - a planted ambient environment.
+
+  (COR-9B1-R2-1/2, T-9B1-R2-2 to T-9B1-R2-7, SEC-9B1-R2-1.)
+- **Wording.** The contract's secret-material sentence now names the recorded limit, its "every call" is
+  narrowed to every `gpg` call, and its runbook citation is a relative link. The runbook names the
+  global-configuration requirement. The 9b row carries its split note, and the CLI reference index names 9b.1
+  (PLAN-9B1-R2-1/2/3, INT-9B1-R2-1/2, COR-9B1-R2-3).
+
+A 30-mutant sweep over the corrected guards and the round's named mutants left no survivor. That includes the
+owner check's uid half, which no earlier test covered.
 

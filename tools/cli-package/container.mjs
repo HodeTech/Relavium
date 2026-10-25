@@ -12,7 +12,7 @@ import { join, posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
 import { readOrdinaryFile, sha256 } from './files.mjs';
-import { MANIFEST_FILE, validateManifest } from './manifest.mjs';
+import { MANIFEST_FILE, RECORD_BYTES, validateManifest } from './manifest.mjs';
 import { readUstar, writeUstar } from './ustar.mjs';
 
 export const CONTAINER_LIMITS = Object.freeze({
@@ -62,12 +62,18 @@ function recorded(list) {
 }
 
 /**
- * Check a container's entries as a whole: exactly the three records and one map per manifest output,
- * each map the manifest's and the finalizer record's, the record naming exactly the manifest's files.
+ * Check a container's entries as a whole: exactly the three records, each within the bound its reader
+ * applies, and one map per manifest output, each map the manifest's and the finalizer record's, the
+ * record naming exactly the manifest's files.
  * @param {Map<string, Buffer>} files
  */
 function checkContents(files) {
   for (const name of RECORDS) if (!files.has(name)) refuseCustody('CONTAINER_SET');
+  for (const name of RECORDS) {
+    if (/** @type {Buffer} */ (files.get(name)).length > RECORD_BYTES[name]) {
+      refuseCustody('CONTAINER_RECORD');
+    }
+  }
   const manifest = (() => {
     try {
       return validateManifest(

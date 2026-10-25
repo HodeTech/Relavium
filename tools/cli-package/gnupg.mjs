@@ -1,8 +1,9 @@
 /**
  * The isolated GnuPG boundary of the custody tools (Step 9b.1; packaging.md, "Recipient custody").
- * GnuPG is release tooling, never a runtime dependency. Every call runs the resolved absolute binary
- * through the shell-free, bounded `runCommand`, in a fresh owner-only home the tools create themselves,
- * with no per-home options file, keyring, agent or key discovery. GnuPG still reads its installation's
+ * GnuPG is release tooling, never a runtime dependency. Every call runs a resolved absolute binary
+ * through the shell-free, bounded `runCommand` in the isolated environment. Every `gpg` call runs in a
+ * fresh owner-only home the tools create themselves, with no per-home options file, keyring, agent or
+ * key discovery; the one `gpgconf` query takes no home. GnuPG still reads its installation's
  * system-wide `gpg.conf` under `--no-options`, so a global configuration refuses before any call that
  * handles a key. Only status lines, colon records, the version line and the configuration directory
  * are read; other human-readable output and stderr are never read or surfaced.
@@ -211,14 +212,11 @@ export async function assertNoGlobalConfig(gpg, { run, env }) {
   } catch {
     return refuseCustody('GPG_UNAVAILABLE');
   }
-  let directory;
-  try {
-    // gpgconf percent-escapes special characters in the directories it lists.
-    directory = decodeURIComponent(String(stdout).trim());
-  } catch {
-    return refuseCustody('GPG_CONFIG');
-  }
-  if (!isAbsolute(directory)) refuseCustody('GPG_CONFIG');
+  // A named directory is printed raw and ended by one newline; only the unnamed listing is
+  // percent-escaped. Anything that is not exactly one absolute path refuses.
+  const text = String(stdout);
+  const directory = text.endsWith('\n') ? text.slice(0, -1) : '';
+  if (!isAbsolute(directory) || /[\r\n\0]/u.test(directory)) refuseCustody('GPG_CONFIG');
   for (const name of ['gpg.conf', 'common.conf']) {
     if (existsSync(join(directory, name))) refuseCustody('GPG_CONFIG');
   }

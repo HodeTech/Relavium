@@ -150,13 +150,35 @@ test('every call is isolated, and encryption never passes a flag that widens it'
 });
 
 test('the environment is isolated in the C locale and every home is owner-only', () => {
-  const env = gnupgEnvironment(scratch);
+  // Planted in this process's environment, so a builder that leaked it would carry them.
+  const planted = {
+    GNUPGHOME: '/planted',
+    GPG_AGENT_INFO: '/planted',
+    GPG_TTY: '/planted',
+    GNUPG_HOME: '/planted',
+    LD_PRELOAD: '/planted',
+    DYLD_INSERT_LIBRARIES: '/planted',
+    LANG: 'tr_TR.UTF-8',
+    LC_ALL: 'tr_TR.UTF-8',
+  };
+  const saved = Object.keys(planted).map((name) => [name, process.env[name]]);
+  Object.assign(process.env, planted);
+  let env;
+  try {
+    env = gnupgEnvironment(scratch);
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
   assert.equal(env.LANG, 'C');
   assert.equal(env.LC_ALL, 'C');
   for (const name of ['HOME', 'TMPDIR', 'XDG_CONFIG_HOME']) assert.equal(env[name], scratch, name);
-  for (const name of ['GNUPGHOME', 'GPG_AGENT_INFO', 'GPG_TTY', 'GNUPG_HOME']) {
+  for (const name of Object.keys(planted).filter((key) => !['LANG', 'LC_ALL'].includes(key))) {
     assert.equal(env[name], undefined, name);
   }
+  assert.ok(!Object.values(env).includes('/planted'));
   const home = createGnupgHome(scratch, 'owner-only');
   if (process.platform !== 'win32') assert.equal(statSync(home).mode & 0o777, 0o700);
 });
@@ -174,6 +196,22 @@ test('a global configuration in the sysconfdir gpgconf names refuses', async () 
   const other = createGnupgHome(scratch, 'sysconf-other');
   writeFileSync(join(other, 'scdaemon.conf'), 'disable-ccid\n');
   await check(`${other}\n`);
+  // A named directory is printed raw: a literal `%41` is part of the path, never an escape.
+  const raw = createGnupgHome(scratch, 'sysconf %41');
+  writeFileSync(join(raw, 'gpg.conf'), 'encrypt-to 0123456789ABCDEF\n');
+  await assert.rejects(check(`${raw}\n`), refuses('GPG_CONFIG'));
+  // Anything but exactly one absolute path ended by one newline refuses.
+  for (const answer of [
+    'relative/dir\n',
+    '\n',
+    '',
+    empty,
+    `${empty}\n${empty}\n`,
+    `${empty}\r\n`,
+    `${empty}\0\n`,
+  ]) {
+    await assert.rejects(check(answer), refuses('GPG_CONFIG'), JSON.stringify(answer));
+  }
   // The real installation has none, so every encryption may proceed.
   const real = resolveGpg();
   await assertNoGlobalConfig(real, { run: runCommand, env: gnupgEnvironment(scratch) });

@@ -42,9 +42,11 @@ function read(tar, overrides = {}) {
   return { files, order };
 }
 
+/** Unaligned, empty, exactly one block, and one byte over a block: every padding case. */
 const ENTRIES = [
   ['manifest.json', Buffer.from('{"synthetic":true}\n')],
-  ['maps/index.js.map', Buffer.from('{"version":3}')],
+  ['empty.json', Buffer.alloc(0)],
+  ['maps/index.js.map', Buffer.alloc(512, 0x62)],
   ['metafile-esm.json', Buffer.alloc(513, 0x61)],
 ];
 

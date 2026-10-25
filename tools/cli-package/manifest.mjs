@@ -50,6 +50,15 @@ const SOURCE = new RegExp(
 );
 const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,64})?$/u;
 const LIMITS = Object.freeze({ outputs: 256, sources: 8192, recordBytes: 1024 * 1024 });
+/**
+ * The bound each staged record's reader applies, by file name: the custody container carries no record
+ * its reader would refuse.
+ */
+export const RECORD_BYTES = Object.freeze({
+  'finalized.json': LIMITS.recordBytes,
+  [MANIFEST_FILE]: LIMITS.recordBytes * 4,
+  'metafile-esm.json': 4 * 1024 * 1024,
+});
 
 export class ManifestError extends Error {
   /** @param {string} code */
@@ -188,7 +197,9 @@ export async function sealPrivateManifest({
   let record;
   try {
     record = JSON.parse(
-      readOrdinaryFile(join(staging, 'finalized.json'), LIMITS.recordBytes).toString('utf8'),
+      readOrdinaryFile(join(staging, 'finalized.json'), RECORD_BYTES['finalized.json']).toString(
+        'utf8',
+      ),
     );
   } catch {
     refuse('RECORD');
@@ -329,7 +340,7 @@ export function readPrivateManifest(staging) {
   let value;
   try {
     value = JSON.parse(
-      readOrdinaryFile(join(staging, MANIFEST_FILE), LIMITS.recordBytes * 4).toString('utf8'),
+      readOrdinaryFile(join(staging, MANIFEST_FILE), RECORD_BYTES[MANIFEST_FILE]).toString('utf8'),
     );
   } catch {
     refuse('UNREADABLE');

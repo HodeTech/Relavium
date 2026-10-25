@@ -11,7 +11,7 @@ import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
 import { PACKAGE_TEST_MODE, originFromEnvironment, validatePackageReceipt } from './binding.mjs';
 import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
-import { MANIFEST_FILE, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
+import { MANIFEST_FILE, RECORD_BYTES, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
 import { symbolicateCandidate } from './symbolicate.mjs';
 
 export function producerNodeMajor(root) {
@@ -59,7 +59,9 @@ export function expectedPackManifest(root) {
 export function finalizedPublicFiles(root, staging) {
   const cli = join(root, 'apps/cli');
   const files = new Map();
-  const graph = JSON.parse(readOrdinaryFile(join(staging, 'metafile-esm.json'), 4 * 1024 * 1024));
+  const graph = JSON.parse(
+    readOrdinaryFile(join(staging, 'metafile-esm.json'), RECORD_BYTES['metafile-esm.json']),
+  );
   const outputs = Object.keys(graph.outputs)
     .map((path) => path.replaceAll('\\', '/'))
     .filter((path) => !path.endsWith('.map'));

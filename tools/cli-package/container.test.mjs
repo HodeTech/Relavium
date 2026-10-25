@@ -6,16 +6,17 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { before, test } from 'node:test';
 import { candidate, fresh, posixModes, seal } from './candidate-fixture.mjs';
 import { CONTAINER_LIMITS, buildPrivateContainer, readPrivateContainer } from './container.mjs';
 import { CustodyError } from './custody-error.mjs';
-import { readPrivateManifest } from './manifest.mjs';
+import { RECORD_BYTES, readPrivateManifest } from './manifest.mjs';
 import { writeUstar } from './ustar.mjs';
 
 const refuses = (code) => (error) => error instanceof CustodyError && error.code === code;
@@ -252,6 +253,19 @@ test('the entry, count and total bounds refuse before a container is written', (
     refuses('CONTAINER_SIZE'),
   );
   const { bytes } = buildPrivateContainer(copy);
+  // Exactly at every bound is admitted, on building and on reading.
+  const exact = {
+    entryBytes: largest,
+    entries: 3 + readdirSync(join(copy, 'maps')).length,
+    totalBytes: bytes.length,
+  };
+  assert.deepEqual(buildPrivateContainer(copy, exact).bytes, bytes);
+  assert.equal(readPrivateContainer(bytes, exact).files.size, exact.entries);
+  // Reading bounds each entry as building does.
+  assert.throws(
+    () => readPrivateContainer(bytes, { ...CONTAINER_LIMITS, entryBytes: largest - 1 }),
+    refuses('CONTAINER_FILE_SIZE'),
+  );
   // The total is refused before the archive is assembled, not by the read-back check.
   assert.throws(
     () => buildPrivateContainer(copy, { ...CONTAINER_LIMITS, totalBytes: bytes.length - 1 }),
@@ -265,6 +279,60 @@ test('the entry, count and total bounds refuse before a container is written', (
     () => readPrivateContainer(bytes, { ...CONTAINER_LIMITS, totalBytes: bytes.length - 1 }),
     refuses('CONTAINER_SIZE'),
   );
+});
+
+test("each record stays within its reader's bound, on building and on reading", () => {
+  /** @param {string} name @param {number} extra */
+  const padded = (name, extra) =>
+    staging((copy) => {
+      const path = join(copy, name);
+      const bytes = readFileSync(path);
+      // Trailing whitespace keeps the JSON valid, so only the size is judged.
+      const padding = Buffer.alloc(RECORD_BYTES[name] - bytes.length + extra, 0x20);
+      writeFileSync(path, Buffer.concat([bytes, padding]));
+    });
+  for (const name of ['finalized.json', 'manifest.json', 'metafile-esm.json']) {
+    buildPrivateContainer(padded(name, 0));
+    assert.throws(() => buildPrivateContainer(padded(name, 1)), refuses('CONTAINER_RECORD'), name);
+  }
+  // The manifest reader recovery uses refuses that manifest too.
+  assert.throws(
+    () => readPrivateManifest(padded('manifest.json', 1)),
+    (error) => error instanceof Error && 'code' in error && error.code === 'UNREADABLE',
+  );
+  const files = readPrivateContainer(buildPrivateContainer(staging()).bytes).files;
+  const over = new Map(files);
+  over.set(
+    'manifest.json',
+    Buffer.concat([files.get('manifest.json'), Buffer.alloc(RECORD_BYTES['manifest.json'], 0x20)]),
+  );
+  assert.throws(
+    () => readPrivateContainer(writeUstar([...over], () => 0o600)),
+    refuses('CONTAINER_RECORD'),
+  );
+});
+
+test('a written container that does not read back refuses: the self-check', () => {
+  // A chunk name too long for the dialect's 100-byte name field is truncated by the writer, and
+  // only the read-back of the written container notices.
+  const copy = staging((dir) => {
+    const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+    const record = JSON.parse(readFileSync(join(dir, 'finalized.json'), 'utf8'));
+    const [output] = manifest.outputs;
+    const long = `dist/${'x'.repeat(100)}.js`;
+    renameSync(
+      join(dir, 'maps', posix.basename(output.map.path)),
+      join(dir, 'maps', `${posix.basename(long)}.map`),
+    );
+    for (const item of record.outputs) if (item.path === output.path) item.path = long;
+    for (const item of record.maps) if (item.path === output.map.path) item.path = `${long}.map`;
+    output.path = long;
+    output.map.path = `${long}.map`;
+    manifest.outputs.sort((left, right) => (left.path < right.path ? -1 : 1));
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+    writeFileSync(join(dir, 'finalized.json'), JSON.stringify(record));
+  });
+  assert.throws(() => buildPrivateContainer(copy), refuses('CONTAINER_TAR_NAME'));
 });
 
 test('a container outside the owner-only dialect, or whose contents disagree, refuses on reading', () => {

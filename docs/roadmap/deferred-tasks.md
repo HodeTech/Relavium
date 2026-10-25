@@ -786,12 +786,16 @@ Recorded with the Step 9b.1 implementation
 ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).
 **Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
 
-- [ ] **The custody tests do not run on Windows.** *Low; a named limit.* No Windows job runs
-  `test:acceptance-tools`; the Windows image's only `gpg` is Git for Windows' MSYS2 build in `usr\bin`,
-  never exercised here, and the tests use POSIX process and permission tools (`ps`, owner-only modes), so
-  `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. **Re-check:** before a release
-  producer runs on Windows, run the custody tests on that runner and record which `gpg.exe` `resolveGpg`
-  selects and whether its Windows path handling passes. *(low · tools/cli-package/gnupg.mjs)*
+- [ ] **The custody tests do not run on Windows, and `encryptOnce` refuses there.** *Low; a named limit.*
+  No Windows job runs `test:acceptance-tools`; the Windows image's only `gpg` is Git for Windows' MSYS2
+  build in `usr\bin`, never exercised here, and the tests use POSIX process and permission tools (`ps`,
+  owner-only modes), so `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. Windows modes
+  say nothing about access and no ACL check exists, so since round 2 (SEC-9B1-R2-2) no private root
+  qualifies there and every encryption refuses `PRIVATE_ROOT` before any GnuPG call. **Re-check:** before
+  a release producer runs on Windows, add an ACL-based owner-only check for the private root and its work
+  directory, then run the custody tests on that runner and record which `gpg.exe` `resolveGpg` selects
+  and whether its Windows path handling and gpgconf's line ending pass. *(low ·
+  tools/cli-package/custody.mjs, tools/cli-package/gnupg.mjs)*
 - [ ] **An interrupted custody test run can leave its ephemeral key home.** *Low; test-only.* *(rigor pass,
   SEC-9B1-PS-2)* `gpg-fixture.mjs` removes the round-trip key's home, its synthetic secret export and its
   agent in `after()`, which a SIGINT to `node --test` skips: the `rg-*` and `rge-*` directories under the

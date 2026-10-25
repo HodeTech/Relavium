@@ -41,8 +41,10 @@ export function processesNaming(home) {
  */
 export function ephemeralKey() {
   const gpg = resolveGpg();
-  const home = mkdtempSync(join(tmpdir(), 'rg-'));
-  assert.ok(home.length + SOCKET.length < 100, 'the ephemeral key home path is too long');
+  // Checked before anything is created: `mkdtemp` appends six characters to the prefix.
+  const prefix = join(tmpdir(), 'rg-');
+  assert.ok(prefix.length + 6 + SOCKET.length < 100, 'the ephemeral key home path is too long');
+  const home = mkdtempSync(prefix);
   const exportDirectory = mkdtempSync(join(tmpdir(), 'rge-'));
   const env = { PATH: process.env.PATH ?? '', LANG: 'C', LC_ALL: 'C' };
   /** @param {string[]} args @param {string} [input] */

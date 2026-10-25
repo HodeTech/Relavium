@@ -71,16 +71,17 @@ export const ciphertextName = (version) => `relavium-${version}-private-maps.tar
  * @returns {{primary: string, subkey: string}}
  */
 export function parsePins(pins) {
+  if (pins === null || typeof pins !== 'object') return refuseCustody('PIN_FORMAT');
+  const { primary, subkey } = /** @type {Record<string, unknown>} */ (pins);
   if (
-    pins === null ||
-    typeof pins !== 'object' ||
     !isDeepStrictEqual(Object.keys(pins).sort(), ['primary', 'subkey']) ||
-    !FINGERPRINT.test(String(/** @type {Record<string, unknown>} */ (pins).primary)) ||
-    !FINGERPRINT.test(String(/** @type {Record<string, unknown>} */ (pins).subkey))
+    typeof primary !== 'string' ||
+    typeof subkey !== 'string' ||
+    !FINGERPRINT.test(primary) ||
+    !FINGERPRINT.test(subkey)
   ) {
     refuseCustody('PIN_FORMAT');
   }
-  const { primary, subkey } = /** @type {{primary: string, subkey: string}} */ (pins);
   return Object.freeze({ primary, subkey });
 }
 
@@ -179,21 +180,19 @@ function plainDirectory(path) {
   }
 }
 
-/** An owner-only directory of this user, not a link; a missing path is not one. */
+/**
+ * An owner-only directory of this user, not a link; a missing path is not one. Windows modes say
+ * nothing about access and no ACL check exists, so no directory there is one.
+ */
 function privateDirectory(path) {
+  if (process.platform === 'win32') return false;
   let info;
   try {
     info = lstatSync(path);
   } catch {
     return false;
   }
-  return (
-    info.isDirectory() &&
-    !info.isSymbolicLink() &&
-    (process.platform === 'win32' ||
-      ((info.mode & 0o077) === 0 &&
-        (typeof process.getuid !== 'function' || info.uid === process.getuid())))
-  );
+  return info.isDirectory() && (info.mode & 0o077) === 0 && info.uid === process.getuid?.();
 }
 
 /**

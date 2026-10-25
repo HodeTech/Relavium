@@ -530,30 +530,41 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   sealed staging in its own layout: `finalized.json`, `manifest.json`, `metafile-esm.json` and
   `maps/<chunk>.js.map`, sorted, with no host path. The staging must hold exactly those records
   and the manifest's maps as regular files of at most 16 MiB each, at most 259 entries and
-  128 MiB in total (the total refused before the archive is assembled). Every map's digest must
+  128 MiB in total (the total refused before the archive is assembled). Each record must also
+  be within the bound its own reader applies (`RECORD_BYTES`: `finalized.json` 1 MiB,
+  `manifest.json` and `metafile-esm.json` 4 MiB), so the container never carries a record
+  recovery would refuse. Every map's digest must
   be the manifest's, and the finalizer's record must name exactly the manifest's outputs and
   maps with each map's size. The manifest records no digest for the metafile, which must parse
-  as a JSON object. Reading a container back applies the same checks, and a decrypted container
+  as a JSON object. The written container is read back before it is returned, so a path the
+  dialect's 100-byte name field cannot hold refuses (`CONTAINER_TAR_NAME`). Reading a container
+  back applies the same checks, and a decrypted container
   extracted with `tar -x` is a staging the manifest reader consumes unchanged.
 - **The isolated runner.** `gnupg.mjs` resolves `gpg` from absolute PATH entries only and
   refuses one older than GnuPG 2.2.8; the installation — its binary, its `gpgconf` and its
-  system-wide configuration directory — is trusted. Every call runs in a fresh owner-only home
-  the tool creates, with `--no-options --no-autostart --no-keyring`, the C locale and an
-  isolated environment, bounded by `runCommand`. GnuPG still reads the installation's
+  system-wide configuration directory — is trusted. Every call runs in the C locale and an
+  isolated environment, bounded by `runCommand`; every `gpg` call also runs in a fresh
+  owner-only home the tool creates, with `--no-options --no-autostart --no-keyring`. GnuPG
+  still reads the installation's
   `<sysconfdir>/gpg.conf` under `--no-options`, and its `[force]` options override the command
   line, so before any key is handled the installation's `gpgconf --list-dirs sysconfdir` is
-  read and a `gpg.conf` or `common.conf` there refuses (`GPG_CONFIG`): a global configuration
-  could add or hide a recipient, redirect the output or log the session key. The recipient listing (`--show-keys`) uses its own home
+  read — the one call without a home — and a `gpg.conf` or `common.conf` there refuses
+  (`GPG_CONFIG`): a global configuration
+  could add or hide a recipient, redirect the output or log the session key. `gpgconf` prints a
+  named directory raw, ended by one newline; anything but exactly one absolute path refuses. The recipient listing (`--show-keys`) uses its own home
   and the default trust model, because GnuPG 2.4 cannot list an expired or revoked key under
   `--trust-model always` without a trust database; that home may gain only GnuPG's own
   `trustdb.gpg`. Encryption uses `--recipient-file`, `--trust-model always` (the pinned
   fingerprints and the colon pre-check are the assurance), an AES-256 preference, no
   compression and a fixed literal name, in a home that may gain only `random_seed`.
 - **The recipient pre-check.** The recipient file is read bounded and copied, so the bytes
-  checked are the bytes encrypted to, and pins are exactly two 40-digit uppercase fingerprints
-  (OpenPGP v4). An armored secret key refuses from its bytes; other secret material refuses
-  from the listing as secret, or as unreadable where GnuPG cannot list it. The colon listing
-  then refuses,
+  checked are the bytes encrypted to, and pins are exactly two strings, each a 40-digit
+  uppercase fingerprint (OpenPGP v4). An armored secret key refuses from its bytes; secret
+  material GnuPG lists refuses as secret, and a file GnuPG cannot list refuses as unreadable.
+  Secret material GnuPG neither lists nor reads, such as binary secret packets after the
+  armored block, is admitted and never reaches the ciphertext, the record or a log (a named
+  limit in [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9b1--named-limits-2026-10-25)).
+  The colon listing then refuses,
   in this order: secret material, a missing pinned primary, more than one listed key, a missing
   pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
   encryption capability, a creation time in the future, or an encryption subkey other than
@@ -564,7 +575,9 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
 - **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
   holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
   private root overlap (compared by device and inode, so a second spelling of one directory
-  does not hide the overlap), or when either is missing or the root is not owner-only. Success requires exit 0, one
+  does not hide the overlap), or when either is missing or the root is not an owner-only
+  directory of this user. No root qualifies on Windows, where modes say nothing about access
+  and no ACL check exists. Success requires exit 0, exactly one
   `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and
   AES-256; an AEAD profile refuses) before one `END_ENCRYPTION`, exactly the expected work
   files, a ciphertext within the container's size plus 64 KiB whose public-key packets name
@@ -592,10 +605,12 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   PGP private-key block.
 - **Where it runs.** The custody tests are part of `test:acceptance-tools`, so they run in local
   `pnpm run ci` and the four Ubuntu jobs inside `ci`'s needs, against the runner's GnuPG; they
-  fail, never skip, without GnuPG ≥ 2.2.8 (`docs/runbooks/local-dev-setup.md`). They do not run
+  fail, never skip, without GnuPG ≥ 2.2.8 or with a global configuration
+  ([local-dev-setup.md](../../runbooks/local-dev-setup.md)). They do not run
   on Windows: no Windows job runs `test:acceptance-tools`, the image's only `gpg` is Git for
   Windows' MSYS2 build, never exercised here, and the tests use POSIX process and permission
-  tools. The 2.2.8 floor is enforced by the version check without being exercised.
+  tools; `encryptOnce` itself refuses there. The 2.2.8 floor is enforced by the version check
+  without being exercised.
 
 ## Package-test and release modes
 
