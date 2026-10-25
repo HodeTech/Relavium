@@ -85,7 +85,11 @@ Windows): a colon pre-check refuses missing, expired, revoked, unusable or unexp
 secret material it can detect, the ciphertext must be SEIPDv1 with MDC and
 AES-256 naming exactly the pinned subkey, an existing ciphertext is never overwritten, the plaintext
 work directory is removed on every path and every refusal is a fixed `PACKED_CLI_CUSTODY_*` code.
-`custody-fixtures/` holds the committed synthetic public keys; no secret key is committed. No private map,
+`custody-fixtures/` holds the committed synthetic public keys; no secret key is committed. Step 9b.2 adds, again
+with nothing calling it yet, the release binding receipt v1 with its validator and verified reuse
+(`release-binding.mjs`, whose import closure starts no process), the scope gate and the sealer that writes the
+receipt once after re-reading the ciphertext (`release-custody.mjs`), and the production recipient loader
+(`release-recipient.mjs`), which refuses in Wave 3 because no recipient is committed. No private map,
 metafile, manifest or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
 sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule

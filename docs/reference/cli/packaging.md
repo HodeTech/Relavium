@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); the remaining Step 9 custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); Step 9b.2's ciphertext reuse, release binding receipt v1, absent production loader and scope separation are implemented on `development` and under review (synthetic recipients only); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -615,6 +615,97 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   neither exercised here, and the tests use POSIX process and permission
   tools; `encryptOnce` itself refuses there. The 2.2.8 floor is enforced by the version check
   without being exercised.
+
+### Recipient custody implementation boundary — Step 9b.2
+
+Step 9b.2 implements the reuse of a retained ciphertext without re-encryption, the release binding
+receipt's schema v1 with its validator and sealer, the production recipient loader (absent in Wave 3)
+and the separation of synthetic and production scope
+([decisions](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-preflight-decisions--2026-10-25)).
+It is release tooling with synthetic controls only, in new modules: no Step 9b.1 module changes and
+nothing outside its tests calls it. Step 9d wires it into the originating job, binds the receipt's
+origin and map-check claims to the trusted run, and replaces the interim release guard, which still
+refuses every artifact. Its review and acceptance are recorded in the
+[Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
+- **The production recipient.** `release-recipient.mjs` loads it from one committed directory,
+  `tools/cli-package/release-recipient/`, holding exactly `recipient.asc` (the
+  `gpg --armor --export '<subkey>!'` export, at most 64 KiB) and `pins.json`:
+  `{"version": 1, "recipients": [{"primary", "subkey", "status"}]}` with 1–32 entries of 40-digit
+  uppercase fingerprints, each `current` or `retired`, exactly one `current` and no subkey twice. An
+  entry is never removed, so a candidate sealed before a rotation still verifies. There is no
+  environment variable, flag or fallback. In Wave 3 the directory does not exist and the loader
+  refuses `PRODUCTION_RECIPIENT_ABSENT`; a linked or malformed directory refuses
+  `PRODUCTION_RECIPIENT_INVALID`, and a history naming a key of the committed synthetic fixtures
+  refuses `FIXTURE_RECIPIENT`. The loaded value is frozen and branded: only that value counts as a
+  production recipient, never a copy. Wave 4b commits the files.
+- **Scope.** A synthetic candidate is one whose private manifest records the fixtures' sentinel
+  source, commit `c`×40 and tree `b`×40. `encryptCandidate` admits production scope only with the
+  loaded recipient and a clean, non-synthetic candidate, and encrypts to the recipient's current
+  pins (`RECIPIENT_SOURCE`, `DIRTY_SOURCE`, `SYNTHETIC_SOURCE`). It admits synthetic scope only with a
+  synthetic candidate (`FIXTURE_SCOPE`), so neither a fixture key nor the per-run round-trip key can
+  encrypt a product staging. An unknown scope refuses `SCOPE`, and a destination already holding a
+  receipt refuses `ALREADY_SEALED`. Every one of these refuses before any GnuPG call; `encryptOnce`
+  then runs unchanged.
+- **The release binding receipt v1.** The public `release-binding-receipt.json` beside the ciphertext,
+  the name the interim guard already keys on:
+
+  | Field | Content | Checked here | Trust Step 9d adds |
+  | --- | --- | --- | --- |
+  | `version`, `kind` | `1`, `"release_binding"` | exact | — |
+  | `packageVersion` | the private manifest's version | equals the expectation | the tag |
+  | `source` | the manifest's `{commit, tree, dirty}` | the commit equals the expectation; production refuses `dirty` and the synthetic source, synthetic requires it | the run's commit |
+  | `tarball` | `{name, bytes, sha256}`, `relavium-<version>.tgz`, 18 B–16 MiB | the name follows the version; the sealer binds the digest to the manifest's `tarballSha256` | — |
+  | `ciphertext` | `{name, bytes, sha256}`, `relavium-<version>-private-maps.tar.gpg`, 1 B–128 MiB + 64 KiB | the name follows the version; the sealer re-reads the file | — |
+  | `recipient` | `{primary, subkey}` | production: a pair of the loaded history; synthetic: the expected pins | — |
+  | `toolchain` | the manifest's node, pnpm, typescript, tsup and esbuild versions, and the GnuPG version | format | — |
+  | `target` | the manifest's target | format | — |
+  | `inputs` | the manifest's per-file lock and configuration digests, by path | format: 1–64 repository-relative paths | — |
+  | `mapCheck` | `{"status": "complete"}` | exact | a successful `ci` run with the product map controls at `source.commit` |
+  | `origin` | `{kind: "github", repository, workflow, runId, runAttempt, event: "push", source}` | format; `source` equals `source.commit` | the originating run and attempt |
+
+  It carries no map, source, per-source inventory, host path or user ID, and no scope field: scope
+  always comes from the verifier's expectation. Every field is a claim until Step 9d binds the last
+  two. Release smoke on a reused candidate derives the public file inventory and package metadata from
+  the digest-verified tarball (Step 9d).
+- **Canonical bytes.** The receipt is `JSON.stringify(receipt, null, 2)` plus a newline, its fields in
+  the table's order and its inputs sorted by path. A verifier parses the exact bytes, at most 64 KiB,
+  and refuses `BINDING_BYTES` for anything but the canonical serialization of the value it validates:
+  a duplicated key, a reordering, other whitespace, a BOM or trailing data. Verifiers never
+  re-serialize a receipt.
+- **The validator.** `validateReleaseBinding(value, expected)` and `parseReleaseBinding(bytes, expected)`
+  take a required expectation: `{scope: 'production', recipient, packageVersion, source}` with the
+  loaded recipient, whose whole history verifies, or `{scope: 'synthetic', pins, packageVersion}`.
+  They refuse `BINDING_VERSION`, `BINDING_SHAPE` (an unknown, missing or malformed field at any level),
+  `BINDING_CANDIDATE`, `BINDING_NAME`, `BINDING_SIZE`, `BINDING_DIRTY`, `BINDING_SCOPE`,
+  `RECIPIENT_SOURCE`, `BINDING_RECIPIENT`, `BINDING_MAP_CHECK` and `BINDING_ORIGIN`.
+- **The sealer.** `sealReleaseBinding(record, {origin})` accepts only a record `encryptCandidate`
+  returned and not yet sealed (`RECORD_SOURCE`); a failed seal leaves the record usable. It refuses an
+  existing receipt before reading anything (`ALREADY_SEALED`), admits exactly the tarball and the
+  ciphertext in the destination (`CANDIDATE_ENTRIES`), and re-reads the ciphertext's size and SHA-256
+  against the record (`CIPHERTEXT_DRIFT`) and the tarball's digest against the manifest
+  (`TARBALL_DRIFT`). It validates its own receipt, then publishes it once: written to a fresh sibling,
+  then hard-linked to its name, which never replaces an existing receipt. A sibling that cannot be
+  removed after the link is left behind rather than reported, because the receipt is then published.
+  A ciphertext no record names, after a crash between encryption and sealing, can never be sealed and
+  needs manual recovery.
+- **Reuse.** `verifyRetainedCandidate({directory, expected})` admits a directory holding exactly the
+  receipt, the tarball and the ciphertext (`CANDIDATE_ENTRIES`) and parses the receipt. It checks each
+  asset's size (`CANDIDATE_SIZE`), reads it as a bounded ordinary file (`CANDIDATE_ASSET`), checks its
+  SHA-256 (`CANDIDATE_DIGEST`), and returns the verified bytes, never a path to open again. It writes,
+  renames and removes nothing. Its module imports nothing that can start a process, so reuse makes no
+  GnuPG call, and it cannot re-check the ciphertext's recipients: a named limit.
+- **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`, a host failure `UNEXPECTED`; no
+  path, key or receipt content surfaces.
+- **Where it runs.** `release-recipient.test.mjs`, `release-binding.test.mjs`, `release-custody.test.mjs`
+  and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
+  needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
+  - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
+  - only the release gate imports `encryptOnce`;
+  - the receipt module's import closure starts no process;
+  - the interim guard still refuses a complete synthetic candidate;
+  - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
+    directory is committed.
 
 ## Package-test and release modes
 

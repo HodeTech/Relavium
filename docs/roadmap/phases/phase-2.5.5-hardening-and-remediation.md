@@ -3704,7 +3704,7 @@ No credential values or request captures belong in tracked evidence.
 | NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
 | 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each map's digest checked against the private manifest and its size against the finalizer's record, which must name exactly the manifest's outputs and maps (the metafile must be a JSON object); an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Independently accepted on `development` at `147c2788` (2026-10-25) ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b1-acceptance--2026-10-25)).* |
-| 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. |
+| 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25)).* |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
@@ -10377,3 +10377,47 @@ Engineering defaults recorded with the rulings:
 - **Gate.** A rigor pass and a generated mutation sweep before the first round; the full `pnpm run ci` alone; the
   custody tests on Ubuntu 24.04 with GnuPG 2.4.4 in Docker; one new complete cumulative round and a separate
   crypto/custody security sitting.
+
+### Wave 3 Step 9b.2 implementation checkpoint — 2026-10-25
+
+Step 9b.2 is implemented on `development` in `84b8e455..4d49176b` and this record, under the
+[preflight decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25). Its canonical description is packaging.md's
+[Step 9b.2 boundary](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b2). No Step
+9b.1 module changed, and nothing outside the new tests calls the new modules.
+- **The production recipient** (`release-recipient.mjs`). The loader reads the committed
+  `tools/cli-package/release-recipient/` directory and refuses `PRODUCTION_RECIPIENT_ABSENT` in Wave 3, because no
+  recipient is committed. A linked or malformed directory refuses `PRODUCTION_RECIPIENT_INVALID`, and a history naming
+  a committed fixture key refuses `FIXTURE_RECIPIENT`. The loaded value is branded through a module-private set.
+- **The receipt, its validator and reuse** (`release-binding.mjs`). Schema v1 carries every field the contract lists,
+  with a required expectation and canonical bytes. Reuse admits exactly the three files and returns the verified bytes.
+  The module's import closure, pinned by a test, holds only `archive.mjs`, `custody-error.mjs`, `files.mjs`,
+  `release-recipient.mjs` and `ustar.mjs`.
+- **The gate and the sealer** (`release-custody.mjs`). Every scope refusal comes before any GnuPG call, and a
+  module-private registry ties the sealer to the records the gate returned. The receipt is published once through a
+  hard link, and a sibling left after the link is not a refusal.
+- **Tests.** Four new files with 34 tests join `test:acceptance-tools`: `release-recipient`, `release-binding`,
+  `release-custody` and `release-scope`. They include a production round trip, in which an ephemeral key under a
+  rotated history decrypts to the container whose manifest the receipt binds, and fault injection after the link and
+  after encryption.
+- **Docs.** packaging.md's Step 9b.2 boundary is the schema's canonical home. deferred-tasks.md records three named
+  limits (an orphaned ciphertext, no recipient re-check on reuse, Windows not exercised), the Step 9d handoffs and a
+  Wave 4b clause on the recipient's committed form.
+
+**Sweeps.** A generated sweep mutated every one-line refusal, condition clause and comparison of the three modules:
+131 mutants, 119 killed at first. Five survivors were real gaps and gained cases:
+- a `pending` status beside the current one;
+- a one-entry inputs map;
+- a receipt passed as a `Uint8Array`;
+- a host failure in the gate, and one after encryption.
+
+The other seven are equivalent:
+- the history's type and read checks: removing one leads to a host error that the loader's wrapper maps to the same
+  code, or for an empty history to the one-current rule;
+- the inputs sort comparator, whose keys are unique;
+- the receipt bound's `>=` flip, since no canonical receipt reaches 64 KiB.
+
+24 named semantic mutants, which the generator cannot produce, all fail a test. They cover the brand, the fixture
+denylist, the root's shape, the current pins, the registry's consumption, the best-effort removal, the `EEXIST`
+mapping, the canonical bytes, the sealer's fields and the link-aware presence check.
+
+A rigor pass, the full CI and the Ubuntu 2.4.4 evidence follow before the first round.

@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, and Steps 9b.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, Step 9b.2 implemented and under review with its named limits and handoffs below, and Steps 9c–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -862,6 +862,40 @@ Recorded with the Step 9b.1 acceptance after round 4
   spellings, without the limit. **Re-check:** in Step 9d, create the root and destination as fresh sibling
   directories of the job, or compare against the mount table, before relying on the refusal; narrow the comment
   on the next change to `custody.mjs`. *(low · tools/cli-package/custody.mjs)*
+
+## Wave 3 Step 9b.2 — named limits and handoffs (2026-10-25)
+
+Recorded with the Step 9b.2 implementation
+([decisions](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-preflight-decisions--2026-10-25)).
+The release modules are library code with synthetic controls only: nothing outside their tests calls them.
+**Trigger for every entry:** Step 9d's release integration, or the next change to the file it names.
+
+- [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* A crash after `encryptCandidate`
+  publishes the ciphertext and before `sealReleaseBinding` runs leaves a ciphertext that no record names, and
+  only a record the gate returned in the same process seals. The candidate then needs manual recovery
+  (packaging.md's missing-asset state); it is never re-encrypted. **Re-check:** in Step 9c's reservation
+  states, classify such a directory as incomplete and route it to manual recovery. *(low ·
+  tools/cli-package/release-custody.mjs)*
+- [ ] **Reuse cannot re-check the ciphertext's recipients.** *Low; a named limit.* `verifyRetainedCandidate`
+  binds each asset's size and SHA-256 to the receipt, and the receipt's recipient to the expected history, but
+  re-reading the ciphertext's public-key packets (`ENC_TO`) needs GnuPG, which reuse never calls. The digest
+  ties the bytes to the ones the sealer re-read after encryption checked their single recipient. **Re-check:**
+  if a retained ciphertext can ever come from anything but the sealer, verify its recipients with the isolated
+  runner before reuse. *(low · tools/cli-package/release-binding.mjs)*
+- [ ] **The release modules do not run on Windows.** *Low; a named limit.* Like the 9b.1 tests, the release
+  tests run only in `test:acceptance-tools`, which no Windows job runs; `encryptCandidate` refuses there
+  through `encryptOnce`'s `PRIVATE_ROOT`, while reuse is platform-neutral but unexercised. **Re-check:** with
+  the 9b.1 Windows limit. *(low · tools/cli-package/release-binding.mjs)*
+- [ ] **Step 9d handoffs.** *Scheduled → Step 9d.* Wire `encryptCandidate` and `sealReleaseBinding` into the
+  originating job, with the origin from `originFromEnvironment`; bind the receipt's `origin` to the trusted run
+  and attempt (on reuse, the original run) and `mapCheck` to a successful `ci` run with the product map
+  controls at `source.commit`; derive release smoke's public inventory and package metadata from the
+  digest-verified tarball with the package-test inspector; check the production recipient before any
+  reservation, so a recipient refusal never leaves an incomplete reservation; widen the sealer's directory
+  admission if the package-test receipt travels beside the tarball; replace the interim guard; then update
+  `release-scope.test.mjs`'s interim control that no product path or workflow names a release module. The
+  guard test's non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
+  tools/cli-package/release-custody.mjs, tools/cli-package/release-guard-core.mjs)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
@@ -2743,7 +2777,11 @@ future test cannot silently re-acquire it.
   primary with only the pinned encryption subkey (`gpg --armor --export '<subkey fingerprint>!'`),
   because a second usable encryption subkey refuses. *Added after Step 9b.1's review round 1:* its
   cipher preferences must include AES256, since custody passes an AES-256 preference and refuses any
-  other cipher.
+  other cipher. *Added with Step 9b.2:* the recipient is committed at
+  `tools/cli-package/release-recipient/` as `recipient.asc` and `pins.json`, whose history is append-only
+  (exactly one `current`, a rotated recipient `retired`, never removed); a fixture fingerprint refuses. Wave 4b
+  then updates `release-recipient.test.mjs`'s absence test and `release-scope.test.mjs`'s interim control that no
+  recipient directory is committed. Any expiry margin is passed as the `now` the custody check uses.
 
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
