@@ -89,7 +89,11 @@ function parseHistory(bytes) {
   return Object.freeze(history);
 }
 
-/** Every fingerprint the committed fixtures name. @param {string} file */
+/**
+ * Every fingerprint the committed fixtures' pins file lists. A file that is not exactly a non-empty map of
+ * named primary and subkey pins refuses rather than yield a weaker denylist.
+ * @param {string} file
+ */
 function fixtureFingerprints(file) {
   let pins;
   try {
@@ -97,21 +101,43 @@ function fixtureFingerprints(file) {
   } catch {
     return refuseCustody('PRODUCTION_RECIPIENT_INVALID');
   }
-  if (!isRecord(pins)) refuseCustody('PRODUCTION_RECIPIENT_INVALID');
-  return new Set(
-    Object.values(pins).flatMap((entry) => (isRecord(entry) ? [entry.primary, entry.subkey] : [])),
-  );
+  const entries = isRecord(pins) ? Object.values(pins) : [];
+  if (
+    entries.length === 0 ||
+    !entries.every(
+      (entry) =>
+        isRecord(entry) &&
+        isDeepStrictEqual(Object.keys(entry).sort(), ['primary', 'subkey']) &&
+        isFingerprint(entry.primary) &&
+        isFingerprint(entry.subkey),
+    )
+  ) {
+    refuseCustody('PRODUCTION_RECIPIENT_INVALID');
+  }
+  return new Set(entries.flatMap((entry) => [entry.primary, entry.subkey]));
 }
 
 /**
- * Load the production recipient. `root` and `fixtures` are test seams only; no product path passes them.
- * @param {{root?: string, fixtures?: string}} [options]
+ * Load the production recipient from the committed directory. It takes no argument: there is no other
+ * place a production recipient can come from.
  * @returns {ProductionRecipient}
  */
-export function loadProductionRecipient({
-  root = PRODUCTION_RECIPIENT_ROOT,
-  fixtures = FIXTURE_PINS_FILE,
-} = {}) {
+export function loadProductionRecipient() {
+  return guarded(PRODUCTION_RECIPIENT_ROOT, FIXTURE_PINS_FILE);
+}
+
+/**
+ * The tests' seam: load a recipient from a temporary directory. No product or tooling code may call it;
+ * release-scope.test.mjs pins that permanently.
+ * @param {{root: string, fixtures?: string}} options
+ * @returns {ProductionRecipient}
+ */
+export function loadRecipientForTests({ root, fixtures = FIXTURE_PINS_FILE } = {}) {
+  return guarded(root, fixtures);
+}
+
+/** @param {string} root @param {string} fixtures @returns {ProductionRecipient} */
+function guarded(root, fixtures) {
   try {
     return load(root, fixtures);
   } catch (error) {

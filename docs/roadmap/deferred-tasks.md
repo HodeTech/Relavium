@@ -870,9 +870,11 @@ Recorded with the Step 9b.2 implementation
 The release modules are library code with synthetic controls only: nothing outside their tests calls them.
 **Trigger for every entry:** Step 9d's release integration, or the next change to the file it names.
 
-- [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* A crash after `encryptCandidate`
-  publishes the ciphertext and before `sealReleaseBinding` runs leaves a ciphertext that no record names, and
-  only a record the gate returned in the same process seals. The candidate then needs manual recovery
+- [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* Only a record the gate returned in
+  the same process seals, so a ciphertext whose seal never succeeds before its process exits — after a crash, or
+  a refusal on an input the gate does not check, such as a malformed origin or an entry added to the
+  destination — is named by no record. The gate refuses an unresolvable destination and a missing or different
+  tarball before encrypting, which removes the likeliest causes. The candidate then needs manual recovery
   (packaging.md's missing-asset state); it is never re-encrypted. **Re-check:** in Step 9c's reservation
   states, classify such a directory as incomplete and route it to manual recovery. *(low ·
   tools/cli-package/release-custody.mjs)*
@@ -882,6 +884,18 @@ The release modules are library code with synthetic controls only: nothing outsi
   ties the bytes to the ones the sealer re-read after encryption checked their single recipient. **Re-check:**
   if a retained ciphertext can ever come from anything but the sealer, verify its recipients with the isolated
   runner before reuse. *(low · tools/cli-package/release-binding.mjs)*
+- [ ] **A sibling left after the receipt's link keeps the candidate from reuse.** *Low; a named limit (rigor
+  pass, SIT-9B2-6).* When the sealer cannot remove its `.partial` sibling after the link, the receipt is
+  published and the seal succeeds, but `verifyRetainedCandidate` admits exactly three entries and refuses
+  `CANDIDATE_ENTRIES` until the sibling is removed by hand; a test pins that state. **Re-check:** in Step 9c's
+  state classification, report such a directory as sealed with a stray sibling. *(low ·
+  tools/cli-package/release-custody.mjs)*
+- [ ] **The fixture denylist covers only the fingerprints the fixtures' pins file lists.** *Low; a named limit
+  (rigor pass, CLAIM-9B2-2).* `two-encryption-subkeys.asc` carries a second encryption subkey,
+  `7BC68AC7D2944C2AB3240A521D784594073951D5`, that `custody-fixtures/pins.json` does not list, so a production
+  history naming it would load. The loader reads no key material (it makes no GnuPG call), and encrypting to it
+  would still need its armored key in the committed recipient file. **Re-check:** list every committed fixture
+  fingerprint in the denylist when the fixtures are next generated. *(low · tools/cli-package/release-recipient.mjs)*
 - [ ] **The release modules do not run on Windows.** *Low; a named limit.* Like the 9b.1 tests, the release
   tests run only in `test:acceptance-tools`, which no Windows job runs; `encryptCandidate` refuses there
   through `encryptOnce`'s `PRIVATE_ROOT`, while reuse is platform-neutral but unexercised. **Re-check:** with
@@ -893,8 +907,11 @@ The release modules are library code with synthetic controls only: nothing outsi
   digest-verified tarball with the package-test inspector; check the production recipient before any
   reservation, so a recipient refusal never leaves an incomplete reservation; widen the sealer's directory
   admission if the package-test receipt travels beside the tarball; replace the interim guard; then update
-  `release-scope.test.mjs`'s interim control that no product path or workflow names a release module. The
-  guard test's non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
+  `release-scope.test.mjs`'s interim control that no product path or workflow names a release module, keeping
+  its permanent controls (the loader takes no argument and its test seam stays out of product code; only the
+  gate imports `encryptOnce`); and include `tools/cli-package/custody-fixtures/pins.json` in every checkout
+  that loads the production recipient, because the loader reads it as its denylist. The guard test's
+  non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
   tools/cli-package/release-custody.mjs, tools/cli-package/release-guard-core.mjs)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
@@ -2781,7 +2798,10 @@ future test cannot silently re-acquire it.
   `tools/cli-package/release-recipient/` as `recipient.asc` and `pins.json`, whose history is append-only
   (exactly one `current`, a rotated recipient `retired`, never removed); a fixture fingerprint refuses. Wave 4b
   then updates `release-recipient.test.mjs`'s absence test and `release-scope.test.mjs`'s interim control that no
-  recipient directory is committed. Any expiry margin is passed as the `now` the custody check uses.
+  recipient directory is committed. Any expiry margin is passed as the `now` the custody check uses. The
+  loader sees one revision of `pins.json` and cannot detect a removed or rewritten entry, so Wave 4b adds a
+  control that every committed revision keeps the previous one's entries, with only `current` becoming
+  `retired` (rigor pass, CLAIM-9B2-3).
 
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker

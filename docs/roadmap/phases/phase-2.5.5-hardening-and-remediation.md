@@ -10380,7 +10380,7 @@ Engineering defaults recorded with the rulings:
 
 ### Wave 3 Step 9b.2 implementation checkpoint — 2026-10-25
 
-Step 9b.2 is implemented on `development` in `84b8e455..4d49176b` and this record, under the
+Step 9b.2 is implemented on `development` in the commits from `84b8e455` through `4d49176b` and this record, under the
 [preflight decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25). Its canonical description is packaging.md's
 [Step 9b.2 boundary](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b2). No Step
 9b.1 module changed, and nothing outside the new tests calls the new modules.
@@ -10395,7 +10395,7 @@ Step 9b.2 is implemented on `development` in `84b8e455..4d49176b` and this recor
 - **The gate and the sealer** (`release-custody.mjs`). Every scope refusal comes before any GnuPG call, and a
   module-private registry ties the sealer to the records the gate returned. The receipt is published once through a
   hard link, and a sibling left after the link is not a refusal.
-- **Tests.** Four new files with 34 tests join `test:acceptance-tools`: `release-recipient`, `release-binding`,
+- **Tests.** Four new files join `test:acceptance-tools`, with 34 tests before the rigor pass and 39 after it: `release-recipient`, `release-binding`,
   `release-custody` and `release-scope`. They include a production round trip, in which an ephemeral key under a
   rotated history decrypts to the container whose manifest the receipt binds, and fault injection after the link and
   after encryption.
@@ -10403,7 +10403,7 @@ Step 9b.2 is implemented on `development` in `84b8e455..4d49176b` and this recor
   limits (an orphaned ciphertext, no recipient re-check on reuse, Windows not exercised), the Step 9d handoffs and a
   Wave 4b clause on the recipient's committed form.
 
-**Sweeps.** A generated sweep mutated every one-line refusal, condition clause and comparison of the three modules:
+**Sweeps before the rigor pass.** A generated sweep mutated every one-line refusal, condition clause and comparison of the three modules:
 131 mutants, 119 killed at first. Five survivors were real gaps and gained cases:
 - a `pending` status beside the current one;
 - a one-entry inputs map;
@@ -10420,4 +10420,44 @@ The other seven are equivalent:
 denylist, the root's shape, the current pins, the registry's consumption, the best-effort removal, the `EEXIST`
 mapping, the canonical bytes, the sealer's fields and the link-aware presence check.
 
-A rigor pass, the full CI and the Ubuntu 2.4.4 evidence follow before the first round.
+**Rigor pass at `d94ed705`.** Internal lenses (claims, platform, crypto/custody pre-sitting, tests and integration)
+and a critic ran, every finding adversarially verified. The platform lens was clean. Three mediums, corrected:
+- **The loader's seams minted a production recipient.** The exported `root` and `fixtures` parameters let any caller
+  brand any key, a fixture key or the per-run key included, with the denylist switched off; only a comment and an
+  interim control stood in the way. `loadProductionRecipient()` now takes no argument, and tests load temporary roots
+  through a separately named `loadRecipientForTests`. Two permanent controls keep every call of the loader
+  argument-free and its test seam out of product and tooling code (CLAIM-9B2-1, SIT-9B2-4).
+- **The import control matched three spellings.** A `../custody.mjs` import from `smoke/`, a workflow's `./tools/…`
+  path or a query suffix passed unseen. The control now resolves every quoted specifier against its file, or a
+  workflow's against the repository root, and has its own positive and negative self-test (SIT-9B2-1, T-9B2-R1-1).
+- **The primary half of the recipient pair was untested.** A pair matching only by its subkey now refuses in both
+  scopes (T-9B2-R1-2).
+
+Lows corrected:
+- the gate reads its scope once and encrypts its own copy of the container, and the validator snapshots its
+  expectation (SIT-9B2-2, T-9B2-R1-3);
+- the gate resolves the destination before encrypting (`PLACEMENT`) and checks the tarball against the manifest
+  (`TARBALL_DRIFT`), so nothing after publication can fail on the destination and the likeliest orphan causes refuse
+  first (CRIT-9B2-3, SIT-9B2-5);
+- an integer-like input name refuses, so the canonical bytes list inputs by path (CLAIM-9B2-5, SIT-9B2-8);
+- the fixtures' pins file is parsed strictly (SIT-9B2-3);
+- the closure control also reads `export * as`, forbids `cluster` and `module`, and scans the closure's files for
+  `require`, `createRequire`, `getBuiltinModule` and `process.binding` (SIT-9B2-7, T-9B2-R1-5, INT-9B2-R1-2,
+  CRIT-9B2-1);
+- the guard control uses a complete, valid synthetic candidate (T-9B2-R1-4, INT-9B2-R1-1);
+- new tests cover the origin's length bounds, a genuine invalid UTF-8 byte, a reused asset swapped for a link after
+  its size check, and the reuse refusal after a sibling is left (T-9B2-R1-6, T-9B2-R1-7, T-9B2-R1-8, SIT-9B2-6);
+- wording: the contract's diagnostics, canonical-bytes and orphan sentences, the module header, the README and this
+  checkpoint's commit range (CLAIM-9B2-4, CLAIM-9B2-6, INT-9B2-R1-3 to INT-9B2-R1-6, CRIT-9B2-4).
+
+Recorded in deferred-tasks.md: the fixture denylist misses an unlisted second subkey, a left sibling blocks reuse
+until it is removed, the append-only rule needs a Wave 4b control, and the release job's checkout must include the
+fixtures' pins file (CLAIM-9B2-2, CLAIM-9B2-3, SIT-9B2-6, CRIT-9B2-2).
+
+**Sweeps at the corrected head.** The generated sweep ran 137 mutants and killed 128 at first. One more gap, a
+malformed fixture subkey, gained a case. The other eight are equivalent: six history, fixture and read checks whose
+removal the loader's wrapper maps to the same code, the inputs comparator, and the receipt bound's `>=` flip. Of 29
+named mutants, 28 are killed. The survivor, the synthetic recipient's snapshot, is equivalent: synthetic scope admits
+any recipient, and `encryptOnce` checks the file it reads against the pins it parsed.
+
+The full CI and the Ubuntu 2.4.4 evidence follow before the first round.

@@ -12,6 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -31,7 +32,7 @@ import {
   validateReleaseBinding,
   verifyRetainedCandidate,
 } from './release-binding.mjs';
-import { SYNTHETIC_SOURCE, loadProductionRecipient } from './release-recipient.mjs';
+import { SYNTHETIC_SOURCE, loadRecipientForTests } from './release-recipient.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'relavium-release-binding-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -60,7 +61,7 @@ function production(...recipients) {
   mkdirSync(root);
   writeFileSync(join(root, 'recipient.asc'), 'key');
   writeFileSync(join(root, 'pins.json'), JSON.stringify({ version: 1, recipients }));
-  return loadProductionRecipient({ root });
+  return loadRecipientForTests({ root });
 }
 const ROTATED = production({ ...A, status: 'retired' }, { ...B, status: 'current' });
 const synthetic = Object.freeze({ scope: 'synthetic', pins: PINS, packageVersion: VERSION });
@@ -176,12 +177,8 @@ test('every key at every level is exact', () => {
     'origin',
   ]) {
     for (const key of Object.keys(value[parent])) {
-      const code =
-        parent === 'origin' && key === 'kind'
-          ? 'BINDING_ORIGIN'
-          : parent === 'origin' && key === 'source'
-            ? 'BINDING_SHAPE'
-            : 'BINDING_SHAPE';
+      // An origin without its kind is not a GitHub origin.
+      const code = parent === 'origin' && key === 'kind' ? 'BINDING_ORIGIN' : 'BINDING_SHAPE';
       assert.throws(
         () =>
           validateReleaseBinding(
@@ -263,6 +260,14 @@ test('every value has its exact format', () => {
     (copy) => (copy.origin.runId = '0'),
     (copy) => (copy.origin.runAttempt = '01'),
     (copy) => (copy.origin.runAttempt = '1234567'),
+    (copy) => (copy.origin.repository = `${'a'.repeat(100)}/${'b'.repeat(100)}`),
+    (copy) => (copy.origin.workflow = 'w'.repeat(201)),
+    (copy) => (copy.origin.runId = '1'.repeat(21)),
+    // Integer-like names would sort ahead of every path in the canonical bytes.
+    ...['0', '9', '10', '4294967295'].map(
+      (path) => (copy) =>
+        (copy.inputs = { [path]: 'a'.repeat(64), 'package.json': 'b'.repeat(64) }),
+    ),
   ];
   for (const [index, change] of cases.entries()) {
     assert.throws(
@@ -282,6 +287,15 @@ test('every value has its exact format', () => {
   });
   assert.equal(Object.keys(validateReleaseBinding(bounded, synthetic).inputs).length, 64);
   const single = changed(value, (copy) => (copy.inputs = { 'package.json': 'a'.repeat(64) }));
+  // The origin's bounds are inclusive, and a numeric-looking path with a leading zero is a name.
+  const origins = changed(value, (copy) => {
+    copy.origin.repository = `${'a'.repeat(99)}/${'b'.repeat(100)}`;
+    copy.origin.workflow = 'w'.repeat(200);
+    copy.origin.runId = '1'.repeat(20);
+    copy.origin.runAttempt = '123456';
+    copy.inputs = { '01': 'a'.repeat(64), 'package.json': 'b'.repeat(64) };
+  });
+  assert.deepEqual(validateReleaseBinding(origins, synthetic).origin, origins.origin);
   assert.deepEqual(validateReleaseBinding(single, synthetic).inputs, {
     'package.json': 'a'.repeat(64),
   });
@@ -306,6 +320,8 @@ test('the version, candidate, names, sizes, map check and origin refuse with the
     ['BINDING_ORIGIN', (copy) => (copy.origin.source = 'f'.repeat(40))],
     ['BINDING_RECIPIENT', (copy) => (copy.recipient = { ...C })],
     ['BINDING_RECIPIENT', (copy) => (copy.recipient.subkey = C.subkey)],
+    // Both halves of the pair must match: the expected subkey under another primary refuses.
+    ['BINDING_RECIPIENT', (copy) => (copy.recipient.primary = C.primary)],
     ['BINDING_SCOPE', (copy) => (copy.source = { ...CLEAN })],
     ['BINDING_SCOPE', (copy) => (copy.source.tree = 'e'.repeat(40))],
   ]) {
@@ -337,6 +353,7 @@ test('production scope admits only a clean, non-synthetic source of the expected
     ['BINDING_DIRTY', (copy) => (copy.source.dirty = true)],
     ['BINDING_RECIPIENT', (copy) => (copy.recipient = { ...C })],
     ['BINDING_RECIPIENT', (copy) => (copy.recipient = { primary: A.primary, subkey: C.subkey })],
+    ['BINDING_RECIPIENT', (copy) => (copy.recipient = { primary: C.primary, subkey: B.subkey })],
   ]) {
     assert.throws(
       () =>
@@ -420,8 +437,12 @@ test('only the exact canonical bytes parse', () => {
     ['trailing byte', Buffer.concat([bytes, Buffer.from(' ')])],
     ['CRLF', Buffer.from(text.replaceAll('\n', '\r\n'))],
     [
-      'invalid UTF-8',
-      Buffer.concat([bytes.subarray(0, -2), Buffer.from([0xff]), Buffer.from('\n')]),
+      'invalid UTF-8 inside a string',
+      (() => {
+        const bad = Buffer.from(bytes);
+        bad[bytes.indexOf('"workflow": "release"') + '"workflow": "r'.length] = 0xff;
+        return bad;
+      })(),
     ],
     ['not JSON', Buffer.from('receipt')],
     ['too large', Buffer.concat([bytes, Buffer.alloc(64 * 1024 + 1 - bytes.length, 0x20)])],
@@ -672,6 +693,60 @@ test('a retained candidate whose assets or entries differ from its receipt refus
     refuses('BINDING_SCOPE'),
   );
 });
+
+test('each expectation field is read once, so a changing expectation cannot change scope midway', () => {
+  let reads = 0;
+  const flipping = {
+    get scope() {
+      reads += 1;
+      return reads === 1 ? 'synthetic' : 'production';
+    },
+    recipient: ROTATED,
+    pins: PINS,
+    packageVersion: VERSION,
+    source: CLEAN.commit,
+  };
+  // Read as synthetic once: a clean source is never a synthetic candidate.
+  assert.throws(
+    () => validateReleaseBinding(receipt({ source: CLEAN, recipient: PINS }), flipping),
+    refuses('BINDING_SCOPE'),
+  );
+  assert.equal(reads, 1);
+});
+
+test(
+  'a retained asset swapped for a link after its size check refuses as not an ordinary file',
+  { skip: !posix },
+  () => {
+    const directory = candidate();
+    const path = join(directory, ciphertextFileName(VERSION));
+    const other = fresh('other-ciphertext');
+    writeFileSync(other, Buffer.alloc(CIPHERTEXT.length, 0x78));
+    const fs = createRequire(import.meta.url)('node:fs');
+    const lstat = fs.lstatSync;
+    let swapped = false;
+    fs.lstatSync = (target, ...rest) => {
+      const info = lstat(target, ...rest);
+      if (target === path && !swapped) {
+        swapped = true;
+        rmSync(path);
+        symlinkSync(other, path);
+      }
+      return info;
+    };
+    syncBuiltinESMExports();
+    try {
+      assert.throws(
+        () => verifyRetainedCandidate({ directory, expected: synthetic }),
+        refuses('CANDIDATE_ASSET'),
+      );
+    } finally {
+      fs.lstatSync = lstat;
+      syncBuiltinESMExports();
+    }
+    assert.equal(swapped, true);
+  },
+);
 
 test('reuse needs a valid expectation, and a host failure refuses with a fixed code and no path', () => {
   const directory = candidate();

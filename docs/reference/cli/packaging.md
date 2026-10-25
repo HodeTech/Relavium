@@ -633,20 +633,28 @@ refuses every artifact. Its review and acceptance are recorded in the
   `gpg --armor --export '<subkey>!'` export, at most 64 KiB) and `pins.json`:
   `{"version": 1, "recipients": [{"primary", "subkey", "status"}]}` with 1–32 entries of 40-digit
   uppercase fingerprints, each `current` or `retired`, exactly one `current` and no subkey twice. An
-  entry is never removed, so a candidate sealed before a rotation still verifies. There is no
-  environment variable, flag or fallback. In Wave 3 the directory does not exist and the loader
-  refuses `PRODUCTION_RECIPIENT_ABSENT`; a linked or malformed directory refuses
-  `PRODUCTION_RECIPIENT_INVALID`, and a history naming a key of the committed synthetic fixtures
-  refuses `FIXTURE_RECIPIENT`. The loaded value is frozen and branded: only that value counts as a
-  production recipient, never a copy. Wave 4b commits the files.
+  entry must never be removed, so that a candidate sealed before a rotation still verifies; the
+  loader sees one revision and cannot detect a removal, so that rule is kept by review until a
+  control over the file's history exists (a recorded Wave 4b handoff). `loadProductionRecipient()`
+  takes no argument: there is no environment variable, flag or fallback. In Wave 3 the directory
+  does not exist and the loader refuses `PRODUCTION_RECIPIENT_ABSENT`; a linked or malformed
+  directory, and any host failure while loading, refuses `PRODUCTION_RECIPIENT_INVALID`. A history
+  naming a fingerprint that the committed fixtures' `pins.json` lists refuses `FIXTURE_RECIPIENT`, and
+  a malformed fixtures file refuses rather than weaken that denylist. The loaded value is frozen and
+  branded: only that value counts as a production recipient, never a copy. Tests load temporary
+  roots through the separately named `loadRecipientForTests`, which `release-scope.test.mjs`
+  permanently keeps out of every product and tooling file. Wave 4b commits the files.
 - **Scope.** A synthetic candidate is one whose private manifest records the fixtures' sentinel
   source, commit `c`×40 and tree `b`×40. `encryptCandidate` admits production scope only with the
   loaded recipient and a clean, non-synthetic candidate, and encrypts to the recipient's current
   pins (`RECIPIENT_SOURCE`, `DIRTY_SOURCE`, `SYNTHETIC_SOURCE`). It admits synthetic scope only with a
   synthetic candidate (`FIXTURE_SCOPE`), so neither a fixture key nor the per-run round-trip key can
-  encrypt a product staging. An unknown scope refuses `SCOPE`, and a destination already holding a
-  receipt refuses `ALREADY_SEALED`. Every one of these refuses before any GnuPG call; `encryptOnce`
-  then runs unchanged.
+  encrypt a product staging. An unknown scope refuses `SCOPE`, a destination already holding a
+  receipt refuses `ALREADY_SEALED`, a destination that does not resolve refuses `PLACEMENT`, and a
+  destination without the tarball the manifest names refuses `TARBALL_DRIFT`, so a ciphertext is
+  never encrypted where it could not be sealed. Every one of these refuses before any GnuPG call.
+  The gate reads the caller's scope once and encrypts its own copy of the container, so neither can
+  change midway; `encryptOnce` then runs unchanged on that copy.
 - **The release binding receipt v1.** The public `release-binding-receipt.json` beside the ciphertext,
   the name the interim guard already keys on:
 
@@ -669,14 +677,15 @@ refuses every artifact. Its review and acceptance are recorded in the
   two. Release smoke on a reused candidate derives the public file inventory and package metadata from
   the digest-verified tarball (Step 9d).
 - **Canonical bytes.** The receipt is `JSON.stringify(receipt, null, 2)` plus a newline, its fields in
-  the table's order and its inputs sorted by path. A verifier parses the exact bytes, at most 64 KiB,
-  and refuses `BINDING_BYTES` for anything but the canonical serialization of the value it validates:
-  a duplicated key, a reordering, other whitespace, a BOM or trailing data. Verifiers never
-  re-serialize a receipt.
+  the table's order and its inputs sorted by path; an integer-like input name, which JavaScript would
+  order first, refuses. A verifier parses the exact bytes, at most 64 KiB, and refuses
+  `BINDING_BYTES` for anything but the canonical serialization of the value it validates: a
+  duplicated key, a reordering, other whitespace, a BOM or trailing data. A verifier accepts only
+  those exact bytes and never writes a receipt back.
 - **The validator.** `validateReleaseBinding(value, expected)` and `parseReleaseBinding(bytes, expected)`
   take a required expectation: `{scope: 'production', recipient, packageVersion, source}` with the
   loaded recipient, whose whole history verifies, or `{scope: 'synthetic', pins, packageVersion}`.
-  They refuse `BINDING_VERSION`, `BINDING_SHAPE` (an unknown, missing or malformed field at any level),
+  Each reads the expectation once. They refuse `BINDING_VERSION`, `BINDING_SHAPE` (an unknown, missing or malformed field at any level),
   `BINDING_CANDIDATE`, `BINDING_NAME`, `BINDING_SIZE`, `BINDING_DIRTY`, `BINDING_SCOPE`,
   `RECIPIENT_SOURCE`, `BINDING_RECIPIENT`, `BINDING_MAP_CHECK` and `BINDING_ORIGIN`.
 - **The sealer.** `sealReleaseBinding(record, {origin})` accepts only a record `encryptCandidate`
@@ -686,24 +695,29 @@ refuses every artifact. Its review and acceptance are recorded in the
   against the record (`CIPHERTEXT_DRIFT`) and the tarball's digest against the manifest
   (`TARBALL_DRIFT`). It validates its own receipt, then publishes it once: written to a fresh sibling,
   then hard-linked to its name, which never replaces an existing receipt. A sibling that cannot be
-  removed after the link is left behind rather than reported, because the receipt is then published.
-  A ciphertext no record names, after a crash between encryption and sealing, can never be sealed and
-  needs manual recovery.
+  removed after the link is left behind rather than reported, because the receipt is then published;
+  the candidate is not reusable (`CANDIDATE_ENTRIES`) until that sibling is removed by hand. A
+  ciphertext whose seal never succeeds before its process exits — after a crash, or a refusal on an
+  input the gate does not check, such as the origin — can never be sealed and needs manual recovery.
 - **Reuse.** `verifyRetainedCandidate({directory, expected})` admits a directory holding exactly the
   receipt, the tarball and the ciphertext (`CANDIDATE_ENTRIES`) and parses the receipt. It checks each
   asset's size (`CANDIDATE_SIZE`), reads it as a bounded ordinary file (`CANDIDATE_ASSET`), checks its
   SHA-256 (`CANDIDATE_DIGEST`), and returns the verified bytes, never a path to open again. It writes,
   renames and removes nothing. Its module imports nothing that can start a process, so reuse makes no
   GnuPG call, and it cannot re-check the ciphertext's recipients: a named limit.
-- **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`, a host failure `UNEXPECTED`; no
-  path, key or receipt content surfaces.
+- **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`. A host failure is `UNEXPECTED`,
+  except while loading the recipient (`PRODUCTION_RECIPIENT_INVALID`) or reading a named file, which
+  carries that file's code (`CANDIDATE_ASSET`, `CIPHERTEXT_DRIFT`, `TARBALL_DRIFT`). No path, key or
+  receipt content surfaces.
 - **Where it runs.** `release-recipient.test.mjs`, `release-binding.test.mjs`, `release-custody.test.mjs`
   and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
   needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
   - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
-  - only the release gate imports `encryptOnce`;
-  - the receipt module's import closure starts no process;
-  - the interim guard still refuses a complete synthetic candidate;
+  - only the release gate imports `encryptOnce`, by any specifier that resolves to it;
+  - the loader is never called with an argument, and its test seam appears in no product or tooling
+    file (permanent controls);
+  - the receipt module's import closure starts no process, by import or otherwise;
+  - the interim guard still refuses a complete, valid synthetic candidate;
   - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
     directory is committed.
 

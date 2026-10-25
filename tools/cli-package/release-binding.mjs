@@ -2,9 +2,10 @@
  * The release binding receipt (Step 9b.2; packaging.md, "Recipient custody implementation boundary —
  * Step 9b.2"): schema v1, its validator and the verified reuse of a retained candidate. The receipt is
  * public JSON beside the ciphertext, written once in canonical bytes. It names files by SHA-256 and signs
- * nothing: every field is a claim, and its origin, map-check and `ci` fields are checked for shape only
- * until Step 9d binds them to the trusted run. Scope always comes from the verifier's expectation, never
- * from the receipt. This module's import closure starts no process, so reuse makes no GnuPG call.
+ * nothing: every field is a claim, and its origin and map-check fields are checked for shape only until
+ * Step 9d binds them to the trusted run and a successful `ci` run. Scope always comes from the verifier's
+ * expectation, never from the receipt. This module's import closure starts no process, so reuse makes no
+ * GnuPG call.
  */
 import { Buffer } from 'node:buffer';
 import { lstatSync, readdirSync } from 'node:fs';
@@ -78,20 +79,39 @@ function size(value, minimum, maximum) {
   if (value < minimum || value > maximum) refuseCustody('BINDING_SIZE');
   return value;
 }
-/** A repository-relative POSIX path with no empty, `.` or `..` segment. @param {string} path */
+/**
+ * A repository-relative POSIX path with no empty, `.` or `..` segment, and not an integer-like name, which
+ * JavaScript orders ahead of every other key so that the canonical bytes could not list it by path.
+ * @param {string} path
+ */
 const isRelativePath = (path) =>
   path.length <= 256 &&
+  !/^(?:0|[1-9]\d*)$/u.test(path) &&
   path.split('/').every((segment) => SEGMENT.test(segment) && segment !== '.' && segment !== '..');
 
-/** @param {unknown} expected */
+/**
+ * A snapshot of the expectation, each field read once: the admitted recipient pairs, the package version
+ * and, for production, the source commit.
+ * @param {unknown} expected
+ * @returns {{scope: 'production' | 'synthetic', history: readonly {primary: unknown, subkey: unknown}[],
+ *   packageVersion: unknown, source: unknown}}
+ */
 function scopeOf(expected) {
   if (!isRecord(expected)) return refuseCustody('BINDING_SCOPE');
-  if (expected.scope === 'production') {
-    if (!isProductionRecipient(expected.recipient)) refuseCustody('RECIPIENT_SOURCE');
-  } else if (expected.scope !== 'synthetic') {
-    refuseCustody('BINDING_SCOPE');
+  const { scope, recipient, pins, packageVersion, source } = expected;
+  if (scope === 'production') {
+    if (!isProductionRecipient(recipient)) refuseCustody('RECIPIENT_SOURCE');
+    const { history } = /** @type {ProductionRecipient} */ (recipient);
+    return Object.freeze({ scope, history, packageVersion, source });
   }
-  return /** @type {Expected} */ (expected);
+  if (scope !== 'synthetic') refuseCustody('BINDING_SCOPE');
+  const pair = isRecord(pins) ? { primary: pins.primary, subkey: pins.subkey } : {};
+  return Object.freeze({
+    scope,
+    history: Object.freeze([Object.freeze({ primary: pair.primary, subkey: pair.subkey })]),
+    packageVersion,
+    source: undefined,
+  });
 }
 
 /**
@@ -116,7 +136,11 @@ function asset(value, version, name, minimum, maximum) {
  * @param {Expected} expected
  */
 export function validateReleaseBinding(value, expected) {
-  const scope = scopeOf(expected);
+  return validate(value, scopeOf(expected));
+}
+
+/** @param {unknown} value @param {ReturnType<typeof scopeOf>} scope */
+function validate(value, scope) {
   if (!isRecord(value) || value.version !== 1 || value.kind !== RELEASE_BINDING_KIND) {
     refuseCustody('BINDING_VERSION');
   }
@@ -159,12 +183,8 @@ export function validateReleaseBinding(value, expected) {
     primary: string(recipientRecord.primary, FINGERPRINT),
     subkey: string(recipientRecord.subkey, FINGERPRINT),
   });
-  const admitted =
-    scope.scope === 'production'
-      ? scope.recipient.history
-      : [{ primary: scope.pins?.primary, subkey: scope.pins?.subkey }];
   if (
-    !admitted.some(
+    !scope.history.some(
       (entry) => entry.primary === recipient.primary && entry.subkey === recipient.subkey,
     )
   ) {
@@ -257,6 +277,11 @@ export const serializeReleaseBinding = (receipt) =>
  * @param {Buffer} bytes @param {Expected} expected
  */
 export function parseReleaseBinding(bytes, expected) {
+  return parse(bytes, scopeOf(expected));
+}
+
+/** @param {Buffer} bytes @param {ReturnType<typeof scopeOf>} scope */
+function parse(bytes, scope) {
   if (!Buffer.isBuffer(bytes) || bytes.length > RECEIPT_BYTES) refuseCustody('BINDING_BYTES');
   let value;
   try {
@@ -264,7 +289,7 @@ export function parseReleaseBinding(bytes, expected) {
   } catch {
     return refuseCustody('BINDING_BYTES');
   }
-  const receipt = validateReleaseBinding(value, expected);
+  const receipt = validate(value, scope);
   if (!serializeReleaseBinding(receipt).equals(bytes)) refuseCustody('BINDING_BYTES');
   return receipt;
 }
@@ -287,7 +312,8 @@ export function verifyRetainedCandidate({ directory, expected }) {
 
 /** @param {string} directory @param {Expected} expected */
 function verify(directory, expected) {
-  const { packageVersion } = scopeOf(expected);
+  const scope = scopeOf(expected);
+  const { packageVersion } = scope;
   if (typeof packageVersion !== 'string' || !PACKAGE_VERSION.test(packageVersion)) {
     refuseCustody('BINDING_CANDIDATE');
   }
@@ -303,7 +329,7 @@ function verify(directory, expected) {
   } catch {
     refuseCustody('CANDIDATE_ASSET');
   }
-  const receipt = parseReleaseBinding(bytes, expected);
+  const receipt = parse(bytes, scope);
   /** @param {{name: string, bytes: number, sha256: string}} entry */
   const retained = (entry) => {
     const path = join(directory, entry.name);

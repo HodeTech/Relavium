@@ -6,6 +6,7 @@
  * encrypt a product staging. The sealer accepts only a record this gate returned, and writes the receipt
  * once, after re-reading the ciphertext it names. This is the only release module that reaches GnuPG.
  */
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -43,8 +44,8 @@ import { isProductionRecipient, isSyntheticSource } from './release-recipient.mj
 
 /**
  * The records the gate returned, with what the sealer needs to bind them.
- * @type {WeakMap<object, {scope: Scope, manifest: import('./manifest.mjs').PrivateManifest,
- *   destination: string}>}
+ * @type {WeakMap<object, {kind: 'production' | 'synthetic', recipient: ProductionRecipient | undefined,
+ *   manifest: import('./manifest.mjs').PrivateManifest, destination: string}>}
  */
 const records = new WeakMap();
 
@@ -86,52 +87,68 @@ export async function encryptCandidate({
     if (error instanceof CustodyError) throw error;
     refuseCustody('UNEXPECTED');
   }
+  // The admitted copy is the one encrypted: the caller's buffer may change, it may not.
   const record = await encryptOnce({
-    container,
+    container: admitted.container,
     recipient: admitted.recipient,
-    destination,
+    destination: admitted.destination,
     privateRoot,
     now,
     run,
     gpg,
   });
-  try {
-    records.set(record, {
-      scope,
-      manifest: admitted.manifest,
-      destination: realpathSync(destination),
-    });
-  } catch {
-    refuseCustody('UNEXPECTED');
-  }
+  records.set(record, {
+    kind: admitted.kind,
+    recipient: admitted.production,
+    manifest: admitted.manifest,
+    destination: admitted.destination,
+  });
   return record;
 }
 
-/** @param {unknown} scope @param {Buffer} container @param {string} destination */
+/**
+ * Admit one encryption, reading the caller's scope and container once: the scope's rules, an unsealed
+ * destination and the candidate's tarball, all before any GnuPG call.
+ * @param {unknown} scope @param {unknown} container @param {string} destination
+ */
 function admit(scope, container, destination) {
-  if (
-    !isRecord(scope) ||
-    (scope.kind !== 'production' && scope.kind !== 'synthetic') ||
-    !isRecord(scope.recipient)
-  ) {
-    refuseCustody('SCOPE');
-  }
-  if (scope.kind === 'production' && !isProductionRecipient(scope.recipient)) {
-    refuseCustody('RECIPIENT_SOURCE');
-  }
-  const { manifest } = readPrivateContainer(container);
+  const { kind, recipient: given } = isRecord(scope) ? scope : {};
+  if ((kind !== 'production' && kind !== 'synthetic') || !isRecord(given)) refuseCustody('SCOPE');
+  if (kind === 'production' && !isProductionRecipient(given)) refuseCustody('RECIPIENT_SOURCE');
+  const bytes = Buffer.isBuffer(container) ? Buffer.from(container) : container;
+  const { manifest } = readPrivateContainer(/** @type {Buffer} */ (bytes));
   let recipient;
-  if (scope.kind === 'production') {
+  let production;
+  if (kind === 'production') {
     if (manifest.source.dirty) refuseCustody('DIRTY_SOURCE');
     if (isSyntheticSource(manifest.source)) refuseCustody('SYNTHETIC_SOURCE');
-    const production = /** @type {ProductionRecipient} */ (scope.recipient);
+    production = /** @type {ProductionRecipient} */ (given);
     recipient = { file: production.file, pins: production.current };
   } else {
     if (!isSyntheticSource(manifest.source)) refuseCustody('FIXTURE_SCOPE');
-    recipient = /** @type {{file: string, pins: unknown}} */ (scope.recipient);
+    recipient = { file: given.file, pins: given.pins };
   }
   if (present(join(destination, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
-  return { manifest, recipient };
+  // Resolved now, so nothing after the ciphertext is published can fail on the destination.
+  let resolved;
+  try {
+    resolved = realpathSync(destination);
+  } catch {
+    refuseCustody('PLACEMENT');
+  }
+  // The receipt binds the tarball the manifest names; a missing or different one would leave an
+  // unsealable ciphertext, so it refuses first.
+  let tarball;
+  try {
+    tarball = readOrdinaryFile(
+      join(resolved, tarballName(manifest.packageVersion)),
+      ARCHIVE_LIMITS.compressedBytes,
+    );
+  } catch {
+    refuseCustody('TARBALL_DRIFT');
+  }
+  if (sha256(tarball) !== manifest.tarballSha256) refuseCustody('TARBALL_DRIFT');
+  return { kind, recipient, production, manifest, container: bytes, destination: resolved };
 }
 
 /** Write a new public file durably; an existing file refuses. @param {string} path @param {Buffer} bytes */
@@ -198,7 +215,7 @@ export function sealReleaseBinding(record, { origin, write = writePublicFile } =
 function seal(record, origin, write) {
   const entry = records.get(record);
   if (entry === undefined) refuseCustody('RECORD_SOURCE');
-  const { scope, manifest, destination } = entry;
+  const { kind, recipient, manifest, destination } = entry;
   // An existing receipt refuses before anything is read; one is never written over.
   if (present(join(destination, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
   const tarball = tarballName(manifest.packageVersion);
@@ -225,10 +242,10 @@ function seal(record, origin, write) {
   if (tarballSha256 !== manifest.tarballSha256) refuseCustody('TARBALL_DRIFT');
 
   const expected =
-    scope.kind === 'production'
+    kind === 'production'
       ? {
           scope: /** @type {const} */ ('production'),
-          recipient: scope.recipient,
+          recipient,
           packageVersion: manifest.packageVersion,
           source: manifest.source.commit,
         }

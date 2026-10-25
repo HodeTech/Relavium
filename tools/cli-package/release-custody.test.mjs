@@ -39,7 +39,7 @@ import {
   places,
   recipientRoot,
 } from './release-fixture.mjs';
-import { SYNTHETIC_SOURCE, loadProductionRecipient } from './release-recipient.mjs';
+import { SYNTHETIC_SOURCE, loadRecipientForTests } from './release-recipient.mjs';
 
 const refuses = (code) => (error) =>
   error instanceof CustodyError &&
@@ -53,10 +53,11 @@ before(async () => {
 });
 
 /** A run port that records every GnuPG call; everything else is the real GnuPG. */
-function recording() {
+function recording(before = () => {}) {
   const calls = [];
   /** @type {typeof runCommand} */
   const run = async (command, args, options) => {
+    before(args);
     calls.push(
       args.find(
         (arg) =>
@@ -99,7 +100,7 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
   const ephemeral = ephemeralKey();
   const production = {
     kind: 'production',
-    recipient: loadProductionRecipient({
+    recipient: loadRecipientForTests({
       root: recipientRoot(ephemeral.file, [{ ...ephemeral.pins, status: 'current' }]),
     }),
   };
@@ -126,6 +127,58 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
     );
     assert.deepEqual(calls, [], code);
     assert.deepEqual(readdirSync(destination), [tarballName(VERSION)], code);
+  }
+  // A destination that cannot be resolved, or whose tarball is missing or another, refuses before any
+  // call: a ciphertext encrypted into it could never be sealed.
+  for (const [code, change] of [
+    ['PLACEMENT', (destination) => rmSync(destination, { recursive: true })],
+    ['TARBALL_DRIFT', (destination) => rmSync(join(destination, tarballName(VERSION)))],
+    [
+      'TARBALL_DRIFT',
+      (destination) =>
+        writeFileSync(join(destination, tarballName(VERSION)), Buffer.from('another tarball')),
+    ],
+  ]) {
+    const { root, destination } = places();
+    change(destination);
+    const { run, calls } = recording();
+    await assert.rejects(
+      encryptCandidate({
+        scope: synthetic,
+        container: built.synthetic,
+        destination,
+        privateRoot: root,
+        run,
+      }),
+      refuses(code),
+      code,
+    );
+    assert.deepEqual(calls, [], code);
+  }
+  // The scope is read once: a kind that changes after its first read cannot skip the brand check.
+  {
+    let reads = 0;
+    const flipping = {
+      get kind() {
+        reads += 1;
+        return reads === 1 ? 'production' : 'synthetic';
+      },
+      recipient: { file: ephemeral.file, current: ephemeral.pins, history: [] },
+    };
+    const { root, destination } = places();
+    const { run, calls } = recording();
+    await assert.rejects(
+      encryptCandidate({
+        scope: flipping,
+        container: built.clean,
+        destination,
+        privateRoot: root,
+        run,
+      }),
+      refuses('RECIPIENT_SOURCE'),
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(reads, 1);
   }
   // A destination that already holds a receipt is sealed: nothing is encrypted into it.
   for (const kind of ['file', 'dangling link']) {
@@ -396,23 +449,33 @@ test(
       syncBuiltinESMExports();
       chmodSync(destination, 0o700);
     }
+    // Published, but not reusable until the sibling is removed: reuse admits exactly three entries.
+    assert.throws(
+      () =>
+        verifyRetainedCandidate({
+          directory: destination,
+          expected: { scope: 'synthetic', pins: PINS.good, packageVersion: VERSION },
+        }),
+      refuses('CANDIDATE_ENTRIES'),
+    );
   },
 );
 
-test('a host failure after encryption refuses with a fixed code and no path', async () => {
+test('a destination that stops resolving refuses before any GnuPG call, with a fixed code and no path', async () => {
   const { root, destination } = places();
   const fs = createRequire(import.meta.url)('node:fs');
   const realpath = fs.realpathSync;
   let calls = 0;
-  // encryptOnce resolves the destination once; the gate's second resolution fails.
+  // The gate resolves the destination once, before encryption: nothing after publication can fail on it.
   fs.realpathSync = Object.assign(
     (path, ...rest) => {
-      if (path === destination && (calls += 1) === 2) throw new Error(`vanished: ${destination}`);
+      if (path === destination && (calls += 1) === 1) throw new Error(`vanished: ${destination}`);
       return realpath(path, ...rest);
     },
     { native: realpath.native },
   );
   syncBuiltinESMExports();
+  const recorded = recording();
   try {
     await assert.rejects(
       encryptCandidate({
@@ -420,21 +483,47 @@ test('a host failure after encryption refuses with a fixed code and no path', as
         container: built.synthetic,
         destination,
         privateRoot: root,
+        run: recorded.run,
       }),
-      (error) => refuses('UNEXPECTED')(error) && !error.message.includes(destination),
+      (error) => refuses('PLACEMENT')(error) && !error.message.includes(destination),
     );
   } finally {
     fs.realpathSync = realpath;
     syncBuiltinESMExports();
   }
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
+  assert.deepEqual(recorded.calls, []);
+});
+
+test("the caller's container changing during encryption changes nothing encrypted or sealed", async () => {
+  const ephemeral = ephemeralKey();
+  const scope = { kind: 'synthetic', recipient: { file: ephemeral.file, pins: ephemeral.pins } };
+  const mine = Buffer.from(built.synthetic);
+  // Overwritten in place while GnuPG runs, before the gate's copy is written for encryption.
+  const { run } = recording((args) => {
+    if (args.includes('--show-keys')) mine.fill(0x20);
+  });
+  const { root, destination } = places();
+  const record = await encryptCandidate({
+    scope,
+    container: mine,
+    destination,
+    privateRoot: root,
+    run,
+  });
+  assert.equal(mine[0], 0x20);
+  const out = fresh('release-copy');
+  mkdirSync(out);
+  ephemeral.decrypt(join(destination, record.name), join(out, 'container.tar'));
+  assert.deepEqual(readFileSync(join(out, 'container.tar')), built.synthetic);
+  sealReleaseBinding(record, { origin: origin(SYNTHETIC_SOURCE.commit) });
 });
 
 test('a production candidate round-trips: the receipt binds what the ciphertext decrypts to', async () => {
   const ephemeral = ephemeralKey();
   // A rotated history: an earlier recipient retired, the ephemeral key current.
   const earlier = { primary: '1'.repeat(40), subkey: '2'.repeat(40) };
-  const recipient = loadProductionRecipient({
+  const recipient = loadRecipientForTests({
     root: recipientRoot(ephemeral.file, [
       { ...earlier, status: 'retired' },
       { ...ephemeral.pins, status: 'current' },
@@ -475,7 +564,7 @@ test('a production candidate round-trips: the receipt binds what the ciphertext 
       }),
     refuses('BINDING_SCOPE'),
   );
-  const rotatedAway = loadProductionRecipient({
+  const rotatedAway = loadRecipientForTests({
     root: recipientRoot(ephemeral.file, [{ ...earlier, status: 'current' }]),
   });
   assert.throws(

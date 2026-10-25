@@ -15,6 +15,7 @@ import {
   isProductionRecipient,
   isSyntheticSource,
   loadProductionRecipient,
+  loadRecipientForTests,
 } from './release-recipient.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'relavium-release-recipient-'));
@@ -54,15 +55,20 @@ test('the committed recipient directory is absent in Wave 3, so every production
     fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/u, ''),
   );
   assert.throws(() => loadProductionRecipient(), refuses('PRODUCTION_RECIPIENT_ABSENT'));
+  // It takes no argument: a root passed to it is ignored, never an override.
   assert.throws(
-    () => loadProductionRecipient({ root: join(fresh('missing'), 'release-recipient') }),
+    () => loadProductionRecipient({ root: root() }),
+    refuses('PRODUCTION_RECIPIENT_ABSENT'),
+  );
+  assert.throws(
+    () => loadRecipientForTests({ root: join(fresh('missing'), 'release-recipient') }),
     refuses('PRODUCTION_RECIPIENT_ABSENT'),
   );
 });
 
 test('a loaded recipient is frozen, branded, and its current pins come from an append-only history', () => {
   const path = root({ pins: history({ ...A, status: 'retired' }, { ...B, status: 'current' }) });
-  const recipient = loadProductionRecipient({ root: path });
+  const recipient = loadRecipientForTests({ root: path });
   assert.equal(recipient.file, join(path, 'recipient.asc'));
   assert.deepEqual(recipient.current, B);
   assert.deepEqual(recipient.history, [
@@ -84,7 +90,7 @@ test('a loaded recipient is frozen, branded, and its current pins come from an a
     assert.equal(isProductionRecipient(value), false);
   }
   // Each load brands its own value.
-  const again = loadProductionRecipient({ root: path });
+  const again = loadRecipientForTests({ root: path });
   assert.notEqual(again, recipient);
   assert.equal(isProductionRecipient(again), true);
 });
@@ -141,7 +147,7 @@ test('a recipient directory that is not exactly the two committed files refuses'
   }
   for (const [index, make] of cases.entries()) {
     assert.throws(
-      () => loadProductionRecipient({ root: make() }),
+      () => loadRecipientForTests({ root: make() }),
       refuses('PRODUCTION_RECIPIENT_INVALID'),
       String(index),
     );
@@ -178,7 +184,7 @@ test('the pins history is exactly one current recipient among at most 32 distinc
     ),
   ]) {
     assert.throws(
-      () => loadProductionRecipient({ root: root({ pins }) }),
+      () => loadRecipientForTests({ root: root({ pins }) }),
       refuses('PRODUCTION_RECIPIENT_INVALID'),
       typeof pins === 'string' ? pins : JSON.stringify(pins).slice(0, 120),
     );
@@ -192,7 +198,7 @@ test('the pins history is exactly one current recipient among at most 32 distinc
       status: 'retired',
     })),
   );
-  assert.equal(loadProductionRecipient({ root: root({ pins: full }) }).history.length, 32);
+  assert.equal(loadRecipientForTests({ root: root({ pins: full }) }).history.length, 32);
 });
 
 test('a history naming a committed fixture key refuses, whichever fingerprint it is', () => {
@@ -203,7 +209,7 @@ test('a history naming a committed fixture key refuses, whichever fingerprint it
   ]) {
     assert.throws(
       () =>
-        loadProductionRecipient({
+        loadRecipientForTests({
           root: root({ pins: history({ ...entry, status: 'current' }) }),
         }),
       refuses('FIXTURE_RECIPIENT'),
@@ -212,7 +218,7 @@ test('a history naming a committed fixture key refuses, whichever fingerprint it
   // A retired fixture entry refuses as well.
   assert.throws(
     () =>
-      loadProductionRecipient({
+      loadRecipientForTests({
         root: root({
           pins: history({ ...A, status: 'current' }, { ...PINS.other, status: 'retired' }),
         }),
@@ -224,11 +230,24 @@ test('a history naming a committed fixture key refuses, whichever fingerprint it
     FIXTURE_PINS_FILE,
     fileURLToPath(new URL('./custody-fixtures/pins.json', import.meta.url)),
   );
-  const malformed = fresh('fixtures.json');
-  writeFileSync(malformed, '[]');
-  for (const fixtures of [join(fresh('none'), 'pins.json'), malformed]) {
+  const fixtureFiles = [join(fresh('none'), 'pins.json')];
+  for (const content of [
+    '[]',
+    '{}',
+    'not json',
+    JSON.stringify({ good: { primary: A.primary } }),
+    JSON.stringify({ good: { ...A, extra: 'x' } }),
+    JSON.stringify({ good: { primary: 'a'.repeat(40), subkey: A.subkey } }),
+    JSON.stringify({ good: { primary: A.primary, subkey: 'a'.repeat(40) } }),
+    JSON.stringify({ good: A, bad: null }),
+  ]) {
+    const file = fresh('fixtures.json');
+    writeFileSync(file, content);
+    fixtureFiles.push(file);
+  }
+  for (const fixtures of fixtureFiles) {
     assert.throws(
-      () => loadProductionRecipient({ root: root(), fixtures }),
+      () => loadRecipientForTests({ root: root(), fixtures }),
       refuses('PRODUCTION_RECIPIENT_INVALID'),
     );
   }
@@ -242,7 +261,7 @@ test(
     chmodSync(path, 0o000);
     try {
       assert.throws(
-        () => loadProductionRecipient({ root: path }),
+        () => loadRecipientForTests({ root: path }),
         refuses('PRODUCTION_RECIPIENT_INVALID'),
       );
     } finally {

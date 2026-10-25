@@ -77,8 +77,8 @@ is written (`verifySealedDist`). `pnpm check:map-controls` (`map-controls.mjs` o
 `map-controls-core.mjs`) runs every named negative control on product copies of one real production,
 prints one JSON summary of codes and fixed lines (no absolute path, frame or map byte) and exits 1
 unless every expected control ran once with its expected outcome; the required `map-controls` CI job
-runs it uncached and uploads nothing. Step 9b.1's custody library (synthetic recipients only; nothing
-calls it yet) builds one owner-only USTAR of the sealed staging (`container.mjs`, over the one strict
+runs it uncached and uploads nothing. Step 9b.1's custody library (nothing outside Step 9b.2's release
+modules and the tests calls it) builds one owner-only USTAR of the sealed staging (`container.mjs`, over the one strict
 dialect in `ustar.mjs`) and encrypts it once to one pinned recipient with GnuPG ≥ 2.2.8 in fresh
 isolated homes (`custody.mjs` over `gnupg.mjs`; POSIX only, since no private root qualifies on
 Windows): a colon pre-check refuses missing, expired, revoked, unusable or unexpected recipients and the
