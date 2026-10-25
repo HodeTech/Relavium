@@ -10057,6 +10057,11 @@ jobs, the advisory Windows job among them. Its probe logged `1 of 200 replacemen
 negative`: on the runner itself a replaced directory's file ID rounded to its original's once in 200 pairs, the
 diagnosed mechanism, while every pair stayed distinct as exact identities, and the repeated replacement tests passed.
 
+**Windows clause, run 2 of 3 (2026-10-25).** Push CI
+[run 40211801913](https://github.com/HodeTech/Relavium/actions/runs/40211801913) at `56ccae62` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
+negative`, and the repeated replacement tests passed.
+
 ### Wave 3 Step 9b preflight decisions — 2026-10-25
 
 A read-only preflight (four readers and a synthesis at `c8c0d41b`) mapped Step 9b's obligations, the code it meets and
@@ -10333,3 +10338,42 @@ The round's verified findings were five lows:
   sentence to what the check catches.
 
 Step 9b.2 is next.
+
+### Wave 3 Step 9b.2 preflight decisions — 2026-10-25
+
+A read-only preflight (four readers and a synthesis at `56ccae62`) mapped Step 9b.2's obligations, the code it builds
+on and what 9c, 9d and Wave 4b will need from it; the detailed record and a Turkish decision register are local and
+Git-ignored. The maintainer approved each recommendation on 2026-10-25. No new ADR or runtime dependency follows: the
+receipt identifies files by SHA-256 from `node:crypto`, with no signature or HMAC (packaging.md's public binding
+receipt), and every module is release tooling. All four parts are new modules, so no accepted 9b.1 file changes and
+none of 9b.1's "next change to the file" lows fire.
+
+| Decision | Ruling |
+| --- | --- |
+| Schema v1 | Carries every field the contract lists now, `origin` and `mapCheck` included, checked for shape only. 9d adds trust checks against these fields (the origin against the GitHub run, `mapCheck` against a successful `ci` run at the source commit) and no new field; there is no `ciRun` field. |
+| Release-smoke inventory | Not embedded. 9d derives the public file inventory and package metadata from the digest-verified tarball with the inspector that produces the package-test receipt, a recorded 9d obligation. |
+| Toolchain identity | The manifest's per-file `inputs` (lock and configuration files only), the five tools plus the GnuPG version, and the target: checkable file by file against the commit, and not the per-source inventory ADR-0111 forbids. |
+| Scope enforcement | A new `encryptCandidate` gate in front of the unchanged `encryptOnce`, with a module-private registry of the records it returns. Production scope requires the loader's brand and a clean, non-synthetic source; synthetic scope requires the synthetic source, so the per-run ephemeral key can never encrypt a product staging. The sealer accepts only a record that gate returned, and only once. |
+| Production loader | A fixed committed path, `tools/cli-package/release-recipient/`, holding `recipient.asc` and a `pins.json` with an append-only `current`/`retired` history: exactly one `current`, no entry ever removed. In Wave 3 the directory is absent and the loader refuses `PRODUCTION_RECIPIENT_ABSENT`; there is no environment variable, flag or fallback, and a fixture fingerprint refuses. Rotation controls are built now (ADR-0111's acceptance 5); Wave 4b only adds the files. |
+
+Engineering defaults recorded with the rulings:
+- **Files.** `release-recipient.mjs` (the loader and its brand), `release-binding.mjs` (schema, validator and reuse,
+  whose import closure cannot start a process, so reuse's zero GnuPG calls are structural), `release-custody.mjs` (the
+  gate and the sealer, the only module that reaches GnuPG) and the test-only `release-fixture.mjs`. Each test file
+  joins `test:acceptance-tools` in the commit that creates it.
+- **Receipt bytes.** The receipt is written once in canonical bytes as `release-binding-receipt.json`, the name the
+  interim guard already keys on. Verifiers parse the exact bytes and never re-serialize, so a duplicated key, a
+  reordering, a BOM or trailing data refuses.
+- **Sealer.** It refuses an existing receipt before reading anything, admits exactly the tarball and the ciphertext
+  in the destination, and re-reads the ciphertext's size and digest against the record and the tarball's digest
+  against the manifest. It then publishes once, by `wx` and a link. A sibling that cannot be removed after the link
+  is not a refusal, and a write port allows fault injection: the lessons of COR-9B1-R4-1 and T-9B1-R1-3.
+- **Reuse.** It admits exactly the three files and checks each asset's size, then its bounded bytes and SHA-256,
+  against the receipt and the expected recipient history. It returns the verified bytes rather than paths and writes
+  nothing. Re-checking `ENC_TO` would need GnuPG and is a named limit.
+- **Static controls.** Only `release-custody.mjs` imports `encryptOnce`; no product path or workflow names a release
+  module until 9d; the release-binding closure excludes every subprocess module; no recipient directory is tracked
+  until Wave 4b. The interim guard stays unchanged and still refuses a valid synthetic candidate.
+- **Gate.** A rigor pass and a generated mutation sweep before the first round; the full `pnpm run ci` alone; the
+  custody tests on Ubuntu 24.04 with GnuPG 2.4.4 in Docker; one new complete cumulative round and a separate
+  crypto/custody security sitting.
