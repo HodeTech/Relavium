@@ -3703,7 +3703,7 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
 | NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
-| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each record's digest and size checked against the private manifest; an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).* |
+| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each map's digest checked against the private manifest and its size against the finalizer's record, which must name exactly the manifest's outputs and maps (the metafile must be a JSON object); an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).* |
 | 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
@@ -10225,8 +10225,8 @@ Lows corrected, none deferred:
 - **Pins.** A pin that only converts to a fingerprint, such as a one-element array, passed. Pins must now be
   strings (CRIT-9B1-R2-2).
 - **Record bounds.** The container admitted a `manifest.json` of up to 16 MiB, which the manifest reader refuses
-  over 4 MiB. Each record is now held to its own reader's bound, one `RECORD_BYTES` map shared by the readers
-  and the container (CRIT-9B1-R2-3).
+  over 4 MiB. Each record is now held to its own reader's bound, one `RECORD_BYTES` map shared by the manifest
+  readers, the metafile read in `seal.mjs` and the container (CRIT-9B1-R2-3).
 - **Fixture.** The ephemeral key's home was created before its path-length check, so a failed check left it
   behind (T-9B1-R2-8).
 - **Tests.** New cases cover:
@@ -10256,4 +10256,45 @@ whole chain. `check:map-controls` refuses such a half-configured GitHub environm
 causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in Docker), the 45 USTAR, container, GnuPG and custody
 tests ran: 44 passed and the case-insensitive-volume case skipped. The commit recording this evidence also
 corrects one contract phrase and changes no code.
+
+**Round 3 at `b3eaebaf` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan,
+security and integration lenses were clean. Two mediums, both in tests, corrected:
+- **The environment assertion did not name the work directory.** Round 2's check that every GnuPG call runs in the
+  work directory's environment accepted any directory named `custody-*`, and the test's own private root and
+  destination are named that way, so an environment built on either passed. Round 2's sweep had tried a leaked
+  process environment, never a wrong directory. Every call's environment must now be that of the one work
+  directory holding every home, in `mkdtemp`'s name shape, the gpgconf query's included.
+- **A hidden recipient beside the pinned one was untested.** The cases covered a duplicated pinned line, a wrong
+  ID, a hidden ID alone and no recipient, so a filter that ignored anonymous `ENC_TO` lines passed. The pinned
+  subkey with a hidden or another recipient beside it now refuses `RECIPIENTS` in tests.
+
+Lows corrected, none deferred:
+- **Additional decryption subkeys.** The pre-check did not classify an ADSK (capability `r`, GnuPG 2.4.1 and
+  later), which GnuPG adds as a further recipient, so a key carrying one passed it and only GnuPG's own refusal
+  and the recipient check stopped it. A usable ADSK now refuses `RECIPIENT_UNEXPECTED` before encryption, checked
+  against a real key carrying one on GnuPG 2.5.21 (COR-9B1-R3-1).
+- **Tests.** New cases cover the finalizer record's output paths, a same-count map rename, the read-side entry
+  count one past its bound, the creation time to the second, a prefixed status line, gpgconf beside a linked
+  gpg's real binary, a directory named `gpg` on PATH, an empty USTAR name, a regular-file private root and a
+  missing configuration directory (T-9B1-R3-3 to T-9B1-R3-6, CRIT-9B1-R3-1).
+- **Wording.** The 9b.1 row says which record is bound to what, round 2's record names the readers that share
+  `RECORD_BYTES`, the contract and its JSDoc claim only the size bound, and the runbook and a test comment no
+  longer say Homebrew and Ubuntu ship an empty configuration directory (PLAN-9B1-R3-1/2, CRIT-9B1-R3-2/3).
+
+**Sweeps.** The 48 named mutants (round 2's 30 and round 3's 18) all fail a test. A generated sweep then mutated
+every one-line refusal, condition clause and comparison of `custody.mjs`, `gnupg.mjs`, `container.mjs` and
+`ustar.mjs`: 182 mutants, 168 killed at first. Five survivors were real gaps and gained cases:
+- a fingerprint record before any key;
+- a ciphertext that can no longer be read after its listing;
+- a `null` record item and a `null` finalizer record;
+- a one-character USTAR name.
+
+The other nine are equivalent:
+- two distinct status lines never share an index;
+- the record items' type checks refuse with the same code at the comparison that follows;
+- two sort comparators never meet a tie that matters;
+- the build's map-name check refuses with the same code as the name-set check;
+- the self-check's comparison cannot differ with the current writer;
+- the checksum loop's extra index reads `?? 0`;
+- twelve octal digits are always a safe integer.
 

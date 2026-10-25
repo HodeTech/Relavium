@@ -105,11 +105,15 @@ function keysOf(records) {
 const expired = (fields, now) =>
   fields[1] === 'e' || (fields[6] !== '' && Number(fields[6]) <= now);
 
-/** @param {string[]} fields @param {number} now */
-const usableEncryption = (fields, now) =>
+/**
+ * A usable subkey with any of `capabilities`: `e` encrypts, and `r` marks an additional decryption
+ * subkey (ADSK, GnuPG 2.4.1 and later), which GnuPG adds as a further recipient.
+ * @param {string[]} fields @param {number} now @param {string} [capabilities]
+ */
+const usableEncryption = (fields, now, capabilities = 'e') =>
   !['e', 'r', 'i', 'n', 'd'].includes(fields[1]) &&
   !expired(fields, now) &&
-  fields[11].includes('e') &&
+  [...capabilities].some((capability) => fields[11].includes(capability)) &&
   !fields[11].includes('D');
 
 /** The approved encryption-subkey algorithms: cv25519 ECDH, or RSA of at least 3072 bits. */
@@ -120,7 +124,7 @@ const approvedAlgorithm = (fields) =>
 /**
  * Classify a recipient listing against its pins, in a fixed order: secret material, a missing primary,
  * more than one key, a missing subkey, revocation, expiry, unusability, then another usable
- * encryption subkey.
+ * encryption or additional decryption subkey.
  * @param {string[][]} records colon records of `--show-keys`
  * @param {{primary: string, subkey: string}} pins
  * @param {number} now seconds since the epoch
@@ -153,7 +157,7 @@ export function inspectRecipient(records, pins, now) {
   ) {
     refuseCustody('RECIPIENT_UNUSABLE');
   }
-  if (subkeys.some((key) => key !== pinned && usableEncryption(key.fields, now))) {
+  if (subkeys.some((key) => key !== pinned && usableEncryption(key.fields, now, 'er'))) {
     refuseCustody('RECIPIENT_UNEXPECTED');
   }
   return pins;

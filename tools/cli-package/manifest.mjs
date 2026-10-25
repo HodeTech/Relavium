@@ -51,8 +51,8 @@ const SOURCE = new RegExp(
 const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,64})?$/u;
 const LIMITS = Object.freeze({ outputs: 256, sources: 8192, recordBytes: 1024 * 1024 });
 /**
- * The bound each staged record's reader applies, by file name: the custody container carries no record
- * its reader would refuse.
+ * The size bound each staged record's reader applies, by file name: no record in the custody container
+ * exceeds the size its reader accepts.
  */
 export const RECORD_BYTES = Object.freeze({
   'finalized.json': LIMITS.recordBytes,

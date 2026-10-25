@@ -80,6 +80,12 @@ test('a staging that is not exactly the sealed records and maps refuses', () => 
     ['CONTAINER_SET', (copy) => writeFileSync(join(copy, 'maps', 'extra.js.map'), '{}')],
     ['CONTAINER_SET', (copy) => rmSync(join(copy, 'maps', mapName(copy)))],
     ['CONTAINER_SET', (copy) => writeFileSync(join(copy, 'maps', 'notes.txt'), '{}')],
+    // Same count, another valid chunk name.
+    [
+      'CONTAINER_SET',
+      (copy) =>
+        renameSync(join(copy, 'maps', mapName(copy)), join(copy, 'maps', 'zzzrenamed.js.map')),
+    ],
     [
       'CONTAINER_DRIFT',
       (copy) => {
@@ -93,6 +99,15 @@ test('a staging that is not exactly the sealed records and maps refuses', () => 
         const path = join(copy, 'finalized.json');
         const record = JSON.parse(readFileSync(path, 'utf8'));
         record.outputs[0].sha256 = '0'.repeat(64);
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.outputs[0].path = 'dist/other.js';
         writeFileSync(path, JSON.stringify(record));
       },
     ],
@@ -187,6 +202,16 @@ test('a staging that is not exactly the sealed records and maps refuses', () => 
         writeFileSync(path, JSON.stringify(record));
       },
     ],
+    ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'finalized.json'), 'null')],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.outputs[0] = null;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
     ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), 'not json')],
     ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), '[]')],
   ]) {
@@ -261,6 +286,10 @@ test('the entry, count and total bounds refuse before a container is written', (
   };
   assert.deepEqual(buildPrivateContainer(copy, exact).bytes, bytes);
   assert.equal(readPrivateContainer(bytes, exact).files.size, exact.entries);
+  assert.throws(
+    () => readPrivateContainer(bytes, { ...exact, entries: exact.entries - 1 }),
+    refuses('CONTAINER_FILE_COUNT'),
+  );
   // Reading bounds each entry as building does.
   assert.throws(
     () => readPrivateContainer(bytes, { ...CONTAINER_LIMITS, entryBytes: largest - 1 }),

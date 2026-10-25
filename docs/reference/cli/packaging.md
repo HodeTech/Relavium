@@ -532,8 +532,8 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   and the manifest's maps as regular files of at most 16 MiB each, at most 259 entries and
   128 MiB in total (the total refused before the archive is assembled). Each record must also
   be within the bound its own reader applies (`RECORD_BYTES`: `finalized.json` 1 MiB,
-  `manifest.json` and `metafile-esm.json` 4 MiB), so the container never carries a record
-  its own reader would refuse. Every map's digest must
+  `manifest.json` and `metafile-esm.json` 4 MiB), so no record exceeds the size its own
+  reader accepts. Every map's digest must
   be the manifest's, and the finalizer's record must name exactly the manifest's outputs and
   maps with each map's size. The manifest records no digest for the metafile, which must parse
   as a JSON object. The written container is read back before it is returned, so a path the
@@ -568,7 +568,8 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   in this order: secret material, a missing pinned primary, more than one listed key, a missing
   pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
   encryption capability, a creation time in the future, or an encryption subkey other than
-  cv25519 or RSA of at least 3072 bits) and another usable encryption subkey. GnuPG's listing
+  cv25519 or RSA of at least 3072 bits) and another usable encryption subkey or additional
+  decryption subkey (an ADSK, which GnuPG 2.4.1 and later adds as a further recipient). GnuPG's listing
   omits a key it cannot use, such as one created in the future or one without a valid user ID,
   so such a key refuses as missing or goes uncounted; GnuPG's own refusal and the
   `KEY_CONSIDERED` and recipient checks remain the independent second layer for it.

@@ -93,13 +93,20 @@ const valueOf = (args, flag) => args[args.indexOf(flag) + 1];
  */
 function recording(hooks = {}) {
   const calls = [];
+  /** @type {string | undefined} */
+  let work;
   /** @type {typeof runCommand} */
   const run = async (command, args, options) => {
     const kind = kindOf(args);
     calls.push(kind);
-    // Every call runs in the work directory's isolated C-locale environment, within the call bounds.
-    assert.deepEqual(options.env, gnupgEnvironment(options.env.HOME));
-    assert.match(basename(options.env.HOME), /^custody-/u);
+    // Every call, the gpgconf query without a home included, runs within the call bounds in the
+    // isolated C-locale environment of the one work directory that holds every home.
+    const parent = args.includes('--homedir') ? dirname(valueOf(args, '--homedir')) : undefined;
+    if (kind === 'version') work = parent;
+    assert.ok(work !== undefined, 'the version call did not come first');
+    assert.ok(parent === undefined || parent === work, 'a home outside the work directory');
+    assert.match(basename(work), /^custody-[A-Za-z0-9]{6}$/u);
+    assert.deepEqual(options.env, gnupgEnvironment(work));
     assert.equal(options.timeoutMs, GNUPG_CALL.timeoutMs);
     assert.equal(options.maxBytes, GNUPG_CALL.maxBytes);
     const hook = hooks[kind] ?? {};
@@ -209,8 +216,8 @@ test('the recipient classification refuses in its fixed order', () => {
     ['RECIPIENT_UNUSABLE', records({}, { 11: 'eD' })],
     ['RECIPIENT_UNUSABLE', records({ 1: 'n' })],
     ['RECIPIENT_UNUSABLE', records({ 1: 'd' })],
-    ['RECIPIENT_UNUSABLE', records({ 5: String(NOW + 60) })],
-    ['RECIPIENT_UNUSABLE', records({}, { 5: String(NOW + 60) })],
+    ['RECIPIENT_UNUSABLE', records({ 5: String(NOW + 1) })],
+    ['RECIPIENT_UNUSABLE', records({}, { 5: String(NOW + 1) })],
     ['RECIPIENT_UNUSABLE', records({}, { 16: 'nistp256' })],
     ['RECIPIENT_UNUSABLE', records({}, { 3: '1', 2: '2048', 16: '' })],
     // An ElGamal subkey of any size is not an approved algorithm.
@@ -225,6 +232,8 @@ test('the recipient classification refuses in its fixed order', () => {
       { primary: PRIMARY, subkey: PRIMARY },
     ],
     ['RECIPIENT_UNEXPECTED', [...records(), key('sub'), fpr('E'.repeat(40))]],
+    // An additional decryption subkey (capability `r`) is a further recipient GnuPG adds.
+    ['RECIPIENT_UNEXPECTED', [...records(), key('sub', { 11: 'r' }), fpr('E'.repeat(40))]],
   ]) {
     assert.throws(
       () => inspectRecipient(listing, override ?? pins, NOW),
@@ -251,6 +260,19 @@ test('the recipient classification refuses in its fixed order', () => {
     pins,
   );
   assert.equal(inspectRecipient(records({}, { 3: '1', 2: '4096', 16: '' }), pins, NOW), pins);
+  // A fingerprint record before any key is ignored.
+  assert.equal(inspectRecipient([fpr(PRIMARY), ...records()], pins, NOW), pins);
+  // Created in the current second is not in the future; a revoked additional decryption subkey is
+  // not a recipient.
+  assert.equal(inspectRecipient(records({ 5: String(NOW) }, { 5: String(NOW) }), pins, NOW), pins);
+  assert.equal(
+    inspectRecipient(
+      [...records(), key('sub', { 1: 'r', 11: 'r' }), fpr('E'.repeat(40))],
+      pins,
+      NOW,
+    ),
+    pins,
+  );
 });
 
 test('the committed synthetic fixtures list as their names say under the real GnuPG', async () => {
@@ -448,6 +470,11 @@ test('the ciphertext must name exactly the pinned subkey and nothing else', asyn
     (text) => text.replace(/ENC_TO [0-9A-F]{16}/u, `ENC_TO ${'1'.repeat(16)}`),
     (text) => text.replace(/ENC_TO [0-9A-F]{16}/u, `ENC_TO ${'0'.repeat(16)}`),
     (text) => text.replace(/\[GNUPG:\] ENC_TO[^\n]*\n/u, ''),
+    // The pinned subkey with a hidden or another recipient beside it.
+    (text) =>
+      text.replace(/(\[GNUPG:\] ENC_TO[^\n]*\n)/u, `$1[GNUPG:] ENC_TO ${'0'.repeat(16)} 18 0\n`),
+    (text) =>
+      text.replace(/(\[GNUPG:\] ENC_TO[^\n]*\n)/u, `$1[GNUPG:] ENC_TO ${'1'.repeat(16)} 18 0\n`),
   ]) {
     refused(await attempt(recording(rewrite(change))), 'RECIPIENTS');
   }
@@ -568,7 +595,8 @@ test("a global GnuPG configuration in the installation's sysconfdir refuses befo
   const sysconf = fresh('sysconfdir');
   mkdirSync(sysconf);
   const config = (stdout) => ({ config: { replace: () => ({ stdout, stderr: '' }) } });
-  // An empty configuration directory, as Homebrew and Ubuntu ship it, admits.
+  // A configuration directory with neither file admits: Homebrew ships only `scdaemon.conf` there,
+  // and Debian and Ubuntu ship no such directory.
   const admitted = recording(config(`${sysconf}\n`));
   const outcome = await attempt(admitted);
   assert.equal(outcome.error, undefined, String(outcome.error));
@@ -610,6 +638,16 @@ test('the published bytes are the listed bytes, and the default clock counts sec
     recipients: { before: (args) => writeFileSync(args.at(-1), other) },
   });
   refused(await attempt(swapped), 'ASSET');
+  // One that can no longer be read after its listing refuses the same way.
+  const vanished = recording({
+    recipients: {
+      after: (result, args) => {
+        rmSync(args.at(-1));
+        return result;
+      },
+    },
+  });
+  refused(await attempt(vanished), 'ASSET');
   // A recipient whose subkey expires tomorrow is valid under the default clock (seconds since the
   // epoch); a clock in milliseconds would call it expired.
   const pins = PINS.good;
@@ -816,9 +854,14 @@ test('an overlap spelled differently on a case-insensitive volume still refuses'
 test('a missing destination or private root refuses with a fixed code and no path', async () => {
   const { root, destination } = places();
   const missing = join(fresh('missing'), 'nowhere');
+  // An owner-only regular file is not a private root.
+  const file = join(fresh('file-root'), 'nowhere');
+  mkdirSync(dirname(file));
+  writeFileSync(file, '', { mode: 0o600 });
   for (const [code, overrides] of [
     ['PLACEMENT', { destination: missing, privateRoot: root }],
     ['PRIVATE_ROOT', { destination, privateRoot: missing }],
+    ['PRIVATE_ROOT', { destination, privateRoot: file }],
   ]) {
     await assert.rejects(
       encryptOnce({

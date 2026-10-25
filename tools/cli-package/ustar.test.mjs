@@ -99,6 +99,7 @@ test('each header field outside the dialect refuses with its own code', () => {
     ['TAR_FORMAT', mutated((block) => block.write('xx', 263))],
     ['TAR_NUMBER', mutated((block) => block.write('00000000009 ', 124))],
     ['TAR_NAME', mutated((block) => (block[20] = 0x61))],
+    ['TAR_NAME', mutated((block) => block.fill(0, 0, 100))],
     ['UTF8', mutated((block) => block.fill(0xff, 0, 4))],
     ['TAR_MODE', mutated((block) => block.write('000644', 100))],
     ['FILE_SIZE', mutated((block) => block.write('00000010001 ', 124))],
@@ -134,6 +135,11 @@ test('the archive structure refuses duplicates, aliases, truncation, padding, co
   ]) {
     assert.throws(() => read(archive), refuses(code), code);
   }
+  // A one-character name is a name: the caller's path rule judges it.
+  assert.throws(
+    () => read(Buffer.concat([ustarEntry('a', Buffer.from('{}'), 0o600), end])),
+    refuses('PATH'),
+  );
   // The caller's path rule runs inside the header check, before its mode and size are judged.
   assert.throws(
     () => read(Buffer.concat([ustarEntry('outside.txt', Buffer.alloc(8192), 0o644), end])),

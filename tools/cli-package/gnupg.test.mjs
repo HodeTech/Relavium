@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
@@ -49,6 +57,24 @@ test('gpg resolves from absolute PATH entries only and is required, never skippe
     refuses('GPG_UNAVAILABLE'),
   );
   assert.deepEqual(resolveGpg(join(scratch, 'relative')).prefix, []);
+  // A directory named gpg is skipped, never chosen.
+  const directoryEntry = createGnupgHome(scratch, 'gpg-directory');
+  mkdirSync(join(directoryEntry, 'gpg'));
+  assert.equal(
+    resolveGpg([directoryEntry, dirname(gpg.command)].join(delimiter)).command,
+    gpg.command,
+  );
+});
+
+test("gpgconf is the one beside the linked gpg's real binary, never a neighbour of the link", () => {
+  const real = resolveGpg();
+  const farm = createGnupgHome(scratch, 'link-farm');
+  symlinkSync(real.command, join(farm, 'gpg'));
+  writeFileSync(join(farm, 'gpgconf'), '#!/bin/sh\necho decoy\n', { mode: 0o700 });
+  const linked = resolveGpg(farm);
+  assert.equal(linked.command, realpathSync(join(farm, 'gpg')));
+  assert.equal(linked.gpgconf.command, join(dirname(linked.command), 'gpgconf'));
+  assert.notEqual(dirname(linked.gpgconf.command), farm);
 });
 
 test('the version floor is GnuPG 2.2.8, read from the version line only', async () => {
@@ -196,6 +222,8 @@ test('a global configuration in the sysconfdir gpgconf names refuses', async () 
   const other = createGnupgHome(scratch, 'sysconf-other');
   writeFileSync(join(other, 'scdaemon.conf'), 'disable-ccid\n');
   await check(`${other}\n`);
+  // Debian and Ubuntu name a directory they do not ship: nothing there to read.
+  await check(`${join(scratch, 'sysconf-missing')}\n`);
   // A named directory is printed raw: a literal `%41` is part of the path, never an escape.
   const raw = createGnupgHome(scratch, 'sysconf %41');
   writeFileSync(join(raw, 'gpg.conf'), 'encrypt-to 0123456789ABCDEF\n');
@@ -228,6 +256,7 @@ test('status parsing admits only status lines and keeps unknown keywords for the
     '[GNUPG:] begin\n',
     '[GNUPG:] BEGIN_ENCRYPTION 2 9\n\n',
     '[GNUPG:]BEGIN_ENCRYPTION\n',
+    'gpg: noise [GNUPG:] NEWSIG\n',
   ]) {
     assert.throws(() => parseStatus(text), refuses('STATUS'), text);
   }
