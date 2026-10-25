@@ -9889,6 +9889,13 @@ line names it, and the contract and the interrupted-runner record say that direc
 public tarball and receipt. The receipt now records `package_test`; the native-identity increment NI is next, then
 Step 9b.
 
+**Push CI.** `development` was pushed at `10993bb8` (the acceptance commit on top of `0f73c253`), after a full local
+`pnpm run ci` at that head passed with all 25 map controls. All fifteen required jobs of
+[run 40137915608](https://github.com/HodeTech/Relavium/actions/runs/40137915608) passed, among them the first CI run
+of the required product map controls job, the originating pack, the four same-tarball installed-CLI consumers and
+their aggregate, lint, typecheck and test, the engine coverage floor and the causal-control families. The three
+advisory jobs passed too, including the Windows job whose earlier failure opened NI.
+
 ### Wave 3 NI preflight decisions — 2026-10-25
 
 A read-only preflight (three readers and a synthesis at `10993bb8`; the detailed record and a Turkish decision
