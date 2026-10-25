@@ -10,7 +10,7 @@ import { Buffer } from 'node:buffer';
 import { lstatSync, readdirSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { refuseCustody } from './custody-error.mjs';
+import { CustodyError, refuseCustody } from './custody-error.mjs';
 import { readOrdinaryFile, sha256 } from './files.mjs';
 import { MANIFEST_FILE, validateManifest } from './manifest.mjs';
 import { readUstar, writeUstar } from './ustar.mjs';
@@ -147,6 +147,17 @@ function containerBytes(files) {
  * @returns {{bytes: Buffer, manifest: import('./manifest.mjs').PrivateManifest}}
  */
 export function buildPrivateContainer(staging, limits = CONTAINER_LIMITS) {
+  try {
+    return build(staging, limits);
+  } catch (error) {
+    // A host error's message names the staging path: only fixed custody codes leave.
+    if (error instanceof CustodyError) throw error;
+    return refuseCustody('CONTAINER_UNREADABLE');
+  }
+}
+
+/** @param {string} staging @param {typeof CONTAINER_LIMITS} limits */
+function build(staging, limits) {
   /** @param {string} path */
   const read = (path) => {
     try {

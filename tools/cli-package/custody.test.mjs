@@ -69,15 +69,17 @@ function places() {
 
 /** @param {string[]} args */
 const kindOf = (args) =>
-  args.includes('--version')
-    ? 'version'
-    : args.includes('--show-keys')
-      ? 'list'
-      : args.includes('--encrypt')
-        ? 'encrypt'
-        : args.includes('--list-only')
-          ? 'recipients'
-          : 'other';
+  args.includes('--list-dirs')
+    ? 'config'
+    : args.includes('--version')
+      ? 'version'
+      : args.includes('--show-keys')
+        ? 'list'
+        : args.includes('--encrypt')
+          ? 'encrypt'
+          : args.includes('--list-only')
+            ? 'recipients'
+            : 'other';
 /** @param {string[]} args @param {string} flag */
 const valueOf = (args, flag) => args[args.indexOf(flag) + 1];
 
@@ -198,6 +200,12 @@ test('the recipient classification refuses in its fixed order', () => {
     ['RECIPIENT_UNUSABLE', records({}, { 5: String(NOW + 60) })],
     ['RECIPIENT_UNUSABLE', records({}, { 16: 'nistp256' })],
     ['RECIPIENT_UNUSABLE', records({}, { 3: '1', 2: '2048', 16: '' })],
+    // An ElGamal subkey of any size is not an approved algorithm.
+    ['RECIPIENT_UNUSABLE', records({}, { 3: '16', 2: '4096', 16: '' })],
+    ['RECIPIENT_UNUSABLE', records({}, { 3: '16', 2: '255', 16: 'cv25519' })],
+    // Revocation is reported before expiry.
+    ['RECIPIENT_REVOKED', records({ 1: 'r', 6: String(NOW) })],
+    ['RECIPIENT_SECRET', [...records(), key('ssb'), fpr('E'.repeat(40))]],
     [
       'RECIPIENT_UNUSABLE',
       records({ 3: '18', 11: 'ecEC', 16: 'cv25519' }),
@@ -217,6 +225,19 @@ test('the recipient classification refuses in its fixed order', () => {
     inspectRecipient([...records(), key('sub', { 1: 'r' }), fpr('E'.repeat(40))], pins, NOW),
     pins,
   );
+  assert.equal(
+    inspectRecipient([...records(), key('sub', { 1: 'e' }), fpr('E'.repeat(40))], pins, NOW),
+    pins,
+  );
+  assert.equal(
+    inspectRecipient(
+      [...records(), key('sub', { 6: String(NOW) }), fpr('E'.repeat(40))],
+      pins,
+      NOW,
+    ),
+    pins,
+  );
+  assert.equal(inspectRecipient(records({}, { 3: '1', 2: '4096', 16: '' }), pins, NOW), pins);
 });
 
 test('the committed synthetic fixtures list as their names say under the real GnuPG', async () => {
@@ -295,7 +316,7 @@ test('encryption publishes exactly one ciphertext for the pinned subkey and leav
     gnupg: await installedVersion(),
   });
   assert.ok(Object.isFrozen(outcome.record) && Object.isFrozen(outcome.record.recipient));
-  assert.deepEqual(calls, ['version', 'list', 'encrypt', 'recipients']);
+  assert.deepEqual(calls, ['version', 'config', 'list', 'encrypt', 'recipients']);
   assert.deepEqual(readdirSync(outcome.root), []);
 });
 
@@ -340,7 +361,7 @@ test('every committed refusal fixture is refused before encryption, and AEAD aft
   ]) {
     const { run, calls } = recording();
     refused(await attempt({ run, recipient: { file: fixture(name), pins: PINS[name] } }), code);
-    assert.deepEqual(calls, ['version', 'list'], name);
+    assert.deepEqual(calls, ['version', 'config', 'list'], name);
   }
   // GnuPG 2.3 and later pick OCB for a key that advertises AEAD, a profile that is refused; GnuPG 2.2
   // has no AEAD and encrypts SEIPDv1, which the profile check admits.
@@ -363,7 +384,7 @@ test("GnuPG's own refusal is a second layer behind the pre-check", async () => {
     await attempt({ run, recipient: { file: fixture('expired-subkey'), pins } }),
     'ENCRYPTION_FAILED',
   );
-  assert.deepEqual(calls, ['version', 'list', 'encrypt']);
+  assert.deepEqual(calls, ['version', 'config', 'list', 'encrypt']);
 });
 
 test('the status must be exactly one pinned, completed SEIPDv1 AES-256 encryption', async () => {
@@ -527,6 +548,72 @@ test('the checked recipient copy is the one encrypted to, read within its bound'
   refused(await attempt({ recipient: { file: large, pins: PINS.good } }), 'RECIPIENT_UNREADABLE');
 });
 
+test("a global GnuPG configuration in the installation's sysconfdir refuses before any key is handled", async () => {
+  const sysconf = fresh('sysconfdir');
+  mkdirSync(sysconf);
+  const config = (stdout) => ({ config: { replace: () => ({ stdout, stderr: '' }) } });
+  // An empty configuration directory, as Homebrew and Ubuntu ship it, admits.
+  const admitted = recording(config(`${sysconf}\n`));
+  const outcome = await attempt(admitted);
+  assert.equal(outcome.error, undefined, String(outcome.error));
+  for (const name of ['gpg.conf', 'common.conf']) {
+    const directory = fresh(`sysconf-${name}`);
+    mkdirSync(directory);
+    writeFileSync(join(directory, name), 'log-file /tmp/leak.log\ndebug-all\n');
+    const { run, calls } = recording(config(`${directory}\n`));
+    refused(await attempt({ run }), 'GPG_CONFIG');
+    assert.deepEqual(calls, ['version', 'config'], name);
+  }
+  // gpgconf percent-escapes a directory name; a relative or malformed answer refuses.
+  const escaped = fresh('sys conf');
+  mkdirSync(escaped);
+  writeFileSync(join(escaped, 'gpg.conf'), 'throw-keyids\n');
+  refused(await attempt(recording(config(`${escaped.replaceAll(' ', '%20')}\n`))), 'GPG_CONFIG');
+  refused(await attempt(recording(config('relative/dir\n'))), 'GPG_CONFIG');
+  refused(await attempt(recording(config('%zz\n'))), 'GPG_CONFIG');
+  refused(
+    await attempt(
+      recording({
+        config: {
+          replace: () => {
+            throw new Error('gpgconf failed');
+          },
+        },
+      }),
+    ),
+    'GPG_UNAVAILABLE',
+  );
+});
+
+test('the published bytes are the listed bytes, and the default clock counts seconds', async () => {
+  // A ciphertext file replaced after it was read — here by another valid ciphertext for the same
+  // recipient, so its listing still passes — is refused, never published.
+  const earlier = await attempt();
+  assert.equal(earlier.error, undefined, String(earlier.error));
+  const other = readFileSync(join(earlier.destination, NAME()));
+  const swapped = recording({
+    recipients: { before: (args) => writeFileSync(args.at(-1), other) },
+  });
+  refused(await attempt(swapped), 'ASSET');
+  // A recipient whose subkey expires tomorrow is valid under the default clock (seconds since the
+  // epoch); a clock in milliseconds would call it expired.
+  const pins = PINS.good;
+  const tomorrow = String(Math.floor(Date.now() / 1000) + 86_400);
+  const listing = [key('pub'), fpr(pins.primary), key('sub', { 6: tomorrow }), fpr(pins.subkey)]
+    .map((fields) => fields.join(':'))
+    .join('\n');
+  const { root, destination } = places();
+  const forged = recording({ list: { replace: () => ({ stdout: listing, stderr: '' }) } });
+  const record = await encryptOnce({
+    container,
+    recipient: { file: fixture('good'), pins },
+    destination,
+    privateRoot: root,
+    run: forged.run,
+  });
+  assert.equal(record.name, NAME());
+});
+
 test('a ciphertext is published once: an existing one refuses before any GnuPG call', async () => {
   const { root, destination } = places();
   writeFileSync(join(destination, NAME()), 'earlier ciphertext');
@@ -611,6 +698,30 @@ test('the destination and the private root are separate directories, the root ow
   assert.deepEqual(calls, []);
 });
 
+test('an overlap spelled differently on a case-insensitive volume still refuses', async (context) => {
+  const base = fresh('case');
+  mkdirSync(join(base, 'Public'), { recursive: true });
+  if (!existsSync(join(base, 'PUBLIC'))) {
+    context.skip('this volume is case-sensitive');
+    return;
+  }
+  const root = join(base, 'PUBLIC', 'root');
+  mkdirSync(root);
+  chmodSync(root, 0o700);
+  const { run, calls } = recording();
+  await assert.rejects(
+    encryptOnce({
+      container,
+      recipient: { file: fixture('good'), pins: PINS.good },
+      destination: join(base, 'Public'),
+      privateRoot: root,
+      run,
+    }),
+    refuses('PLACEMENT'),
+  );
+  assert.deepEqual(calls, []);
+});
+
 test('a missing destination or private root refuses with a fixed code and no path', async () => {
   const { root, destination } = places();
   const missing = join(fresh('missing'), 'nowhere');
@@ -652,6 +763,8 @@ test(
           error.code === 'CLEANUP' &&
           !JSON.stringify({ message: error.message, ...error }).includes(root),
       );
+      // The plaintext is removed before anything is published.
+      assert.deepEqual(readdirSync(destination), []);
     } finally {
       chmodSync(root, 0o700);
     }
@@ -698,7 +811,7 @@ test('no GnuPG output, path or host error text reaches a refusal', async () => {
       return error instanceof CustodyError && error.code === 'UNEXPECTED';
     },
   );
-  assert.deepEqual(vanished.calls, ['version', 'list', 'encrypt', 'recipients']);
+  assert.deepEqual(vanished.calls, ['version', 'config', 'list', 'encrypt', 'recipients']);
   assert.deepEqual(readdirSync(lost.root), []);
 });
 
@@ -725,7 +838,8 @@ test(
       [
         "import { readFileSync, writeFileSync } from 'node:fs';",
         'const args = process.argv.slice(2);',
-        "if (args.includes('--version')) process.stdout.write('gpg (GnuPG) 2.4.4\\n');",
+        `if (args.includes('--list-dirs')) process.stdout.write(${JSON.stringify(work)} + '\\n');`,
+        "else if (args.includes('--version')) process.stdout.write('gpg (GnuPG) 2.4.4\\n');",
         `else if (args.includes('--show-keys')) process.stdout.write(readFileSync(${JSON.stringify(listing)}, 'utf8'));`,
         `else { writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); writeFileSync(${JSON.stringify(started)}, ''); setInterval(() => {}, 1000); }`,
       ].join('\n'),
@@ -743,7 +857,8 @@ test(
         `  encryptOnce({ container: readFileSync(${JSON.stringify(join(work, 'container.tar'))}),`,
         `    recipient: { file: ${JSON.stringify(fixture('good'))}, pins: ${JSON.stringify(pins)} },`,
         `    destination: ${JSON.stringify(destination)}, privateRoot: root,`,
-        `    gpg: { command: process.execPath, prefix: [${JSON.stringify(fakeGpg)}] } }));`,
+        `    gpg: { command: process.execPath, prefix: [${JSON.stringify(fakeGpg)}],`,
+        `      gpgconf: { command: process.execPath, prefix: [${JSON.stringify(fakeGpg)}] } } }));`,
       ].join('\n'),
     );
     writeFileSync(join(work, 'container.tar'), container);

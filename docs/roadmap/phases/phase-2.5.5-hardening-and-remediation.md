@@ -10102,8 +10102,9 @@ and this record:
 2. **The private container.** `container.mjs` builds and reads the owner-only container in the approved
    staging-relative layout, every map checked against the manifest and the finalizer's record.
 3. **The isolated GnuPG runner.** `gnupg.mjs`, with GnuPG ≥ 2.2.8 added to the local prerequisites.
-4. **Synthetic fixtures.** Committed armored public keys for every recipient class, their pins and a
-   maintainer-only generator; the round-trip key is generated per run.
+4. **Synthetic fixtures.** Committed armored public keys for the recipient classes GnuPG can produce,
+   their pins and a maintainer-only generator; crafted listings cover the other classes, and the round-trip key
+   is generated per run.
 5. **Encrypt once.** `custody.mjs`: pins, the colon pre-check, `encryptOnce` and its tests.
 
 The [packaging contract](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b1) records
@@ -10171,4 +10172,34 @@ pre-check counts only the keys GnuPG lists. A rerun sweep of 52 mutants left no 
 inventory's `vitest list` collection exceeded its 30-second spawn timeout while the rigor pass's agents held the
 load average at 40–66. On a quiet machine it passed three of three runs in 10–12 seconds. The full CI reruns at
 the corrected head, alone, before the first round.
+
+**Author evidence at `f0555a61`.** The full `pnpm run ci` passed alone (exit 0): `test:acceptance-tools` 969 of
+969, all 25 product map controls, and every causal-control family complete.
+
+**Round 1 at `f0555a61` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. They
+reported three medium findings, all corrected:
+- **Global configuration.** GnuPG reads its installation's `<sysconfdir>/gpg.conf` even under `--no-options`, so
+  the "no options file" claim was false. The reviewer showed that a global `log-file` with debug options wrote
+  the AES session key outside every home while the encryption passed every check. The installation's `gpgconf`
+  now names that directory before any key is handled, and a `gpg.conf` or `common.conf` there refuses
+  (`GPG_CONFIG`). The contract names the installation as trusted.
+- **Container host errors.** `buildPrivateContainer` still let host errors carrying the staging path escape; the
+  rigor pass had named it with `encryptOnce`, and only `encryptOnce` was corrected. They now refuse
+  `CONTAINER_UNREADABLE`.
+- **Algorithm policy.** Nothing tested the algorithm-ID half of the policy: an ElGamal subkey would pass once
+  that half was removed. ElGamal cases now refuse.
+
+Lows corrected:
+- **Overlap.** The destination and root are compared by device and inode, not spelling; a case-variant test runs
+  on case-insensitive volumes and is skipped where the volume is case-sensitive.
+- **Publish order.** The listed ciphertext file must still be the bytes published, and the plaintext work
+  directory is removed before anything is published, so a `CLEANUP` refusal publishes nothing.
+- **Tests.** New cases cover revocation before expiry, an expired second subkey, `ssb`-only secret material, the
+  default clock's unit, the record items' exact keys, the isolated environment, the C locale and owner-only homes,
+  and the forbidden `--ignore-*` family.
+- **Wording.** Corrected in the fixture comment, the contract's secret-material wording, the Wave 4b clause (an
+  AES256 preference) and this checkpoint's fixture item.
+
+Two lows are recorded in deferred-tasks.md: secret material GnuPG neither lists nor reads is admitted, and the
+atomic publish has no fault-injection test. Every corrected guard's mutant now fails a test.
 

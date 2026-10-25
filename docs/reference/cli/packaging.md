@@ -536,9 +536,14 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   as a JSON object. Reading a container back applies the same checks, and a decrypted container
   extracted with `tar -x` is a staging the manifest reader consumes unchanged.
 - **The isolated runner.** `gnupg.mjs` resolves `gpg` from absolute PATH entries only and
-  refuses one older than GnuPG 2.2.8. Every call runs in a fresh owner-only home the tool
-  creates, with `--no-options --no-autostart --no-keyring`, the C locale and an isolated
-  environment, bounded by `runCommand`. The recipient listing (`--show-keys`) uses its own home
+  refuses one older than GnuPG 2.2.8; the installation — its binary, its `gpgconf` and its
+  system-wide configuration directory — is trusted. Every call runs in a fresh owner-only home
+  the tool creates, with `--no-options --no-autostart --no-keyring`, the C locale and an
+  isolated environment, bounded by `runCommand`. GnuPG still reads the installation's
+  `<sysconfdir>/gpg.conf` under `--no-options`, and its `[force]` options override the command
+  line, so before any key is handled the installation's `gpgconf --list-dirs sysconfdir` is
+  read and a `gpg.conf` or `common.conf` there refuses (`GPG_CONFIG`): a global configuration
+  could add or hide a recipient, redirect the output or log the session key. The recipient listing (`--show-keys`) uses its own home
   and the default trust model, because GnuPG 2.4 cannot list an expired or revoked key under
   `--trust-model always` without a trust database; that home may gain only GnuPG's own
   `trustdb.gpg`. Encryption uses `--recipient-file`, `--trust-model always` (the pinned
@@ -546,7 +551,9 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   compression and a fixed literal name, in a home that may gain only `random_seed`.
 - **The recipient pre-check.** The recipient file is read bounded and copied, so the bytes
   checked are the bytes encrypted to, and pins are exactly two 40-digit uppercase fingerprints
-  (OpenPGP v4). An armored secret key refuses from its bytes. The colon listing then refuses,
+  (OpenPGP v4). An armored secret key refuses from its bytes; other secret material refuses
+  from the listing as secret, or as unreadable where GnuPG cannot list it. The colon listing
+  then refuses,
   in this order: secret material, a missing pinned primary, more than one listed key, a missing
   pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
   encryption capability, a creation time in the future, or an encryption subkey other than
@@ -556,11 +563,14 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   `KEY_CONSIDERED` and recipient checks remain the independent second layer for it.
 - **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
   holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
-  private root overlap, or when the root is not owner-only. Success requires exit 0, one
+  private root overlap (compared by device and inode, so a second spelling of one directory
+  does not hide the overlap), or when either is missing or the root is not owner-only. Success requires exit 0, one
   `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and
   AES-256; an AEAD profile refuses) before one `END_ENCRYPTION`, exactly the expected work
   files, a ciphertext within the container's size plus 64 KiB whose public-key packets name
-  exactly the pinned subkey and no hidden recipient, and homes holding only what GnuPG creates.
+  exactly the pinned subkey and no hidden recipient and whose file is still the bytes about to
+  be published, and homes holding only what GnuPG creates. The work directory and its
+  plaintext are removed before anything is published, so a failed removal publishes nothing.
   The ciphertext is then published atomically: written to a fresh sibling, then hard-linked to
   its final name, which never replaces an existing file, so a failed write never leaves a
   partial file under that name. It returns a frozen custody record: name, size, SHA-256, pins
@@ -569,8 +579,9 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   an owner-only work directory under the caller's private root, removed on every path; an
   interrupt in the caller's `exitOnInterrupt` scope stops GnuPG and removes the root. No secure
   erasure is claimed. Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`, including a host
-  failure (`UNEXPECTED`) and a work directory that cannot be removed (`CLEANUP`); GnuPG's stdout
-  and stderr, paths and host error text never surface.
+  failure (`UNEXPECTED`, or `CONTAINER_UNREADABLE` for a staging that cannot be read) and a
+  work directory that cannot be removed (`CLEANUP`); GnuPG's stdout and stderr, paths and host
+  error text never surface.
 - **Synthetic fixtures.** `custody-fixtures/` commits armored public v4 keys under
   `fixture.invalid` for the classes GnuPG can produce — good cv25519 and RSA-3072 keys, one
   advertising AEAD, an RSA-2048 subkey, an expired primary and subkey, a revoked primary and

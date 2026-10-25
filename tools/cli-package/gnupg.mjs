@@ -2,11 +2,13 @@
  * The isolated GnuPG boundary of the custody tools (Step 9b.1; packaging.md, "Recipient custody").
  * GnuPG is release tooling, never a runtime dependency. Every call runs the resolved absolute binary
  * through the shell-free, bounded `runCommand`, in a fresh owner-only home the tools create themselves,
- * with no options file, keyring, agent or key discovery. Only status lines and colon records are
- * parsed; human-readable output and stderr are never read or surfaced.
+ * with no per-home options file, keyring, agent or key discovery. GnuPG still reads its installation's
+ * system-wide `gpg.conf` under `--no-options`, so a global configuration refuses before any call that
+ * handles a key. Only status lines, colon records, the version line and the configuration directory
+ * are read; other human-readable output and stderr are never read or surfaced.
  */
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { refuseCustody } from './custody-error.mjs';
 import { isolatedEnvironment } from './process.mjs';
 
@@ -18,15 +20,27 @@ export const GNUPG_CALL = Object.freeze({ timeoutMs: 60_000, maxBytes: 256 * 102
 export const LITERAL_NAME = 'relavium-private-maps.tar';
 
 /**
- * Resolve `gpg` from absolute PATH entries only, without a shell.
- * @returns {{command: string, prefix: string[]}}
+ * @typedef {{command: string, prefix: string[]}} Command
+ * @typedef {Command & {gpgconf: Command}} GnupgInstallation
+ */
+
+/**
+ * Resolve `gpg` from absolute PATH entries only, without a shell, and the `gpgconf` of the same
+ * installation beside it.
+ * @returns {GnupgInstallation}
  */
 export function resolveGpg(path = process.env.PATH ?? '', platform = process.platform) {
+  const executable = (name) => (platform === 'win32' ? `${name}.exe` : name);
   for (const directory of path.split(delimiter).filter(Boolean)) {
     if (!isAbsolute(directory)) continue;
-    const candidate = join(directory, platform === 'win32' ? 'gpg.exe' : 'gpg');
+    const candidate = join(directory, executable('gpg'));
     if (existsSync(candidate) && statSync(candidate).isFile()) {
-      return { command: realpathSync(candidate), prefix: [] };
+      const command = realpathSync(candidate);
+      return {
+        command,
+        prefix: [],
+        gpgconf: { command: join(dirname(command), executable('gpgconf')), prefix: [] },
+      };
     }
   }
   return refuseCustody('GPG_UNAVAILABLE');
@@ -176,6 +190,38 @@ export async function gnupgVersion(gpg, { run, env, home }) {
     if (version[index] < floor) refuseCustody('GPG_VERSION');
   }
   return version.join('.');
+}
+
+/**
+ * GnuPG reads `<sysconfdir>/gpg.conf` even under `--no-options`, and `[force]` options there override
+ * the command line: a global configuration could add or hide a recipient, redirect the output or log
+ * the session key. The installation's `gpgconf` names that directory; a `gpg.conf` or `common.conf`
+ * in it refuses.
+ * @param {GnupgInstallation} gpg
+ * @param {{run: Function, env: Record<string, string>}} options
+ */
+export async function assertNoGlobalConfig(gpg, { run, env }) {
+  let stdout;
+  try {
+    ({ stdout } = await run(
+      gpg.gpgconf.command,
+      [...gpg.gpgconf.prefix, '--list-dirs', 'sysconfdir'],
+      { ...GNUPG_CALL, env },
+    ));
+  } catch {
+    return refuseCustody('GPG_UNAVAILABLE');
+  }
+  let directory;
+  try {
+    // gpgconf percent-escapes special characters in the directories it lists.
+    directory = decodeURIComponent(String(stdout).trim());
+  } catch {
+    return refuseCustody('GPG_CONFIG');
+  }
+  if (!isAbsolute(directory)) refuseCustody('GPG_CONFIG');
+  for (const name of ['gpg.conf', 'common.conf']) {
+    if (existsSync(join(directory, name))) refuseCustody('GPG_CONFIG');
+  }
 }
 
 /**

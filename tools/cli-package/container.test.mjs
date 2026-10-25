@@ -177,10 +177,34 @@ test('a staging that is not exactly the sealed records and maps refuses', () => 
         writeFileSync(path, JSON.stringify(record));
       },
     ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.maps[0].extra = true;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
     ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), 'not json')],
     ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), '[]')],
   ]) {
     assert.throws(() => buildPrivateContainer(staging(change)), refuses(code), code);
+  }
+});
+
+test('a staging that cannot be read refuses with a fixed code and no path', () => {
+  const missing = join(fresh('no-staging'), 'staging');
+  const file = `${fresh('file-staging')}.json`;
+  writeFileSync(file, '{}');
+  for (const path of [missing, file]) {
+    assert.throws(
+      () => buildPrivateContainer(path),
+      (error) =>
+        error instanceof CustodyError &&
+        error.code === 'CONTAINER_UNREADABLE' &&
+        !error.message.includes(path),
+    );
   }
 });
 

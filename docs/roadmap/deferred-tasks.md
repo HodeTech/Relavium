@@ -805,6 +805,17 @@ Recorded with the Step 9b.1 implementation
   outcome, so nothing is published. **Re-check:** count primary-key packets independently of import
   filtering if a recipient file is ever produced by anything but `gpg --export`. *(low ·
   tools/cli-package/custody.mjs)*
+- [ ] **Secret material GnuPG neither lists nor reads is admitted.** *Low; round 1, R1-COR-2.* A binary
+  secret key appended after the armored public block is ignored by GnuPG's listing and encryption, so the
+  pre-check admits the file and the ciphertext is published. The secret stays in the recipient file and
+  never reaches the ciphertext, the record or a log. **Re-check:** refuse any byte after the armored public
+  block's end line (or any secret-key packet tag in a packet walk) if recipient files are ever produced by
+  anything but `gpg --armor --export`. *(low · tools/cli-package/custody.mjs)*
+- [ ] **The atomic publish has no fault-injection test.** *Low; round 1, T-9B1-R1-3.* `publish` writes a
+  temporary sibling and hard-links it to the final name; writing the final name directly also passes every
+  test, because no test makes the write fail midway. **Re-check:** inject a write failure (a full
+  filesystem or a writer port) and assert no file exists under the final name afterwards. *(low ·
+  tools/cli-package/custody.mjs)*
 - [ ] **The GnuPG 2.2.8 floor is enforced, never exercised.** *Low; a named limit.* The version check
   refuses an older GnuPG, but the tests ran only on 2.5.21 (local) and 2.4.4 (Ubuntu 24.04), so neither
   encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests
@@ -2689,7 +2700,9 @@ future test cannot silently re-acquire it.
   must not advertise the AEAD feature, because custody requires SEIPDv1 with MDC and AES-256 so that
   `gpg -d | tar -x` with GnuPG ≥ 2.2.8 stays true; and the committed recipient file is the export of the
   primary with only the pinned encryption subkey (`gpg --armor --export '<subkey fingerprint>!'`),
-  because a second usable encryption subkey refuses.
+  because a second usable encryption subkey refuses. *Added after Step 9b.1's review round 1:* its
+  cipher preferences must include AES256, since custody passes an AES-256 preference and refuses any
+  other cipher.
 
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker

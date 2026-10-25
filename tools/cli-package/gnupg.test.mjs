@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join, relative } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import { CustodyError } from './custody-error.mjs';
 import {
   GNUPG_FLOOR,
   assertHomeState,
+  assertNoGlobalConfig,
   createGnupgHome,
   encryptArgs,
   gnupgEnvironment,
@@ -26,6 +27,9 @@ const refuses = (code) => (error) => error instanceof CustodyError && error.code
 test('gpg resolves from absolute PATH entries only and is required, never skipped', async () => {
   const gpg = resolveGpg();
   assert.ok(gpg.command.length > 0 && gpg.prefix.length === 0);
+  // The installation's own gpgconf sits beside the resolved gpg.
+  assert.equal(dirname(gpg.gpgconf.command), dirname(gpg.command));
+  assert.match(gpg.gpgconf.command, /gpgconf(?:\.exe)?$/u);
   // The real binary meets the floor; this is the prerequisite local `pnpm run ci` and CI rely on.
   const home = createGnupgHome(scratch, 'version');
   const version = await gnupgVersion(gpg, {
@@ -125,7 +129,7 @@ test('every call is isolated, and encryption never passes a flag that widens it'
     for (const flag of required) assert.ok(args.includes(flag), flag);
     assert.equal(args[args.indexOf('--homedir') + 1], 'H');
     for (const flag of forbidden) assert.ok(!args.includes(flag), flag);
-    assert.ok(!args.some((arg) => arg.startsWith('--allow-')));
+    assert.ok(!args.some((arg) => arg.startsWith('--allow-') || arg.startsWith('--ignore-')));
   }
   const encrypt = encryptArgs('H', 'K', 'I', 'O');
   for (const [flag, value] of [
@@ -143,6 +147,36 @@ test('every call is isolated, and encryption never passes a flag that widens it'
     assert.ok(encrypt.includes(flag), flag);
   }
   assert.equal(encrypt.at(-1), 'I');
+});
+
+test('the environment is isolated in the C locale and every home is owner-only', () => {
+  const env = gnupgEnvironment(scratch);
+  assert.equal(env.LANG, 'C');
+  assert.equal(env.LC_ALL, 'C');
+  for (const name of ['HOME', 'TMPDIR', 'XDG_CONFIG_HOME']) assert.equal(env[name], scratch, name);
+  for (const name of ['GNUPGHOME', 'GPG_AGENT_INFO', 'GPG_TTY', 'GNUPG_HOME']) {
+    assert.equal(env[name], undefined, name);
+  }
+  const home = createGnupgHome(scratch, 'owner-only');
+  if (process.platform !== 'win32') assert.equal(statSync(home).mode & 0o777, 0o700);
+});
+
+test('a global configuration in the sysconfdir gpgconf names refuses', async () => {
+  const gpg = { command: 'gpg', prefix: [], gpgconf: { command: 'gpgconf', prefix: [] } };
+  const check = (stdout) =>
+    assertNoGlobalConfig(gpg, { run: async () => ({ stdout, stderr: '' }), env: {} });
+  const empty = createGnupgHome(scratch, 'sysconf-empty');
+  await check(`${empty}\n`);
+  const planted = createGnupgHome(scratch, 'sysconf-planted');
+  writeFileSync(join(planted, 'gpg.conf'), 'encrypt-to 0123456789ABCDEF\n');
+  await assert.rejects(check(`${planted}\n`), refuses('GPG_CONFIG'));
+  // Only the configuration files GnuPG reads count; another daemon's file is not one.
+  const other = createGnupgHome(scratch, 'sysconf-other');
+  writeFileSync(join(other, 'scdaemon.conf'), 'disable-ccid\n');
+  await check(`${other}\n`);
+  // The real installation has none, so every encryption may proceed.
+  const real = resolveGpg();
+  await assertNoGlobalConfig(real, { run: runCommand, env: gnupgEnvironment(scratch) });
 });
 
 test('status parsing admits only status lines and keeps unknown keywords for the caller', () => {

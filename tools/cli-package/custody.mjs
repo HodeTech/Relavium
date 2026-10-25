@@ -10,8 +10,16 @@
  * production recipient: Step 9b uses synthetic recipients only.
  */
 import { randomUUID } from 'node:crypto';
-import { linkSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import {
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { readPrivateContainer } from './container.mjs';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
@@ -20,6 +28,7 @@ import { writePrivateFile } from './finalize.mjs';
 import {
   GNUPG_CALL,
   assertHomeState,
+  assertNoGlobalConfig,
   createGnupgHome,
   encryptArgs,
   gnupgEnvironment,
@@ -33,7 +42,10 @@ import {
 import { runCommand } from './process.mjs';
 
 const FINGERPRINT = /^[0-9A-F]{40}$/u;
-/** An armored secret key: refused from the bytes, since listing one needs an agent this boundary never starts. */
+/**
+ * An armored secret key, refused from the bytes before any listing: whether GnuPG lists secret input
+ * (as `sec`/`ssb`, refused too) or fails depends on the home's agent socket path.
+ */
 const SECRET_ARMOR = ['-----BEGIN PGP', 'PRIVATE KEY BLOCK-----'].join(' ');
 const RECIPIENT_BYTES = 256 * 1024;
 /** Literal-packet and packet framing overhead a ciphertext may add to its container. */
@@ -148,8 +160,14 @@ export function inspectRecipient(records, pins, now) {
 
 /** @param {string} root @param {string} path */
 function within(root, path) {
-  const rel = relative(root, path);
-  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+  // Compared by identity, not spelling: a case-insensitive volume or a bind mount can give one
+  // directory two spellings that no string comparison relates.
+  const { dev, ino } = statSync(root, { bigint: true });
+  for (let current = path; ; current = dirname(current)) {
+    const info = statSync(current, { bigint: true });
+    if (info.dev === dev && info.ino === ino) return true;
+    if (dirname(current) === current) return false;
+  }
 }
 
 /** A directory, not a link; a missing path is not one. */
@@ -215,7 +233,7 @@ function publish(directory, name, bytes) {
  *   privateRoot: string,
  *   now?: number,
  *   run?: typeof runCommand,
- *   gpg?: {command: string, prefix: string[]},
+ *   gpg?: import('./gnupg.mjs').GnupgInstallation,
  * }} options
  * @returns {Promise<CustodyRecord>}
  */
@@ -287,6 +305,7 @@ async function encrypt(
     }
   };
   const version = await gnupgVersion(binary, { run, env, home: encryption });
+  await assertNoGlobalConfig(binary, { run, env });
 
   // Every later step reads this copy, so the bytes checked are the bytes encrypted to.
   let key;
@@ -359,7 +378,22 @@ async function encrypt(
     refuseCustody('RECIPIENTS');
   }
   assertHomeState(recipientsHome, []);
+  // The listed file must still be the bytes about to be published.
+  let listedBytes;
+  try {
+    listedBytes = readOrdinaryFile(output, container.length + CIPHERTEXT_OVERHEAD);
+  } catch {
+    refuseCustody('ASSET');
+  }
+  if (!listedBytes.equals(ciphertext)) refuseCustody('ASSET');
 
+  // The plaintext goes before anything is published, so a failed removal publishes nothing.
+  try {
+    rmSync(work, { recursive: true, force: true });
+  } catch {
+    refuseCustody('CLEANUP');
+  }
+  scope.work = undefined;
   publish(destinationPath, name, ciphertext);
   return Object.freeze({
     name,

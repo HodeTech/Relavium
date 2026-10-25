@@ -132,9 +132,9 @@ test('the archive structure refuses duplicates, aliases, truncation, padding, co
   ]) {
     assert.throws(() => read(archive), refuses(code), code);
   }
-  // The caller's path rule runs inside the header check, before the entry's bytes are bounded.
+  // The caller's path rule runs inside the header check, before its mode and size are judged.
   assert.throws(
-    () => read(Buffer.concat([ustarEntry('outside.txt', Buffer.alloc(0), 0o600), end])),
+    () => read(Buffer.concat([ustarEntry('outside.txt', Buffer.alloc(8192), 0o644), end])),
     refuses('PATH'),
   );
 });

@@ -1,8 +1,9 @@
 /**
  * Test-only GnuPG fixtures (Step 9b.1): the committed synthetic public keys and their pins, and an
- * ephemeral decryption key generated per run in a short owner-only home. That home's agent is stopped
- * and its socket directory removed when the test ends; no secret key is written anywhere else, and
- * none is ever committed.
+ * ephemeral decryption key generated per run in a short owner-only home. Its public export and, for
+ * the secret-material refusal, its armored secret export go to a second owner-only temporary
+ * directory. Both directories are removed and the home's agent stopped when the test file ends; no
+ * secret key is ever committed.
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
