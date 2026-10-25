@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are implemented on `development` and under review (synthetic recipients only); the remaining Step 9 custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -575,8 +575,10 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   `KEY_CONSIDERED` and recipient checks remain the independent second layer for it.
 - **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
   holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
-  private root overlap (compared by device and inode, so a second spelling of one directory
-  does not hide the overlap), or when either is missing or the root is not an owner-only
+  private root overlap (compared by device and inode, so one directory reached by a second
+  spelling, such as a case-insensitive variant or a bind mount of that directory, does not hide
+  the overlap; containment through a bind mount of a directory inside the other is not detected,
+  a [recorded limit](../../roadmap/deferred-tasks.md#wave-3-step-9b1--recorded-low-findings-2026-10-25)), or when either is missing or the root is not an owner-only
   directory of this user. No root qualifies on Windows, where modes say nothing about access
   and no ACL check exists. Success requires exit 0, exactly one
   `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and
@@ -608,8 +610,9 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   `pnpm run ci` and the four Ubuntu jobs inside `ci`'s needs, against the runner's GnuPG; they
   fail, never skip, without GnuPG ≥ 2.2.8 or with a global configuration
   ([local-dev-setup.md](../../runbooks/local-dev-setup.md)). They do not run
-  on Windows: no Windows job runs `test:acceptance-tools`, the image's only `gpg` is Git for
-  Windows' MSYS2 build, never exercised here, and the tests use POSIX process and permission
+  on Windows: no Windows job runs `test:acceptance-tools`, the `gpg` on the image's PATH is
+  Git for Windows' MSYS2 build and MSYS2's own GnuPG under `C:\msys64` is installed off PATH,
+  neither exercised here, and the tests use POSIX process and permission
   tools; `encryptOnce` itself refuses there. The 2.2.8 floor is enforced by the version check
   without being exercised.
 

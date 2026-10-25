@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 implemented and under review with its named limits below, and Steps 9b.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, and Steps 9b.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -787,13 +787,14 @@ Recorded with the Step 9b.1 implementation
 **Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
 
 - [ ] **The custody tests do not run on Windows, and `encryptOnce` refuses there.** *Low; a named limit.*
-  No Windows job runs `test:acceptance-tools`; the Windows image's only `gpg` is Git for Windows' MSYS2
-  build in `usr\bin`, never exercised here, and the tests use POSIX process and permission tools (`ps`,
+  No Windows job runs `test:acceptance-tools`; the `gpg` on the Windows image's PATH is Git for Windows'
+  MSYS2 build in `usr\bin`, and MSYS2's own GnuPG under `C:\msys64` is installed off PATH, neither exercised
+  here, and the tests use POSIX process and permission tools (`ps`,
   owner-only modes), so `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. Windows modes
   say nothing about access and no ACL check exists, so since round 2 (SEC-9B1-R2-2) no private root
   qualifies there and every encryption refuses `PRIVATE_ROOT` before any GnuPG call. **Re-check:** before
   a release producer runs on Windows, add an ACL-based owner-only check for the private root and its work
-  directory, then run the custody tests on that runner and record which `gpg.exe` `resolveGpg` selects
+  directory, then run the custody tests on that runner and record which of the two `gpg.exe` builds `resolveGpg` selects
   and whether its Windows path handling and gpgconf's line ending pass. *(low ·
   tools/cli-package/custody.mjs, tools/cli-package/gnupg.mjs)*
 - [ ] **An interrupted custody test run can leave its ephemeral key home.** *Low; test-only.* *(rigor pass,
@@ -825,6 +826,42 @@ Recorded with the Step 9b.1 implementation
   encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests
   against GnuPG 2.2.8 (for example in a container that ships it) before a recovery runbook names that
   version. *(low · tools/cli-package/gnupg.mjs)*
+
+## Wave 3 Step 9b.1 — recorded low findings (2026-10-25)
+
+Recorded with the Step 9b.1 acceptance after round 4
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-acceptance--2026-10-25)).
+**Trigger for every entry:** the next change to the file it names, or Step 9d's release integration.
+
+- [ ] **A temporary sibling that cannot be removed after the link reports `UNEXPECTED`.** *Low; round 4,
+  COR-9B1-R4-1.* `publish` removes its `.partial` sibling in a `finally`. If that removal fails (`EACCES`,
+  `EROFS`, `EIO`) after `linkSync` succeeded, `encryptOnce` refuses `UNEXPECTED` with no record although the
+  ciphertext is published; the sibling, ciphertext only and never plaintext, stays beside it, and a retry
+  refuses `ALREADY_ENCRYPTED`. Example: make the destination 0500 right after the link. **Re-check:** make the
+  removal best-effort once the link succeeded, or refuse with a code that says the ciphertext was published, and
+  inject that failure in a test alongside T-9B1-R1-3's. *(low · tools/cli-package/custody.mjs)*
+- [ ] **No test pins the metafile's 4 MiB bound.** *Low; round 4, T-9B1-R4-1.* The container's record-bound
+  tests pad from `RECORD_BYTES` itself, so changing `'metafile-esm.json'` to 8 MiB passes every test while the
+  contract says 4 MiB; `manifest.test.mjs` pins the other two values. The container and `seal.mjs` share the
+  constant, so every record still stays within its reader's bound. **Re-check:** assert `RECORD_BYTES`'s literal
+  values, or pad the metafile to a literal 4 MiB plus one byte. *(low · tools/cli-package/manifest.mjs)*
+- [ ] **No test builds the container from a real finalizer's staging.** *Low; round 4, INT-9B1-R4-1.* The
+  container requires the finalizer record's exact key sets, but every container and custody test uses
+  `candidate-fixture.mjs`'s hand-written record and a stub metafile. A field added to `finalize.mjs`'s record
+  would pass every gate and refuse `CONTAINER_RECORD` on every real staging. A reviewer's probe built,
+  encrypted, decrypted and extracted a real production's staging at `147c2788` without a refusal. **Re-check:**
+  build and read back the container once from a real production's sealed staging (map-controls' seal port holds
+  one), or pin the record's key set in `finalize.test.mjs`; at the latest in Step 9d. *(low ·
+  tools/cli-package/container.mjs, tools/cli-package/finalize.mjs)*
+- [ ] **The overlap check misses containment through a bind mount.** *Low; round 4, CRIT-9B1-R4-1.* `within`
+  compares device and inode along each path's own ancestors. It catches one directory reached by two spellings
+  (a case-insensitive variant, or a bind mount of exactly that directory), but not a root that is a bind mount
+  of a directory inside the destination, or the reverse: the work directory and its plaintext then sit inside
+  the destination's tree while GnuPG runs. A bind mount needs privileges to set up. The acceptance commit
+  narrows the contract's sentence; `custody.mjs`'s comment still says a bind mount can give one directory two
+  spellings, without the limit. **Re-check:** in Step 9d, create the root and destination as fresh sibling
+  directories of the job, or compare against the mount table, before relying on the refusal; narrow the comment
+  on the next change to `custody.mjs`. *(low · tools/cli-package/custody.mjs)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
