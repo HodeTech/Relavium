@@ -284,8 +284,8 @@ export async function encryptOnce({
     );
     if (
       recipients.length !== 1 ||
-      recipients[0].args[0] !== pins.subkey.slice(-16) ||
-      recipients[0].args[0] === '0'.repeat(16)
+      // A hidden recipient's all-zero key ID never equals the pinned subkey's.
+      recipients[0].args[0] !== pins.subkey.slice(-16)
     ) {
       refuseCustody('RECIPIENTS');
     }

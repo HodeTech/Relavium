@@ -154,10 +154,8 @@ export function buildPrivateContainer(staging, limits = CONTAINER_LIMITS) {
   if (!isDeepStrictEqual(readdirSync(staging).sort(), [...RECORDS, 'maps'].sort())) {
     refuseCustody('CONTAINER_SET');
   }
-  const mapsDirectory = lstatSync(join(staging, 'maps'));
-  if (!mapsDirectory.isDirectory() || mapsDirectory.isSymbolicLink()) {
-    refuseCustody('CONTAINER_SET');
-  }
+  // lstat: a linked maps directory is not a directory.
+  if (!lstatSync(join(staging, 'maps')).isDirectory()) refuseCustody('CONTAINER_SET');
   const names = readdirSync(join(staging, 'maps')).sort();
   if (names.length > limits.entries - RECORDS.length) refuseCustody('CONTAINER_SIZE');
   /** @type {Map<string, Buffer>} */

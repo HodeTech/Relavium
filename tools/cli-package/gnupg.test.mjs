@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import { CustodyError } from './custody-error.mjs';
 import {
@@ -35,13 +35,16 @@ test('gpg resolves from absolute PATH entries only and is required, never skippe
   });
   assert.match(version, /^\d+\.\d+\.\d+$/u);
   assert.throws(() => resolveGpg(join(scratch, 'none')), refuses('GPG_UNAVAILABLE'));
-  // A relative entry is never searched, even when it holds a gpg.
+  // A relative entry is never searched, even when it resolves to a directory holding a gpg.
   mkdirSync(join(scratch, 'relative'));
-  writeFileSync(join(scratch, 'relative', 'gpg'), '');
+  writeFileSync(join(scratch, 'relative', process.platform === 'win32' ? 'gpg.exe' : 'gpg'), '');
+  const entry = relative(process.cwd(), join(scratch, 'relative'));
+  assert.equal(isAbsolute(entry), false);
   assert.throws(
-    () => resolveGpg(['relative', join(scratch, 'none')].join(delimiter)),
+    () => resolveGpg([entry, join(scratch, 'none')].join(delimiter)),
     refuses('GPG_UNAVAILABLE'),
   );
+  assert.deepEqual(resolveGpg(join(scratch, 'relative')).prefix, []);
 });
 
 test('the version floor is GnuPG 2.2.8, read from the version line only', async () => {
