@@ -9,7 +9,8 @@
  * every path; the caller's interrupt scope stops GnuPG and removes that root. This library holds no
  * production recipient: Step 9b uses synthetic recipients only.
  */
-import { lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { linkSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { readPrivateContainer } from './container.mjs';
@@ -151,9 +152,23 @@ function within(root, path) {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
-/** An owner-only directory of this user, not a link. */
+/** A directory, not a link; a missing path is not one. */
+function plainDirectory(path) {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** An owner-only directory of this user, not a link; a missing path is not one. */
 function privateDirectory(path) {
-  const info = lstatSync(path);
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch {
+    return false;
+  }
   return (
     info.isDirectory() &&
     !info.isSymbolicLink() &&
@@ -161,6 +176,29 @@ function privateDirectory(path) {
       ((info.mode & 0o077) === 0 &&
         (typeof process.getuid !== 'function' || info.uid === process.getuid())))
   );
+}
+
+/**
+ * Publish once and atomically: the bytes go to a fresh sibling, which is then hard-linked to the
+ * final name. A link never replaces an existing file, and a failed write never leaves a partial
+ * file under the final name.
+ * @param {string} directory @param {string} name @param {Buffer} bytes
+ */
+function publish(directory, name, bytes) {
+  const temporary = join(directory, `.${name}.${randomUUID()}.partial`);
+  try {
+    writePrivateFile(temporary, bytes);
+    try {
+      linkSync(temporary, join(directory, name));
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        refuseCustody('ALREADY_ENCRYPTED');
+      }
+      throw error;
+    }
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 /**
@@ -181,136 +219,153 @@ function privateDirectory(path) {
  * }} options
  * @returns {Promise<CustodyRecord>}
  */
-export async function encryptOnce({
-  container,
-  recipient,
-  destination,
-  privateRoot,
-  now = Math.floor(Date.now() / 1000),
-  run = runCommand,
-  gpg,
-}) {
+export async function encryptOnce(options) {
+  /** @type {{work?: string}} */
+  const scope = {};
+  /** @type {{record?: CustodyRecord, error?: CustodyError}} */
+  let outcome;
+  try {
+    outcome = { record: await encrypt(options, scope) };
+  } catch (error) {
+    // A host error's message can name a private path: only fixed custody codes leave.
+    outcome = { error: error instanceof CustodyError ? error : new CustodyError('UNEXPECTED') };
+  }
+  if (scope.work !== undefined) {
+    try {
+      rmSync(scope.work, { recursive: true, force: true });
+    } catch {
+      // The plaintext may remain: refuse with a fixed code rather than a host message.
+      outcome = { error: new CustodyError('CLEANUP') };
+    }
+  }
+  if (outcome.error) throw outcome.error;
+  return /** @type {CustodyRecord} */ (outcome.record);
+}
+
+/**
+ * The encryption itself; `scope.work` names its work directory as soon as it exists.
+ * @param {Parameters<typeof encryptOnce>[0]} options
+ * @param {{work?: string}} scope
+ * @returns {Promise<CustodyRecord>}
+ */
+async function encrypt(
+  {
+    container,
+    recipient,
+    destination,
+    privateRoot,
+    now = Math.floor(Date.now() / 1000),
+    run = runCommand,
+    gpg,
+  },
+  scope,
+) {
   const pins = parsePins(recipient.pins);
   const { manifest } = readPrivateContainer(container);
   const name = ciphertextName(manifest.packageVersion);
-  const destinationInfo = lstatSync(destination);
-  if (!destinationInfo.isDirectory() || destinationInfo.isSymbolicLink()) {
-    refuseCustody('PLACEMENT');
-  }
+  if (!plainDirectory(destination)) refuseCustody('PLACEMENT');
   if (readdirSync(destination).includes(name)) refuseCustody('ALREADY_ENCRYPTED');
   if (!privateDirectory(privateRoot)) refuseCustody('PRIVATE_ROOT');
   const destinationPath = realpathSync(destination);
   const root = realpathSync(privateRoot);
-  if (within(root, destinationPath) || within(destinationPath, root)) refuseCustody('PLACEMENT');
+  if (within(root, destinationPath) || within(destinationPath, root)) {
+    refuseCustody('PLACEMENT');
+  }
   const binary = gpg ?? resolveGpg();
 
   const work = mkdtempSync(join(root, 'custody-'));
+  scope.work = work;
+  const env = gnupgEnvironment(work);
+  const listing = createGnupgHome(work, 'listing');
+  const encryption = createGnupgHome(work, 'encryption');
+  const recipientsHome = createGnupgHome(work, 'recipients');
+  const call = async (args, code) => {
+    try {
+      return await run(binary.command, [...binary.prefix, ...args], { ...GNUPG_CALL, env });
+    } catch {
+      return refuseCustody(code);
+    }
+  };
+  const version = await gnupgVersion(binary, { run, env, home: encryption });
+
+  // Every later step reads this copy, so the bytes checked are the bytes encrypted to.
+  let key;
   try {
-    const env = gnupgEnvironment(work);
-    const listing = createGnupgHome(work, 'listing');
-    const encryption = createGnupgHome(work, 'encryption');
-    const recipientsHome = createGnupgHome(work, 'recipients');
-    const call = async (args, code) => {
-      try {
-        return await run(binary.command, [...binary.prefix, ...args], { ...GNUPG_CALL, env });
-      } catch {
-        return refuseCustody(code);
-      }
-    };
-    const version = await gnupgVersion(binary, { run, env, home: encryption });
-
-    // Every later step reads this copy, so the bytes checked are the bytes encrypted to.
-    let key;
-    try {
-      key = readOrdinaryFile(recipient.file, RECIPIENT_BYTES);
-    } catch {
-      refuseCustody('RECIPIENT_UNREADABLE');
-    }
-    if (key.includes(SECRET_ARMOR)) refuseCustody('RECIPIENT_SECRET');
-    const recipientPath = join(work, 'recipient.asc');
-    writePrivateFile(recipientPath, key);
-    const listed = await call(listArgs(listing, recipientPath), 'RECIPIENT_UNREADABLE');
-    inspectRecipient(parseColons(String(listed.stdout)), pins, now);
-    assertHomeState(listing, ['trustdb.gpg']);
-
-    const input = join(work, 'container.tar');
-    const output = join(work, 'ciphertext.gpg');
-    writePrivateFile(input, container);
-    const encrypted = await call(
-      encryptArgs(encryption, recipientPath, input, output),
-      'ENCRYPTION_FAILED',
-    );
-    const status = parseStatus(String(encrypted.stdout));
-    if (status.some((line) => FAILURE_STATUS.includes(line.keyword))) refuseCustody('STATUS');
-    const begins = status.filter((line) => line.keyword === 'BEGIN_ENCRYPTION');
-    const ends = status.filter((line) => line.keyword === 'END_ENCRYPTION');
-    const considered = status.filter((line) => line.keyword === 'KEY_CONSIDERED');
-    if (
-      begins.length !== 1 ||
-      ends.length !== 1 ||
-      status.indexOf(ends[0]) < status.indexOf(begins[0]) ||
-      considered.length !== 1 ||
-      !isDeepStrictEqual(considered[0].args.slice(0, 2), [pins.primary, '0'])
-    ) {
-      refuseCustody('STATUS');
-    }
-    // SEIPDv1 with MDC (method 2) and AES-256 (algorithm 9); an AEAD algorithm refuses.
-    if (begins[0].args[0] !== '2' || begins[0].args[1] !== '9' || begins[0].args.length > 2) {
-      refuseCustody('PROFILE');
-    }
-    assertHomeState(encryption, ['random_seed']);
-
-    if (
-      !isDeepStrictEqual(readdirSync(work).sort(), [
-        'ciphertext.gpg',
-        'container.tar',
-        'encryption',
-        'listing',
-        'recipient.asc',
-        'recipients',
-      ])
-    ) {
-      refuseCustody('ASSET');
-    }
-    let ciphertext;
-    try {
-      ciphertext = readOrdinaryFile(output, container.length + CIPHERTEXT_OVERHEAD);
-    } catch {
-      refuseCustody('ASSET');
-    }
-    const listedRecipients = await call(recipientsArgs(recipientsHome, output), 'RECIPIENTS');
-    const recipients = parseStatus(String(listedRecipients.stdout)).filter(
-      (line) => line.keyword === 'ENC_TO',
-    );
-    if (
-      recipients.length !== 1 ||
-      // A hidden recipient's all-zero key ID never equals the pinned subkey's.
-      recipients[0].args[0] !== pins.subkey.slice(-16)
-    ) {
-      refuseCustody('RECIPIENTS');
-    }
-    assertHomeState(recipientsHome, []);
-
-    try {
-      writePrivateFile(join(destinationPath, name), ciphertext);
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-        refuseCustody('ALREADY_ENCRYPTED');
-      }
-      throw error;
-    }
-    return Object.freeze({
-      name,
-      bytes: ciphertext.length,
-      sha256: sha256(ciphertext),
-      recipient: Object.freeze({ primary: pins.primary, subkey: pins.subkey }),
-      gnupg: version,
-    });
-  } catch (error) {
-    // A host error's message can name a private path: only fixed custody codes leave.
-    if (error instanceof CustodyError) throw error;
-    throw new CustodyError('UNEXPECTED');
-  } finally {
-    rmSync(work, { recursive: true, force: true });
+    key = readOrdinaryFile(recipient.file, RECIPIENT_BYTES);
+  } catch {
+    refuseCustody('RECIPIENT_UNREADABLE');
   }
+  if (key.includes(SECRET_ARMOR)) refuseCustody('RECIPIENT_SECRET');
+  const recipientPath = join(work, 'recipient.asc');
+  writePrivateFile(recipientPath, key);
+  const listed = await call(listArgs(listing, recipientPath), 'RECIPIENT_UNREADABLE');
+  inspectRecipient(parseColons(String(listed.stdout)), pins, now);
+  assertHomeState(listing, ['trustdb.gpg']);
+
+  const input = join(work, 'container.tar');
+  const output = join(work, 'ciphertext.gpg');
+  writePrivateFile(input, container);
+  const encrypted = await call(
+    encryptArgs(encryption, recipientPath, input, output),
+    'ENCRYPTION_FAILED',
+  );
+  const status = parseStatus(String(encrypted.stdout));
+  if (status.some((line) => FAILURE_STATUS.includes(line.keyword))) refuseCustody('STATUS');
+  const begins = status.filter((line) => line.keyword === 'BEGIN_ENCRYPTION');
+  const ends = status.filter((line) => line.keyword === 'END_ENCRYPTION');
+  const considered = status.filter((line) => line.keyword === 'KEY_CONSIDERED');
+  if (
+    begins.length !== 1 ||
+    ends.length !== 1 ||
+    status.indexOf(ends[0]) < status.indexOf(begins[0]) ||
+    considered.length !== 1 ||
+    !isDeepStrictEqual(considered[0].args.slice(0, 2), [pins.primary, '0'])
+  ) {
+    refuseCustody('STATUS');
+  }
+  // SEIPDv1 with MDC (method 2) and AES-256 (algorithm 9); an AEAD algorithm refuses.
+  if (begins[0].args[0] !== '2' || begins[0].args[1] !== '9' || begins[0].args.length > 2) {
+    refuseCustody('PROFILE');
+  }
+  assertHomeState(encryption, ['random_seed']);
+
+  if (
+    !isDeepStrictEqual(readdirSync(work).sort(), [
+      'ciphertext.gpg',
+      'container.tar',
+      'encryption',
+      'listing',
+      'recipient.asc',
+      'recipients',
+    ])
+  ) {
+    refuseCustody('ASSET');
+  }
+  let ciphertext;
+  try {
+    ciphertext = readOrdinaryFile(output, container.length + CIPHERTEXT_OVERHEAD);
+  } catch {
+    refuseCustody('ASSET');
+  }
+  const listedRecipients = await call(recipientsArgs(recipientsHome, output), 'RECIPIENTS');
+  const recipients = parseStatus(String(listedRecipients.stdout)).filter(
+    (line) => line.keyword === 'ENC_TO',
+  );
+  if (
+    recipients.length !== 1 ||
+    // A hidden recipient's all-zero key ID never equals the pinned subkey's.
+    recipients[0].args[0] !== pins.subkey.slice(-16)
+  ) {
+    refuseCustody('RECIPIENTS');
+  }
+  assertHomeState(recipientsHome, []);
+
+  publish(destinationPath, name, ciphertext);
+  return Object.freeze({
+    name,
+    bytes: ciphertext.length,
+    sha256: sha256(ciphertext),
+    recipient: Object.freeze({ primary: pins.primary, subkey: pins.subkey }),
+    gnupg: version,
+  });
 }

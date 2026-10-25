@@ -96,6 +96,89 @@ test('a staging that is not exactly the sealed records and maps refuses', () => 
       },
     ],
     ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'manifest.json'), '{"version":1}')],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.maps[0].bytes += 1;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.maps[0].sha256 = '0'.repeat(64);
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.maps[0].path = 'dist/other.js.map';
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.version = 2;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.extra = true;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.upstreamMaps = 1.5;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        delete record.outputs[0].bytes;
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.outputs[0].bytes = '1';
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    [
+      'CONTAINER_RECORD',
+      (copy) => {
+        const path = join(copy, 'finalized.json');
+        const record = JSON.parse(readFileSync(path, 'utf8'));
+        record.maps = {};
+        writeFileSync(path, JSON.stringify(record));
+      },
+    ],
+    ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), 'not json')],
+    ['CONTAINER_RECORD', (copy) => writeFileSync(join(copy, 'metafile-esm.json'), '[]')],
   ]) {
     assert.throws(() => buildPrivateContainer(staging(change)), refuses(code), code);
   }
@@ -145,9 +228,14 @@ test('the entry, count and total bounds refuse before a container is written', (
     refuses('CONTAINER_SIZE'),
   );
   const { bytes } = buildPrivateContainer(copy);
+  // The total is refused before the archive is assembled, not by the read-back check.
   assert.throws(
     () => buildPrivateContainer(copy, { ...CONTAINER_LIMITS, totalBytes: bytes.length - 1 }),
-    refuses('CONTAINER_SIZE'),
+    refuses('CONTAINER_TOTAL'),
+  );
+  assert.throws(
+    () => readPrivateContainer(bytes, { ...CONTAINER_LIMITS, entries: 3 }),
+    refuses('CONTAINER_FILE_COUNT'),
   );
   assert.throws(
     () => readPrivateContainer(bytes, { ...CONTAINER_LIMITS, totalBytes: bytes.length - 1 }),

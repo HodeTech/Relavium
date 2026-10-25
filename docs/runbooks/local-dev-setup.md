@@ -21,7 +21,7 @@ For the full package layout this runbook references, see
 | Rust toolchain (`rustup`, `cargo`) | Builds the Tauri v2 desktop backend | Only needed to build `apps/desktop`. The engine, CLI, and tests do not need Rust. |
 | Tauri OS prerequisites | Native WebView + build deps | macOS: Xcode Command Line Tools. Windows: WebView2 + MSVC build tools. Linux: WebKitGTK + libsecret dev packages. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/). |
 | Git | Workflows and agents are git-native YAML | — |
-| GnuPG ≥ 2.2.8 (`gpg`) | The release custody tests (`pnpm run ci`) encrypt synthetic map containers | Required, never skipped: the tests fail without it. macOS: `brew install gnupg`. Debian/Ubuntu: `apt install gnupg` (the CI Ubuntu runner has it). Windows: Gpg4win; the CI runs these tests on Ubuntu only. Release tooling, never a runtime dependency. |
+| GnuPG ≥ 2.2.8 (`gpg`) | The release custody tests (`pnpm run ci`) encrypt synthetic map containers | Required, never skipped: the tests fail without it. macOS: `brew install gnupg`. Debian/Ubuntu: `apt install gnupg` (the CI Ubuntu runner has it). Windows: run these tests under WSL, since they use POSIX process and permission tools; the CI runs them on Ubuntu only. Release tooling, never a runtime dependency. |
 
 > You can do meaningful work on the engine and CLI **without** the Rust/Tauri
 > toolchain. Install Rust only when you start on `apps/desktop`.

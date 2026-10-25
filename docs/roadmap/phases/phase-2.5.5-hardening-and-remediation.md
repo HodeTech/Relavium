@@ -10128,3 +10128,47 @@ ciphertext's recipients on GnuPG 2.5.21 (local) and 2.4.4 (`ubuntu:24.04`):
   GnuPG 2.4.4 after a fresh frozen install, with no GnuPG process left afterwards.
 - The archive, seal, packed-CLI pin and tooling typecheck and lint suites passed.
 
+**Internal rigor pass, 2026-10-25.** Two checks preceded the first round:
+- an author mutation sweep at `0bd1953f`, 44 mutants;
+- an internal pass at `45bc5654`, with claims, platform, crypto/custody pre-sitting, tests and integration lenses
+  and a completeness critic, every finding adversarially verified (the record is local).
+
+Commit `45bc5654` fixed the sweep's survivors. Its message says three survived; a fourth, the container's pre-write
+total check, had been counted as killed only because a flaky interrupt test failed under it.
+
+The pass confirmed seven medium findings, all corrected:
+- **Host errors escaped with their path.** Errors raised before `encryptOnce`'s main try block carried their
+  path: a missing destination or root, a failed listing or path resolution. The whole function now sits inside
+  the fixed-code boundary. A missing destination refuses `PLACEMENT`, a missing root `PRIVATE_ROOT`, and a work
+  directory that cannot be removed `CLEANUP`.
+- **The AEAD control was version-blind.** It asserted `PROFILE`, which holds only on GnuPG 2.3 and later. It now
+  takes the expectation from the installed version, never skipping: GnuPG 2.2 has no AEAD, encrypts SEIPDv1 and
+  succeeds.
+- **The interrupt test raced the reaping.** It probed the stand-in's process once, racing the reaping of its
+  killed group, and failed about once in 30 runs. It now polls with a deadline and failed 0 of 30.
+- **The success test checked the record against itself.** The record's SHA-256 and GnuPG version are now
+  computed independently.
+- **Three guards had no isolating test.** The MDC half of the profile check, the pinned-primary-as-subkey guard
+  and the finalizer record's map binding (path, digest and size) each have one now.
+- **The checked recipient copy and its bound were unproven.** Nothing proved that the copy is the one encrypted
+  to, or that the 256 KiB bound holds. One test now changes the caller's file mid-run, and another exceeds the
+  bound.
+
+Low findings corrected:
+- The publish is atomic: a temporary sibling, hard-linked to the final name.
+- The version call carries the isolation flags.
+- The metafile must parse as a JSON object, and the contract says what binds each record.
+- The pre-write total refuses with its own code.
+- More USTAR header, status-keyword and classification cases are tested.
+- The contract's wording on the modification-time field, listed keys, future creation, the fixture classes and
+  Windows is corrected (the Windows image ships Git's MSYS2 `gpg`, and the tests use POSIX tools, so Windows
+  developers use WSL), and so is deferred-tasks.md's freshness line.
+
+Two lows are recorded in deferred-tasks.md: an interrupted test run can leave the ephemeral key's home, and the
+pre-check counts only the keys GnuPG lists. A rerun sweep of 52 mutants left no survivor.
+
+**CI at `45bc5654`.** The full `pnpm run ci` failed one test outside the increment. The usage-coverage
+inventory's `vitest list` collection exceeded its 30-second spawn timeout while the rigor pass's agents held the
+load average at 40–66. On a quiet machine it passed three of three runs in 10–12 seconds. The full CI reruns at
+the corrected head, alone, before the first round.
+

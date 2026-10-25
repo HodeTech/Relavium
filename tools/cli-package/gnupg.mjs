@@ -161,7 +161,7 @@ export function parseColons(text) {
 export async function gnupgVersion(gpg, { run, env, home }) {
   let stdout;
   try {
-    ({ stdout } = await run(gpg.command, [...gpg.prefix, '--homedir', home, '--version'], {
+    ({ stdout } = await run(gpg.command, [...gpg.prefix, ...isolated(home), '--version'], {
       ...GNUPG_CALL,
       env,
     }));

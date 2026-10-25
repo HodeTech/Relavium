@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
@@ -19,13 +20,28 @@ import { candidate, fresh, posixModes, seal } from './candidate-fixture.mjs';
 import { buildPrivateContainer } from './container.mjs';
 import { CustodyError } from './custody-error.mjs';
 import { ciphertextName, encryptOnce, inspectRecipient, parsePins } from './custody.mjs';
-import { createGnupgHome, gnupgEnvironment, listArgs, parseColons, resolveGpg } from './gnupg.mjs';
+import {
+  createGnupgHome,
+  gnupgEnvironment,
+  gnupgVersion,
+  listArgs,
+  parseColons,
+  resolveGpg,
+} from './gnupg.mjs';
 import { PINS, ephemeralKey, fixture, processesNaming } from './gpg-fixture.mjs';
 import { readPrivateManifest } from './manifest.mjs';
 import { runCommand } from './process.mjs';
 
 const refuses = (code) => (error) => error instanceof CustodyError && error.code === code;
 const NOW = Math.floor(Date.now() / 1000);
+
+/** The installed GnuPG's version, read independently of `encryptOnce`. */
+async function installedVersion() {
+  const work = fresh('version');
+  mkdirSync(work);
+  const home = createGnupgHome(work, 'home');
+  return gnupgVersion(resolveGpg(), { run: runCommand, env: gnupgEnvironment(work), home });
+}
 
 /** @type {Buffer} */
 let container;
@@ -174,11 +190,19 @@ test('the recipient classification refuses in its fixed order', () => {
     ['RECIPIENT_UNUSABLE', records({ 11: 'cC' })],
     ['RECIPIENT_UNUSABLE', records({}, { 11: 's' })],
     ['RECIPIENT_UNUSABLE', records({}, { 1: 'n' })],
+    ['RECIPIENT_UNUSABLE', records({}, { 1: 'i' })],
+    ['RECIPIENT_UNUSABLE', records({}, { 11: 'eD' })],
+    ['RECIPIENT_UNUSABLE', records({ 1: 'n' })],
+    ['RECIPIENT_UNUSABLE', records({ 1: 'd' })],
     ['RECIPIENT_UNUSABLE', records({ 5: String(NOW + 60) })],
     ['RECIPIENT_UNUSABLE', records({}, { 5: String(NOW + 60) })],
     ['RECIPIENT_UNUSABLE', records({}, { 16: 'nistp256' })],
     ['RECIPIENT_UNUSABLE', records({}, { 3: '1', 2: '2048', 16: '' })],
-    ['RECIPIENT_UNUSABLE', records(), { primary: PRIMARY, subkey: PRIMARY }],
+    [
+      'RECIPIENT_UNUSABLE',
+      records({ 3: '18', 11: 'ecEC', 16: 'cv25519' }),
+      { primary: PRIMARY, subkey: PRIMARY },
+    ],
     ['RECIPIENT_UNEXPECTED', [...records(), key('sub'), fpr('E'.repeat(40))]],
   ]) {
     assert.throws(
@@ -266,11 +290,10 @@ test('encryption publishes exactly one ciphertext for the pinned subkey and leav
   assert.deepEqual(outcome.record, {
     name,
     bytes: bytes.length,
-    sha256: outcome.record.sha256,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
     recipient: PINS.good,
-    gnupg: outcome.record.gnupg,
+    gnupg: await installedVersion(),
   });
-  assert.match(outcome.record.sha256, /^[0-9a-f]{64}$/u);
   assert.ok(Object.isFrozen(outcome.record) && Object.isFrozen(outcome.record.recipient));
   assert.deepEqual(calls, ['version', 'list', 'encrypt', 'recipients']);
   assert.deepEqual(readdirSync(outcome.root), []);
@@ -319,11 +342,14 @@ test('every committed refusal fixture is refused before encryption, and AEAD aft
     refused(await attempt({ run, recipient: { file: fixture(name), pins: PINS[name] } }), code);
     assert.deepEqual(calls, ['version', 'list'], name);
   }
-  // GnuPG picks OCB for a key that advertises AEAD; that profile is refused.
-  refused(
-    await attempt({ recipient: { file: fixture('good-aead'), pins: PINS['good-aead'] } }),
-    'PROFILE',
-  );
+  // GnuPG 2.3 and later pick OCB for a key that advertises AEAD, a profile that is refused; GnuPG 2.2
+  // has no AEAD and encrypts SEIPDv1, which the profile check admits.
+  const [major, minor] = (await installedVersion()).split('.').map(Number);
+  const aead = await attempt({
+    recipient: { file: fixture('good-aead'), pins: PINS['good-aead'] },
+  });
+  if (major > 2 || (major === 2 && minor >= 3)) refused(aead, 'PROFILE');
+  else assert.equal(aead.error, undefined, String(aead.error));
 });
 
 test("GnuPG's own refusal is a second layer behind the pre-check", async () => {
@@ -355,6 +381,10 @@ test('the status must be exactly one pinned, completed SEIPDv1 AES-256 encryptio
     ],
     ['STATUS', (text) => `${text}[GNUPG:] INV_RECP 0 recipient\n`],
     ['STATUS', (text) => `${text}[GNUPG:] FAILURE encrypt 53\n`],
+    ...['NO_RECP 0', 'ERROR encrypt 1', 'KEYEXPIRED 1', 'KEYREVOKED', 'INV_SGNR 0 x'].map(
+      (line) => ['STATUS', (text) => `${text}[GNUPG:] ${line}\n`],
+    ),
+    ['STATUS', (text) => `${text}[GNUPG:] END_ENCRYPTION\n`],
     ['STATUS', (text) => text.replace(/\[GNUPG:\] KEY_CONSIDERED[^\n]*\n/u, '')],
     [
       'STATUS',
@@ -365,6 +395,8 @@ test('the status must be exactly one pinned, completed SEIPDv1 AES-256 encryptio
     ['PROFILE', (text) => text.replace(/BEGIN_ENCRYPTION 2 9/u, 'BEGIN_ENCRYPTION 0 9 2')],
     ['PROFILE', (text) => text.replace(/BEGIN_ENCRYPTION 2 9/u, 'BEGIN_ENCRYPTION 2 7')],
     ['PROFILE', (text) => text.replace(/BEGIN_ENCRYPTION 2 9/u, 'BEGIN_ENCRYPTION 2 9 2')],
+    ['PROFILE', (text) => text.replace(/BEGIN_ENCRYPTION 2 9/u, 'BEGIN_ENCRYPTION 0 9')],
+    ['PROFILE', (text) => text.replace(/BEGIN_ENCRYPTION 2 9/u, 'BEGIN_ENCRYPTION 1 9')],
   ]) {
     refused(await attempt(recording(rewrite(change))), code);
   }
@@ -464,6 +496,37 @@ test('a failing GnuPG call or an unreadable recipient refuses with a fixed code'
   refused(outcome, outcome.error.code);
 });
 
+test('the checked recipient copy is the one encrypted to, read within its bound', async () => {
+  // The caller's file changes after it was read: the checked copy is still the only key used.
+  const work = fresh('recipient-copy');
+  mkdirSync(work);
+  const original = join(work, 'recipient.asc');
+  writeFileSync(original, readFileSync(fixture('good')));
+  const seen = [];
+  const swap = recording({
+    list: {
+      before: (args) => {
+        seen.push(args.at(-1));
+        writeFileSync(original, readFileSync(fixture('other')));
+      },
+    },
+    encrypt: {
+      before: (args) => seen.push(args[args.indexOf('--recipient-file') + 1]),
+    },
+  });
+  const outcome = await attempt({ run: swap.run, recipient: { file: original, pins: PINS.good } });
+  assert.equal(outcome.error, undefined, String(outcome.error));
+  assert.deepEqual(outcome.record.recipient, PINS.good);
+  assert.equal(seen.length, 2);
+  for (const path of seen) {
+    assert.notEqual(path, original);
+    assert.equal(path.split(/[\\/]/u).at(-1), 'recipient.asc');
+  }
+  const large = join(work, 'large.asc');
+  writeFileSync(large, Buffer.concat([readFileSync(fixture('good')), Buffer.alloc(256 * 1024)]));
+  refused(await attempt({ recipient: { file: large, pins: PINS.good } }), 'RECIPIENT_UNREADABLE');
+});
+
 test('a ciphertext is published once: an existing one refuses before any GnuPG call', async () => {
   const { root, destination } = places();
   writeFileSync(join(destination, NAME()), 'earlier ciphertext');
@@ -498,6 +561,7 @@ test('a ciphertext is published once: an existing one refuses before any GnuPG c
     refuses('ALREADY_ENCRYPTED'),
   );
   assert.equal(readFileSync(join(raced.destination, NAME()), 'utf8'), 'raced ciphertext');
+  assert.deepEqual(readdirSync(raced.destination), [NAME()]);
   assert.deepEqual(readdirSync(raced.root), []);
 });
 
@@ -546,6 +610,53 @@ test('the destination and the private root are separate directories, the root ow
   );
   assert.deepEqual(calls, []);
 });
+
+test('a missing destination or private root refuses with a fixed code and no path', async () => {
+  const { root, destination } = places();
+  const missing = join(fresh('missing'), 'nowhere');
+  for (const [code, overrides] of [
+    ['PLACEMENT', { destination: missing, privateRoot: root }],
+    ['PRIVATE_ROOT', { destination, privateRoot: missing }],
+  ]) {
+    await assert.rejects(
+      encryptOnce({
+        container,
+        recipient: { file: fixture('good'), pins: PINS.good },
+        ...overrides,
+      }),
+      (error) =>
+        error instanceof CustodyError &&
+        error.code === code &&
+        !JSON.stringify({ message: error.message, ...error }).includes('nowhere'),
+    );
+  }
+});
+
+test(
+  'a work directory that cannot be removed refuses with a fixed code',
+  { skip: !posixModes || process.getuid?.() === 0 },
+  async () => {
+    const { root, destination } = places();
+    const locked = recording({ recipients: { before: () => chmodSync(root, 0o500) } });
+    try {
+      await assert.rejects(
+        encryptOnce({
+          container,
+          recipient: { file: fixture('good'), pins: PINS.good },
+          destination,
+          privateRoot: root,
+          run: locked.run,
+        }),
+        (error) =>
+          error instanceof CustodyError &&
+          error.code === 'CLEANUP' &&
+          !JSON.stringify({ message: error.message, ...error }).includes(root),
+      );
+    } finally {
+      chmodSync(root, 0o700);
+    }
+  },
+);
 
 test('no GnuPG output, path or host error text reaches a refusal', async () => {
   const marker = join(fresh('marker'), 'private', 'path');
@@ -649,6 +760,19 @@ test(
     assert.deepEqual(await closed, { code: 130, signal: null });
     assert.equal(existsSync(root), false, 'the private root and its plaintext survived');
     assert.deepEqual(readdirSync(destination), []);
-    assert.throws(() => process.kill(gpgPid, 0), { code: 'ESRCH' });
+    // The group got SIGKILL before the driver exited; its member is reaped shortly after.
+    const alive = () => {
+      try {
+        process.kill(gpgPid, 0);
+        return true;
+      } catch (error) {
+        assert.equal(error.code, 'ESRCH');
+        return false;
+      }
+    };
+    for (let index = 0; index < 500 && alive(); index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(alive(), false, 'the stopped GnuPG stand-in outlived its group kill');
   },
 );

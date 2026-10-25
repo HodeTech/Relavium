@@ -63,6 +63,27 @@ test('the version floor is GnuPG 2.2.8, read from the version line only', async 
     await assert.rejects(version(line), refuses('GPG_VERSION'));
   }
   await assert.rejects(version('gpg 2.4.4\n'), refuses('GPG_VERSION'));
+  // The version call is isolated like every other call.
+  let argv = [];
+  await gnupgVersion(gpg, {
+    run: async (_command, args) => {
+      argv = args;
+      return { stdout: 'gpg (GnuPG) 2.4.4\n', stderr: '' };
+    },
+    env: {},
+    home: 'H',
+  });
+  for (const flag of [
+    '--homedir',
+    '--batch',
+    '--no-tty',
+    '--no-options',
+    '--no-autostart',
+    '--no-keyring',
+  ]) {
+    assert.ok(argv.includes(flag), flag);
+  }
+  assert.equal(argv.at(-1), '--version');
   await assert.rejects(
     gnupgVersion(gpg, {
       run: async () => {

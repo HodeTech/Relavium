@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), and Steps 9b–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 implemented and under review with its named limits below, and Steps 9b.2–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -786,11 +786,25 @@ Recorded with the Step 9b.1 implementation
 ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).
 **Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
 
-- [ ] **The custody tests do not run on Windows.** *Low; a named limit.* The Windows runner image has no
-  GnuPG, and the custody tests run only where `test:acceptance-tools` runs (local `pnpm run ci` and the
-  Ubuntu jobs). Local Windows developers need Gpg4win, as `docs/runbooks/local-dev-setup.md` says.
-  **Re-check:** before a release producer runs on Windows, install GnuPG there and run the custody tests
-  on that runner. *(low · tools/cli-package/gnupg.mjs)*
+- [ ] **The custody tests do not run on Windows.** *Low; a named limit.* No Windows job runs
+  `test:acceptance-tools`; the Windows image's only `gpg` is Git for Windows' MSYS2 build in `usr\bin`,
+  never exercised here, and the tests use POSIX process and permission tools (`ps`, owner-only modes), so
+  `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. **Re-check:** before a release
+  producer runs on Windows, run the custody tests on that runner and record which `gpg.exe` `resolveGpg`
+  selects and whether its Windows path handling passes. *(low · tools/cli-package/gnupg.mjs)*
+- [ ] **An interrupted custody test run can leave its ephemeral key home.** *Low; test-only.* *(rigor pass,
+  SEC-9B1-PS-2)* `gpg-fixture.mjs` removes the round-trip key's home, its synthetic secret export and its
+  agent in `after()`, which a SIGINT to `node --test` skips: the `rg-*` and `rge-*` directories under the
+  temporary directory and an orphaned `gpg-agent` remain. The key is synthetic and never decrypts a
+  product archive. **Re-check:** stop the agent and remove both directories from a process exit hook as
+  well. *(low · tools/cli-package/gpg-fixture.mjs)*
+- [ ] **The pre-check counts only the keys GnuPG lists.** *Low; fail-closed.* *(rigor pass, SEC-9B1-PS-5)*
+  `--show-keys` omits a key an import would reject, for example one whose user ID packet was removed, so a
+  recipient file holding such a key before the pinned one passes the one-key rule. GnuPG then encrypts to
+  the first key in the file and refuses it, and `KEY_CONSIDERED` and the recipient check refuse any other
+  outcome, so nothing is published. **Re-check:** count primary-key packets independently of import
+  filtering if a recipient file is ever produced by anything but `gpg --export`. *(low ·
+  tools/cli-package/custody.mjs)*
 - [ ] **The GnuPG 2.2.8 floor is enforced, never exercised.** *Low; a named limit.* The version check
   refuses an older GnuPG, but the tests ran only on 2.5.21 (local) and 2.4.4 (Ubuntu 24.04), so neither
   encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests

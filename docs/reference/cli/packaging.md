@@ -523,15 +523,18 @@ binding receipt and the production loader are Step 9b.2's. Its review and accept
 recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
 
 - **One strict dialect.** `ustar.mjs` owns the USTAR dialect the archive inspector reads:
-  regular files only, every header field fixed, zero owner ids and device numbers, an exact
-  end and zero padding. The inspector delegates to it unchanged.
+  regular files only, every header field fixed except the modification time, whose syntax
+  alone is checked, zero owner ids and device numbers, an exact end and zero padding. The
+  inspector delegates to it unchanged.
 - **The private container.** `container.mjs` builds one owner-only (0600) USTAR from the
   sealed staging in its own layout: `finalized.json`, `manifest.json`, `metafile-esm.json` and
   `maps/<chunk>.js.map`, sorted, with no host path. The staging must hold exactly those records
-  and the manifest's maps as regular files of at most 16 MiB each; every map must be the one the
-  manifest and the finalizer's record name, at most 259 entries and 128 MiB in total. Reading a
-  container back applies the same checks, and a decrypted container extracted with `tar -x` is a
-  staging the manifest reader consumes unchanged.
+  and the manifest's maps as regular files of at most 16 MiB each, at most 259 entries and
+  128 MiB in total (the total refused before the archive is assembled). Every map's digest must
+  be the manifest's, and the finalizer's record must name exactly the manifest's outputs and
+  maps with each map's size. The manifest records no digest for the metafile, which must parse
+  as a JSON object. Reading a container back applies the same checks, and a decrypted container
+  extracted with `tar -x` is a staging the manifest reader consumes unchanged.
 - **The isolated runner.** `gnupg.mjs` resolves `gpg` from absolute PATH entries only and
   refuses one older than GnuPG 2.2.8. Every call runs in a fresh owner-only home the tool
   creates, with `--no-options --no-autostart --no-keyring`, the C locale and an isolated
@@ -544,11 +547,13 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
 - **The recipient pre-check.** The recipient file is read bounded and copied, so the bytes
   checked are the bytes encrypted to, and pins are exactly two 40-digit uppercase fingerprints
   (OpenPGP v4). An armored secret key refuses from its bytes. The colon listing then refuses,
-  in this order: secret material, a missing pinned primary, more than one key, a missing pinned
-  subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
-  encryption capability, future creation, or an encryption subkey other than cv25519 or RSA of
-  at least 3072 bits) and another usable encryption subkey. GnuPG's own refusal remains a
-  second, independent layer.
+  in this order: secret material, a missing pinned primary, more than one listed key, a missing
+  pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
+  encryption capability, a creation time in the future, or an encryption subkey other than
+  cv25519 or RSA of at least 3072 bits) and another usable encryption subkey. GnuPG's listing
+  omits a key it cannot use, such as one created in the future or one without a valid user ID,
+  so such a key refuses as missing or goes uncounted; GnuPG's own refusal and the
+  `KEY_CONSIDERED` and recipient checks remain the independent second layer for it.
 - **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
   holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
   private root overlap, or when the root is not owner-only. Success requires exit 0, one
@@ -556,23 +561,30 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   AES-256; an AEAD profile refuses) before one `END_ENCRYPTION`, exactly the expected work
   files, a ciphertext within the container's size plus 64 KiB whose public-key packets name
   exactly the pinned subkey and no hidden recipient, and homes holding only what GnuPG creates.
-  The ciphertext is then published with `wx`, never over an existing file. It returns a frozen
-  custody record: name, size, SHA-256, pins and GnuPG version.
+  The ciphertext is then published atomically: written to a fresh sibling, then hard-linked to
+  its final name, which never replaces an existing file, so a failed write never leaves a
+  partial file under that name. It returns a frozen custody record: name, size, SHA-256, pins
+  and GnuPG version.
 - **Plaintext and diagnostics.** The plaintext container and the recipient copy exist only in
   an owner-only work directory under the caller's private root, removed on every path; an
   interrupt in the caller's `exitOnInterrupt` scope stops GnuPG and removes the root. No secure
-  erasure is claimed. Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`; GnuPG's stdout and
-  stderr, paths and host error text never surface.
+  erasure is claimed. Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`, including a host
+  failure (`UNEXPECTED`) and a work directory that cannot be removed (`CLEANUP`); GnuPG's stdout
+  and stderr, paths and host error text never surface.
 - **Synthetic fixtures.** `custody-fixtures/` commits armored public v4 keys under
-  `fixture.invalid` for every class above, with their pins and a maintainer-only generator that
-  is never run in CI. No secret key is committed: the decryption round trip generates one per
+  `fixture.invalid` for the classes GnuPG can produce — good cv25519 and RSA-3072 keys, one
+  advertising AEAD, an RSA-2048 subkey, an expired primary and subkey, a revoked primary and
+  subkey, a sign-only key and a key with two encryption subkeys — with their pins and a
+  maintainer-only generator that is never run in CI; the other classes are covered by crafted
+  listings. No secret key is committed: the decryption round trip generates one per
   run in a short owner-only home and stops its agent afterwards, and a test refuses any tracked
   PGP private-key block.
 - **Where it runs.** The custody tests are part of `test:acceptance-tools`, so they run in local
   `pnpm run ci` and the four Ubuntu jobs inside `ci`'s needs, against the runner's GnuPG; they
-  fail, never skip, without GnuPG ≥ 2.2.8 (`docs/runbooks/local-dev-setup.md`). The Windows image
-  has no GnuPG, so they do not run there, and the 2.2.8 floor is enforced by the version check
-  without being exercised.
+  fail, never skip, without GnuPG ≥ 2.2.8 (`docs/runbooks/local-dev-setup.md`). They do not run
+  on Windows: no Windows job runs `test:acceptance-tools`, the image's only `gpg` is Git for
+  Windows' MSYS2 build, never exercised here, and the tests use POSIX process and permission
+  tools. The 2.2.8 floor is enforced by the version check without being exercised.
 
 ## Package-test and release modes
 

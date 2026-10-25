@@ -91,6 +91,10 @@ function checkContents(files) {
       refuseCustody('CONTAINER_DRIFT');
     }
   }
+  // The manifest records no digest for the metafile; it must at least be the finalizer's JSON object.
+  if (!isRecord(json(/** @type {Buffer} */ (files.get('metafile-esm.json')), 'CONTAINER_RECORD'))) {
+    refuseCustody('CONTAINER_RECORD');
+  }
   const record = json(/** @type {Buffer} */ (files.get('finalized.json')), 'CONTAINER_RECORD');
   if (
     !isRecord(record) ||
@@ -166,7 +170,8 @@ export function buildPrivateContainer(staging, limits = CONTAINER_LIMITS) {
     files.set(`maps/${name}`, read(join(staging, 'maps', name)));
   }
   const manifest = checkContents(files);
-  if (containerBytes(files) > limits.totalBytes) refuseCustody('CONTAINER_SIZE');
+  // Refused before the archive is assembled in memory; the read-back check would refuse it after.
+  if (containerBytes(files) > limits.totalBytes) refuseCustody('CONTAINER_TOTAL');
   const sorted = [...files].sort(([left], [right]) => (left < right ? -1 : 1));
   const bytes = writeUstar(sorted, () => ENTRY_MODE);
   // The written container must read back as exactly these entries.
