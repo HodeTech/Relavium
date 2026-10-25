@@ -77,7 +77,14 @@ is written (`verifySealedDist`). `pnpm check:map-controls` (`map-controls.mjs` o
 `map-controls-core.mjs`) runs every named negative control on product copies of one real production,
 prints one JSON summary of codes and fixed lines (no absolute path, frame or map byte) and exits 1
 unless every expected control ran once with its expected outcome; the required `map-controls` CI job
-runs it uncached and uploads nothing. No private map,
+runs it uncached and uploads nothing. Step 9b.1's custody library (synthetic recipients only; nothing
+calls it yet) builds one owner-only USTAR of the sealed staging (`container.mjs`, over the one strict
+dialect in `ustar.mjs`) and encrypts it once to one pinned recipient with GnuPG ≥ 2.2.8 in fresh
+isolated homes (`custody.mjs` over `gnupg.mjs`): a colon pre-check refuses missing, expired, revoked,
+unusable or unexpected recipients and secret material, the ciphertext must be SEIPDv1 with MDC and
+AES-256 naming exactly the pinned subkey, an existing ciphertext is never overwritten, the plaintext
+work directory is removed on every path and every refusal is a fixed `PACKED_CLI_CUSTODY_*` code.
+`custody-fixtures/` holds the committed synthetic public keys; no secret key is committed. No private map,
 metafile, manifest or per-source inventory enters the public artifact. The release workflow's
 `release-guard.mjs` refuses every artifact until verified release custody exists: it
 sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule

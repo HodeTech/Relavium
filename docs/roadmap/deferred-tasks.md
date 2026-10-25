@@ -689,7 +689,9 @@ that shows the shape.
   **Re-check:** when Step 9b designs the custody job, run the capture child and every descendant under an
   OS sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
   *Re-checked after rounds 1 and 2 (2026-10-24): the module confinement narrows the limit; the record and
-  packaging.md now say the refusals are in-process only.*
+  packaging.md now say the refusals are in-process only.* *Re-recorded 2026-10-25 (Step 9b preflight
+  decisions): Step 9b adds a library and synthetic controls and designs no custody job, so the trigger moves
+  to Step 9d, which designs the release job.*
 - [ ] **Two packs of one source can differ in the packed manifest's key order.** *Low, for Step 9c.* *(rigor
   pass, integration lens)* Two productions of the same tree packed the five `@relavium/*` `devDependencies`,
   which pnpm rewrites from `workspace:*` to versions at pack time, in different orders (`core, llm, shared,
@@ -777,6 +779,23 @@ no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending th
   `rmSync` in `pack()` passes everything; the bundler's maps would stay in the candidate's `dist` (inside the
   producer's owner-only root) until the next build. **Re-check:** with the composition test of the F5 entry, assert
   `dist` holds no `.map` file after each refused control build. *(low · tools/cli-package/map-controls-core.mjs)*
+
+## Wave 3 Step 9b.1 — named limits (2026-10-25)
+
+Recorded with the Step 9b.1 implementation
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).
+**Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
+
+- [ ] **The custody tests do not run on Windows.** *Low; a named limit.* The Windows runner image has no
+  GnuPG, and the custody tests run only where `test:acceptance-tools` runs (local `pnpm run ci` and the
+  Ubuntu jobs). Local Windows developers need Gpg4win, as `docs/runbooks/local-dev-setup.md` says.
+  **Re-check:** before a release producer runs on Windows, install GnuPG there and run the custody tests
+  on that runner. *(low · tools/cli-package/gnupg.mjs)*
+- [ ] **The GnuPG 2.2.8 floor is enforced, never exercised.** *Low; a named limit.* The version check
+  refuses an older GnuPG, but the tests ran only on 2.5.21 (local) and 2.4.4 (Ubuntu 24.04), so neither
+  encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests
+  against GnuPG 2.2.8 (for example in a container that ships it) before a recovery runbook names that
+  version. *(low · tools/cli-package/gnupg.mjs)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
@@ -2652,7 +2671,11 @@ future test cannot silently re-acquire it.
   the confirmed production recipient for encrypted release custody must be an OpenPGP v4 key
   with a cv25519 or RSA≥3072 encryption-capable subkey. Wave 3 Step 9 implements custody with
   synthetic keys only; an actual release fails closed until this recipient, its offline
-  recovery check and backup ownership exist.
+  recovery check and backup ownership exist. *Added 2026-10-25 (Step 9b preflight decisions):* the key
+  must not advertise the AEAD feature, because custody requires SEIPDv1 with MDC and AES-256 so that
+  `gpg -d | tar -x` with GnuPG ≥ 2.2.8 stays true; and the committed recipient file is the export of the
+  primary with only the pinned encryption subkey (`gpg --armor --export '<subkey fingerprint>!'`),
+  because a second usable encryption subkey refuses.
 
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker

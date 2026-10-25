@@ -3703,7 +3703,7 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
 | NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
-| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each record's digest and size checked against the private manifest; an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring, agent or trustdb); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. |
+| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each record's digest and size checked against the private manifest; an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring, agent or trustdb); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).* |
 | 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
@@ -10051,6 +10051,12 @@ The round's verified findings were four lows and four nits:
 The NI entry stays open until its Windows clause closes: three consecutive green advisory Windows runs on pushed
 heads, with the probe's logged counts recorded. Step 9b is next.
 
+**Windows clause, run 1 of 3 (2026-10-25).** Push CI
+[run 40151763770](https://github.com/HodeTech/Relavium/actions/runs/40151763770) at `c8c0d41b` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `1 of 200 replacement pairs collide as Numbers; 0 read
+negative`: on the runner itself a replaced directory's file ID rounded to its original's once in 200 pairs, the
+diagnosed mechanism, while every pair stayed distinct as exact identities, and the repeated replacement tests passed.
+
 ### Wave 3 Step 9b preflight decisions — 2026-10-25
 
 A read-only preflight (four readers and a synthesis at `c8c0d41b`) mapped Step 9b's obligations, the code it meets and
@@ -10083,4 +10089,42 @@ Engineering defaults recorded with the rulings:
 - The tests join `test:acceptance-tools`, so they run in local `pnpm run ci` and the four Ubuntu jobs already inside `ci`'s needs, with no workflow edit.
 - Windows has no GnuPG on its image, and the 2.2.8 floor is enforced only by the version check; both are recorded limits.
 - Before the first external round, the custody tests run in a local `ubuntu:24.04` container with the distribution's GnuPG, to gather 2.4.4 evidence.
+
+### Wave 3 Step 9b.1 implementation checkpoint — 2026-10-25
+
+**Scope and source.** Step 9b.1 (the 9b.1 row; #46, ADR-0111) is implemented on `development` after the
+[Step 9b preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25) (`12883df4`), in five ordered commits
+and this record:
+
+1. **One strict USTAR dialect.** `ustar.mjs` extracts the archive inspector's reader with a path rule, a mode rule,
+   an entry hook and a refusal reporter, and promotes the writer. The inspector delegates with its refusal codes and
+   order unchanged, and `archive.test.mjs` and `seal.test.mjs` pass unchanged.
+2. **The private container.** `container.mjs` builds and reads the owner-only container in the approved
+   staging-relative layout, every map checked against the manifest and the finalizer's record.
+3. **The isolated GnuPG runner.** `gnupg.mjs`, with GnuPG ≥ 2.2.8 added to the local prerequisites.
+4. **Synthetic fixtures.** Committed armored public keys for every recipient class, their pins and a
+   maintainer-only generator; the round-trip key is generated per run.
+5. **Encrypt once.** `custody.mjs`: pins, the colon pre-check, `encryptOnce` and its tests.
+
+The [packaging contract](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b1) records
+the mechanism, the tooling README and deferred-tasks.md (SEC-9A2A-2 re-recorded to Step 9d, two Wave 4b key
+clauses, two named limits) the rest. Product paths, the receipt, the guard and both workflows are unchanged; no
+runtime dependency or ADR is added.
+
+**Measured before writing the parsers.** One script listed every fixture, encrypted to each and listed the
+ciphertext's recipients on GnuPG 2.5.21 (local) and 2.4.4 (`ubuntu:24.04`):
+- `BEGIN_ENCRYPTION 2 9` for a key without the AEAD feature, `0 9 2` (OCB) for one with it, on both versions.
+- `--list-only` exits 0 with one `ENC_TO`; `--list-packets` exits 2.
+- `INV_RECP` reasons do not tell expired, revoked and sign-only apart, and the `FAILURE` numbers differ between
+  calls, so neither is keyed on.
+- An `INV_RECP` line carries the recipient file's absolute path, which is why status output is never surfaced.
+- GnuPG 2.4.4 cannot list an expired or revoked key under `--trust-model always` without a trust database (`Fatal:
+  can't open trustdb.gpg`), so the listing runs in its own home with the default trust model.
+- With `--trust-model always`, the encryption home gains only `random_seed`.
+
+**Author evidence at `85a9aebe`.**
+- The four custody test files passed locally: 32 tests on GnuPG 2.5.21.
+- They also passed in a clean clone in `ubuntu:24.04`: 32 of 32 with none skipped, as a non-root user, on its
+  GnuPG 2.4.4 after a fresh frozen install, with no GnuPG process left afterwards.
+- The archive, seal, packed-CLI pin and tooling typecheck and lint suites passed.
 

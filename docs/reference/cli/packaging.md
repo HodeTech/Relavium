@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); the remaining Step 9 custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are implemented on `development` and under review (synthetic recipients only); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -512,6 +512,67 @@ and backup ownership before an actual release. Rotation is a reviewed public-key
 update for future candidates; preserve historical fingerprint/decryption capability
 for supported versions. Existing public ciphertext cannot be recalled by revocation.
 This wave creates no automatic deletion policy or production key.
+
+### Recipient custody implementation boundary — Step 9b.1
+
+Step 9b.1 implements the container and the one-time encryption as a library with synthetic
+controls only. It holds no production recipient, encrypts no product staging, and changes
+neither `producePackage`, `sealPackage`, the package-test receipt, the interim release guard
+nor either workflow; encryption in the originating job is Step 9d's, reuse, the release
+binding receipt and the production loader are Step 9b.2's. Its review and acceptance are
+recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
+- **One strict dialect.** `ustar.mjs` owns the USTAR dialect the archive inspector reads:
+  regular files only, every header field fixed, zero owner ids and device numbers, an exact
+  end and zero padding. The inspector delegates to it unchanged.
+- **The private container.** `container.mjs` builds one owner-only (0600) USTAR from the
+  sealed staging in its own layout: `finalized.json`, `manifest.json`, `metafile-esm.json` and
+  `maps/<chunk>.js.map`, sorted, with no host path. The staging must hold exactly those records
+  and the manifest's maps as regular files of at most 16 MiB each; every map must be the one the
+  manifest and the finalizer's record name, at most 259 entries and 128 MiB in total. Reading a
+  container back applies the same checks, and a decrypted container extracted with `tar -x` is a
+  staging the manifest reader consumes unchanged.
+- **The isolated runner.** `gnupg.mjs` resolves `gpg` from absolute PATH entries only and
+  refuses one older than GnuPG 2.2.8. Every call runs in a fresh owner-only home the tool
+  creates, with `--no-options --no-autostart --no-keyring`, the C locale and an isolated
+  environment, bounded by `runCommand`. The recipient listing (`--show-keys`) uses its own home
+  and the default trust model, because GnuPG 2.4 cannot list an expired or revoked key under
+  `--trust-model always` without a trust database; that home may gain only GnuPG's own
+  `trustdb.gpg`. Encryption uses `--recipient-file`, `--trust-model always` (the pinned
+  fingerprints and the colon pre-check are the assurance), an AES-256 preference, no
+  compression and a fixed literal name, in a home that may gain only `random_seed`.
+- **The recipient pre-check.** The recipient file is read bounded and copied, so the bytes
+  checked are the bytes encrypted to, and pins are exactly two 40-digit uppercase fingerprints
+  (OpenPGP v4). An armored secret key refuses from its bytes. The colon listing then refuses,
+  in this order: secret material, a missing pinned primary, more than one key, a missing pinned
+  subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
+  encryption capability, future creation, or an encryption subkey other than cv25519 or RSA of
+  at least 3072 bits) and another usable encryption subkey. GnuPG's own refusal remains a
+  second, independent layer.
+- **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
+  holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
+  private root overlap, or when the root is not owner-only. Success requires exit 0, one
+  `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and
+  AES-256; an AEAD profile refuses) before one `END_ENCRYPTION`, exactly the expected work
+  files, a ciphertext within the container's size plus 64 KiB whose public-key packets name
+  exactly the pinned subkey and no hidden recipient, and homes holding only what GnuPG creates.
+  The ciphertext is then published with `wx`, never over an existing file. It returns a frozen
+  custody record: name, size, SHA-256, pins and GnuPG version.
+- **Plaintext and diagnostics.** The plaintext container and the recipient copy exist only in
+  an owner-only work directory under the caller's private root, removed on every path; an
+  interrupt in the caller's `exitOnInterrupt` scope stops GnuPG and removes the root. No secure
+  erasure is claimed. Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`; GnuPG's stdout and
+  stderr, paths and host error text never surface.
+- **Synthetic fixtures.** `custody-fixtures/` commits armored public v4 keys under
+  `fixture.invalid` for every class above, with their pins and a maintainer-only generator that
+  is never run in CI. No secret key is committed: the decryption round trip generates one per
+  run in a short owner-only home and stops its agent afterwards, and a test refuses any tracked
+  PGP private-key block.
+- **Where it runs.** The custody tests are part of `test:acceptance-tools`, so they run in local
+  `pnpm run ci` and the four Ubuntu jobs inside `ci`'s needs, against the runner's GnuPG; they
+  fail, never skip, without GnuPG ≥ 2.2.8 (`docs/runbooks/local-dev-setup.md`). The Windows image
+  has no GnuPG, so they do not run there, and the 2.2.8 floor is enforced by the version check
+  without being exercised.
 
 ## Package-test and release modes
 
