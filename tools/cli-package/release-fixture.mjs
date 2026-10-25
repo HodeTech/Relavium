@@ -77,6 +77,10 @@ export function recipientRoot(file, recipients) {
   const root = fresh('release-recipient');
   mkdirSync(root);
   copyFileSync(file, join(root, 'recipient.asc'));
-  writeFileSync(join(root, 'pins.json'), JSON.stringify({ version: 1, recipients }));
+  // The loader admits only the canonical serialization.
+  writeFileSync(
+    join(root, 'pins.json'),
+    `${JSON.stringify({ version: 1, recipients }, null, 2)}\n`,
+  );
   return root;
 }

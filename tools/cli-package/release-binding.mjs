@@ -119,12 +119,13 @@ function scopeOf(expected) {
  * @param {number} minimum @param {number} maximum
  */
 function asset(value, version, name, minimum, maximum) {
-  const entry = exact(value, ['name', 'bytes', 'sha256']);
-  if (entry.name !== name(version)) refuseCustody('BINDING_NAME');
+  // Each field is read once: the value checked is the value returned.
+  const { name: given, bytes, sha256: digest } = exact(value, ['name', 'bytes', 'sha256']);
+  if (given !== name(version)) refuseCustody('BINDING_NAME');
   return Object.freeze({
-    name: /** @type {string} */ (entry.name),
-    bytes: size(entry.bytes, minimum, maximum),
-    sha256: string(entry.sha256, SHA256),
+    name: /** @type {string} */ (given),
+    bytes: size(bytes, minimum, maximum),
+    sha256: string(digest, SHA256),
   });
 }
 
@@ -136,7 +137,21 @@ function asset(value, version, name, minimum, maximum) {
  * @param {Expected} expected
  */
 export function validateReleaseBinding(value, expected) {
-  return validate(value, scopeOf(expected));
+  return bounded(() => validate(value, scopeOf(expected)));
+}
+
+/**
+ * Run `work` behind the fixed-code boundary: a host error's message, or a throwing accessor's, never
+ * leaves; only custody codes do.
+ * @template T @param {() => T} work @returns {T}
+ */
+function bounded(work) {
+  try {
+    return work();
+  } catch (error) {
+    if (error instanceof CustodyError) throw error;
+    return refuseCustody('UNEXPECTED');
+  }
 }
 
 /** @param {unknown} value @param {ReturnType<typeof scopeOf>} scope */
@@ -146,12 +161,12 @@ function validate(value, scope) {
   }
   const receipt = exact(value, KEYS);
   const packageVersion = string(receipt.packageVersion, PACKAGE_VERSION, 100);
-  const sourceRecord = exact(receipt.source, ['commit', 'tree', 'dirty']);
-  if (typeof sourceRecord.dirty !== 'boolean') refuseCustody('BINDING_SHAPE');
+  const { commit, tree, dirty } = exact(receipt.source, ['commit', 'tree', 'dirty']);
+  if (typeof dirty !== 'boolean') refuseCustody('BINDING_SHAPE');
   const source = Object.freeze({
-    commit: string(sourceRecord.commit, GIT_OBJECT),
-    tree: string(sourceRecord.tree, GIT_OBJECT),
-    dirty: sourceRecord.dirty,
+    commit: string(commit, GIT_OBJECT),
+    tree: string(tree, GIT_OBJECT),
+    dirty,
   });
   if (packageVersion !== scope.packageVersion) refuseCustody('BINDING_CANDIDATE');
   if (scope.scope === 'production') {
@@ -277,7 +292,7 @@ export const serializeReleaseBinding = (receipt) =>
  * @param {Buffer} bytes @param {Expected} expected
  */
 export function parseReleaseBinding(bytes, expected) {
-  return parse(bytes, scopeOf(expected));
+  return bounded(() => parse(bytes, scopeOf(expected)));
 }
 
 /** @param {Buffer} bytes @param {ReturnType<typeof scopeOf>} scope */
@@ -300,14 +315,11 @@ function parse(bytes, scope) {
  * verified bytes, never a path to open again; writes, renames and removes nothing.
  * @param {{directory: string, expected: Expected}} options
  */
-export function verifyRetainedCandidate({ directory, expected }) {
-  try {
+export function verifyRetainedCandidate(options) {
+  return bounded(() => {
+    const { directory, expected } = isRecord(options) ? options : {};
     return verify(directory, expected);
-  } catch (error) {
-    // A host error's message names a path: only fixed custody codes leave.
-    if (error instanceof CustodyError) throw error;
-    return refuseCustody('UNEXPECTED');
-  }
+  });
 }
 
 /** @param {string} directory @param {Expected} expected */
@@ -333,7 +345,12 @@ function verify(directory, expected) {
   /** @param {{name: string, bytes: number, sha256: string}} entry */
   const retained = (entry) => {
     const path = join(directory, entry.name);
-    const info = lstatSync(path);
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch {
+      return refuseCustody('CANDIDATE_ASSET');
+    }
     if (!info.isFile()) refuseCustody('CANDIDATE_ASSET');
     if (info.size !== entry.bytes) refuseCustody('CANDIDATE_SIZE');
     let data;

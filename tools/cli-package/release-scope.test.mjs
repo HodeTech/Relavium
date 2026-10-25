@@ -41,6 +41,9 @@ const tracked = spawnSync(
     '*.mts',
     '*.yml',
     '*.yaml',
+    // Package scripts can name a module too.
+    'package.json',
+    '*/package.json',
   ],
   { cwd: repository, encoding: 'utf8' },
 )
@@ -76,25 +79,32 @@ test('the scan sees the custody modules and leaves the tests out', () => {
 });
 
 test('no product or tooling code reaches a test fixture, and only the loader reads the fixture pins', () => {
-  assert.deepEqual(naming(/(?:candidate|gpg|release)-fixture\.mjs/u), []);
+  assert.deepEqual(naming(/[A-Za-z0-9_-]+-fixture\.mjs/u), []);
   assert.deepEqual(naming(/custody-fixtures/u), ['tools/cli-package/release-recipient.mjs']);
 });
 
 /**
  * Whether `text`, a file at repository-relative `path`, names repository-relative `target` by any quoted
- * specifier that resolves to it: relative to the file, or to the repository root for a workflow (whose
- * steps run there) and for a `tools/` specifier; a query suffix is ignored.
+ * literal that resolves to it, as Node would resolve a relative specifier or a `new URL(…,
+ * import.meta.url)`: relative to the file, or to the repository root for a workflow (whose steps run
+ * there), a package manifest's scripts and a `tools/` path. Percent-escapes are decoded and a query or
+ * fragment is ignored.
  * @param {string} path @param {string} text @param {string} target
  */
 function resolvesTo(path, text, target) {
-  const name = posix.basename(target).replaceAll('.', '\\.');
-  const literal = new RegExp(`['"\`]([^'"\`\\s]*(?:^|/)${name})(?:\\?[^'"\`\\s]*)?['"\`]`, 'gu');
-  const root = /\.ya?ml$/u.test(path) ? '.' : posix.dirname(path);
-  for (const match of text.matchAll(literal)) {
-    const specifier = match[1];
-    const base = specifier.startsWith('tools/') ? '.' : root;
-    const resolved = posix.normalize(posix.join(base, specifier));
-    if (resolved === target) return true;
+  const root = /(?:\.ya?ml|package\.json)$/u.test(path) ? '.' : posix.dirname(path);
+  // Every run of non-space characters directly between two quotes; the closing quote may open the next
+  // run, so a literal nested inside another (a workflow's `node -e "import('…')"`) is found too.
+  for (const match of text.matchAll(/['"`]([^'"`\s]+)(?=['"`])/gu)) {
+    let specifier = match[1].replace(/[?#].*$/u, '');
+    try {
+      specifier = decodeURIComponent(specifier);
+    } catch {
+      continue;
+    }
+    if (posix.basename(specifier) !== posix.basename(target)) continue;
+    const base = specifier.startsWith('tools/') || specifier.startsWith('./tools/') ? '.' : root;
+    if (posix.normalize(posix.join(base, specifier)) === target) return true;
   }
   return false;
 }
@@ -105,7 +115,11 @@ test('the import match resolves every spelling, and only the real target', () =>
     ['tools/cli-package/smoke/x.mjs', "import { encryptOnce } from '../custody.mjs';"],
     ['tools/x.mjs', "import { encryptOnce } from './cli-package/custody.mjs';"],
     ['tools/ci/x/y.mjs', 'const m = await import("../../cli-package/custody.mjs?v=1");'],
+    ['tools/cli-package/x.mjs', "import { encryptOnce } from './custody.mjs#fragment';"],
+    ['tools/cli-package/x.mjs', "import { encryptOnce } from './custody%2Emjs';"],
+    ['tools/cli-package/x.mjs', "const url = new URL('custody.mjs', import.meta.url);"],
     ['.github/workflows/x.yml', 'run: node -e "import(\'./tools/cli-package/custody.mjs\')"'],
+    ['package.json', '"x": "node -e \\"import(\'./tools/cli-package/custody.mjs\')\\""'],
     ['apps/cli/x.ts', "export * as custody from '../../tools/cli-package/custody.mjs';"],
     ['tools/cli-package/x.mjs', 'require(`./custody.mjs`)'],
   ]) {
@@ -116,6 +130,7 @@ test('the import match resolves every spelling, and only the real target', () =>
     ['tools/cli-package/x.mjs', "import { encryptCandidate } from './release-custody.mjs';"],
     ['tools/x.mjs', "import { x } from './custody.mjs';"],
     ['tools/cli-package/x.mjs', '// encryptOnce lives in custody.mjs'],
+    ['tools/cli-package/x.mjs', "import { x } from './custody.mjs.bak';"],
   ]) {
     assert.equal(resolvesTo(path, text, target), false, `${path}: ${text}`);
   }
@@ -177,16 +192,26 @@ test("the binding receipt's closure starts no process, so reuse makes no GnuPG c
     'release-recipient.mjs',
     'ustar.mjs',
   ]);
-  for (const forbidden of ['child_process', 'worker_threads', 'cluster', 'module']) {
-    assert.equal(specifiers.includes(forbidden), false, forbidden);
-    assert.equal(specifiers.includes(`node:${forbidden}`), false, forbidden);
+  // Every specifier is one of those files or an allowed builtin: no package, no process module.
+  const builtins = [
+    'node:assert/strict',
+    'node:buffer',
+    'node:crypto',
+    'node:fs',
+    'node:path',
+    'node:url',
+    'node:util',
+    'node:zlib',
+  ];
+  for (const specifier of specifiers) {
+    assert.ok(specifier.startsWith('./') || builtins.includes(specifier), specifier);
   }
-  // Nor can a closure file reach a process without importing one.
+  // Nor can a closure file reach a process or a module without a literal import.
   for (const file of files) {
     const source = readFileSync(join(here, file), 'utf8');
     assert.doesNotMatch(
       source,
-      /\b(?:getBuiltinModule|createRequire|process\.binding|process\.dlopen)\b|\brequire\s*\(/u,
+      /\b(?:getBuiltinModule|createRequire|process\.binding|process\.dlopen|process\.execve)\b|\brequire\s*\(|\bimport\(\s*[^'"\s]/u,
       file,
     );
   }
@@ -268,6 +293,14 @@ test('the constants the release modules restate equal their sources', () => {
   for (const version of ['0.1.1', '1.2.3-rc.1', '2.0.0+build.5']) {
     assert.equal(ciphertextFileName(version), ciphertextName(version));
   }
-  assert.equal(CIPHERTEXT_BYTES, CONTAINER_LIMITS.totalBytes + 64 * 1024);
+  // custody.mjs keeps its overhead private: read it from the source, so both halves have a source.
+  const overhead = /^const CIPHERTEXT_OVERHEAD = (\d+) \* (\d+);$/mu.exec(
+    read('tools/cli-package/custody.mjs'),
+  );
+  assert.ok(overhead, 'custody.mjs no longer declares CIPHERTEXT_OVERHEAD as a product');
+  assert.equal(
+    CIPHERTEXT_BYTES,
+    CONTAINER_LIMITS.totalBytes + Number(overhead[1]) * Number(overhead[2]),
+  );
   assert.deepEqual(SYNTHETIC_SOURCE, { commit: COMMIT, tree: TREE });
 });

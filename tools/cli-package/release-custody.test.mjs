@@ -130,13 +130,43 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
   }
   // A destination that cannot be resolved, or whose tarball is missing or another, refuses before any
   // call: a ciphertext encrypted into it could never be sealed.
+  // A link refuses before anything is read through it: its target's stray entry is never reached.
+  const linked = (destination) => {
+    const target = fresh('linked-destination-target');
+    mkdirSync(target);
+    writeFileSync(join(target, tarballName(VERSION)), TARBALL);
+    writeFileSync(join(target, 'stray'), 'x');
+    rmSync(destination, { recursive: true });
+    symlinkSync(target, destination);
+  };
   for (const [code, change] of [
     ['PLACEMENT', (destination) => rmSync(destination, { recursive: true })],
-    ['TARBALL_DRIFT', (destination) => rmSync(join(destination, tarballName(VERSION)))],
+    [
+      'PLACEMENT',
+      (destination) =>
+        posixModes ? linked(destination) : rmSync(destination, { recursive: true }),
+    ],
+    ['CANDIDATE_ENTRIES', (destination) => rmSync(join(destination, tarballName(VERSION)))],
+    [
+      'CANDIDATE_ENTRIES',
+      (destination) => writeFileSync(join(destination, 'package-test-receipt.json'), '{}'),
+    ],
+    [
+      'ALREADY_ENCRYPTED',
+      (destination) =>
+        writeFileSync(join(destination, ciphertextFileName(VERSION)), 'earlier ciphertext'),
+    ],
     [
       'TARBALL_DRIFT',
       (destination) =>
         writeFileSync(join(destination, tarballName(VERSION)), Buffer.from('another tarball')),
+    ],
+    [
+      'TARBALL_DRIFT',
+      (destination) => {
+        rmSync(join(destination, tarballName(VERSION)));
+        mkdirSync(join(destination, tarballName(VERSION)));
+      },
     ],
   ]) {
     const { root, destination } = places();
@@ -154,6 +184,28 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
       code,
     );
     assert.deepEqual(calls, [], code);
+  }
+  // A tarball whose name differs only in case is not the tarball, even where the volume would open it.
+  {
+    const { root, destination } = places();
+    rmSync(join(destination, tarballName(VERSION)));
+    writeFileSync(join(destination, tarballName(VERSION).toUpperCase()), TARBALL);
+    const { run, calls } = recording();
+    await assert.rejects(
+      encryptCandidate({
+        scope: synthetic,
+        container: built.synthetic,
+        destination,
+        privateRoot: root,
+        run,
+      }),
+      refuses('CANDIDATE_ENTRIES'),
+    );
+    assert.deepEqual(calls, []);
+  }
+  // A malformed call refuses with a fixed code, never a host error.
+  for (const options of [undefined, null, 'options']) {
+    await assert.rejects(encryptCandidate(options), refuses('SCOPE'));
   }
   // The scope is read once: a kind that changes after its first read cannot skip the brand check.
   {
@@ -517,6 +569,33 @@ test("the caller's container changing during encryption changes nothing encrypte
   ephemeral.decrypt(join(destination, record.name), join(out, 'container.tar'));
   assert.deepEqual(readFileSync(join(out, 'container.tar')), built.synthetic);
   sealReleaseBinding(record, { origin: origin(SYNTHETIC_SOURCE.commit) });
+});
+
+test('the gate forwards the clock and the GnuPG installation to encryptOnce', async () => {
+  // A clock before the fixture key's creation makes its subkey one created in the future.
+  const early = places();
+  await assert.rejects(
+    encryptCandidate({
+      scope: synthetic,
+      container: built.synthetic,
+      destination: early.destination,
+      privateRoot: early.root,
+      now: 1,
+    }),
+    refuses('RECIPIENT_UNUSABLE'),
+  );
+  const missing = places();
+  const absent = { command: join(fresh('no-gpg'), 'gpg'), prefix: [] };
+  await assert.rejects(
+    encryptCandidate({
+      scope: synthetic,
+      container: built.synthetic,
+      destination: missing.destination,
+      privateRoot: missing.root,
+      gpg: { ...absent, gpgconf: absent },
+    }),
+    refuses('GPG_UNAVAILABLE'),
+  );
 });
 
 test('a production candidate round-trips: the receipt binds what the ciphertext decrypts to', async () => {

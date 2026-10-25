@@ -640,7 +640,10 @@ refuses every artifact. Its review and acceptance are recorded in the
   does not exist and the loader refuses `PRODUCTION_RECIPIENT_ABSENT`; a linked or malformed
   directory, and any host failure while loading, refuses `PRODUCTION_RECIPIENT_INVALID`. A history
   naming a fingerprint that the committed fixtures' `pins.json` lists refuses `FIXTURE_RECIPIENT`, and
-  a malformed fixtures file refuses rather than weaken that denylist. The loaded value is frozen and
+  a malformed fixtures file refuses rather than weaken that denylist. `pins.json` must be exactly its
+  canonical serialization (`JSON.stringify(value, null, 2)` plus a newline, fields in the order above),
+  so a duplicated key, which `JSON.parse` would resolve silently to its last value, refuses and the file a
+  reviewer reads is the history loaded. The loaded value is frozen and
   branded: only that value counts as a production recipient, never a copy. Tests load temporary
   roots through the separately named `loadRecipientForTests`, which `release-scope.test.mjs`
   permanently keeps out of every product and tooling file. Wave 4b commits the files.
@@ -649,12 +652,14 @@ refuses every artifact. Its review and acceptance are recorded in the
   loaded recipient and a clean, non-synthetic candidate, and encrypts to the recipient's current
   pins (`RECIPIENT_SOURCE`, `DIRTY_SOURCE`, `SYNTHETIC_SOURCE`). It admits synthetic scope only with a
   synthetic candidate (`FIXTURE_SCOPE`), so neither a fixture key nor the per-run round-trip key can
-  encrypt a product staging. An unknown scope refuses `SCOPE`, a destination already holding a
-  receipt refuses `ALREADY_SEALED`, a destination that does not resolve refuses `PLACEMENT`, and a
-  destination without the tarball the manifest names refuses `TARBALL_DRIFT`, so a ciphertext is
-  never encrypted where it could not be sealed. Every one of these refuses before any GnuPG call.
-  The gate reads the caller's scope once and encrypts its own copy of the container, so neither can
-  change midway; `encryptOnce` then runs unchanged on that copy.
+  encrypt a product staging. An unknown scope refuses `SCOPE`. The destination must be a plain,
+  resolvable directory (`PLACEMENT`; a link refuses, as `encryptOnce` requires) holding exactly the
+  tarball the manifest names: a receipt there refuses `ALREADY_SEALED`, the ciphertext
+  `ALREADY_ENCRYPTED`, any other entry, or a tarball named otherwise, `CANDIDATE_ENTRIES`, and a different
+  tarball `TARBALL_DRIFT`. A ciphertext is therefore never encrypted where the sealer would refuse its
+  directory. Every one of these refuses before any GnuPG call. The gate reads the caller's scope once
+  and encrypts its own copy of the container, so neither can change midway; `encryptOnce` then runs
+  unchanged, on that copy and the caller's destination.
 - **The release binding receipt v1.** The public `release-binding-receipt.json` beside the ciphertext,
   the name the interim guard already keys on:
 
@@ -713,10 +718,13 @@ refuses every artifact. Its review and acceptance are recorded in the
   and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
   needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
   - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
-  - only the release gate imports `encryptOnce`, by any specifier that resolves to it;
+  - only the release gate imports `encryptOnce`, by any quoted specifier that resolves to it, in
+    source, workflow and package-script text, percent-escapes, queries, fragments and bare names
+    included;
   - the loader is never called with an argument, and its test seam appears in no product or tooling
     file (permanent controls);
-  - the receipt module's import closure starts no process, by import or otherwise;
+  - the receipt module's import closure holds only its own files and listed Node builtins, with no
+    package, process module, `require`-like call or non-literal dynamic import;
   - the interim guard still refuses a complete, valid synthetic candidate;
   - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
     directory is committed.

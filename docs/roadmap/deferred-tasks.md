@@ -873,8 +873,8 @@ The release modules are library code with synthetic controls only: nothing outsi
 - [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* Only a record the gate returned in
   the same process seals, so a ciphertext whose seal never succeeds before its process exits — after a crash, or
   a refusal on an input the gate does not check, such as a malformed origin or an entry added to the
-  destination — is named by no record. The gate refuses an unresolvable destination and a missing or different
-  tarball before encrypting, which removes the likeliest causes. The candidate then needs manual recovery
+  destination after encryption — is named by no record. The gate refuses a linked or unresolvable destination,
+  any entry but the tarball and a different tarball before encrypting, which removes the likeliest causes. The candidate then needs manual recovery
   (packaging.md's missing-asset state); it is never re-encrypted. **Re-check:** in Step 9c's reservation
   states, classify such a directory as incomplete and route it to manual recovery. *(low ·
   tools/cli-package/release-custody.mjs)*
@@ -896,6 +896,12 @@ The release modules are library code with synthetic controls only: nothing outsi
   history naming it would load. The loader reads no key material (it makes no GnuPG call), and encrypting to it
   would still need its armored key in the committed recipient file. **Re-check:** list every committed fixture
   fingerprint in the denylist when the fixtures are next generated. *(low · tools/cli-package/release-recipient.mjs)*
+- [ ] **The release entry points accept the test ports.** *Low; a named limit (round 1, SIT-R1-5).*
+  `encryptCandidate` forwards `encryptOnce`'s `run` and `gpg` ports and `sealReleaseBinding` takes a `write`
+  port, in production scope too, so an in-process caller could replace GnuPG and defeat its checks. Like the
+  brand, the ports guard against an honest mistake, not hostile code in the same process. **Re-check:** in Step
+  9d, call both without ports from the release job and add a permanent control that no product call passes
+  them. *(low · tools/cli-package/release-custody.mjs)*
 - [ ] **The release modules do not run on Windows.** *Low; a named limit.* Like the 9b.1 tests, the release
   tests run only in `test:acceptance-tools`, which no Windows job runs; `encryptCandidate` refuses there
   through `encryptOnce`'s `PRIVATE_ROOT`, while reuse is platform-neutral but unexercised. **Re-check:** with
@@ -2801,7 +2807,9 @@ future test cannot silently re-acquire it.
   recipient directory is committed. Any expiry margin is passed as the `now` the custody check uses. The
   loader sees one revision of `pins.json` and cannot detect a removed or rewritten entry, so Wave 4b adds a
   control that every committed revision keeps the previous one's entries, with only `current` becoming
-  `retired` (rigor pass, CLAIM-9B2-3).
+  `retired` (rigor pass, CLAIM-9B2-3). With the files committed, Wave 4b also replaces the absence test with a
+  load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
+  exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker

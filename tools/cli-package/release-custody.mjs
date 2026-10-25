@@ -29,6 +29,7 @@ import { readOrdinaryFile, sha256 } from './files.mjs';
 import {
   RELEASE_BINDING_FILE,
   RELEASE_BINDING_KIND,
+  ciphertextFileName,
   serializeReleaseBinding,
   tarballName,
   validateReleaseBinding,
@@ -64,24 +65,21 @@ function present(path) {
 
 /**
  * Encrypt a candidate's container once for its scope. Every refusal here comes before any GnuPG call;
- * `encryptOnce`'s own refusals follow unchanged.
+ * `encryptOnce` then runs on the caller's destination, so its own refusals follow unchanged.
  * @param {{scope: Scope, container: Buffer, destination: string, privateRoot: string, now?: number,
  *   run?: typeof import('./process.mjs').runCommand, gpg?: import('./gnupg.mjs').GnupgInstallation}}
  *   options
  * @returns {Promise<CustodyRecord>}
  */
-export async function encryptCandidate({
-  scope,
-  container,
-  destination,
-  privateRoot,
-  now,
-  run,
-  gpg,
-}) {
+export async function encryptCandidate(options) {
   let admitted;
+  let ports;
   try {
+    const { scope, container, destination, privateRoot, now, run, gpg } = isRecord(options)
+      ? options
+      : {};
     admitted = admit(scope, container, destination);
+    ports = { destination, privateRoot, now, run, gpg };
   } catch (error) {
     // A host error's message names a path: only fixed custody codes leave.
     if (error instanceof CustodyError) throw error;
@@ -89,13 +87,9 @@ export async function encryptCandidate({
   }
   // The admitted copy is the one encrypted: the caller's buffer may change, it may not.
   const record = await encryptOnce({
+    ...ports,
     container: admitted.container,
     recipient: admitted.recipient,
-    destination: admitted.destination,
-    privateRoot,
-    now,
-    run,
-    gpg,
   });
   records.set(record, {
     kind: admitted.kind,
@@ -107,8 +101,8 @@ export async function encryptCandidate({
 }
 
 /**
- * Admit one encryption, reading the caller's scope and container once: the scope's rules, an unsealed
- * destination and the candidate's tarball, all before any GnuPG call.
+ * Admit one encryption, reading the caller's scope and container once: the scope's rules, then a plain,
+ * unsealed destination that holds exactly the candidate's tarball, all before any GnuPG call.
  * @param {unknown} scope @param {unknown} container @param {string} destination
  */
 function admit(scope, container, destination) {
@@ -129,21 +123,27 @@ function admit(scope, container, destination) {
     recipient = { file: given.file, pins: given.pins };
   }
   if (present(join(destination, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
-  // Resolved now, so nothing after the ciphertext is published can fail on the destination.
+  // A plain directory, as encryptOnce requires, resolved now so that nothing after the ciphertext is
+  // published can fail on it.
   let resolved;
   try {
+    if (!lstatSync(destination).isDirectory()) refuseCustody('PLACEMENT');
     resolved = realpathSync(destination);
-  } catch {
+  } catch (error) {
+    if (error instanceof CustodyError) throw error;
     refuseCustody('PLACEMENT');
   }
-  // The receipt binds the tarball the manifest names; a missing or different one would leave an
-  // unsealable ciphertext, so it refuses first.
+  // The sealer admits exactly the tarball and the ciphertext: a destination holding anything else, or a
+  // missing or different tarball, would leave an unsealable ciphertext, so it refuses first.
+  const tarballFile = tarballName(manifest.packageVersion);
+  const entries = readdirSync(resolved);
+  if (entries.includes(ciphertextFileName(manifest.packageVersion))) {
+    refuseCustody('ALREADY_ENCRYPTED');
+  }
+  if (!isDeepStrictEqual(entries, [tarballFile])) refuseCustody('CANDIDATE_ENTRIES');
   let tarball;
   try {
-    tarball = readOrdinaryFile(
-      join(resolved, tarballName(manifest.packageVersion)),
-      ARCHIVE_LIMITS.compressedBytes,
-    );
+    tarball = readOrdinaryFile(join(resolved, tarballFile), ARCHIVE_LIMITS.compressedBytes);
   } catch {
     refuseCustody('TARBALL_DRIFT');
   }

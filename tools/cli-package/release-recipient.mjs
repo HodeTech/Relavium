@@ -7,6 +7,7 @@
  * exist, so every production use refuses; Wave 4b commits the files. A loaded recipient is branded: only the
  * value this module returned counts as a production recipient, never a copy of it.
  */
+import { Buffer } from 'node:buffer';
 import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,27 +59,20 @@ function parseHistory(bytes) {
   } catch {
     return refuseCustody('PRODUCTION_RECIPIENT_INVALID');
   }
-  if (
-    !isRecord(value) ||
-    !isDeepStrictEqual(Object.keys(value).sort(), ['recipients', 'version']) ||
-    value.version !== 1 ||
-    !Array.isArray(value.recipients) ||
-    value.recipients.length < 1 ||
-    value.recipients.length > MAX_RECIPIENTS
-  ) {
-    refuseCustody('PRODUCTION_RECIPIENT_INVALID');
-  }
-  const history = value.recipients.map((entry) => {
+  // The canonical comparison below fixes the version and every key set; these checks make the history
+  // safe to build and state its rules.
+  const recipients = isRecord(value) && Array.isArray(value.recipients) ? value.recipients : [];
+  if (recipients.length > MAX_RECIPIENTS) refuseCustody('PRODUCTION_RECIPIENT_INVALID');
+  const history = recipients.map((entry) => {
+    const { primary, subkey, status } = isRecord(entry) ? entry : {};
     if (
-      !isRecord(entry) ||
-      !isDeepStrictEqual(Object.keys(entry).sort(), ['primary', 'status', 'subkey']) ||
-      !isFingerprint(entry.primary) ||
-      !isFingerprint(entry.subkey) ||
-      (entry.status !== 'current' && entry.status !== 'retired')
+      !isFingerprint(primary) ||
+      !isFingerprint(subkey) ||
+      (status !== 'current' && status !== 'retired')
     ) {
       refuseCustody('PRODUCTION_RECIPIENT_INVALID');
     }
-    return Object.freeze({ primary: entry.primary, subkey: entry.subkey, status: entry.status });
+    return Object.freeze({ primary, subkey, status });
   });
   if (
     history.filter((entry) => entry.status === 'current').length !== 1 ||
@@ -86,6 +80,13 @@ function parseHistory(bytes) {
   ) {
     refuseCustody('PRODUCTION_RECIPIENT_INVALID');
   }
+  // Exactly its canonical serialization, so the file a reviewer reads is the history loaded: a
+  // duplicated key, which JSON.parse would resolve silently to its last value, or another order or
+  // layout refuses.
+  const canonical = Buffer.from(
+    `${JSON.stringify({ version: 1, recipients: history }, null, 2)}\n`,
+  );
+  if (!canonical.equals(bytes)) refuseCustody('PRODUCTION_RECIPIENT_INVALID');
   return Object.freeze(history);
 }
 

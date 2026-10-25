@@ -10399,11 +10399,14 @@ Step 9b.2 is implemented on `development` in the commits from `84b8e455` through
   `release-custody` and `release-scope`. They include a production round trip, in which an ephemeral key under a
   rotated history decrypts to the container whose manifest the receipt binds, and fault injection after the link and
   after encryption.
-- **Docs.** packaging.md's Step 9b.2 boundary is the schema's canonical home. deferred-tasks.md records three named
-  limits (an orphaned ciphertext, no recipient re-check on reuse, Windows not exercised), the Step 9d handoffs and a
-  Wave 4b clause on the recipient's committed form.
+- **Docs.** packaging.md's Step 9b.2 boundary is the schema's canonical home. deferred-tasks.md records the named
+  limits (as of round 1: an orphaned ciphertext, no recipient re-check on reuse, a sibling left after the link, the
+  fixture denylist's coverage, the test ports and Windows not exercised), the Step 9d handoffs and a Wave 4b clause on
+  the recipient's committed form.
 
-**Sweeps before the rigor pass.** A generated sweep mutated every one-line refusal, condition clause and comparison of the three modules:
+**Sweeps before the rigor pass.** A generated sweep mutated every refusal statement, every guarded one-line refusal,
+every clause of a multi-line condition and every comparison of the three modules; an inner clause of a one-line
+compound condition is not mutated on its own:
 131 mutants, 119 killed at first. Five survivors were real gaps and gained cases:
 - a `pending` status beside the current one;
 - a one-entry inputs map;
@@ -10460,4 +10463,49 @@ removal the loader's wrapper maps to the same code, the inputs comparator, and t
 named mutants, 28 are killed. The survivor, the synthetic recipient's snapshot, is equivalent: synthetic scope admits
 any recipient, and `encryptOnce` checks the file it reads against the pins it parsed.
 
-The full CI and the Ubuntu 2.4.4 evidence follow before the first round.
+**Author evidence at `91d08a65`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,019 of 1,019, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in
+Docker, a fresh clone, a non-root user), the 85 tests of the 9b.1 custody files and the four release files ran: 84
+passed and the case-insensitive-volume case skipped.
+
+**Round 1 at `91d08a65` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. Three
+mediums, corrected:
+- **The rigor pass's destination fix dropped a 9b.1 refusal.** Resolving the destination in the gate and handing
+  `encryptOnce` the resolved path let a linked destination through, which `encryptOnce` alone refuses. The gate now
+  refuses a link itself (`PLACEMENT`, before anything is read through it) and passes `encryptOnce` the caller's
+  destination, so its refusals apply unchanged (PLAN-9B2-R1-1, COR-9B2-R1-1, SIT-R1-1).
+- **A stray entry led to an unsealable ciphertext.** The gate checked the tarball but not the destination's other
+  entries, which the sealer refuses. It now requires exactly the tarball: an existing ciphertext refuses
+  `ALREADY_ENCRYPTED`, and anything else, including a tarball name in another case, refuses `CANDIDATE_ENTRIES`, all
+  before any GnuPG call (SIT-R1-2, PLAN-9B2-R1-2, COR-9B2-R1-2).
+- **A bare `custody.mjs` specifier escaped the import control.** The control now reads every quoted literal, nested
+  ones included, decodes percent-escapes, ignores a query or fragment, and resolves a bare name as Node resolves
+  `new URL(…, import.meta.url)`; package scripts join its scan (INT-9B2-R1-A, TEST-9B2-R1-7, COR-9B2-R1-4,
+  PLAN-9B2-R1-3).
+
+Lows corrected:
+- the validator reads each field once, and the public validator, parser and reuse refuse a malformed call or a
+  throwing accessor with a fixed code (SIT-R1-6, COR-9B2-R1-3); a vanished asset refuses `CANDIDATE_ASSET`
+  (COR-9B2-R1-5);
+- `pins.json` must be its canonical serialization, so a duplicated key refuses, and the checks that this subsumes are
+  removed (CRIT-9B2-R1-2);
+- the closure control is an allowlist of its own files and listed builtins, and refuses a non-literal dynamic import
+  and `process.execve` (SIT-R1-3, INT-9B2-R1-B);
+- the fixture control covers every `*-fixture.mjs` name (SIT-R1-4);
+- the overhead constant's parity reads custody.mjs's own declaration (TEST-9B2-R1-6);
+- new tests cover anchored patterns, a non-string whose string form matches, the forwarding of the clock and the
+  GnuPG installation, the reuse snapshot and a directory under the tarball's name (TEST-9B2-R1-2, TEST-9B2-R1-3,
+  TEST-9B2-R1-5, CRIT-9B2-R1-1);
+- wording: this checkpoint's named-limit list and its sweep description (INT-9B2-R1-C, CRIT-9B2-R1-1).
+
+Recorded in deferred-tasks.md: the release entry points accept the test ports (SIT-R1-5), and the production loader's
+own denylist wiring is exercised only once Wave 4b commits the files (TEST-9B2-R1-4). The oversized-receipt case of
+TEST-9B2-R1-1 stays as it is: no canonical receipt reaches the 64 KiB bound, which only spares the parser an
+oversized input.
+
+**Sweeps at the round 1 corrections.** The generated sweep ran 131 mutants and killed 127. The four survivors are
+equivalent: the fixture entry's record check and the recipient files' read refusal, whose removal leads to a host error
+that the loader's wrapper maps to the same code, the inputs comparator, and the receipt bound's `>=` flip. Of 38 named
+mutants, 36 are killed. The two survivors are equivalent: passing `encryptOnce` the resolved destination, because the
+gate's own `lstat` refuses every link first and `encryptOnce` resolves the path itself, and the synthetic recipient's
+snapshot, as above.

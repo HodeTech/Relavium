@@ -40,7 +40,10 @@ function root({
   const path = fresh('root');
   mkdirSync(path);
   writeFileSync(join(path, 'recipient.asc'), key);
-  writeFileSync(join(path, 'pins.json'), typeof pins === 'string' ? pins : JSON.stringify(pins));
+  writeFileSync(
+    join(path, 'pins.json'),
+    typeof pins === 'string' ? pins : `${JSON.stringify(pins, null, 2)}\n`,
+  );
   return path;
 }
 const history = (...recipients) => ({ version: 1, recipients });
@@ -174,6 +177,17 @@ test('the pins history is exactly one current recipient among at most 32 distinc
     history({ primary: 'a'.repeat(40), subkey: A.subkey, status: 'current' }),
     history({ primary: [A.primary], subkey: A.subkey, status: 'current' }),
     history({ primary: A.primary, subkey: `${A.subkey}!`, status: 'current' }),
+    history({ primary: `X${A.primary}`, subkey: A.subkey, status: 'current' }),
+    // Only the canonical serialization: a compact layout, a missing final newline, another key order or a
+    // duplicated key, which JSON.parse would resolve silently to its last value.
+    JSON.stringify(history({ ...A, status: 'current' })),
+    JSON.stringify(history({ ...A, status: 'current' }), null, 2),
+    `${JSON.stringify({ recipients: [{ ...A, status: 'current' }], version: 1 }, null, 2)}\n`,
+    `${JSON.stringify(history({ status: 'current', ...A }), null, 2)}\n`,
+    `${JSON.stringify(history({ ...A, status: 'retired' }), null, 2)}\n`.replace(
+      '"status": "retired"',
+      '"status": "retired",\n      "status": "current"',
+    ),
     history(
       current,
       ...Array.from({ length: 32 }, (_, index) => ({

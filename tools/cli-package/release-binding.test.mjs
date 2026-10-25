@@ -60,7 +60,10 @@ function production(...recipients) {
   const root = fresh('recipient');
   mkdirSync(root);
   writeFileSync(join(root, 'recipient.asc'), 'key');
-  writeFileSync(join(root, 'pins.json'), JSON.stringify({ version: 1, recipients }));
+  writeFileSync(
+    join(root, 'pins.json'),
+    `${JSON.stringify({ version: 1, recipients }, null, 2)}\n`,
+  );
   return loadRecipientForTests({ root });
 }
 const ROTATED = production({ ...A, status: 'retired' }, { ...B, status: 'current' });
@@ -261,6 +264,23 @@ test('every value has its exact format', () => {
     (copy) => (copy.origin.runAttempt = '01'),
     (copy) => (copy.origin.runAttempt = '1234567'),
     (copy) => (copy.origin.repository = `${'a'.repeat(100)}/${'b'.repeat(100)}`),
+    // Every pattern is anchored at both ends: a prefix before a valid value refuses.
+    (copy) => (copy.source.commit = `x${copy.source.commit}`),
+    (copy) => (copy.source.tree = `x${copy.source.tree}`),
+    (copy) => (copy.tarball.sha256 = `x${copy.tarball.sha256}`),
+    (copy) => (copy.recipient.primary = `X${copy.recipient.primary}`),
+    (copy) => (copy.toolchain.node = `x${copy.toolchain.node}`),
+    (copy) => (copy.toolchain.typescript = `x${copy.toolchain.typescript}`),
+    (copy) => (copy.toolchain.gnupg = `x${copy.toolchain.gnupg}`),
+    (copy) => (copy.target = `x${copy.target}`),
+    (copy) => (copy.origin.repository = ` ${copy.origin.repository}`),
+    (copy) => (copy.origin.workflow = `\u0007${copy.origin.workflow}`),
+    (copy) => (copy.origin.runId = `x${copy.origin.runId}`),
+    (copy) => (copy.origin.runAttempt = `x${copy.origin.runAttempt}`),
+    (copy) => (copy.inputs = { 'package.json': `x${'a'.repeat(64)}` }),
+    // A value whose string form matches is still not a string.
+    (copy) => (copy.toolchain.node = [copy.toolchain.node]),
+    (copy) => (copy.source.commit = [copy.source.commit]),
     (copy) => (copy.origin.workflow = 'w'.repeat(201)),
     (copy) => (copy.origin.runId = '1'.repeat(21)),
     // Integer-like names would sort ahead of every path in the canonical bytes.
@@ -445,6 +465,8 @@ test('only the exact canonical bytes parse', () => {
       })(),
     ],
     ['not JSON', Buffer.from('receipt')],
+    // Also refused as non-canonical: no canonical receipt reaches the 64 KiB bound, which only spares the
+    // parser an oversized input.
     ['too large', Buffer.concat([bytes, Buffer.alloc(64 * 1024 + 1 - bytes.length, 0x20)])],
     [
       'unsorted inputs',
@@ -747,6 +769,92 @@ test(
     assert.equal(swapped, true);
   },
 );
+
+test('each receipt field is read once, and a throwing accessor refuses with a fixed code', () => {
+  // A name checked on its first read is the name returned, never a later value.
+  let reads = 0;
+  const value = receipt();
+  Object.defineProperty(value.tarball, 'name', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return reads === 1 ? tarballName(VERSION) : '/private/host/path';
+    },
+  });
+  assert.equal(validateReleaseBinding(value, synthetic).tarball.name, tarballName(VERSION));
+  assert.equal(reads, 1);
+  // A clean source checked once stays clean in the receipt returned.
+  let dirtyReads = 0;
+  const clean = productionReceipt();
+  Object.defineProperty(clean.source, 'dirty', {
+    enumerable: true,
+    get() {
+      dirtyReads += 1;
+      return dirtyReads !== 1;
+    },
+  });
+  assert.equal(validateReleaseBinding(clean, productionExpected()).source.dirty, false);
+  assert.equal(dirtyReads, 1);
+  const throwing = receipt();
+  Object.defineProperty(throwing, 'target', {
+    enumerable: true,
+    get() {
+      throw new Error(`at ${scratch}`);
+    },
+  });
+  assert.throws(() => validateReleaseBinding(throwing, synthetic), refuses('UNEXPECTED'));
+  const expectation = {
+    ...synthetic,
+    get pins() {
+      throw new Error(`at ${scratch}`);
+    },
+  };
+  assert.throws(
+    () =>
+      parseReleaseBinding(
+        serializeReleaseBinding(validateReleaseBinding(receipt(), synthetic)),
+        expectation,
+      ),
+    refuses('UNEXPECTED'),
+  );
+});
+
+test('reuse reads its expectation once, and a vanished asset refuses as that asset', () => {
+  const directory = candidate();
+  let reads = 0;
+  const flipping = {
+    scope: 'synthetic',
+    pins: PINS,
+    get packageVersion() {
+      reads += 1;
+      return reads === 1 ? VERSION : '0.1.2';
+    },
+  };
+  verifyRetainedCandidate({ directory, expected: flipping });
+  assert.equal(reads, 1);
+  // An asset that disappears after the listing refuses as that asset, never a host error.
+  const fs = createRequire(import.meta.url)('node:fs');
+  const lstat = fs.lstatSync;
+  const path = join(directory, tarballName(VERSION));
+  fs.lstatSync = (target, ...rest) => {
+    if (target === path) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+    return lstat(target, ...rest);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => verifyRetainedCandidate({ directory, expected: synthetic }),
+      refuses('CANDIDATE_ASSET'),
+    );
+  } finally {
+    fs.lstatSync = lstat;
+    syncBuiltinESMExports();
+  }
+  // A malformed call refuses with a fixed code.
+  for (const options of [undefined, null, 'options']) {
+    assert.throws(() => verifyRetainedCandidate(options), refuses('BINDING_SCOPE'));
+  }
+});
 
 test('reuse needs a valid expectation, and a host failure refuses with a fixed code and no path', () => {
   const directory = candidate();
