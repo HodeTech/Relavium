@@ -1435,7 +1435,7 @@ mutations.push({
   ],
 });
 
-// NI: every file and directory identity compares exact bigints. Each removal returns one site's whole
+// NI: the product's file and directory identities compare exact bigints. Each removal returns one site's whole
 // comparison to Number and must break a real replacement whose substituted identities (2^60 + k)
 // differ only beyond a Number's precision, as a 64-bit Windows file ID can.
 const nativeIdentityCli = 'apps/cli/src/engine/tool-host/native-identity.test.ts';

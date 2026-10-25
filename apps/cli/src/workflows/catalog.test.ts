@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { MAX_SOURCE_CHARS } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -193,6 +194,24 @@ describe('discoverCatalog', () => {
     const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
     expect(entries.map((e) => e.slug)).toEqual(['review']);
     expect(entries[0]?.valid).toBe(false);
+  });
+
+  it('refuses an oversized file from its admitting stat before reading a byte', () => {
+    write('workflows', 'big.yaml', 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1));
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    expect(entries.map((entry) => ({ valid: entry.valid, error: entry.error }))).toEqual([
+      { valid: false, error: 'exceeds the size limit' },
+    ]);
+    expect(vi.mocked(readSync)).not.toHaveBeenCalled();
+  });
+
+  it('admits a dense multibyte file over the character cap in bytes but within it in characters', () => {
+    // Three bytes per character: half the cap in characters is one and a half times it in bytes.
+    write('workflows', 'dense.yaml', `# ${'€'.repeat(MAX_SOURCE_CHARS / 2)}\n${VALID_WORKFLOW}`);
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    expect(entries.map((entry) => ({ slug: entry.slug, valid: entry.valid }))).toEqual([
+      { slug: 'hello', valid: true },
+    ]);
   });
 
   it('flags a symlinked .yaml that resolves to a non-regular file (no readFileSync hang)', () => {

@@ -554,10 +554,12 @@ The 2026-10-13 correction made the persisted claim token exact but left every li
 on numbers: the root pin, file snapshots and the owned-file check that guards deletion, the
 read's descriptor stats, the publish handle, and the sweep's claim-directory, child, marker
 and moved-blob checks; `nativeFile` read a bigint but compared it through `Number()`. Each now
-compares exact bigint device and inode from a single stat projected once, while `nlink`, `size`
-and `mtimeMs` keep their number values (`mtimeMs` by Node's own formula). Node fills bigint
-stats from a signed array, so a 64-bit file ID with its top bit set read negative and its claim
-token refused it, retaining such a temporary forever. The token now encodes the unsigned value;
+compares exact bigint device and inode, each read from a single stat; the file and directory
+checks share one projection, in which `nlink`, `size` and `mtimeMs` keep their number values
+(`mtimeMs` by Node's own formula). Node fills bigint stats from a signed array, so a 64-bit file
+ID with its top bit set read negative: `nativeFile`'s Number cross-check refused it, and the
+claim token would have too, retaining such a temporary forever. The token now encodes the
+unsigned value;
 every other value keeps a byte-identical token, so persisted claims stay compatible. The
 [physical storage contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
 owns the rules. Permanent causal controls and the

@@ -200,9 +200,10 @@ comparison to `Number`. Its complete witness file (four CLI cases or seven media
 cases) substitutes every identity the code reads with 2^60 + k, which stays distinct as a
 bigint but collapses to one Number, so a real replacement must refuse with the named
 assertion. The declaration is now 115 controls /345 phases. Its round-robin shards hold
-58 and 57 controls, projecting 174 and 171 phase manifests (about 34 MiB at roughly
-205 KB each) and 1,051 and 1,033 retained files under the unchanged ceilings; this is
-capacity arithmetic until an export measures it.
+58 and 57 controls, projecting 174 and 171 phase manifests and 1,051 and 1,033 retained
+files under the unchanged ceilings. One new control's export at `209e7193` measured a phase
+manifest of 203,728 bytes, so the larger shard's manifests come to 35,448,672 bytes (52.8 %
+of the bound); that is one local measurement, not a CI capture.
 
 The declaration is not acceptance evidence by itself. The complete matrix
 still requires a stable committed head, all fixed/removal/restored phases,

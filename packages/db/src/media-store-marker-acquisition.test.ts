@@ -104,7 +104,9 @@ function claim(): string {
   const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
   utimesSync(blob, old, old);
   const info = statSync(blob, { bigint: true });
-  const name = `media-claim-v2.${absentPid}.${randomUUID()}.${info.dev.toString(36)}.${info.ino.toString(36)}.${absentPid}.${randomUUID()}`;
+  // Production's token: Node reports a top-bit file ID as a negative bigint, encoded unsigned.
+  const token = (value: bigint): string => BigInt.asUintN(64, value).toString(36);
+  const name = `media-claim-v2.${absentPid}.${randomUUID()}.${token(info.dev)}.${token(info.ino)}.${absentPid}.${randomUUID()}`;
   const directory = join(root, name);
   renameSync(staging, directory);
   return directory;

@@ -421,6 +421,7 @@ it.each([
 describe('exact private host scratch descriptors (no production allocator)', () => {
   it.each(['tmp', 'artifacts'])(
     'permits only the issued %s tree through both jailed factory tiers',
+    REPLACEMENT_REPEATS,
     async (kind) => {
       const home = join(base, 'home');
       const scratch = join(home, '.relavium', kind, 'parent');

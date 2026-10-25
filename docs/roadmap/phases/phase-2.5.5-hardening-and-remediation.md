@@ -3701,7 +3701,7 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. *Split on 2026-10-24 (maintainer-approved; ID coverage #46/ADR-0111 unchanged) into 9a.2a and 9a.2b below, which replace it as increments ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)).* |
 | 9a.2a | **Recorded split, 2026-10-24 (maintainer-approved) — decoder, private manifest and symbolication:** an in-house strict source-map decoder; strict mapping and range validation of upstream and final maps in the finalizer; the private map manifest (`staging/manifest.json`, keyed by `dist/<chunk>.js`, with a per-source digest inventory and the commit's tree), sealed after the archive inspection; real packed CLI and `@relavium/core` frame capture through a tooling-only preload during an offline `relavium import`, run on the finalized `dist` that the inspection proves byte-equal to the tarball; symbolication of those frames against the matching source revision (clean: the checkout's Git objects; dirty, local only: the candidate copy), wired into the seal before the receipt is written. The receipt stays `compiled_package_test`. Security sitting. *Independently accepted on `development` at `a92a7602` on 2026-10-24 ([checkpoint](#wave-3-step-9a2a-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)).* |
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
-| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. |
+| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); implemented on `development` and under review ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25)).* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
@@ -9932,7 +9932,7 @@ Engineering defaults recorded with the rulings:
 
 **Scope and source.** The native-identity increment (register row NI; ADR-0105, ADR-0106) is implemented on
 `development` after the 9a.2b acceptance and the [NI preflight decisions](#wave-3-ni-preflight-decisions--2026-10-25)
-(`451223f7`), in six ordered commits and this record:
+(`451223f7`), in five ordered commits and this record:
 
 1. **CLI fix.** The filesystem policy's canonical and lexical root pins and the workflow catalog's open check read
    with `{ bigint: true }` into bigint fields. A witness file has four injected-identity real-replacement cases, and
@@ -9942,9 +9942,9 @@ Engineering defaults recorded with the rulings:
    replacement tests repeat twenty times.
 3. **Media-store fix.** One internal `ExactStats` projection holds bigint `dev` and `ino` and number `nlink`, `size`
    and `mtimeMs`; the last comes from `mtimeNs` by Node's own formula and was bit-identical on 307 checked files,
-   including fractional and negative times. It serves the root pin, file snapshots, the owned-file check, the
-   read's descriptor stats, the publish handle and the temporary sweep's claim directory, children, marker and
-   moved blob. `nativeFile` loses its `Number()`, and the claim token encodes the unsigned value
+   including fractional and negative times. It serves file snapshots, the owned-file check, the read's
+   descriptor stats, the publish handle and the temporary sweep's claim directory, children, marker and moved
+   blob; the root pin keeps its own bigint stats. `nativeFile` loses its `Number()`, and the claim token encodes the unsigned value
    (`BigInt.asUintN(64, …)`). A witness file has seven cases, and the exact-claim vectors gain two negative
    identities. `CAS_COOPERATIVE_READ`'s anchor follows the new parameter type.
 4. **Tooling fix.** The overflow capture's destination check, the budget-replay evidence retention's directory
@@ -9980,3 +9980,31 @@ the causal-control source graph's hard-link check, which can only refuse falsely
 
 **Windows evidence.** The advisory Windows job runs the probe and the repeated replacement tests after the push. The
 Windows clause closes after three consecutive green advisory runs on pushed heads, with the logged counts recorded.
+
+**Author evidence at `209e7193`.** The full `pnpm run ci` passed (exit 0), including all 115 filesystem causal
+controls with the five new ones, the product map controls and both changed smokes.
+
+**Internal rigor pass, 2026-10-25.** Under the rigor-before-review rule, an internal pass at `209e7193` ran claims,
+platform, security, tests and integration lenses with a completeness critic, and every finding was adversarially
+verified; the detailed record is local. It confirmed one medium finding: nothing pinned that a negative identity's
+claim token is the unsigned value. Two encodings that alias a negative identity onto another value's token
+(`asUintN(63, …)` and an absolute value) therefore passed the whole suite on the deletion-authority path. Corrected:
+the exact-claim vectors now assert each claim name's token against a literal, and both mutants fail on
+`MEDIA_TEMP_NATIVE_IDENTITY_TOKEN`.
+
+Low findings corrected:
+- The recovery-marker fixture builds claim names with production's unsigned token.
+- The scratch descriptor's real replacement test repeats like the others.
+- The catalog's byte precheck gets two tests, each failing its own mutant: one refuses an oversized file before
+  any read, the other admits a dense multibyte file within the character cap.
+- The claim-directory guard gets a test that retains a regular file under a claim name as an unsafe entry.
+- The ADR-0106 note now names `nativeFile`'s Number cross-check, not the token, as what refused a top-bit identity
+  before NI (the message of commit `ed690d04` still says the token).
+- The scoped limit now says FAT and exFAT can fail open, since their file IDs derive from directory-entry positions.
+- The status lines and the controls' comment now say every *product* identity check, since one tooling check
+  remains by decision.
+- Also corrected: the row's status, current.md's freshness line, the budget-replay README's replacement-control
+  count, and this checkpoint's commit count and root-pin wording.
+
+The pass measured the export capacity: one new control's phase manifest is 203,728 bytes, so a 58-control shard's
+174 manifests come to 35,448,672 bytes, 52.8 % of the 64-MiB bound.

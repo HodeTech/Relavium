@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   linkSync,
@@ -182,6 +182,24 @@ it('owns put bytes before awaiting and preserves concurrent atomic/idempotent pu
   expect(handles).toEqual([handle, handle]);
   expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
   expect((await store.listHandles()).map((entry) => entry.handle)).toEqual([handle]);
+});
+
+it('retains a regular file under a claim name as an unsafe entry', async () => {
+  const name = `media-claim-v2.2147483647.${randomUUID()}.1.2.2147483647.${randomUUID()}`;
+  writeFileSync(join(root, name), 'not a claim directory');
+  vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('fixture absent owner'), { code: 'ESRCH' });
+  });
+  try {
+    expect(await new FilesystemMediaStore(root).sweepTemporaries()).toEqual({
+      removed: 0,
+      retained: 1,
+      reasons: { unsafe_entry: 1 },
+    });
+  } finally {
+    vi.restoreAllMocks();
+  }
+  expect(readFileSync(join(root, name), 'utf8')).toBe('not a claim directory');
 });
 
 it('preserves never-created read/GC semantics without provisioning a root', async () => {

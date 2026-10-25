@@ -144,11 +144,13 @@ they never modify the extracted predecessor, whose archived files can be read-on
 ten concurrent completions, future timestamps, active/interrupted/foreign/redirected records,
 current-owner refusal and direct-child ownership. Seven additional finalization cases, grouped into
 three results, preserve Error/primitive primary failures and a failed diagnostic sink while surfacing
-finalization-only failures. Fourteen additional production-caller controls cover six stage write
+finalization-only failures. Fifteen additional production-caller controls cover six stage write
 faults, ten genuinely failed retention children, a native failed spawn, three real closed-stderr
-pipes retaining `Error`/`undefined`/`null`, and three post-scan owner/physical replacement claims.
+pipes retaining `Error`/`undefined`/`null`, and four post-scan owner/physical replacement claims.
 The completed replacement deliberately reuses the same owner/completion bytes and proves that
-directory identity is required. These controls execute the actual helpers/callers; they do not
+directory identity is required. Its collision variant (NI) substitutes every lstat identity with
+2^60 + k, distinct as a bigint but one Number, so only an exact bigint directory identity refuses
+the lookalike. These controls execute the actual helpers/callers; they do not
 mirror their implementations. The ESM control uses the actual production loader
 with an inert, pinned TypeScript stand-in; it loads no TS source and is separate from the
 real predecessor/source/dependency acceptance workers.

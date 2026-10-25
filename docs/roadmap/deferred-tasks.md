@@ -801,15 +801,17 @@ item stays open until NI's acceptance and the Windows clause below close it.
 
 Scoped limits recorded with NI (2026-10-25):
 
-- [ ] **ReFS and Dev Drive file IDs are 128-bit; the 64-bit index Node reads is not guaranteed unique there.**
-  *Low; Windows ReFS/Dev Drive.* Microsoft documents that the 64-bit identifier "is not guaranteed to be unique on
-  ReFS". NI makes every comparison exact, so the claim is exact identity on filesystems whose 64-bit file IDs are
-  unique, such as NTFS, ext4 and APFS; on ReFS two files could still share an index. Minimal example: a workspace
-  on a Dev Drive whose replaced subdirectory receives a colliding 64-bit index. FAT is out of scope too: its file
-  IDs can change on rename, which only makes a check refuse (fail closed). **Re-check:** if ReFS or Dev Drive
-  workspaces become a supported target, read the 128-bit `FILE_ID_INFO` identity, which needs native code or a
-  dependency and therefore an ADR. *(low · `apps/cli/src/engine/tool-host/fs-policy.ts`,
-  `packages/db/src/media-store-paths.ts`)*
+- [ ] **ReFS, Dev Drive, FAT and exFAT do not give unique, stable 64-bit file IDs.** *Low; Windows ReFS/Dev
+  Drive and FAT/exFAT volumes.* Microsoft documents that the 64-bit identifier "is not guaranteed to be unique on
+  ReFS", and that a FAT file ID is derived from the position of the file's directory entry, which renaming a file
+  to a longer name moves. NI makes every comparison exact, so the claim is exact identity on filesystems whose
+  64-bit file IDs are unique, such as NTFS, ext4 and APFS. On ReFS two files could share an index; on FAT or exFAT
+  a replacement created in a freed directory entry could inherit the pinned ID, so a check would admit it (fail
+  open), whatever the comparison's precision. Minimal example: a pinned directory `selected` on a FAT volume is
+  renamed to `selected-old` and a new `selected` is created in the freed entry. **Re-check:** if ReFS, Dev Drive,
+  FAT or exFAT workspaces become a supported target, read the 128-bit `FILE_ID_INFO` identity, pair the identity
+  with a second discriminator such as creation time, or refuse such volumes; native code or a dependency needs an
+  ADR. *(low · `apps/cli/src/engine/tool-host/fs-policy.ts`, `packages/db/src/media-store-paths.ts`)*
 - [ ] **The causal-control source graph's hard-link check still compares `ino` as a number.** *Low; tooling,
   fail-closed.* `tools/usage-coverage-controls/source-graph.mjs` asserts that each copied source file's `ino`
   differs from its original's, so a collision can only refuse a copy falsely; four causal families share the

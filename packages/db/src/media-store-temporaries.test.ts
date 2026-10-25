@@ -232,18 +232,22 @@ async function exactIdentityClaims(): Promise<void> {
       result: { removed: 0, retained: 1, reasons: { identity_changed: 1 } },
       exists: true,
     });
-    for (const [index, value] of [
-      BigInt(Number.MAX_SAFE_INTEGER),
-      first,
-      first + 1n,
-      11193352636847878000n,
-      (1n << 64n) - 1n,
-      // Node's signed bigint stats: a 64-bit file ID with its top bit set reads negative (NI).
-      -1n,
-      -(1n << 63n),
-    ].entries()) {
+    // Literal tokens: an encoding that maps a negative identity onto another value's token fails here.
+    const exact: ReadonlyArray<readonly [bigint, string]> = [
+      [BigInt(Number.MAX_SAFE_INTEGER), '2gosa7pa2gv'],
+      [first, '2gosa7pa2gw'],
+      [first + 1n, '2gosa7pa2gx'],
+      [11193352636847878000n, '2d1i8ct3mhd9s'],
+      [(1n << 64n) - 1n, '3w5e11264sgsf'],
+      // Node's signed bigint stats: a 64-bit file ID with its top bit set reads negative, and its
+      // token is the unsigned value the filesystem reports (NI).
+      [-1n, '3w5e11264sgsf'],
+      [-(1n << 63n), '1y2p0ij32e8e8'],
+    ];
+    for (const [index, [value, token]] of exact.entries()) {
       const label = `exact-${index}`;
       const claim = await makeClaim(label, value);
+      expect(basename(claim.dir).split('.')[4], 'MEDIA_TEMP_NATIVE_IDENTITY_TOKEN').toBe(token);
       expect(
         await new FilesystemMediaStore(join(base, label)).sweepTemporaries(),
         'MEDIA_TEMP_NATIVE_IDENTITY_RECOVERY',
