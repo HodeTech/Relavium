@@ -10249,3 +10249,11 @@ Lows corrected, none deferred:
 A 30-mutant sweep over the corrected guards and the round's named mutants left no survivor. That includes the
 owner check's uid half, which no earlier test covered.
 
+**Author evidence at `ade62b7e`.** A first full run was started with `CI=true GITHUB_ACTIONS=true` set for the
+whole chain. `check:map-controls` refuses such a half-configured GitHub environment before it builds anything
+(`PACKED_CLI_MAP_CONTROL_ORIGIN`), as designed, so that run certified nothing. Rerun plain and alone, the full
+`pnpm run ci` passed (exit 0): `test:acceptance-tools` 979 of 979, all 25 product map controls, and every
+causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in Docker), the 45 USTAR, container, GnuPG and custody
+tests ran: 44 passed and the case-insensitive-volume case skipped. The commit recording this evidence also
+corrects one contract phrase and changes no code.
+

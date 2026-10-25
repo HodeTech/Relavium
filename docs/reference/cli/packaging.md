@@ -533,7 +533,7 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   128 MiB in total (the total refused before the archive is assembled). Each record must also
   be within the bound its own reader applies (`RECORD_BYTES`: `finalized.json` 1 MiB,
   `manifest.json` and `metafile-esm.json` 4 MiB), so the container never carries a record
-  recovery would refuse. Every map's digest must
+  its own reader would refuse. Every map's digest must
   be the manifest's, and the finalizer's record must name exactly the manifest's outputs and
   maps with each map's size. The manifest records no digest for the metafile, which must parse
   as a JSON object. The written container is read back before it is returned, so a path the
