@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { readUstar } from './ustar.mjs';
 
 // This inspects the pinned pnpm pack dialect, not arbitrary tar archives. There
 // is no extraction and no fallback to a more permissive platform tar executable.
@@ -23,9 +24,9 @@ export class PackageArchiveError extends Error {
   }
 }
 
-/** @param {string} code @returns {never} */
-function refuse(code) {
-  throw new PackageArchiveError(code);
+/** @param {string} code @param {unknown} [cause] @returns {never} */
+function refuse(code, cause) {
+  throw new PackageArchiveError(code, cause === undefined ? undefined : { cause });
 }
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -78,22 +79,6 @@ function unpack(bytes) {
   }
 }
 
-/** @param {Buffer} field */
-function octal(field) {
-  const text = field.toString('latin1');
-  if (!/^[0-7]+[ \0]*$/u.test(text)) refuse('TAR_NUMBER');
-  const value = Number.parseInt(text, 8);
-  if (!Number.isSafeInteger(value)) refuse('TAR_NUMBER');
-  return value;
-}
-
-/** @param {Buffer} field */
-function nameField(field) {
-  const end = field.indexOf(0);
-  if (end < 1 || field.subarray(end).some((byte) => byte !== 0)) refuse('TAR_NAME');
-  return utf8(field.subarray(0, end));
-}
-
 /** @param {string} path */
 export function assertPublicPackagePath(path) {
   if (
@@ -104,43 +89,6 @@ export function assertPublicPackagePath(path) {
     refuse('PUBLIC_PATH');
   }
   if (/\/(?:con|prn|aux|nul|com[1-9]|lpt[1-9])\.js$/iu.test(path)) refuse('PUBLIC_PATH');
-}
-
-/** @param {Buffer} header */
-function readHeader(header) {
-  const checksum = octal(header.subarray(148, 156));
-  let actual = 0;
-  for (let index = 0; index < 512; index += 1) {
-    actual += index >= 148 && index < 156 ? 32 : (header[index] ?? 0);
-  }
-  if (checksum !== actual) refuse('TAR_CHECKSUM');
-  if (!header.subarray(257, 265).equals(Buffer.from('ustar\0' + '00'))) refuse('TAR_FORMAT');
-  if (header[156] !== 48) refuse('TAR_TYPE');
-  // No linkname, owner strings, prefix, extension records or reserved bytes.
-  // A regular USTAR file is the only dialect produced by our current packer.
-  for (const [start, end] of [
-    [157, 257],
-    [265, 329],
-    [345, 512],
-  ]) {
-    if (header.subarray(start, end).some((byte) => byte !== 0)) refuse('TAR_METADATA');
-  }
-  for (const [start, end] of [
-    [108, 116],
-    [116, 124],
-    [329, 337],
-    [337, 345],
-  ]) {
-    if (octal(header.subarray(start, end)) !== 0) refuse('TAR_METADATA');
-  }
-  octal(header.subarray(136, 148)); // Validate mtime syntax without requiring a clock value.
-  const path = nameField(header.subarray(0, 100));
-  assertPublicPackagePath(path);
-  const mode = octal(header.subarray(100, 108));
-  if (mode !== (path === 'package/dist/index.js' ? 0o755 : 0o644)) refuse('TAR_MODE');
-  const size = octal(header.subarray(124, 136));
-  if (size > ARCHIVE_LIMITS.fileBytes) refuse('FILE_SIZE');
-  return { path, mode, size };
 }
 
 /** @param {Buffer} bytes @param {Record<string, unknown>} expected */
@@ -223,59 +171,45 @@ export function inspectPackageArchive(bytes, { expectedFiles, expectedPackage })
   if (bytes.byteLength > ARCHIVE_LIMITS.compressedBytes) refuse('GZIP_SIZE');
   const compressed = Buffer.from(bytes);
   const tar = unpack(compressed);
-  const seen = new Set();
-  const portableNames = new Set();
   const files = [];
-  let offset = 0;
-  let ended = false;
   /** @type {Record<string, unknown> | undefined} */
   let packageManifest;
-  while (offset < tar.length) {
-    if (tar.length - offset < 512) refuse('TAR_TRUNCATED');
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) {
-      if (tar.length - offset !== 1024 || tar.subarray(offset).some((byte) => byte !== 0)) {
-        refuse('TAR_END');
-      }
-      ended = true;
-      break;
-    }
-    if (files.length >= ARCHIVE_LIMITS.files) refuse('FILE_COUNT');
-    const { path, mode, size } = readHeader(header);
-    if (seen.has(path)) refuse('DUPLICATE_FILE');
-    seen.add(path);
-    if (portableNames.has(path.toLowerCase())) refuse('PATH_ALIAS');
-    portableNames.add(path.toLowerCase());
-    const expected = expectedFiles.get(path);
-    if (expected === undefined) refuse('EXTRA_FILE');
-    const start = offset + 512;
-    const end = start + size;
-    const next = start + Math.ceil(size / 512) * 512;
-    if (next > tar.length) refuse('TAR_TRUNCATED');
-    if (tar.subarray(end, next).some((byte) => byte !== 0)) refuse('TAR_PADDING');
-    const contents = tar.subarray(start, end);
-    if (path === 'package/package.json') packageManifest = manifest(contents, expectedPackage);
-    if (expected instanceof Uint8Array) {
-      if (path !== 'package/package.json' && !contents.equals(expected)) refuse('FILE_DRIFT');
-    } else if (contents.length !== expected.bytes || digest(contents) !== expected.sha256) {
-      refuse('FILE_DRIFT');
-    }
-    if (path.endsWith('.js')) {
-      const source = utf8(contents);
-      if (
-        path === 'package/dist/index.js'
-          ? !source.startsWith('#!/usr/bin/env node\n')
-          : source.startsWith('#!')
+  readUstar(tar, {
+    admitPath: assertPublicPackagePath,
+    modeFor: (path) => (path === 'package/dist/index.js' ? 0o755 : 0o644),
+    maxFiles: ARCHIVE_LIMITS.files,
+    maxFileBytes: ARCHIVE_LIMITS.fileBytes,
+    refuse,
+    admitEntry: (path) => {
+      if (!expectedFiles.has(path)) refuse('EXTRA_FILE');
+    },
+    onFile: ({ path, mode, size, contents }) => {
+      const expected = expectedFiles.get(path);
+      if (path === 'package/package.json') packageManifest = manifest(contents, expectedPackage);
+      if (expected instanceof Uint8Array) {
+        if (path !== 'package/package.json' && !contents.equals(expected)) refuse('FILE_DRIFT');
+      } else if (
+        expected === undefined ||
+        contents.length !== expected.bytes ||
+        digest(contents) !== expected.sha256
       ) {
-        refuse('HASHBANG');
+        refuse('FILE_DRIFT');
       }
-      if (/sourceMappingURL\s*=/u.test(source)) refuse('MAP_LINK');
-    }
-    files.push({ path, bytes: size, sha256: digest(contents), mode });
-    offset = next;
-  }
-  if (!ended) refuse('TAR_END');
-  if (seen.size !== expectedFiles.size || !packageManifest) refuse('MISSING_FILE');
+      if (path.endsWith('.js')) {
+        const source = utf8(contents);
+        if (
+          path === 'package/dist/index.js'
+            ? !source.startsWith('#!/usr/bin/env node\n')
+            : source.startsWith('#!')
+        ) {
+          refuse('HASHBANG');
+        }
+        if (/sourceMappingURL\s*=/u.test(source)) refuse('MAP_LINK');
+      }
+      files.push({ path, bytes: size, sha256: digest(contents), mode });
+    },
+  });
+  if (files.length !== expectedFiles.size || !packageManifest) refuse('MISSING_FILE');
   return {
     sha256: digest(compressed),
     bytes: compressed.length,
