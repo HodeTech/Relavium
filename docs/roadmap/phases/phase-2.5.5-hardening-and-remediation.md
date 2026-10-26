@@ -3704,7 +3704,7 @@ No credential values or request captures belong in tracked evidence.
 | NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
 | 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each map's digest checked against the private manifest and its size against the finalizer's record, which must name exactly the manifest's outputs and maps (the metafile must be a JSON object); an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Independently accepted on `development` at `147c2788` (2026-10-25) ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b1-acceptance--2026-10-25)).* |
-| 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. *Implemented on `development` and under review ([decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25)).* |
+| 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. *Independently accepted on `development` at `563402e6` (2026-10-26) ([decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b2-acceptance--2026-10-26)).* |
 | 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
 | 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
@@ -10580,3 +10580,38 @@ real gaps, the `typescript`, `tsup` and `esbuild` length bounds, and gained case
   observes.
 
 Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.
+
+### Wave 3 Step 9b.2 acceptance — 2026-10-26
+
+**Step 9b.2 is independently accepted on `development` at `563402e6` (2026-10-26)** under the Acceptance row as
+amended on 2026-10-23. An internal rigor pass and rounds 1–3 were not accepted, each with mediums corrected as the
+[checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25) records:
+- the rigor pass: the loader's exported seams could brand any key, the import control matched three spellings, and
+  half the recipient pair was untested;
+- round 1: the rigor fix's resolved destination dropped a 9b.1 refusal, stray destination entries led to an unsealable
+  ciphertext, and a bare specifier escaped the import control;
+- round 2: a nested package script escaped the import control, and a trailing separator bypassed the link refusal;
+- round 3: four untested paths or control gaps, in the link failure, a linked tarball, the trailing anchors and a
+  template literal.
+
+Round 4 was a NEW independent complete cumulative review of `819f8cbb..563402e6`, with every reviewer in its own
+worktree detached at that head. It reported no blocker, high or medium finding and no regression. Its separate
+crypto/custody security sitting, run at the same head as its own reviewer and report, found lows only. The
+integration lens and the critic were clean. The plan lens confirmed the inventory pin at every commit and that no 9b.1
+module, product path, receipt, guard or workflow changed.
+
+**Author evidence at `563402e6`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,024 of 1,024, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in
+Docker, a fresh clone, a non-root user), the 90 tests of the 9b.1 custody files and the four release files ran: 89
+passed and the case-insensitive-volume case skipped.
+
+The round's verified findings were twelve lows and one nit:
+- Two are corrected in the acceptance commit, which changes no code. The contract's diagnostics bullet no longer
+  says every host failure on the destination is `PLACEMENT`: a destination that cannot be listed refuses `UNEXPECTED`
+  (PLAN-9B2-R4-3, SIT9B2-R4-L2, COR-R4-1). The `custody.mjs` control's claim now names the escapes it decodes
+  (PLAN-9B2-R4-1, COR-R4-2).
+- The rest are recorded in
+  [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b2--recorded-low-findings-2026-10-26), each with its example
+  and re-check.
+
+Step 9c is next.

@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); Step 9b.2's ciphertext reuse, release binding receipt v1, absent production loader and scope separation are implemented on `development` and under review (synthetic recipients only); the remaining Step 9 custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); Step 9b.2's ciphertext reuse, release binding receipt v1, absent production loader and scope separation are independently accepted on `development` (2026-10-26; synthetic recipients only); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -713,18 +713,18 @@ refuses every artifact. Its review and acceptance are recorded in the
   renames and removes nothing. Its module imports nothing that can start a process, so reuse makes no
   GnuPG call, and it cannot re-check the ciphertext's recipients: a named limit.
 - **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`. A host failure is `UNEXPECTED`,
-  except on a named path, which carries that path's code: `PLACEMENT` for the destination,
-  `CANDIDATE_ASSET`, `CIPHERTEXT_DRIFT` and `TARBALL_DRIFT` for the files read, and
-  `PRODUCTION_RECIPIENT_INVALID` while loading the recipient; inside encryption, `encryptOnce`'s own
-  codes apply. No path, key or receipt content surfaces.
+  except on a named path, which carries that path's code: `PLACEMENT` when the destination cannot be
+  checked or resolved (one that resolves but cannot be listed is `UNEXPECTED`), `CANDIDATE_ASSET`,
+  `CIPHERTEXT_DRIFT` and `TARBALL_DRIFT` for the files read, and `PRODUCTION_RECIPIENT_INVALID` while
+  loading the recipient; inside encryption, `encryptOnce`'s own codes apply. No path, key or receipt content surfaces.
 - **Where it runs.** `release-recipient.test.mjs`, `release-binding.test.mjs`, `release-custody.test.mjs`
   and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
   needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
   - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
   - only the release gate mentions `custody.mjs`, the one tracked file of that name, anywhere in source,
-    workflow and package-script text, comments included, once JavaScript and percent escapes,
-    separators and case are normalized; a path built at run time from pieces is beyond any static
-    control;
+    workflow and package-script text, comments included, once `\x`, `\u`, `\u{…}` and percent escapes,
+    separators and case are normalized; a path built at run time from pieces, or spelled with another
+    escape, is beyond this control (a recorded limit);
   - the loader is never called with an argument, and its test seam appears in no product or tooling
     file (permanent controls);
   - the receipt module's import closure, read from every `from` or `import` specifier whatever the

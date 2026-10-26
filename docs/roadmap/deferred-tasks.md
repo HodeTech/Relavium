@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-25 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, Step 9b.2 implemented and under review with its named limits and handoffs below, and Steps 9c–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-10-26 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, Step 9b.2 independently accepted on `development` with its named limits, handoffs and recorded low findings below, and Steps 9c–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -926,6 +926,42 @@ The release modules are library code with synthetic controls only: nothing outsi
   that loads the production recipient, because the loader reads it as its denylist. The guard test's
   non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
   tools/cli-package/release-custody.mjs, tools/cli-package/release-guard-core.mjs)*
+
+## Wave 3 Step 9b.2 — recorded low findings (2026-10-26)
+
+Recorded with the Step 9b.2 acceptance after round 4
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-acceptance--2026-10-26)).
+**Trigger for every entry:** Step 9d's update of `release-scope.test.mjs` and the release modules, or the next change
+to the file it names.
+
+- [ ] **The `custody.mjs` control does not decode identity or legacy octal escapes.** *Low; round 4, PLAN-9B2-R4-1,
+  COR-R4-2.* `namesFile` decodes `\x`, `\u`, `\u{…}` and percent escapes, but a specifier such as
+  `'./custo\dy.mjs'` (an identity escape) or a sloppy-mode octal escape still loads `custody.mjs` unseen. The
+  spelling is deliberate, never an honest mistake. **Re-check:** also match a variant with each stray backslash
+  removed and octal escapes decoded, or refuse any backslash in a specifier. *(low ·
+  tools/cli-package/release-scope.test.mjs)*
+- [ ] **The static controls skip `tools/lint-fixtures/assert-fence.mjs`.** *Low; round 4, PLAN-9B2-R4-2.* The scan
+  treats all of `tools/lint-fixtures/` as test-only, but `assert-fence.mjs` is CI tooling (`pnpm lint:fence-check`), so
+  a `custody.mjs`, fixture or test-seam reference there passes the controls. **Re-check:** exempt only the quarantined
+  `.ts` fixtures and add the script to the scan's own assertion. *(low · tools/cli-package/release-scope.test.mjs)*
+- [ ] **The closure's specifier scan has blind spellings.** *Low; round 4, SIT9B2-R4-L1, COR-R4-3, T-R4-3.* A comment
+  between `from` or `import` and the specifier, a specifier containing the other quote character, and computed member
+  access such as `process['getBuiltin' + 'Module']` each pass the closure control, which proves reuse starts no
+  process. Each spelling is deliberate, and today's closure contains none. **Re-check:** strip comments and tokenize
+  string literals properly before scanning, and refuse computed access on `process` in closure files. *(low ·
+  tools/cli-package/release-scope.test.mjs)*
+- [ ] **The loader reads the root by path after its link check.** *Low; round 4, COR-R4-4.* `lstat` then `readdir`
+  and the two reads leave a window in which a swapped root is read through a link and branded. Only a committed,
+  maintainer-owned directory is read in production. **Re-check:** open the root with `O_DIRECTORY | O_NOFOLLOW` and
+  compare its device and inode before and after the reads, as `readOrdinaryFile` does for files. *(low ·
+  tools/cli-package/release-recipient.mjs)*
+- [ ] **Some exact rules have no isolating test.** *Low; round 4, T-R4-1, T-R4-2, T-R4-4.* No history puts its current
+  entry before a retired one, so choosing the last entry would pass; the toolchain's prerelease suffix (its character
+  set and 64-character bound) and the target's digit count (three admitted, four refused) are unpinned; and a nit:
+  the sealed-link case asserts the first link's target, and the non-POSIX fallback of the linked-tarball case removes
+  the tarball instead. **Re-check:** add those cases on the next change to the release tests. *(low ·
+  tools/cli-package/release-recipient.test.mjs, tools/cli-package/release-binding.test.mjs,
+  tools/cli-package/release-custody.test.mjs)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
