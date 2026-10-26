@@ -19,7 +19,7 @@ import {
   rmSync,
   writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ARCHIVE_LIMITS } from './archive.mjs';
 import { readPrivateContainer } from './container.mjs';
@@ -78,7 +78,7 @@ export async function encryptCandidate(options) {
     const { scope, container, destination, privateRoot, now, run, gpg } = isRecord(options)
       ? options
       : {};
-    admitted = admit(scope, container, destination);
+    admitted = admit(scope, container, destination, privateRoot);
     ports = { destination, privateRoot, now, run, gpg };
   } catch (error) {
     // A host error's message names a path: only fixed custody codes leave.
@@ -104,8 +104,9 @@ export async function encryptCandidate(options) {
  * Admit one encryption, reading the caller's scope and container once: the scope's rules, then a plain,
  * unsealed destination that holds exactly the candidate's tarball, all before any GnuPG call.
  * @param {unknown} scope @param {unknown} container @param {string} destination
+ * @param {string} privateRoot
  */
-function admit(scope, container, destination) {
+function admit(scope, container, destination, privateRoot) {
   const { kind, recipient: given } = isRecord(scope) ? scope : {};
   if ((kind !== 'production' && kind !== 'synthetic') || !isRecord(given)) refuseCustody('SCOPE');
   if (kind === 'production' && !isProductionRecipient(given)) refuseCustody('RECIPIENT_SOURCE');
@@ -122,9 +123,11 @@ function admit(scope, container, destination) {
     if (!isSyntheticSource(manifest.source)) refuseCustody('FIXTURE_SCOPE');
     recipient = { file: given.file, pins: given.pins };
   }
-  if (present(join(destination, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
-  // A plain directory, as encryptOnce requires, resolved now so that nothing after the ciphertext is
-  // published can fail on it.
+  // Normalized absolute paths only: a trailing separator, `.` or `..` would make lstat follow a link.
+  if (resolve(privateRoot) !== privateRoot) refuseCustody('PRIVATE_ROOT');
+  if (resolve(destination) !== destination) refuseCustody('PLACEMENT');
+  // A plain directory, as encryptOnce requires, checked before anything is read through it and
+  // resolved now so that nothing after the ciphertext is published can fail on it.
   let resolved;
   try {
     if (!lstatSync(destination).isDirectory()) refuseCustody('PLACEMENT');
@@ -133,6 +136,7 @@ function admit(scope, container, destination) {
     if (error instanceof CustodyError) throw error;
     refuseCustody('PLACEMENT');
   }
+  if (present(join(resolved, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
   // The sealer admits exactly the tarball and the ciphertext: a destination holding anything else, or a
   // missing or different tarball, would leave an unsealable ciphertext, so it refuses first.
   const tarballFile = tarballName(manifest.packageVersion);
@@ -199,8 +203,9 @@ function publish(directory, bytes, write) {
  * @param {{origin?: unknown, write?: (path: string, bytes: Buffer) => void}} [options]
  * @returns {{receipt: ReturnType<typeof validateReleaseBinding>, bytes: Buffer}}
  */
-export function sealReleaseBinding(record, { origin, write = writePublicFile } = {}) {
+export function sealReleaseBinding(record, options) {
   try {
+    const { origin, write = writePublicFile } = isRecord(options) ? options : {};
     return seal(record, origin, write);
   } catch (error) {
     if (error instanceof CustodyError) throw error;

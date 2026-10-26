@@ -652,9 +652,11 @@ refuses every artifact. Its review and acceptance are recorded in the
   loaded recipient and a clean, non-synthetic candidate, and encrypts to the recipient's current
   pins (`RECIPIENT_SOURCE`, `DIRTY_SOURCE`, `SYNTHETIC_SOURCE`). It admits synthetic scope only with a
   synthetic candidate (`FIXTURE_SCOPE`), so neither a fixture key nor the per-run round-trip key can
-  encrypt a product staging. An unknown scope refuses `SCOPE`. The destination must be a plain,
-  resolvable directory (`PLACEMENT`; a link refuses, as `encryptOnce` requires) holding exactly the
-  tarball the manifest names: a receipt there refuses `ALREADY_SEALED`, the ciphertext
+  encrypt a product staging. An unknown scope refuses `SCOPE`. The destination and the private root
+  must be normalized absolute paths (`PLACEMENT`, `PRIVATE_ROOT`), so that a trailing separator, `.` or
+  `..` cannot make a link look like a directory. The destination must then be a plain, resolvable
+  directory (`PLACEMENT`; a link refuses before anything is read through it, as `encryptOnce` requires)
+  holding exactly the tarball the manifest names: a receipt there refuses `ALREADY_SEALED`, the ciphertext
   `ALREADY_ENCRYPTED`, any other entry, or a tarball named otherwise, `CANDIDATE_ENTRIES`, and a different
   tarball `TARBALL_DRIFT`. A ciphertext is therefore never encrypted where the sealer would refuse its
   directory. Every one of these refuses before any GnuPG call. The gate reads the caller's scope once
@@ -718,13 +720,14 @@ refuses every artifact. Its review and acceptance are recorded in the
   and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
   needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
   - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
-  - only the release gate imports `encryptOnce`, by any quoted specifier that resolves to it, in
-    source, workflow and package-script text, percent-escapes, queries, fragments and bare names
-    included;
+  - only the release gate refers to `custody.mjs`, the one tracked file of that name, by any quoted
+    literal in source, workflow and package-script text, whatever directory it would resolve from:
+    separators, queries, fragments, percent-escapes and case are normalized;
   - the loader is never called with an argument, and its test seam appears in no product or tooling
     file (permanent controls);
   - the receipt module's import closure holds only its own files and listed Node builtins, with no
-    package, process module, `require`-like call or non-literal dynamic import;
+    package, process module or `require`-like call, and every dynamic import takes exactly one string
+    literal;
   - the interim guard still refuses a complete, valid synthetic candidate;
   - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
     directory is committed.

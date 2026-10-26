@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { before, test } from 'node:test';
 import { fresh, posixModes } from './candidate-fixture.mjs';
 import { readPrivateContainer } from './container.mjs';
@@ -184,6 +184,57 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
       code,
     );
     assert.deepEqual(calls, [], code);
+  }
+  // Only a normalized absolute path names the destination and the private root, so a trailing separator
+  // or `.` cannot make lstat follow a link; a link whose target holds a receipt refuses as a link.
+  if (posixModes) {
+    const target = fresh('linked-target');
+    mkdirSync(target);
+    writeFileSync(join(target, tarballName(VERSION)), TARBALL);
+    const link = fresh('linked-destination');
+    symlinkSync(target, link);
+    const sealedTarget = fresh('linked-sealed-target');
+    mkdirSync(sealedTarget);
+    writeFileSync(join(sealedTarget, tarballName(VERSION)), TARBALL);
+    writeFileSync(join(sealedTarget, RELEASE_BINDING_FILE), '{}');
+    const sealedLink = fresh('linked-sealed-destination');
+    symlinkSync(sealedTarget, sealedLink);
+    for (const destination of [`${link}/`, `${link}/.`, sealedLink]) {
+      const { root } = places();
+      const { run, calls } = recording();
+      await assert.rejects(
+        encryptCandidate({
+          scope: synthetic,
+          container: built.synthetic,
+          destination,
+          privateRoot: root,
+          run,
+        }),
+        refuses('PLACEMENT'),
+        destination,
+      );
+      assert.deepEqual(calls, [], destination);
+      assert.deepEqual(readdirSync(target), [tarballName(VERSION)]);
+    }
+  }
+  {
+    const { root, destination } = places();
+    for (const [code, options] of [
+      ['PLACEMENT', { destination: relative(process.cwd(), destination), privateRoot: root }],
+      [
+        'PLACEMENT',
+        { destination: `${destination}/../${basename(destination)}`, privateRoot: root },
+      ],
+      ['PRIVATE_ROOT', { destination, privateRoot: `${root}/` }],
+    ]) {
+      const { run, calls } = recording();
+      await assert.rejects(
+        encryptCandidate({ scope: synthetic, container: built.synthetic, ...options, run }),
+        refuses(code),
+        JSON.stringify(options),
+      );
+      assert.deepEqual(calls, []);
+    }
   }
   // A tarball whose name differs only in case is not the tarball, even where the volume would open it.
   {
@@ -360,9 +411,19 @@ test('only a record the gate returned seals, and an existing receipt refuses bef
     refuses('ALREADY_SEALED'),
   );
   assert.equal(readFileSync(join(destination, RELEASE_BINDING_FILE), 'utf8'), 'planted');
-  // Calling without options refuses with a fixed code, never a host error.
+  // Calling without options, or with a throwing origin, refuses with a fixed code, never a host error.
   const again = await encrypted();
   assert.throws(() => sealReleaseBinding(again.record), refuses('BINDING_ORIGIN'));
+  assert.throws(() => sealReleaseBinding(again.record, null), refuses('BINDING_ORIGIN'));
+  assert.throws(
+    () =>
+      sealReleaseBinding(again.record, {
+        get origin() {
+          throw new Error(`at ${again.destination}`);
+        },
+      }),
+    (error) => refuses('UNEXPECTED')(error) && !error.message.includes(again.destination),
+  );
   noReceipt(again.destination);
 });
 

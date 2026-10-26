@@ -10509,3 +10509,34 @@ that the loader's wrapper maps to the same code, the inputs comparator, and the 
 mutants, 36 are killed. The two survivors are equivalent: passing `encryptOnce` the resolved destination, because the
 gate's own `lstat` refuses every link first and `encryptOnce` resolves the path itself, and the synthetic recipient's
 snapshot, as above.
+
+**Author evidence at `5cda6459`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,022 of 1,022, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4, the
+88 tests ran: 87 passed and the case-insensitive-volume case skipped.
+
+**Round 2 at `5cda6459` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. Two
+mediums, corrected:
+- **A nested package script escaped the import control.** pnpm runs a package's scripts in that package's directory,
+  but the control resolved every manifest against the repository root, so a script in `apps/cli/package.json` could
+  reach `custody.mjs` unseen; a workflow step's working directory left the same gap. No single base is right, so the
+  control now refuses any quoted reference, outside the gate, to a file named `custody.mjs`, the one tracked file of
+  that name, with separators, queries, fragments, percent-escapes and case normalized (PLAN-9B2-R2-1, COR-R2-1,
+  T-R2-3).
+- **A trailing separator bypassed the link refusal.** `lstat('link/')` follows the link, so a linked destination
+  spelled with a trailing `/` or `/.` was admitted. The gate now requires the destination and the private root in
+  normalized absolute form, and checks the destination before probing it for a receipt, so a link refuses
+  `PLACEMENT` before anything is read through it (COR-R2-2, SIT2-R2-1, PLAN-9B2-R2-2, INT-9B2-R2-1).
+
+Lows corrected:
+- the sealer reads its options inside its fixed-code boundary (SIT2-R2-2, COR-R2-4, T-R2-1);
+- the validator reads the origin and the inputs once (COR-R2-5);
+- a dynamic import in the receipt's closure must be exactly one string literal, a rule with its own self-test
+  (COR-R2-3);
+- a recipient root whose parent is a file refuses `PRODUCTION_RECIPIENT_INVALID`, never absent (T-R2-2);
+- the Step 9d handoff widens the gate's, the sealer's and reuse's directory admission together (CRIT-9B2-R2-1).
+
+Recorded in deferred-tasks.md: `encryptOnce` called directly still follows a link spelled with a trailing separator.
+Nothing outside the gate and the tests calls it, and the gate requires normalized paths (the 9b.1 half of COR-R2-2).
+
+**Sweeps at the round 2 corrections.** The generated sweep ran 135 mutants and killed 131; the four survivors are the
+equivalents named above. Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.

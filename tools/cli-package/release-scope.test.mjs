@@ -84,61 +84,61 @@ test('no product or tooling code reaches a test fixture, and only the loader rea
 });
 
 /**
- * Whether `text`, a file at repository-relative `path`, names repository-relative `target` by any quoted
- * literal that resolves to it, as Node would resolve a relative specifier or a `new URL(…,
- * import.meta.url)`: relative to the file, or to the repository root for a workflow (whose steps run
- * there), a package manifest's scripts and a `tools/` path. Percent-escapes are decoded and a query or
- * fragment is ignored.
- * @param {string} path @param {string} text @param {string} target
+ * Whether `text` refers, by any quoted literal, to a file whose name is `name`, whatever directory it
+ * would resolve from: a package script runs in its package and a workflow step in its working directory,
+ * so no single base is right. Separators are normalized, a query or fragment is ignored, percent-escapes
+ * are decoded and case is ignored, as a case-insensitive volume would. Only one tracked file has the name.
+ * @param {string} text @param {string} name
  */
-function resolvesTo(path, text, target) {
-  const root = /(?:\.ya?ml|package\.json)$/u.test(path) ? '.' : posix.dirname(path);
+function namesFile(text, name) {
   // Every run of non-space characters directly between two quotes; the closing quote may open the next
   // run, so a literal nested inside another (a workflow's `node -e "import('…')"`) is found too.
   for (const match of text.matchAll(/['"`]([^'"`\s]+)(?=['"`])/gu)) {
-    let specifier = match[1].replace(/[?#].*$/u, '');
+    let specifier = match[1].replaceAll('\\', '/').replace(/[?#].*$/u, '');
     try {
       specifier = decodeURIComponent(specifier);
     } catch {
       continue;
     }
-    if (posix.basename(specifier) !== posix.basename(target)) continue;
-    const base = specifier.startsWith('tools/') || specifier.startsWith('./tools/') ? '.' : root;
-    if (posix.normalize(posix.join(base, specifier)) === target) return true;
+    if (posix.basename(specifier).toLowerCase() === name) return true;
   }
   return false;
 }
 
-test('the import match resolves every spelling, and only the real target', () => {
-  const target = 'tools/cli-package/custody.mjs';
-  for (const [path, text] of [
-    ['tools/cli-package/smoke/x.mjs', "import { encryptOnce } from '../custody.mjs';"],
-    ['tools/x.mjs', "import { encryptOnce } from './cli-package/custody.mjs';"],
-    ['tools/ci/x/y.mjs', 'const m = await import("../../cli-package/custody.mjs?v=1");'],
-    ['tools/cli-package/x.mjs', "import { encryptOnce } from './custody.mjs#fragment';"],
-    ['tools/cli-package/x.mjs', "import { encryptOnce } from './custody%2Emjs';"],
-    ['tools/cli-package/x.mjs', "const url = new URL('custody.mjs', import.meta.url);"],
-    ['.github/workflows/x.yml', 'run: node -e "import(\'./tools/cli-package/custody.mjs\')"'],
-    ['package.json', '"x": "node -e \\"import(\'./tools/cli-package/custody.mjs\')\\""'],
-    ['apps/cli/x.ts', "export * as custody from '../../tools/cli-package/custody.mjs';"],
-    ['tools/cli-package/x.mjs', 'require(`./custody.mjs`)'],
+test('the reference match finds every spelling of the name, and only that name', () => {
+  for (const text of [
+    "import { encryptOnce } from '../custody.mjs';",
+    "import { encryptOnce } from './cli-package/custody.mjs';",
+    'const m = await import("../../cli-package/custody.mjs?v=1");',
+    "import { encryptOnce } from './custody.mjs#fragment';",
+    "import { encryptOnce } from './custody%2Emjs';",
+    "const url = new URL('custody.mjs', import.meta.url);",
+    "const url = new URL('.\\\\custody.mjs', import.meta.url);",
+    "const url = new URL('Custody.mjs', import.meta.url);",
+    'run: node -e "import(\'./tools/cli-package/custody.mjs\')"',
+    '"x": "node -e \\"import(\'../../tools/cli-package/custody.mjs\')\\""',
+    "export * as custody from '../../tools/cli-package/custody.mjs';",
+    'require(`./custody.mjs`)',
   ]) {
-    assert.equal(resolvesTo(path, text, target), true, `${path}: ${text}`);
+    assert.equal(namesFile(text, 'custody.mjs'), true, text);
   }
-  for (const [path, text] of [
-    ['tools/cli-package/x.mjs', "import { refuseCustody } from './custody-error.mjs';"],
-    ['tools/cli-package/x.mjs', "import { encryptCandidate } from './release-custody.mjs';"],
-    ['tools/x.mjs', "import { x } from './custody.mjs';"],
-    ['tools/cli-package/x.mjs', '// encryptOnce lives in custody.mjs'],
-    ['tools/cli-package/x.mjs', "import { x } from './custody.mjs.bak';"],
+  for (const text of [
+    "import { refuseCustody } from './custody-error.mjs';",
+    "import { encryptCandidate } from './release-custody.mjs';",
+    '// encryptOnce lives in custody.mjs',
+    "import { x } from './custody.mjs.bak';",
+    "the container's bound (container.mjs, custody.mjs)",
   ]) {
-    assert.equal(resolvesTo(path, text, target), false, `${path}: ${text}`);
+    assert.equal(namesFile(text, 'custody.mjs'), false, text);
   }
 });
 
-test('only the release gate imports encryptOnce, by any spelling', () => {
-  const target = 'tools/cli-package/custody.mjs';
-  assert.deepEqual(code.filter((path) => resolvesTo(path, read(path), target)).sort(), [
+test('only the release gate refers to custody.mjs, by any spelling', () => {
+  assert.equal(
+    tracked.filter((path) => posix.basename(path).toLowerCase() === 'custody.mjs').length,
+    1,
+  );
+  assert.deepEqual(code.filter((path) => namesFile(read(path), 'custody.mjs')).sort(), [
     'tools/cli-package/release-custody.mjs',
   ]);
 });
@@ -157,6 +157,38 @@ test('no product path or workflow names a release module yet', () => {
     'tools/cli-package/release-binding.mjs',
     'tools/cli-package/release-custody.mjs',
   ]);
+});
+
+/**
+ * Whether every dynamic import in `source` takes exactly one string literal, so that a closure scan
+ * reads every module the source can load.
+ * @param {string} source
+ */
+function dynamicImportsAreLiteral(source) {
+  for (const match of source.matchAll(/\bimport\s*\(/gu)) {
+    const rest = source.slice(match.index + match[0].length);
+    if (!/^\s*(['"])[^'"\n]+\1\s*\)/u.test(rest)) return false;
+  }
+  return true;
+}
+
+test('a dynamic import is admitted only as one string literal', () => {
+  for (const source of [
+    "await import('./archive.mjs');",
+    'import("node:fs")',
+    "import ( './x.mjs' )",
+  ]) {
+    assert.equal(dynamicImportsAreLiteral(source), true, source);
+  }
+  for (const source of [
+    "import('node:child' + '_process')",
+    "import('./' + name)",
+    'import(`./x.mjs`)',
+    'import(name)',
+    "import('./x.mjs', { with: {} })",
+  ]) {
+    assert.equal(dynamicImportsAreLiteral(source), false, source);
+  }
 });
 
 /** Every specifier a module's import closure reaches, relative files followed. @param {string} entry */
@@ -211,9 +243,10 @@ test("the binding receipt's closure starts no process, so reuse makes no GnuPG c
     const source = readFileSync(join(here, file), 'utf8');
     assert.doesNotMatch(
       source,
-      /\b(?:getBuiltinModule|createRequire|process\.binding|process\.dlopen|process\.execve)\b|\brequire\s*\(|\bimport\(\s*[^'"\s]/u,
+      /\b(?:getBuiltinModule|createRequire|process\.binding|process\.dlopen|process\.execve)\b|\brequire\s*\(/u,
       file,
     );
+    assert.equal(dynamicImportsAreLiteral(source), true, file);
   }
   // The scan reads the imports it claims to: the gate's closure reaches GnuPG.
   const gate = closure('release-custody.mjs');

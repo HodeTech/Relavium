@@ -896,6 +896,12 @@ The release modules are library code with synthetic controls only: nothing outsi
   history naming it would load. The loader reads no key material (it makes no GnuPG call), and encrypting to it
   would still need its armored key in the committed recipient file. **Re-check:** list every committed fixture
   fingerprint in the denylist when the fixtures are next generated. *(low · tools/cli-package/release-recipient.mjs)*
+- [ ] **`encryptOnce` called directly follows a link spelled with a trailing separator.** *Low; a named limit
+  (round 2, COR-R2-2).* 9b.1's `plainDirectory` and `privateDirectory` lstat the path as given, and `lstat('link/')`
+  follows the link, so a direct caller of `encryptOnce` can encrypt into a linked destination or use a linked
+  private root. The release gate requires both paths in normalized absolute form and refuses a link itself, so
+  no release path reaches this; nothing outside the gate and the tests calls `encryptOnce`. **Re-check:** on the
+  next change to `custody.mjs`, require normalized absolute paths there too. *(low · tools/cli-package/custody.mjs)*
 - [ ] **The release entry points accept the test ports.** *Low; a named limit (round 1, SIT-R1-5).*
   `encryptCandidate` forwards `encryptOnce`'s `run` and `gpg` ports and `sealReleaseBinding` takes a `write`
   port, in production scope too, so an in-process caller could replace GnuPG and defeat its checks. Like the
@@ -911,8 +917,9 @@ The release modules are library code with synthetic controls only: nothing outsi
   and attempt (on reuse, the original run) and `mapCheck` to a successful `ci` run with the product map
   controls at `source.commit`; derive release smoke's public inventory and package metadata from the
   digest-verified tarball with the package-test inspector; check the production recipient before any
-  reservation, so a recipient refusal never leaves an incomplete reservation; widen the sealer's directory
-  admission if the package-test receipt travels beside the tarball; replace the interim guard; then update
+  reservation, so a recipient refusal never leaves an incomplete reservation; if the package-test receipt
+  travels beside the tarball, widen the gate's, the sealer's and reuse's directory admission together, since all
+  three admit exact entries (round 2, CRIT-9B2-R2-1); replace the interim guard; then update
   `release-scope.test.mjs`'s interim control that no product path or workflow names a release module, keeping
   its permanent controls (the loader takes no argument and its test seam stays out of product code; only the
   gate imports `encryptOnce`); and include `tools/cli-package/custody-fixtures/pins.json` in every checkout

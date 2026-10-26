@@ -224,8 +224,9 @@ function validate(value, scope) {
   });
   const target = string(receipt.target, /^node\d{2,3}$/u, 8);
 
-  if (!isRecord(receipt.inputs)) refuseCustody('BINDING_SHAPE');
-  const entries = Object.entries(receipt.inputs);
+  const { inputs: inputsRecord, origin: originValue } = receipt;
+  if (!isRecord(inputsRecord)) refuseCustody('BINDING_SHAPE');
+  const entries = Object.entries(inputsRecord);
   if (entries.length < 1 || entries.length > MAX_INPUTS) refuseCustody('BINDING_SHAPE');
   const inputs = Object.freeze(
     Object.fromEntries(
@@ -241,10 +242,8 @@ function validate(value, scope) {
   const mapCheck = exact(receipt.mapCheck, ['status']);
   if (mapCheck.status !== 'complete') refuseCustody('BINDING_MAP_CHECK');
 
-  if (!isRecord(receipt.origin) || receipt.origin.kind !== 'github') {
-    refuseCustody('BINDING_ORIGIN');
-  }
-  const originRecord = exact(receipt.origin, [
+  if (!isRecord(originValue) || originValue.kind !== 'github') refuseCustody('BINDING_ORIGIN');
+  const originRecord = exact(originValue, [
     'kind',
     'repository',
     'workflow',

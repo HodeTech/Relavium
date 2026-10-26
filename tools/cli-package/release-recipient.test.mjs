@@ -67,6 +67,13 @@ test('the committed recipient directory is absent in Wave 3, so every production
     () => loadRecipientForTests({ root: join(fresh('missing'), 'release-recipient') }),
     refuses('PRODUCTION_RECIPIENT_ABSENT'),
   );
+  // Only a missing root is absent: any other failure to reach it, such as a parent that is a file, is not.
+  const parentFile = fresh('parent-file');
+  writeFileSync(parentFile, '');
+  assert.throws(
+    () => loadRecipientForTests({ root: join(parentFile, 'release-recipient') }),
+    refuses('PRODUCTION_RECIPIENT_INVALID'),
+  );
 });
 
 test('a loaded recipient is frozen, branded, and its current pins come from an append-only history', () => {
