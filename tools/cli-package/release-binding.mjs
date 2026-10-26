@@ -19,7 +19,7 @@ import { isProductionRecipient, isSyntheticSource } from './release-recipient.mj
 /** The receipt's file name beside the ciphertext, as the interim release guard keys on it. */
 export const RELEASE_BINDING_FILE = 'release-binding-receipt.json';
 export const RELEASE_BINDING_KIND = 'release_binding';
-/** The custody container's 128 MiB total plus the 64 KiB a ciphertext may add (container.mjs, custody.mjs). */
+/** The custody container's 128 MiB total plus the 64 KiB a ciphertext may add to it (9b.1's bounds). */
 export const CIPHERTEXT_BYTES = 128 * 1024 * 1024 + 64 * 1024;
 const RECEIPT_BYTES = 64 * 1024;
 const MAX_INPUTS = 64;

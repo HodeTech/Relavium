@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -278,6 +279,26 @@ test('every value has its exact format', () => {
     (copy) => (copy.origin.runId = `x${copy.origin.runId}`),
     (copy) => (copy.origin.runAttempt = `x${copy.origin.runAttempt}`),
     (copy) => (copy.inputs = { 'package.json': `x${'a'.repeat(64)}` }),
+    // ...and at the end: a suffix after a valid value refuses.
+    (copy) => (copy.source.commit = `${copy.source.commit}x`),
+    (copy) => (copy.source.tree = `${copy.source.tree}x`),
+    (copy) => (copy.tarball.sha256 = `${copy.tarball.sha256}a`),
+    (copy) => (copy.recipient.subkey = `${copy.recipient.subkey}A`),
+    (copy) => (copy.toolchain.node = `${copy.toolchain.node}x`),
+    (copy) => (copy.toolchain.typescript = `${copy.toolchain.typescript} `),
+    (copy) => (copy.toolchain.gnupg = `${copy.toolchain.gnupg}x`),
+    (copy) => (copy.target = `${copy.target}x`),
+    (copy) => (copy.origin.repository = `${copy.origin.repository} x`),
+    (copy) => (copy.origin.workflow = `${copy.origin.workflow}\u0007`),
+    (copy) => (copy.origin.runId = `${copy.origin.runId}x`),
+    (copy) => (copy.origin.runAttempt = `${copy.origin.runAttempt}x`),
+    (copy) => (copy.inputs = { 'package.json': `${'a'.repeat(64)}a` }),
+    // The toolchain's length bounds: one past each refuses.
+    (copy) => (copy.toolchain.node = `v1.1.${'1'.repeat(36)}`),
+    ...['pnpm', 'typescript', 'tsup', 'esbuild'].map(
+      (tool) => (copy) => (copy.toolchain[tool] = `1.1.${'1'.repeat(97)}`),
+    ),
+    (copy) => (copy.toolchain.gnupg = `1.1.${'1'.repeat(37)}`),
     // A value whose string form matches is still not a string.
     (copy) => (copy.toolchain.node = [copy.toolchain.node]),
     (copy) => (copy.source.commit = [copy.source.commit]),
@@ -316,6 +337,15 @@ test('every value has its exact format', () => {
     copy.inputs = { '01': 'a'.repeat(64), 'package.json': 'b'.repeat(64) };
   });
   assert.deepEqual(validateReleaseBinding(origins, synthetic).origin, origins.origin);
+  // The toolchain's length bounds are inclusive.
+  const tools = changed(value, (copy) => {
+    copy.toolchain.node = `v1.1.${'1'.repeat(35)}`;
+    for (const tool of ['pnpm', 'typescript', 'tsup', 'esbuild']) {
+      copy.toolchain[tool] = `1.1.${'1'.repeat(96)}`;
+    }
+    copy.toolchain.gnupg = `1.1.${'1'.repeat(36)}`;
+  });
+  assert.deepEqual(validateReleaseBinding(tools, synthetic).toolchain, tools.toolchain);
   assert.deepEqual(validateReleaseBinding(single, synthetic).inputs, {
     'package.json': 'a'.repeat(64),
   });
@@ -636,6 +666,15 @@ test('a retained candidate whose assets or entries differ from its receipt refus
     ['CANDIDATE_ENTRIES', (directory) => writeFileSync(join(directory, 'notes.txt'), 'extra')],
     ['CANDIDATE_ENTRIES', (directory) => rmSync(join(directory, ciphertextFileName(VERSION)))],
     ['CANDIDATE_ENTRIES', (directory) => rmSync(join(directory, RELEASE_BINDING_FILE))],
+    // Same count, another name: the listing is compared by name, not by size.
+    [
+      'CANDIDATE_ENTRIES',
+      (directory) =>
+        renameSync(
+          join(directory, tarballName(VERSION)),
+          join(directory, tarballName(VERSION).toUpperCase()),
+        ),
+    ],
     [
       'CANDIDATE_ASSET',
       (directory) => {
@@ -795,6 +834,21 @@ test('each receipt field is read once, and a throwing accessor refuses with a fi
   });
   assert.equal(validateReleaseBinding(clean, productionExpected()).source.dirty, false);
   assert.equal(dirtyReads, 1);
+  // The origin and the inputs are read once each.
+  const counts = { origin: 0, inputs: 0 };
+  const counted = receipt();
+  for (const key of ['origin', 'inputs']) {
+    const original = counted[key];
+    Object.defineProperty(counted, key, {
+      enumerable: true,
+      get() {
+        counts[key] += 1;
+        return original;
+      },
+    });
+  }
+  validateReleaseBinding(counted, synthetic);
+  assert.deepEqual(counts, { origin: 1, inputs: 1 });
   const throwing = receipt();
   Object.defineProperty(throwing, 'target', {
     enumerable: true,
@@ -850,10 +904,37 @@ test('reuse reads its expectation once, and a vanished asset refuses as that ass
     fs.lstatSync = lstat;
     syncBuiltinESMExports();
   }
-  // A malformed call refuses with a fixed code.
+  // A malformed call refuses with a fixed code, and a throwing option with no host text.
   for (const options of [undefined, null, 'options']) {
     assert.throws(() => verifyRetainedCandidate(options), refuses('BINDING_SCOPE'));
   }
+  assert.throws(
+    () =>
+      verifyRetainedCandidate({
+        get directory() {
+          throw new Error(`at ${scratch}`);
+        },
+      }),
+    refuses('UNEXPECTED'),
+  );
+  // The receipt bytes returned are the ones verified, even when the file changes during verification.
+  const changing = candidate();
+  const receiptPath = join(changing, RELEASE_BINDING_FILE);
+  const original = readFileSync(receiptPath);
+  const tarballPath = join(changing, tarballName(VERSION));
+  fs.lstatSync = (target, ...rest) => {
+    if (target === tarballPath) writeFileSync(receiptPath, Buffer.from('{"replaced": true}\n'));
+    return lstat(target, ...rest);
+  };
+  syncBuiltinESMExports();
+  let verified;
+  try {
+    verified = verifyRetainedCandidate({ directory: changing, expected: synthetic });
+  } finally {
+    fs.lstatSync = lstat;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(verified.receiptBytes, original);
 });
 
 test('reuse needs a valid expectation, and a host failure refuses with a fixed code and no path', () => {

@@ -10540,3 +10540,43 @@ Nothing outside the gate and the tests calls it, and the gate requires normalize
 
 **Sweeps at the round 2 corrections.** The generated sweep ran 135 mutants and killed 131; the four survivors are the
 equivalents named above. Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.
+
+**Author evidence at `463a047c`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,023 of 1,023, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4, the
+89 tests ran: 88 passed and the case-insensitive-volume case skipped.
+
+**Round 3 at `463a047c` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan and
+integration lenses were clean, and the security sitting reported lows only. The tests lens reported four mediums, all
+in tests or static controls; the code they cover was correct:
+- **A non-`EEXIST` link failure was untested.** Turning that `throw` into a `return` passed every test, so a seal could
+  have reported success with no receipt. An injected `EPERM` link now refuses `UNEXPECTED` with no host text, publishes
+  nothing and leaves the record sealable (T4-1).
+- **The gate's refusal of a linked tarball was untested.** A tarball that is a link to a file with the right bytes
+  now refuses `TARBALL_DRIFT` before any GnuPG call (T4-2).
+- **No test pinned the patterns' trailing anchors.** A suffix after each valid value now refuses (T4-3).
+- **A template literal escaped the `custody.mjs` control.** A substitution containing a space hid
+  `` `${join(here, base)}/custody.mjs` ``, and whitespace-bearing scripts, unquoted arguments and JavaScript escapes
+  hid other spellings. The control no longer looks for quoted specifiers: after JavaScript and percent escapes,
+  separators and case are normalized, it refuses any mention of the name outside the gate, comments included
+  (T4-4, PLAN-9B2-R3-1, SIT3-L2).
+
+Lows corrected:
+- the closure scan reads every specifier after `from` or `import`, whatever the spacing, so spaced, compact and
+  multi-line imports are seen (SIT3-L1, T4-5);
+- new tests cover single reads of the gate's recipient, the validator's origin and inputs, throwing options on the gate
+  and on reuse, same-count renames for the sealer and reuse, the toolchain's length bounds, and the receipt bytes
+  returned by reuse while the file changes (COR3-R3-1, COR3-R3-2, T4-6, T4-7, T4-8);
+- the contract's diagnostics bullet names every path's code (CRIT-9B2-R3-1).
+
+**Sweeps at the round 3 corrections.** The generated sweep gained the operator classes the rounds had found by hand: a
+`throw` turned into a `return`, each regex anchor removed, each `||` and `&&` swapped inside one-line conditions, each
+integer bound raised by one, and each single-line call statement deleted. It ran 233 mutants. Three survivors were
+real gaps, the `typescript`, `tsup` and `esbuild` length bounds, and gained cases. Ten are equivalent:
+- the four named above;
+- `isRecord`'s two operator swaps and the history guard's `||`, which let through only values that still refuse with
+  the same code;
+- `string()`'s default maximum, used only by fixed-length patterns;
+- deleting `writePublicFile`'s `fsync` or `close`, which guard durability and descriptor hygiene, not anything a test
+  observes.
+
+Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.

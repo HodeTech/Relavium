@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -168,6 +169,17 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
         mkdirSync(join(destination, tarballName(VERSION)));
       },
     ],
+    // A link to a file with the right bytes is not an ordinary tarball either.
+    [
+      'TARBALL_DRIFT',
+      (destination) => {
+        if (!posixModes) return rmSync(join(destination, tarballName(VERSION)));
+        const target = fresh('linked-tarball-target');
+        writeFileSync(target, TARBALL);
+        rmSync(join(destination, tarballName(VERSION)));
+        symlinkSync(target, join(destination, tarballName(VERSION)));
+      },
+    ],
   ]) {
     const { root, destination } = places();
     change(destination);
@@ -257,6 +269,39 @@ test('the gate refuses a wrong scope, recipient or candidate before any GnuPG ca
   // A malformed call refuses with a fixed code, never a host error.
   for (const options of [undefined, null, 'options']) {
     await assert.rejects(encryptCandidate(options), refuses('SCOPE'));
+  }
+  await assert.rejects(
+    encryptCandidate({
+      get scope() {
+        throw new Error('/private/host/path');
+      },
+    }),
+    (error) => refuses('UNEXPECTED')(error) && !error.message.includes('/private/host/path'),
+  );
+  // The recipient is read once too: the brand check sees the value encrypted to.
+  {
+    let reads = 0;
+    const counted = {
+      kind: 'production',
+      get recipient() {
+        reads += 1;
+        return { file: ephemeral.file, current: ephemeral.pins, history: [] };
+      },
+    };
+    const { root, destination } = places();
+    const { run, calls } = recording();
+    await assert.rejects(
+      encryptCandidate({
+        scope: counted,
+        container: built.clean,
+        destination,
+        privateRoot: root,
+        run,
+      }),
+      refuses('RECIPIENT_SOURCE'),
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(reads, 1);
   }
   // The scope is read once: a kind that changes after its first read cannot skip the brand check.
   {
@@ -437,6 +482,15 @@ test('the sealer refuses a candidate directory that is not exactly its tarball a
     ['CANDIDATE_ENTRIES', (destination) => writeFileSync(join(destination, 'notes.txt'), 'x')],
     ['CANDIDATE_ENTRIES', (destination) => rmSync(join(destination, tarballName(VERSION)))],
     ['CANDIDATE_ENTRIES', (destination, record) => rmSync(join(destination, record.name))],
+    // Same count, another name: the listing is compared by name, not by size.
+    [
+      'CANDIDATE_ENTRIES',
+      (destination) =>
+        renameSync(
+          join(destination, tarballName(VERSION)),
+          join(destination, tarballName(VERSION).toUpperCase()),
+        ),
+    ],
     [
       'CIPHERTEXT_DRIFT',
       (destination, record) => appendFileSync(join(destination, record.name), 'x'),
@@ -539,6 +593,29 @@ test('the receipt is published once and atomically, whatever happens to the writ
   // The record survives a failed seal, so the candidate can still be sealed.
   sealReleaseBinding(failed.record, { origin: origin(SYNTHETIC_SOURCE.commit) });
   assert.ok(readdirSync(failed.destination).includes(RELEASE_BINDING_FILE));
+  // A link that fails for another reason publishes nothing, reports no host text and keeps the record.
+  const unlinked = await encrypted();
+  const fs = createRequire(import.meta.url)('node:fs');
+  const link = fs.linkSync;
+  fs.linkSync = (existing) => {
+    throw Object.assign(new Error(`EPERM: ${existing}`), { code: 'EPERM' });
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => sealReleaseBinding(unlinked.record, { origin: origin(SYNTHETIC_SOURCE.commit) }),
+      (error) => refuses('UNEXPECTED')(error) && !error.message.includes(unlinked.destination),
+    );
+  } finally {
+    fs.linkSync = link;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(
+    readdirSync(unlinked.destination).sort(),
+    [ciphertextFileName(VERSION), tarballName(VERSION)].sort(),
+  );
+  sealReleaseBinding(unlinked.record, { origin: origin(SYNTHETIC_SOURCE.commit) });
+  assert.ok(readdirSync(unlinked.destination).includes(RELEASE_BINDING_FILE));
 });
 
 test(

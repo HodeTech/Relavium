@@ -84,39 +84,44 @@ test('no product or tooling code reaches a test fixture, and only the loader rea
 });
 
 /**
- * Whether `text` refers, by any quoted literal, to a file whose name is `name`, whatever directory it
- * would resolve from: a package script runs in its package and a workflow step in its working directory,
- * so no single base is right. Separators are normalized, a query or fragment is ignored, percent-escapes
- * are decoded and case is ignored, as a case-insensitive volume would. Only one tracked file has the name.
+ * Whether `text` mentions a file named `name` anywhere, quoted or not, comments included: a package script
+ * runs in its package and a workflow step in its working directory, and a template literal can build the
+ * rest of the path, so no resolution is attempted. JavaScript and percent escapes are decoded, separators
+ * normalized and case ignored first. Only one tracked file has the name, so any mention is a reference.
  * @param {string} text @param {string} name
  */
 function namesFile(text, name) {
-  // Every run of non-space characters directly between two quotes; the closing quote may open the next
-  // run, so a literal nested inside another (a workflow's `node -e "import('…')"`) is found too.
-  for (const match of text.matchAll(/['"`]([^'"`\s]+)(?=['"`])/gu)) {
-    let specifier = match[1].replaceAll('\\', '/').replace(/[?#].*$/u, '');
-    try {
-      specifier = decodeURIComponent(specifier);
-    } catch {
-      continue;
-    }
-    if (posix.basename(specifier).toLowerCase() === name) return true;
-  }
-  return false;
+  const decoded = text
+    .replace(/\\\r?\n/gu, '')
+    .replace(/\\x([0-9a-f]{2})|\\u\{([0-9a-f]+)\}|\\u([0-9a-f]{4})/giu, (_, x, braced, u) =>
+      String.fromCodePoint(Number.parseInt(x ?? braced ?? u, 16)),
+    )
+    .replace(/%([0-9a-f]{2})/giu, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replaceAll('\\', '/')
+    .toLowerCase();
+  const escaped = name.toLowerCase().replaceAll('.', '\\.');
+  return new RegExp(`(?<![\\w$.-])${escaped}(?![\\w$.-])`, 'u').test(decoded);
 }
 
 test('the reference match finds every spelling of the name, and only that name', () => {
   for (const text of [
     "import { encryptOnce } from '../custody.mjs';",
-    "import { encryptOnce } from './cli-package/custody.mjs';",
     'const m = await import("../../cli-package/custody.mjs?v=1");',
     "import { encryptOnce } from './custody.mjs#fragment';",
     "import { encryptOnce } from './custody%2Emjs';",
+    "import { encryptOnce } from './%63ustody.mjs';",
+    "import { encryptOnce } from './custody\\u002emjs';",
+    "import { encryptOnce } from './custody\\x2emjs';",
+    "import { encryptOnce } from './cus\\u{74}ody.mjs';",
     "const url = new URL('custody.mjs', import.meta.url);",
     "const url = new URL('.\\\\custody.mjs', import.meta.url);",
     "const url = new URL('Custody.mjs', import.meta.url);",
+    'const m = (here, base) => import(`${join(here, base)}/custody.mjs`);',
     'run: node -e "import(\'./tools/cli-package/custody.mjs\')"',
-    '"x": "node -e \\"import(\'../../tools/cli-package/custody.mjs\')\\""',
+    '"a": "node --import ../../tools/cli-package/custody.mjs run.mjs"',
+    '"b": "node -e \\"import(process.argv[1])\\" ../tools/cli-package/custody.mjs"',
+    'run: node tools/cli-package/custody.mjs',
+    '// encryptOnce lives in custody.mjs',
     "export * as custody from '../../tools/cli-package/custody.mjs';",
     'require(`./custody.mjs`)',
   ]) {
@@ -125,9 +130,9 @@ test('the reference match finds every spelling of the name, and only that name',
   for (const text of [
     "import { refuseCustody } from './custody-error.mjs';",
     "import { encryptCandidate } from './release-custody.mjs';",
-    '// encryptOnce lives in custody.mjs',
     "import { x } from './custody.mjs.bak';",
-    "the container's bound (container.mjs, custody.mjs)",
+    "import { x } from './my-custody.mjs';",
+    "import { x } from './custodyxmjs';",
   ]) {
     assert.equal(namesFile(text, 'custody.mjs'), false, text);
   }
@@ -191,6 +196,46 @@ test('a dynamic import is admitted only as one string literal', () => {
   }
 });
 
+/**
+ * Every module specifier `source` names: each string literal right after `from` or `import`, with or
+ * without a parenthesis, whatever the spacing, so a compact, spaced or multi-line import is read too.
+ * @param {string} source
+ */
+function specifiersOf(source) {
+  // A keyword, never a member call such as `Buffer.from('…')`.
+  return [...source.matchAll(/(?<![.\w$])(?:from|import)\s*\(?\s*(['"])([^'"\n]+)\1/gu)].map(
+    (match) => match[2],
+  );
+}
+
+test('the specifier scan reads every spelling of an import', () => {
+  assert.deepEqual(
+    specifiersOf(
+      [
+        "import { a } from './a.mjs';",
+        "import{b}from'./b.mjs';",
+        "import 'node:fs';",
+        "import {\n  c, // the container's\n} from './c.mjs';",
+        "export * as d from './d.mjs';",
+        "export { e } from './e.mjs';",
+        "const f = await import ( 'node:child_process' );",
+        'const g = import("./g.mjs");',
+        "const magic = Buffer.from('ustar\\0');",
+      ].join('\n'),
+    ),
+    [
+      './a.mjs',
+      './b.mjs',
+      'node:fs',
+      './c.mjs',
+      './d.mjs',
+      './e.mjs',
+      'node:child_process',
+      './g.mjs',
+    ],
+  );
+});
+
 /** Every specifier a module's import closure reaches, relative files followed. @param {string} entry */
 function closure(entry) {
   const seen = new Set();
@@ -199,10 +244,7 @@ function closure(entry) {
     if (seen.has(path)) return;
     seen.add(path);
     const source = readFileSync(path, 'utf8');
-    for (const match of source.matchAll(
-      /^\s*import\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]|^\s*export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/gmu,
-    )) {
-      const specifier = match[1] ?? match[2] ?? match[3];
+    for (const specifier of specifiersOf(source)) {
       specifiers.add(specifier);
       if (specifier.startsWith('.')) visit(join(dirname(path), specifier));
     }

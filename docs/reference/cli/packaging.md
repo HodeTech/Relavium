@@ -713,21 +713,23 @@ refuses every artifact. Its review and acceptance are recorded in the
   renames and removes nothing. Its module imports nothing that can start a process, so reuse makes no
   GnuPG call, and it cannot re-check the ciphertext's recipients: a named limit.
 - **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`. A host failure is `UNEXPECTED`,
-  except while loading the recipient (`PRODUCTION_RECIPIENT_INVALID`) or reading a named file, which
-  carries that file's code (`CANDIDATE_ASSET`, `CIPHERTEXT_DRIFT`, `TARBALL_DRIFT`). No path, key or
-  receipt content surfaces.
+  except on a named path, which carries that path's code: `PLACEMENT` for the destination,
+  `CANDIDATE_ASSET`, `CIPHERTEXT_DRIFT` and `TARBALL_DRIFT` for the files read, and
+  `PRODUCTION_RECIPIENT_INVALID` while loading the recipient; inside encryption, `encryptOnce`'s own
+  codes apply. No path, key or receipt content surfaces.
 - **Where it runs.** `release-recipient.test.mjs`, `release-binding.test.mjs`, `release-custody.test.mjs`
   and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
   needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
   - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
-  - only the release gate refers to `custody.mjs`, the one tracked file of that name, by any quoted
-    literal in source, workflow and package-script text, whatever directory it would resolve from:
-    separators, queries, fragments, percent-escapes and case are normalized;
+  - only the release gate mentions `custody.mjs`, the one tracked file of that name, anywhere in source,
+    workflow and package-script text, comments included, once JavaScript and percent escapes,
+    separators and case are normalized; a path built at run time from pieces is beyond any static
+    control;
   - the loader is never called with an argument, and its test seam appears in no product or tooling
     file (permanent controls);
-  - the receipt module's import closure holds only its own files and listed Node builtins, with no
-    package, process module or `require`-like call, and every dynamic import takes exactly one string
-    literal;
+  - the receipt module's import closure, read from every `from` or `import` specifier whatever the
+    spacing, holds only its own files and listed Node builtins, with no package, process module or
+    `require`-like call, and every dynamic import takes exactly one string literal;
   - the interim guard still refuses a complete, valid synthetic candidate;
   - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
     directory is committed.
