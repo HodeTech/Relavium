@@ -22,6 +22,10 @@ are actually enforced — automation catches format and types; a human catches t
   > Amended 2026-11-04: "a review approval" read as a GitHub approval that `main`'s protection has never
   > required (0 approvals, no CODEOWNERS); a PR #96 review found the mismatch and the maintainer ruled
   > the rule should state the practice.
+
+  > Amended 2026-11-04 (D64 round 4 on the PR #96 correction): a maintainer-scheduled checkpoint may carry a
+  > correction whose acceptance round is still open only when the phase register records that decision and
+  > `current.md` names what `main` keeps until the next checkpoint, as the D61 checkpoint did.
 - The author runs lint, format, and tests **before** requesting review; review is not a
   substitute for the toolchain.
 - Keep PRs small and scoped to one concern; a reviewable diff gets a real review. Large

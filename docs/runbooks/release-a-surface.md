@@ -88,6 +88,11 @@ and the bundle boundary are [ADR-0051](../decisions/0051-cli-distribution-thin-b
 - Add the **`NPM_TOKEN`** repo secret (an npm automation token for the `relavium` package); enable **2FA** on
   the npm account. The publish job is otherwise maintainer-gated by design — like the `ci` branch-protection
   obligation.
+
+  > Amended 2026-11-04: before the next publication, MVP-A23 moves this credential out of the repository: into
+  > the protected `release` deployment environment that `release.yml`'s publish job names (a `v*`-tag deployment
+  > policy and a required reviewer, with the repository-level secret deleted), or replaces it with npm trusted
+  > publishing, chosen in the D59 release ADR ([phase 2.6](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)).
 - A `workflow_dispatch` run executes `pack` + the cross-OS `smoke` **without** publishing — use it to verify a
   release candidate before tagging.
 

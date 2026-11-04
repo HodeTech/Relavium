@@ -143,7 +143,9 @@ username still ends the authority (`https://us,er:pw@host` stays as it is; the b
 (`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
 scheme, a quote, `}`, `]` or whitespace, or any raw `?` or `#` after the `,` or `/` (which may begin a path's
 query, as in `https://host:abc/p?e=a@b`) keeps the text public: `https://user:pa,ss?1@host` stays as it is,
-a recorded limit the backstop does not share for the comma spelling. This reading only adds masks: its username
+a recorded limit the backstop does not share for the comma spelling. It is skipped when a nested scheme's `://`
+straddles the `,` or `/` (`https://proxy:https://u:p@ss@h`) or the authority holds a backslash, a JSON escape the
+key rules read: both are left to the other rules. This reading only adds masks: its username
 owns no text, so every key there — a credential-word username, or one after a raw `?`, `#`, `;` or `&` — masks its
 value to its own end as before 2026-11-04 (`https://x-access-token:pa,ss@github.com/o/r` and
 `http://svc?token=a:b/c@d` → `https://[redacted]`, `http://[redacted]`). A password with an `@` before its `,`
@@ -164,8 +166,10 @@ not know the program, so a `name:group` (`docker run -u app:app`) or another col
 `-u` is masked too, and calls that differ only there share one journal identity. A credential flag in value position may be the
 previous flag's value (`--password -MySecret`) or a flag of its own (`--ask-password --password <password>`),
 so it is masked as a value and still masks the element after it: neither reading leaks, at the cost of the flag
-name there. After a `-u`/`--user` with no pair (`unzip -u -P <password>`) the element is read as any other, and a
-`--flag=value` spelling's flag name is read by the text rules too. Short-option clusters (`curl -su alice:secret`),
+name there. After a `-u`/`--user` with no pair (`unzip -u -P <password>`) the element is read as any other. A
+`--flag=value` spelling keeps an anchored name (`--password=[redacted]`), and a last-word name only where the
+text rules keep it too; where they mask it with its value (`--db-token=<value>`), the whole element is masked.
+Short-option clusters (`curl -su alice:secret`),
 `-U`/`--proxy-user` and flags whose last word is not a listed credential word (`--oauth2-bearer`,
 `--pass`, openssl's `-passin`, keytool's `-storepass`) are outside the rule, a recorded limit.
 

@@ -982,8 +982,8 @@ names, unless the entry names another.
   `release-custody.mjs`, `candidate.mjs`, `release-binding.mjs`, `symbolicate.mjs`, `ustar.mjs`,
   `tools/bundle-closure/closure.mjs` and `inventory.mjs`. Each is security-critical redaction or release tooling, so a
   refactor needs its own mutation sweep and review. *(low · the files named)*
-- [ ] **Regex complexity (`S5843`) in eight patterns.** *Low.* `bounding.ts`'s standalone and key rules and five
-  `scrub-secrets.ts` rules: their "complexity" is the length of a finite name or shape alternation (as the existing
+- [ ] **Regex complexity (`S5843`): eight reports on seven patterns.** *Low.* `bounding.ts`'s scheme and key rules
+  (the key rule reported twice) and five `scrub-secrets.ts` rules: their "complexity" is the length of a finite name or shape alternation (as the existing
   `NOSONAR` notes say), and each is a causal-control anchor. The three `S5869` reports on `scrub-secrets.ts:138` are
   the `i` flag making `A-Z` and `a-z` overlap, not a duplicate. **Re-check:** split a rule only with its controls.
   *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
@@ -1110,6 +1110,15 @@ them but these:
 - [ ] **The hash-object answer check `names.length !== batch.paths.length` is equivalent to `<` within one batch:** an
   extra line is compared with the next batch's first file, so only a crafted answer across batches tells the two
   apart, and no test builds one. *(low · tools/cli-package/candidate.mjs:353 · round-3 RT3-1)*
+
+**D64 round 4 (2026-11-05, at `7a12ee6f`).** One medium finding (the `,`/`/` reading skipped a nested URL) and a
+downgraded claim (a masked `--flag=value` name shown) were fixed, with the round's lows; recorded with them:
+
+- [ ] **Eleven more test cleanups check a process with `alive()` and then kill it**, the race that failed
+  `consumer-lifetime.test.mjs` once on the Linux CI (ESRCH when the process exits in between; fixed there in
+  `93a8b033`): `tools/cli-bootstrap/witness.test.mjs:488,552`,
+  `tools/cli-package/process.test.mjs:252,409,424,495,523,581`, `produce.test.mjs:593,806` and `check.test.mjs:218`.
+  Replace each with a kill that ignores ESRCH only. *(low · the files named · round-4 CI-R4-1)*
 
 **The review's unverified first-pass lows, triaged at `f25fb83d` (2026-11-04).** Two agents checked all 86 against the
 merged head: 81 still hold (78 entries below once duplicates merge), R1a-06 was fixed by `e8121aa4`, R1a-04 and R9a-05

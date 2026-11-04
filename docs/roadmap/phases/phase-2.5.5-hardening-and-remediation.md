@@ -10730,7 +10730,7 @@ lines, 92.83% branches). GitHub CI at the merged head `f25fb83d`: push run 41848
 41848332524, 18 of 18 jobs green each. SonarCloud: the PR's gate OK at `f25fb83d` (0 bugs, 0 vulnerabilities, 42
 recorded smells) and `main`'s gate OK at `b3cf117e`. `main`'s own push run at `b3cf117e` (41872891482) failed
 on its first attempt: its macOS consumer was cancelled before any step ran, for want of a runner, so the two
-aggregates that need it failed.
+aggregates that need it failed; its re-run (attempt 2, 2026-11-05) passed, so the commit is green.
 
 **Repository settings changed with it (maintainer, 2026-11-04).** `main`'s branch protection requires
 `windows · db concurrency + filesystem + headless smoke` beside `lint · typecheck · test` and the coverage floor;
@@ -10782,13 +10782,29 @@ verifier downgraded a second claim to low: the `,`/`/` reading gave a credential
 text, so a password's tail after a raw `@` showed (introduced by `0826f30a`). Both readings now only add masks: a
 credential flag in value position is masked as a value and still masks the element after it, and the `,`/`/` reading's
 username owns no text, so the key rules mask as they did before. A superset oracle checks that property directly, with
-markers in every position including flag-shaped values and credential-word usernames: over 200,000 generated URL texts
+markers in values, flag-shaped values, credential-word usernames, passwords and hosts (not, as round 4 found, in a
+`--flag=value` name or a nested URL): over 200,000 generated URL texts
 and argument vectors, in the display, value and journal projections (one million comparisons), no marker that
 `64fb8772` hid is visible at the fixed head, while the same oracle finds 60,299 violations at `07f653e7`. The round's
 lows were fixed with it (the password tail's five stops and `-u-` pinned, the hash-object batch bound and an extra
 answer line tested, the allowlist on optional and peer dependencies, a 40-hex blob id, default and step shells pinned,
-eight documentation corrections) except one recorded limit and one equivalent mutant. **D64's bar is still not met:**
-acceptance needs a NEW round 4 with no blocker, high or medium finding.
+eight documentation corrections) except one recorded limit and one equivalent mutant. **D64's bar was still not met:**
+acceptance needed a NEW round 4 with no blocker, high or medium finding.
+
+**D64 round 4 (2026-11-05, at `7a12ee6f`).** The redaction reviewer and the security sitting each found the same
+medium regression independently: when an authority ends in `scheme:` and the `/` delimiter begins a nested `//`, the
+`,`/`/` reading masked to the nested URL's first `@` and skipped the scheme scan past it, so that URL's password tail
+after a raw `@` showed, which `64fb8772` masked (introduced by `0826f30a`). A verifier downgraded a second claim to
+low: round 3's oracle had placed no marker in a `--flag=value` name, and there the head showed a last-word name the
+text rules masked with its value. The reading now leaves a straddling `://` and a backslash in its authority or tail
+to the other rules, and a last-word `--flag=value` spelling keeps its name only where the text rules keep it. Two
+independent oracles, each first shown to catch the head, find no violation at the fixed head: the reviewer's (about
+2.2 million comparisons over four seeds; 686 at `7a12ee6f`) and an extended one of ours with flag-name, nested-URL and
+escape shapes (one million; 70,280 at `7a12ee6f`). The round's lows were fixed with it (relative candidate roots
+refused, batch packing pinned, the `ci` aggregate's guard steps pinned to their keys, the W7 summary moved back beside
+its copy, the release runbook and `code-review.md` notes, and smaller corrections). A cleanup race in a test failed
+the usage controls job once at `7a12ee6f` (ESRCH between a liveness check and a kill) and was fixed in `93a8b033`.
+**D64's bar is still not met:** acceptance needs a NEW round 5 with no blocker, high or medium finding.
 
 ## Execution record moved from current.md — 2026-11-04
 
@@ -11222,11 +11238,11 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
 > found that the rest of its unique records had left the docs, against D66's ruling to relocate them, so they are
 > moved here verbatim too: the Wave 2 and Wave 3 sections of that plan, the rows the reset edited in place (as they
 > read before), and current.md's, CLAUDE.md's and AGENTS.md's status blocks. Only relative links were rewritten and
-> heading levels lowered by one; headings in brackets are added. Five old lines are deliberately not repeated: the
-> page's own `Last updated` and **Related** lines, the 2.6.F and 2.6.C status headings (their records are the
-> workstream sections in [Phase 2.6](phase-2.6-conversational-authoring.md)) and a paraphrased duplicate of the W7
-> round-1 review summary, whose canonical copy is in Phase 2.6.5's record; the 2.6.Q usage-capture line was extended
-> in place in Phase 2.6. The Phase 2.6.5 interlude and the W7/W8 records are
+> heading levels lowered by one; headings in brackets are added. Four old lines are deliberately not repeated: the
+> page's own `Last updated` and **Related** lines and the 2.6.F and 2.6.C status headings (their records are the
+> workstream sections in [Phase 2.6](phase-2.6-conversational-authoring.md)); the 2.6.Q usage-capture line was
+> extended in place in Phase 2.6. current.md's W7 round-1 review summary, first left out as a duplicate, holds facts
+> its Phase 2.6.5 copy lacks and now sits verbatim beside that copy (D64 round 4). The Phase 2.6.5 interlude and the W7/W8 records are
 > in [Phase 2.6.5's record](phase-2.6.5-core-reliability-remediation.md#execution-record-moved-from-currentmd--2026-11-04),
 > Phase 2's status in [Phase 2's](phase-2-cli.md#status-record-moved-from-currentmd--2026-11-04) and the
 > "Not started yet" summary in [Phase 2.6's](phase-2.6-conversational-authoring.md#status-record-moved-from-currentmd--2026-11-04).
