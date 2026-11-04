@@ -10703,7 +10703,9 @@ unsanitized `relavium run` output; the maintainer accepted it because the produc
 tree (`c7af0bc3`) is byte-identical to the merged head `f25fb83da17583c6e51ee72c7d5bfdbdfc7ad5a7`; GitHub records 97
 commits, 179 changed files, +34,184 / −3,264. `development` was fast-forwarded to the merge commit. It is the scoped
 checkpoint [D61](#mvp-priority-reset--2026-11-04) ruled and claims no wave acceptance: Wave 3 stays paused after
-Step 9b.2, and whole-wave acceptance remains Step 19.
+Step 9b.2, and whole-wave acceptance remains Step 19. The review correction reached `main` with this merge before any of its D64 rounds,
+by the maintainer's decision; `main` keeps the regressions those rounds found until the next checkpoint
+([current.md](../current.md#status-at-a-glance) names them).
 
 **What reached `main`.** The accepted increments PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2, each under its own
 acceptance register (none is widened by the merge), including Step 9a.1's interim release guard; the
@@ -10726,7 +10728,9 @@ the maintainer chose to record are in
 130/130, acceptance tools 1,027/1,027), and `pnpm coverage:enforced` passed there (753 files, 16,244 tests; 94.75%
 lines, 92.83% branches). GitHub CI at the merged head `f25fb83d`: push run 41848319834 and pull-request run
 41848332524, 18 of 18 jobs green each. SonarCloud: the PR's gate OK at `f25fb83d` (0 bugs, 0 vulnerabilities, 42
-recorded smells) and `main`'s gate OK at `b3cf117e`.
+recorded smells) and `main`'s gate OK at `b3cf117e`. `main`'s own push run at `b3cf117e` (41872891482) failed
+on its first attempt: its macOS consumer was cancelled before any step ran, for want of a runner, so the two
+aggregates that need it failed.
 
 **Repository settings changed with it (maintainer, 2026-11-04).** `main`'s branch protection requires
 `windows · db concurrency + filesystem + headless smoke` beside `lint · typecheck · test` and the coverage floor;
@@ -10767,8 +10771,24 @@ fixed with it: an inline flag name read by the text rules, two surviving mutants
 length bound and npm's name rules with a test per guard, the required-check pin extended to `needs`, the Build step,
 the coverage steps and `ci`'s name, and eight documentation corrections. Before round 3, a differential oracle over
 365,640 argument vectors (every vector of up to three items from a 40-item pool, and 300,000 random ones of four to
-seven) found no credential that `64fb8772` masked and the fixed head shows, in either projection. **D64's bar is still
-not met:** acceptance needs a NEW round 3 with no blocker, high or medium finding.
+seven) found no credential that `64fb8772` masked and the fixed head shows, in either projection; its value pool held
+no flag-shaped secret, so it could not see the class round 3 then found. **D64's bar was still not met:** acceptance
+needed a NEW round 3 with no blocker, high or medium finding.
+
+**D64 round 3 (2026-11-04, at `07f653e7`).** The same shape over `64fb8772..07f653e7` confirmed one medium finding:
+round 2's fix read a credential flag in value position as a flag, so a password spelled like one (`--password
+-MySecret`) showed in `toolInput` and the journal digest, which `64fb8772` masked (introduced by `2f7224ec`). A
+verifier downgraded a second claim to low: the `,`/`/` reading gave a credential-word username (`x-access-token:`) its
+text, so a password's tail after a raw `@` showed (introduced by `0826f30a`). Both readings now only add masks: a
+credential flag in value position is masked as a value and still masks the element after it, and the `,`/`/` reading's
+username owns no text, so the key rules mask as they did before. A superset oracle checks that property directly, with
+markers in every position including flag-shaped values and credential-word usernames: over 200,000 generated URL texts
+and argument vectors, in the display, value and journal projections (one million comparisons), no marker that
+`64fb8772` hid is visible at the fixed head, while the same oracle finds 60,299 violations at `07f653e7`. The round's
+lows were fixed with it (the password tail's five stops and `-u-` pinned, the hash-object batch bound and an extra
+answer line tested, the allowlist on optional and peer dependencies, a 40-hex blob id, default and step shells pinned,
+eight documentation corrections) except one recorded limit and one equivalent mutant. **D64's bar is still not met:**
+acceptance needs a NEW round 4 with no blocker, high or medium finding.
 
 ## Execution record moved from current.md — 2026-11-04
 
@@ -11349,13 +11369,13 @@ A 2026-07-19 full-project code review then opened **Phase 2.5.5 (Hardening and R
 interstitial phase holding the review's verified findings against the pre-2.6 codebase; it runs
 **concurrently with Phase 2.6, not before it** — see
 [phases/phase-2.5.5-hardening-and-remediation.md](phase-2.5.5-hardening-and-remediation.md)
-and [Active now](../current.md#what-is-active-now).
+and [Active now](#what-is-active-now).
 **Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
 Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
 (PR #74, 2026-07-11), and so is **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
-PR #75, 2026-07-13) — see [Active now](../current.md#what-is-active-now). **2.6.Q** (dynamic model-catalog
+PR #75, 2026-07-13) — see [Active now](#what-is-active-now). **2.6.Q** (dynamic model-catalog
 enrichment) is **no longer blocked**: [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md)
 and [ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) are both
 **Accepted**, resolving the six open maintainer questions the phase file had cited, and the P1–P5
@@ -11364,7 +11384,7 @@ visibility toggle remain open; the bundled offline snapshot was **regenerated** 
 price ruling.
 
 **The unified build order across both phases is in
-[Execution order — Phase 2.5.5 + Phase 2.6](../current.md#execution-order--phase-255--phase-26-temporary) below** — a
+[Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
 temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
 merged too (PR #85, 2026-08-28).
@@ -11444,7 +11464,7 @@ are recorded in
 9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
 [increment table](#proposed-implementation-increments) and end with
 whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the
-review scope of new commits. See the [Wave 3 queue](../current.md#wave-3--clear-the-ground).
+review scope of new commits. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 
 ### Where we are

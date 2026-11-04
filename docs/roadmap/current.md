@@ -39,7 +39,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. `development` is ahead of `main` again with the D64 fixes to that correction (from `5a1006ea`); `main` keeps the redaction regressions they fix (credential flags after a boolean flag, a query key in a `,`/`/` URL password) until the next checkpoint, MVP-10's unless the maintainer schedules one earlier |
+| Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. `development` is ahead of `main` again with the D64 fixes to that correction (from `5a1006ea`); `main` keeps the redaction regressions they fix (a credential flag after a boolean flag, a credential key in a `,`/`/` URL password's userinfo) until the next checkpoint, MVP-10's unless the maintainer schedules one earlier |
 
 ### What a CLI user meets today
 
@@ -80,7 +80,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 
 0. **Gate 0 — decide and re-order (no product code).** This reset and the `development`→`main` checkpoint (D61) —
    **both done:** PR #96 merged on 2026-11-04 ([checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)); its review
-   correction's D64 round 1 found five medium findings and round 2 one, all fixed since, and a clean round 3 is
+   correction's D64 rounds 1–3 found five, one and one medium findings, all fixed since, and a clean round 4 is
    pending;
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
@@ -202,7 +202,8 @@ sub-stream D are satisfied on `main`; M2.5.5-2's I half stays open.
 
 **Paused on 2026-10-26 after Step 9b.2; 25 of 32 increments pending behind the MVP.** Steps 1–8 merged to `main`
 as [PR #95](https://github.com/HodeTech/Relavium/pull/95) on 2026-10-18 ([merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18));
-PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are accepted on `development`, each with its acceptance record in the
+PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are accepted and on `main` since the D61 checkpoint (PR #96, 2026-11-04),
+each with its acceptance record in the
 [register](phases/phase-2.5.5-hardening-and-remediation.md). The
 [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns the
 remaining increments' scope and order. Whole-wave acceptance stays Step 19.

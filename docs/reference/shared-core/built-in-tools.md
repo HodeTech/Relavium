@@ -136,15 +136,18 @@ the delimiters of the JSON and quoted texts it reads, so userinfo that contains 
 already-masked `[REDACTED]` password among them — is left as it is; it recognizes any scheme of up to
 32 characters rather than a finite list; and a userinfo with no password is kept as a vanity handle
 below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 a `,` or `/` in a
-password no longer ends the authority: the userinfo is read on to the first `@` within 512 characters
+password no longer ends an authority that holds no `@` before it: the userinfo is read on to the first `@`
+within 512 characters
 (`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`), while a `,` in the
 username still ends the authority (`https://us,er:pw@host` stays as it is; the backstop masks it). A port
 (`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
 scheme, a quote, `}`, `]` or whitespace, or any raw `?` or `#` after the `,` or `/` (which may begin a path's
 query, as in `https://host:abc/p?e=a@b`) keeps the text public: `https://user:pa,ss?1@host` stays as it is,
-a recorded limit the backstop does not share for the comma spelling. After a raw `?` or `#` before the first
-`:` there is no username, as in the authority scan, so a key there masks its value to its own end
-(`http://svc?token=a:b/c@d` → `http://[redacted]`). The backstop still stops at a `/` (a recorded low). Two
+a recorded limit the backstop does not share for the comma spelling. This reading only adds masks: its username
+owns no text, so every key there — a credential-word username, or one after a raw `?`, `#`, `;` or `&` — masks its
+value to its own end as before 2026-11-04 (`https://x-access-token:pa,ss@github.com/o/r` and
+`http://svc?token=a:b/c@d` → `https://[redacted]`, `http://[redacted]`). A password with an `@` before its `,`
+or `/` keeps its tail after that `@` (`https://user:p@ss/word@vault/x`), a recorded limit. The backstop still stops at a `/` (a recorded low). Two
 further recorded limits: a password that begins with the `,` or `/` (`https://user:/pw@host`) stays public,
 and a non-numeric port with an `@` in its path (`http://localhost:$PORT/users/@me`) reads as a password through
 that `@`, which masks benign text and merges the journal identities of calls that differ there.
@@ -158,11 +161,11 @@ rule's words as written (`--auth-token`, `--access-token`, `--db-password`, `--p
 Only `-p`/`-P` keep a port exception. A `-u`/`--user` value (curl's `user:password` spelling, glued as
 `-ualice:secret` or not) is masked when it holds a `:`, unless it is a `uid[:gid]` or a URL. The rule does
 not know the program, so a `name:group` (`docker run -u app:app`) or another colon-bearing value after
-`-u` is masked too, and calls that differ only there share one journal identity. A credential flag in value position — after a
-boolean flag whose last word names a credential (`--ask-password --password <password>`) or after a
-`-u`/`--user` with no pair (`unzip -u -P <password>`) — is read as a flag, so it masks its own value, and a
-`--flag=value` spelling's flag name is read by the text rules too. A password that is itself spelled like a
-credential flag (`--password --token`) therefore stays visible, a recorded limit. Short-option clusters (`curl -su alice:secret`),
+`-u` is masked too, and calls that differ only there share one journal identity. A credential flag in value position may be the
+previous flag's value (`--password -MySecret`) or a flag of its own (`--ask-password --password <password>`),
+so it is masked as a value and still masks the element after it: neither reading leaks, at the cost of the flag
+name there. After a `-u`/`--user` with no pair (`unzip -u -P <password>`) the element is read as any other, and a
+`--flag=value` spelling's flag name is read by the text rules too. Short-option clusters (`curl -su alice:secret`),
 `-U`/`--proxy-user` and flags whose last word is not a listed credential word (`--oauth2-bearer`,
 `--pass`, openssl's `-passin`, keytool's `-storepass`) are outside the rule, a recorded limit.
 
