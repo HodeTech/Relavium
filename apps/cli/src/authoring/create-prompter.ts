@@ -126,7 +126,8 @@ export function createClackPrompter(deps: ClackCreateDeps = defaultDeps): Create
 
       const toolsRaw = await deps.text({
         message: 'Tools (comma-separated tool ids, optional)',
-        placeholder: 'read_file, web_search',
+        // Tools that also work on `relavium run`, which wires no egress or os arm (2.6.A).
+        placeholder: 'read_file, list_directory',
       });
       if (deps.isCancel(toolsRaw)) return null;
       const tools = toolsRaw

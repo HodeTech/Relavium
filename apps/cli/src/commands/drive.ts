@@ -1,11 +1,13 @@
 import {
   EngineStateError,
   WorkflowValidationError,
+  validateWorkflowToolArms,
   validateWorkflowWithCatalog,
   type RunHandle,
   type RunDeparture,
   type WorkflowDefinition,
   type WorkflowEngine,
+  type ToolHostArm,
   type WorkflowModelCatalog,
 } from '@relavium/core';
 import type {
@@ -40,6 +42,25 @@ export function assertWorkflowCatalogValid(
 ): void {
   try {
     validateWorkflowWithCatalog(workflow, catalog);
+  } catch (err) {
+    if (err instanceof WorkflowValidationError) {
+      throw new CliError('invalid_invocation', err.message, { cause: err });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The run-path tool pre-flight (2.6.A, MVP-1): a workflow granting a built-in whose host arm `relavium run` does
+ * not wire (`web_search`, `http_request`, `read_clipboard`, `notify`) is refused before the run starts, as an
+ * `invalid_invocation` CliError (exit 2), instead of failing with `tool_unavailable` partway through.
+ */
+export function assertWorkflowToolArmsWired(
+  workflow: WorkflowDefinition,
+  unwired: readonly ToolHostArm[],
+): void {
+  try {
+    validateWorkflowToolArms(workflow, { unwired });
   } catch (err) {
     if (err instanceof WorkflowValidationError) {
       throw new CliError('invalid_invocation', err.message, { cause: err });

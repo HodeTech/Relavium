@@ -1297,6 +1297,50 @@ describe('runCommand', () => {
     expect(engineBuilt).toBe(false);
   });
 
+  it('refuses a grant the run path cannot serve before any key is read or the engine built (2.6.A)', async () => {
+    const path = writeWorkflow(
+      'agent-search.relavium.yaml',
+      AGENT_WF.replace('id: cli-run-agent', 'id: cli-run-agent-search').replace(
+        'system_prompt: inspect }',
+        "system_prompt: inspect, tools: ['read_file', 'web_search'] }",
+      ),
+    );
+    const { io } = captureIo();
+    let keysRead = 0;
+    let engineBuilt = false;
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          resolveKeys: () => {
+            keysRead += 1;
+            return {
+              providers: createProviderResolver({ RELAVIUM_ANTHROPIC_API_KEY: 'present' }),
+              mcpSecretResolver: vi.fn(() => 'unused'),
+            };
+          },
+          buildEngine: () => {
+            engineBuilt = true;
+            return Promise.reject(new Error('the engine must not be built'));
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('node `a`.tools');
+      expect(caught.message).toContain('web_search needs a host capability');
+    }
+    expect(keysRead).toBe(0);
+    expect(engineBuilt).toBe(false);
+  });
+
   it('names the matching env var for a non-anthropic primary provider (gemini)', async () => {
     const path = writeWorkflow('agent-gemini.relavium.yaml', AGENT_WF_GEMINI);
     const { io } = captureIo(); // io.env = {} → no RELAVIUM_GEMINI_API_KEY

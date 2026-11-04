@@ -23,7 +23,7 @@ import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-no
 import { hostAbortController, hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
-import { assembleToolEnv } from './tool-host/assemble.js';
+import { assembleToolEnv, type ToolEnvProfile } from './tool-host/assemble.js';
 
 export interface BuildEngineOptions {
   /**
@@ -120,6 +120,9 @@ export interface BuildEngineOptions {
  * tool needing one is cleanly `tool_unavailable`. Absent `toolEnv` (the in-memory unit/harness path) ⇒ a
  * fail-closed `{}` base host.
  */
+/** The tool-host profile of `relavium run` and `gate` (the author-trusted run host; see {@link buildEngine}). */
+export const RUN_TOOL_PROFILE: ToolEnvProfile = 'workflow-read-write';
+
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
   const providers = options.providers ?? createProviderResolver();
@@ -137,7 +140,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     options.toolEnv === undefined
       ? {}
       : assembleToolEnv({
-          profile: 'workflow-read-write',
+          profile: RUN_TOOL_PROFILE,
           fsScopeTier: options.toolEnv.fsScopeTier,
           workspaceDir: options.toolEnv.workspaceDir,
           ...(options.toolEnv.nativeProcesses === undefined

@@ -23,8 +23,10 @@ import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { loadResolvedConfig } from '../config/load.js';
 import {
   buildEngine as defaultBuildEngine,
+  RUN_TOOL_PROFILE,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import { unwiredToolArms } from '../engine/tool-host/assemble.js';
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import {
   createEffectJournalPort,
@@ -76,6 +78,7 @@ import {
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
+  assertWorkflowToolArmsWired,
   driveRun,
   isTerminalOutcome,
   outcomeToExitCode,
@@ -235,6 +238,8 @@ async function runOwned(
   }
   const inputs = admitted.inputs;
   warnSnapshotLiterals(def, deps.io);
+  // Before any key is resolved: a grant this path cannot serve is refused with nothing read (2.6.A, MVP-1).
+  assertWorkflowToolArmsWired(def, unwiredToolArms(RUN_TOOL_PROFILE));
   lifetime.checkpoint();
   const keys = deps.resolveKeys?.();
   lifetime.checkpoint();

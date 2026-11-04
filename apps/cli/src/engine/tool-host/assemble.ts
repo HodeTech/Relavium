@@ -1,5 +1,5 @@
 import type { NativeProcessController } from '../../process/native-process-owner.js';
-import type { FsScopeTier, ToolDef, ToolDelegateName, ToolHost } from '@relavium/core';
+import type { FsScopeTier, ToolDef, ToolDelegateName, ToolHost, ToolHostArm } from '@relavium/core';
 import type { ToolPolicy } from '@relavium/shared';
 
 import { createNodeEgressCapability } from './egress.js';
@@ -44,6 +44,14 @@ export { ProcessCapabilityError, ProcessDeniedError } from './process.js';
 
 /** The three host profiles: read-only chat, the full-capability (approval-gated) chat host, and the run host. */
 export type ToolEnvProfile = 'chat-read-only' | 'chat-read-write' | 'workflow-read-write';
+
+/**
+ * The host arms a profile leaves unwired: only the approval-gated `chat-read-write` host wires `egress` and `os`.
+ * {@link assembleToolEnv} wires from this, and `relavium run`'s pre-flight refuses a grant that needs one (2.6.A).
+ */
+export function unwiredToolArms(profile: ToolEnvProfile): readonly ToolHostArm[] {
+  return profile === 'chat-read-write' ? [] : ['egress', 'os'];
+}
 
 export interface AssembleToolEnvOptions {
   /** Invocation-owned native creation authority, inert until a capability actually spawns. */
@@ -97,7 +105,7 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   const tier: FsScopeTier = isChat ? clampChatTier(opts.fsScopeTier) : opts.fsScopeTier;
   // The full-capability chat host (ADR-0057): `egress` + `os` ride on top of fs-write + process, made safe by
   // the per-tool approval floor (the regime + advertise-filter the session-host activates), NOT by absence.
-  const wireEgressOs = opts.profile === 'chat-read-write';
+  const wireEgressOs = unwiredToolArms(opts.profile).length === 0;
   const host: ToolHost = {
     // Strings in committed config cannot grant roots: only the pre-admitted host policy can widen project scope.
     fs: createNodeFsCapability({
