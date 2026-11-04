@@ -1146,7 +1146,8 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * them (an already-masked `[REDACTED]` password among them) is left as it is; it recognizes any
  * scheme of up to 32 characters rather than a finite list; and a userinfo with no password is a
  * vanity handle below 16 characters and masked from 16 on, under every scheme. A `,` or `/` in a
- * password is read on to its `@` ({@link passwordPastDelimiter}).
+ * password is read on to its `@` ({@link passwordPastDelimiter}), but a `,` in a username still ends the
+ * authority (`https://us,er:pw@host` stays as it is; the backstop masks it).
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
   // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
@@ -1461,21 +1462,26 @@ function redactArgVector(
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
-    // A `-u`/`--user` value that is no user:password pair is processed as any element, so a credential flag
-    // there (`unzip -u -P <pw>`) still masks its own value (a D64 round-1 finding on the PR #96 correction).
+    // A credential flag in value position (`--ask-password --password <pw>`), and a `-u`/`--user` value that is
+    // no user:password pair, are processed as any element, so a credential flag there still masks its own value
+    // (D64 round-1 and round-2 findings on the PR #96 correction).
+    const flag = typeof item === 'string' && isCredentialFlag(item);
     const masked =
-      redactNext === undefined ? undefined : redactCredentialArgument(redactNext, item, whole);
+      redactNext === undefined || flag
+        ? undefined
+        : redactCredentialArgument(redactNext, item, whole);
     redactNext = undefined;
     if (masked !== undefined) {
       out.push(masked);
       continue;
     }
-    const inline = typeof item === 'string' ? redactInlineCredential(item, whole) : undefined;
+    const inline =
+      typeof item === 'string' ? redactInlineCredential(item, project, whole) : undefined;
     if (inline !== undefined) {
       out.push(inline);
       continue;
     }
-    if (typeof item === 'string' && isCredentialFlag(item)) redactNext = item;
+    if (flag) redactNext = item;
     out.push(redactSecretShapedWalk(item, seen, project, collide, whole));
   }
   return out;
@@ -1485,12 +1491,17 @@ function redactArgVector(
  * One argument that carries its own credential, masked: a credential flag's `--flag=value` spelling or curl's
  * glued `-ualice:secret`. `undefined` when the argument is neither, so the vector walks it as usual.
  */
-function redactInlineCredential(item: string, whole: WholeMask): string | undefined {
+function redactInlineCredential(
+  item: string,
+  project: TextProjection,
+  whole: WholeMask,
+): string | undefined {
   const separator = item.indexOf('=');
   const flag = separator > 0 ? item.slice(0, separator) : '';
   if (isCredentialFlag(flag)) {
     const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
-    if (masked !== undefined) return `${flag}=${masked}`;
+    // The name is read too: a last-word flag admits any name before its credential word.
+    if (masked !== undefined) return `${project(flag)}=${masked}`;
   }
   const glued = gluedUserPassword(item);
   return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;

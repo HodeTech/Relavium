@@ -933,7 +933,17 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
     const benign = {
       args: [
-        ...['-u', 'alice', '--user', 'carol', '-u', '1000:1000', '--user=dave', '-uroot'],
+        ...[
+          '-u',
+          'alice',
+          '--user',
+          'carol',
+          '-u',
+          '1000:1000',
+          '--user=dave',
+          '-uroot',
+          '-u=1000:1000',
+        ],
         ...['--user', 'git+https://example.invalid/r.git'],
       ],
     };
@@ -943,6 +953,31 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(
       JSON.stringify(redactSecretShapedValue({ args: ['--user', key, '-u', key] })),
     ).not.toContain(key);
+    // A boolean flag whose last word names a credential leaves the credential flag after it in force too,
+    // in both projections; and a flag-shaped name keeps no secret shape in its `=` spelling.
+    const ghp = `ghp_${'Q'.repeat(36)}`;
+    for (const [args, expected] of [
+      [
+        ['helm', '--pass-credentials', '--password', 'Qz7pw', '--with-token', '--token', 'Qz7pw'],
+        [
+          'helm',
+          '--pass-credentials',
+          '--password',
+          '[redacted]',
+          '--with-token',
+          '--token',
+          '[redacted]',
+        ],
+      ],
+      [
+        ['--ask-password', '--passphrase', '--secret', '-p', 'Qz7pw'],
+        ['--ask-password', '--passphrase', '--secret', '-p', '[redacted]'],
+      ],
+      [[`--github-${ghp}-token=Qz7pw`], ['--github-[redacted]-token=[redacted]']],
+    ] as const) {
+      expect(redactSecretShapedValue({ args })).toEqual({ args: expected });
+      expect(projectSecretShapedValue({ args }).value).toEqual({ args: expected });
+    }
     // A boolean -u/--user (unzip's update flag) leaves the credential flag after it in force.
     expect(
       redactSecretShapedValue({
@@ -1392,6 +1427,7 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
       // A key in the username names the user, so its value stops at the `@` and the host stays.
       ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
+      ['https://x-access-token:pa?x,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
       // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
       // After a raw `?`/`#` there is no username: the key there masks its value to its own end.
