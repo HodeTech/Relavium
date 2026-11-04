@@ -304,6 +304,9 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({ chat: { on_exceed: 'explode' } }).success).toBe(false);
     // 0 = unbounded here (nonNegativeInt) — deliberately unlike the workflow budget's positiveInt.
     expect(ProjectConfigSchema.safeParse({ chat: { max_cost_microcents: 0 } }).success).toBe(true);
+    // [chat].max_tokens (MVP-A7) is a positive cap: 0 would mean nothing.
+    expect(ProjectConfigSchema.safeParse({ chat: { max_tokens: 4000 } }).success).toBe(true);
+    expect(ProjectConfigSchema.safeParse({ chat: { max_tokens: 0 } }).success).toBe(false);
   });
 
   it('preserves absent and empty filesystem selectors and admits relative selectors (ADR-0105)', () => {
