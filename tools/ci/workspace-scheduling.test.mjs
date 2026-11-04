@@ -217,11 +217,23 @@ test('required checks keep their branch-protection names and cannot be skipped',
     assert.equal(job.name, name, id);
     assert.equal(job.if, undefined, id);
     assert.equal(job['continue-on-error'], undefined, id);
+    // A `needs` would skip the required job whenever its dependency fails.
+    assert.equal(job.needs, undefined, id);
+  }
+  // The aggregate keeps its required context name (its `if: always()` is pinned with its needs).
+  assert.equal(workflow.jobs.ci.name, 'lint · typecheck · test');
+  for (const step of workflow.jobs.coverage.steps) {
+    assert.equal(step.if, undefined, step.name ?? step.uses);
+    assert.equal(step['continue-on-error'], undefined, step.name ?? step.uses);
   }
   const steps = workflow.jobs['windows-concurrency'].steps;
   const build = steps.findIndex((step) => step.id === 'windows-build');
   assert.ok(build > 0);
   assert.ok(steps.length > build + 1);
+  for (const step of steps.slice(0, build + 1)) {
+    assert.equal(step.if, undefined, step.name ?? step.uses);
+    assert.equal(step['continue-on-error'], undefined, step.name ?? step.uses);
+  }
   for (const step of steps.slice(build + 1)) {
     assert.equal(
       step.if,

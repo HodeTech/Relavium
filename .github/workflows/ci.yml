@@ -226,7 +226,7 @@ jobs:
       # RUN the artifact this job just built, through the SAME `pnpm smoke:cli` script the root `ci` script
       # calls — a check that exists in only one of the two is exactly the #312 divergence this change closes.
       # Until now nothing in the required gate executed
-      # `apps/cli/dist/index.js` — only the advisory Windows leg and the tag-gated release smoke did (#294) —
+      # `apps/cli/dist/index.js` — only the then-advisory Windows leg and the tag-gated release smoke did (#294) —
       # so a bundle that builds but cannot boot merged green. The `run --json` leg additionally proves the
       # migrations resolve beside the bundle, which is the failure `apps/cli/drizzle/**` becoming a declared
       # turbo output (#315) exists to prevent: a cache-hit replay used to leave `dist/` fresh next to a

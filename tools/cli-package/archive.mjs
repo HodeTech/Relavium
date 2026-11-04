@@ -90,20 +90,27 @@ function unpack(bytes) {
 const REGISTRY_REQUIREMENT =
   /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64}){0,15})?$/u;
 
+/** A lowercase npm package name: no part begins with `.` or `_`, as npm requires. */
+const PACKAGE_NAME = /^(?:@[a-z0-9-][a-z0-9_.-]*\/)?[a-z0-9-][a-z0-9_.-]*$/u;
+
 /**
  * Whether one public runtime dependency entry is admitted: an npm package name outside the private
- * `@relavium/` scope, required at a registry version. Shared by the archive inspector and the package
- * receipt binding so the two cannot drift.
+ * `@relavium/` scope (and not npm's reserved `node_modules` or `favicon.ico`), required at a registry
+ * version of at most 100 characters, well under semver's 256, past which npm reads a version as a
+ * dist-tag. Shared by the archive inspector and the package receipt binding so the two cannot drift.
  * @param {string} name
  * @param {unknown} requirement
  * @returns {boolean}
  */
 export function isPublicRuntimeDependency(name, requirement) {
   return (
-    /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u.test(name) &&
+    PACKAGE_NAME.test(name) &&
     name.length <= 200 &&
+    name !== 'node_modules' &&
+    name !== 'favicon.ico' &&
     !name.startsWith('@relavium/') &&
     typeof requirement === 'string' &&
+    requirement.length <= 100 &&
     REGISTRY_REQUIREMENT.test(requirement)
   );
 }

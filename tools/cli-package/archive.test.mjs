@@ -309,11 +309,20 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     { commander: '*' },
     { commander: '>=12.0.0' },
     { commander: 'latest' },
-    // npm reads an empty prerelease identifier as a dist-tag.
+    // npm reads an empty prerelease identifier, or a version over semver's length limit, as a dist-tag.
     { commander: '1.2.3-.' },
     { commander: '1.2.3-a..b' },
+    { commander: `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}` },
     { commander: '' },
     { commander: 12 },
+    { commander: ['12.1.0'] },
+    // Names npm refuses, and the private scope.
+    { Commander: '12.1.0' },
+    { _commander: '12.1.0' },
+    { '.commander': '12.1.0' },
+    { '@scope/.x': '12.1.0' },
+    { node_modules: '12.1.0' },
+    { [`c${'o'.repeat(200)}`]: '12.1.0' },
   ]) {
     const badPackage = { ...expectedPackage, dependencies };
     const files = inventory();
@@ -344,8 +353,22 @@ test('a runtime dependency is admitted at an exact, caret, tilde or prerelease r
       requirement,
     );
   }
-  for (const requirement of ['1.2.3-.', '1.2.3-a.', '1.2.3-..', 'latest', '>=1.0.0']) {
-    assert.equal(isPublicRuntimeDependency('commander', requirement), false, requirement);
+  for (const requirement of ['1.2.3-.', '1.2.3-a.', '1.2.3-..', 'latest', '>=1.0.0', ['12.1.0']]) {
+    assert.equal(isPublicRuntimeDependency('commander', requirement), false, String(requirement));
+  }
+  assert.equal(
+    isPublicRuntimeDependency('commander', `1.2.3-${'a'.repeat(60)}.${'a'.repeat(33)}`),
+    true,
+  );
+  assert.equal(
+    isPublicRuntimeDependency('commander', `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}`),
+    false,
+  );
+  for (const name of ['@scope/pkg', 'a-b.c_d', `c${'o'.repeat(199)}`]) {
+    assert.equal(isPublicRuntimeDependency(name, '1.0.0'), true, name);
+  }
+  for (const name of ['favicon.ico', '@relavium/core', '_x', '.x', '@_s/x']) {
+    assert.equal(isPublicRuntimeDependency(name, '1.0.0'), false, name);
   }
 });
 
