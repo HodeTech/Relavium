@@ -82,7 +82,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the
-   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for CR-71 (D67). Maintainer
+   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). Maintainer
    gates: CI provider keys for the live-nightly lane (D37), provider spend for a manual three-provider turn and a
    Windows machine for MVP-10. A stale-entry sweep of [deferred-tasks.md](deferred-tasks.md) and the phase 2.6
    bullets that 2.6.5 and Wave 2–3 work already satisfied.
@@ -104,12 +104,14 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering
    v2** (sanitized target kept after the turn; assistant text between tool calls kept); 2.6.M · **Default chat
    agent grant review** as amended by D62 (MVP-A14) with `[chat].default_mode` (MVP-A13); the 80×24 guard on
-   both chat surfaces and the Home strip row budget (#63, row 15c split).
+   both chat surfaces and the Home strip row budget (#63, row 15c split) — MVP-3 owns the strip's geometry
+   and its no-hidden-input rule, MVP-8 its content.
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
    pending approval rejecting it (MVP-A12; row 11b split); denials returned to the model (MVP-A10); a failed,
-   denied or aborted turn kept in context as a content-free interruption marker (CR-71, un-deferred, D67);
-   configurable, finite turn ceilings with conservative defaults (MVP-A11).
+   denied or aborted turn kept in context as a content-free interruption marker (the CR-71 residual,
+   un-deferred, D67; CR-71 itself closed in W7); configurable, finite turn ceilings with conservative
+   defaults (MVP-A11).
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file
    and environment block (MVP-A16); 2.6.E · **Type-ahead message queue**; `chat --model/--provider` and a one-shot
    prompt mode (MVP-A17).
@@ -120,8 +122,8 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 7. **MVP-7 — Web.** G30 (rows 13a–13c, pulled forward; 13c is re-scoped when it starts because Step 12b is
    paused); 2.6.M · **`web_search` activation**; web fetch through `http_request` under the chat authority.
 8. **MVP-8 — The Home as hub.** Phase 2.6 ADR row 6; 2.6.H's history data layer as far as G needs it; 2.6.K's
-   shared resume core; 2.6.G's `/agents`, the actionable strip, `/workflows` (defined, history, run detail) and the
-   bound-agent view; Home `/help`; `logs --follow/--failed`.
+   shared resume core; 2.6.G's `/agents`, the actionable strip's content (within MVP-3's row budget),
+   `/workflows` (defined, history, run detail) and the bound-agent view; Home `/help`; `logs --follow/--failed`.
 9. **MVP-9 — MCP and provider management.** Phase 2.6 ADR row 7; MCP servers attached to the default agent under
    ADR-0084 consent (MVP-A21); 2.6.I · **`/providers`**, `/mcp`, **`relavium mcp list/add/remove/test`** and MCP
    header auth; the masked `provider set-key` prompt (MVP-A20).
@@ -145,7 +147,10 @@ stays so (D60); the published `0.1.1` still prints unsanitized model output in `
 > `<sub-stream> · <the bullet's bold lead-in> (<finding ids>)`. The waves below keep the order derived on
 > 2026-07-26; since 2026-11-04 they run **after** the MVP above. The original plan's baseline, axes, Waves 0–1
 > and the PR #81 closing list (the only definition of `#W15-1`…`#W15-24`, which code comments cite) are preserved
-> verbatim in the [Phase 2.5.5 register](phases/phase-2.5.5-hardening-and-remediation.md#execution-record-moved-from-currentmd--2026-11-04).
+> verbatim in the [Phase 2.5.5 register](phases/phase-2.5.5-hardening-and-remediation.md#execution-record-moved-from-currentmd--2026-11-04),
+> and so, since the [PR #96 review correction](phases/phase-2.5.5-hardening-and-remediation.md#moved-by-the-pr-96-review-correction--2026-11-04),
+> are this page's other records: the Wave 2 and Wave 3 sections, its status blocks, and the W7, W8 and Phase 2.6.5
+> records in [Phase 2.6.5's](phases/phase-2.6.5-core-reliability-remediation.md#execution-record-moved-from-currentmd--2026-11-04).
 
 ```mermaid
 flowchart TD
@@ -359,7 +364,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D64 | MVP | Acceptance bar for MVP increments | ✅ **Ruled 2026-11-04 — tiered** (see [Next work](#next-work--the-cli-mvp)) |
 | D65 | MVP | Paused Wave 3 increments' user-visible pieces | ✅ **Ruled 2026-11-04:** six recorded splits (10b, 15a, 15c, 11b, 16b, 17a) and #61 move into the MVP; Steps 12/14 stay paused |
 | D66 | Gate 0 | `current.md`'s history | ✅ **Ruled 2026-11-04:** relocate the unique records, delete the duplicated history, keep every inbound anchor |
-| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** CR-71 un-deferred into MVP-4 (content-free marker), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 |
+| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 |
 | D68 | MVP-1/2/4 | First-run defaults and the keymap | ✅ **Ruled 2026-11-04:** env-var key fallback, the interactive output budget, the default model following the stored key, a minimal `init`, and one keymap ADR (Ctrl+C interrupts the turn, a second press ends the session, Ctrl+C at a pending approval rejects it first) superseding the 2026-10-19 `/cancel` wording |
 | D69 | MVP | Order of the added lanes | ✅ **Ruled 2026-11-04:** authoring → web → Home → MCP |
 | D70 | MVP | npm pre-release before v0.2.0 | ✅ **Ruled 2026-11-04 — none** |
@@ -390,15 +395,18 @@ places, each deliberate:
 
 ## Standing rules
 
-> **Branch from `origin/development`, never from a local `main`.** A long-lived `development` merged into
-> `main` by merge commit leaves a stale local `main` behind after every PR, silently and without conflict.
-> Run `git fetch` and cut from `origin/development`.
+> **Work on `development` itself** ([AGENTS.md](../../AGENTS.md)); create another branch only when the
+> maintainer asks, and then cut it from `origin/development`, never from a local `main`. A long-lived
+> `development` merged into `main` by merge commit leaves a stale local `main` behind after every PR, silently
+> and without conflict. Run `git fetch` first.
 
 - The gate is `pnpm run ci` plus `pnpm coverage:enforced`; `development` is pushed after each accepted increment
   and its push CI is observed.
-- `main` carries branch protection (PR required, `lint · typecheck · test` and the coverage floor required,
-  force-push and deletion blocked) and a `v*` tag ruleset limited to the maintain/admin roles; `release.yml`
-  asserts its ref is reachable from `main`.
+- `main` carries branch protection (PR required; `lint · typecheck · test`, the coverage floor and, since
+  2026-11-04, the Windows job required; no approval count, since GitHub refuses a self-approval — see
+  [code-review.md](../standards/code-review.md); force-push and deletion blocked) and a `v*` tag ruleset
+  limited to the maintain/admin roles; `release.yml` asserts its ref is reachable from `main` and publishes
+  from the `release` deployment environment.
 
 ## History
 

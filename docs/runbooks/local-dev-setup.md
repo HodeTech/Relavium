@@ -1,6 +1,6 @@
 # Local Dev Setup
 
-> Last updated: 2026-06-03
+> Last updated: 2026-11-04
 
 This runbook gets the Relavium monorepo building on your machine. Relavium is a
 **Turborepo + pnpm** TypeScript monorepo with a thin Rust layer for the Tauri desktop
@@ -63,28 +63,21 @@ pnpm --filter @relavium/core test
 Once the engine is green, bring up a surface. Build order is CLI → desktop → extension
 (see [architectural-principles.md](../standards/architectural-principles.md) §1).
 
-**CLI (fastest feedback loop):**
+**CLI (fastest feedback loop):** the CLI has no watch-mode script; build it, then run the bundle.
 
 ```bash
-pnpm --filter relavium dev
+pnpm turbo run build --filter=relavium
 # then, against a committed workflow file:
-relavium run ./workflows/<name>.relavium.yaml --input topic=<value>
+node apps/cli/dist/index.js run ./workflows/<name>.relavium.yaml --input topic=<value>
 ```
 
-**Desktop app (Tauri v2, needs the Rust toolchain):**
+Rebuild after every source change: the bundle is what runs, so a stale `dist/` runs old code. To call it
+as `relavium`, put an alias or a link to `apps/cli/dist/index.js` on your `PATH`.
 
-```bash
-pnpm --filter @relavium/desktop tauri dev
-```
-
-This starts the Vite + React 19 frontend and the Rust backend together with hot reload.
-
-**VS Code extension:**
-
-```bash
-pnpm --filter @relavium/vscode-extension build
-# then press F5 in VS Code on apps/vscode-extension to launch an Extension Host
-```
+**Desktop app and VS Code extension:** not in the repository yet. `apps/desktop` and
+`apps/vscode-extension` hold only a README; the desktop app is built in
+[Phase 3](../roadmap/phases/phase-3-desktop.md) and the extension in
+[Phase 4](../roadmap/phases/phase-4-vscode.md), and this section gains their commands then.
 
 ## 4. Add a provider key for local runs
 
@@ -100,8 +93,8 @@ in the repo.
 | 2 | `packages/llm` | `shared` |
 | 3 | `packages/core` | `shared`, `llm` |
 | 4 | `apps/cli` | `core` |
-| 5 | `apps/desktop` + `packages/ui` | `core` |
-| 6 | `apps/vscode-extension` | `core`, `ui` |
+| 5 | `apps/desktop` + `packages/ui` | `core` — **Phase 3; not in the repository yet** |
+| 6 | `apps/vscode-extension` | `core`, `ui` — **Phase 4; not in the repository yet** |
 | 7 | `apps/api` + `apps/portal` | `core`, `ui` — **Phase 2 (cloud) only** |
 
 ## Troubleshooting

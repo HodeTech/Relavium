@@ -963,6 +963,82 @@ to the file it names.
   tools/cli-package/release-recipient.test.mjs, tools/cli-package/release-binding.test.mjs,
   tools/cli-package/release-custody.test.mjs)*
 
+## PR #96 review — recorded findings and Sonar dispositions (2026-11-04)
+
+Recorded by the PR #96 review correction. The review's verified high and medium findings and SonarCloud's 27 bugs and
+10 vulnerabilities were fixed in that correction; these are the verified lows and the code smells the maintainer
+ruled on 2026-11-04 to record rather than refactor now. **Trigger for every entry:** the next change to the file it
+names, unless the entry names another.
+
+**Sonar code smells (gate-neutral; maintainability stays A):**
+
+- [ ] **Cognitive complexity (`S3776`) in fifteen functions.** *Low.* `packages/core/src/tools/bounding.ts` (five,
+  25–38), `packages/llm/src/scrub-secrets.ts:411`, `tools/cli-package/source-map.mjs:47` (35), `map-controls-core.mjs`,
+  `release-custody.mjs`, `candidate.mjs`, `release-binding.mjs`, `symbolicate.mjs`, `ustar.mjs`,
+  `tools/bundle-closure/closure.mjs` and `inventory.mjs`. Each is security-critical redaction or release tooling, so a
+  refactor needs its own mutation sweep and review. *(low · the files named)*
+- [ ] **Regex complexity (`S5843`) in eight patterns.** *Low.* `bounding.ts`'s standalone and key rules and five
+  `scrub-secrets.ts` rules: their "complexity" is the length of a finite name or shape alternation (as the existing
+  `NOSONAR` notes say), and each is a causal-control anchor. The three `S5869` reports on `scrub-secrets.ts:138` are
+  the `i` flag making `A-Z` and `a-z` overlap, not a duplicate. **Re-check:** split a rule only with its controls.
+  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **`S1994` on the closing-view loop.** *Low.* `bounding.ts`'s backward scan tests `next` but steps `index`; a
+  `while` rewrite must keep the step that its `continue` skips. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **`S6582` in `media-store-paths.ts` (three).** *Low.* The optional-chain rewrites are equivalent, but the lines
+  are filesystem causal-control anchors; change them with those controls. *(low · packages/db/src/media-store-paths.ts)*
+- **DECLINED — `S9382` (seven sequential awaits) and `S7758` (five `charCodeAt`).** The awaits are ordered process
+  steps by design (`map-controls-core.mjs`, `pipeline.mjs`, `symbolicate.mjs`), and `source-map.mjs` is a code-unit
+  VLQ parser that advances one code unit at a time, which `codePointAt` would misstate.
+
+**Redaction:**
+
+- [ ] **The LLM backstop leaves a `/` in a URL password.** *Low.* `scrubSecrets('https://user:pa/ss@host')` keeps the
+  password, because its userinfo pattern stops at `/`; core masks it since this correction. Matching core needs its
+  port guard (`host:8080/a@b` stays public). *(low · packages/llm/src/scrub-secrets.ts)*
+- [ ] **A glued `-pSECRET` (`mysql -uroot -pSecret`) is not masked.** *Low.* A glued `-p` is ambiguous with
+  `cp -pR` and `tar -pxf`, so only the separate and `=` spellings are read. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **The object-key rule masks count keys such as `max_tokens`.** *Low.* Its plural folding reads `tokens` as
+  `token`, so two calls that differ only in `max_tokens` share a journal identity. The argv rule reads words as written
+  and does not. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Zero-width characters break the `sk-` and `Bearer` shapes; header names are matched with hyphens only.**
+  *Low; verified.* *(low · packages/llm/src/scrub-secrets.ts)*
+- [ ] **A model-supplied tool name reaches an error message unmasked and unbounded.** *Low; verified.* *(low ·
+  packages/core/src/tools/errors.ts:21)*
+- [ ] **Two redaction engines and two fixed-point copies; the parity test compares booleans only.** *Low; verified.*
+  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **Permanent causal controls for this correction's three mechanisms.** *Low.* The credential-flag words, the
+  `,`/`/` password reading and the omitted-media bytes are pinned by permanent tests and a manual mutation sweep (every
+  mutant killed), not by `check:secrets-mutations` controls. The secrets evidence has about 15 MiB of headroom per
+  shard. *(low · tools/secrets-controls/mutations.mjs)*
+
+**Release, custody and tooling (verified lows):**
+
+- [ ] **`isProductionRecipient` accepts seam values; the distinction rests on a grep control.** *(low ·
+  tools/cli-package/release-recipient.mjs:52)* Trigger: Step 9d or Wave 4b.
+- [ ] **A revocation is visible only in the committed recipient snapshot.** *(low · docs/reference/cli/packaging.md)*
+- [ ] **`resolveGpg` checks `isFile`, not `X_OK`.** *(low · tools/cli-package/gnupg.mjs:33)*
+- [ ] **A developer's own `core.excludesFile` directory can let private untracked files into the candidate.** The
+  public tarball is not affected; an explicit `RELAVIUM_GIT_EXCLUDES_FILE` naming a directory already fails in Git.
+  *(low · tools/cli-package/candidate.mjs)*
+- [ ] **`prepack.mjs` selects the finalizer by environment variable; `symbolicate.mjs` may load TypeScript from a parent
+  directory.** The closure check is equivalent for the first. *(low · tools/cli-package/prepack.mjs:36,
+  tools/cli-package/symbolicate.mjs:306)*
+- [ ] **`runCommand` does not follow detached grandchildren after a successful exit; `causal-controls` starts a
+  detached group without a Ctrl-C handler; the smoke's cleanup can skip its PID kill after a parse error.** *(low ·
+  tools/cli-package/process.mjs, tools/causal-controls/, tools/cli-package/smoke/)*
+- [ ] **`mcp-orphan.e2e` scans the process table by fixture name, which sibling tests share; `vi.waitFor` keeps its
+  1-second default.** *(low · packages/mcp)*
+- [ ] **The case-insensitive custody tests run in no CI job.** *Medium as reviewed, low in practice.* Ubuntu skips
+  them and no macOS or Windows job runs `custody.test.mjs`; the local `pnpm run ci` on macOS runs them. A CI lane
+  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:830, .github/workflows/ci.yml)*
+- **DECLINED — declaring `RELAVIUM_CLI_CANDIDATE_STAGING` in `turbo.json`.** The candidate build never runs through
+  Turbo (`pnpm exec tsc` and `pnpm pack`), and Turbo 2's strict environment mode withholds an undeclared variable, so
+  a Turbo build is always map-free; declaring it would let one become a candidate build.
+
+**Not yet recorded here:** the review's unverified lows (its section F) wait for the consolidated file from that
+review session, and two roadmap lows ("DONE entries whose body still describes the open state", "MVP items without an
+annotation") need the entries they name.
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
@@ -1094,7 +1170,7 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
-      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4):** a failed, denied or aborted turn stays in context as a
+      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
       content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment drafted in Gate 0.
 
 - [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the

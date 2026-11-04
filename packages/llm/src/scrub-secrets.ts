@@ -12,8 +12,9 @@ const MASKED = '[REDACTED]';
  * the engine's `deInlineMedia` pass, leak-freedom here is an active transform at one boundary, not
  * per-adapter discipline. It masks finite common secret **shapes**: prefixed keys, literal secret query
  * names, URL userinfo of a finite scheme list and finite API-key/Bearer/Basic headers. Each non-query rule probes
- * the original diagnostic independently, including terminal-normalized and LF/TAB-joined views, before any
- * other rule can erase its identifying context. A match revealed by normalization masks the whole
+ * the original diagnostic independently, including the terminal-normalized view, and the key prefixes, URL
+ * userinfo and exact header names the LF/TAB-joined view too, before any other rule can erase its identifying
+ * context; an opaque Bearer/Basic value split by an LF or TAB keeps its tail (a documented limit). A match revealed by normalization masks the whole
  * diagnostic. The finite patterns check boundaries in the original text (the URL rule has none, like the
  * pre-PR matcher, so a scheme glued to a word character is masked in place) and preserve already-masked spans;
  * this is not universal fragment discovery. Query names are excluded from the residual probe, but their
@@ -24,7 +25,8 @@ const MASKED = '[REDACTED]';
  * check, with no parsing or external calls on the error path.
  * Asserted by `llm-error.test.ts` (the backstop) and each adapter's
  * secret-safety test (a planted secret → a secret-free surfaced `LlmError`); see security-review.md.
- * The canonical policy is error-handling.md's diagnostic secret backstop.
+ * The rule is error-handling.md's diagnostic secret backstop; the finite shape list and its limits are
+ * specified in docs/reference/shared-core/diagnostic-secret-backstop.md.
  */
 export function scrubSecrets(text: string): string {
   return toFixedPoint(scrubOnce, text, MASKED);
@@ -129,7 +131,7 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // at a delimiter, at escapes before one or before a header name glued to it, which then masks its
   // own value. A JSON escape after the `:` starts the token, so it takes a value glued to the
   // escape (`"x-api-key":"\n<t>"` keeps only the backslash) but not a quoted value behind one
-  // (`x-api-key:\t"<t>"`), a documented limit (error-handling.md). Every label repetition is
+  // (`x-api-key:\t"<t>"`), a documented limit (diagnostic-secret-backstop.md). Every label repetition is
   // bounded so no label run can exhaust the RegExp stack: past eight separate labels the standalone
   // label rule masks the token after the last one, and nine concatenated labels blank the diagnostic
   // (`LABEL_RUN_PAST_BOUND`).

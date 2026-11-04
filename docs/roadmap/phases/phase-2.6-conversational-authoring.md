@@ -348,7 +348,8 @@ step's central change — had **zero test coverage** at any layer. All folded, e
   [deferred-tasks.md](../deferred-tasks.md).
 - **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
   ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
-  a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3).
+  a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3) as its
+  [usage-capture item](#26q--dynamic-model-catalog-enrichment-modelsdev-per-model-capability-matrix--pricing-long-tail---p1p5-landed-pr-76-2026-07-26-p6-and-the-settings--models-toggle-open).
 - **Cross-turn tool-call memory** — a "the reseat forgets tool calls" report turned out to be an *engine* property,
   not a reseat one: tool pairs never cross **any** turn boundary (ADR-0062 §6). Deferred behind a default-off toggle,
   but **three already-live bugs gate it** (no pre-egress context-window check; overflow is a fatal, non-retryable
@@ -1303,6 +1304,13 @@ models the four shipped adapters can **already** call and to ADR-0065 custom end
   opt-in *local-first*) and **clamp vs reject**. It closes the `error: validation` gap in
   [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md). A **mandatory security review** of
   untrusted-community-pricing-into-a-safety-control is a co-gate.
+- **Usage capture for streams that end without usage** *(added 2026-11-04, after the MVP; 2.6.C's open
+  obligation, [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §3 exceptions
+  1–2).* An egress that streamed content but ended without a usage chunk, and a mid-stream failure, are
+  recorded as 0 on both sides of the reconciliation invariant, so reported spend under-estimates the
+  provider's invoice. Capture or estimate their usage at the seam and mark it as such, or show the
+  under-report on the money surfaces; ADR-0070 §3's exceptions narrow with it. A PR #96 review found 2.6.C's
+  "filed against 2.6.Q" with no item here; the maintainer ruled this phase owns it.
 - **Tests:** an over-ceiling `max_tokens` is clamped per model; an OpenAI reasoning id uses
   `max_completion_tokens`; an out-of-range effort never reaches the wire and the picker offers only accepted
   tiers; a reachable-but-unpriced id gets a models-dev price so the cap applies (or is refused under
@@ -1672,3 +1680,26 @@ flowchart LR
 | Competitor-copy erodes Relavium's posture | Patterns are stolen, postures are not: keychain-only secrets, fail-closed approval, YAML-first artifacts, and the ADR-0049 machine contract are non-negotiable filters on every borrowed idea |
 
 Part of [roadmap/](../README.md). Carry-over hardening lives in [../deferred-tasks.md](../deferred-tasks.md).
+## Status record moved from current.md — 2026-11-04
+
+> Moved verbatim from `docs/roadmap/current.md` as it stood at `5a328bca` by the
+> [PR #96 review correction](phase-2.5.5-hardening-and-remediation.md#moved-by-the-pr-96-review-correction--2026-11-04).
+> Only relative links were rewritten for this directory and heading levels lowered by one.
+
+### Not started yet
+
+The rest of **Phase 2.6 — Conversational Authoring and the First-Class CLI**
+([phase-2.6-conversational-authoring.md](), in progress —
+**2.6.F is done**,
+unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
+research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for
+workflows/runs/agents, provider + MCP + settings management, onboarding v2 with the Relavium-account
+stub), competitor-breadth tools under the governance floor, settings/theming/`en`+`tr` localization,
+the run-ops resume follow-up — plus the original spine: the shared `@relavium/authoring` package and
+a chat that **authors** standards-valid `.relavium.yaml`. Then the surfaces and the cloud —
+everything after the engine critical path: the desktop app (Phase 3) and the VS Code extension (Phase 4), then **Product Phase 2** — first **managed
+inference** ([phase-5-managed-inference.md](phase-5-managed-inference.md), the opt-in
+`managed` gateway, engine still local), then the **cloud execution layer and web portal**
+([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md)), the two
+decoupled per Option B. See the [phase index](../README.md#phase-index) and the
+[milestone spine](../README.md#global-milestone-spine) (M3 onward).

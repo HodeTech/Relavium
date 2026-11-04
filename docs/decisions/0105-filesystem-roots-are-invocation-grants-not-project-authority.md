@@ -326,14 +326,14 @@ future feature, deferral or claim of merge-commit execution.
 
 ## Exact native identity correction — 2026-10-25
 
-The root pins this decision requires compared device and inode as JavaScript numbers. On
-Windows `ino` is a 64-bit NTFS file ID, and Linux overlayfs's `xino` feature sets high inode
-bits; neither fits a Number's 53 bits, so a replaced root could compare equal (Step 9a.2a's
-push CI observed it once on the Windows runner). The policy pins and the workflow catalog's
-open check now read and compare exact bigints; the catalog comparison is Windows' only swap
-guard, since `O_NOFOLLOW` is undefined there. The decision is unchanged: this restores the
-identity the pins already claimed, and permanent causal controls substitute identities that
-differ only beyond a Number's precision. ReFS's 64-bit file IDs are not guaranteed unique;
-that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
-The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
-owns review and acceptance; this note claims neither.
+> Amended 2026-10-25: The root pins this decision requires compared device and inode as JavaScript numbers. On
+> Windows `ino` is a 64-bit NTFS file ID, and Linux overlayfs's `xino` feature sets high inode
+> bits; neither fits a Number's 53 bits, so a replaced root could compare equal (Step 9a.2a's
+> push CI observed it once on the Windows runner). The policy pins and the workflow catalog's
+> open check now read and compare exact bigints; the catalog comparison is Windows' only swap
+> guard, since `O_NOFOLLOW` is undefined there. The decision is unchanged: this restores the
+> identity the pins already claimed, and permanent causal controls substitute identities that
+> differ only beyond a Number's precision. ReFS's 64-bit file IDs are not guaranteed unique;
+> that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
+> The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
+> owns review and acceptance; this note claims neither.
