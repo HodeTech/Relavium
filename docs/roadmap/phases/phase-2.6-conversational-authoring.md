@@ -633,6 +633,12 @@ last drill-down position.
   settle per their timeout policy via 2.6.K's re-arm. Confirmed live by the review — `engine.reconcile()`
   is tested in `packages/core` but called from nowhere in `apps/cli` today, so a killed/crashed run stays
   `'running'` forever. *(S · `packages/core/src/engine/engine.ts` (`reconcile`), `apps/cli`; #229)*
+  **Wired 2026-11-05 (MVP-1 1b):** `run`, `gate` and `budget resume` call `engine.reconcile()` at start, and the
+  Home calls it on open, before its first read of the runs; `status` stays read-only, and the browser reads come
+  with the browsers. Wiring it exposed a second-terminal race (a reconcile between a run's `run:started` and its
+  lease acquire), so the store now refuses a second terminal
+  ([database-schema.md](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior)).
+  Expired gates settling through 2.6.K's re-arm remain open.
 - Non-interactive parity: extend the read *commands* minimally (`relavium list --runs`, `status <runId>`
   for finished runs, `logs --follow/--failed`) so scripting keeps pace with the TUI —
   [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant.
