@@ -4,6 +4,7 @@ import {
   CorruptRunEventError,
   LeaseFencedError,
   parseStoredRunEvent,
+  RunAlreadyTerminalError,
   RunEventSchema,
   RunSuspensionReducer,
   type DurableWriteContext,
@@ -395,6 +396,13 @@ export interface RunLeaseState extends RunLease {
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
+
+/** The run terminals — a log holds at most one, and {@link createRunHistoryStore}'s fold refuses a second. */
+const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set<RunEvent['type']>([
+  'run:completed',
+  'run:failed',
+  'run:cancelled',
+]);
 
 /** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
  *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} validates every stored row first, then excludes
@@ -1030,6 +1038,22 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           lease?.generation,
         );
       }
+    }
+    // **Exactly one terminal (ADR-0036), held HERE for every writer.** Neither check above stops a second
+    // one: the engine exempts its terminal from the append guard (ADR-0078 §2), and a writer that never
+    // acquired a lease carries no fence. The reachable case is a `reconcile()` in another process settling a
+    // run in the moment between its durable `run:started` and its lease acquire, then releasing its claim —
+    // the run's own acquire then succeeds and its terminal would land behind the first. Read from the event
+    // rows, not `runs.status`, for the same no-second-source reason as `max(seq)` above.
+    if (TERMINAL_EVENT_TYPES.has(event.type)) {
+      const prior = tx
+        .select({ seq: runEvents.seq })
+        .from(runEvents)
+        .where(
+          and(eq(runEvents.runId, runId), inArray(runEvents.eventType, [...TERMINAL_EVENT_TYPES])),
+        )
+        .get();
+      if (prior !== undefined) throw new RunAlreadyTerminalError(runId);
     }
     applyDerived(tx, event, runId, ts);
     const eventRow: NewRunEventRow = {
