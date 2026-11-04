@@ -16,7 +16,12 @@ export type { AgentDefinition, ParseAgentOptions } from './agent-parser.js';
 
 // Catalog-aware load-check (1.AF/D15) — validates each agent node's `output_modalities` against its
 // resolved model's `media.outputCombinations`, using a host-provided model→capabilities catalog.
-export { validateWorkflowWithCatalog, type WorkflowModelCatalog } from './validate-catalog.js';
+export {
+  validateWorkflowToolArms,
+  validateWorkflowWithCatalog,
+  type ToolHostArm,
+  type WorkflowModelCatalog,
+} from './validate-catalog.js';
 
 // Typed, field-named, secret-free parse/validation errors — narrow on `code`, never on `message`.
 export {

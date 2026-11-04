@@ -7,6 +7,8 @@ import {
 
 import { WorkflowValidationError, type WorkflowIssue } from './errors.js';
 import type { WorkflowDefinition } from './parser.js';
+import { BUILTIN_TOOLS } from './tools/builtins.js';
+import type { ToolDef } from './tools/types.js';
 
 /** Type guard: a media-billed output modality (image | audio | video) — no `text`. Avoids an `as` cast when
  *  narrowing a node's `output_modalities` to the billed subset (the generative one-modality load-check). */
@@ -100,9 +102,13 @@ function candidateModels(node: WorkflowNode, workflow: WorkflowDefinition): read
  * Returned as a count because the load-check only needs "does this node use tools at all".
  */
 function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): number {
-  if (node.type !== 'agent') return 0;
-  if (node.tools !== undefined) return node.tools.length;
-  return inlineAgent(node, workflow)?.tools?.length ?? 0;
+  return grantedTools(node, workflow).length;
+}
+
+/** The authored tool names a node would dispatch with: the node's `tools:` when present, else its inline agent's. */
+function grantedTools(node: WorkflowNode, workflow: WorkflowDefinition): readonly string[] {
+  if (node.type !== 'agent') return [];
+  return node.tools ?? inlineAgent(node, workflow)?.tools ?? [];
 }
 
 /**
@@ -210,6 +216,55 @@ export function validateWorkflowWithCatalog(
   const issues = workflow.workflow.nodes
     .map((node) => nodeCatalogIssue(node, catalog, workflow, opts))
     .filter((issue): issue is WorkflowIssue => issue !== undefined);
+  if (issues.length > 0) {
+    throw new WorkflowValidationError(issues);
+  }
+}
+
+/** A host capability a built-in tool reaches through, which a surface may leave unwired on one path. */
+export type ToolHostArm = 'egress' | 'os';
+
+/** The host arm a built-in needs: `os` for the clipboard and notifications, `egress` for HTTP and search. */
+function toolHostArm(tool: ToolDef): ToolHostArm | undefined {
+  if (tool.policy.os === true) return 'os';
+  // MCP reaches through its own host arm, which a run path wires (`host.mcp`), so it needs neither.
+  if (tool.policy.egress === 'http' || tool.policy.egress === 'search') return 'egress';
+  return undefined;
+}
+
+const TOOL_HOST_ARMS: ReadonlyMap<string, ToolHostArm> = new Map(
+  BUILTIN_TOOLS.flatMap((tool): [string, ToolHostArm][] => {
+    const arm = toolHostArm(tool);
+    return arm === undefined ? [] : [[tool.id, arm]];
+  }),
+);
+
+/**
+ * The run-path tool pre-flight (2.6.A, MVP-1): refuse a workflow whose agent node grants a built-in that needs a
+ * host arm this path does not wire. The CLI's `relavium run` wires neither egress nor os, so `web_search`,
+ * `http_request`, `read_clipboard` or `notify` there is a certain `tool_unavailable` at its first call, partway
+ * through a run that may already have spent money; refusing before the run starts is the louder signal. A `$ref`'d
+ * agent with no node `tools:` is deferred, as the catalog checks defer it. Throws a {@link WorkflowValidationError}
+ * listing every offending node, naming the tool, never a payload.
+ */
+export function validateWorkflowToolArms(
+  workflow: WorkflowDefinition,
+  opts: { readonly unwired: readonly ToolHostArm[] },
+): void {
+  const issues = workflow.workflow.nodes.flatMap((node): WorkflowIssue[] => {
+    const tools = grantedTools(node, workflow).filter((tool) => {
+      const arm = TOOL_HOST_ARMS.get(tool);
+      return arm !== undefined && opts.unwired.includes(arm);
+    });
+    return tools.length === 0
+      ? []
+      : [
+          {
+            field: `node \`${node.id}\`.tools`,
+            message: `${tools.join(', ')} ${tools.length === 1 ? 'needs' : 'need'} a host capability this run path does not provide (available in chat) — remove the grant to run this workflow here`,
+          },
+        ];
+  });
   if (issues.length > 0) {
     throw new WorkflowValidationError(issues);
   }

@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 import { WorkflowValidationError } from './errors.js';
 import { parseWorkflow, type WorkflowDefinition } from './parser.js';
-import { validateWorkflowWithCatalog, type WorkflowModelCatalog } from './validate-catalog.js';
+import {
+  validateWorkflowToolArms,
+  validateWorkflowWithCatalog,
+  type WorkflowModelCatalog,
+} from './validate-catalog.js';
 
 /** Capabilities with the given output combinations (input flags off; vision=input.image per the refine). */
 function caps(outputCombinations: readonly (readonly OutputModality[])[]): CapabilityFlags {
@@ -253,5 +257,54 @@ describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check
     expect(() =>
       validateWorkflowWithCatalog(subset, () => caps([['text', 'image', 'audio']])),
     ).toThrow(WorkflowValidationError);
+  });
+});
+
+describe('run-path tool pre-flight for unwired host arms (2.6.A, MVP-1)', () => {
+  function workflowGranting(agentTools: string, nodeTools = ''): WorkflowDefinition {
+    return parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: gpt-4o, provider: openai, system_prompt: hi, tools: ${agentTools} }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer${nodeTools} }\n  edges: []`,
+    );
+  }
+  const runPath = { unwired: ['egress', 'os'] as const };
+
+  function issuesOf(workflow: WorkflowDefinition, unwired: readonly ('egress' | 'os')[]): string[] {
+    try {
+      validateWorkflowToolArms(workflow, { unwired });
+      return [];
+    } catch (error) {
+      if (!(error instanceof WorkflowValidationError)) throw error;
+      return error.issues.map((issue) => `${issue.field}: ${issue.message}`);
+    }
+  }
+
+  it('refuses each egress and os built-in, naming the tools, never a payload', () => {
+    const issues = issuesOf(
+      workflowGranting("['read_file', 'web_search', 'http_request', 'read_clipboard', 'notify']"),
+      runPath.unwired,
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('node `n`.tools');
+    expect(issues[0]).toContain(
+      'web_search, http_request, read_clipboard, notify need a host capability',
+    );
+    expect(issues[0]).not.toContain('read_file');
+  });
+
+  it('passes filesystem, process and MCP tools, and refuses only the arm left unwired', () => {
+    expect(
+      issuesOf(workflowGranting("['read_file', 'run_command', 'mcp_call']"), runPath.unwired),
+    ).toEqual([]);
+    expect(issuesOf(workflowGranting("['web_search']"), ['os'])).toEqual([]);
+    expect(issuesOf(workflowGranting("['notify']"), ['os'])).toHaveLength(1);
+  });
+
+  it("reads the node's narrowing `tools:` over its agent's", () => {
+    expect(
+      issuesOf(
+        workflowGranting("['read_file', 'web_search']", ", tools: ['read_file']"),
+        runPath.unwired,
+      ),
+    ).toEqual([]);
   });
 });
