@@ -220,6 +220,17 @@ describe('resolveConfig', () => {
     expect(resolved.maxCostMicrocents).toBe(0);
   });
 
+  it('resolves [chat].max_tokens with the project over the workspace layer (MVP-A7)', () => {
+    expect(
+      resolveConfig({
+        workspace: { chat: { max_tokens: 9000 } },
+        project: { chat: { max_tokens: 2000 } },
+      }).chat.maxTokens,
+    ).toBe(2000);
+    expect(resolveConfig({ workspace: { chat: { max_tokens: 9000 } } }).chat.maxTokens).toBe(9000);
+    expect(resolveConfig({}).chat.maxTokens).toBeUndefined();
+  });
+
   it('resolves an absent [chat] block: non-model fields stay undefined; default_model falls back to global [preferences] (ADR-0063)', () => {
     const empty = resolveConfig({}).chat;
     expect(empty.maxTurns).toBeUndefined();

@@ -30,6 +30,7 @@ import {
   unwiredEffectJournal,
 } from '@relavium/core';
 import {
+  catalogModel,
   effortTiersFor,
   type EndpointKind,
   type PricingOverlay,
@@ -983,7 +984,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
-      agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      agent: withChatOutputDefault(
+        narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+        chatOutputSettings(opts.chat),
+        officialEndpointOf(deps),
+      ),
       context,
       deps: { ...deps, whenReady },
     });
@@ -1250,7 +1255,11 @@ export async function buildResumedChatSession(
       {
         sessionId: record.id,
         agentRef: agent.id,
-        agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+        agent: withChatOutputDefault(
+          narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+          chatOutputSettings(opts.chat),
+          officialEndpointOf(deps),
+        ),
         context,
         deps: {
           ...deps,
@@ -1463,6 +1472,53 @@ export function buildGovernorWiring(
       microcents: governor.conservativeCostMicrocents,
       durabilityBroken: governor.conservativeDurabilityBroken,
     }),
+  };
+}
+
+/**
+ * The output cap for a chat agent that authors none (MVP-A7, ADR-0101's 2026-11-05 amendment): `[chat].max_tokens`
+ * when set; otherwise, for an Anthropic agent with no fallback chain on the official endpoint, the model's catalog
+ * ceiling — that wire would otherwise carry the adapter's implicit 4,096-token default. Another provider sends no
+ * cap unless one is configured, and a chain keeps today's behaviour, since an entry may not take that ceiling.
+ *
+ * A session with a cost cap keeps today's behaviour too: the governor reserves the effective cap before each turn
+ * (ADR-0101), and a catalog ceiling (128,000 tokens on `claude-sonnet-4-6`) would refuse the first turn of a modest
+ * cap outright. Applied to the EFFECTIVE agent only, so a resumed or rebound session recomputes it from the current
+ * config.
+ */
+export function withChatOutputDefault(
+  agent: AgentDefinition,
+  chat: { readonly maxTokens: number | undefined; readonly costCapped: boolean },
+  officialEndpoint: (provider: ProviderId) => boolean,
+): AgentDefinition {
+  if (agent.max_tokens !== undefined) return agent;
+  if (chat.maxTokens !== undefined) return { ...agent, max_tokens: chat.maxTokens };
+  if (chat.costCapped) return agent;
+  if (agent.provider !== 'anthropic' || agent.fallback_chain !== undefined) return agent;
+  if (!officialEndpoint(agent.provider)) return agent;
+  const ceiling = catalogModel(agent.model)?.maxOutputTokens;
+  return ceiling !== undefined && Number.isSafeInteger(ceiling) && ceiling > 0
+    ? { ...agent, max_tokens: ceiling }
+    : agent;
+}
+
+/** The `[chat]` settings the output default reads: the configured cap, and whether a cost cap is set. */
+function chatOutputSettings(chat: ResolvedChatConfig): {
+  readonly maxTokens: number | undefined;
+  readonly costCapped: boolean;
+} {
+  return { maxTokens: chat.maxTokens, costCapped: (chat.maxCostMicrocents ?? 0) > 0 };
+}
+
+/** Whether the session reaches a provider's official endpoint; unknown metadata counts as not official. */
+function officialEndpointOf(deps: SessionDeps): (provider: ProviderId) => boolean {
+  return (provider) => {
+    try {
+      const resolved = deps.resolveProvider(provider);
+      return resolved !== undefined && resolved.customEndpoint !== true;
+    } catch {
+      return false;
+    }
   };
 }
 

@@ -106,6 +106,7 @@ it.each(cases)(
         autoCompact: undefined,
         compactThreshold: undefined,
         maxCostMicrocents: undefined,
+        maxTokens: undefined,
         onExceed: undefined,
         strictCostCap: false,
         allowedCommands: undefined,

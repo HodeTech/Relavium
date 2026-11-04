@@ -6,7 +6,7 @@ import { createCliInvocation } from '../process/invocation.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
-import { prepareOutputCapPlan } from '@relavium/llm';
+import { catalogModel, prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -47,6 +47,7 @@ import {
   buildGovernorWiring,
   buildResumedChatSession as buildRestoredSession,
   swapAgentModel,
+  withChatOutputDefault,
   type ChatBudgetWarning,
 } from './session-host.js';
 import {
@@ -163,6 +164,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   autoCompact: undefined,
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
+  maxTokens: undefined,
   onExceed: undefined,
   strictCostCap: false,
   allowedCommands: undefined,
@@ -2191,4 +2193,61 @@ describe('session MCP native owner forwarding during pending startup', () => {
     },
     15_000,
   );
+});
+
+describe('the interactive output default (MVP-A7, ADR-0101 amendment of 2026-11-05)', () => {
+  const official = (): boolean => true;
+  const custom = (): boolean => false;
+  const ceiling = catalogModel('claude-sonnet-4-6')?.maxOutputTokens;
+  const uncapped = { maxTokens: undefined, costCapped: false };
+  const configured = { maxTokens: 2000, costCapped: true };
+  const anthropic = buildDefaultChatAgent('claude-sonnet-4-6');
+  const openai = { ...anthropic, provider: 'openai' as const, model: 'gpt-4o' };
+
+  it("gives an Anthropic chat on the official endpoint its model's catalog ceiling, not the implicit 4,096", () => {
+    expect(ceiling).toBeGreaterThan(4096);
+    expect(withChatOutputDefault(anthropic, uncapped, official).max_tokens).toBe(ceiling);
+  });
+
+  it('uses [chat].max_tokens for any provider and endpoint, even under a cost cap, never over an authored cap', () => {
+    expect(withChatOutputDefault(anthropic, configured, custom).max_tokens).toBe(2000);
+    expect(withChatOutputDefault(openai, configured, official).max_tokens).toBe(2000);
+    expect(
+      withChatOutputDefault({ ...anthropic, max_tokens: 777 }, configured, official).max_tokens,
+    ).toBe(777);
+  });
+
+  it("keeps today's behaviour on a custom endpoint, for another provider, for a chain and under a cost cap", () => {
+    expect(withChatOutputDefault(anthropic, uncapped, custom).max_tokens).toBeUndefined();
+    expect(withChatOutputDefault(openai, uncapped, official).max_tokens).toBeUndefined();
+    const chained = {
+      ...anthropic,
+      fallback_chain: [
+        { model: 'claude-haiku-4-5', provider: 'anthropic' as const, max_attempts: 1 },
+      ],
+    };
+    expect(withChatOutputDefault(chained, uncapped, official).max_tokens).toBeUndefined();
+    // The governor reserves the effective cap: a 128,000-token ceiling would refuse the first turn of a modest
+    // session cap (the configured-fallback tests above caught exactly that).
+    expect(
+      withChatOutputDefault(anthropic, { maxTokens: undefined, costCapped: true }, official)
+        .max_tokens,
+    ).toBeUndefined();
+  });
+
+  it('reaches the wire for the default chat and leaves the persisted agent unchanged', async () => {
+    for (const [maxTokens, expected] of [
+      [undefined, ceiling],
+      [2000, 2000],
+    ] as const) {
+      const { providers, requests } = capturingResolver([textTurn('hi')]);
+      const built = await build({ providers, chat: { ...EMPTY_CHAT, maxTokens } });
+      built.session.start();
+      await built.session.sendMessage('go');
+      built.session.cancel();
+      await built.recordedEvents;
+      expect(requests[0]?.maxTokens).toBe(expected);
+      expect(built.agent.max_tokens).toBeUndefined();
+    }
+  });
 });

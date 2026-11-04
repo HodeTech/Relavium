@@ -264,6 +264,7 @@ async function runSession() {
     autoCompact: false,
     compactThreshold: undefined,
     maxCostMicrocents: cap === 'capped' ? 1_000_000 : undefined,
+    maxTokens: undefined,
     onExceed: 'fail',
     strictCostCap: true,
     allowedCommands: undefined,
