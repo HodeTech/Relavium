@@ -288,8 +288,8 @@ test('secrets workload corrections retain independent complete-count and reader-
     513,
   );
   for (const [id, file, expectedTests] of [
-    ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
-    ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 84],
+    ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],
+    ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 73],
     ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
   ]) {

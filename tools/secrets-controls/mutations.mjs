@@ -672,7 +672,7 @@ export const mutations = [
     '  const raw = await read();',
     "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
     ['apps/cli/src/commands/run.test.ts'],
-    84,
+    85,
     'uses the real native default reader once and suppresses an injected gate selector',
     'SECRETS_CAUSAL_RUN_DEFAULT_READER',
     [
@@ -913,7 +913,7 @@ export const mutations = [
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],
-    84,
+    85,
     'warns after admission before services and preserves the actual augmented frozen workflow',
     'SNAPSHOT_CAUSAL_RUN_CALLER',
   ),
