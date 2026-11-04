@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 merged as PR #94 (2026-10-15); Wave 3 Steps 1–8 merged as PR #95 (2026-10-18); Wave 3 Steps 9–19 and later waves remain open.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 merged as PR #94 (2026-10-15); Wave 3 Steps 1–8 merged as PR #95 (2026-10-18); Wave 3 is paused after Step 9b.2 since 2026-10-26 behind the CLI MVP ([priority reset](#mvp-priority-reset--2026-11-04)); Steps 9c–19 and later waves remain open.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -3677,6 +3677,9 @@ No credential values or request captures belong in tracked evidence.
 > maintainer's approval; the 2026-10-19 amendment is recorded in
 > [Wave 3 Steps 9–19 preflight review and maintainer rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19).
 > Steps 1–8 merged as PR #95; live progress is canonical in [current.md](../current.md#wave-3--clear-the-ground).
+> *Paused 2026-10-26 after Step 9b.2:* Steps 9c–19 are pending behind the CLI MVP; the recorded splits of rows 10b, 11b,
+> 13a–13c, 15a, 15c, 16b and 17a that move into the MVP, with their order amendments, are in the
+> [MVP priority reset](#mvp-priority-reset--2026-11-04).
 
 | Step | Scope, finding IDs and principal verification |
 |---|---|
@@ -9398,11 +9401,11 @@ plan amendment (row PR95) and the recorded splits; ID coverage is unchanged apar
 
 | Area | Ruling |
 | --- | --- |
-| Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting: PR95, 9a.1, 9a.2, 9b, 9c, 9d (whole Step 9 custody), 10a, 10c, 11b, 13c, 14b, 15c, 16a, 16b, 16c (whole Step 16), 18 and 19b (whole wave). PR95 instead follows the maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). **Amended 2026-10-23 (maintainer, after Step 9a.1's twelfth round):** from Step 9a.1's round 13 on, every increment is accepted after one NEW independent complete cumulative round that reports no blocker, high or medium finding and no regression; that round's low findings are recorded in [deferred-tasks.md](../deferred-tasks.md) with their file, a minimal example and a re-check note rather than fixed in the loop, and nits are optional. A high or medium finding is still corrected and followed by a new round, and the separate security sittings above are unchanged. |
-| Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. |
+| Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting: PR95, 9a.1, 9a.2, 9b, 9c, 9d (whole Step 9 custody), 10a, 10c, 11b, 13c, 14b, 15c, 16a, 16b, 16c (whole Step 16), 18 and 19b (whole wave). PR95 instead follows the maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). **Amended 2026-10-23 (maintainer, after Step 9a.1's twelfth round):** from Step 9a.1's round 13 on, every increment is accepted after one NEW independent complete cumulative round that reports no blocker, high or medium finding and no regression; that round's low findings are recorded in [deferred-tasks.md](../deferred-tasks.md) with their file, a minimal example and a re-check note rather than fixed in the loop, and nits are optional. A high or medium finding is still corrected and followed by a new round, and the separate security sittings above are unchanged. **Amended 2026-11-04 (D64):** tiered for the CLI MVP — see the [MVP priority reset](#mvp-priority-reset--2026-11-04). |
+| Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. **Amended 2026-11-04 (D61):** a scoped `development`→`main` checkpoint follows the [MVP priority reset](#mvp-priority-reset--2026-11-04); the Wave 3 PR still follows Step 19. |
 | Plan shape | PR95 + 9a.1, 9a.2, 9b, 9c, 9d + 10a–c + 11a–b + 12a–b + 13a–c + 14a–b + 15a–c + 16a–c + 17a–b + 18 + 19a–b (29 increments). Each split is recorded before its step starts. **Amended 2026-10-24 (maintainer):** 9a.2 is split into 9a.2a and 9a.2b, so the plan has 30 increments ([9a.2 preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)). **Amended 2026-10-24 (maintainer, E6):** the native-identity increment NI is added after 9a.2b, so the plan has 31 increments ([9a.2a acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)). **Amended 2026-10-25 (maintainer, L8):** 9b is split into 9b.1 and 9b.2, so the plan has 32 increments ([9b preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)). |
 | Reassignments | G54 moves from row 17 to 11a; #311's implementation moves to 10b and its certification stays in 17a; G36/G46 are re-scoped in 10a to the branch that replaces the raw-stack branch and are certified in 17b; promotion of the Steps 6–10 commands.md sections moves from Step 19 to 10c. |
-| Interim release guard | 9a.1 adds a fail-closed check to the `release.yml` publish job that refuses any non-release candidate. Consequence, acknowledged: no npm publication, including a v0.1.x patch, until 9d and Wave 4b production custody exist. |
+| Interim release guard | 9a.1 adds a fail-closed check to the `release.yml` publish job that refuses any non-release candidate. Consequence, acknowledged: no npm publication, including a v0.1.x patch, until 9d and Wave 4b production custody exist. **Amended 2026-11-04 (D59):** to be superseded by a pre-1.0 release ADR (option B, sunset at 1.0 or when 9c/9d land); the guard stays in force until that ADR is Accepted and its guard change passes a security sitting ([MVP priority reset](#mvp-priority-reset--2026-11-04)). |
 | PR95 scrubber residuals | Fixed before 9a: the `api-key:Bearer`/`Basic` leak; raw `?`/`#` userinfo masked unless the text before it is host-shaped and an `=` assignment separates it from the authority `@`, in both the LLM leaf and core's twin predicate (core's other documented differences are recorded, not removed); an extended finite scheme list that masks colon-bearing userinfo for the new schemes; the scanner invariants, prefilter and witnesses; the load-sensitive 8 MiB timing case. LOW-1 and LOW-2 become approved deferrals with their recorded triggers. |
 | Step 9 mechanics | The encrypted plaintext container is an in-house strict USTAR (regular files, repository-relative paths) recoverable with standard `gpg -d \| tar -x`; GnuPG ≥ 2.2.8 becomes a prerequisite of local `pnpm run ci` and of the CI Ubuntu runner, documented in local-dev-setup.md, and its controls fail rather than skip when it is absent; release-mode staging artifacts are retained 30 days, package-test artifacts 7; product-copy map negative controls run as `check:map-controls` locally and in a required uncached CI job; the private manifest keys final JS as `dist/<chunk>.js`; the production recipient must be an OpenPGP v4 key with a cv25519 or RSA≥3072 encryption subkey, a Wave 4b prerequisite recorded in [deferred-tasks.md](../deferred-tasks.md#wave-3-approved-later-wave-ownership--2026-10-16). |
 | Step 10 compatibility | Verbose frames use a same-build allowlist (a tsup `renderChunk` substitution of a fixed-length placeholder, so no second build or post-finalization write) and appear only on classified non-infrastructure diagnostics; `--quiet` treats live progress as decoration on TTY surfaces; excess positional arguments are refused on every non-variadic command; plain `note:` stderr lines become `{type:'diagnostic', code, message}` records in JSON mode; `help [path] --json` returns the discovery DTO; human `--help` keeps Commander behaviour for unknown grammar; deprecated aliases emit one structured JSON notice or one fixed human line kept under quiet and are hidden from human help listings. |
@@ -10062,6 +10065,13 @@ diagnosed mechanism, while every pair stayed distinct as exact identities, and t
 jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
 negative`, and the repeated replacement tests passed.
 
+**Windows clause, run 3 of 3 (2026-10-26) — closed.** Push CI
+[run 40276471445](https://github.com/HodeTech/Relavium/actions/runs/40276471445) at `5a328bca` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
+negative`, and the repeated replacement tests passed. With three consecutive green advisory Windows runs on pushed
+heads, the Windows clause and the NI entry in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24)
+are closed; NI's scoped limits stay recorded there.
+
 ### Wave 3 Step 9b preflight decisions — 2026-10-25
 
 A read-only preflight (four readers and a synthesis at `c8c0d41b`) mapped Step 9b's obligations, the code it meets and
@@ -10614,4 +10624,499 @@ The round's verified findings were twelve lows and one nit:
   [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b2--recorded-low-findings-2026-10-26), each with its example
   and re-check.
 
-Step 9c is next.
+Step 9c was next; Wave 3 was paused on 2026-10-26 behind the CLI MVP ([MVP priority reset](#mvp-priority-reset--2026-11-04)).
+
+## MVP priority reset — 2026-11-04
+
+**Wave 3 is paused after Step 9b.2.** On 2026-10-26 the maintainer stopped the Step 9c preflight and redirected the
+project to an MVP: features and bugfixes that a CLI user feels, in `apps/cli` and `packages/core` first. Steps
+9c–19 (25 of the 32 increments; the plan grew from 29 with the 9a.2, NI and 9b splits) are **pending, not
+declined**: each keeps its row, its recorded ADR amendments and its security sittings. The live order is
+canonical in [current.md](../current.md#next-work--the-cli-mvp); this section records the evidence, the decisions
+and the amendments to this register.
+
+**Evidence.** A read-only multi-agent review at `development` `5a328bca` read every roadmap document and the code:
+eight scoped readers (661 open items), eight adversarial verifiers (three re-run on 2026-11-04 after a spend
+limit), a synthesis and a completeness critic. The detailed reports and a Turkish decision register stay local and
+Git-ignored. Its main findings, each re-checked against the code before the decisions:
+
+- The engine is solid; the agent and presentation layers are not. The built-in chat agent grants only
+  `read_file`, `list_directory` and `git_status` (`apps/cli/src/chat/default-agent.ts:35`) and starts in `ask`
+  (`apps/cli/src/chat/chat-mode.ts:31`); no edit, search or find tool exists; `run_command` is refused before any
+  approval unless allowlisted (`packages/core/src/tools/registry.ts:762-770`).
+- Run results are invisible on the human surfaces (no outputs, no run id, no finished-run listing, crashed runs stay
+  `running`); replies are raw markdown; a resumed chat opens empty; Anthropic chat turns default to a 4,096-token
+  output estimate (`packages/llm/src/output-cap.ts:37`).
+- Nothing newer than `0.1.1` can be published: the Step 9a.1 guard sets `process.exitCode = 1` before evaluating
+  (`tools/cli-package/release-guard.mjs:13`), and it exists only on `development` — `main` has no guard.
+- The published `0.1.1` prints unsanitized model output in its `relavium run` view (#56); `LICENSE` §2 grants no
+  usage right without a written agreement.
+
+**Decisions (maintainer, 2026-11-04).** D58–D72 are recorded in the
+[decision table](../current.md#wave-gating-decisions) with their rulings. In short: the larger MVP (v0.2.0 after
+MVP-1…MVP-10, including conversational authoring, web, the Home hub and MCP management; milestone M3.5); release
+path B (D59); the license unchanged (D60); a scoped `development`→`main` checkpoint now (D61); the default agent
+may write, with `[chat].default_mode` (D62); a `run_command` approval card with remembered grants outside the
+repository (D63); a tiered acceptance bar (D64); six recorded splits plus #61 (D65); `current.md` reduced to live
+status (D66); CR-71 un-deferred and CR-70 after the release with ADR-0096 §5 (D67); first-run defaults and one
+keymap ADR (D68); authoring → web → Home → MCP (D69); no pre-release (D70); the parity items in the MVP (D71); no
+action on `0.1.1`'s #56 (D72).
+
+**Recorded splits (D65), ID coverage unchanged.** Each split keeps its row's recorded ADR amendment and security
+sitting, and lands in the named MVP milestone:
+
+| From | Split | Lands in | Order amendment |
+|---|---|---|---|
+| 10b | Excess positional arguments refused on every non-variadic command | MVP-2 | — |
+| 15a | #65: tabs expanded to 8 cells before width measurement | MVP-2 | Lands before #58/#62/G40/G51 (row 15's strict arrow amended) |
+| 15c | #63: 80×24 on both chat surfaces with no hidden affirmative input there or on the Home strip (approved ADR-0057 amendment, approval-path sitting); with it, the Home strip row budget (2.6.F's open obligation) | MVP-3 | Lands before 15a/15b's remaining items |
+| 11b | Ctrl-C at a pending approval rejects it | MVP-4 | Lands before 11a. The 2026-10-19 "maps to `/cancel`" wording is superseded by the keymap ADR (D68): reject first, then the ordinary interrupt semantics; the approval-path sitting stays |
+| 16b | #51: the persistent, current-state keyless nudge (keychain/config sitting) | MVP-2 | Lands before 16a |
+| 17a | #24: the one-shot stdin hint | MVP-2 | — |
+| 13a–13c | G30: chat HTTP authority under ADR-0112 (egress/config-trust sitting) | MVP-7 | Row 13's "after decomposition" no longer holds: 13a/13b land before Step 12; 13c is re-scoped when MVP-7 starts because 12b's shared helpers do not exist yet |
+| Wave 5a | #61: full-screen word-wrap | MVP-2 | Its Wave 5a ownership ([later-wave ownership](#existing-later-wave-ownership-and-approval-gate)) ends |
+
+**Amendments to the 2026-10-19 rulings** (dated, the original text kept):
+
+- *Acceptance (D64):* tiered. An increment touching an approval or consent path, egress, keys or secrets,
+  filesystem writes, a new terminal sink for untrusted content, the lease or resume paths, or release and
+  publication keeps the 2026-10-23 bar — a rigor pass, one NEW complete cumulative round with no blocker, high or
+  medium finding and no regression, and a separate security sitting. Other UX, rendering and command increments are
+  reviewed per MVP milestone: author self-review, `pnpm run ci` plus `pnpm coverage:enforced`, and one independent
+  scoped round with no high or medium finding; lows go to [deferred-tasks.md](../deferred-tasks.md).
+- *Publication (D61):* a scoped `development`→`main` checkpoint follows this reset; the Wave 3 PR still follows
+  Step 19 when the wave resumes.
+- *Interim release guard (D59):* to be superseded by a new pre-1.0 release ADR (option B) with a sunset at 1.0 or
+  when 9c/9d land, whichever comes first. The guard stays in force, in code and procedurally, until that ADR is
+  Accepted and its guard change passes a security sitting.
+
+**Recorded risks.** The published package grants no usage right (D60). The published `0.1.1` keeps #56's
+unsanitized `relavium run` output; the maintainer accepted it because the product has no users yet (D72).
+
+**NI's Windows clause is closed** (2026-10-26): run 3 of 3 is recorded in the
+[NI acceptance](#wave-3-ni-acceptance--2026-10-25).
+
+## Execution record moved from current.md — 2026-11-04
+
+> Moved verbatim from `docs/roadmap/current.md` on 2026-11-04 (decision D66) when that page was reduced to live
+> status and order; only relative links were rewritten for this directory and heading levels lowered by one.
+> It keeps the 2026-07-26 execution plan's baseline, axes, Waves 0–1 and the PR #81 closing list — the only
+> definition of `#W15-1`…`#W15-24`, which code comments cite. The live order is in [current.md](../current.md).
+
+### Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
+
+> **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's
+> definition, size, file list and finding ids live in its phase file —
+> [phase-2.5.5](phase-2.5.5-hardening-and-remediation.md) (176 work items, sub-streams A–I) and
+> [phase-2.6](phase-2.6-conversational-authoring.md) (15 open workstreams) — and nothing below
+> restates them. Items are cited as `<sub-stream> · <the bullet's bold lead-in> (<finding ids>)`, which
+> greps directly against the phase file.
+>
+> Derived 2026-07-26 from a full pass over both phase files, their own sequencing sections, and the live
+> tree. Where it departs from a phase file's own prose, see [Departures](../current.md#departures-from-the-phase-files-own-sequencing).
+
+#### Ordering root — one baseline ✅ **discharged 2026-07-26**
+
+The plan opened on a divergence neither phase file modelled: Phase 2.5.5's whole backlog is written against
+`f88b0e8`, which existed only on `development` behind PR #76, so every `file:line` citation in it resolved
+against a tree nobody was branching from. **PR #76 and #77 are both merged** — `f88b0e8` is on `origin/main`,
+`origin/development` and `origin/main` held identical trees with no open PRs as of 2026-07-26. Every
+citation in this plan now resolves. (PR #79 and PR #80 have opened since.)
+
+One consequence survives and is worth keeping until the phases close:
+
+> **Branch from `origin/development`, never from a local `main`.** A long-lived `development` merged into
+> `main` by merge commit leaves a stale local `main` behind after every PR, silently and without conflict.
+> Run `git fetch` and cut from `origin/development`.
+
+Also settled while discharging this: `main` now carries branch protection (PR required, `lint · typecheck ·
+test` required, force-push and deletion blocked) and a `v*` tag ruleset restricting tag creation to the
+maintain/admin roles — closing the Phase-0 obligation that made `ci.yml`'s own "REQUIRED status check"
+comment untrue. `release.yml` asserts its ref is reachable from `main` before `pack`, so **2.5.5.H's `G26`
+is closed ahead of Wave 0**.
+
+#### The three axes this order is built on
+
+1. **Irreversibility** — a defect whose damage a later fix cannot undo jumps every queue. That is Wave 1:
+   a credential already written into a durable `--json`-visible row, a billed turn lost after the reply
+   rendered, model-controlled ANSI inside the consent card, and the states where the cost cap is silently off.
+2. **File ownership** — whoever edits a file next inherits everyone else's rebase. Every god-file
+   decomposition and naming/convention ruling lands *before* the 2.6 workstream that piles onto it, and
+   eleven items are pulled across the phase line because they edit the exact function another item restructures.
+3. **Certification** — a wave that discharges a phase obligation certifies it while the evidence is fresh,
+   which is why 2.5.5's exit criteria 1–3 close in Wave 2 rather than at the end.
+
+Waves are readable single-branch sequences. Concurrency is expressed as *"these queues are file-disjoint,
+any order"* — never as headcount.
+
+```mermaid
+flowchart TD
+    W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
+    W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
+    LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0–W8 complete · W3 blocker closed in W8<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 merged — PR #92<br/>49/51 closed · approved deferrals retained"]
+    W2["Wave 2 — Shut the doors ✅<br/>PR #94 merged · fs jail · secrets · config trust<br/>2.5.5 EXIT 1–3 satisfied"]
+    W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
+    W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
+    W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
+    W5a["Wave 5a — Paint before you build<br/>render-v2 · theme · config"]
+    W5b["Wave 5b — Home becomes the product<br/>2.6.G/I/J · then i18n sweep"]
+    W6["Wave 6 — Hands, voice, lineage<br/>2.6.M/B/E + 2.6.N foundation"]
+    W7["Wave 7 — Orchestration & the gate<br/>2.6.O/P · go/no-go → Phase 3"]
+    W0 --> W1 --> LEDGER --> P265 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
+    W3 --> W4b
+    W4b -.->|v0.2.0 release| W7
+    W4a -.->|file-disjoint lanes| W4b
+```
+
+#### Wave 0 — One true baseline
+
+Collapse the divergence, make the required gate execute the artifact it ships, and fix the review
+checklists before ~30 security-gated PRs are reviewed against them.
+
+1. ✅ **Merge PR #76** (2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal) — **done
+   2026-07-26**, along with #77 (this plan + the Phase-2.5.5 opening + `release.yml`'s `G26` ancestry gate).
+2. ✅ **Reserve numbers** — **done**, recorded here: migrations end at `0012` and ADRs at `0072` (verified),
+   so `0013` = **ADR-0074 §4's conservative money columns** (`agent_sessions.total_conservative_microcents` + `session_costs.conservative_microcents`) — the number was freed when D8 ruled against the approval-preview scrub and is RE-USED here rather than left as a hole · `0014` = 2.5.5.C's enum CHECKs (#101) · `0015` = 2.6.H ·
+   `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0075+** for the nine unwritten 2.6 ADRs (`0073` = the history.db migration lock, `0074` = durable conservative budget commitments — both landed in Wave 1).
+3. ✅ **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** — **done 2026-07-29 (PR #80)**, all eight items:
+   2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
+   local `pnpm run ci` vs `ci.yml` divergence (#312 — and `pnpm ci` is shadowed by a pnpm builtin, so the
+   script was unreachable by the name everyone types) → the coverage-floor **ruling and its implementation**
+   (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
+   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, landed in
+   #77; its tag-protection half is configured.)* The PR also closed the four blockers from the 2026-07-29
+   roadmap review, and its own CI caught two real defects in it — a TS4111 that `turbo run typecheck` does not
+   cover, and `pnpm ci` being unreachable because pnpm reserves `ci` as a builtin.
+4. ✅ **2.5.5.F · three skills' hardcoded foreign-project paths** (#162) — **done 2026-07-29.** Filed as docs,
+   actually a functional bug: they pointed at `/Users/dev/…/Agent-Organizer/`, so `add-package`'s `mkdir -p`
+   would have created a tree outside the repo. All three now anchor on `$(git rev-parse --show-toplevel)`.
+5. ✅ **One markdown PR** — **done 2026-07-29**: `packages/mcp` added to all five inventory sites (#128, #129,
+   #153, #163, #254), the reviewer agent's secrets item extended to the shipped CLI floor (#164), the
+   security-review skill's SSRF step now requires reusing the shared guard rather than re-deriving one (#167),
+   and the i18n clause settled by the D5 ruling (#74, #260, #134).
+6. ✅ **The locale-bar amendment** (D5, `en`+`tr`) and the **snapshot regen** (D3) — **done**, propagated to
+   all seven locale sites and merged as PR #79 (two price rises taken, nine retirements accepted).
+
+> ✅ **Wave 0 is COMPLETE (2026-07-29).** The required gate now executes the binary it ships,
+> `apps/cli/drizzle/**` is a declared turbo output, and `lint · typecheck · test` +
+> `engine coverage floor (llm, mcp)` are both required checks under branch protection. In phase terms this
+> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 followed and is also complete
+> (2026-07-30, PR #81) — see below; Wave 2 is next.**
+
+#### Wave 1 — Stop the bleeding
+
+All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
+lanes, any order between them, plus the money hole they left open.
+
+**✅ Wave 1 is COMPLETE — lanes (a)–(d) on 2026-07-30 (PR #81), lane (e) on 2026-08-09 (`#W15-3`).**
+
+> **Superseded 2026-08-09 — kept because the correction is the record.** Lane (e) closed with `#W15-3`:
+> `/cost --release` makes §1's escape hatch reachable, and `/cost` renders the durability state. The
+> retraction below was accurate when written and is no longer; it stays so the history of the false
+> completion claim is not quietly erased.
+>
+> **Retraction (2026-07-30).** This section previously said Wave 1 was complete and ADR-0074 fully implemented.
+> That was wrong on lane (e) and I am correcting it rather than leaving it: **§1's release escape hatch is
+> exposed on `GovernorWiring` but reachable from no command, REPL action or Home affordance**, and `/cost` never
+> renders `conservativeDurabilityBroken`. §1 names this exact state as forbidden — "a single usage-less response
+> would permanently shrink a long-lived chat's cap with no way out" — and this PR REMOVED the accidental escape
+> a restart used to provide. A section whose compensating bound is unreachable is not implemented, and marking
+> it done made four other documents inherit the error. Two independent reviews flagged it; both were right.
+>
+> Lane (e)'s remaining work, and two defects it exposed that ADR-0074 does not cover, are tracked in
+> **[PR #81's closing list](#pr-81s-closing-list-and-the-two-items-that-need-an-adr)** below. Every lane below is verified against the shipped code, not
+against its own task text — the check for each is stated inline. Two gaps are recorded rather than closed; both
+are named in their lane and marked in the source, and neither is a shipped defect:
+
+1. the engine-level composition test for ADR-0074 §3's abort-breakable media-job hold (`engine.ts`, at the abort
+   listener) — the governor's own state machine is mutation-verified, the composition with `#countRunning`'s
+   termination gate is not;
+2. the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime` → `GovernorWiring`
+   (`session-host.test.ts`) — `AgentSession.resume` calling the hook IS mutation-verified in `packages/core`;
+   only the spread that supplies it is unproven.
+
+- ✅ **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
+  (#91). *(The originally-planned migration 0013 scrubbing already-persisted previews was ruled OUT — see D8.)* *Closed: `previewFor()` now scrubs the DISPLAY copy while `rawPreviewFor()` keeps an
+  `unredactedPreview` for in-process classification — splitting the two uses, because a whole-string scrub
+  flipped the protected-path decision and a per-segment one reopened the leak. Verified: `registry.ts` and
+  `tools/types.ts` both carry `unredactedPreview`.*
+- ✅ **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
+  the blocking `Atomics.wait` (#226) → **the chat-persister safety net** (#228, CRITICAL) →
+  serialize `runMigrations` (#99) co-landed with the unconditional 0600 self-heal (#28, #33) →
+  `createClient` typed error + PRAGMA docstring (#104, #105). `deprecationDate` crash guard (G1) is a
+  standalone one-liner, droppable anywhere.
+- ✅ **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
+  reached** (G34, G44, #56, #57, CRITICAL — one PR at the shared helper, its own security review) →
+  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *Closed at all four boundaries the register names, verified by call count:
+  `RunApp.tsx` (#56) 9, `final-summary.ts` (#57) 6, `render-error.ts` (G34) 4, `clack-prompter.ts` (G44) 4. G0's
+  run/gate `SIGTSTP`/`SIGCONT` is `render/run-job-control.ts`; #50 is closed by ordering —
+  `drive-home.tsx` subscribes signals at `:808`, before `runOnboardingWizard` at `:855`.*
+- ✅ **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
+  `max_parallel` (G38) → re-armed `budget:warning` + projected `thresholdPct` (G39, G47, G49) → **2.6.Q's
+  strict-cap half**. Then `fallback-chain.ts`/`cost-tracker.ts` only: 2.5.5.B · `maxRetries: 0` + jitter +
+  `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
+  **2.6.Q's realized-cost half**.
+
+- 🔶 **(e) ADR-0074 — durable conservative budget commitments (§2–§5 shipped; §1 INCOMPLETE)** · the money hole the other four lanes leave open:
+  a bounded estimate retained when a provider may already have billed but returned no trustworthy usage was
+  kept only in memory, so a crash or a resume reopened a strict cap against money that may already be owed.
+  §5 (a forward-compatible stored-event READ, the precondition for emitting anything new) → §2 (the
+  `budget:estimate_committed` contract, the governor's durability barrier, the checkpoint fold and the resume
+  restore) → §3 (freeze an async media job's accepted units + price) → §4 (the session's conservative
+  aggregate + per-model attribution + migration + transactional persister write).
+
+> 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
+> `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
+> **Closes M2.5.5-1.**
+>
+> **Outstanding inside lane (e) — restated at close, because §4 changed the facts.** ADR-0074 §1 ties a
+> commitment's release to the surface that renders it.
+>
+> **Rendering: done on all three surfaces.** The run TUI and `relavium logs` shipped with §2; `/cost` shipped
+> with §4's fold and reads *estimated, possibly billed*, with `(no completed call)` for a model that has one
+> without a completed call. All three are mutation-verified.
+>
+> **Release: reachable, as of `#W15-3` (2026-08-09).** `/cost --release` on the chat surface — the one that
+> renders the amount, which is what §1 ties it to — clears the durable per-model and aggregate columns first
+> and the live governor second, so a released commitment does not return on the next `chat-resume`. `/cost`
+> also renders the durability state. This note previously said no affordance called it; that was true and no
+> longer is.
+>
+> The reserved `budget:estimate_released` event stays **reserved and unemitted**, and that is a decision, not
+> an omission: the session path restores its conservative total from COLUMNS rather than by replaying events,
+> so zeroing them is what makes the release durable there. The event is needed only by a workflow-run release
+> surface, which does not exist — a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node
+> bypass or raising the YAML cap are §1's own analogy. §1's dated note in
+> [ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) carries the same statement.
+
+#### PR #81's closing list, and the two items that need an ADR
+
+Two independent adversarial reviews of PR #81 (2026-07-30) found that the cap's core safety claim does not yet
+hold across a process boundary.
+
+**Almost all of this belongs to PR #81 itself, not to a later wave** — a first framing filed it as one, which
+was wrong. The test is simple: this PR either ADDED the code a finding is in (`background-failure.ts`), or
+claimed to have closed the area it sits in (the terminal-safety boundaries, ADR-0074 §1), or REMOVED a
+protection without replacing it (§1's escape hatch, which a restart used to provide). Shipping a regression and
+deferring its fix is not a schedule decision.
+
+**Only §A is genuinely separable.** Both of its items need an append-only ADR before any code — one changes what
+"spent" means across a crash, the other supersedes a decision ADR-0074 §5 already recorded. Those earn their own
+PRs. Everything from §B down is #81's to close.
+
+Ordered by whether the repo currently states something untrue, then by blast radius.
+
+**Every item names the check that would close it, not just the defect.**
+
+> **Status — 24 of 24 closed and MERGED, across two PRs.** Everything marked ✅ below is fixed and
+> break-verified with the mutation confirmed applied; the two PRs are recorded separately because the closure
+> dates differ:
+>
+> - **23 items merged to `main` via PR #81** (2026-08-09).
+> - **`#W15-1`, the last one, closed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and **merged to `main`
+>   via PR #82** (2026-08-11), together with the first Phase 2.6.5 batch.
+>
+> §E's six coverage gaps are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort
+> listener is removed, which is the unkillable run reproduced exactly rather than an assertion standing in
+> for it.
+>
+> **`#W15-2` closed 2026-08-09** as [ADR-0075](../../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
+> amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
+> DISPLAY stays tolerant. It landed first on purpose — `#W15-1` adds a new durable event type, and an older
+> binary reading it falls straight into §5's skip path, so this decision governs how that event degrades.
+>
+> **One gap this closing deliberately left open**, named here rather than implied: ADR-0075's refusal is
+> pinned at `gate.ts`'s own catch (where the blocker was) and at `toUserFacing`, but NOT through
+> `dispatch.ts` / `specs.ts` to the process exit. A re-wrapping `try/catch` added in either layer reproduces
+> the same blocker and leaves both tests green. Closing it needs a `run(argv, io)` drive with a redirected
+> HOME and a seeded on-disk `history.db`; no such harness exists for `gate` yet, and the marker sits at the
+> test it concerns.
+>
+> **`#W15-1` is what remains, and its DECISION is now made**:
+> [ADR-0076](../../decisions/0076-durable-per-attempt-realized-cost-ledger.md) (Accepted 2026-08-09) — an
+> additive durable run event recording one settled provider attempt, emitted through ADR-0074 §2's barrier and
+> folded into a `run_costs` row at persist time. It landed after ADR-0075 on purpose: a new durable event type
+> is exactly the input that decision governs.
+>
+> **The implementation is staged, and starts here.** In order, because each step is a precondition for the
+> next:
+>
+> 1. `packages/shared/src/run-event.ts` — `cost:attempt_settled`'s schema, its union arm, and
+>    `parseStoredRunEvent`. Until this lands nothing else compiles.
+> 2. `docs/reference/contracts/sse-event-schema.md` — the canonical shape + which of the two cost events is
+>    authoritative (ADR-0076's last Negative names that drift risk).
+> 3. `packages/db/src/run-history-store.ts` — the `applyDerived` arm writing the `run_costs` row in the SAME
+>    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
+>    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
+>    no-double-count claim.
+> 4. The attempt boundary and its barriers — **corrected by
+>    [ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)**. ADR-0076
+>    §1 asked for an `await` at the settle point; there is no `await` to be had there. The seam's observer is
+>    `onAttempt?: (record) => void` — synchronous, void — and BOTH money events are emitted from that one
+>    callback a few lines apart, which `budget-governor.ts` already states outright ("which cannot await"). So
+>    the ledger takes ADR-0074 §2's shape: **start** the write at the settle instant on a chained in-flight
+>    promise, **join** it at three barriers — before the next egress admission, **before tool dispatch**
+>    (`agent-turn.ts`'s `await dispatchToolCalls(...)`, the barrier this adds beyond §2), and at the turn/node
+>    terminal. Every barrier awaits AND observes the failure, because `#emitDurable` is total for store faults
+>    and resolves.
+> 5. `packages/core/src/engine/checkpoint.ts` — **corrected during implementation**. The instruction here was
+>    "fold it as a SUM of deltas", borrowing ADR-0074 §2's reasoning, and the wrong half of that cost two
+>    rewrites. Summing into the realized total double-counts (a node terminal's snapshot already contains its
+>    attempts); summing into a separate accumulator and maxing the two families UNDER-counts (a media node
+>    writes a snapshot and emits no attempt row, so every attempt after the last boundary vanishes). What is
+>    correct is the fold already two arms above it: `Math.max` over every durable ABSOLUTE total. §2's
+>    rejection of `Math.max` does not carry — it was rejected there only because a release can DECREASE a
+>    conservative total, and realized spend is monotonic.
+>
+> **STATUS: all five steps are landed** (`8d7ffcf` … `50c60bd`), each with an Opus and a Sonnet round folded.
+> The break-verify that matters most was step 4's ordering, and it now holds: with the tests draining to
+> quiescence before asserting, deleting B2 reddens the tool-dispatch test and deleting B3 reddens the node-
+> terminal test. B1 is masked by B2 on the current fixture (the second egress only comes after the tool), so
+> it is covered by construction rather than by a red — named rather than implied.
+>
+> **This is now the prerequisite of Phase 2.6.5, not a parallel track.** Its five steps touch the same four
+> files `CR-10` (ordered append tail) and `CR-12` (effect journal) restructure, so it lands first — see the
+> 2.6.5 section below.
+>
+> **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
+> A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
+> duplicate EFFECT is the harm, and no cost bookkeeping prevents it. That needs a durable effect journal with
+> a prepare/receipt pair, which is a different decision about a different failure and earns its own ADR. It is
+> the natural next one after this chain (forward-compatibility → conservative commitment → realized cost).
+>
+> Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
+> `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
+> write and the next turn is clean; it now stops instead, because continuing to spend above a transcript that
+> has fallen behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other
+> `packages/db` stores share the same outer-`db`-inside-a-transaction convention, which remains open, is
+> stated here rather than implied closed, and has its own PR queued after this one.
+
+##### A. Needs an ADR first — the only part that is NOT PR #81's to close
+
+- ✅ **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+  *Closed 2026-08-10 by ADR-0076 + ADR-0077 and the five staged steps; the barrier is a chain-and-join, not
+  the inline await ADR-0076 §1 first specified. See the staged plan below for what each step landed and the
+  three carried-forward gaps.*
+  `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
+  and the checkpoint can only recover cost from a LATER `node:completed`/gate snapshot. So: a paid call
+  succeeds → the model asks for a tool → the process dies during the tool → the realized cost is gone and the
+  resumed node re-runs the same paid call, against a cap that has forgotten the first one. ADR-0074 makes only
+  the CONSERVATIVE commitment durable; a call that returned trustworthy usage has no equivalent barrier.
+  *Needs an ADR: an idempotent per-attempt durable ledger, written before the next tool side-effect, the next
+  egress and the turn/node terminal. Not a local fix — it changes what "spent" means across a crash.*
+- ✅ **`#W15-2` (blocker) — a tolerant read is fail-OPEN on the resume path.** ADR-0074 §5 drops an event whose
+  `type` an older binary does not know, and `checkpointer.ts` builds resumable state from what remains. An
+  older binary cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a
+  cost commitment — so it may re-run completed or already-submitted work. Preserving the sequence high-water
+  mark prevents a UNIQUE collision; it does not restore lost state. Tolerance is right for `logs`/`status`
+  (read-only); it is wrong for a replay that changes the world.
+  *Needs a superseding ADR (§5 is append-only): fail closed on the resume path with "a newer Relavium is
+  required" when any row was skipped, while read-only surfaces stay tolerant — or classify events as
+  state-bearing vs not, and tolerate only the latter.*
+
+##### B. PR #81 — ADR-0074 §1, the half that makes the rest safe
+
+- ✅ **`#W15-3`** (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.
+  `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
+  REPL action or Home affordance calls either. §1 requires the surface that RENDERS the amount to also expose
+  clearing it, and this PR removed the accidental escape a restart used to provide.
+  *Closed by `/cost --release`: `/cost` renders the durability state, and the release clears the per-model AND
+  aggregate columns before the live governor, so it survives `chat-resume`. The durable
+  `budget:estimate_released` named here was NOT needed — the session path restores from columns, not from an
+  event replay — so it stays reserved; see the lane-(e) note above.*
+
+##### C. PR #81 — data integrity, each with a concrete failure
+
+- ✅ **`#W15-4`** (blocker) — session persistence failures are invisible to the producer. `RunEventBus` isolates
+  listener errors by design, so a persister that cannot write still lets the turn complete. Two consequences:
+  `persister.ts` advances the in-memory cost total BEFORE the DB write, so a failed `recordSessionCost` leaves
+  the durable total low and a resume restores a cap that has forgotten real spend; and a failed `commitTurn`
+  leaves the staged turn uncleared, so the next `beginUserTurn` overwrites the previous user message and the
+  durable transcript loses an exchange the in-memory session still has.
+  *Closes when: cost and transcript persistence move to an awaited durability port (UI subscribers may stay
+  passive), and a persistent write failure puts the session in a durability-degraded state that refuses new
+  egress rather than reporting success.*
+- ✅ **`#W15-5`** (high) — stored payloads are not checked against the authoritative columns. `readEventLog`
+  selects `seq`/`event_type` alongside the payload but never compares them to the parsed event's own `runId`,
+  `sequenceNumber` and `type`. A row with `seq = 2` carrying `sequenceNumber: 1` is accepted, leaving the
+  high-water mark wrong and the resume colliding on the next write.
+  *Closes when: every denormalized projection is compared after parse and any mismatch is a
+  `CorruptRunEventError`.*
+- ✅ **`#W15-6`** (high) — terminal cost snapshots on failed/cancelled runs are dropped by the read models.
+  `node:failed`, `run:failed` and `run:cancelled` all carry cost in the shared schema, but the store folds
+  none of them, the checkpoint folds none, and the run TUI's summary ignores the terminal figure. A sibling's
+  paid media cleanup after a root failure exists ONLY on `run:failed.cumulativeCostMicrocents`, so replay and
+  history lose it. Pre-dates this PR, but the PR touches all three files and claims cost safety.
+- ✅ **`#W15-7`** (medium) — `media_job:submitted` accepts a half-frozen basis. `units` and
+  `acceptedCostMicrocents` are independently optional, so a row with a frozen cost and no frozen units resumes
+  with the old reservation and a re-derived volume. The invariant is not "both or neither" (the approved-bypass
+  case legitimately has units only) but **`acceptedCostMicrocents` present ⇒ `units` required**.
+
+##### D. PR #81 — security and correctness
+
+- ✅ **`#W15-8`** (high) — the new failure-reporting paths can leak credentials. `background-failure.ts` prints an
+  arbitrary rejection message and, under `RELAVIUM_DEBUG`, a raw stack; `sanitize.ts` strips ANSI/control/bidi
+  but performs no secret redaction. Same class in the session listener notice, `render-error.ts`'s verbose
+  stack and `index.ts`'s fatal debug stack. The rejection can be an MCP error, a provider response body or a
+  tool result — all of which carry keys, `Bearer` headers or credentialed URLs. Existing tests plant ANSI, never
+  a secret.
+  *Closes when: the shared secret-shape redactor runs BEFORE terminal sanitization on every one of those paths
+  (stacks included), with tests planting `sk-*`, `Bearer`, `Basic`, credentialed URLs, query tokens and PEM.*
+- ✅ **`#W15-9`** (high) — the stream path can throw out of a contract that says it never throws.
+  `#runStreamAttempt` calls `#emitSuccess` OUTSIDE its try/catch (the `generate()` path has it inside), so a
+  provider returning non-integer usage makes `assertAccountableUsage` throw raw out of the async generator —
+  and `streamOneTurn`'s `for await` has no try/catch, so it crashes the turn unclassified, AFTER the content was
+  produced and paid for.
+- ✅ **`#W15-10`** (high) — `--json` output is not sanitized. `status --json` / `gate list --json` carry
+  model-controlled text; `JSON.stringify` does not escape Unicode bidi overrides (CVE-2021-42574). The human
+  render path is sanitized; the JSON branch is not. `createJsonRenderer` is the same gap on the NDJSON path.
+- ✅ **`#W15-11`** (high) — `createPlainRenderer` sanitizes AFTER splitting on newlines, so an embedded newline
+  still forges a line. Every other boundary this PR touched sanitizes first; `renderer.ts` is the exception.
+- ✅ **`#W15-12`** (high) — `isBlankPreview` treats a fully-redacted preview as informative (`chat-mode.ts`), so a
+  user pressing "always" on `Approve write to [redacted]?` auto-approves every `write_file`/`run_command`/
+  `http_request` for the session, having been shown nothing.
+- ✅ **`#W15-13`** (medium) — the config reader chmods PROJECT configs to 0600. `reassertOwnerOnly` runs on every
+  layer, but `config-spec.md` says project files are committed and shared. Reading a config mutates repo file
+  permissions, and `statSync`/`chmodSync` follow symlinks. Self-heal belongs to the canonical global config
+  only.
+- ✅ **`#W15-14`** (medium) — a provider `Retry-After` sleep is not abort-aware. `fallback-chain.ts` passes the
+  delay straight to an injected `sleep` with no signal, and the real hosts use a plain `setTimeout`. A cancel
+  during a 60 s clamped wait hangs until the timer fires. The existing abort test resolves `sleep` immediately,
+  so the window is untested. The docblock also says an oversized value becomes `undefined`; the code clamps.
+- ✅ **`#W15-15`** (medium) — corruption is reported to a multi-run view as "no data". `readPerRunOrDegrade`
+  returns only the fallback, so `gate list` can print "No pending human gates." for a run whose gates were lost
+  to corruption. It must return the degradation alongside the value, with a warning in human output and a
+  machine-readable marker under `--json`.
+
+##### E. PR #81 — coverage gaps it shipped knowingly
+
+All six are now CLOSED and their in-source markers removed. None had been a shipped defect — each had
+mutation-verified coverage one layer down — but closing them surfaced one that was: `onLegacyMediaJobHold`
+reached `WorkflowEngine` from a real `gate.ts` sentence and the constructor never read it, so ADR-0074 §3's
+hold notice was dead and a `relavium gate` resume of a legacy parked media job stalled silently. Found by
+the review of `#W15-16`, fixed with it, and now the signal that test drives.
+
+- ✅ **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
+  listener leaves the whole suite green.
+- ✅ **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
+- ✅ **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
+  the block does not seed).
+- ✅ **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
+- ✅ **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
+- ✅ **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
+  `agent run`.
+
+##### F. PR #81 — standards and documentation drift
+
+- ✅ **`#W15-22`** (low) — the PR's "no unsafe `as`" conformance claim is false. Two assertions in new production
+  code: `shared.ts`'s `readRetryAfter` casts an arbitrary `headers.get`, and `openai.ts`'s `mapOpenAiApiError`
+  casts a `headers` field back onto a parameter type that lacks it. A structural `headers?:` plus runtime
+  narrowing removes both.
+- ✅ **`#W15-23`** (medium) — `persistEvent`'s `applyDerived` uses the outer `db`, not the transaction handle.
+  Harmless under `better-sqlite3`, but it breaks ADR-0005's Postgres-portability promise on the highest-volume
+  money write.
+- ✅ **`#W15-24`** (low) — canonical docs describe code that was not shipped. `tool-registry.md` says path
+  redaction is per-segment (it is whole-string, and the same file says so correctly three paragraphs later);
+  `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
+  note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.

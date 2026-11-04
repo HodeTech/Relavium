@@ -1553,6 +1553,10 @@ Every connect failure had collapsed into one sentence, and every identifier was 
 carried — the package's own tests had to regex human prose to find a server id. Fields and a `reason` now,
 derived from the caught error's SHAPE, never from its text.
 
+### W4 start gate — maintainer ruling (moved from current.md on 2026-11-04)
+
+**The `W4`-waits-for-the-`W3`-blocker gate was lifted deliberately on 2026-09-01, by the maintainer, and it is recorded here rather than left to be inferred from the commit order.** The reasoning: the blocker is a `BoundedEventStream` drop on a stream nobody iterates, its fix is ADR-0087 §1 — a decision that was still **Proposed** and unapproved — and `W4` touches a disjoint surface (the MCP boundary). Blocking a whole wave on an unapproved ADR would have stalled the phase rather than protected it. **The blocker stays open and stays first in the `W3` residuals**; nothing here closes it or reduces its severity. **Updated 2026-09-04:** ADR-0087 is now **Accepted**, with nine dated corrections written into it after a review refused acceptance. That removes the "unapproved ADR" half of this gate — §1 is now a settled decision — but §1 remains **unimplemented** and the blocker is unchanged. Its Correction 1 records what §1 must settle before it can be built: the two factories §1 names are not symmetric — a host calls `createSessionHandle` directly, but a `RunHandle` is only ever produced inside `WorkflowEngine.start()` / `resumeFromCheckpoint()`, so the run half needs the mode plumbed onto an engine entry point before it can be passed at all. A `subscribe-only` handle must also not present a silently-empty iterable.
+
 ### W4 closing register
 
 **The register, per exit criterion 7 — the code that closes each item, so a reader can check the claim.**

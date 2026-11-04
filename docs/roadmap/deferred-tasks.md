@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-26 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are merged in PR #95 (Step 9a.1 is independently accepted on `development` with its recorded low findings below, Step 9a.2a is independently accepted on `development` with its recorded low findings below, Step 9a.2b is independently accepted on `development` with its recorded low findings below, the native-identity increment NI independently accepted on `development` with its recorded low findings below (its Windows clause open), Step 9b.1 independently accepted on `development` with its named limits and recorded low findings below, Step 9b.2 independently accepted on `development` with its named limits, handoffs and recorded low findings below, and Steps 9c–19 not started; the PR95 increment is closed on `development` under the maintainer's 2026-10-21 round cap). The independent PR #95 review's findings are recorded below with the maintainer's 2026-10-19 owner rulings, and the masker's edge cases with the maintainer's 2026-10-21 acceptance bar and round cap and the 2026-10-22 rulings. Existing approved deferrals remain.
+> Last updated: 2026-11-04 — the CLI MVP comes first (maintainer, 2026-10-26; decisions D58–D72 ruled 2026-11-04): Wave 3 is paused after Step 9b.2 and its Steps 9c–19 are pending, not declined; the order is in [current.md](current.md#next-work--the-cli-mvp). Wave 2 is merged in PR #94 and Wave 3 Steps 1–8 in PR #95; PR95, 9a.1, 9a.2a, 9a.2b, NI (its Windows clause closed on 2026-10-26), 9b.1 and 9b.2 are accepted on `development` with their recorded findings below. The independent PR #95 review's findings keep the maintainer's 2026-10-19 owner rulings, and the masker's edge cases the 2026-10-21 bar and the 2026-10-22 rulings. Existing approved deferrals remain; entries the MVP pulls forward say so.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -996,8 +996,10 @@ increment, after 9a.2b and before 9b (register row NI), rather than a deferral; 
 NI is independently accepted on `development` at `fc5af701` (2026-10-25,
 [acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the item stays
 open until the Windows clause below closes it after three consecutive green advisory Windows runs on pushed heads.
+**Closed 2026-10-26:** the third consecutive green advisory Windows run (push CI run 40276471445 at `5a328bca`, probe
+`0 of 200`) closed the Windows clause ([NI acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the scoped limits below stay open.
 
-- [ ] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
+- [x] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
   Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a
   number, but on Windows `ino` is the volume's 64-bit file ID; above 2^53 neighbouring IDs round to the same value,
   so a replaced file or directory can compare as the original. `apps/cli/src/engine/tool-host/fs-policy.test.ts`,
@@ -1062,6 +1064,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
         ADR-0081's role boundary; ids unique per session; validity proven by the live conformance suite; a
         user-scoped `[preferences]` toggle.
       *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
+      **Scheduled 2026-11-04 (D67):** v0.2.1, right after the CLI MVP's v0.2.0, designed together with ADR-0096 §5's
+      in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
 
 - [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
       [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
@@ -1090,6 +1094,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
+      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4):** a failed, denied or aborted turn stays in context as a
+      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment drafted in Gate 0.
 
 - [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
       upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
@@ -1926,6 +1932,9 @@ so directly: these "should remain visible rather than disappear behind the green
 
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
+>
+> **Scheduled 2026-11-04:** the CLI MVP's MVP-2 repaints a resumed session's transcript
+> ([current.md](current.md#next-work--the-cli-mvp)); close this entry when that lands.
 
 `relavium chat-resume <sessionId>` restores the model's context from `history.db`, but opens on an **empty
 viewport** — the prior conversation is never repainted. This is **not** the 2.6.F regression F1 is: it has been
@@ -2862,3 +2871,5 @@ future test cannot silently re-acquire it.
   [approved execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
   and [Wave 5a owner](current.md#wave-5a--paint-before-you-build) retain the split; close only
   after actual word-wrap implementation and regression evidence land.
+  **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
+  ownership ends, and the close condition above stands.

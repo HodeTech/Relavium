@@ -3,6 +3,9 @@
 > Status: **In progress** — **2.6.F** (platform floor + full-screen TUI, PR #74) and **2.6.C** (reseat
 > transcript-carry + `/cost`, PR #75) are ✅ **Done**, and **2.6.Q P1–P5** landed with PR #76 (2026-07-26).
 > Joint Wave 2 prerequisites and corrections merged in PR #94 (2026-10-15); the [merge checkpoint](phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records their exact scope. Full M/N lifecycle and remaining workstreams stay open.
+> **CLI MVP first (2026-11-04):** the MVP order in [../current.md](../current.md#next-work--the-cli-mvp) takes slices of
+> 2.6.A/B/D/E/G/H/I/J/K/M/Q ahead of the rest of the phase; new MVP items are defined under
+> [CLI MVP additions](#cli-mvp-additions--2026-11-04). The phase scope, exit criteria and milestones are unchanged.
 > Live progress is canonical in [../current.md](../current.md); the rest of the phase follows. Depends on the Phase 2.5
 > spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
 > PR #69, 2026-07-08), so this phase is unblocked.
@@ -314,6 +317,45 @@ viewport with an inline switch marker (regression-tested on both the Home and st
 shows per-model spend for a reseated session; the notice is asserted on resume surfaces. **Required ADR:**
 none (ADR-0059 is Accepted).
 
+#### Implementation record (moved from current.md on 2026-11-04)
+
+Driven by two maintainer manual-test findings. **F1:** a mid-session `/models` reseat **blanked the alt-screen
+viewport** — the reseat builds a fresh view store, and on the full-screen renderer (the TTY default since 2.6.F, with
+no native scrollback behind it) that store *is* the scrollback, so the whole conversation vanished the moment a user
+switched models. The durable transcript and the new model's context were never at risk; the loss was the view. The
+reseat now carries the rendered conversation, gated to full-screen (a seeded **inline** store would re-print the
+conversation over the copy ink's `<Static>` already put in the terminal's scrollback), and the switch notice lands
+**beneath** it as an inline `⇄ model changed <old> → <new>` marker, keeping ADR-0059's bound disclosure clause.
+
+**`/cost`** now shows where the money went, behind a new
+[ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md): a durable `session_costs` table with the
+invariant **`SUM(rows) == agent_sessions.total_cost_microcents`**, true by construction. ADR-0059 had planned to
+derive the breakdown from the per-message `model_id`, which **cannot work** — one row holds one model, but a turn
+whose tool loop fails over bills two. Along the way it closed a **live bug**: `total_cost_microcents` was being SET
+blindly by five writers, so two `chat-resume` processes could permanently corrupt a session's total. It now has a
+single owner. `session_messages`' never-written token/cost columns were dropped rather than left as a second, wrong,
+zero-valued source.
+
+Four adversarial review rounds ran over the work and each found something real — including that a tripwire I shipped
+was **armed in production** and **swallowed by ink** (so it could never fail), that a perf harness measured a
+**pointer assignment** while its ADR note claimed it verified an O(n) bound, and that the `/cost` DB read — the
+step's central change — had **zero test coverage** at any layer. All folded, each with a break-verified regression.
+
+**Open obligations carried out of 2.6.C:**
+
+- **`chat-resume` opens on an empty viewport** — it has never repainted prior turns, in any mode or version (nothing
+  projects `session_messages` into rendered entries). Not a 2.6.F regression; tracked in
+  [deferred-tasks.md](../deferred-tasks.md).
+- **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
+  ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
+  a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3).
+- **Cross-turn tool-call memory** — a "the reseat forgets tool calls" report turned out to be an *engine* property,
+  not a reseat one: tool pairs never cross **any** turn boundary (ADR-0062 §6). Deferred behind a default-off toggle,
+  but **three already-live bugs gate it** (no pre-egress context-window check; overflow is a fatal, non-retryable
+  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks.md](../deferred-tasks.md).
+- **The CLI e2e suite migrates the developer's real `~/.relavium/history.db`** — verified, and it is what let a
+  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks.md](../deferred-tasks.md).
+
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 
 Unchanged in intent; one absorbed deferred item makes the security mandate explicit.
@@ -392,7 +434,8 @@ tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering 
 > [ADR-0069](../../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width`, Accepted on the merge).
 > The shipped inventory (incl. the `✓ Copied` copy-on-select toast), the two adversarial review rounds, and the
 > open obligations carried out (short-terminal Home overflow → 2.6.G; `relavium run` stays inline; themes → 2.6.L)
-> live in the canonical status home [current.md](../current.md); this entry is not restated there.
+> are in the implementation record at the end of this section, moved from current.md on 2026-11-04. Its release
+> clause (v0.2.0) is still open: it lands with the CLI MVP's MVP-10 ([current.md](../current.md#next-work--the-cli-mvp)).
 
 The substrate workstream — it runs **first** because the browsers (2.6.G), settings screens (2.6.L), and
 render-v2 (2.6.M) all build on it.
@@ -441,6 +484,45 @@ render-v2 (2.6.M) all build on it.
 and released as a breaking 0.x MINOR bump (e.g. `0.2.0`, per ADR-0067) with migration notes; the component harness runs in CI with at least the
 frozen-clock regression pinned. **Required ADRs:** the ADR-0021-superseding floor ADR + a full-screen
 renderer & TUI-harness ADR.
+
+#### Implementation record (moved from current.md on 2026-11-04)
+
+The first 2.6 workstream. Behind [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+(Node `>=22` published floor, `>=22.13.0` dev-install floor; `better-sqlite3` re-affirmed),
+[ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (`ink` 7 + a hand-built alternate-screen
+renderer + the `ink-testing-library` harness), and
+[ADR-0069](../../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width — **Accepted**
+on the PR #74 merge, the CLAUDE.md rule-2 approval it gated).
+
+Shipped: `ink` 6→7 and the component-render harness; the alt-screen lifecycle with restore nets on every
+termination path; a hand-built transcript **viewport** (grapheme-aware wrapping, windowing, scroll + auto-follow, a
+per-entry wrap cache) and the inter-session alt-buffer **hoist**; the **`/scrollback`**, **`/edit`** and **`/copy`**
+copy-and-search hatches over a `suspendFullScreen` primitive; **in-app mouse text selection with copy-on-select over
+OSC 52** on both surfaces, with edge auto-scroll, a frozen auto-follow and a transient **`✓ Copied` toast** so the
+otherwise-silent copy is confirmed; `--no-mouse` /
+`[preferences].{alt_screen,mouse,copy_on_select,show_banner}`; a branded Home banner; and DEC-2026 synchronized
+output — which `ink` 7 turned out to already emit, so the step **pins** it rather than building the planned
+`stdout` Proxy.
+
+The full-screen renderer is now the **default on a TTY**; `--no-alt-screen` and a machine / non-TTY / `--json` / CI
+path stay on the byte-identical inline renderer.
+
+Two adversarial review rounds (one per step, one over the whole phase) drove the last third of the work. The
+whole-phase round found that **the caps-lift ADR-0068 exists to deliver was never implemented** — a name collision
+with the Step-4b-3 wrap cache — so a >4000-character answer was still clipped in the very viewport built to scroll
+it; that `displayWidth` under-counted 8 539 code points against `ink`'s own width function; and that a keyboard
+Ctrl-C during a Home hatch stranded mouse reporting on the user's shell. All folded, each with a break-verified
+regression test.
+
+**Open obligations carried out of 2.6.F:**
+
+- **The Home landing can overflow a short terminal** — a populated "Attention required" section pushes the top off,
+  and the alt buffer has no scrollback to recover it. Predates 2.6.F (the strip is 2.5.B); **2.6.G**'s management
+  browsers replace the strip wholesale, which is the right place to fix it.
+- **`relavium run`'s TUI stays inline** (a deliberate 2.6.F scope cut); its retained-scrollable-history is tracked.
+- **Themes** (beyond colour / `NO_COLOR`) are deferred to **2.6.L**, per the maintainer's Step-5 decision.
+- Real-TTY signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`/`-QUIT`, a hatch under `tmux`) remain a **manual PR-time
+  check** — the unit tests pin the orchestration around injected seams, not the kernel.
 
 ### 2.6.G — Home management browsers: workflows, runs, agents
 
@@ -928,6 +1010,9 @@ sensitive-read floors).
   wired for chat in 2.6.N — agent spawning is separate from workflow composition.)
 - **Default chat agent grant review**: widen the built-in agent's grant to the new idempotent read tools
   (search/find/todo); write/exec/egress stay opt-in via mode + approval.
+  *Direction set 2026-11-04 (D62, see [MVP-A14](#cli-mvp-additions--2026-11-04)):* the built-in agent also gets
+  `write_file`/`edit_file` and `run_command` under the approval card; this lands only with its ADR-0057 amendment and
+  security review.
 - **Curl/wget as web-search substrate** *(research item)*: evaluate whether `curl` / `wget` / `httpie` /
   `xh` should be **default-allowed** in the built-in chat agent's `allowed_commands` as an alternative
   web-search path — the model can already use `web_search` (once credential-resolved), but a
@@ -1237,6 +1322,40 @@ extends ADR-0064; rides ADR-0065 (SSRF / user-pricing precedent) and ADR-0066 (t
 [ADR-0011](../../decisions/0011-internal-llm-abstraction.md)-respecting (host-side data source, not a
 `listModels` call). Mandatory security review is a co-gate.
 
+## CLI MVP additions — 2026-11-04
+
+The CLI MVP (decision D58, milestone M3.5, v0.2.0) is ordered in [current.md](../current.md#next-work--the-cli-mvp).
+Most of its items already have a home in a workstream above. This section is the one home for the items that had
+none, found by the 2026-11-04 review of the code at `5a328bca` and ruled by the maintainer
+([priority reset](phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04)). Each belongs to the
+workstream named in its row and follows that workstream's ADR and security gates.
+
+| ID | Workstream | Item and acceptance |
+|---|---|---|
+| MVP-A1 | 2.6.G | **Human run output.** `relavium run` and `logs` print the workflow's outputs on the human surfaces, bounded and through the shared sanitize floor; `--json` is unchanged. |
+| MVP-A2 | 2.6.G | **The run id is visible.** The TTY run view and its final summary show the run id that `logs`, `status` and `gate` accept. |
+| MVP-A3 | 2.6.B | **`/export` writes where workflows live.** It writes into `.relavium/workflows/` with a slug from the session title (no UUID file in the working directory) and offers to run the result. |
+| MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
+| MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
+| MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
+| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling, clamped, with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. |
+| MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
+| MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
+| MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
+| MVP-A11 | 2.6.M | **Configurable, finite ceilings.** Tool rounds, correction attempts and the session turn limit are configurable with conservative defaults and stay finite (ADR-0086). |
+| MVP-A12 | 2.6.E | **One keymap.** Ctrl+C interrupts the running turn, a second Ctrl+C ends the session, and Ctrl+C at a pending approval rejects it before anything else (keymap ADR, D68; supersedes the 2026-10-19 `/cancel` wording; approval-path sitting). |
+| MVP-A13 | 2.6.M | **`[chat].default_mode`.** The starting mode is configurable (default `ask`), with a one-time hint that Shift+Tab changes it (ADR-0057 amendment, D62). |
+| MVP-A14 | 2.6.M | **Default grant (D62).** The built-in agent gets the read, search and find tools, `write_file` and `edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) and `run_command` under MVP-A15; egress stays opt-in. Lands only after the approval diff; ADR-0057 amendment and security review. |
+| MVP-A15 | 2.6.G | **`run_command` approval card (D63).** A non-allowlisted command prompts once / for the session / to remember; remembered grants live outside the repository, in operator-owned configuration keyed by project root; accept-edits keeps prompting for allowlisted commands; headless paths stay fail-closed; `!` uses the same card. New ADR amending ADR-0029(a)/0061/0063, and a security sitting. |
+| MVP-A16 | 2.6.D | **Project instructions.** A project instructions file (`AGENTS.md`) and an environment block enter the system prompt under explicit provenance rules (new ADR; independent of ADR-0060's `{{ctx.*}}`). |
+| MVP-A17 | 2.6.E | **Session entry flags.** `relavium chat --model/--provider` and a one-shot prompt mode; headless stays fail-closed; both follow ADR-0110's compatibility rules. |
+| MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. |
+| MVP-A19 | 2.6.B | **Starter content.** Two or three starter workflows and agents a new user can run unchanged. |
+| MVP-A20 | 2.6.I | **Masked `provider set-key` on a TTY** instead of refusing an interactive terminal. Secret-input sitting. |
+| MVP-A21 | 2.6.I | **Registered MCP servers reach the default agent**, under ADR-0084 spawn consent and ADR-0088's untrusted tool definitions. |
+| MVP-A22 | 2.6.F | **Upgrade from `0.1.1`.** A populated `0.1.1` home (history.db with migrations 0000–0004, config.toml, keychain entries) upgrades through v0.2.0, with a seeded-then-migrated test. |
+| MVP-A23 | 2.6.F | **Release prerequisites for v0.2.0.** The D59 release ADR and guard change; version and CHANGELOG including the Node ≥22 break; npm token, 2FA, provenance and the `v*` ruleset verified; the interactive Home and chat checked on a real Windows terminal; a manual three-provider end-to-end turn; first-read docs (README, npm README, tutorials, runbooks) describing what ships. |
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into
@@ -1303,7 +1422,7 @@ separate backlog.
 
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
-| M2.6-1 Foundation | 2.6.F | Node floor decided/shipped; full-screen renderer + TUI harness — the substrate for every arm |
+| M2.6-1 Foundation | 2.6.F | Node floor decided/shipped; full-screen renderer + TUI harness — the substrate for every arm *(met except the v0.2.0 release clause, which closes with the CLI MVP's MVP-10)* |
 | M2.6-2 Authoring core shared | 2.6.A | `@relavium/authoring` + catalog-aware pre-flight |
 | M2.6-3 Conversational authoring | 2.6.B + 2.6.D | "define a workflow…" → valid YAML in the Home; `{{ctx.*}}` lands |
 | M2.6-4 The Home-managed CLI | 2.6.G + 2.6.H + 2.6.I + 2.6.J + 2.6.K | Every management task doable from Home; drillable, attributed run history; onboarding v2 |
@@ -1511,9 +1630,9 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract + the `ask_user` mid-turn pause/resume **engine** interaction (rides the EA4 pause machine; a turn-level pause distinct from the approval pause) (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts | 2.6.M |
+| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract + the `ask_user` mid-turn pause/resume **engine** interaction (rides the EA4 pause machine; a turn-level pause distinct from the approval pause) (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts *Split 2026-11-04 for the MVP: the toolbelt and the tool-render/approval-preview contract first (MVP-3), the `ask_user` pause later.* | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
-| 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts | 2.6.E |
+| 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |
 | 13 | *(new)* | On-the-fly **generation + parallel orchestration security** (the generation-as-codegen threat model, schema-valid≠safe, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent) — **mandatory security review is the ship-gate** | Drafted when 2.6.O starts | 2.6.O |
 | 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the recorded deferral of dynamic `invoke_workflow`) | Drafted when 2.6.P starts | 2.6.P |

@@ -39,188 +39,24 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status: Phase 1 is complete** (2026-06-21) — the engine runs end-to-end behind the
-`LLMProvider` seam with all three adapters, `AgentSession`, multimodal I/O, and the full
-run-loop. **Phase 2 (CLI) is feature-complete** (published as v0.1.1):
-`relavium chat` / `chat-resume` / `agent run`, `relavium run` with `--json`, the
-inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
-**Phase 2.5 (CLI Consolidation) is complete** (M2.5-4, PR #69, 2026-07-08): the bare-invocation
-Home, the two-registry command system (`/` palette + shell commands), per-tool
-approval/modes (ask/plan/accept-edits/auto), `@`-mention file injection, context
-compaction, the onboarding wizard + live model catalog, reasoning rendering, and regression
-hardening. **Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress** — two
-workstreams are merged to `main`: **2.6.F** (the platform floor + the full-screen TUI renderer,
-PR #74, 2026-07-11) and **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
-PR #75, 2026-07-13). The phase is a full-screen Home-managed CLI with conversational workflow authoring, management
-browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
-run-ops resume follow-up.
+**Status (2026-11-04): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+(CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
+complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
+(49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
+Wave 3 Steps 1–8 are merged (PR #95, 2026-10-18), and PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are
+accepted on `development`. **On 2026-10-26 the maintainer paused Wave 3 — Steps 9c–19 are pending, not
+declined — and put the CLI MVP first:** `relavium` v0.2.0 on npm (milestone M3.5), ordered as MVP-1…MVP-10 in
+[current.md](docs/roadmap/current.md#next-work--the-cli-mvp) under decisions D58–D72 (ruled 2026-11-04).
+Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6.C and 2.6.F are done
+(2.6.F's v0.2.0 release clause closes with the MVP) and 2.6.Q P1–P5 landed; the MVP takes slices of the rest.
 
-**The interlude between remediation Waves 1 and 2 is complete: Phase 2.6.5 (Core reliability),
-49 of 51 items closed on `main`, with approved CR-70/93 and scoped deferrals retained.
-W8 merged on 2026-10-11 as PR #92; W7 had restored the non-deferrable criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
-2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
-ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
-the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
-MCP spawn. **`W2` — liveness and deadlines — merged 2026-08-28 (PR #85)** behind
-[ADR-0085](docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md): the authored
-agent `timeout_ms` now bounds the node, every media call is bounded, a resume re-arms the run cap and a
-pending gate at their REMAINING time rather than renewing them (the node bound is the deliberate exception —
-ADR-0085 §2 records why), and an executor that ignores its signal can no longer leave a run without a
-terminal. **`W3` — resource governance and bounds — merged 2026-08-30 (PR #86) behind
-[ADR-0086](docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)**: authored values carry
-absolute admission ceilings, node output / workflow state / durable events are size-bounded, and a long-lived
-engine no longer retains every finished run. **It merged with a live blocker** — an un-pulled event stream
-drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
-in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
-[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and, after a
-review that refused acceptance until nine dated corrections existed, was **Accepted (2026-09-04) with its §1
-unimplemented**. That blocker is now closed by W8/PR #92. Its §3 turned out to be implemented already, in `W5`. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
-behind [ADR-0088](docs/decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
-cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
-refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
-untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
-A systematic review of PR #87 found **five merge blockers** in `W4` — all reproduced and fixed before it
-merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — MERGED 2026-09-02 (PR #88)** behind
-[ADR-0089](docs/decisions/0089-media-correctness-four-boundaries.md) and
-[ADR-0090](docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): `read_media` delivers
-over the media-input rail on a marked, fenced synthesized message; tool and attachment capability is gated on
-the MODEL; Gemini's function-call continuation token rides the part it belongs to; a media body streams from
-the network into the store under a size ceiling, an idle deadline and the run signal; a `url` output is pinned
-to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
-zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
-before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
-rather than left inside a checked box. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
-`merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
-is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
-and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
-ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
-time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
-existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven internal review rounds found that **most defects
-were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
-expression scan's no-false-refusal claim was false in eight ways, and a stand-down gate silently removed the
-check it was added to protect; each is a dated correction inside its own ADR. A systematic maintainer review
-then returned **two merge blockers**, both breaking a headline claim of the wave — `required` was not enforced
-when a property's schema constrained nothing, and the expression scanner's regex was quadratic and synchronous
-on a parser that accepts 2 MiB — plus eight further High findings, all reproduced and fixed before the merge.
-
-
-**Between `W6` and `W7`, the two remaining non-deferrable items closed (2026-09-06)**: `CR-73` — `invoke_agent`
-was advertised to every model granted it while `ctx.invokeAgent` is wired nowhere in the tree, so the
-advertise-filter now checks a tool's declared dispatch DELEGATE and not only its `ToolHost` arm (`read_media`
-rides along, for the same reason and by `CR-50`'s own argument) — and `CR-80` — a rejected custom provider
-`base_url` was caught and the DEFAULT adapter left standing, which is the official API, so a drifted config
-silently sent prompts and keys to `api.openai.com`; it now installs a refusing adapter naming the URL's shape,
-never its credentials. The test that was supposed to pin `CR-80` asserted only `toBeDefined()`, which a
-refusing adapter satisfies too, so it passed either way — the finding under the defect was the test.
-[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
-(2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
-at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
-**W8 merged to `main` on 2026-10-11 as PR #92 (`ef0ffa54`); Phase 2.6.5 is complete with approved deferrals.**
-All seven steps, CR-81/82 and ADR-0087 §1 are complete on `main`; the register is **49/51**.
-The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
-joins the original whole-wave acceptance, all maintainer-correction dispositions and final reviewed-head
-`3d4491df` PR/push CI plus SonarCloud success. The ordinary/enforced-coverage inventory is
-511 files / 11,026 passing tests / 12 established skips; four wire and 23 usage mechanisms pass.
-Every correction increment has two NEW independent complete clean cumulative rounds after its final fix;
-scoped correction reviews are not a new whole-PR certification. Fresh full local CI and bare/enforced
-coverage at `6139563e` retain their separate source attribution. No merge-commit execution is inferred.
-Two nonblocking Sonar complexity suggestions remain visible. Historical counts and pending states
-throughout the registers describe their original checkpoints.
-
-CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
-and existing exact-capacity/scoped residuals retain their approved limits in
-[deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
-credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2-merged--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
-next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground).
-Phase 2.5.5 and Phase 2.6 remain in progress.
-
-**W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
-Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
-lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items are closed
-(47/51 at the W7 merge); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
-[closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
-stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 subsequently merged in PR #92 and closed the phase with approved deferrals. No user decision,
-billing setup, credential or provider capture is pending.
-
-**Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
-each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
-correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
-joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
-passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
-billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
-Existing approved limits are unchanged; W8 has no open implementation or landing gate.
-
-**Joint Wave 2 merged to `main` — 2026-10-15, PR #94 (`ab08209e`).**
-All eight implementation steps and the maintainer corrections are complete on `main`
-under Accepted ADR-0105–0109. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
-joins forty item dispositions, security sittings, the final reviewed source `4cdfe011`,
-two NEW clean complete cumulative correction rounds and successful PR/push CI,
-coverage, native-platform and independently inspected physical controls. Earlier
-whole-wave and correction reviews retain their exact source scopes; no new whole-PR
-review or merge-commit execution is inferred. Detailed review records remain local
-and Git-ignored.
-
-Exit criteria 1–3 and the D half of M2.5.5-2 are satisfied on `main`. The I half,
-whole Phase 2.5.5/2.6, full M/N production lifecycle, future live provider headers
-and existing approved deferrals remain open in their canonical homes. No Wave 2
-implementation, review, publication, ADR approval, provider capture, credential,
-billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
-whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10-16.
-Its serialized multi-file Step 1 is independently accepted on `development`
-(2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
-following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
-is independently accepted after two NEW complete cumulative clean rounds and a
-separate clean security sitting. Step 4 (error/envelope substrate) is independently
-accepted after two NEW complete cumulative clean rounds. Step 5 (tools and engine
-tails) is independently accepted after two NEW complete cumulative clean rounds
-following its registry-documentation correction and a separate clean security
-sitting. Step 6 (pure process/discovery substrate) is independently accepted after
-two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 7a (lazy runtime and finite compiled graph) is independently accepted after
-two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 7b and whole Step 7 are independently accepted at `c836ffe6` after two NEW
-complete cumulative clean rounds, a clean security sitting and successful exact-tarball
-Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separately
-attributed status. Step 8a implements origin adapters and an inert native foundation;
-it is independently accepted at `e0a5ae19` after two NEW complete cumulative
-clean rounds and a separate clean security sitting.
-Step 8b (creation-owned native processes) is independently accepted at
-`e16a7659` after two NEW complete cumulative clean rounds and a separate clean
-security sitting following its canonical-reference correction. Its unchanged
-runtime/control evidence and successful full CI plus all four same-tarball
-platform consumers remain attributed to `ab50be11`, with independently verified
-source/dependency equivalence. Step 8c workflow/preparation/terminal integration
-is independently accepted at `dbab25d8` after two NEW complete cumulative clean
-rounds, a separate clean security sitting and successful full CI. All four
-same-tarball platform consumers pass at that reviewed source.
-**Step 8d and whole Step 8 are independently accepted on `development` at
-`c83c8575` — 2026-10-17.** Two NEW complete cumulative CLEAN rounds (R25/R26)
-each cover all 342 paths / 1,842 ordered hunks after the final fixture correction.
-A NEW separate clean security sitting and all fifteen full-CI jobs pass at that
-reviewed source, as do all four actual same-tarball platform consumers. Original
-failed reviewer-preparation records and source/native/platform limits remain
-explicit; source CI does not certify later documentation commits. The
-[acceptance register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
-joins exact evidence and historical corrections. Steps 1–8 are accepted;
-**Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
-itself is NOT complete: Steps 9–19 had not started at that merge (Step 9a.1, the first, is now
-accepted on `development`, below, as are Steps 9a.2a and 9a.2b; the native-identity increment NI and Steps 9b.1 and 9b.2 are accepted too, and Steps 9c–19 have not started) and whole-wave acceptance remains Step 19.
-The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18)
-records what merged and its review attributions. The final head `a3e164b5` (corrections from a
-further independent review, including a secret-scrubbing rule) merged with author verification
-only and was then independently reviewed (four rounds and a security sitting, with follow-up
-fixes on `development`, not yet on `main`); CI for it and the merge commit finished green, and SonarCloud's `main`
-gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
-and the maintainer's [2026-10-19 rulings](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
-give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
-(the scrubber residuals, including both security residuals) is closed on `development` under the
-maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)): rounds 1–10 were
-NONCLEAN; the high and medium findings through round 9 are corrected, and after round 10, the last
-round, only GEN-R10-1, which the maintainer counted as high on 2026-10-22, is corrected (in the summary,
-by the author alone). The other findings are recorded in deferred-tasks.md. Step 9a.1 (the candidate build and finalizer, the first increment of the release map/custody substrate, #46/ADR-0111) is independently accepted on `development` at `cf97b7f1` (2026-10-24): after twelve NONCLEAN rounds and an internal rigor pass, its round 13 reported no blocker, high or medium finding and its security sitting was clean; the round's low findings are recorded in deferred-tasks.md ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-acceptance--2026-10-24)). Step 9a.2 is split into 9a.2a and 9a.2b ([preflight decisions](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)); Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24): rounds 1 and 2 were not accepted (a medium, then a regression from round 1's correction), and round 3 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2a-acceptance--2026-10-24)). Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24): round 1 was not accepted (a regression in the author's own deferral record and an untested exit code), and round 2 reported no blocker, high or medium finding and no regression; its low findings are recorded in deferred-tasks.md ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-acceptance--2026-10-24)). The native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25): round 1 reported no blocker, high or medium finding and no regression, with a clean security sitting; every product file and directory identity check now compares exact bigints, its low findings are recorded in deferred-tasks.md, and its Windows clause closes after three green advisory Windows runs ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)). Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b-preflight-decisions--2026-10-25)); Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` (2026-10-25): rounds 1–3 were not accepted (one, one and two mediums, each corrected), and round 4 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-acceptance--2026-10-25)). Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the production recipient loader, absent in Wave 3, and scope separation; synthetic recipients only) is independently accepted on `development` at `563402e6` (2026-10-26): an internal rigor pass and rounds 1–3 were not accepted (mediums each time, all corrected), and round 4 reported no blocker, high or medium finding and no regression, its security sitting lows only; its low findings are recorded in deferred-tasks.md ([acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-acceptance--2026-10-26)). Step 9c is next. `development` is pushed after each accepted increment. No provider,
-credential, billing or new ADR approval is pending for the approved implementation plan.
+Two rules shape every MVP increment. Step 9a.1's interim release guard on `development` refuses any npm
+publication until the superseding pre-1.0 release ADR (D59) is Accepted. The acceptance bar is tiered (D64):
+an increment touching an approval or consent path, egress, keys or secrets, filesystem writes, a new terminal
+sink for untrusted content, the lease or resume paths, or release keeps a rigor pass, one NEW complete
+cumulative round with no blocker, high or medium finding, and a separate security sitting; other UX,
+rendering and command increments are reviewed per milestone. `development` is pushed after each accepted
+increment.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
