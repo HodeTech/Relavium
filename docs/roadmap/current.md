@@ -95,7 +95,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    `run`/`gate` start; `status` stays read-only); 2.6.K · **Validate the gate decision shape against `gateType`
    before resume**; 2.6.A · **Run-path tool pre-flight for the unwired egress/os arms** (and no `web_search` in
    the `create` placeholder); `/export` into `.relavium/workflows/` (MVP-A3); the default model follows the stored
-   key (MVP-A4); the interactive output budget (MVP-A7).
+   key (MVP-A4); the interactive output budget (MVP-A7). **Sliced 2026-11-05 (maintainer):** **1a** (UX tier, reviewed
+   per milestone) — the run id, `list --runs` and `status <runId>`, the run-path pre-flight, the output budget; **1b**
+   (security tier under D64) — human run output, the gate decision check, `/export`, the default model and missing-key
+   error, and liveness.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess

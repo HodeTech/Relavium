@@ -194,7 +194,9 @@ the same core.
   [`built-in-tools.md`](../../reference/shared-core/built-in-tools.md) /
   [`workflow-yaml-spec.md`](../../reference/contracts/workflow-yaml-spec.md), which currently document
   these tools as unconditionally available. Does **not** wire the arms themselves — that stays out of
-  scope per the recorded 2.5.E design boundary (Phase 3+).
+  scope per the recorded 2.5.E design boundary (Phase 3+). **Ruled 2026-11-05 (maintainer, MVP-1):** the
+  pre-flight refuses such a workflow before the run starts (exit `2`), naming the tool; MCP-discovered tools are
+  exempt. Until MVP-6 back-ports `validateAuthoredWorkflow`, the check rides `validateWorkflowWithCatalog`.
   *(M · `apps/cli/src/engine/build-engine.ts`, `apps/cli/src/engine/tool-host/assemble.ts`; #37, G29)*
 - **Catalog-aware `max_tokens` pre-flight** *(manual-test finding 2026-07-11):* extend
   `validateWorkflowWithCatalog` so `create`/`import`/`export` reject-or-clamp a `max_tokens` that exceeds the
@@ -798,6 +800,9 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
   no error. Add `assertDecisionMatchesGateType` in `gate/decision.ts`, with `WorkflowEngine#resume` gaining
   the same check as defense-in-depth, as part of the shared resume core this task extracts.
   *(M · `apps/cli/src/gate/decision.ts`, `packages/core/src/engine/engine.ts` (`resume`); #0)*
+  **Ruled 2026-11-05 (maintainer, MVP-1):** an `approval` or `review` gate accepts `approved` or `rejected`; an
+  `input` gate accepts `input_provided` or `rejected`. The engine reads the gate type from the workflow
+  definition's `gate_type`, since the checkpoint does not carry it.
 - **`relavium budget resume`** — **MOVED to Phase 2.6.5 `W7` on 2026-09-18.**
   [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) makes an approval a
   shown, frozen allowance, and the inline `run` prompter is the only way to approve a budget gate today — so
@@ -1351,7 +1356,7 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
 | MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
 | MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
-| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling, clamped, with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. |
+| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling, clamped, with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
 | MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
