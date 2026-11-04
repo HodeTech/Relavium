@@ -1006,7 +1006,7 @@ validated copy-in with **project-global** id uniqueness), and `relavium export <
 
 **Phase 2 — CLI is feature-complete.** Every in-phase workstream (2.A–2.S) is merged and the published CLI is cut
 as **v0.1.1**; M3 was reached at 2.K and the Phase-3 go/no-go held from 2.L. See the
-[Phase 2 workstreams]() and the
+[Phase 2 workstreams](phase-2-cli.md) and the
 [sequencing plan](#sequencing--parallelization). The full status-aware history is the
 [Remaining build order](#remaining-build-order) section (its queue is now empty).
 

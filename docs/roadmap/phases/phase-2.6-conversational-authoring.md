@@ -1306,11 +1306,16 @@ models the four shipped adapters can **already** call and to ADR-0065 custom end
   untrusted-community-pricing-into-a-safety-control is a co-gate.
 - **Usage capture for streams that end without usage** *(added 2026-11-04, after the MVP; 2.6.C's open
   obligation, [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §3 exceptions
-  1–2).* An egress that streamed content but ended without a usage chunk, and a mid-stream failure, are
-  recorded as 0 on both sides of the reconciliation invariant, so reported spend under-estimates the
-  provider's invoice. Capture or estimate their usage at the seam and mark it as such, or show the
-  under-report on the money surfaces; ADR-0070 §3's exceptions narrow with it. A PR #96 review found 2.6.C's
-  "filed against 2.6.Q" with no item here; the maintainer ruled this phase owns it.
+  1–2).* Since W8, an egress that streamed content but ended without a usage chunk, and a mid-stream
+  failure, carry `missing` or `partial` usage evidence
+  ([ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)): their realized
+  money stays 0, and the money surfaces already qualify the total ("usage unknown for N calls") without
+  inventing a quantity. What remains is capture: where a provider does report usage that an adapter still
+  drops, if any, read it at the seam so the realized total stops under-reporting, and ADR-0070 §3's
+  exceptions narrow with it. An estimate is out of scope here: it would need an ADR amending ADR-0104's
+  rule that missing evidence contains no invented quantities. A PR #96 review found 2.6.C's "filed against
+  2.6.Q" with no item here; the maintainer ruled this phase owns it, and the D64 round-1 review narrowed it
+  to what W8 left (2026-11-04).
 - **Tests:** an over-ceiling `max_tokens` is clamped per model; an OpenAI reasoning id uses
   `max_completion_tokens`; an out-of-range effort never reaches the wire and the picker offers only accepted
   tiers; a reachable-but-unpriced id gets a models-dev price so the cap applies (or is refused under
@@ -1689,7 +1694,7 @@ Part of [roadmap/](../README.md). Carry-over hardening lives in [../deferred-tas
 ### Not started yet
 
 The rest of **Phase 2.6 — Conversational Authoring and the First-Class CLI**
-([phase-2.6-conversational-authoring.md](), in progress —
+([phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), in progress —
 **2.6.F is done**,
 unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
 research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for

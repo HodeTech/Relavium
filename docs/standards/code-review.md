@@ -15,7 +15,8 @@ are actually enforced — automation catches format and types; a human catches t
   (typecheck, lint, unit tests, fixture-mode conformance — see [testing.md](testing.md)). While the
   project has one maintainer, GitHub cannot enforce an approval (it refuses a self-approval), so branch
   protection requires the CI checks and the review is the maintainer's own plus an independent review
-  round recorded for the change under the roadmap's acceptance bar. A GitHub approval becomes a required
+  round recorded for the change under the roadmap's acceptance bar. The protection does not bind
+  administrators, and the maintainer is one, so their own merges keep the green-CI rule by practice. A GitHub approval becomes a required
   check when a second maintainer joins.
 
   > Amended 2026-11-04: "a review approval" read as a GitHub approval that `main`'s protection has never

@@ -7096,7 +7096,7 @@ remains canonical for execution order. W8 implementation is not started by this 
 > [PR #96 review correction](phase-2.5.5-hardening-and-remediation.md#moved-by-the-pr-96-review-correction--2026-11-04):
 > the D66 reset had kept only current.md's live status and order and recorded its 2026-07-26 plan in the Phase 2.5.5
 > register, and these Phase 2.6.5 records had left the docs. Only relative links were rewritten for this directory
-> and heading levels lowered by one; a heading in brackets is added. The `W4` start-gate paragraph is kept in
+> and heading levels lowered by one; headings in brackets are added. The `W4` start-gate paragraph is kept in
 > [its earlier section](#w4-start-gate--maintainer-ruling-moved-from-currentmd-on-2026-11-04).
 
 ### [current.md's header notes, as of 2026-10-25]
@@ -7499,7 +7499,7 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md]() — **51 items** (`CR-01`…`CR-98`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews, `CR-98` on 2026-09-18) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+[phase-2.6.5-core-reliability-remediation.md](phase-2.6.5-core-reliability-remediation.md) — **51 items** (`CR-01`…`CR-98`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews, `CR-98` on 2026-09-18) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`

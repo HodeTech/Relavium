@@ -9402,7 +9402,7 @@ plan amendment (row PR95) and the recorded splits; ID coverage is unchanged apar
 | Area | Ruling |
 | --- | --- |
 | Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting: PR95, 9a.1, 9a.2, 9b, 9c, 9d (whole Step 9 custody), 10a, 10c, 11b, 13c, 14b, 15c, 16a, 16b, 16c (whole Step 16), 18 and 19b (whole wave). PR95 instead follows the maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). **Amended 2026-10-23 (maintainer, after Step 9a.1's twelfth round):** from Step 9a.1's round 13 on, every increment is accepted after one NEW independent complete cumulative round that reports no blocker, high or medium finding and no regression; that round's low findings are recorded in [deferred-tasks.md](../deferred-tasks.md) with their file, a minimal example and a re-check note rather than fixed in the loop, and nits are optional. A high or medium finding is still corrected and followed by a new round, and the separate security sittings above are unchanged. **Amended 2026-11-04 (D64):** tiered for the CLI MVP — see the [MVP priority reset](#mvp-priority-reset--2026-11-04). |
-| Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. **Amended 2026-11-04 (D61):** a scoped `development`→`main` checkpoint follows the [MVP priority reset](#mvp-priority-reset--2026-11-04); the Wave 3 PR still follows Step 19. |
+| Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. **Amended 2026-11-04 (D61):** a scoped `development`→`main` checkpoint follows the [MVP priority reset](#mvp-priority-reset--2026-11-04); the Wave 3 PR still follows Step 19. **Done 2026-11-04:** PR #96 merged ([D61 checkpoint](#d61-checkpoint--pr-96-merged-2026-11-04)). |
 | Plan shape | PR95 + 9a.1, 9a.2, 9b, 9c, 9d + 10a–c + 11a–b + 12a–b + 13a–c + 14a–b + 15a–c + 16a–c + 17a–b + 18 + 19a–b (29 increments). Each split is recorded before its step starts. **Amended 2026-10-24 (maintainer):** 9a.2 is split into 9a.2a and 9a.2b, so the plan has 30 increments ([9a.2 preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)). **Amended 2026-10-24 (maintainer, E6):** the native-identity increment NI is added after 9a.2b, so the plan has 31 increments ([9a.2a acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)). **Amended 2026-10-25 (maintainer, L8):** 9b is split into 9b.1 and 9b.2, so the plan has 32 increments ([9b preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)). |
 | Reassignments | G54 moves from row 17 to 11a; #311's implementation moves to 10b and its certification stays in 17a; G36/G46 are re-scoped in 10a to the branch that replaces the raw-stack branch and are certified in 17b; promotion of the Steps 6–10 commands.md sections moves from Step 19 to 10c. |
 | Interim release guard | 9a.1 adds a fail-closed check to the `release.yml` publish job that refuses any non-release candidate. Consequence, acknowledged: no npm publication, including a v0.1.x patch, until 9d and Wave 4b production custody exist. **Amended 2026-11-04 (D59):** to be superseded by a pre-1.0 release ADR (option B, sunset at 1.0 or when 9c/9d land); the guard stays in force until that ADR is Accepted and its guard change passes a security sitting ([MVP priority reset](#mvp-priority-reset--2026-11-04)). |
@@ -10685,7 +10685,7 @@ sitting, and lands in the named MVP milestone:
   reviewed per MVP milestone: author self-review, `pnpm run ci` plus `pnpm coverage:enforced`, and one independent
   scoped round with no high or medium finding; lows go to [deferred-tasks.md](../deferred-tasks.md).
 - *Publication (D61):* a scoped `development`→`main` checkpoint follows this reset; the Wave 3 PR still follows
-  Step 19 when the wave resumes.
+  Step 19 when the wave resumes. **Done 2026-11-04:** PR #96 merged ([D61 checkpoint](#d61-checkpoint--pr-96-merged-2026-11-04)).
 - *Interim release guard (D59):* to be superseded by a new pre-1.0 release ADR (option B) with a sunset at 1.0 or
   when 9c/9d land, whichever comes first. The guard stays in force, in code and procedurally, until that ADR is
   Accepted and its guard change passes a security sitting.
@@ -10695,6 +10695,67 @@ unsanitized `relavium run` output; the maintainer accepted it because the produc
 
 **NI's Windows clause is closed** (2026-10-26): run 3 of 3 is recorded in the
 [NI acceptance](#wave-3-ni-acceptance--2026-10-25).
+
+## D61 checkpoint — PR #96 merged, 2026-11-04
+
+[PR #96](https://github.com/HodeTech/Relavium/pull/96) merged `development` into `main` at 16:58:27 UTC on
+2026-11-04, merge commit `b3cf117ea1dae4e534f17c4806f2a30eb300e317` (parents `6d2a7372` and `f25fb83d`). The merge
+tree (`c7af0bc3`) is byte-identical to the merged head `f25fb83da17583c6e51ee72c7d5bfdbdfc7ad5a7`; GitHub records 97
+commits, 179 changed files, +34,184 / −3,264. `development` was fast-forwarded to the merge commit. It is the scoped
+checkpoint [D61](#mvp-priority-reset--2026-11-04) ruled and claims no wave acceptance: Wave 3 stays paused after
+Step 9b.2, and whole-wave acceptance remains Step 19.
+
+**What reached `main`.** The accepted increments PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2, each under its own
+acceptance register (none is widened by the merge), including Step 9a.1's interim release guard; the
+[MVP priority reset](#mvp-priority-reset--2026-11-04) (`64fb8772`); and the PR #96 review correction.
+
+**The review correction.** A read-only review of the PR at `64fb8772` (eighteen scoped reviewers, four verifiers)
+reported two high and several medium findings, among them argv credential flags and URL passwords left unmasked, a
+30 MiB data URI settled whole into the effect journal, and current.md records dropped by the reset. The maintainer
+ruled on its governance items on 2026-11-04. Nine commits fixed the verified findings and SonarCloud's 27 bugs and 10
+vulnerabilities: `0826f30a` (core masking and the omitted-media bound), `b4ef9374` (the run failure summary),
+`8445a700` (the build configuration typechecked), `e8121aa4` (release tooling: the runtime-dependency allowlist, the
+candidate copy check through Git's own blob hashes, code-unit sorts), `002ff6d7` (CI: the Windows job required, the
+publish job naming the `release` environment, skipped provider lanes reported), `964994c7` (the dropped records
+restored, [moved here](#moved-by-the-pr-96-review-correction--2026-11-04) and to the other phase files), `eb2cce48`
+(MVP-A23's publish-credential prerequisite), and `062564f0`/`f25fb83d` (complexity). The lows and the Sonar smells
+the maintainer chose to record are in
+[deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04).
+
+**Evidence at the merged head.** Local `pnpm run ci` passed at `964994c7` (secrets controls 130/130, acceptance tools
+1,027/1,027) and `pnpm coverage:enforced` passed (753 files, 16,244 tests; 94.75% lines, 92.83% branches). GitHub
+CI at `f25fb83d`: push run 41848319834 and pull-request run 41848332524, 18 of 18 jobs green each. SonarCloud: the
+PR's gate OK at `f25fb83d` (0 bugs, 0 vulnerabilities, 42 recorded smells) and `main`'s gate OK at `b3cf117e`.
+
+**Repository settings changed with it (maintainer, 2026-11-04).** `main`'s branch protection requires
+`windows · db concurrency + filesystem + headless smoke` beside `lint · typecheck · test` and the coverage floor;
+it does not bind administrators. The `release` deployment environment that `release.yml`'s publish job names does
+not exist yet: creating it with a `v*`-tag deployment policy and a required reviewer and moving `NPM_TOKEN` into it,
+or adopting npm trusted publishing, is MVP-A23's prerequisite, chosen in the D59 release ADR.
+
+**D64 round 1 (2026-11-04, at `f25fb83d`).** The correction touched secrets redaction and release tooling, so
+[D64](#mvp-priority-reset--2026-11-04) asks for a NEW complete cumulative round and a separate security sitting.
+Four scoped reviewers (redaction, release tooling, CI and build, documents and governance) and a security sitting
+read the whole range `64fb8772..f25fb83d`; one adversarial verifier per medium-or-higher claim confirmed seven
+reports, five distinct medium findings:
+
+| Finding | Kind | Disposition |
+| --- | --- | --- |
+| A boolean `-u`/`--user` swallowed the credential flag after it (`unzip -u -P <pw>`), a regression from `64fb8772` | Redaction | Fixed: a value that is no `user:password` pair is processed as any element |
+| The `,`/`/` password helper gave the username the text before the first `:` even after a raw `?`/`#`, so the tail of a credential query value stayed visible, a regression for the `/` spelling | Redaction | Fixed: the username owns that text only as in the authority scan |
+| packaging.md and `release.yml` said the `release` environment holds `NPM_TOKEN` (three reports) | Documents | Corrected to the current state |
+| built-in-tools.md omitted that a raw `?`/`#` after the `,`/`/` keeps a password public | Documents | Stated as a recorded limit |
+| "Media left in a dispatch result is text to the model" was false: the seam refuses it | Documents | Corrected; the rule moved to built-in-tools.md |
+
+The fixes are `5a1006ea` (core), `3cb9712c` (tooling and CI) and the documentation commit that records them. Of
+25 lows, those in the correction's own code and documents were fixed with them (the requirement allowlist's
+prerelease grammar and tests, a stranded JSDoc, the fixture generator's temporary home, the Windows job's comment and
+a pin that no required job can be skipped, stale pointers, move notes, empty links, the argv rule's scope, the 2.6.Q
+item narrowed to what W8 left); the rest are in
+[deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04), with the
+review's 86 unverified first-pass lows triaged against `f25fb83d`. **D64's bar is not met yet:** round 1 found
+medium findings, so acceptance needs one NEW complete cumulative round over the corrected head with no blocker, high
+or medium finding.
 
 ## Execution record moved from current.md — 2026-11-04
 
@@ -11128,7 +11189,11 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
 > found that the rest of its unique records had left the docs, against D66's ruling to relocate them, so they are
 > moved here verbatim too: the Wave 2 and Wave 3 sections of that plan, the rows the reset edited in place (as they
 > read before), and current.md's, CLAUDE.md's and AGENTS.md's status blocks. Only relative links were rewritten and
-> heading levels lowered by one; a heading in brackets is added. The Phase 2.6.5 interlude and the W7/W8 records are
+> heading levels lowered by one; headings in brackets are added. Five old lines are deliberately not repeated: the
+> page's own `Last updated` and **Related** lines, the 2.6.F and 2.6.C status headings (their records are the
+> workstream sections in [Phase 2.6](phase-2.6-conversational-authoring.md)) and a paraphrased duplicate of the W7
+> round-1 review summary, whose canonical copy is in Phase 2.6.5's record; the 2.6.Q usage-capture line was extended
+> in place in Phase 2.6. The Phase 2.6.5 interlude and the W7/W8 records are
 > in [Phase 2.6.5's record](phase-2.6.5-core-reliability-remediation.md#execution-record-moved-from-currentmd--2026-11-04),
 > Phase 2's status in [Phase 2's](phase-2-cli.md#status-record-moved-from-currentmd--2026-11-04) and the
 > "Not started yet" summary in [Phase 2.6's](phase-2.6-conversational-authoring.md#status-record-moved-from-currentmd--2026-11-04).
@@ -11145,7 +11210,7 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
    (#35, G32, #205) → transport/discovery/result size bounds against a hostile server (G33, #201, #209, #288) →
    structured `serverId`/`reason` discriminants (#203, #204) → the two fail-loud violations (#206, #207) →
    per-file transport-adapter tests (#297) → `CLIENT_INFO.version` (#208). These finding ids keep their home in
-   [phases/phase-2.5.5-hardening-and-remediation.md]() and
+   [phases/phase-2.5.5-hardening-and-remediation.md](phase-2.5.5-hardening-and-remediation.md) and
    certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
    spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
    sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
@@ -11270,7 +11335,7 @@ breakdown, now historical, is in
 A 2026-07-19 full-project code review then opened **Phase 2.5.5 (Hardening and Remediation)**, an
 interstitial phase holding the review's verified findings against the pre-2.6 codebase; it runs
 **concurrently with Phase 2.6, not before it** — see
-[phases/phase-2.5.5-hardening-and-remediation.md]()
+[phases/phase-2.5.5-hardening-and-remediation.md](phase-2.5.5-hardening-and-remediation.md)
 and [Active now](../current.md#what-is-active-now).
 **Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
 2026-07-08); its plan is in
@@ -11412,7 +11477,7 @@ writer but the three oldest, cancel-wins implemented in four node handlers and o
 fifth). That makes the remediation cheap and low-risk: the reference implementation is already
 in-tree.
 
-Disposition: 176 work items opened the new **[Phase 2.5.5 — Hardening and Remediation]()**
+Disposition: 176 work items opened the new **[Phase 2.5.5 — Hardening and Remediation](phase-2.5.5-hardening-and-remediation.md)**
 (engine/LLM/persistence hardening, MCP/secrets, the CLI operator-safety net, TUI terminal safety,
 docs accuracy, CI/test-infrastructure, and hygiene), running **concurrently with Phase 2.6, not
 before it** (327 findings); 27 findings (16 work items) were folded directly into the charter of an

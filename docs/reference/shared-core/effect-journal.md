@@ -426,7 +426,12 @@ credential flags have none. Since 2026-11-04 the credential flags include every 
 word names a credential and curl's `-u`/`--user` pair, and a URL password's `,` or `/` no longer
 ends its userinfo ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
 with the PR95 tightening above, a `v5:` row whose arguments these project differently now refuses
-matching prepare, and every other row keeps its digest. Unrecognized public fields and ordinary arguments still
+matching prepare, and every other row keeps its digest. Both rules are program-agnostic, so a value a
+boolean flag happens to precede is masked as well — a `name:group` after `-u` (`docker run -u app:app`), the
+argument after `--ask-vault-password` — and calls that differ only in that element share one projection; on a
+crash-resume where the model changes exactly that element, the slot replays the committed result instead of
+refusing. It is a recorded limit of the finite rules ([deferred tasks](../../roadmap/deferred-tasks.md)), the same
+cost recognized credentials always carry. Unrecognized public fields and ordinary arguments still
 contribute their complete surviving values to identity. These projections do not change
 the arguments dispatched to the host.
 

@@ -44,13 +44,13 @@ and [docs/architecture/managed-inference.md](docs/architecture/managed-inference
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
 Wave 3 Steps 1–8 are merged (PR #95, 2026-10-18), and PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are
-accepted on `development`. **On 2026-10-26 the maintainer paused Wave 3 — Steps 9c–19 are pending, not
+accepted and on `main` since the `development`→`main` checkpoint (PR #96, merged 2026-11-04). **On 2026-10-26 the maintainer paused Wave 3 — Steps 9c–19 are pending, not
 declined — and put the CLI MVP first:** `relavium` v0.2.0 on npm (milestone M3.5), ordered as MVP-1…MVP-10 in
 [current.md](docs/roadmap/current.md#next-work--the-cli-mvp) under decisions D58–D72 (ruled 2026-11-04).
 Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6.C and 2.6.F are done
 (2.6.F's v0.2.0 release clause closes with the MVP) and 2.6.Q P1–P5 landed; the MVP takes slices of the rest.
 
-Two rules shape every MVP increment. Step 9a.1's interim release guard on `development` refuses any npm
+Two rules shape every MVP increment. Step 9a.1's interim release guard (on `main` since PR #96) refuses any npm
 publication until the superseding pre-1.0 release ADR (D59) is Accepted. The acceptance bar is tiered (D64):
 an increment touching an approval or consent path, egress, keys or secrets, filesystem writes, a new terminal
 sink for untrusted content, the lease or resume paths, or release keeps a rigor pass, one NEW complete

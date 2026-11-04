@@ -77,8 +77,18 @@ The result a tool hands **back to the model** (which re-enters the next request)
 | --- | --- | --- |
 | Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
 | Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
-| Preview | head + tail slice within the ceiling | the marker names the omitted span |
+| Preview | head + tail slice within the ceiling | the marker names the omitted span; a result over the ceiling only by the inline media its text omits keeps that media-free text as its preview |
 | Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+
+**Inline media counts against the ceiling (2026-11-04).** The bound counts the inline media a result still
+holds — a base64 `data:` URI, a canonical base64 source, a binary buffer at its `byteLength` — at its full size,
+although the summary, spill and preview show only a marker for it. A builtin's media rides the attachment rail
+([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1). Media left in a dispatch result is
+settled into the effect journal as it is, and the seam refuses raw media bytes in `tool_result.result`
+([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), so under the ceiling such a result fails the next request (a recorded
+low). Over the ceiling, the model gets the media-free preview, and the marker counts the text's bytes plus the
+omitted media's (a 30 MiB data URI had been measured as its 25-character marker); when the media-free text fits
+the ceiling, that text is the preview.
 
 The ceiling is a **byte/line** bound — no token count, which would need a provider-specific tokenizer and break engine purity. These defaults are tunable and revisited if real workflows hit them (the [deferred-tasks.md](../../roadmap/deferred-tasks.md) tool-output-gate framing). The dispatch lifecycle that applies them is in [tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file).
 
@@ -129,8 +139,11 @@ below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 
 password no longer ends the authority: the userinfo is read on to the first `@` within 512 characters
 (`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`). A port
 (`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
-scheme, or a quote, `}`, `]` or whitespace first keeps the text public; the backstop still stops at a
-`/` (a recorded low).
+scheme, a quote, `}`, `]` or whitespace, or any raw `?` or `#` after the `,` or `/` (which may begin a path's
+query, as in `https://host:abc/p?e=a@b`) keeps the text public: `https://user:pa,ss?1@host` stays as it is,
+a recorded limit the backstop does not share for the comma spelling. After a raw `?` or `#` before the first
+`:` there is no username, as in the authority scan, so a key there masks its value to its own end
+(`http://svc?token=a:b/c@d` → `http://[redacted]`). The backstop still stops at a `/` (a recorded low).
 
 In an argument vector, the element after a credential flag, or the value of its `--flag=value`
 spelling, is masked whole. A flag is a credential flag when it is one of the anchored names (`-p`,
@@ -138,8 +151,14 @@ spelling, is masked whole. A flag is a credential flag when it is one of the anc
 rule's words as written (`--auth-token`, `--access-token`, `--db-password`, `--pwd`, `--x-api-key`,
 `--credentials`). A flag that only mentions a credential (`--password-stdin`, `--token-file`,
 `--max-tokens`) or begins with `no-` does not count, so the argument after it keeps its own identity.
-Only `-p` keeps a port exception. curl's `-u`/`--user` value, glued (`-ualice:secret`) or not, is
-masked when it holds a `:`, unless it is a `uid[:gid]` or a URL.
+Only `-p`/`-P` keep a port exception. A `-u`/`--user` value (curl's `user:password` spelling, glued as
+`-ualice:secret` or not) is masked when it holds a `:`, unless it is a `uid[:gid]` or a URL. The rule does
+not know the program, so a `name:group` (`docker run -u app:app`) or another colon-bearing value after
+`-u` is masked too, and calls that differ only there share one journal identity. A `-u`/`--user` whose value is no
+such pair is an ordinary flag: the element after it is read as any other, so a credential flag there
+(`unzip -u -P <password>`) still masks its own value. Short-option clusters (`curl -su alice:secret`),
+`-U`/`--proxy-user` and flags whose last word is not a listed credential word (`--oauth2-bearer`,
+`--pass`, openssl's `-passin`, keytool's `-storepass`) are outside the rule, a recorded limit.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span. An ambiguous
 token-alphabet continuation after LF/TAB is conservatively masked with that credential; an
@@ -263,7 +282,8 @@ credential split by one, are masked as in raw text (`{"stdout":"keys:\nsk-…"}`
 `{"stdout":"keys:\n[redacted]"}`), while a header label split by one is not read; the journal
 projection reads no escape. Core does not read a credential or a scheme label glued to a terminal
 sequence's final byte (`ESC[1msk-…`), which leaves no word boundary there, a documented limit; the
-backstop's terminal handling is in [error handling](../../standards/error-handling.md). Supported
+backstop's terminal handling is in the
+[diagnostic secret backstop](diagnostic-secret-backstop.md). Supported
 split shapes are recognized **before** complete-text one-line normalization, by that projection's
 full fixed point, followed by ordinary recognition and length clipping. This preserves multiline
 quoted-value recognition without exposing a split token's suffix. Public argument bytes are not
