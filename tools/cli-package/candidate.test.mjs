@@ -1071,7 +1071,11 @@ test('every hash-object batch is compared, the last included', async () => {
   copyCandidateTree({ repository, destination: candidate, files });
   const calls = [];
   const run = (command, args, options) => {
-    if (args[1] === 'hash-object') calls.push(args.length - 4);
+    if (args[1] === 'hash-object') {
+      calls.push(args.length - 4);
+      // Each command line stays well inside Windows's 32,767-character limit.
+      assert.ok(args.slice(4).join(' ').length <= 16 * 1024, 'a batch exceeds 16 KiB of paths');
+    }
     return runCommand(command, args, options);
   };
   const matches = () =>
@@ -1106,25 +1110,27 @@ test(
   },
 );
 
-test('a hash-object answer missing a line is not a match', async () => {
+test('a hash-object answer missing a line or carrying an extra one is not a match', async () => {
   const { repository } = await committedRepository('short-answer');
   const identity = await sourceIdentity(repository);
   const candidate = fresh('short-answer-candidate');
   copyCandidateTree({ repository, destination: candidate, files: ['kept.ts'] });
-  const run = async (command, args, options) => {
-    const result = await runCommand(command, args, options);
-    return args[1] === 'hash-object' ? { ...result, stdout: '' } : result;
-  };
-  assert.equal(
-    await copyMatchesCommit({
-      repository,
-      candidate,
-      source: identity.source,
-      files: ['kept.ts'],
-      run,
-    }),
-    false,
-  );
+  for (const answer of [() => '', (stdout) => `${stdout}${stdout}`]) {
+    const run = async (command, args, options) => {
+      const result = await runCommand(command, args, options);
+      return args[1] === 'hash-object' ? { ...result, stdout: answer(result.stdout) } : result;
+    };
+    assert.equal(
+      await copyMatchesCommit({
+        repository,
+        candidate,
+        source: identity.source,
+        files: ['kept.ts'],
+        run,
+      }),
+      false,
+    );
+  }
 });
 
 test('a store the caller names reaches the install, and pnpm is never asked to discover one', async () => {

@@ -309,7 +309,8 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     { commander: '*' },
     { commander: '>=12.0.0' },
     { commander: 'latest' },
-    // npm reads an empty prerelease identifier, or a version over semver's length limit, as a dist-tag.
+    // npm reads an empty prerelease identifier as a dist-tag; a version past the allowlist's 100-character
+    // bound is refused too.
     { commander: '1.2.3-.' },
     { commander: '1.2.3-a..b' },
     { commander: `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}` },
@@ -334,6 +335,26 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
           expectedPackage: badPackage,
         }),
       (error) => error instanceof PackageArchiveError && error.code === 'MANIFEST_RUNTIME',
+    );
+  }
+});
+
+test('the allowlist also guards optional and peer dependencies', () => {
+  for (const [field, requirement] of [
+    ['optionalDependencies', 'github:attacker/commander'],
+    ['peerDependencies', '*'],
+  ]) {
+    const badPackage = { ...expectedPackage, [field]: { commander: requirement } };
+    const files = inventory();
+    files.set('package/package.json', Buffer.from(JSON.stringify(badPackage)));
+    assert.throws(
+      () =>
+        inspectPackageArchive(gzipSync(tar(files)), {
+          expectedFiles: files,
+          expectedPackage: badPackage,
+        }),
+      (error) => error instanceof PackageArchiveError && error.code === 'MANIFEST_RUNTIME',
+      field,
     );
   }
 });

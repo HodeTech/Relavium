@@ -84,8 +84,9 @@ function unpack(bytes) {
  * version, the form pnpm publishes for a `catalog:` entry. An allowlist rather than a list of refused
  * protocols, so `npm:` aliases, `github:`, git and tarball URLs, `file:`/`link:`/`workspace:`/`catalog:`
  * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding). The
- * prerelease follows semver's dot-separated identifiers, since npm reads an empty one (`1.2.3-.`,
- * `1.2.3-a..b`) as a dist-tag.
+ * prerelease takes semver's dot-separated identifiers, since npm reads an empty one (`1.2.3-.`,
+ * `1.2.3-a..b`) as a dist-tag; leading zeros are admitted, as npm's and pnpm's loose reading accepts them
+ * as versions.
  */
 const REGISTRY_REQUIREMENT =
   /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64}){0,15})?$/u;
