@@ -1172,6 +1172,9 @@ function passwordPastDelimiter(text: string, start: number, end: number): number
   const authority = text.slice(start, end);
   const colon = authority.indexOf(':');
   if (colon < 0 || /^\d*$/.test(authority.slice(colon + 1))) return -1;
+  // A scheme whose `://` straddles the delimiter starts a nested URL the scan reads on its own, and a
+  // backslash may be a JSON escape the key rules read: this reading leaves both to them (D64 round 4).
+  if (text.startsWith('://', end - 1) || authority.includes('\\')) return -1;
   const query = authority.search(/[?#]/);
   if (query >= 0 && isPublicQueryContact(authority, query)) return -1;
   PASSWORD_TAIL.lastIndex = end;
@@ -1201,7 +1204,7 @@ function maskPasswordPastDelimiter(
 }
 
 /** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
-const PASSWORD_TAIL = /[^\s"'}\]?#@]{0,512}@/y;
+const PASSWORD_TAIL = /[^\s"'}\]?#@\\]{0,512}@/y;
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
@@ -1497,11 +1500,22 @@ function redactInlineCredential(
   const flag = separator > 0 ? item.slice(0, separator) : '';
   if (isCredentialFlag(flag)) {
     const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
-    // The name is read too: a last-word flag admits any name before its credential word.
-    if (masked !== undefined) return `${project(flag)}=${masked}`;
+    if (masked !== undefined) {
+      return keepsFlagName(item, flag, project) ? `${flag}=${masked}` : whole(item, '[redacted]');
+    }
   }
   const glued = gluedUserPassword(item);
   return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;
+}
+
+/**
+ * Whether a credential flag's `--flag=value` spelling keeps its name visible: an anchored name always has; a
+ * last-word name only where the text rules leave it in place, so this spelling never shows a name they mask
+ * (`--db-token=…` reads as a key/value pair, a secret shape may sit in the name). Otherwise the element is
+ * masked whole.
+ */
+function keepsFlagName(item: string, flag: string, project: TextProjection): boolean {
+  return SECRETISH_FLAG.test(flag) || project(item).startsWith(`${flag}=`);
 }
 
 /**

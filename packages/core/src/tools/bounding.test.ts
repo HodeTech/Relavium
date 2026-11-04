@@ -885,25 +885,27 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
   });
 
+  // The `=` spelling keeps a name the text rules keep (`--pwd`, an anchored `--apiKey`) and hides one they
+  // mask as a key/value pair, as 64fb8772 did.
   it.each([
-    '--auth-token',
-    '--access-token',
-    '--pwd',
-    '--db-password',
-    '--x-api-key',
-    '--apiKey',
-    '--credentials',
-    '--refresh_token',
+    ['--auth-token', '[redacted]'],
+    ['--access-token', '[redacted]'],
+    ['--pwd', '--pwd=[redacted]'],
+    ['--db-password', '[redacted]'],
+    ['--x-api-key', '[redacted]'],
+    ['--apiKey', '--apiKey=[redacted]'],
+    ['--credentials', '--credentials=[redacted]'],
+    ['--refresh_token', '[redacted]'],
   ])(
     'STRUCTURAL_ARGV_WORDS masks the value after %s, whose last word names a credential',
-    (flag) => {
+    (flag, inline) => {
       // A PR #96 review: the object-key rule masked these names as keys while the anchored flag list passed
       // them verbatim into `agent:tool_call` and the journal projection.
       expect(redactSecretShapedValue({ args: [flag, 'Qz7flagValue', '--count=4'] })).toEqual({
         args: [flag, '[redacted]', '--count=4'],
       });
       expect(redactSecretShapedValue({ args: [`${flag}=Qz7flagValue`] })).toEqual({
-        args: [`${flag}=[redacted]`],
+        args: [inline],
       });
       expect(projectSecretShapedValue({ args: [flag, 'Qz7flagValue'] })).toEqual({
         value: { args: [flag, '[redacted]'] },
@@ -989,10 +991,27 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
         ['mysql', '--password', '-Qz7Secret', 'db', '--token', '--Qz7-password'],
         ['mysql', '--password', '[redacted]', '[redacted]', '--token', '[redacted]'],
       ],
-      [[`--github-${ghp}-token=Qz7pw`], ['--github-[redacted]-token=[redacted]']],
+      // A last-word name the text rules mask in context hides the whole `=` spelling; an anchored one stays.
+      [[`--github-${ghp}-token=Qz7pw`], ['[redacted]']],
     ] as const) {
       expect(redactSecretShapedValue({ args })).toEqual({ args: expected });
       expect(projectSecretShapedValue({ args }).value).toEqual({ args: expected });
+    }
+    // A last-word name stays where the text rules keep it (a value too short for their key rule) and is
+    // hidden where they mask it with its value; an anchored name always stays.
+    const deploy = [
+      'gh',
+      '--deploy-token=Qz7pw',
+      '--deploy-token=Qz7flagValue',
+      '--password=Qz7flagValue',
+    ];
+    for (const projected of [
+      redactSecretShapedValue({ args: deploy }),
+      projectSecretShapedValue({ args: deploy }).value,
+    ]) {
+      expect(projected).toEqual({
+        args: ['gh', '--deploy-token=[redacted]', '[redacted]', '--password=[redacted]'],
+      });
     }
     // A boolean -u/--user (unzip's update flag) leaves the credential flag after it in force.
     expect(
@@ -1446,6 +1465,11 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]'],
       ['https://x-access-token:Ab/cd@Ef9Gh2Jk@github.com/o/r.git', 'https://[redacted]'],
       ['http://svc;token=a:b/c@d', 'http://[redacted]'],
+      // A nested URL whose `://` straddles the delimiter is read by the scheme scan on its own.
+      [
+        'curl https://proxy.example:https://user:p@ss@target.example/',
+        'curl https://proxy.example:https://[redacted]@target.example/',
+      ],
       // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
       // After a raw `?`/`#` there is no username: the key there masks its value to its own end.
@@ -3004,6 +3028,17 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
         'bbbbbbbb',
       ],
       [{ stdout: 'AKIAABCDEFGH\nIJKLMNOP' }, '{"stdout":"[redacted]"}', 'IJKLMNOP'],
+      // A `,`/`/` URL password never reads across an escape the key rule needs to see.
+      [
+        { stdout: 'password="https://u:pw/x\nnext@h', stderr: 'Zq9SecondLine"' },
+        '{"stdout":"[redacted]"}',
+        'Zq9SecondLine',
+      ],
+      [
+        { stdout: 'password="https://u:p\nw/x@h', stderr: 'Zq9Second"' },
+        '{"stdout":"[redacted]"}',
+        'Zq9Second',
+      ],
       [
         { stdout: 'progress 50%\rsk-proj-abcdefghijklmnopqrstuvwxyz' },
         '{"stdout":"progress 50%\\r[redacted]"}',
