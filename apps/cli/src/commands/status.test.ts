@@ -27,6 +27,31 @@ describe('statusCommand', () => {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
 
+  it('shows one run by id, finished or active, and refuses an unknown id (MVP-1)', async () => {
+    await seedRun(db, { slug: 'done', runId: 'done-1', state: 'completed' });
+    await seedRun(db, { slug: 'live', runId: 'live-1', state: 'running' });
+    const noOutbox = { readTerminalOutbox: () => Promise.resolve([]) };
+    const finished = captureIo();
+    expect(await statusCommand({ ...deps(finished.io), ...noOutbox }, { runId: 'done-1' })).toBe(
+      EXIT_CODES.success,
+    );
+    expect(finished.out()).toContain('run done-1 — completed');
+    expect(finished.out()).not.toContain('live-1');
+    const active = captureIo();
+    await statusCommand({ ...deps(active.io, true), ...noOutbox }, { runId: 'live-1' });
+    const records = parseNdjson(active.out());
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ runId: 'live-1', status: 'running' });
+    // Without an id the listing is unchanged: active runs only.
+    const listing = captureIo();
+    await statusCommand({ ...deps(listing.io), ...noOutbox });
+    expect(listing.out()).toContain('run live-1 — running');
+    expect(listing.out()).not.toContain('done-1');
+    await expect(
+      statusCommand({ ...deps(captureIo().io), ...noOutbox }, { runId: 'missing' }),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+  });
+
   it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {
     await seedRun(db, { slug: 'healthy', runId: 'healthy', state: 'running' });
     await seedRun(db, { slug: 'future', runId: 'future', state: 'running' });

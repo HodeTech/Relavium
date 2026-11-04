@@ -65,6 +65,45 @@ describe('listCommand', () => {
     },
   ];
 
+  it('--runs lists every recorded run newest first with its workflow slug, outside any project (MVP-1)', async () => {
+    await seedRun(db, { slug: 'code-review', runId: 'r-old', state: 'completed', atMs: 1_000 });
+    await seedRun(db, { slug: 'hello', runId: 'r-new', state: 'failed', atMs: 2_000 });
+    const outside = mkdtempSync(join(tmpdir(), 'relavium-list-runs-'));
+    try {
+      const human = captureIo();
+      expect(
+        listCommand({ agents: false, runs: true }, deps(human.io, { catalog: [], cwd: outside })),
+      ).toBe(EXIT_CODES.success);
+      const lines = human.out().trim().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatch(/^r-new {2}failed {5}hello {2}/u);
+      expect(lines[1]).toMatch(/^r-old {2}completed {2}code-review {2}/u);
+      const machine = captureIo();
+      listCommand(
+        { agents: false, runs: true },
+        deps(machine.io, { catalog: [], cwd: outside, json: true }),
+      );
+      const records = parseNdjson(machine.out());
+      expect(records.map((record) => record['runId'])).toEqual(['r-new', 'r-old']);
+      expect(records[1]).toMatchObject({
+        kind: 'runs',
+        workflow: 'code-review',
+        status: 'completed',
+      });
+      expect(records[1]).not.toHaveProperty('totalCostMicrocents');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('--runs reports an empty history plainly', () => {
+    const { io, out } = captureIo();
+    expect(listCommand({ agents: false, runs: true }, deps(io, { catalog: [] }))).toBe(
+      EXIT_CODES.success,
+    );
+    expect(out()).toBe('No runs recorded.\n');
+  });
+
   it('groups workflows by tag and overlays last-run status from durable history', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'code-review', runId: 'r1', state: 'completed' }); // last-run overlay

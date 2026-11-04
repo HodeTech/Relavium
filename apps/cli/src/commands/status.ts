@@ -12,6 +12,7 @@ import {
   budgetPromptLabel,
   budgetResumeHints,
 } from '../gate/budget.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -22,6 +23,11 @@ import { readPerRunOrDegrade } from '../history/per-run-read.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
+
+/** `relavium status [runId]` — one run, active or finished, instead of every active run (MVP-1). */
+export interface StatusCommandArgs {
+  readonly runId?: string;
+}
 
 export interface StatusCommandDeps {
   readonly commandLifetime?: CommandLifetime;
@@ -81,9 +87,12 @@ interface ActiveRunStatus {
  * step status (`loadStepExecutions`). For a run paused at a human gate it also surfaces the pending `gateId`(s)
  * with gate type + node id, so an operator can pass the right one to `relavium gate <runId> --gate <gateId>`
  * (canonical: [commands.md](../../../docs/reference/cli/commands.md)). `--json` emits one record per run.
- * Framework-free; no `runId` argument (it lists every active run).
+ * Framework-free. With a `runId` it shows that one run, active or finished; without, every active run.
  */
-export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> {
+export async function statusCommand(
+  deps: StatusCommandDeps,
+  args: StatusCommandArgs = {},
+): Promise<ExitCode> {
   const { homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
@@ -107,7 +116,9 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   // ownership of a run another process may be finishing right now.
   try {
     const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
-    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
+    const runs =
+      args.runId === undefined ? reader.listActiveRuns() : [requireRun(reader, args.runId)];
+    const statuses: ActiveRunStatus[] = runs.map((run) => {
       let steps: readonly StepRecord[] = [];
       const usage = readPerRunOrDegrade(
         {
@@ -154,6 +165,15 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   } finally {
     if (deps.commandLifetime === undefined) close();
   }
+}
+
+/** The run `status <runId>` names, active or finished (soft-deleted excluded), as `logs` resolves it. */
+function requireRun(reader: RunHistoryReader, runId: string): RunRecord {
+  const run = reader.loadRun(runId);
+  if (run === undefined) {
+    throw new CliError('invalid_invocation', `no run found with id ${runId}`);
+  }
+  return run;
 }
 
 /** Reconstruct once per active run: a companion crash may leave a running projection with pending gates. */

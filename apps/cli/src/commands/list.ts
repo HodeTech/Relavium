@@ -15,6 +15,8 @@ import { openHistoryReader } from '../history/reader.js';
 export interface ListCommandArgs {
   /** `--agents`: list the agent catalog instead of the workflow catalog. */
   readonly agents: boolean;
+  /** `--runs`: list every recorded run, newest first, instead of a catalog (MVP-1). */
+  readonly runs?: boolean;
 }
 
 export interface ListCommandDeps {
@@ -47,6 +49,12 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
     configPath: deps.global.configPath,
   });
   const json = deps.global.json;
+
+  // Run history lives in the home directory, not the project, so `--runs` needs no `.relavium/`.
+  if (args.runs === true) {
+    listRuns(deps, homeDir);
+    return EXIT_CODES.success;
+  }
 
   if (projectConfigDir === undefined) {
     // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json.
@@ -99,6 +107,55 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
 
   renderHuman(deps.io, entries, kind, lookupHistory);
   return EXIT_CODES.success;
+}
+
+/**
+ * `relavium list --runs` — every recorded run, newest first (`listRuns`), each with its workflow's slug where
+ * history knows it. No amounts: a total needs its usage coverage qualified (ADR-0104), which `status <runId>`
+ * reads per run; a listing replays no event log.
+ */
+function listRuns(deps: ListCommandDeps, homeDir: string): void {
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
+  try {
+    // Every workflow with a run appears once in the latest-run pick, which gives each run's slug.
+    const slugById = new Map(
+      reader
+        .loadLatestRunPerWorkflow()
+        .map((summary): [string, string] => [summary.lastRun.workflowId, summary.slug]),
+    );
+    const runs = reader.listRuns();
+    if (deps.global.json) {
+      writeRecordLines(
+        deps.io,
+        runs.map((run) => ({
+          kind: 'runs',
+          runId: run.id,
+          workflowId: run.workflowId,
+          workflow: slugById.get(run.workflowId) ?? null,
+          status: run.status,
+          startedAt: run.startedAt ?? null,
+          completedAt: run.completedAt ?? null,
+        })),
+      );
+      return;
+    }
+    if (runs.length === 0) {
+      deps.io.writeOut('No runs recorded.\n');
+      return;
+    }
+    for (const run of runs) {
+      const workflow = sanitizeUntrustedInline(slugById.get(run.workflowId) ?? run.workflowId);
+      const started = run.startedAt ?? run.createdAt;
+      deps.io.writeOut(`${run.id}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`);
+    }
+  } finally {
+    if (deps.commandLifetime === undefined) close();
+  }
 }
 
 /** One catalog entry as a machine record: identity + path + validity, plus the last-run overlay for workflows. */

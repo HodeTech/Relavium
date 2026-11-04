@@ -171,8 +171,10 @@ const cases: readonly Case[] = [
   },
   { id: 'gate.list', argv: ['gate', 'list', 'r1'], positionals: ['r1'], options: {} },
   { id: 'list', argv: ['list', '--agents'], positionals: [], options: { agents: true } },
+  { id: 'list', argv: ['list', '--runs'], positionals: [], options: { runs: true } },
   { id: 'logs', argv: ['logs', 'r1'], positionals: ['r1'], options: {} },
   { id: 'status', argv: ['status'], positionals: [], options: {} },
+  { id: 'status', argv: ['status', 'r1'], positionals: ['r1'], options: {} },
   { id: 'models', argv: ['models'], positionals: [], options: {} },
   {
     id: 'models.refresh',
@@ -303,26 +305,29 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
 
   it('retains all actual command paths and mandatory/variadic grammar independently of model schema', () => {
     const nodes = walk(buildProgram(capture().io));
+    // A command with mutually exclusive options (`list --agents` / `--runs`) or an optional positional needs
+    // several cases; its grammar is the union of theirs.
+    const ids = [...new Set(cases.map((testCase) => testCase.id))];
     expect(nodes.map((node) => node.path).sort()).toEqual(
-      [
-        ...cases.map((testCase) => testCase.id),
-        'agent',
-        'budget',
-        'provider',
-        'media',
-        'init',
-      ].sort(),
+      [...ids, 'agent', 'budget', 'provider', 'media', 'init'].sort(),
     );
-    for (const testCase of cases) {
-      const command = nodes.find((node) => node.path === testCase.id)?.command;
-      if (command === undefined) throw new Error(`missing command ${testCase.id}`);
+    for (const id of ids) {
+      const group = cases.filter((testCase) => testCase.id === id);
+      // The case with the most positionals states the full positional grammar.
+      const testCase = group.reduce((widest, next) =>
+        next.positionals.length > widest.positionals.length ? next : widest,
+      );
+      const command = nodes.find((node) => node.path === id)?.command;
+      if (command === undefined) throw new Error(`missing command ${id}`);
       expect(command.options.map((option) => option.long).sort()).toEqual(
-        [...new Set(testCase.argv.filter((token) => token.startsWith('--')))].sort(),
+        [
+          ...new Set(group.flatMap((each) => each.argv.filter((token) => token.startsWith('--')))),
+        ].sort(),
       );
       expect(
         command.options.map((option) => [option.attributeName(), option.required]).sort(),
       ).toEqual(
-        Object.entries(testCase.options)
+        Object.entries(group.reduce<Options>((all, each) => ({ ...all, ...each.options }), {}))
           .map(([key, value]) => [key, typeof value !== 'boolean'])
           .sort(),
       );
@@ -341,6 +346,7 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
             'gate.list': 'runId',
             'budget.resume': 'runId',
             logs: 'runId',
+            status: 'runId',
             'models.pricing': 'model',
             'provider.add': 'name',
             'provider.set-key': 'name',
@@ -348,7 +354,11 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
             'provider.test': 'name',
           };
           expect(index).toBe(0);
-          return [names[testCase.id], !['gate', 'gate.list'].includes(testCase.id), false];
+          return [
+            names[testCase.id],
+            !['gate', 'gate.list', 'status'].includes(testCase.id),
+            false,
+          ];
         }),
       );
     }
@@ -425,6 +435,31 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
       expect(execute).not.toHaveBeenCalled();
     },
   );
+
+  it('refuses list --agents with --runs before any action runs (MVP-1)', async () => {
+    const parse = async (argv: readonly string[]): Promise<number> => {
+      const { io } = capture();
+      const execute = vi.fn(() => Promise.resolve(0 as const));
+      const context = {
+        io,
+        global: {
+          json: false,
+          color: false,
+          cwd: '/test',
+          configPath: undefined,
+          verbosity: 'normal' as const,
+        },
+        result: {},
+      };
+      const program = buildProgram(io, { context, execute });
+      program.exitOverride();
+      await program.parseAsync(['node', 'relavium', ...argv]).catch(() => undefined);
+      return execute.mock.calls.length;
+    };
+    expect(await parse(['list', '--runs'])).toBe(1);
+    expect(await parse(['list', '--agents'])).toBe(1);
+    expect(await parse(['list', '--agents', '--runs'])).toBe(0);
+  });
 
   it('keeps the init stub as an explicit unavailable action', async () => {
     const execute = vi.fn(() => Promise.resolve(0 as const));
