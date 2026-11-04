@@ -1013,6 +1013,13 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
         args: ['gh', '--deploy-token=[redacted]', '[redacted]', '--password=[redacted]'],
       });
     }
+    // A glued `-u` pair keeps its `-u` only where the text rules keep it (`-utoken:` reads as a key).
+    for (const projected of [
+      redactSecretShapedValue({ args: ['-utoken:Qz7flagValue', '-ualice:Qz7pw'] }),
+      projectSecretShapedValue({ args: ['-utoken:Qz7flagValue', '-ualice:Qz7pw'] }).value,
+    ]) {
+      expect(projected).toEqual({ args: ['[redacted]', '-u[redacted]'] });
+    }
     // A boolean -u/--user (unzip's update flag) leaves the credential flag after it in force.
     expect(
       redactSecretShapedValue({
@@ -1451,35 +1458,28 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     }
   });
 
-  it('reads a `,` or `/` in a password through its `@`, never past a port, query or other delimiter', () => {
-    // A PR #96 review found the authority scan leaving `ssword` and `ss` public here.
+  it('keeps the authority scan at a `,` or `/` in a password, as before PR #96 (a recorded limit)', () => {
+    // A PR #96 review found these tails public (its A4). A reading past the delimiter was tried and removed
+    // on 2026-11-05: under the repeated projection its masks could hide context other rules read, so it could
+    // not be shown to only add masks. Each input projects exactly as at 64fb8772.
     for (const [input, expected] of [
-      ['https://user:pa,ssword@host.example/', 'https://[redacted]@host.example/'],
-      ['https://user:pa/ss@host.example/x', 'https://[redacted]@host.example/x'],
-      ['{"u":"https://user:p,w/x@h.example/v1"}', '{"u":"https://[redacted]@h.example/v1"}'],
-      ['https://user:pa/ss@host.example/@scope/pkg', 'https://[redacted]@host.example/@scope/pkg'],
-      // A raw `?` that is not a host's public query stays userinfo, as the authority scan reads it.
-      ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
-      // The username owns nothing here: a key there masks its value to its own end, as it did before this
-      // reading existed, so a password's text after a raw `@` stays masked.
-      ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]'],
+      ['https://user:pa,ssword@host.example/', 'https://user:pa,ssword@host.example/'],
+      ['https://user:pa/ss@host.example/x', 'https://user:pa/ss@host.example/x'],
+      ['https://u:p?x/y@h.example/', 'https://u:p?x/y@h.example/'],
+      // Keys in the userinfo are still read by the key/value rules.
       ['https://x-access-token:Ab/cd@Ef9Gh2Jk@github.com/o/r.git', 'https://[redacted]'],
-      ['http://svc;token=a:b/c@d', 'http://[redacted]'],
-      // A nested URL whose `://` straddles the delimiter is read by the scheme scan on its own.
+      ['http://svc;token=a:b/c@d', 'http://svc;[redacted]'],
+      ['http://svc?token=abc:de/fgh@ijk9', 'http://svc?[redacted]'],
+      // A later or nested scheme is read by the scheme scan on its own.
       [
         'curl https://proxy.example:https://user:p@ss@target.example/',
         'curl https://proxy.example:https://[redacted]@target.example/',
       ],
-      // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
-      // After a raw `?`/`#` there is no username: the key there masks its value to its own end.
-      ['http://svc?token=abc:de/fgh@ijk9', 'http://[redacted]'],
-      ['http://svc#token=abc:de,fgh@ijk9', 'http://[redacted]'],
-      ['https://gw?token=ab:cd/ef@gh@host.example/', 'https://[redacted]'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(expected);
     }
-    // The backstop already reads a comma; both now mask it.
+    // The backstop reads a comma in a password; core does not (a recorded difference).
     expect(scrubSecrets('https://user:pa,ssword@host.example/')).toBe(
       'https://[REDACTED]@host.example/',
     );
@@ -1493,10 +1493,8 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       "'https://u:pw/x', 'a@b.example'",
       'https://a:b/https://c@d.example',
       `https://user:pa/${'s'.repeat(600)}@host.example/`,
-      // A raw `?`/`#` after the delimiter may begin a path's query: a recorded limit.
       'https://user:pa,ss?1@host.example/',
       'https://user:pa/ss#1@host.example/',
-      // Each delimiter the authority keeps also stops the read on its own.
       '{"a":"https://h.example:x/p","b":"c@d.example"}',
       "https://u:pw/x'@y.example",
       'https://u:pw/x}@y.example',

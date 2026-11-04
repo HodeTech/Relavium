@@ -1141,13 +1141,11 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * its last `@`. This projection masks the userinfo and reads every key and parameter in it but its
  * username's; their values keep their own extent and the rules' ranges merge
  * (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
- * The projection differs from that backstop by design: its authority also ends at `"`, `'`,
- * `}` and `]`, the delimiters of the JSON and quoted texts it reads, so userinfo containing one of
- * them (an already-masked `[REDACTED]` password among them) is left as it is; it recognizes any
- * scheme of up to 32 characters rather than a finite list; and a userinfo with no password is a
- * vanity handle below 16 characters and masked from 16 on, under every scheme. A `,` or `/` in a
- * password is read on to its `@` ({@link passwordPastDelimiter}), but a `,` in a username still ends the
- * authority (`https://us,er:pw@host` stays as it is; the backstop masks it).
+ * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
+ * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
+ * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
+ * and a userinfo with no password is a vanity handle below 16 characters and masked from 16 on,
+ * under every scheme.
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
   // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
@@ -1155,56 +1153,6 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
   if (query > HOST_SHAPED_MAX_LENGTH) return false;
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
-
-/**
- * The `@` of a password that holds a `,` or `/`, or -1. The authority scan stops at either, so
- * `https://user:pa,ss@host` and `https://user:pa/ss@host` left the password's tail public (a PR #96
- * review finding; RFC 3986 admits a raw `,` in userinfo, and a raw `/` is a malformed URL a
- * credential can still sit in). Reads on past them only, to the first `@` within 512 characters. A
- * port (`host:8080/a@b`, `host:8080,bob@x.io`), a public query contact as the authority scan reads
- * one ({@link isPublicQueryContact}), another scheme, and the delimiters the authority keeps
- * (whitespace, quotes, `}`, `]`) keep the text public, and so does any raw `?` or `#` after the `,` or
- * `/`, which may begin a path's query (`host:abc/p?e=a@b`): `https://user:pa,ss?1@host` stays public, a
- * recorded limit (the LLM backstop masks that comma spelling, and neither masks its `/` twin).
- */
-function passwordPastDelimiter(text: string, start: number, end: number): number {
-  if (text[end] !== ',' && text[end] !== '/') return -1;
-  const authority = text.slice(start, end);
-  const colon = authority.indexOf(':');
-  if (colon < 0 || /^\d*$/.test(authority.slice(colon + 1))) return -1;
-  // A scheme whose `://` straddles the delimiter starts a nested URL the scan reads on its own, and a
-  // backslash may be a JSON escape the key rules read: this reading leaves both to them (D64 round 4).
-  if (text.startsWith('://', end - 1) || authority.includes('\\')) return -1;
-  const query = authority.search(/[?#]/);
-  if (query >= 0 && isPublicQueryContact(authority, query)) return -1;
-  PASSWORD_TAIL.lastIndex = end;
-  const tail = PASSWORD_TAIL.exec(text)?.[0];
-  if (tail === undefined || tail.includes('://')) return -1;
-  return end + tail.length - 1;
-}
-
-/**
- * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}). Its username owns no
- * text, unlike in {@link visitUrlUserinfo}: every key there (`x-access-token:`, `?token=`, `;password=`) is
- * still read by the key/value rules, which mask its value to its own end as they did before this reading
- * existed, so the reading only adds masks. Returns where the scheme scan resumes: after the `@` it masked
- * through, or at `start` when there is none.
- */
-function maskPasswordPastDelimiter(
-  text: string,
-  schemeStart: number,
-  start: number,
-  end: number,
-  mask: SecretSpanVisitor,
-): number {
-  const passwordAt = passwordPastDelimiter(text, start, end);
-  if (passwordAt < 0) return start;
-  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: start });
-  return passwordAt + 1;
-}
-
-/** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
-const PASSWORD_TAIL = /[^\s"'}\]?#@\\]{0,512}@/y;
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
@@ -1218,10 +1166,7 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const firstQuery = authority.search(/[?#]/);
     const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
     const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
-    if (at < 0) {
-      scheme.lastIndex = maskPasswordPastDelimiter(text, match.index, start, end, mask);
-      continue;
-    }
+    if (at < 0) continue;
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
     const query = userinfo.search(/[?#]/);
@@ -1505,7 +1450,10 @@ function redactInlineCredential(
     }
   }
   const glued = gluedUserPassword(item);
-  return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;
+  if (glued === undefined) return undefined;
+  return project(item).startsWith('-u')
+    ? `-u${whole(glued, '[redacted]')}`
+    : whole(item, '[redacted]');
 }
 
 /**
