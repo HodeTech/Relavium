@@ -13,8 +13,9 @@ import { digest } from '../usage-coverage-controls/source-graph.mjs';
 
 export function selectControls(mutations, requested) {
   assert.ok(
-    requested.length === 0 || (requested.length === 2 && requested[0] === '--mechanism'),
-    'Usage: check.mjs [--mechanism declared-id]',
+    requested.length === 0 ||
+      (requested.length === 2 && ['--mechanism', '--shard'].includes(requested[0])),
+    'Usage: check.mjs [--mechanism declared-id | --shard index/count]',
   );
   assert.ok(
     mutations.length > 0 && new Set(mutations.map((entry) => entry.id)).size === mutations.length,
@@ -28,11 +29,27 @@ export function selectControls(mutations, requested) {
       'Empty declared inventory',
     );
   }
+  if (requested[0] === '--shard') {
+    const { index, count } = parseShard(requested[1]);
+    assert.ok(count <= mutations.length, 'Shard out of range');
+    // Declaration order dealt round-robin: every control belongs to exactly one of the shards.
+    return mutations.filter((_, position) => position % count === index - 1);
+  }
   const selected = requested.length
     ? mutations.filter((entry) => entry.id === requested[1])
     : mutations;
   assert.ok(selected.length, 'Unknown mechanism');
   return selected;
+}
+
+/** `index/count`, 1-based, as `--shard` takes it. */
+export function parseShard(value) {
+  const match = /^([1-9]\d{0,2})\/([1-9]\d{0,2})$/.exec(value ?? '');
+  assert.ok(match, 'Usage: --shard index/count');
+  const index = Number(match[1]);
+  const count = Number(match[2]);
+  assert.ok(index <= count, 'Shard out of range');
+  return { index, count };
 }
 
 export function ownedTools(repository, roots) {

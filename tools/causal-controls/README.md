@@ -128,6 +128,13 @@ scratch tree through a symlink. The bound includes the final export record: at m
 failure.
 Selected runs never claim complete-matrix acceptance. Source HEAD and working-tree
 capture attribution describe the execution actually performed.
+`--shard <index>/<count>` deals the declared controls round-robin in declaration
+order, so the `count` shards partition the family; each shard is a selection with
+`complete: false` and its own export, and records `shard: { index, count, declared,
+members }`, so the shards' summaries can be joined against the declaration. Only every
+shard of one count passing, each within the export bounds, covers the family. The
+secrets family runs as two shards because one export of all its controls exceeds the
+64-MiB bound; a full unsharded run still executes every control, but it cannot export.
 
 The permanent coordinator integration guard runs three bounded actual captures.
 Each family proves synthetic fixed/red/restored execution before a real assertion

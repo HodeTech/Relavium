@@ -11,8 +11,16 @@ are actually enforced — automation catches format and types; a human catches t
 
 ## Ground rules
 
-- Nothing merges to the default branch without a review approval and green required CI
-  (typecheck, lint, unit tests, fixture-mode conformance — see [testing.md](testing.md)).
+- Nothing merges to the default branch without a recorded review and green required CI
+  (typecheck, lint, unit tests, fixture-mode conformance — see [testing.md](testing.md)). While the
+  project has one maintainer, GitHub cannot enforce an approval (it refuses a self-approval), so branch
+  protection requires the CI checks and the review is the maintainer's own plus an independent review
+  round recorded for the change under the roadmap's acceptance bar. A GitHub approval becomes a required
+  check when a second maintainer joins.
+
+  > Amended 2026-11-04: "a review approval" read as a GitHub approval that `main`'s protection has never
+  > required (0 approvals, no CODEOWNERS); a PR #96 review found the mismatch and the maintainer ruled
+  > the rule should state the practice.
 - The author runs lint, format, and tests **before** requesting review; review is not a
   substitute for the toolchain.
 - Keep PRs small and scoped to one concern; a reviewable diff gets a real review. Large

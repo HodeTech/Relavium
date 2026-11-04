@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–8 and review corrections merged to main as PR #94 (2026-10-15); later waves remain open.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 merged as PR #94 (2026-10-15); Wave 3 Steps 1–8 merged as PR #95 (2026-10-18); Wave 3 is paused after Step 9b.2 since 2026-10-26 behind the CLI MVP ([priority reset](#mvp-priority-reset--2026-11-04)); Steps 9c–19 and later waves remain open.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -139,6 +139,11 @@ reached.
    the `coverage` job (`pnpm coverage:enforced`); no item in this phase widens
   the `LLMProvider` seam, adds a platform import to `packages/core`, or changes the
   `--json`/CI machine-output contract ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)).
+  *Reconciled 2026-10-19 with [exit criterion 4](#exit-criteria):* machine-output compatibility
+  changes are limited to the explicitly approved [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
+  scope (diagnostics/exits, JSON discovery, aliases and consent); run-event stdout and actual
+  workflow-outcome contracts stay unchanged. Wave 3 Step 19 promotes `packages/core` into the
+  enforced coverage floor alongside `llm` and `mcp`.
 
 ## Scope
 
@@ -194,26 +199,26 @@ reached.
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — #91 · `rawPreviewFor` keeps the classification copy, `previewFor` scrubs the display copy).** **Redact tool-approval previews like `sanitizeInput()` already does.** `previewFor()` (`packages/core/src/tools/registry.ts:436`) builds the persisted, `--json`-visible `ToolActionPreview` by echoing `target.command`/`target.path` verbatim, never calling the `redactSecretShapedValue` scrub that its sibling `sanitizeInput()` (same file, line 563) applies to `toolInput` moments later in the same dispatch. A live credential in a `run_command` arg or `write_file` path is written unredacted into the durable, persisted `agent:approval_requested` event. Call the same redaction helper in `previewFor()` before the preview is built. This is the review's canonical propagation-gap example and should land first. *(S · `packages/core/src/tools/registry.ts` · #91)*
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G38 · `reservedAdmissions` ledger in `budget-governor.ts`).** **Add a reservation/admission step to `BudgetGovernor`'s pre-egress check.** `checkPreEgress` (`packages/core/src/engine/budget-governor.ts`) is a pure read against a snapshot that is only updated post-hoc after `cost:updated` lands, with no reservation/admission-control step — two or more parallel agent-node branches under `max_parallel` can each pass `checkPreEgress` against the same stale snapshot, letting the sum exceed `max_cost_microcents` even with `on_exceed:'fail'`. Add an in-flight reserved-cost ledger that is checked and updated atomically at dispatch time, and add a test combining budget + `max_parallel` (none exists today). *(L · `packages/core/src/engine/budget-governor.ts` · G38)*
 - ✅ **DONE (Phase 2.6.5 `CR-22`, 2026-08-27)** — closed early, out of wave order, because `W2`'s liveness item owns the same function. **Compute the remaining timeout budget on every resume instead of re-arming a fresh timer.** `#armRunTimeout` (`packages/core/src/engine/engine.ts`) re-arms a full-duration timer on every checkpoint/gate/media-job resume instead of computing remaining budget from `#elapsedMs()`, unlike the checkpoint's own `startEpochMs` and the media-job absolute-deadline pattern it should mirror — a workflow with `timeout_ms` can run far longer than authored if it pauses and resumes repeatedly. Fix `#armRunTimeout` to compute the remaining budget from elapsed wall-clock time on every re-arm. *(M · `packages/core/src/engine/engine.ts` · #75)*
-- **Thread the missing `AbortSignal` into `resolvePrompt` and recheck cancellation in `human-gate.ts`.** `resolvePrompt` (`packages/core/src/engine/agent-runner.ts:868`) omits the `AbortSignal` that every other call site passes into `resolveTemplate`, so cancellation during prompt-template resolution is not observed. Separately, `human-gate.ts` (`packages/core/src/engine/node-handlers/human-gate.ts`) is the one node handler doing real async work yet has no post-resolution `ctx.signal.aborted` recheck before returning `'paused'` — a cancelled run can emit `human_gate:paused` right before `run:cancelled`. Add the signal to `resolvePrompt` and the recheck to `human-gate.ts` in one pass. *(M · `packages/core/src/engine/agent-runner.ts`, `packages/core/src/engine/node-handlers/human-gate.ts` · #76, G9)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Thread the missing `AbortSignal` into `resolvePrompt` and recheck cancellation in `human-gate.ts`.** `resolvePrompt` (`packages/core/src/engine/agent-runner.ts:868`) omits the `AbortSignal` that every other call site passes into `resolveTemplate`, so cancellation during prompt-template resolution is not observed. Separately, `human-gate.ts` (`packages/core/src/engine/node-handlers/human-gate.ts`) is the one node handler doing real async work yet has no post-resolution `ctx.signal.aborted` recheck before returning `'paused'` — a cancelled run can emit `human_gate:paused` right before `run:cancelled`. Add the signal to `resolvePrompt` and the recheck to `human-gate.ts` in one pass. *(M · `packages/core/src/engine/agent-runner.ts`, `packages/core/src/engine/node-handlers/human-gate.ts` · #76, G9)*
 - ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Extract a shared `messageFor` diagnostic helper for `parser.ts` and `agent-parser.ts`.** `parser.ts`'s `messageFor` has no case for Zod's `invalid_literal` code, so a `schema_version` mismatch reports only "invalid value" with no expected-value indication. `agent-parser.ts`'s `AgentParseError` carries only field paths, never reason text, so distinct error kinds report identically on the `.agent.yaml` authoring surface — a gap distinct from 2.6.B's visibility-wiring task. Extract `messageFor` into a schema-agnostic helper consumed by both `parser.ts` and `agent-parser.ts`. *(M · `packages/core/src/parser.ts`, `packages/core/src/agent-parser.ts` · #85, #86)*
-- **Reconcile `system_prompt_append`'s documented interpolation with its verbatim-append implementation.** `workflow-yaml-spec.md` documents `system_prompt_append` as an interpolation target, but `agent-runner.ts` appends it verbatim by design (ADR-0038 anti-injection), while `packages/core/src/dag.ts` still wires it into real scheduling/taint-scan sites — an author using `{{ }}` there gets literal unresolved text sent to the model with zero error. Fix by either correcting the spec or adding a parse-time rejection of `{{ }}` syntax in that field. *(M · `packages/core/src/engine/agent-runner.ts`, `docs/reference/*/workflow-yaml-spec.md` · #87)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)) — documented as a literal append; Proposed ADR-0060 stays inactive.** **Reconcile `system_prompt_append`'s documented interpolation with its verbatim-append implementation.** `workflow-yaml-spec.md` documents `system_prompt_append` as an interpolation target, but `agent-runner.ts` appends it verbatim by design (ADR-0038 anti-injection), while `packages/core/src/dag.ts` still wires it into real scheduling/taint-scan sites — an author using `{{ }}` there gets literal unresolved text sent to the model with zero error. Fix by either correcting the spec or adding a parse-time rejection of `{{ }}` syntax in that field. *(M · `packages/core/src/engine/agent-runner.ts`, `docs/reference/*/workflow-yaml-spec.md` · #87)*
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G39/G47/G49 · `warningArmed` re-arm + projected `thresholdPct`).** **Re-arm `budget:warning` on continued overage and compute `thresholdPct` from the projected post-call total.** `#warningEmitted` (`packages/core/src/engine/budget-governor.ts:112`) is a one-shot lifetime boolean, so a long-lived `AgentSession`/chat process gets exactly one `budget:warning` ever and then silently proceeds no matter how far over cap spend climbs. Separately, `thresholdPct` is computed from pre-call cumulative spend rather than the projected post-call amount, so a single large call that jumps past the cap reports a near-0% warning. Fix both in the same pass: re-arm the warning on continued overage, and derive `thresholdPct` from the projected post-call total. *(M · `packages/core/src/engine/budget-governor.ts` · G39, G47, G49)*
-- **Give `assertNoTaintedArgs()` an actual producer for `ctx.secretArgKeys`.** `ctx.secretArgKeys` — the runtime ADR-0029(c) taint-check input that `assertNoTaintedArgs()` (`packages/core/src/tools/registry.ts`, `packages/core/src/tools/types.ts`) correctly enforces when present — has no producer anywhere in the engine, so the check is inert everywhere, including on the `AgentSession`/chat path with no static-analysis backstop. Either wire a producer that actually populates `ctx.secretArgKeys`, or explicitly record this as a tracked, known gap in the ADR. *(M · `packages/core/src/tools/registry.ts`, `packages/core/src/engine/agent-session.ts` · #92)*
-- **Cap `write_file.content`, `http_request.body`, `run_command.args`, and `git_commit.message` at a schema-level max length.** These four fields carry no length ceiling in `builtins.ts`'s Zod schemas despite heavy investment in bounding tool *output* — an oversized model-driven payload reaches dispatch and an unbounded regex redaction scan with no schema-level circuit breaker. Add a generous max-length ceiling on each field that won't break legitimate large writes. *(M · `packages/core/src/tools/builtins.ts` · #95)*
-- **Rewrite `llmVisibleParams` descriptions across the built-in tool set.** No built-in tool's `llmVisibleParams` schema has per-property descriptions (byte-vs-line ranges, glob dialect, argv-vs-shell-string semantics are left to the model's guess), and several descriptions leak engineer-facing implementation vocabulary (`shell:false`) instead of actionable denial-recovery guidance. One clustered rewrite pass over `builtins.ts`'s tool descriptions, distinct from 2.6.M's new-tool scope. *(M · `packages/core/src/tools/builtins.ts` · #96, #98)*
-- **Remove cycle-guard `WeakSet` entries on recursion unwind.** `redactInlineMediaForText`/`redactSecretShapedWalk` (`packages/core/src/tools/bounding.ts`) add to the shared cycle-guard `WeakSet` but never remove on the way back out of recursion, so any object referenced twice non-cyclically renders as a bogus `[cyclic]` in observability output. Remove the object from the `WeakSet` when recursion unwinds and add a regression test. *(S · `packages/core/src/tools/bounding.ts` · #94)*
-- **Decide the real backpressure granularity for `RunHandle` and `SessionHandle` in one pass.** `RunHandle.whenConsumersReady()` (`packages/core/src/engine/run-handle.ts`) is only awaited once per node dispatch, never within a single node's own streaming duration, so a long token/reasoning stream against a stalled consumer buffers unboundedly. `SessionHandle.whenConsumersReady`/`whenDrained` (`packages/core/src/engine/session-handle.ts`) is implemented identically but has zero callers anywhere. Decide and implement the actual granularity needed for both handles together. *(M · `packages/core/src/engine/run-handle.ts`, `packages/core/src/engine/session-handle.ts` · #77, G48)*
-- **Unescape the quoted filter-argument text `parseArg` returns.** `parseArg` (`packages/core/src/interpolation/references.ts`) returns the raw backslash-escaped text of a quoted filter argument instead of unescaping it, contradicted by its own test's comment. Fix `parseArg` to unescape the quoted argument text per its documented contract, and correct the misleading test comment. *(S · `packages/core/src/interpolation/references.ts` · #82)*
+- ✅ **DISPOSED ([Wave 3 Step 3](#wave-3-step-3-acceptance--2026-10-16)) — ADR-0113 records the unsupported tool mapping honestly instead of fabricating a producer; the reproduced context leak is fixed.** **Give `assertNoTaintedArgs()` an actual producer for `ctx.secretArgKeys`.** `ctx.secretArgKeys` — the runtime ADR-0029(c) taint-check input that `assertNoTaintedArgs()` (`packages/core/src/tools/registry.ts`, `packages/core/src/tools/types.ts`) correctly enforces when present — has no producer anywhere in the engine, so the check is inert everywhere, including on the `AgentSession`/chat path with no static-analysis backstop. Either wire a producer that actually populates `ctx.secretArgKeys`, or explicitly record this as a tracked, known gap in the ADR. *(M · `packages/core/src/tools/registry.ts`, `packages/core/src/engine/agent-session.ts` · #92)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Cap `write_file.content`, `http_request.body`, `run_command.args`, and `git_commit.message` at a schema-level max length.** These four fields carry no length ceiling in `builtins.ts`'s Zod schemas despite heavy investment in bounding tool *output* — an oversized model-driven payload reaches dispatch and an unbounded regex redaction scan with no schema-level circuit breaker. Add a generous max-length ceiling on each field that won't break legitimate large writes. *(M · `packages/core/src/tools/builtins.ts` · #95)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Rewrite `llmVisibleParams` descriptions across the built-in tool set.** No built-in tool's `llmVisibleParams` schema has per-property descriptions (byte-vs-line ranges, glob dialect, argv-vs-shell-string semantics are left to the model's guess), and several descriptions leak engineer-facing implementation vocabulary (`shell:false`) instead of actionable denial-recovery guidance. One clustered rewrite pass over `builtins.ts`'s tool descriptions, distinct from 2.6.M's new-tool scope. *(M · `packages/core/src/tools/builtins.ts` · #96, #98)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Remove cycle-guard `WeakSet` entries on recursion unwind.** `redactInlineMediaForText`/`redactSecretShapedWalk` (`packages/core/src/tools/bounding.ts`) add to the shared cycle-guard `WeakSet` but never remove on the way back out of recursion, so any object referenced twice non-cyclically renders as a bogus `[cyclic]` in observability output. Remove the object from the `WeakSet` when recursion unwinds and add a regression test. *(S · `packages/core/src/tools/bounding.ts` · #94)*
+- ✅ **CERTIFIED ([Wave 3 preflight](#preflight-corrections-and-already-satisfied-work)) — closed by Phase 2.6.5 CR-30 session backpressure and the W8/ADR-0087 contract; preserved, not reimplemented.** **Decide the real backpressure granularity for `RunHandle` and `SessionHandle` in one pass.** `RunHandle.whenConsumersReady()` (`packages/core/src/engine/run-handle.ts`) is only awaited once per node dispatch, never within a single node's own streaming duration, so a long token/reasoning stream against a stalled consumer buffers unboundedly. `SessionHandle.whenConsumersReady`/`whenDrained` (`packages/core/src/engine/session-handle.ts`) is implemented identically but has zero callers anywhere. Decide and implement the actual granularity needed for both handles together. *(M · `packages/core/src/engine/run-handle.ts`, `packages/core/src/engine/session-handle.ts` · #77, G48)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Unescape the quoted filter-argument text `parseArg` returns.** `parseArg` (`packages/core/src/interpolation/references.ts`) returns the raw backslash-escaped text of a quoted filter argument instead of unescaping it, contradicted by its own test's comment. Fix `parseArg` to unescape the quoted argument text per its documented contract, and correct the misleading test comment. *(S · `packages/core/src/interpolation/references.ts` · #82)*
 - ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Apply consistent duplicate/cross-field admission; certify existing input and session guards.** Shared leaf/full admission now enforces the approved duplicate, human-gate timeout and logical Run status matrices. Existing input defaults/enums and session compaction-role rules are certified. Historical session/workflow readers retain their former contracts; no rows are migrated or silently repaired. *(M · `packages/shared/src/{node,agent,workflow,session,run,common}.ts` · #89, #90, G18, #212, G16, G17, #210, #211)*
-- **Extend `analyzeSecretTaint`'s leak-reporting loop to cover context-value sites.** `analyzeSecretTaint` (`packages/core/src/interpolation/analyze.ts`) deliberately skips context-value sites in its leak-reporting loop, so a direct `{{secrets.*}}` reference never read elsewhere is not reported at parse time — the workflow only fails later, differently-shaped, at run start. Not an actual secret leak, but a real completeness gap in the "reject before a run starts, uniformly" contract. *(S · `packages/core/src/interpolation/analyze.ts` · G22)*
+- ✅ **CERTIFIED ([Wave 3 preflight](#preflight-corrections-and-already-satisfied-work)) — Wave 2's context-namespace refusal closes it.** **Extend `analyzeSecretTaint`'s leak-reporting loop to cover context-value sites.** `analyzeSecretTaint` (`packages/core/src/interpolation/analyze.ts`) deliberately skips context-value sites in its leak-reporting loop, so a direct `{{secrets.*}}` reference never read elsewhere is not reported at parse time — the workflow only fails later, differently-shaped, at run start. Not an actual secret leak, but a real completeness gap in the "reject before a run starts, uniformly" contract. *(S · `packages/core/src/interpolation/analyze.ts` · G22)*
 - ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Retain and validate the public event envelope without stripping full payloads.** `BaseEventSchema` shares the full run family's parsed exactly-one-correlation check; `BaseEvent` and `HumanGateEvent` remain exported. Complete payload, strict accounting, lenient opposite-key and stored forward-reader contracts are preserved. *(S · `packages/shared/src/run-event.ts` · #213)*
 - ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Clarify descriptive dispatch scope and retain immutable host filesystem authority.** Accepted [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md) decides the host boundary; `ctx.fsScope` describes dispatch context and cannot widen the host's grant. No per-turn `FsCapability` escalation is introduced. *(S · `packages/core/src/tools/{types,registry,builtins}.ts` · #93)*
-- **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
-- **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)) — #97/#214 corrected, #78 certified.** **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)) — #275's priority structure; #274's `validate` option is retained as an approved, documented compatibility surface.** **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
 - ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Introduce minimal shared native error ancestry while retaining each family's contract.** The current export-scoped inventory replaces the historical 15/17 estimate: 46 roots across 37 files reach 83 module-exported production classes, with the additional unchanged private timeout descendant recorded separately. Constructors, names, discriminants, context/cause and structural/private-authority guards are preserved. *(M · `packages/shared/src/relavium-error.ts` and existing package families · #219)*
-- **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
+- ✅ **CERTIFIED ([Wave 3 preflight](#preflight-corrections-and-already-satisfied-work)) — completed by W7/Wave 2.** **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
 - ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Preserve typed budget-error discriminants with shared native ancestry.** `BudgetExceededError` and `BudgetPauseError` retain their `.code` fields and `instanceof` identity; the accepted D10 ruling and error-substrate increment resolve the former maintainer question. *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
-- **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
 
 **Acceptance:** the CRITICAL `previewFor()`/approval-preview secret leak is closed and verified against a `run_command`/`write_file` fixture containing a fake credential; `BudgetGovernor` rejects a concurrent-branch overspend under `max_parallel` in a new test exercising the reservation ledger; `#armRunTimeout` computes remaining budget on every resume rather than re-arming full duration; cancel-signal propagation reaches `human-gate.ts` and `resolvePrompt`, and backpressure propagation reaches `SessionHandle`; `parser.ts` and `agent-parser.ts` share one `messageFor`-derived diagnostic helper; the approved duplicate/cross-field schema inventory is implemented or certified with its historical-reader limits in [Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16); the cycle-guard `WeakSet` leak in `bounding.ts` is fixed with a regression test; no engine-core doc comment contradicts the code it describes; the budget-error `.code` ruling is resolved by D10 and [Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16), while the export privacy/warning scope is resolved by the accepted D14/D15 Wave 2 contract. These are resolved decision gates, not current blockers; whole sub-stream A acceptance remains Wave 3 Step 19.
 
@@ -309,20 +314,20 @@ This workstream is `apps/cli`'s outermost layer — the process/runtime host eve
 
 **Tasks:**
 
-- **Close the five remaining gaps in the CLI's outermost crash/signal safety net.** `processIo()` (`apps/cli/src/process/io.ts`) has no EPIPE handling, so a `--json` consumer that closes its reader early dumps a raw stack trace instead of a structured envelope. `buildProgram()` in `apps/cli/src/run.ts` is the one synchronous step inside `run()` not wrapped in the standard error path, despite `run()`'s own JSDoc promising it never rejects. There is zero `process.on('unhandledRejection'|'uncaughtException', ...)` registration anywhere in production `apps/cli/src` — an async error escaping `run()`'s own promise chain falls straight to Node's default handler, and `process.on('exit')` never reaps detached `run_command` child process groups or closes DB/MCP connections on a crash. The last-resort crash message in `apps/cli/src/index.ts` unconditionally writes plain text to stderr with no `--json` check, the sole exception to the CLI's otherwise-universal structured-envelope convention. Fix all five in `index.ts`/`run.ts`/`process/io.ts` together: add EPIPE handling, wrap `buildProgram()`, register the missing global handlers with child-process reaping and DB/MCP close-on-exit, and make the last-resort message honor `--json`. *(L · apps/cli/src/index.ts, apps/cli/src/run.ts, apps/cli/src/process/io.ts · #40, #41, #42, #224, #269)* **Source correction — 2026-10-15:** the recoverable rejection net already exists and keeps alive; preserve it. Proposed ADR-0110 adds fatal/early-import/output handling through registered owners. Do not close DB/MCP from exit without actual owner ACK or claim universal descendant containment; see the revised preflight and canonical proposed teardown scope.
+- ✅ **DONE ([Wave 3 Step 8](#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)).** **Close the five remaining gaps in the CLI's outermost crash/signal safety net.** `processIo()` (`apps/cli/src/process/io.ts`) has no EPIPE handling, so a `--json` consumer that closes its reader early dumps a raw stack trace instead of a structured envelope. `buildProgram()` in `apps/cli/src/run.ts` is the one synchronous step inside `run()` not wrapped in the standard error path, despite `run()`'s own JSDoc promising it never rejects. There is zero `process.on('unhandledRejection'|'uncaughtException', ...)` registration anywhere in production `apps/cli/src` — an async error escaping `run()`'s own promise chain falls straight to Node's default handler, and `process.on('exit')` never reaps detached `run_command` child process groups or closes DB/MCP connections on a crash. The last-resort crash message in `apps/cli/src/index.ts` unconditionally writes plain text to stderr with no `--json` check, the sole exception to the CLI's otherwise-universal structured-envelope convention. Fix all five in `index.ts`/`run.ts`/`process/io.ts` together: add EPIPE handling, wrap `buildProgram()`, register the missing global handlers with child-process reaping and DB/MCP close-on-exit, and make the last-resort message honor `--json`. *(L · apps/cli/src/index.ts, apps/cli/src/run.ts, apps/cli/src/process/io.ts · #40, #41, #42, #224, #269)* **Source correction — 2026-10-15:** the recoverable rejection net already exists and keeps alive; preserve it. Proposed ADR-0110 adds fatal/early-import/output handling through registered owners. Do not close DB/MCP from exit without actual owner ACK or claim universal descendant containment; see the revised preflight and canonical proposed teardown scope.
 - ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Carry `const exhaustive: never` from `engine.ts` to the three sibling switches it was never propagated to, two of which drop live data.** `apps/cli/src/chat/persister.ts`'s event switch — the sole writer of `agent_sessions`/`session_costs` — silently drops any unhandled event kind via a bare `default`, a real money/data risk. Four picker key-routing switches in `apps/cli/src/render/tui/chat-ink.tsx` and `apps/cli/src/render/tui/home-controller.ts` lack the same guard on the reseat surface that already caused a data-loss-class bug. `apps/cli/src/render/tui/run-view-model.ts`'s `reduceRunEvent` silently drops `agent:reasoning` with no state field to hold it, so `relavium run` never shows reasoning that `chat` already renders — the exact bug class the guard in `apps/cli/src/chat/session-host.ts`'s `engine.ts`-derived pattern was invented to prevent, recurring on a different driver. Apply `const exhaustive: never` uniformly across all six sites. *(M · apps/cli/src/chat/persister.ts · #300, #301, G3)*
 - **Centralize `openLocalDb` wrap-and-redact instead of leaving it well-wrapped at only 3 of 8+ call sites.** On the `run`/`chat`/`gate` paths the well-wrapped open happens AFTER an earlier unwrapped one, making the clean `CliError` message largely unreachable in practice. Separately, `packages/db/src/client.ts` interpolates a raw absolute path into its error with no redaction backstop, unlike `packages/llm`'s `scrubSecrets`. Move the wrap-and-redact logic inside `openLocalDb` itself so every caller gets it for free instead of re-implementing it. *(M · packages/db/src/client.ts · #278, #280)*
 - **Wire `agent-run.ts`'s missing SIGINT handler and make chat's existing one actually abort the session.** `apps/cli/src/commands/agent-run.ts` registers zero SIGINT handler, so Ctrl-C orphans spawned MCP child processes. `drivePlain`/`driveJson`'s SIGINT handlers (chat driver) only close readline and never call `session.abort()`, letting the billed generation run to completion. Register a handler in `agent-run.ts` mirroring `driveRun`'s teardown, and make the chat handlers call `abort()`. *(M · apps/cli/src/commands/agent-run.ts · #21, #23)*
 - **Wrap `gate.ts`'s two idempotent-resume success paths in the same `--json` branch every other command uses.** Both write plain human text to stdout unconditionally, breaking the NDJSON contract for scripted callers, and neither path is tested. No dependency on the 2.6.K resume-core extraction — fix in place. *(S · apps/cli/src/commands/gate.ts · #20)*
 - **Fix `/doctor`'s hardcoded probe profile, which misreports the exact thing it exists to diagnose.** `apps/cli/src/chat/doctor.ts` probes tool-host wiring with a hardcoded profile instead of the session's actual one, so it always misreports `egress`/`os` capability as unwired regardless of the real config. Probe with the session's actual profile. *(S · apps/cli/src/chat/doctor.ts · G43)*
 - **Implement `--help --json`'s promised `COMMAND_MANIFEST` serialization, or correct the docs that claim it exists.** Doc comments in `apps/cli/src/commands/manifest.ts` and user-facing docs both claim `--help --json` emits `COMMAND_MANIFEST` as JSON; no code path serializes it, confirmed by a passing test that asserts help stays human text. Either implement the missing serialization or amend the docs to match reality. *(M · apps/cli/src/commands/manifest.ts · #13)*
-- **Defer the CLI's eager `driveHome` import and unconditional `seedCatalog()` call behind command-need, closing the ~400ms `--help`/`--version` tax.** `apps/cli/src/run.ts`'s static import of `driveHome` pulls in its full transitive graph — ink, react, the home controller, the DB layer, the native keychain binding — on every process start, even for `--help`/`--version`. `seedCatalog()` (`apps/cli/src/engine/catalog-refresh.ts`) does an unconditional sync read/parse/validate of the cached model catalog before checking whether pricing data is even needed. Measured ~390-410ms wall time for `--version` against ~30ms bare Node startup; a separate measurement centered on `dispatch.ts` confirmed the same root cause independently. Gate both behind a dynamic import keyed on actual command need; likely requires enabling `splitting: true` in `apps/cli/tsup.config.ts`, which currently emits a single bundle file. *(L · apps/cli/src/run.ts · #43, #44, #271)*
+- ✅ **DONE ([Wave 3 Step 7](#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)) — lazy packaged runtime under ADR-0111.** **Defer the CLI's eager `driveHome` import and unconditional `seedCatalog()` call behind command-need, closing the ~400ms `--help`/`--version` tax.** `apps/cli/src/run.ts`'s static import of `driveHome` pulls in its full transitive graph — ink, react, the home controller, the DB layer, the native keychain binding — on every process start, even for `--help`/`--version`. `seedCatalog()` (`apps/cli/src/engine/catalog-refresh.ts`) does an unconditional sync read/parse/validate of the cached model catalog before checking whether pricing data is even needed. Measured ~390-410ms wall time for `--version` against ~30ms bare Node startup; a separate measurement centered on `dispatch.ts` confirmed the same root cause independently. Gate both behind a dynamic import keyed on actual command need; likely requires enabling `splitting: true` in `apps/cli/tsup.config.ts`, which currently emits a single bundle file. *(L · apps/cli/src/run.ts · #43, #44, #271)*
 - ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Extend `authoring.ts`'s cwd-relative `displayPath` error-path discipline to `resolve.ts`, `catalog.ts`, and `chat/export.ts`.** `apps/cli/src/authoring/authoring.ts`'s `readAuthoredFile` already renders filesystem errors against a cwd-relative `displayPath` instead of the raw absolute path; `apps/cli/src/workflows/resolve.ts` and `apps/cli/src/workflows/catalog.ts` never adopted it, and neither did the filesystem `CliError`s in `apps/cli/src/commands/chat-export.ts`. Apply `displayPath` at all three remaining sites so no command leaks the user's absolute home-directory path into an error message. *(M · apps/cli/src/workflows/resolve.ts · #4, G11)*
 - ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Fix `resolve.ts`'s 1x UTF-8 byte multiplier, which undersizes the load cap for non-ASCII workflow files.** `apps/cli/src/workflows/resolve.ts` compares `stats.size` directly against `MAX_SOURCE_CHARS` (a 1x multiplier); `authoring.ts` and `catalog.ts` both correctly use `MAX_SOURCE_CHARS * 4` to account for UTF-8's up-to-4-bytes-per-char worst case. On the `relavium run` load path this means a dense multibyte YAML file well under the real char cap can be wrongly rejected as oversized. Apply the same `* 4` multiplier used by its two siblings. *(S · apps/cli/src/workflows/resolve.ts · #3)*
 - ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Extend `chat.ts`'s `closeQuietly()` helper to the four sibling commands still using an unguarded `.close()`.** `apps/cli/src/commands/chat.ts` wraps every store-close in `closeQuietly()` so a close-time throw can never overwrite a successful exit code; `apps/cli/src/commands/run.ts`, `apps/cli/src/commands/gate.ts`, `apps/cli/src/commands/chat-export.ts`, and `apps/cli/src/commands/chat-list.ts` all still call `.close()`/`opened.close()` unguarded. Extract the helper to a shared location and import it into all four. *(S · apps/cli/src/commands/chat.ts · #22)*
 - **Close `agent run`'s two UX-parity gaps against its sibling drivers in one pass.** `apps/cli/src/commands/agent-run.ts` blocks silently on a TTY with no piped stdin and prints no banner, unlike `chat`/`create` which both print one. `makePlainPrinter` (shared with `apps/cli/src/commands/chat.ts`'s plain-printer path) has no `cost:updated` case or final cost line for `agent run`'s non-JSON output, unlike `run`'s TUI/plain renderer. Both are the same shape of gap — `agent run` is the newest, least-mature driver — so add the stdin-TTY banner `create` already has and the cost line `run` already prints in the same change. *(S · apps/cli/src/commands/agent-run.ts · #24, #26)*
-- **Add a dedicated exit code for unclassified internal faults, or amend the docs that call exit code 1 "workflow failed."** Exit code 1 is documented as meaning a failed workflow but is silently reused for any unclassified internal fault from any command, so a script branching on exit code cannot distinguish "your workflow failed" from "the CLI itself broke." Add a dedicated code or correct the documented contract. *(S · apps/cli/src/index.ts · G35)*
-- **Resolve `--quiet`/`--verbose`/`RELAVIUM_DEBUG` into one coherent diagnostic-flag system and point the CLI's generic error fallbacks at it.** `--quiet` has exactly one consumer, and that consumer hardcodes the value away — a complete no-op. `--verbose` only gates `err.stack` on a top-level crash and has zero effect during a live session. `RELAVIUM_DEBUG` is undocumented and is a second, inconsistently-named escape hatch alongside `--verbose`. Both of the CLI's generic "internal error" fallback messages never mention `--verbose` or `RELAVIUM_DEBUG` as a way to get more detail — the same incoherence, seen from the user's side of the same broken flag system. Wire `--quiet` to actually suppress output, extend `--verbose` to gate live-session diagnostics, fold `RELAVIUM_DEBUG` into `--verbose`'s precedence chain, and append the resulting hint to both generic fallback messages in the same change; the fallback-message fix cannot be written correctly until the flag relationship is settled. **Approved 2026-10-16 in ADR-0110:** quiet+verbose conflict, explicit flags over exact DEBUG=1, independent JSON representation and preserved requested data/safety categories. Implementation remains staged. *(M · apps/cli/src/index.ts · #45, #264, #265, #268)*
+- ✅ **DONE ([Wave 3 Step 8](#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)) — `cli_internal`/`output_unavailable` exit 9 under ADR-0110, with Step 6's contracts.** **Add a dedicated exit code for unclassified internal faults, or amend the docs that call exit code 1 "workflow failed."** Exit code 1 is documented as meaning a failed workflow but is silently reused for any unclassified internal fault from any command, so a script branching on exit code cannot distinguish "your workflow failed" from "the CLI itself broke." Add a dedicated code or correct the documented contract. *(S · apps/cli/src/index.ts · G35)*
+- **Resolve `--quiet`/`--verbose`/`RELAVIUM_DEBUG` into one coherent diagnostic-flag system and point the CLI's generic error fallbacks at it.** `--quiet` has exactly one consumer, and that consumer hardcodes the value away — a complete no-op. `--verbose` only gates `err.stack` on a top-level crash and has zero effect during a live session. `RELAVIUM_DEBUG` is undocumented and is a second, inconsistently-named escape hatch alongside `--verbose`. Both of the CLI's generic "internal error" fallback messages never mention `--verbose` or `RELAVIUM_DEBUG` as a way to get more detail — the same incoherence, seen from the user's side of the same broken flag system. Wire `--quiet` to actually suppress output, extend `--verbose` to gate live-session diagnostics, fold `RELAVIUM_DEBUG` into `--verbose`'s precedence chain, and append the resulting hint to both generic fallback messages in the same change; the fallback-message fix cannot be written correctly until the flag relationship is settled. **Approved 2026-10-16 in ADR-0110:** quiet+verbose conflict, explicit flags over exact DEBUG=1, independent JSON representation and preserved requested data/safety categories. Implementation remains staged. *Note 2026-10-19:* the [ADR-0110 2026-10-18 clarification](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md#fixed-infrastructure-diagnostic-clarification--2026-10-18) supersedes this bullet's "append the resulting hint" instruction: infrastructure and unclassifiable faults keep one fixed diagnostic at every verbosity and their message does **not** suggest `--verbose` or `RELAVIUM_DEBUG` ([commands.md](../../reference/cli/commands.md#diagnostic-policy)). #45 closes on that disposition in Wave 3 Step 10a. *(M · apps/cli/src/index.ts · #45, #264, #265, #268)*
 - **Certify durable-only logs (G15; source correction — 2026-10-15).** The earlier token-firehose premise is refuted: shipping token/reasoning emission is live-only and logs reads durable rows. No coalescing decision or new persistence is required. Preserve actual replay with a real engine/store/log regression and JSON sequence-gap controls; the [reopened preflight](#maintainer-review-reopened-the-proposal--2026-10-15) records the evidence. *(M · apps/cli/src/commands/logs.ts · G15)*
 - **Attach `GLOBAL_OPTIONS_HELP` to every subcommand's `--help`, not just the root program's.** `apps/cli/src/program.ts` defines `GLOBAL_OPTIONS_HELP` (documenting the position-independent flags `commander` itself doesn't parse, like `--json`/`--cwd`/`--verbose`) and attaches it only to the root program; `commander` does not propagate it to subcommand help output, so `relavium run --help` never shows it. Attach the same help text to each subcommand, or add an explicit pointer to `relavium --help`. *(S · apps/cli/src/program.ts · #17)*
 - **Add a `--force` gate or interactive confirmation to `provider remove-key`, the manifest's sole `effect: 'destructive'` command.** `apps/cli/src/commands/provider.ts`'s `remove-key` action has no confirmation gate at all, unlike the create/import/export family, which all require explicit confirmation for destructive effects. Add the same pattern here. *(S · apps/cli/src/commands/provider.ts · #19)*
@@ -380,10 +385,10 @@ Cross-cutting code-quality debt with no owning subsystem, concentrated in `packa
 - **Expand tabs before measuring transcript width.** `stripTerminalControls` (`apps/cli/src/render/sanitize.ts`) deliberately preserves `\t` in transcript body text, but `displayWidth`/`graphemeWidth` (`apps/cli/src/render/tui/viewport.ts`) delegate to `string-width`, which measures any control character — including tab — as 0-width, while a real terminal expands a literal tab to the next 8-column stop. This breaks the viewport module's own documented invariant ("1 DisplayLine == 1 terminal row"): scroll offsets and mouse row→line mapping drift whenever a tab reaches the transcript (shell/tool output, TSV data, a tab-indented code block a model emits). Expand tabs to spaces at the same display boundary `sanitizeInline` already uses for short fields, or give `wrapLogicalLine`/`displayWidth` explicit tab-stop-aware accounting, and add a `viewport.test.ts` case pinning the chosen behavior. *(M · apps/cli/src/render/tui/viewport.ts · #65)*
 - **Replace four hand-rolled money/token reimplementations with the canonical helpers they already sit next to.** `capUsd` (`apps/cli/src/chat/effort-notice.ts`) hand-rolls the same ÷1e8 microcent→USD conversion `format.ts`'s `formatCostUsd`/`formatCostShort` already canonicalize — against `format.ts`'s own explicit "never a second hand-rolled divisor" comment (#236). `TOKENS_PER_MTOK` is declared independently in both `packages/llm/src/budget-estimator.ts` and `packages/llm/src/cost-tracker.ts`, despite `budget-estimator.ts` already importing other symbols from `cost-tracker.js` (#237). `mention.ts` (`apps/cli/src/render/tui/mention.ts`) hardcodes its own `Math.ceil(bytes / 4)` for the `@`-mention token warning instead of importing `CHARS_PER_TOKEN` from `packages/llm/src/adapters/shared.ts` (#242). `budgetWarningText` (`apps/cli/src/commands/chat.ts`) interpolates raw microcents directly ("~80% of the 500000000µ¢ cap reached") instead of calling `formatCostUsd`/`formatCostShort` — the one cost-facing string in the CLI that doesn't (#307). One mechanical replace-with-import pass, no new logic, closes all four. *(S · apps/cli/src/chat/effort-notice.ts, packages/llm/src/budget-estimator.ts, apps/cli/src/render/tui/mention.ts, apps/cli/src/commands/chat.ts · #236, #237, #242, #307)*
 - **Split the `Capability` vocabulary collision and unify it with `Port`.** `packages/llm/src/capabilities.ts`'s bare `Capability = keyof CapabilityFlags` (a model feature flag) collides with `packages/core/src/tools/types.ts`'s `FsCapability`/`ProcessCapability`/`EgressCapability`/`OsCapability`/`McpCapability` (host-injected ToolHost-seam implementations) — the same root word for two unrelated architectural roles, hurting greppability on exactly the seam a security review audits (#217). The identical host-injected pattern is separately spelled `Port` elsewhere (`HomeModelsPort` in `apps/cli/src/render/tui/home-controller.ts`, `SuspendPort`, `MediaWritePort`, `MediaReferencePort`), so `apps/cli` imports both spellings for one concept in sibling files (#222). Rename `packages/llm`'s bare `Capability` alias to `ModelFeature`/`FeatureFlag`, leave `core`'s `*Capability` family (already matching ADR-0037/ADR-0041's ToolHost vocabulary) as sole owner of the word, and settle on `Port` as the one name for "host-injected dependency interface," recording the convention in `docs/standards/architectural-principles.md`. *(S · packages/llm/src/capabilities.ts, packages/core/src/tools/types.ts · #217, #222)*
-- **Pick one spelling each for `ok`/`success` and `model`/`modelId`.** `packages/core` uses `{ ok: true | false }` at 49 call sites across the package (`agent-runner.ts`, `agent-session.ts`), but `tools/registry.ts` and `engine/agent-turn.ts` use `success: true | false` for the identical binary-outcome shape (#216). Within `packages/llm`'s catalog/pricing layer, lookups split roughly 50/50 between `modelId` (`pricing.ts`'s `catalogPricing`, `cost-tracker.ts`) and `model` (`pricing.ts`'s `contextWindowForModel`, `output-cap.ts`, `adapters/shared.ts`) for the same lookup-key role. Rename the two `success` sites to `ok` (or document the wire-schema exception for `ToolResultEventData.success`), and standardize on `modelId` for every catalog/pricing-lookup parameter, reserving `model` for signatures that literally forward `LlmRequest.model`. *(S · packages/core/src/tools/registry.ts, packages/core/src/engine/agent-turn.ts, packages/llm/src/pricing.ts · #216, #221)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)) — #221; #216's canonical event `success` field is retained per the preflight disposition.** **Pick one spelling each for `ok`/`success` and `model`/`modelId`.** `packages/core` uses `{ ok: true | false }` at 49 call sites across the package (`agent-runner.ts`, `agent-session.ts`), but `tools/registry.ts` and `engine/agent-turn.ts` use `success: true | false` for the identical binary-outcome shape (#216). Within `packages/llm`'s catalog/pricing layer, lookups split roughly 50/50 between `modelId` (`pricing.ts`'s `catalogPricing`, `cost-tracker.ts`) and `model` (`pricing.ts`'s `contextWindowForModel`, `output-cap.ts`, `adapters/shared.ts`) for the same lookup-key role. Rename the two `success` sites to `ok` (or document the wire-schema exception for `ToolResultEventData.success`), and standardize on `modelId` for every catalog/pricing-lookup parameter, reserving `model` for signatures that literally forward `LlmRequest.model`. *(S · packages/core/src/tools/registry.ts, packages/core/src/engine/agent-turn.ts, packages/llm/src/pricing.ts · #216, #221)*
 - **Rename `swapAgentModel` to match the dominant "reseat" vocabulary.** ADR-0059 ("CLI mid-session model reseat") and the surrounding codebase use `reseat*` identifiers pervasively (100+ occurrences in `apps/cli/src/commands/chat.ts` alone: `reseatChat`, `ReseatTarget`, `createReseatRebuild`, `finalizeReseatOutcome`). Yet the actual mutation function performing the model rebind — `swapAgentModel` (`apps/cli/src/chat/session-host.ts`), whose own docstring calls it a "model SWITCH" — and the dispatcher `resolveSwapRebuild` (`chat.ts`), which branches on `outcome.kind === 'reseat'`, both use a third word for the same operation, so a grep for "reseat" against ADR-0059's implementation misses it entirely. 2.6.C is closed, so this is a maintenance rename against shipped code, not new scope: rename `swapAgentModel` → `reseatAgentModel`, keeping "swap" only as the deliberately broader umbrella term where `resolveSwapRebuild` genuinely branches on two outcome kinds. *(S · apps/cli/src/chat/session-host.ts · #218)*
 - **Delete three knip-confirmed dead exports and their false justifying comments.** The `@relavium/llm/adapters` subpath export (`packages/llm/src/adapters/index.ts`) has zero real consumers — `packages/llm/src/providers.ts` imports the three adapter factories directly from their own files, bypassing the barrel entirely (#239). `isDispatchableId` (`apps/cli/src/commands/dispatch.ts`) is exported with a doc comment claiming "a surface calls this before dispatch," but no call site exists anywhere in the repo (#240). `FRAME_MS`'s re-export from `apps/cli/src/render/tui/ink-renderer.ts` carries a comment claiming "existing importers" use it, but every real consumer (`drive-home.tsx`, `chat-ink.tsx`, `synchronized-output.test.tsx`) imports it directly from `tui-constants.js` instead (#241). Delete each dead export/re-export and its stale comment, or, for the `/adapters` subpath, replace the comment with a note on which future consumer it is reserved for if kept deliberately. *(S · packages/llm/src/adapters/index.ts, apps/cli/src/commands/dispatch.ts, apps/cli/src/render/tui/ink-renderer.ts · #239, #240, #241)*
-- **Pin every identifier-sorting `localeCompare` call to break the machine-locale dependency.** `models refresh --json`'s provider sort (`apps/cli/src/engine/model-refresh.ts`) calls `a.provider.localeCompare(b.provider)` with no locale argument, so the comparison resolves against the invoking machine's ambient `Intl` locale (e.g. `LANG`) rather than anything Relavium controls — breaking the ADR-0049 byte-identical `--json` promise, since e.g. Turkish collation reorders relative to `en_US` (#258). The same unpinned pattern recurs at 7+ more sites sorting closed-set ASCII identifiers: `apps/cli/src/engine/mcp-servers.ts` (env var names, tool allowlist), `apps/cli/src/workflows/catalog.ts` (workflow/agent slug order feeding both the Home browser and `relavium list`), `apps/cli/src/commands/list.ts`, `apps/cli/src/render/tui/mention.ts`, and `packages/core/src/tools/registry.ts`/`errors.ts` (`UnknownToolError`'s message, which can propagate into a `node:failed` RunEvent's `outputSummary` and thus into the NDJSON stream too) (#259). One shared `compareIdentifiers(a, b)` helper — a plain ASCII ordinal comparison, matching the one site that already gets this right (`packages/llm/src/model-catalog.ts`'s `localeCompare(y.displayName, 'en')`) — closes the whole sweep in one pass. *(M · apps/cli/src/engine/model-refresh.ts, apps/cli/src/engine/mcp-servers.ts, apps/cli/src/workflows/catalog.ts, packages/core/src/tools/registry.ts · #258, #259)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Pin every identifier-sorting `localeCompare` call to break the machine-locale dependency.** `models refresh --json`'s provider sort (`apps/cli/src/engine/model-refresh.ts`) calls `a.provider.localeCompare(b.provider)` with no locale argument, so the comparison resolves against the invoking machine's ambient `Intl` locale (e.g. `LANG`) rather than anything Relavium controls — breaking the ADR-0049 byte-identical `--json` promise, since e.g. Turkish collation reorders relative to `en_US` (#258). The same unpinned pattern recurs at 7+ more sites sorting closed-set ASCII identifiers: `apps/cli/src/engine/mcp-servers.ts` (env var names, tool allowlist), `apps/cli/src/workflows/catalog.ts` (workflow/agent slug order feeding both the Home browser and `relavium list`), `apps/cli/src/commands/list.ts`, `apps/cli/src/render/tui/mention.ts`, and `packages/core/src/tools/registry.ts`/`errors.ts` (`UnknownToolError`'s message, which can propagate into a `node:failed` RunEvent's `outputSummary` and thus into the NDJSON stream too) (#259). One shared `compareIdentifiers(a, b)` helper — a plain ASCII ordinal comparison, matching the one site that already gets this right (`packages/llm/src/model-catalog.ts`'s `localeCompare(y.displayName, 'en')`) — closes the whole sweep in one pass. *(M · apps/cli/src/engine/model-refresh.ts, apps/cli/src/engine/mcp-servers.ts, apps/cli/src/workflows/catalog.ts, packages/core/src/tools/registry.ts · #258, #259)*
 - **Estimate attachment token warnings from injected content, not raw file size.** `fileAttachmentWarning` (`apps/cli/src/render/tui/attachments.ts`) documents its estimate as computed "from the ACTUALLY-INJECTED (bounded) length — NOT the raw file size," but the implementation always derives `injectedTokens` from the `sizeBytes` parameter, never from `content.length`. For ASCII content the two values are numerically equal, masking the bug, but for any multi-byte UTF-8 content (non-Latin scripts, emoji, i18n fixtures) `sizeBytes` exceeds `content.length`, so the non-truncated-branch warning reports an inflated token estimate against the function's own documented contract. Switch to `Math.min(content.length, INJECT_MAX_CHARS)`, and extend the existing test with a `content`/`sizeBytes` pair that diverge, since the current fixture passes identical values for both and cannot catch this. *(S · apps/cli/src/render/tui/attachments.ts · G54)*
 - **Harden two structurally-checked type escapes that rely on control flow, not the compiler.** `catalog-metadata.ts` (`apps/cli/src/engine/catalog-metadata.ts`) casts Zod-validated catalog data to `CatalogPriceTier[]`/`ReasoningControls`/`RequestCapabilities` via `as X` on a money/capability-adjacent boundary feeding the ADR-0028 cost cap — TS rejects a structurally-incompatible cast, but not a future schema change that stays structurally assignable while becoming semantically wrong (#303). `schema-compiler.ts` (`packages/mcp/src/schema-compiler.ts`) uses non-null assertions (`built[0]!`, `literals[0]!`) that are correct today only because an adjacent `if` guards the invariant, not because `noUncheckedIndexedAccess` enforces it — a future reorder of that guard would silently reintroduce a runtime crash with no compiler signal (#304). Add a round-trip fixture test pinning the catalog schema-to-interface mapping for the former; destructure-and-check instead of asserting for the cheap cases of the latter, commenting the rest. *(S · apps/cli/src/engine/catalog-metadata.ts, packages/mcp/src/schema-compiler.ts · #303, #304)*
 - **Bound `SGR_MOUSE`'s digit groups to match the file's own defensive posture.** `SGR_MOUSE = /^\x1b?\[<(\d+);(\d+);(\d+)([Mm])$/` (`apps/cli/src/render/tui/mouse.ts`) accepts an unbounded digit run in each field on the complete-report path, while the partial-fragment path in the same file caps at `MAX_PARTIAL_LENGTH` (24) specifically "so a malformed stream cannot grow a buffer." Not currently exploitable — `Number()` on an oversized digit string saturates rather than throwing, and a real terminal only ever emits 1-5 digit fields — but it is an inconsistency against the file's own stated bounding discipline. Cap each digit group to `\d{1,5}`, matching the fragment path's defensive intent. *(S · apps/cli/src/render/tui/mouse.ts · G55)*
@@ -429,7 +434,7 @@ This substream is the development-process substrate itself — `.github/workflow
 - **Cap `InputHistory.entries`.** `input-history.ts:23`'s `entries` array has no upper bound, unlike the `MAX_TOKEN_CHARS`/`MAX_TOOL_LINES` siblings in the same directory. Add the same kind of bound. *(S · `apps/cli/src/render/tui/input-history.ts` · G4)*
 - **Cache per-cluster widths and debounce resize wrap-cache invalidation.** `viewport.ts:56`'s `graphemeWidth` calls the full `string-width` library per already-segmented cluster, 2.5–6x slower than necessary on CJK/wide-script lines (`#64`); `chat-projection.ts:273`'s `entryWrapCache` fully invalidates on every `SIGWINCH` tick during a drag-resize instead of only the final size, compounding the cost (`#66`). Cache per-cluster widths and debounce resize invalidation. *(M · `apps/cli/src/render/tui/viewport.ts` · #64, #66)*
 - **Mount the four overlay components under adversarial render tests.** `PromptEditor`/`PaletteView`/`ReverseSearchView` (`prompt-view.tsx:1`, `G41`) and `MentionView`/`EffortTierList` (`palette-view.tsx:1`, `G53`, overlapping heavily with G41's coverage) all carry explicit sanitization-safety claims in comments but are never mounted by any test in the repo. Add `ink-testing-library` render tests per component in one PR. *(M · `apps/cli/src/render/tui/prompt-view.tsx` · G41, G53)*
-- **Make chat's own `git_commit` denial message satisfiable.** `packages/core/src/tools/registry.ts:292` emits a workflow-authored `human_gate` denial message into chat that asks the user to do something chat structurally cannot produce. Give chat its own denial copy. *(S · `packages/core/src/tools/registry.ts` · #308)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Make chat's own `git_commit` denial message satisfiable.** `packages/core/src/tools/registry.ts:292` emits a workflow-authored `human_gate` denial message into chat that asks the user to do something chat structurally cannot produce. Give chat its own denial copy. *(S · `packages/core/src/tools/registry.ts` · #308)*
 - **Align `chat-resume`/`chat-list`/`chat-export` with the CLI's noun-verb convention.** These three flat subcommands (`apps/cli/src/commands/specs.ts:131`) break the `gate list`/`provider add` pattern used everywhere else. Add `chat resume`/`chat list`/`chat export` as the canonical forms, keeping the flat spellings as deprecated aliases. *(M · `apps/cli/src/commands/specs.ts` · #309)*
 - **Add a persistent keyless-state indicator to the Home strip.** `apps/cli/src/home/home-store.ts:73`'s `HomeSnapshot` carries no field for "no provider key configured," so a skipped or cancelled onboarding wizard leaves no durable nudge once the wizard screen is gone. Add a keyless-state field and a persistent nudge row. *(S · `apps/cli/src/home/home-store.ts` · #51)*
 - **Make onboarding's model-binding failure recoverable and regression-tested.** A `writeDefaultModel` failure inside the wizard (`apps/cli/src/onboarding/wizard.ts:241`) silently re-introduces the exact provider/default-model mismatch the wizard exists to prevent (`#49`), and there is no end-to-end test proving the chosen provider actually binds the first chat's model (`apps/cli/src/home/drive-home.test.ts:562`, `#52`). Make the write retried/recoverable and add the regression test in the same change. *(M · `apps/cli/src/onboarding/wizard.ts` · #49, #52)*
@@ -968,6 +973,13 @@ The review report itself is not tracked in git (it lives under the gitignored `d
 | `#61` | `polish` | `apps/cli/src/render/tui/viewport.ts:218` | Alt-screen transcript char-wraps while inline transcript word-wraps — divergent row shapes | Alt-screen char-wraps while inline word-wraps, a known deliberate deferral the finding asks to… |
 
 #### Routed into the active Phase 2.6 — these land in that phase's own workstreams, not in this file
+
+> **Pull-forward note — 2026-10-19:** `G30` (`http_request` advertised in chat with no allowlist path) is no
+> longer 2.6.M work. The approved Wave 3 plan pulled it forward to
+> [execution row 13](#proposed-implementation-increments) under Accepted
+> [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): a global-only
+> `[chat_http].allowed_domains` with live narrowing authority, not coupled to credential-resolver or `web_search`
+> activation. The generated row below keeps its original routing as history.
 
 | Finding | Severity | Location | Issue | Lands in | Work item |
 |---|---|---|---|---|---|
@@ -3629,6 +3641,11 @@ the token heuristic is now in LLM `request-estimator`, not an adapter module.
 
 #### Decisions presented together before implementation
 
+> **Approved 2026-10-16** — see [Wave 3 maintainer approval and implementation checkpoint](#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16).
+> Steps 1–8 merged as PR #95; the 2026-10-19 rulings for Steps 9–19 are in
+> [Wave 3 Steps 9–19 preflight review and maintainer rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19).
+> Live progress is canonical in [current.md](../current.md#wave-3--clear-the-ground).
+
 All entries below are **proposed**, not maintainer rulings. Approval covers the
 concrete public/API/secrets plan as well as the new ADRs. No proposed choice silently
 changes a currently Accepted ADR or a canonical reference before approval.
@@ -3655,6 +3672,15 @@ No credential values or request captures belong in tracked evidence.
 
 #### Proposed implementation increments
 
+> **Approved 2026-10-16** ([checkpoint](#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)).
+> Rows 7a–8d, 9a–9d and every `Recorded split` / `Recorded plan amendment` row below were added later with the
+> maintainer's approval; the 2026-10-19 amendment is recorded in
+> [Wave 3 Steps 9–19 preflight review and maintainer rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19).
+> Steps 1–8 merged as PR #95; live progress is canonical in [current.md](../current.md#wave-3--clear-the-ground).
+> *Paused 2026-10-26 after Step 9b.2:* Steps 9c–19 are pending behind the CLI MVP; the recorded splits of rows 10b, 11b,
+> 13a–13c, 15a, 15c, 16b and 17a that move into the MVP, with their order amendments, are in the
+> [MVP priority reset](#mvp-priority-reset--2026-11-04).
+
 | Step | Scope, finding IDs and principal verification |
 |---|---|
 | 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 plus #3's UTF-8 source admission parity → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership. For #3, use the sibling 4× byte precheck plus authoritative parser character bound; test a dense multibyte source above the old byte cap but below the character cap, ASCII character overflow and true byte overflow. Add native error and mounted output regressions. |
@@ -3671,20 +3697,54 @@ No credential values or request captures belong in tracked evidence.
 | 8b | **Recorded split — creation-owned native processes:** tool POSIX group versus MCP PID, actual close/retirement, verified absolute Windows teardown admission and helper lifetime; connect OS/editor helpers and replace independent reapers without claiming full descendant containment. |
 | 8c | **Recorded split — workflow and render integration:** run/gate/budget/driver owners, real return/throw health priority, cancellation, terminal/job-control leases and force-quit routing. No timer certifies DB close or receipt settlement. |
 | 8d | **Recorded split — sessions, terminal and activation:** fresh/resumed/one-shot/Home/pending/replaced session lifetimes, retained publication failure and shared actual cleanup promises; connect caught slash/rebuild faults, restore terminal custody before diagnosis, then activate early coordinator/background/sink integration. Actual native/platform/packed controls and complete cumulative Step 8 acceptance follow. |
+| PR95 | **Recorded plan amendment, 2026-10-19 (maintainer-approved; new scope from the [PR #95 independent review](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18), not a split of rows 1–19) — scrubber residuals, before 9a:** the `api-key:Bearer`/`Basic` label erasure that leaks the token; raw `?`/`#` URL userinfo masked unless the text before it is host-shaped **and** an `=` assignment separates it from the authority `@`, applied to the LLM leaf and core's twin predicate; an extended finite scheme list (postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp, smtps) masking colon-bearing userinfo for the new schemes; module-load checks of the split-credential scanner's two invariants, a start prefilter, joined-view and glued-scheme witnesses, the load-sensitive 8 MiB timing case, and the causal-control pins. One increment with ordered commits, two NEW clean complete cumulative rounds and a separate security sitting. *Acceptance amended on 2026-10-21 by the maintainer's masker acceptance bar and round cap; closed under the round cap on 2026-10-22 ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)).* |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
+| 9a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage #46/ADR-0111 unchanged, no new contract) — release maps, final build and symbolication:** fresh uncached upstream original-TypeScript maps, the sole prepack final CLI build, final trailer removal before hashes, map and private-graph staging outside public artifacts and caches, exact tarball-to-final-JS binding, and real packed CLI and engine frame symbolication with wrong JS/map/source and missing-map negative controls. Ordinary builds remain map-free. *Split again on 2026-10-19 into 9a.1 and 9a.2 below, which replace it as increments ([Plan shape](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)).* |
+| 9a.1 | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — candidate build and finalizer:** an owned isolated candidate copy, fresh uncached upstream maps, candidate-mode tsup selection with absent `sourcesContent`, the prepack finalizer (upstream and final map validation, repository-relative sources, exact trailer removal before hashes), owner-only private staging outside public artifacts and caches, closure/seal adaptation, the ordinary map-free control, the PR #95 archive/worker fold-ins, and a fail-closed `release.yml` publish guard that refuses any non-release candidate until 9d and Wave 4b custody exist. The receipt stays `compiled_package_test`. *Implemented on `development` on 2026-10-22 ([checkpoint](#wave-3-step-9a1-implementation-checkpoint--2026-10-22)); independently accepted at `cf97b7f1` on 2026-10-24 ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)).* |
+| 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. *Split on 2026-10-24 (maintainer-approved; ID coverage #46/ADR-0111 unchanged) into 9a.2a and 9a.2b below, which replace it as increments ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)).* |
+| 9a.2a | **Recorded split, 2026-10-24 (maintainer-approved) — decoder, private manifest and symbolication:** an in-house strict source-map decoder; strict mapping and range validation of upstream and final maps in the finalizer; the private map manifest (`staging/manifest.json`, keyed by `dist/<chunk>.js`, with a per-source digest inventory and the commit's tree), sealed after the archive inspection; real packed CLI and `@relavium/core` frame capture through a tooling-only preload during an offline `relavium import`, run on the finalized `dist` that the inspection proves byte-equal to the tarball; symbolication of those frames against the matching source revision (clean: the checkout's Git objects; dirty, local only: the candidate copy), wired into the seal before the receipt is written. The receipt stays `compiled_package_test`. Security sitting. *Independently accepted on `development` at `a92a7602` on 2026-10-24 ([checkpoint](#wave-3-step-9a2a-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)).* |
+| 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
+| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
+| 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
+| 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each map's digest checked against the private manifest and its size against the finalizer's record, which must name exactly the manifest's outputs and maps (the metafile must be a JSON object); an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Independently accepted on `development` at `147c2788` (2026-10-25) ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b1-acceptance--2026-10-25)).* |
+| 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. *Independently accepted on `development` at `563402e6` (2026-10-26) ([decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b2-acceptance--2026-10-26)).* |
+| 9c | **Recorded split — offline release state controller:** permission-enforcing offline GitHub/npm controller, permissioned prebuild discovery and reservation, and every rerun, partial, conflict and expiry state, with no overwrite, rebuild or re-encryption on uncertain history. |
+| 9d | **Recorded split — workflow, runbook and whole-Step-9 landing:** least-privilege actual workflow dependency graph, required artifact/platform aggregation and exact-artifact consumers, lost-staging refusal and the release runbook update. The whole-Step-9 cumulative review retains all 9a–9d changes with preservation traces into Step 8, and the dedicated archive/crypto security sitting closes the step. *Added 2026-11-04 (PR #96 review, maintainer ruling):* ADR-0111's "encrypt once" holds per container, not per destination — `encryptOnce` refuses a second ciphertext only in the same destination, so one container can still yield two valid ciphertexts in two destinations; 9d adds a global encrypt-once record (or an equivalent refusal) with its regression. No encrypted map is produced before 1.0 under release path B (D59), so the gap is latent until then. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
+| 10a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — diagnostic policy and output owners:** #45/#264/#265/#268 policy wiring, the production output-owner category registry with a drift test, verbose detail whose frames come from a same-build allowlist (no second build or post-finalization write), removal of the raw stack branch with G36/G46 re-scoped to its replacement, and the PR #95 lazy-dispatch cause-wrap and purity-root fold-ins. |
+| 10b | **Recorded split — descriptor grammar and JSON help:** canonical chat paths and pricing spellings with working aliases and conflict refusal (#309/#18/#310), non-echoing Commander refusal with the #311 static hint family (moved here from row 17; certified in 17a), excess-argument refusal, subcommand global help (#17), real root/subtree JSON help (#13, including `help [path] --json`) and the purity guard. |
+| 10c | **Recorded split — consent, G15 evidence and landing:** signal-safe key-deletion consent (#19), G15 engine/store/log preservation evidence, promotion of the implemented Steps 6–10 commands.md sections (moved here from Step 19, per landing checklist item 3) and the repeated packed gates. |
 | 11 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
+| 11a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged, G54 moved here from row 17) — canonical token/money source:** #236/#237/#242/#307, including USD presentation of the conservative-hold disclosures, G54's character-based attachment estimate on the same helper, then #218 reseat vocabulary. |
+| 11b | **Recorded split — immediate abort:** #21/#23 certification and blocked-turn abort, including Ctrl-C mapped to `/cancel` while a tool approval is pending (an approved ADR-0057 amendment: the approval is rejected, never accepted), with an approval-path security sitting. |
 | 12 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
+| 12a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — chat leaves:** driver contracts, pure surface decisions, printers, headless drivers, the lifecycle seam and live notices move out of `commands/chat.ts` with no behaviour change (the first part of #220). |
+| 12b | **Recorded split — line handler and wiring:** #244 line-handler decomposition and the rest of #220's session wiring, clear/reseat ownership, the REPL loop and command bodies. `commands/chat.ts` keeps only the command entry points and their argument/dependency types, importers are repointed, and `chat.ts`-internal duplication is consolidated (Home's chat wiring moves onto the shared helpers in 13c). |
 | 13 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Invocation-live policy owner shared by old/pending hosts, post-approval/post-prepare target guard, pinned global selection, suspension/recovery and latest-only build publication. Actual failed/overlapping Home rebuild and approval-race controls, alongside no-authority/SSRF/ports; separate egress/config-trust security sitting. |
+| 13a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — pure substrate:** the DNS-hostname grammar and comparator (also rejecting `.internal`, which the SSRF floor always blocks), the strict `[chat_http].allowed_domains` key, the frozen dispatch target and the additive pre-dispatch check. |
+| 13b | **Recorded split — invocation authority:** the pinned global selection and the invocation-live, monotonically narrowing HTTP authority owner wired into standalone chat fresh/resume/clear/reseat and `agent run`. |
+| 13c | **Recorded split — Home integration:** Home's in-chat wiring first moves onto the shared session helpers from 12b, then shares the authority across old/pending/replacement hosts with latest-only publication; `http_request` is omitted from each turn's advertised tools while the live authority is empty or suspended (dispatch stays authoritative). Separate egress/config-trust security sitting. |
 | 14 | **Home controller:** certify G37, fix #281, record/test #125/D26 before #215/#243 decomposition; then #217/#222 scoped naming. Overlay discriminated union, subcontrollers, stale async work/focus/approval invariants and both live cost surfaces. |
+| 14a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — correctness first:** certify G37, make the palette rejection observable (#281), settle and test #125/D26 on both live chat surfaces, and remove the unused `HomeDeps.exit` (PR #95 fold-in). |
+| 14b | **Recorded split — decomposition and naming:** the overlay discriminated union with subcontroller decomposition (#215/#243) in one change, preserving the Step 8 and Step 13 invariants; the shared `[c]` reason-capture reducer on both Home and chat-ink (a call-site swap only); then #217/#222 scoped naming. |
 | 15 | **Viewport/input:** #58/#62/G40/G51 → #65 → #64/#66, then #63/#69/G4/G55. Grapheme-correct editing/truncation, tabs, bounded caches, safe resizing, TERM=dumb and both small-terminal surfaces, input history and mouse bounds. CJK measurement and real emitted rows. |
+| 15a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — grapheme and tabs:** the shared grapheme primitive (#58/#62/G40/G51) and 8-cell tab expansion before width measurement (#65). |
+| 15b | **Recorded split — width cache and resize:** the bounded 1,024-entry width memo and latest-size frame coalescing with immediate narrowing safety (#64/#66). |
+| 15c | **Recorded split — terminal bounds:** 80×24 on both chat surfaces with no hidden affirmative input there or on the Home strip (#63; an approved ADR-0057 amendment), the `TERM=dumb` plain fallback including the bare-Home gate (#69; an approved ADR-0054 amendment), the 500-entry history and SGR bounds (G4/G55) and the PR #95 input-listener fold-in. Approval-path security sitting. |
 | 16 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model/ephemeral invocation binding across clear/reseat, recoverable persistence, explicit acknowledgement/current keyless nudge, shared pre-read writer symlink refusal, surfaced typed recovery and deterministic existing-file comment-loss notices. Hidden-approval safety/color-off; keychain/config security sitting. |
+| 16a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — shared writer:** the shared preference writer with pre-read link refusal and typed recovery, the acknowledgement key (#34) and path-free configuration diagnostics (extending the safe display-path discipline to `ConfigError` and `/doctor`). |
+| 16b | **Recorded split — onboarding truth:** typed key availability, truthful onboarding outcomes, the current-state keyless nudge and color-off across all four clack prompt sites (#49/#52/#51/#53/#55). |
+| 16c | **Recorded split — selection and overlays:** the invocation selection binding (an explicit ephemeral choice wins for the invocation; a reseat stays session-scoped), surfaced Home refusal, the one-pending-approval invariant (G5) and the overlay/color-off controls (G52/G41/G53). Whole-Step-16 keychain/config security sitting. |
 | 17 | **Remaining CLI/hygiene:** #24/#26/G43/G2/#12/#54/G14/#11/#47/#48/#240/#241/#311/G54/#303/#304; certify #20/G36/G46. One-shot coverage-aware cost/banner, actual-host doctor, typed faults, no silent missing-dist skip, guard misuse, attachment estimate and compiler checks. #239 remains the approved documented compatibility surface. |
+| 17a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged, G54 moved to 11a) — CLI tails:** one-shot stdin hint and cost line (#24/#26), actual-host doctor (G43), typed faults (G2/#12/#54), #311 certification, consumer-audited dead exports (#240/#241), comments (G14/#11) and the four PR #95 exit-code literal sites. |
+| 17b | **Recorded split — test and control hygiene:** #47/#48, catalog/compiler checks (#303/#304), certification of #20/G36/G46 and the PR #95 test-evidence and join-table nits. |
 | 18 | **openLocalDb LAST:** #278/#280 across every moved caller. Centralize the already-integrated classification/wrapping with fixed safe errors, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
 | 19 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; measure and promote core's ≥90% line/branch floor to required CI as testing.md requires after Wave 3 coverage work, fixing meaningful missing coverage before closure. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
+| 19a | **Recorded split, 2026-10-19 (maintainer-approved; ID coverage unchanged) — coverage:** measure core at the accepted Step 18 head, close meaningful gaps, then promote core's ≥90% line and branch floor into the required coverage job, renamed `engine coverage floor` (the maintainer updates branch protection). |
+| 19b | **Recorded split — whole-wave acceptance:** every disposition, canonical landings and the Proposed-section inventory, final exact-head gates, two NEW whole-wave cumulative reviews and the PR. |
 
 Steps are dependency-safe increments, not permission to parallel-edit shared hot
-files. Within each row, arrows remain strict. The process/packaging sequence replaces the old fatal-before-lazy assumption: pure contracts → guarded lazy graph → native fatal integration → map/archive custody → remaining CLI behaviour. It is nineteen increments, with no parallel edits of shared hot files. Step 1 completes before all other
+files. Within each row, arrows remain strict. The process/packaging sequence replaces the old fatal-before-lazy assumption: pure contracts → guarded lazy graph → native fatal integration → map/archive custody → remaining CLI behaviour. It was approved as nineteen steps; the recorded splits and the 2026-10-19 amendment make it 29 increments (see the rulings' Plan shape), and the 9a.2, NI and 9b splits of 2026-10-24/25 make it 32, with no parallel edits of shared hot files. Step 1 completes before all other
 code. Home cost is disposed or implemented before its decomposition; viewport
 geometry work never races editor/cache work. If review exposes a necessary smaller
 increment, split it with unchanged ID coverage and record the split before proceeding.
@@ -3714,6 +3774,10 @@ No dependent code is authorized merely by a recommendation,
 preflight test pass or a clean proposal review. Approval is requested because the
 user explicitly requires it for new ADRs and implement-task step 3 requires it for
 public API/Accepted-decision/secrets changes. No product step is complete yet.
+
+> *Superseded status, noted 2026-10-19:* this gate was satisfied on 2026-10-16
+> ([approval checkpoint](#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)), and
+> Steps 1–8 merged as PR #95. The sentence above records the proposal stage.
 
 #### Proposal review disposition — 2026-10-15
 
@@ -9141,3 +9205,2529 @@ criteria; [PR #95](https://github.com/HodeTech/Relavium/pull/95) owns their live
 result. Source acceptance does not assert a green retry or completed publication.
 Steps **9–19 have NOT STARTED**. No merge, release, new user decision or deferral
 is claimed.
+
+### Wave 3 Steps 1–8 merge checkpoint — 2026-10-18
+
+[PR #95](https://github.com/HodeTech/Relavium/pull/95) merged to `main` at
+**22:44:24 UTC (01:44:24 Europe/Istanbul, 2026-10-19)**, merge commit
+`6d2a737231e2445c6d9d54b2d7449084e036ade4` (parents `ab08209e` and `a3e164b5`). The merged
+head is `a3e164b5608d386fc3db7fa3b8483d0adf2ed0fd`; the merge tree
+(`415af9662f5690b675ebaf4ccfff5840ea6e3f29`) is byte-identical to it. GitHub records
+649 changed files, +81,844 / −7,343. **Wave 3 Steps 1–8 are complete on `main`. Wave 3 is
+not: Steps 9–19 have NOT STARTED and whole-wave acceptance remains Step 19.** ADR-0110–0113
+remain Accepted. The PR was the maintainer-authorized, scoped publication checkpoint recorded
+in [Wave 3 Steps 1–8 scoped publication](#wave-3-steps-18-scoped-publication--2026-10-17); it
+claimed no whole-wave acceptance and this checkpoint does not add one.
+
+#### Completed Steps 1–8 scope
+
+| Step | Complete on `main` |
+| --- | --- |
+| 1 | Shared close handling, safe source labels with UTF-8 admission parity, exhaustive session/picker/run switches and actual reasoning rendering. |
+| 2 | Shared admission and diagnostics: status/duplicate matrices, shared parser reason helper and config numeric bounds. |
+| 3 | Secret provenance at public sinks (ADR-0113): engine-owned context/input provenance across fresh, resume, condition, transform and merge paths. |
+| 4 | Typed error/envelope substrate (`RelaviumError`, migrated classes, cross-bundle structural guards). |
+| 5 | Tools and engine tails: bounds before effects, model-visible semantics, ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence. |
+| 6 | Pure process/discovery substrate (ADR-0110): categories, early flag grammar, exit/site inventory, descriptor registry and invocation owner registry. |
+| 7 | Lazy runtime, finite compiled graph, exact-tarball inspection and the required Node 22.0.0 plus Linux/macOS/Windows consumers (ADR-0111). |
+| 8 | Creation-owned native process integration, kind-specific owners, terminal custody and the total fatal budget across workflow, render and session lifetimes. |
+
+#### Review attribution
+
+Each step keeps its own acceptance register; none is widened by the merge. Whole Step 8
+is accepted at `c83c8575` (two NEW complete cumulative CLEAN rounds, 342 paths / 1,842
+ordered hunks, separate clean security sitting). The two PR #95 correction cycles are
+accepted at `ec0f3e10` ([second corrective source-review completion](#pr-95-second-corrective-source-review-completion--2026-10-18)),
+and the two later native test-fixture increments (`154d832d`, `1c7aec25`) have their own
+[supplemental acceptance](#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Detailed review records remain local and Git-ignored.
+
+The difference between `ec0f3e10` and the merged head is exactly twelve non-documentation
+paths plus three documentation files. Two test files are the independently accepted fixture
+increments above. The other ten are the commit below. It merged with author verification only; its
+post-merge independent review is recorded in [its own section](#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19) after this checkpoint.
+
+#### Independent review of the published head and its corrections
+
+After the accepted sources, a further independent systematic review of the PR at `19c99968`
+(reviewer-reported: two rounds, 14 agent sessions in total, all 648 changed files read at diff level,
+about 5,000 targeted test runs, five red-team attacks on the headline invariants) reported **no blocker, no high, one
+medium, four low and about seventeen nit/info/suggestion items**, with four items withdrawn after
+its own verification. The attacks did not break a headline claim; the test-evidence attack held
+only partially (LOW-4). Its detailed records stay local. The author reproduced each finding
+before acting. Corrections landed as `a3e164b5`:
+
+| Finding | Disposition |
+| --- | --- |
+| **MEDIUM-1** — URL userinfo not masked when its scheme is glued to a word character (`xhttps://user:pass@host`) | Reproduced at `19c99968` through both `scrubSecrets` and the CLI sanitizer. Fixed in `packages/llm/src/scrub-secrets.ts`: the rule returns to its pre-PR word-adjacency (no `\b`) and supplies its own joined pattern, because the split-credential scanner otherwise strips two characters from a pattern that has none. Fourteen new `scrub-secrets` cases and one CLI case; reverting the production change fails all fourteen (the CLI case failed against the stale build before it was rebuilt). |
+| **LOW-4** — failed-spawn test does not pin the native close join | Confirmed by mutation: removing `reservation.whenClosed` left all three `process-close` tests green. The reviewer's suggested `activeOwners === 0` assertion was also tried and **did not** kill that mutant, because the owner retires synchronously inside its own `close` handler on POSIX. Replaced by a case that gates the reservation's `whenClosed` and observes publication; it fails only when the join is removed. The post-merge review extended it to all four publication branches. |
+| **LOW-2** — default 1 s `vi.waitFor` on a real spawned child | Added in `a3e164b5` (an explicit 4 s bound on four waits), then **reverted** after the post-merge review: the only wait that observes a real child booting is enclosed by 1 s waits in its sole caller, so a longer inner bound could not help. Examined and deliberately unchanged; see deferred-tasks.md. |
+| **LOW-3** — POSIX `ps` suite not skipped on Windows | Fixed: `describe.skipIf(process.platform === 'win32')`. Prettier re-indented the suite body, so the raw diff of that file is 215 lines; `git show -w` shows the 7-insertion / 2-deletion semantic change. |
+| **LOW-1** — fixed 5 s native watchdogs | **Not changed.** Three runs of the three affected native files (52 tests) all passed at a load average of 80–96, the reviewer could not observe the Windows root cause, and the constants are coupled to neighbouring bounds, so a retune would be speculative. Recorded in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18). |
+| Nit — import above the module docblock in `parser.ts`, `agent-parser.ts` | Fixed (no behaviour change). |
+| Nit — `packages/shared` curated export list | Closed without change: it is an illustrative existence sample, not an exhaustive contract. |
+| Other nits and info items | Open, in the same deferred-tasks section. |
+
+The production change restores the pre-PR word-adjacency for http(s) (and gives the ws/wss/ftp/ftps
+schemes this PR added the same behaviour), but it touches a secret-scrubbing rule and
+the repository's causal controls: the `diagnostic-raw-password-userinfo` source anchor moved to
+the new `URL_USERINFO_PATTERN` constant, and the pinned complete workloads changed (89→103,
+179→180, 277→278) because the files gained cases. **At merge, verification was the author's only.** The
+full local gate was run in two parts: `pnpm run ci` through the workspace tests, builds, format,
+fences, bundle closure and smokes; then, after the anchor/pin update, `test:acceptance-tools`
+(633 of 633) and the secrets, wire, usage and filesystem mutation gates (exit code 0 each, the
+userinfo control 103 / 98 with five failing cases / 103), plus tools lint, typecheck and format and
+the affected suites under `CI=true GITHUB_ACTIONS=true`. A second complete `pnpm run ci` after
+the pin update and a coverage run were not performed. No independent review rounds or security
+sitting had covered `a3e164b5` at merge; the review that followed is recorded after this checkpoint.
+
+#### Publication state observed at merge
+
+The merged head's [PR CI](https://github.com/HodeTech/Relavium/actions/runs/39169681878) and
+[push CI](https://github.com/HodeTech/Relavium/actions/runs/39169678515) started at 21:51 UTC.
+Observed at 22:48 UTC, four minutes after the merge, each had 14 of 15 jobs completed
+successfully (including the four same-archive installed-CLI consumers and the causal-control
+families) and no failed job. The aggregate `lint · typecheck · test` job, one of the two
+required status checks on `main` (with `engine coverage floor (llm, mcp)`), was still running; in the PR run it
+started at 22:46:21 UTC, after the merge. The merge commit's own
+[push CI on `main`](https://github.com/HodeTech/Relavium/actions/runs/39173540595) started at
+22:44:30 UTC. **That observation asserted none of the eventual conclusions.** Earlier full-CI,
+coverage, SonarCloud and platform results stay attributed to the sources recorded in the preceding
+registers and are not carried to `a3e164b5` or the merge commit.
+
+**Later observation, 2026-10-19 06:53 UTC.** All three runs completed with conclusion `success`,
+**15 of 15 jobs each**, and both required checks succeeded on the merged head (`lint · typecheck · test`
+completed 22:54 UTC in the push run and 23:00 UTC in the PR run). Job logs, coverage figures and
+test counts were not re-read for this record. SonarCloud's PR analysis passed its quality gate
+(102 new issues, 86 accepted). Its analysis of the **`main` merge commit failed the quality gate**:
+`new_security_rating` C against the required A, from 9 open vulnerabilities on the `previous_version`
+baseline (2026-06-04) — seven `githubactions:S6505` findings on workflow `pnpm install` lines
+(created June–July, deliberately declined with a recorded rationale but still open on the `main`
+branch, where SonarCloud already carries five other S6505 findings as false positives), one
+`jssecurity:S8707` (created 2026-10-08; seventeen sibling findings are already false positives
+on `main`) and one `javascript:S4036` (created 2026-10-17; won't-fix on the PR #95 branch, open on
+`main`). SonarCloud statuses are per branch, so these are existing dispositions not yet applied
+on `main`. The same gate also failed on the `main` merge
+commits of PR #90, #92 and #94, so this was a standing condition of `main`, not a regression of
+PR #95, and SonarCloud is not a required check. **Resolved 2026-10-19 10:50 UTC:** at the
+maintainer's direction the author applied those dispositions on `main` through the SonarCloud
+API, each with a reviewed comment (the seven S6505 and the S8707 as false positives, the S4036
+accepted), after re-verifying the recorded rationale against the repository at `6d2a7372` — the
+pinned pnpm 9.12.3, the two-package `onlyBuiltDependencies` allowlist, no workspace install hooks,
+the S8707 path coming from a fresh owned scratch directory, and `RELAVIUM_PACKAGE_SOURCE_SHA` set by
+both workflow steps that run the aggregator. SonarCloud then reported **zero open vulnerabilities
+and an OK quality gate for `main`**. No rule, threshold or quality gate was changed. The failed
+check-run attached to the merge commit itself is historical and unchanged. Recorded in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
+
+#### Exit status and Step 9 as next work
+
+**Wave 3 Steps 1–8 are on `main`; Wave 3 remains in progress.** Open after this merge: Steps 9–19
+and whole-wave acceptance (Step 19: A/E/G and M2.5.5-3 evidence, promoting core's ≥90% line/branch
+floor to required CI, the reconciled EXIT:4 reading, two new whole-wave cumulative reviews);
+and the unactioned review findings. Phase 2.5.5 exit criteria 4–8, sub-stream I, later
+product waves and the existing approved deferrals keep their canonical homes. The merge adds no
+deferral, ADR or release.
+
+**Next is Step 9 — release map/custody substrate** (#46, ADR-0111): upstream TypeScript maps, a
+sole prepack final build, exact tarball symbolication, the encrypt-once candidate through
+discovery/reservation → pack/reuse → smoke → archive → npm → finalization, with a dedicated
+archive/crypto security sitting. The maintainer-approved 9a–9d subdivision is recorded in the
+[increment table](#proposed-implementation-increments), and 9a is first. Steps 10–19 follow the
+approved plan in order. New implementation
+commits on `development` now start a new publication checkpoint; PR #95 no longer bounds their review scope.
+
+### Independent review of `a3e164b5` and its follow-up corrections — 2026-10-19
+
+The merged delta `19c99968..a3e164b5` had author verification only. After the merge it was reviewed by
+independent reviewers, each in an isolated worktree at an exact tree, given the code and a neutral statement of
+purpose, never the author's conclusions: three area reviewers (the scrubbing rule and its tests; the
+causal-control pins and README; the CLI test changes and two import moves) and a separate security sitting on
+the rule. Later rounds review the **cumulative** result, so the fixes made between rounds are reviewed too. Detailed
+records stay local and Git-ignored.
+
+| Round | Source | Result |
+| --- | --- | --- |
+| 1 | `a3e164b5` (tree `415af966`) | All four NONCLEAN: no blocker, high or medium; low and nit findings. |
+| 2 | `f597977a` (tree `7fd14b05`) | Rule and tests **CLEAN**, pins and README **CLEAN**, security sitting **CLEAN**; CLI tests NONCLEAN (one medium, three low). |
+| 3 | `fcfe79b1` (tree `b45d510d`) | Rule and tests **CLEAN**, pins and README **CLEAN**, CLI tests **CLEAN**. |
+| 4 | `fcfe79b1` | CLI tests **CLEAN**, a second fresh reviewer on the same bytes. |
+
+Each area therefore has two clean rounds on identical code bytes (rule and tests: rounds 2–3; pins and README:
+2–3; CLI tests: 3–4), plus one clean security sitting (round 2). Differential corpora ran the pre-PR matcher,
+`19c99968`, `a3e164b5` and the corrected tree side by side: the scrubbing reviewers used 0.8–1.1 million structured
+inputs and up to 2.2 million random strings, the security sitting 48 million exhaustive and 31.5 million random
+token sequences with a planted-token leak oracle (which did detect leaks in the three older versions). **Against
+`19c99968` no input regressed, apart from accidents of that version:** the few inputs it redacted wholesale only
+because its raw and normalized views disagreed (for example an ANSI-coloured URL whose credential is split by a
+plain space) are now masked in place and keep the documented opaque-fragments-across-spaces limit that the
+pre-PR matcher shares. **Against the pre-PR matcher** the only inputs it masked and the corrected tree does not
+are the raw-`?`/`#` userinfo class recorded in deferred-tasks.md. Reviewers ran on macOS only, and no review ran SonarCloud
+on the final code or exercised Windows. Three comment-only corrections in `scrub-secrets.ts` and two README
+sentences were made after the last review of those files; they change no behaviour, anchor or count.
+
+| Finding (source) | Disposition |
+| --- | --- |
+| A glued scheme with an LF/TAB-split credential that also holds a raw `@` left a partial mask with part of the credential visible, e.g. `xhttps://user:p@ss\tword@host/v1` (security sitting, round 1; low). | **Fixed** in `c64f3c39`: the URL rule's `boundary` blocks no start, and the scanner's word-character shortcut applies only when a rule's boundary rejects word characters. The anchored scanner gate and pattern line are untouched, so no causal-control anchor moves. Two regression cases (reverting the gate fails exactly those) and CLI assertions. |
+| The join of the owner reservation was pinned on the failed-spawn branch only; a mutant keeping it there alone passed every `process*` test (round 1; low). | **Fixed** in `f597977a` and `ebbec1c0`: one table over failed-spawn, natural exit, abort and timeout, mutation-verified branch by branch, against a stop-based join, against ungated publications up to about 100 ms late, and with the child reaped in a `finally` (removing it leaks a child). |
+| The 4 s `waitFor` bound could not help its only caller (round 2; medium). | **Reverted** in `ebbec1c0`; `native-forwarding.test-support.ts` is byte-identical to its `19c99968` form. Examined and deliberately unchanged. |
+| Stale pinned counts and README numbers (round 1; low). | **Fixed**: scrub-secrets set 89→111, sanitize + render-error 179→180, llm-error + sanitize + render-error 277→278; the README carries them and 25 files / 1,343 cases, measured independently by three reviewers. |
+| Inaccurate or overclaiming comments (rounds 1–3). | **Corrected**: ws/wss/ftp/ftps were this PR's additions, not pre-PR behaviour; "never reveal" and "all fail-closed"; the `slice(2)` contract; the `'a'` proxy; the `mcp-orphan` skip reason. |
+| Whole-diagnostic redaction of prose next to a path-less URL and a later `@`, and suffix matches such as `sftp://` (rounds 1–3; low). | **Characterised, not changed**: three tests and a docblock state the trade-off. It fails closed, equals the pre-PR matcher for http(s), and is new for the schemes this PR added. |
+| Residuals that predate the follow-up and are not in this delta: an `api-key:Bearer <token>` token leak, userinfo with a raw `?`/`#` before the first `:`, URL schemes outside the finite rule, a constant-factor scan cost, two unchecked invariants, an equivalent-mutant coverage gap, the load-sensitive wall-clock test and join-table nits. | **Open, not fixed**: recorded in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18). |
+
+Author verification of the corrected tree: full local `pnpm run ci` passes end to end at `7913b7b7` (workspace lint, typecheck, tests and build; format; fences; bundle closure; smokes; the acceptance tools; and the wire, usage, filesystem and secrets mutation families); the affected suites pass with and
+without `CI=true GITHUB_ACTIONS=true`. The `a3e164b5` subject line (`refactor(tests)`, a non-package scope on a
+change that spans llm, core, cli and tools) is already published and is not rewritten. The follow-up commits are
+`c64f3c39`, `f597977a`, `ebbec1c0`, `fcfe79b1` and `7913b7b7`. They are on `development`, pushed to
+`origin/development` with the recording commit `9902e0a0`, and are **not on `main`**; they reach `main` with the next
+publication checkpoint. [Push CI 39275223233](https://github.com/HodeTech/Relavium/actions/runs/39275223233) at
+`9902e0a0` completed `success` on 2026-10-19; source CI certifies no later documentation commit.
+
+### Wave 3 Steps 9–19 preflight review and maintainer rulings — 2026-10-19
+
+**Source:** `development` = `origin/development` = `9902e0a0`. Steps 9–19 had not started. Before implementation,
+sixteen scoped auditors read the canonical documents for Steps 9–19 and the open PR #95 findings in full and checked
+every requirement against the current source; fifteen independent adversarial verifiers re-checked each audit, and a
+completeness critic compared all of them against the execution table and the current.md queue. Every finding ID in
+rows 9–19 has an owner. The detailed reports stay local and Git-ignored. **No new ADR is required.** Three approved
+amendments to Accepted ADRs will be appended when their increments land: ADR-0057 for Ctrl-C through the approval
+swallow (11b) and for no hidden affirmative input below 80×24 (15c), and ADR-0054 for the `TERM=dumb` bare-invocation
+gate (15c). Dated implementation notes follow the canonical landing checklist: ADR-0051's no-map clause (9a/9d),
+ADR-0111 (9d) and ADR-0110's frame mechanism and static hint family (10a/10b).
+
+The maintainer approved every recommendation below on 2026-10-19. The increment table above records the resulting
+plan amendment (row PR95) and the recorded splits; ID coverage is unchanged apart from PR95's new scope.
+
+| Area | Ruling |
+| --- | --- |
+| Acceptance | Each increment keeps the existing rule: implement, author gates, commit, then NEW independent complete cumulative review rounds until two consecutive rounds are clean after the last material fix. Comment- or documentation-only nits do not reset the count. Security-touching increments add a separate scoped sitting: PR95, 9a.1, 9a.2, 9b, 9c, 9d (whole Step 9 custody), 10a, 10c, 11b, 13c, 14b, 15c, 16a, 16b, 16c (whole Step 16), 18 and 19b (whole wave). PR95 instead follows the maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)). **Amended 2026-10-23 (maintainer, after Step 9a.1's twelfth round):** from Step 9a.1's round 13 on, every increment is accepted after one NEW independent complete cumulative round that reports no blocker, high or medium finding and no regression; that round's low findings are recorded in [deferred-tasks.md](../deferred-tasks.md) with their file, a minimal example and a re-check note rather than fixed in the loop, and nits are optional. A high or medium finding is still corrected and followed by a new round, and the separate security sittings above are unchanged. **Amended 2026-11-04 (D64):** tiered for the CLI MVP — see the [MVP priority reset](#mvp-priority-reset--2026-11-04). |
+| Publication | `development` is pushed after each accepted increment, so its actual CI (including the four same-tarball platform consumers) is observed per increment. The Wave 3 PR follows Step 19. **Amended 2026-11-04 (D61):** a scoped `development`→`main` checkpoint follows the [MVP priority reset](#mvp-priority-reset--2026-11-04); the Wave 3 PR still follows Step 19. |
+| Plan shape | PR95 + 9a.1, 9a.2, 9b, 9c, 9d + 10a–c + 11a–b + 12a–b + 13a–c + 14a–b + 15a–c + 16a–c + 17a–b + 18 + 19a–b (29 increments). Each split is recorded before its step starts. **Amended 2026-10-24 (maintainer):** 9a.2 is split into 9a.2a and 9a.2b, so the plan has 30 increments ([9a.2 preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)). **Amended 2026-10-24 (maintainer, E6):** the native-identity increment NI is added after 9a.2b, so the plan has 31 increments ([9a.2a acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)). **Amended 2026-10-25 (maintainer, L8):** 9b is split into 9b.1 and 9b.2, so the plan has 32 increments ([9b preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)). |
+| Reassignments | G54 moves from row 17 to 11a; #311's implementation moves to 10b and its certification stays in 17a; G36/G46 are re-scoped in 10a to the branch that replaces the raw-stack branch and are certified in 17b; promotion of the Steps 6–10 commands.md sections moves from Step 19 to 10c. |
+| Interim release guard | 9a.1 adds a fail-closed check to the `release.yml` publish job that refuses any non-release candidate. Consequence, acknowledged: no npm publication, including a v0.1.x patch, until 9d and Wave 4b production custody exist. **Amended 2026-11-04 (D59):** to be superseded by a pre-1.0 release ADR (option B, sunset at 1.0 or when 9c/9d land); the guard stays in force until that ADR is Accepted and its guard change passes a security sitting ([MVP priority reset](#mvp-priority-reset--2026-11-04)). |
+| PR95 scrubber residuals | Fixed before 9a: the `api-key:Bearer`/`Basic` leak; raw `?`/`#` userinfo masked unless the text before it is host-shaped and an `=` assignment separates it from the authority `@`, in both the LLM leaf and core's twin predicate (core's other documented differences are recorded, not removed); an extended finite scheme list that masks colon-bearing userinfo for the new schemes; the scanner invariants, prefilter and witnesses; the load-sensitive 8 MiB timing case. LOW-1 and LOW-2 become approved deferrals with their recorded triggers. |
+| Step 9 mechanics | The encrypted plaintext container is an in-house strict USTAR (regular files, repository-relative paths) recoverable with standard `gpg -d \| tar -x`; GnuPG ≥ 2.2.8 becomes a prerequisite of local `pnpm run ci` and of the CI Ubuntu runner, documented in local-dev-setup.md, and its controls fail rather than skip when it is absent; release-mode staging artifacts are retained 30 days, package-test artifacts 7; product-copy map negative controls run as `check:map-controls` locally and in a required uncached CI job; the private manifest keys final JS as `dist/<chunk>.js`; the production recipient must be an OpenPGP v4 key with a cv25519 or RSA≥3072 encryption subkey, a Wave 4b prerequisite recorded in [deferred-tasks.md](../deferred-tasks.md#wave-3-approved-later-wave-ownership--2026-10-16). |
+| Step 10 compatibility | Verbose frames use a same-build allowlist (a tsup `renderChunk` substitution of a fixed-length placeholder, so no second build or post-finalization write) and appear only on classified non-infrastructure diagnostics; `--quiet` treats live progress as decoration on TTY surfaces; excess positional arguments are refused on every non-variadic command; plain `note:` stderr lines become `{type:'diagnostic', code, message}` records in JSON mode; `help [path] --json` returns the discovery DTO; human `--help` keeps Commander behaviour for unknown grammar; deprecated aliases emit one structured JSON notice or one fixed human line kept under quiet and are hidden from human help listings. |
+| Steps 11–12 | The raw-µ¢ conservative-hold disclosures move to USD with their wording kept (a recorded #307 extension). Ctrl-C while a tool approval is pending maps to `/cancel`, rejecting the approval. `commands/chat.ts` keeps only its command entry points and their argument/dependency types after Step 12; `chat.ts`-internal duplication is consolidated in Step 12 and Home's chat wiring moves onto the shared helpers in 13c. |
+| Step 13 | `http_request` is omitted per turn while the live authority is empty or suspended; `[chat_http].allowed_domains` also rejects `.internal`. |
+| Step 14 | The `[c]` reason-capture reducer is shared by Home and chat-ink (a chat-ink call-site swap only, consistent with D18). |
+| Step 15 | `TERM=dumb` (exact match) selects the plain renderers and makes the bare invocation print help; below 80×24 only Ctrl-C, Esc, `n` (reject), Ctrl-Z and mouse-report consumption act on either chat surface and on the Home strip. |
+| Step 16 | An explicit ephemeral model choice wins over project, workspace and global defaults for the invocation and the UI says when it shadows a project default; a successful `/models` reseat does not update that binding. Color-off applies to all four clack prompt sites. `ConfigError` and `/doctor` stop printing absolute configuration paths. |
+| Step 17 | The one-shot cost line goes to stderr after the turn settles, also after an abort or infrastructure failure once a provider call was admitted (qualified known total). Bare-Home `/doctor` reports the `chat-read-write` host profile a new chat binds plus Step 13's live authority view. The #24 stdin hint and the new notices of Steps 13, 15 and 16 are preserved under `--quiet`. |
+| Step 19 | The coverage job is renamed `engine coverage floor` when core is promoted; the maintainer updates branch protection. |
+| Housekeeping | 54 merged local branches were deleted with `git branch -d` and local `main` was fast-forwarded to `6d2a7372`; the restore list is kept locally. |
+
+PR #95 item owners: archive `TAR_FORMAT` dead branches and the `worker.mjs` ancestor loop → 9a.1; the lazy-dispatch
+cause-wrap and the purity-guard root set → 10a; `HomeDeps.exit` → 14a; the kitty `data` listener → 15c; the four
+exit-code literal sites → 17a; test-evidence and join-table nits → 17b; the duplicate-heading nit (with its corrected
+premise) → 19b. [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18)
+carries the same owners.
+
+### Wave 3 PR95 increment implementation checkpoint and review-round corrections — 2026-10-20
+
+**Scope and source.** The PR95 increment implements the PR95 scrubber residuals ruling above in
+`packages/llm/src/scrub-secrets.ts` (with its package-internal `split-credential-probe.ts` and
+`fixed-point.ts`) and in core's twin projection, `packages/core/src/tools/bounding.ts`, together with
+the CLI's authored-content detector, the secrets causal controls and the canonical documents. Base
+`9902e0a0`; commits `38e10d42` (Docs-0, the rulings), `dda3b45e` (implementation) and the
+corrections `ef3ded0d`, `bdd292a6`, `6fb7e9d9`, `b2c50e88`, `6b2e94dd` (round 5, which added this
+section), `b89ac62e` (round 6), `082962e2` (round 7), `6f7dd342` (round 8), `59c64498` (round 9) and the
+round-10 commit. The commits stayed local on `development` until the increment closed.
+
+**Review rounds.** Each round is a NEW independent complete cumulative review of `9902e0a0..HEAD`, every
+reviewer in its own worktree detached at the reviewed head: scrubber correctness, tests and causal
+controls, documentation, integration, a separate security sitting and, from round 3, generative
+properties and a completeness critic. Every finding is adversarially verified. The detailed reports
+stay local and Git-ignored.
+
+| Round | Reviewed head | Verdict | Verified findings | Main corrections |
+| --- | --- | --- | --- | --- |
+| 1 | `dda3b45e` | NONCLEAN | 15 (2 high) | the host-shaped prefix bounded at 260 characters before the RegExp, which had exhausted V8's stack at admitted size, with its anchors and port bound pinned by tests; stacked labels; already-masked userinfo kept |
+| 2 | `ef3ded0d` | NONCLEAN | 15 | quote-closed labels, bounded label stacking, masked tokens as fixed points |
+| 3 | `bdd292a6` | NONCLEAN | 17 | sequential rule application replaced by one merged, token-only masking pass |
+| 4 | `6fb7e9d9` | NONCLEAN (integration clean) | 19 | the literal query names in the merged pass; concatenated label runs and the nine-label bound; one standalone label rule for both labels; a bounded fixed point in both maskers; the secrets CI job allowance becomes 60 minutes |
+| 5 | `b2c50e88` | NONCLEAN | 20 (2 high) | core's round-4 authority extent erased the context its sequential rules read, so core now masks an ambiguous userinfo with exactly the query values its later rules mask whole; its split view masks URL userinfo before scheme labels; the LLM split scan retries a kept candidate glued across a line break; tested fixed-point helpers; untested pattern pieces gained discriminating tests |
+| 6 | `6b2e94dd` | NONCLEAN | 21 (9 high) | round 5's value mirror was quadratic and still erased context, and its split view dropped the value mask; core now merges every rule's ranges on one text, as the scrubber does, reads a key or scheme label inside another value and a value through earlier masks, reads a split header label or a scheme label right after a credential, and scans PEM blocks linearly; the scrubber's nine-label bound also reads the raw text and its literal query names follow `#`; both fail-closed values are tested |
+| 7 | `b89ac62e` | NONCLEAN | 17 (2 high) | only a userinfo's username owns its keys, never past an LF or TAB, so a key in its password or parameter position or on the next line masks its value through the last `@`; quoted values are found by a character scan that an admitted 8-MiB value cannot exhaust; a credential glued to a fixed-length one is masked in the same pass; summaries use the projection's fixed point; a tiered call whose journal projection does not settle is refused before its prepare; the secrets controls run as two CI shards so that each evidence export fits the unchanged 64-MiB bound, which the single export had exceeded; untested pieces gained discriminating tests |
+| 8 | `082962e2` | NONCLEAN (integration and security clean) | 16 (1 high) | round 7's glued-credential chain cut wider credentials and swallowed key names, and is gone; a structured result's summary reads its JSON as one text once credential members are masked; quoted values are read one JSON string down, and one that does not close on its line is read as an unquoted run from after its quote, no further than that line's end (one JSON string down, its string's end), unless another mask of the pass takes its line break and it closes; a summary masks one stopped by a line break through a later quote instead; a header label at a line start inside a split continuation is read; the scrubber's split probe also reads the raw text; a password-position key's extent is documented as credential equality. Before the commit the author ran the reviewers' method on the candidate and six internal pre-reviews: the first found three of the draft's alternatives unsound (a trusted host-shaped tail, quoted values across lines, a quadratic line-start scan), and they were dropped; the second (17 findings, none high) led to the summary's through-the-closer masking, colliding member names refused as unsettled and escaped separators and opaque values before escaped quotes; the third (27 findings, two high) found that the round's own additions failed — masking a value that never closes to its line end merged journal identities, and the scrubber's escaped header separator and terminal final-byte view let a token leak or blanked coloured diagnostics — so such a value is read as an unquoted run, the two scrubber additions are withdrawn and documented as limits, and a structured summary's walk became linear at a small constant factor; the fourth (16 findings, two medium; the critic clean, with all 128 controls run) found that the run and the opaque mask's kept backslash showed values that earlier versions masked whole in their next pass, so such a value is decided once the pass's other masks are known and the opaque mask takes the backslash again, and gaps in tests and wording; the fifth (19 findings, one high; the critic clean) found that projecting a structured result's strings one by one removed the PEM markers and keys that reading its JSON needs across members, so a structured summary reads its JSON as one text again and the summary-only runs over line breaks are withdrawn; the sixth (four findings and a duplicate, one medium; the integration lens and the critic clean) found that the closing view and the summary's closer read a quote's escape after a nested key's value had taken its backslash, and that a structured summary's walk dropped the private-key markers a block across members needs, both regressions against base, and that a structured summary read no JSON-escaped line break or tab, a gap base shares, so a quoted value closes at the later of its readings with and without the masks' trailing backslashes, which also masks the tail an opaque value's mask unescaped (behind a URL userinfo, a further regression the author's oracles found), the walk keeps a marker whose partner lies outside its member, and every summary also reads its escaped separators; two low edge cases base shares went to deferred-tasks.md under the maintainer's 2026-10-21 bar |
+| 9 | `6f7dd342` | NONCLEAN (integration clean) | 18 (2 high, 8 medium) | round 8's view comparisons and per-range backslash walks were quadratic at admitted size, so each view is built once and a shared backslash run is read once; a quoted value is also read with the scheme labels' tokens filled, and one that does not close on its line with and without the key rule's own masks; a summary masks a value that one reading stops at a line break through its later closer; a structured summary reads the unwalked JSON once with the walk's whole masks applied in that pass, which replaces round 8's kept PEM markers; a summary reads private-key markers that a line break, a tab or more than one space splits; three low findings went to deferred-tasks.md, and two private-key block gaps the author found afterwards, unchanged since base, are named as limits and recorded there pending the maintainer's confirmation |
+| 10 | `59c64498` | NONCLEAN (critic clean) | 11 (7 medium and 4 low as verified; three of the mediums are one finding) | no high or blocker finding; the maintainer counted GEN-R10-1 as high on 2026-10-22 — a `cat .env` result whose password, after a query value at the end of a line, showed in its structured summary, unchanged since base — so a summary opens a key's value whose escaped opening quote ends an earlier mask's backslashes where that mask keeps them, and the journal keeps its reading, so `v5:` digests do not change; the docblocks and the canonical sentence that counted one summary difference, effect-journal.md §11's closing readings and the status records are corrected; the wrapped markers' whitespace bound, the U+E000 placeholder's fallback, a PEM END marker glued to another rule's match, two test gaps and the journal half of GEN-R10-1 are named as limits where a canonical document claimed otherwise and recorded in deferred-tasks.md under the round cap; the two private-key block gaps found after round 9 are approved deferrals |
+
+**Author gates and controls.** Every corrected head passed `pnpm run ci` and the affected suites
+under `CI=true GITHUB_ACTIONS=true`, plus local differential, exhaustive and admitted-size harnesses
+that found no new leak against the previous head beyond the classes a round documents (in round 8,
+glued credentials that round 7's chain had masked in one pass, and a key that only such a
+credential's mask exposes inside a value that does not close). Until round 7 no author gate ran the
+evidence export, which only the dedicated CI job enables, so the 110-control family's single export,
+about 77 MiB against the unchanged 64-MiB bound, would have failed that job. From round 7 the family
+is 120 controls / 360 phases / 501 targets and witnesses, run as two 60-control shards that each
+project 1,087 of the unchanged 2,000 retained files; both shards ran locally with
+`RELAVIUM_ACCEPTANCE_EVIDENCE` set, and each export held 1,087 files and measured 45.50 MiB and
+45.48 MiB, its final record included. From round 8 the family is 130 controls / 390 phases / 513
+targets and witnesses in two shards of 65 controls (1,177 files each), whose exports measured
+49.83 MiB and 49.76 MiB (50.19 MiB and 50.09 MiB at the round-9 source, 50.24 MiB and 50.14 MiB at the round-10 source). From round 8 the author also runs the reviewers' own
+generative harness (a planted-token oracle, idempotence, JSON round trips, prose preservation,
+admitted-size timing and a search for projections that do not settle) and an internal multi-lens
+pre-review on every correction before its commit.
+[tools/secrets-controls/README.md](../../../tools/secrets-controls/README.md) records each round's
+control changes and, from round 5, the rule that pieces inside a mechanism's pattern are pinned by
+discriminating tests rather than by new controls.
+
+**Maintainer ruling — the masker acceptance bar, 2026-10-21.** After eight external rounds and six
+internal pre-reviews, the maintainer narrowed this increment's acceptance bar. A pattern-based masker
+cannot be complete, and each aggressive round found another corner case while Step 9 waited. A round
+is clean for this increment when it reports no high or medium finding and no regression against base
+`9902e0a0` (text that base masked and the reviewed head shows, or a guarantee base kept, such as no
+throw, linear time at admitted size or a settled projection, that the reviewed head no longer keeps). Each low finding is recorded in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22)
+with its file, a minimal example and where to re-check it, instead of being corrected in the loop.
+The increment was to close with the sixth internal pre-review and one external round (round 9) under
+that bar; the round cap below superseded that. The ruling covers only the open-ended masker work: `packages/llm/src/scrub-secrets.ts`, core's
+twin projection in `packages/core/src/tools/bounding.ts` and their controls. Every other increment
+keeps the approved bar of two NEW consecutive clean complete cumulative rounds after the last
+material fix.
+
+**Maintainer ruling — the round cap, 2026-10-21.** Round 9 reported two high findings, in round 8's
+own quadratic view comparisons, and eight medium regressions in five constructed shapes. The maintainer
+ruled that round 9's high and medium findings are corrected (its three low findings were recorded under
+the bar) and round 10 runs, and that the loop then stops: after round 10, whatever it reports, only its
+high and blocker findings are corrected; its medium and low findings are recorded in deferred-tasks.md
+with the file, a minimal example and where to re-check it, and the plan moves on to Step 9a.1.
+
+**Maintainer rulings after round 10, 2026-10-22.** Round 10 reported no high or blocker finding. The
+maintainer counted GEN-R10-1 as high, since a `cat .env` run_command or MCP result whose
+`POSTGRES_PASSWORD` line follows a URL ending in a query value showed that password in the structured
+summary that the `agent:tool_result` event carries into history.db (unchanged since base), and ruled
+that it is corrected in the summary only, so that `v5:` journal digests do not change. The maintainer
+also approved the two private-key block gaps the author found after round 9 as deferrals. As the round
+cap provides, the correction has author verification only: a test with five witnesses and a journal pin
+(218 bounding cases), a mutation run of six mutants on the new code that kills four (the two survivors
+are output-neutral, because a mask that the key rule's kept view keeps ends before a delimiter, where a
+view that keeps the backslashes closes no later than the filled one), the eight controls next to the
+changed code (`core-quoted-value-scan` and `core-escaped-quote` re-anchored), the full `pnpm run ci`
+with both exporting shards of all 130 controls, and differentials against
+`59c64498` and base: the journal and display text identical on 250,000 inputs, every summary that
+differs on 320,000 inputs showing a subsequence of `59c64498`'s visible text, and no planted-token
+regression against base or `59c64498` in the generators or in an exhaustive run of 837,606 sequences.
+
+**Closure, 2026-10-22.** The increment closes under the round cap with the round-10 correction. It is
+not independently accepted in the sense of the approved bar: round 10 was NONCLEAN, and its correction
+was verified by the author alone, as the round cap provides; every finding it did not correct is in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22).
+`development` is pushed and its CI observed, and the PR95 items in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) are
+closed. Step 9a.1 follows.
+
+**Post-closure CI corrections, 2026-10-22.** `development` was pushed at `9eb38156` (run 39693684654).
+Its separate engine coverage floor job, which `pnpm run ci` does not include, failed: under instrumented
+coverage, round 9's admitted-size linear-views case ran ten 8-MiB projections in one case and passed its
+15 s case deadline on the runner (3.7 s plain and 7.2 s under local coverage). The next push cancelled
+that run before the filesystem controls and the second secrets shard finished, and its aggregating
+`lint · typecheck · test` job failed at the step that requires the filesystem controls. `2a1f7359` (run
+39698522813) makes the case one case per shape with the same inputs, assertions and deadline (1.1–2.8 s
+each under local coverage; 221 core projection cases); its coverage job passed, and the local enforced
+coverage gate passes at llm 97.79 % lines and 95.69 % branches, mcp 96.56 % and 91.29 %, core (measured)
+96.71 % and 91.06 %. In that run the filesystem causal controls failed at export, and the aggregating
+job failed with them: each phase retains a manifest of the whole source graph (203,421 bytes once PR95
+grew it), and the 330 manifests of one export passed the unchanged 64-MiB bound by 20,066 bytes, an
+overflow already present at `9eb38156` because `2a1f7359` added no source file. `4c3cafe9` (run
+39706480450) runs that family as two exporting shards, as PR95's round 7 did for the secrets family
+([filesystem controls README](../../../tools/fs-policy-controls/README.md)), and that run passed all 17
+jobs, both shards of each control family, the coverage floor and the four installed-CLI consumers
+included. The author now also runs the coverage gate before a push and checks each control family's
+export arithmetic.
+
+### Wave 3 Step 9a.1 implementation checkpoint — 2026-10-22
+
+**Scope and source.** Step 9a.1 (the 9a.1 row of the increment table; #46, ADR-0111) implements the
+candidate build and finalizer on `development`, on top of `4c3cafe9`, the PR95 closure and its two CI
+corrections. It changes
+`tools/cli-package` (the owned candidate tree `candidate.mjs`; the producer `produce.mjs` and its entry
+point `pack.mjs`; the prepack orchestrator `prepack.mjs`; the finalizer `finalize.mjs`; the seal; the
+archive and smoke fold-ins; the interim publication guard `release-guard.mjs` with its rule
+`release-guard-core.mjs`; the interrupt, corepack and Git-isolation substrate in `process.mjs`; the local
+check `check.mjs`; the consumer lifetime `consume.mjs` and `consumer-lifetime.mjs`; `paths.mjs` and
+`production-failure.mjs`), `tools/bundle-closure` (map-aware closure and a shared emitted inventory),
+`apps/cli` (the prepack script and the candidate-mode tsup selection), `.github/workflows/release.yml`
+(the guard before npm publication) and, through the review rounds, `tools/cli-bootstrap` (stopping the
+bootstrap witness's bounded children and removing its live fixtures for an interrupted consumer), the
+installed smoke's native fixtures and worker root, the `ci.yml` pack-step comment, the acceptance-tools
+list in `package.json` and `tools/ci/require-packed-cli.test.mjs`, with the
+[packaging contract](../../reference/cli/packaging.md#candidate-build-and-finalizer-implementation-boundary--step-9a1),
+the release runbook, an ADR-0051 amendment, the tooling and smoke READMEs, the CLI reference index and the
+`CLAUDE.md`, `AGENTS.md`, `current.md` and `deferred-tasks.md` status lines. It adds no runtime dependency, and
+the receipt stays `compiled_package_test`; the contract section is the canonical description of the
+mechanism.
+
+**Before the commit.** An internal read-only pre-review of the prepared change (five lenses, adversarial
+verification of every finding and a completeness critic; the detailed record is local) found seventeen
+issues, none high once verified. The publication guard refused only when it recognized itself as the
+entry point, so a symlinked or otherwise non-canonical path would have let a tag push reach
+`npm publish`; the producer's composition had no test; the candidate's file list ignored the developer's
+global Git excludes, so a globally ignored private file entered the candidate; and smaller gaps in tests,
+modes and wording. All are corrected: the guard's entry point exits 1 before it evaluates its rule, the
+producer is a tested module, the candidate reads the developer's global excludes file and nothing else
+of the global configuration, the candidate copy's modes are exact under any umask that lets the owner write, and each gap has a
+killing test. A mutation run of twenty mutants over the new code kills all of them. The full local CI
+then found one more defect in the change itself: `tools/bundle-closure/closure.test.mjs` built its
+staged fixture with a top-level `await` after most of its tests were registered, so a slow build let the
+runner finish those tests and run the file's `after` hook, which removed the scratch directory a later
+test needed (intermittent under load; reproduced deterministically with a delayed fixture). Both
+fixtures are now built before the first test is registered, as the file's first fixture already was.
+
+**Author gates.** `lint:tools` and `typecheck:tools` pass, the 259 cases of the changed tooling tests
+pass, and the full `pnpm run ci` on top of `4c3cafe9` passes, both exporting secrets shards included
+(65 controls each, 50.39 MiB and 50.28 MiB), with the producer running for real in `smoke:cli-package`.
+Under `CI=true GITHUB_ACTIONS=true`, 709 of the 710 acceptance tooling tests pass; the other one,
+unchanged by this step, installs through the corepack pnpm shim in an empty home, which needs the
+registry, and corepack hung for 45 s on this host while the same tree had passed it in the full run an
+hour earlier.
+
+**Review rounds.** Each round is a NEW independent complete cumulative review of `4c3cafe9..HEAD`,
+every reviewer in its own worktree detached at the reviewed head: plan and contract conformance, a
+separate security sitting, producer and finalizer correctness (running the real producer), tests and
+causal adequacy, integration and documentation, and a completeness critic. Every finding is
+adversarially verified; the detailed reports stay local and Git-ignored.
+
+| Round | Reviewed head | Verdict | Verified findings | Main corrections |
+| --- | --- | --- | --- | --- |
+| 1 | `a72c7ecd` | NONCLEAN (plan lens clean) | 9 (2 medium, 6 low, 1 nit) | an interrupted producer (SIGINT, SIGTERM, SIGHUP) left its private maps and candidate tree in the temporary directory while its detached build ran on, so the producer now stops the child trees `runCommand` tracks and removes the private root, the build home and the artifact directory's contents before exiting with the signal's code (a producer killed outright is a named limit); private staging must be canonical and outside the candidate by real path; the global-excludes wiring, the producer environment, the placement check's artifact half, the candidate's bounds and three finalizer refusals gained killing tests; the status lines, the CI pack-step comment and the post-closure CI record were corrected |
+| 2 | `8ddb7ec2` | NONCLEAN (plan and integration lenses clean) | 12 (4 medium, 7 low, 1 nit; 9 distinct) | the producer removed its interrupt handlers before the final removal, so an interrupt during it ended the process with the private root half removed: the handlers now stay until everything private is gone, and a deterministic test interrupts that removal; SIGHUP, the handlers' removal and a whole build tree (a grandchild in the build's process group) are tested; path containment is decided by segments in one shared helper (`..private` is inside); private staging and the producer's placement compare the real paths and letter case the filesystem stores (`realpathSync.native`); the local `pnpm smoke:cli-package` forwards an interrupt to the producer and the consumer it started (`forwardInterrupts`); the finalizer creates its maps directory with an exact mode and its staged and public modes are tested under a umask that removes the owner's write bit; further finalizer and staged-closure refusals gained killing tests; the ADR-0051 note links ADR-0111 |
+| 3 | `184562bd` | NONCLEAN (security lens clean) | 11 (2 medium, 8 low, 1 nit) | round 2 still dropped an interrupt that arrived after the build's last child exited, during the seal or the final removal, because Node delivers a caught signal only when the event loop next polls and the handlers were removed first; round 2's test asserted exit 0 and so pinned the dropped interrupt. Every tool now keeps its handlers until the loop has polled once more, which takes two turns when the work ran from an I/O callback (one turn, the suggested fix, was measured to drop it), and the producer then empties the artifact directory and exits with the signal's code, tested from an I/O-callback tail. An interrupted consumer stops its own and the bootstrap witness's children and removes its installation and fixtures, and the local `pnpm smoke:cli-package`, now tested end to end, starts no later stage once an interrupt arrived. The build's isolated environment, the producer's native real path of the checkout and the prepack catch-all gained killing tests. Git reading the checkout uses no home, global or system configuration, a skip-worktree or assume-unchanged file makes the identity dirty, and an empty upstream mapping is accepted only for `export {};` |
+| 4 | `aa5c994a` | NONCLEAN (integration and critic lenses clean) | 10 (3 medium, 5 low, 2 nits) | an interrupted consumer killed the installed smoke's worker before its own removal, so the worker's directory (42 MB) stayed under the report directory and the native fixture target the installed CLI had started in its own process group ran on as an orphan: the fixture's processes now end once the smoke worker that owns their case is gone, and the consumer lifetime, given the report directory as a required `supportRoot`, abandons the bootstrap witness's children and fixtures and the smoke's worker roots itself before removing the installation. The local check's ordinary failures, its successful summary and its hand-off of the store and excludes variables, a dirty identity's path to the seal, the producer's removal of engine build state and the bounded children's process group gained killing tests. "Owner-only" is qualified where POSIX modes are not observable (Windows); the candidate copy's umask wording and the checkpoint's scope list were corrected |
+| 5 | `d51a2437` | NONCLEAN (plan, correctness and integration lenses clean) | 7 (1 medium, 6 low) | `prepareCandidate`'s link verification had no composed test, so deleting the call passed: a preparation whose install resolves an engine package or the root dependency directory to the original checkout now refuses after the install. A tracked directory replaced by an ignored link let the copy read bytes from outside the checkout through the linked parent, so every parent directory below the checkout must now be an ordinary directory; a `core.excludesFile` that is present but empty disables Git's global excludes and no longer falls back to the default ignore file. Settled children leaving both live-child sets, the exact `export {};` rule, each field of a facade's empty map, an interrupt the consumer outlives and the smoke-root prefix limit gained killing tests |
+| 6 | `3c6c5dce` | NONCLEAN (plan and correctness lenses clean) | 6 (1 medium, 4 low, 1 partial nit; 4 distinct) | nothing pinned that a leader-exit descendant watches the smoke worker rather than its own parent, so a descendant watching its exited parent would have ended on its own and left the product's group reap unproven: a test now keeps the descendant alive past its parent's exit until the owner is killed. The staging directory's ownership check gained a killing test (a different `process.getuid`); every wait for the local check's exit is bounded; and five live status statements that still said Steps 9–19 had not started now say that Step 9a.1 is under review |
+| 7 | `0e59f5ff` | NONCLEAN (plan, security, correctness and integration lenses clean) | 3 (3 low) | a replace ref on HEAD let Git's status compare the working tree with a substituted commit, so the identity recorded the real HEAD as clean over other bytes: Git reading the checkout now ignores replace refs (`GIT_NO_REPLACE_OBJECTS`), with a real-repository test. The linked-parent refusal is tested for links above the listed file's own directory and below the root, and the fixture owner tests bound every wait and clean up in an after-hook, so a regression fails within the test and leaves no process |
+| 8 | `c691ef9f` | NONCLEAN (tests lens only; plan, security, correctness, integration and critic clean) | 4 (2 low, 2 nits) | two of the finalizer's pre-write refusals (a runtime output that is not a flat `dist/<name>.js`, and one whose own map entry was swapped for another) and the excludes lookup's forwarded configuration-location variables had no killing test; they now do, with real-Git cases for an excludes file set only in an XDG configuration directory or a `GIT_CONFIG_GLOBAL` file. The non-material gaps were closed too: the upstream map's name type, a metafile without outputs or inputs, the metafile and map byte bounds, the pinned pnpm version, the producer's exact modes under a restrictive umask and the reference index row |
+| 9 | `08f296cd` | NONCLEAN (plan, security, correctness and integration lenses clean) | 4 (3 low, 1 nit) | a failed production printed its build children's captured output word for word, and esbuild quotes a malformed upstream map in its warning, contrary to the rule that maps are excluded from every diagnostic: the producer's entry point now prints only prepack's own fixed `✗ CLI …` lines and one fixed code (`production-failure.mjs`), tested through the real entry point with a quoted-map marker. The local check's first stage guard gained a killing test (an interrupt during its own discovery), and the real-checkout excludes test no longer reads the host's system Git configuration |
+| 10 | `954d6a62` | NONCLEAN (plan, correctness, integration and critic clean) | 4 (3 low, 1 nit) | with a corepack-managed pnpm, the producer's pnpm ran from the isolated build home under the shared temporary directory, so its optional module lookups reached a `node_modules` there that another local user could create (present since Step 7b; shared-`/tmp` POSIX hosts only, never CI): isolated children now carry the developer's own corepack cache (`COREPACK_HOME`, computed as corepack computes it), and a test plants such a module and shows it never runs. A failed removal during an interrupt escaped the signal handler with a raw stack and exit 1: each cleanup step is now attempted on its own, a failure leaves one fixed line, the exit code stays the signal's, and an ordinary failed removal no longer skips the other directory. A source root's sibling sharing its prefix gained a killing test, and an untracked nested repository refuses under its own code |
+| 11 | `d890abf0` | NONCLEAN (plan, security, correctness and integration lenses clean) | 4 (1 medium, 3 low) | nothing pinned that the producer looks up the developer's global excludes in the caller's own environment rather than the isolated build environment, which would have dropped them silently: the composition test now requires the very environment object. The local check's deadline killed only a stage's own process group, so a producer's detached build child could recreate the removed root with a map: a stage past its deadline is now interrupted first (`runCommand`'s `graceMs`) and killed only after a grace period, tested with a late-writing build child. The check's wait for an interrupt caught during its own root removal gained a killing test, and `dependencyStore`'s docblock says where corepack runs |
+| 12 | `78623964` | NONCLEAN (plan, security and correctness lenses clean) | 7 (1 medium, 2 low, 4 nits; 5 distinct) | Git reading the checkout got Node's null device, `\\.\nul` on Windows, which Git for Windows refuses (it maps only `nul` and the literal `/dev/null`), so every isolated Git call would exit on a Windows host — the local producer and a local consumer; the CI producer runs on Linux and every CI consumer names its source: it now gets the literal `/dev/null`. The consumer stage's deadline grace and a bounded grace test gained killing tests, and the store discovery's exception is stated. The author gate statements of rounds 3–11 said the filesystem and secrets families' captured sources were unchanged, but both capture the root `package.json`, which round 3 changed (one acceptance-tools entry); this round runs the full `pnpm run ci`, every family included |
+| 13 | `cf97b7f1` | **ACCEPTED** under the 2026-10-23 bar (security sitting, tests and integration lenses clean; no blocker, high or medium finding and no regression) | 10 (3 low, 7 nits; 6 distinct) | none in the loop. The contract's list of the caller variables that reach store discovery omitted `NPM_CONFIG_STORE_DIR`, which the code forwards (low, reported by four lenses), and three wording nits (the deadline's group kill, the guard's exit code, deferred-tasks.md's freshness line) are documentation only and corrected in the acceptance commit; `forwardInterrupts`' group-wide forwarding has no test (low) and the map-source bound is pinned on its admitted side only (nit), both recorded in deferred-tasks.md |
+
+**Internal rigor pass, 2026-10-24.** After the twelfth round the maintainer asked for maximum care before
+any further round, so an internal read-only pass covered the whole increment at `1f247772` before round
+13: five mutation sweeps (the candidate and paths, the finalizer, the producer and seal, the process and
+interrupt lifetime, and the closure and guard; each mutant applied in place, run in its own process group
+and restored by digest) and claims, platform and security lenses; the detailed record is local. It
+reported 84 raw findings (6 medium, 69 low, 9 nits). Code defects corrected: past its deadline, a group
+member that ignored SIGTERM outlived a leader that exited on it, so the group is now killed when the leader
+closes inside the grace; the excludes lookup ran Git from the checkout when the caller had no `PATH`, and
+missed command-scope `GIT_CONFIG_*` configuration; Git reading the checkout still read the system
+attributes and, on Windows, default attribute and ignore locations under the null-device home, so it now
+sets `GIT_ATTR_NOSYSTEM` and names both files; the store discovery dropped `npm_config_store_dir`; the
+candidate copy treated a group or other execute bit as executable, unlike Git; the consumer compared its
+placement by real paths that keep the given letter case; the producer removed the private maps last on an
+interrupt, and an ordinary failure let a removal error replace the primary refusal and left a refused
+tarball in the artifact directory; two finalizer refusals echoed an unvalidated metafile string as their
+subject; and one bootstrap fixture that could not be removed stopped the others' removal. Each test gap
+gained a killing test, among them a composed `sealPackage` run on a candidate that is not the repository,
+a behavioural evaluation of the tsup configuration, exact finalizer bounds and refusal subjects, the
+release guard's handling of a rule that returns, exits or throws a foreign error, the publish job's exact
+keys, and the completeness of the acceptance-tools list. The 260 mutants that had survived the five sweeps,
+and new mutants over the corrections, were then run against the corrected tests. All are killed except the
+ones the sweeps judged equivalent or defensive and the consumer and worker composition lines that no node
+test reaches by design; two of the old survivors needed further killing tests first (the producer's default
+temporary directory, and a deadline interrupt that reaches every member of the process group, not only its
+leader). One of those runs left a test's detached build stand-in behind under a mutant that hung the test,
+so every wait for a spawned tool's exit in the interrupt tests is now bounded and a regressed tool fails its
+test instead. Five low findings that need a change of scope are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
+
+**Remaining gates.** None for acceptance: see the acceptance record below. `development` is pushed and
+its CI observed after the acceptance commit.
+
+### Wave 3 Step 9a.1 acceptance — 2026-10-24
+
+**Step 9a.1 is independently accepted on `development` at `cf97b7f1` (2026-10-24)** under the Acceptance
+row as amended on 2026-10-23. Round 13, a NEW independent complete cumulative review of
+`4c3cafe9..cf97b7f1` with every reviewer in its own worktree detached at that head, reported no blocker,
+high or medium finding and no regression, and its separate security sitting, run at the same head as its
+own reviewer and report, was clean. The plan reviewer ran the real producer at the reviewed head: it exited
+0 with a `compiled_package_test` receipt, and the tarball held no map, map link or `sourcesContent`. The
+round's ten verified findings (three low, seven nits; six distinct) are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). Those that
+concern documentation only — the contract's store-discovery list, the deadline's group-kill wording, the
+guard's exit-code wording and deferred-tasks.md's freshness line — are corrected in the acceptance commit,
+which changes no code; the two test gaps stay open there. The PR #95 tooling nits owned by 9a.1 (the
+unreachable `TAR_FORMAT` branches and the smoke worker's ancestor loop) are accepted with it; that item's
+duplicate headings stay with 19b. Author evidence at `cf97b7f1`: the full `pnpm run ci` with every
+causal-control family, and the acceptance tools (835 of 835) with and without `CI=true GITHUB_ACTIONS=true`.
+The receipt stays `compiled_package_test`; Step 9a.2 is next.
+
+**Push CI.** `development` was pushed at `b0579580` (the acceptance commit on top of `cf97b7f1`). Every
+required job of [run 40050981969](https://github.com/HodeTech/Relavium/actions/runs/40050981969) passed: the
+originating pack, the four same-tarball installed-CLI consumers (current Linux, macOS and Windows and Node
+22.0.0 Linux) and their aggregate, lint, typecheck and test, the engine coverage floor and the causal-control
+families. The advisory Windows job failed: one `packages/db` test timed out at vitest's default 5 s on that
+runner (7.7 s). 9a.1 changed no database or CLI source; the cause and the runner's history are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
+
+### Wave 3 Step 9a.2 preflight decisions — 2026-10-24
+
+A read-only preflight (five readers and a synthesis; the detailed record and a Turkish decision register are
+local and Git-ignored) mapped every place Step 9a.2 touches before any code was written. The maintainer
+approved each recommendation on 2026-10-24; no new ADR or runtime dependency follows.
+
+| Decision | Ruling |
+| --- | --- |
+| Split | 9a.2 becomes 9a.2a (decoder, finalizer hardening, private manifest, frame capture and symbolication before the receipt write; the receipt stays `compiled_package_test`) and 9a.2b (`check:map-controls`, the required uncached CI job and its pins, then the atomic `package_test` flip). `package_test` is never claimed before its negative controls exist. |
+| Frames | "Actual packed CLI and engine frames" are captured by a tooling-only `node --import` preload while the packed CLI runs an offline `relavium import` of a canary document: the preload wraps the external `yaml` package's `parse` and records one synchronous stack of structured call sites for that document alone, crossing the CLI and `@relavium/core`. Engine coverage is `@relavium/core` (at least two core and three CLI anchors). No product surface is added and no native module is loaded. |
+| Where they run | The finalized `apps/cli/dist`, which the archive inspection has proven byte-equal to the tarball entry by entry; each anchor frame's file is re-hashed at capture against the manifest and the tarball inventory. |
+| Manifest | The private manifest also carries a per-source digest inventory (repository-relative path and SHA-256 of every original source a final map names; no content) and the commit's Git tree object id with the dirty flag. This reconciles ADR-0111's "private per-source manifest" with packaging.md's field list; per-source inventories stay out of every public receipt. |
+| Source revision | A clean candidate's anchor sources are read from the original checkout's Git objects at the recorded commit through isolated Git and must equal the manifest's digests; a dirty candidate (local only — a GitHub origin with a dirty source is already refused) uses the candidate copy's bytes, with `dirty` recorded. |
+| Post-receipt rebuild | ADR-0111's "post-receipt rebuild fail" is closed in 9a.2b for the package-test producer: a second prepack into sealed staging, a re-seal into the artifact directory and a rebuilt `dist` that differs from the manifest are refused. The release-mode no-rebuild retry rules stay with 9c and 9d. |
+
+Engineering defaults recorded with the rulings: an in-house strict VLQ decoder in tooling, with Node's
+built-in `node:module` source map used only as an independent test oracle; anchor frames must land on an
+exact mapping segment, and the expected 1-based line and column come from the source revision's TypeScript
+syntax tree, never from a pinned position table; the finalizer reuses the decoder for strict mapping and range
+checks; the manifest is a separate owner-only `staging/manifest.json`, removed with the staging; the
+`package_test` receipt keeps version 1 and its fields; consumers and the aggregate verify identity through the
+shared validator and change no schema; `check:map-controls` is a standalone runner in `tools/cli-package`,
+outside the causal source roots; a tag push now produces a package-test artifact that the interim guard refuses.
+The inert `--verbose` raw-stack branch the preflight found is recorded for Step 10a, which replaces it.
+
+### Wave 3 Step 9a.2a implementation checkpoint — 2026-10-24
+
+**Scope and source.** Step 9a.2a (the 9a.2a row; #46, ADR-0111) implements, on `development` after the 9a.1
+acceptance and the 9a.2 preflight record (`6277e375`), the strict source-map decoder (`tools/cli-package/source-map.mjs`),
+the finalizer's strict mapping and range checks (`finalize.mjs`), the private manifest (`manifest.mjs`), the
+tooling-only frame-capture preload with its keyring stub (`frame-capture.mjs`, `frame-capture-hooks.mjs`,
+`frame-capture-keyring.mjs`), symbolication against the matching source revision (`symbolicate.mjs`), the seal's
+composition (inspection → manifest → symbolication → receipt, `seal.mjs`), the producer's private work directory
+(`produce.mjs`) and the entry point's summary (`pack.mjs`), with their tests and the
+[packaging contract](../../reference/cli/packaging.md#private-manifest-and-symbolication-implementation-boundary--step-9a2a),
+the tooling README and the status lines. No runtime dependency is added, Node's own source map decoder is only a
+test oracle, and the receipt stays `compiled_package_test`. On the real product the decoder agrees with that
+oracle at all 245,806 final-map and 330,759 upstream-map segment starts, every position lies inside its text, and
+the real producer seals a 25-output, 404-source manifest and reaches all five anchors in about a second.
+
+**Internal rigor pass, 2026-10-24.** Under the maintainer's rigor-before-review rule, a read-only pass covered
+the whole increment at `1ab4c134` before its first round: claims, platform, security, integration and critic
+lenses and three mutation sweeps (the decoder and finalizer, the manifest, seal and producer, and symbolication and
+the preload); the detailed record is local. It reported two high findings. On a clean checkout with converted
+line endings (`core.autocrlf`, the Git for Windows default) Git status stays clean while the copy holds CRLF bytes,
+so every clean production refused `SOURCE_REVISION`: candidate preparation now confirms a clean status byte for
+byte, comparing each copy's Git blob id with the commit tree's entry, and records a differing copy as `dirty`. And
+`relavium import --cwd` walks up for a project, so an ancestor `.relavium/` of the temporary directory (a
+developer's real project on Windows) could receive the canary: the capture now creates the project's own
+`.relavium/` first and refuses `CAPTURE_PROJECT` unless the canary landed there. Medium findings corrected: the
+manifest inputs missed the configurations the engine build configurations extend; the two-core, three-CLI anchor
+ruling was enforced by nothing; zero-payload VLQ padding decoded as NaN, which passed every comparison, so an eighth
+digit now refuses; and many claimed guarantees had no killing test (a new `manifest.test.mjs`, a rewritten
+`symbolicate.test.mjs` on a shared test-only fixture whose CLI walks up for its project like the real one, and
+extended decoder, finalizer, seal and candidate tests). Lows corrected include a native-addon refusal in the
+preload beside the keyring stand-in, which now exports every export the package declares, owners without a body
+no longer counted as anchor owners, and the Git, re-hash, README and status wording. Two lows are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24): the capture child is not
+sandboxed (also a named limit in the contract), and two packs of one source can order the packed manifest's
+`@relavium/*` dependencies differently, so their digests differ (for Step 9c). All 554 mutants of the three sweeps
+and of the corrections were then run against the corrected tests: 509 are killed, 4 targeted code the pass
+changed and are replaced by new mutants, and the 41 survivors are equivalent or defensive (unreachable defaults,
+caches, a redundant clause, parser options, constants and the binary search's arithmetic).
+
+**Author evidence at `fd6cd1cd`.** The full `pnpm run ci` (exit 0, about 70 minutes, with the real producer
+and consumer smoke and every causal-control family) and `test:acceptance-tools` (881 of 881, plain and under
+`CI=true GITHUB_ACTIONS=true`); on the clean tree, the package smoke and a direct production whose receipt
+records `dirty: false` and whose anchors were read from the commit's Git objects.
+
+**Round 1 at `fd6cd1cd` — NONCLEAN.** Five lenses and a critic, every finding adversarially verified. The security
+sitting reported one confirmed medium (SEC-9A2A-R1-1): the capture child ran the candidate CLI from the producer's
+root in the shared temporary directory, so ws's optional `require('bufferutil')` resolved a module another local
+user could plant in `<tmpdir>/node_modules`, which ran beside the private staging while the production still
+succeeded. Corrected: the preload registers a synchronous resolution hook (`module.registerHooks`, which sees
+`require` as well as `import`) that refuses any module resolving outside the candidate; a test plants such a module
+and shows that Node loads it without the preload and refuses it, by `require` and by `import`, with it. The test
+fixture now installs `yaml` inside the candidate in pnpm's layout. Lows corrected in the same commit: the anchor
+ruling counts distinct call sites (PLAN-9A2A-R1-1 = DMCS-9A2A-R1-1); the contract's 9a.2a section carries the
+Windows caveat of "owner-only" (PLAN-9A2A-R1-2); the manifest admits exactly the package versions a receipt admits,
+through one shared rule (CRIT-9A2A-R1-1); the triggered 9a.1 PLAT-9 deferral records its re-check (CRIT-9A2A-R1-2);
+and this checkpoint records the author's CI evidence (CRIT-9A2A-R1-3). Of thirteen mutants over the corrections, ten
+are killed and three are defensive: a prefix-sibling comparison that no resolution path reaches, a real-path call
+on paths the resolver already returns real, and the hook API check on a Node that has the API.
+
+**Round 2 at `990a5d16` — not accepted.** The plan lens was clean; the round reported no blocker, high or medium
+finding, and the security sitting one low. But three lenses independently found a regression the round-1
+correction introduced (DMCS-9A2A-R2-1 = TCA-9A2A-R2-1 = INT-9A2A-R2-1, rated low): `module.registerHooks` exists
+from Node 22.15, the workspace admits Node 22.13, and on 22.13 or 22.14 every local production now refused with the
+generic `CAPTURE_FAILED` code, because the preload's named import failed at link time and its guard never ran.
+Since the amended bar requires no regression, the increment is not accepted at round 2. Corrected: the producer
+refuses an unsupported Node with `PACKED_CLI_PRODUCER_NODE` before anything exists (`captureSupported`), the
+preload reads the API from the module object so its own guard runs, and the contract and README name the minimum.
+The security sitting's low (SEC-9A2A-R2-1) is corrected as wording: the keyring, native-addon and module refusals
+hold in the capture process itself, not in a thread or subprocess the candidate starts without the preload; the
+contract, the preload's docblock and the SEC-9A2A-2 record say so, and that record notes its re-check
+(CRIT-9A2A-R2-1).
+
+Round 3 accepted the increment; see the acceptance below.
+
+### Wave 3 Step 9a.2a acceptance — 2026-10-24
+
+**Step 9a.2a is independently accepted on `development` at `a92a7602` (2026-10-24)** under the Acceptance row as
+amended on 2026-10-23. Round 3, a NEW independent complete cumulative review of `6277e375..a92a7602` with every
+reviewer in its own worktree detached at that head, reported no blocker, high or medium finding and no
+regression, and its separate security sitting, run at the same head as its own reviewer and report, was clean;
+so were the plan, correctness and integration lenses and the critic. The plan reviewer ran the real producer at
+the reviewed head: it exited 0 with a `compiled_package_test` receipt and `dirty: false`, the receipt's keys
+were unchanged, neither the receipt nor the tarball held a map, the manifest, a frame, the per-source inventory or
+a host path, and the sealed manifest (25 outputs, 404 sources) and the symbolication of all five anchors (about a
+second) matched this checkpoint. The round's three verified findings (one low, two nits) are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24); the wording nit is
+corrected in the acceptance commit, which changes no code, and the two test gaps stay open there. The receipt
+stays `compiled_package_test`; Step 9a.2b is next.
+
+**Push CI.** `development` was pushed at `f65999a6` (the acceptance commit on top of `a92a7602`). All fourteen
+required jobs of [run 40105286543](https://github.com/HodeTech/Relavium/actions/runs/40105286543) passed, among them
+the originating pack, the four same-tarball installed-CLI consumers and their aggregate, lint, typecheck and test,
+the engine coverage floor and the causal-control families. The advisory Windows job failed on a security assertion
+unrelated to 9a.2a: `apps/cli/src/engine/tool-host/fs-policy.test.ts`, "revokes a selected subdirectory
+replacement even when its enclosing grant is unchanged", read the replacement instead of refusing it. It was the
+first failure of that test in the last sixty CI runs. The cause is in the code: the filesystem policy pins a
+directory by `dev` and `ino` read without `{ bigint: true }`, and on Windows `ino` is a 64-bit NTFS file ID that a
+JavaScript number above 2^53 cannot hold exactly, so a directory created next to the renamed original can round to
+the same identity. Four other identity checks share the pattern. The maintainer approved a separate increment for
+them on 2026-10-24, after 9a.2b and before 9b (row NI;
+[deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24)).
+
+### Wave 3 Step 9a.2b preflight decisions — 2026-10-24
+
+A read-only preflight (five readers and a synthesis at `f65999a6`; the detailed record and a Turkish decision
+register are local and Git-ignored) mapped every place Step 9a.2b touches. The maintainer approved each
+recommendation on 2026-10-24; no new ADR or runtime dependency follows. The earlier 9a.2 rulings stand: the
+three post-receipt rebuild refusals, the receipt keeping version 1 and its twelve fields with only `mode` changing
+to `package_test` and `compiled_package_test` refused, the standalone runner `tools/cli-package/map-controls.mjs`,
+and a `map-controls` CI job shaped like `pack-cli` (uncached, no upload, at most 20 minutes, inside `ci`'s needs
+with a success guard; the required contexts stay `ci` and `coverage`).
+
+| Decision | Ruling |
+| --- | --- |
+| Sealed product | One real `producePackage` run, driven through its existing ports: the controls run inside the seal callback while the private staging still exists, mutate the owned candidate and staging copies in place and restore each file by digest; every private copy stays under the staging, which is removed first on success, failure and interrupt. `produce.mjs`'s cleanup and interrupt handling stay the one owner. |
+| Re-seal | `sealPackage` refuses with `PACKED_CLI_ALREADY_SEALED` at its entry, before the inspection and any capture, when the artifact directory holds anything besides the one tarball or the staging already holds a manifest; a receipt-write race maps to the same code. |
+| Rebuilt `dist` | A new `verifySealedDist` compares the whole `dist` inventory, every output's digest and the tarball's digest with the in-memory manifest (`PACKED_CLI_MANIFEST_DIST_DRIFT`, `PACKED_CLI_MANIFEST_TARBALL_CHANGED`); the seal calls it immediately before the receipt write, and the control calls it after a real rebuild. |
+| Release workflow | `release.yml` gets no map-controls job: the interim guard refuses every release-workflow artifact until 9d and Wave 4b, and 9d owns the workflow graph. A manual dry-run's `package_test` artifact is backed by the required `ci` run at the same commit, and the contract says so. |
+| Increments | One increment with ordered commits — the seal refusals, the runner, the CI job and its pins, then the flip, then the documents — under one acceptance gate and one security sitting; the flip never exists in a tree without the controls before it. |
+
+Engineering defaults recorded with the rulings: each control asserts its exact refusal code and its stage markers
+(so a refusal from the wrong layer cannot pass); wrong source runs both clean (`SOURCE_REVISION`) and dirty
+(`ANCHOR_UNMAPPED`); truncation covers a byte cut and a cut inside a VLQ value; the JS and map controls run on every
+anchor-bearing chunk; permuted sources rotate with no fixed point; the shifted upstream map is checked to be
+strictly valid before use; the runner prints one JSON summary with codes and outcomes only — no path, frame, map
+byte or child output — and compares bytes by digest; it runs in `pnpm run ci` right after `smoke:cli-package`.
+
+### Wave 3 Step 9a.2b implementation checkpoint — 2026-10-24
+
+**Scope and source.** Step 9a.2b (the 9a.2b row; #46, ADR-0111) implements, on `development` after the 9a.2a
+acceptance and the 9a.2b preflight decisions (`436d7c67`), four ordered commits and this record: the seal-side
+rebuild refusals (`PACKED_CLI_ALREADY_SEALED` at `sealPackage`'s entry and `verifySealedDist` before the
+receipt, `seal.mjs` and `manifest.mjs`, with a prepack test of a second prepack into a sealed staging); the
+product map controls runner (`tools/cli-package/map-controls.mjs`, `pnpm check:map-controls`, with tests of its
+pure helpers); the required `map-controls` CI job inside `ci`'s needs with its success guard, `pnpm run ci`'s
+step after `smoke:cli-package` and the workflow pins; and only then the `package_test` flip (one
+`PACKAGE_TEST_MODE` shared by the seal and both receipt validators, `compiled_package_test` refused), with the
+[packaging contract](../../reference/cli/packaging.md#product-map-controls-and-the-package-test-receipt--step-9a2b),
+the tooling README and the status lines. No runtime dependency or ADR is added; `release.yml` gets no map
+controls job, as ruled. At the implementation head (`77ee5d0a`) the runner's 24 controls passed in about 30 seconds
+on one real production, `smoke:cli-package` passed with the flipped receipt through the real producer and
+consumers, and `test:acceptance-tools` passed 911 of 911; after the rigor pass the runner records 25 (the
+seventeen fixed controls plus four for each of the two anchor-bearing chunks) and the suite runs 932 tests.
+
+**Internal rigor pass, 2026-10-24.** Under the rigor-before-review rule a pass covered the whole increment at
+`77ee5d0a` before its first round: three mutation sweeps (the seal refusals and the flip; the runner, including
+removing each production refusal a control is meant to prove and running the real runner; the CI pins) and
+claims, platform, security and integration lenses with a completeness critic; the detailed record is local. It
+confirmed one high finding: the re-seal-receipt control re-sealed against the sealed staging, so the staging half
+of `PACKED_CLI_ALREADY_SEALED` refused for it and the artifact half it claimed to prove could be removed with the
+runner still passing. Corrected: it now re-seals against a copy of the staging without its manifest. Medium
+findings corrected: nothing tested the seal's default `verify` port (a seal test now runs the real check, and a new
+`seal-verify` control changes a chunk during the seal's own run); the runner accepted whatever controls ran and
+its exit gate was untested (it now requires the seventeen fixed controls plus four per anchor-bearing chunk, each
+exactly once, through a tested `verdict` and `report`); its entry guard compared two differently resolved paths
+and could exit 0 on Windows without running (the entry point is now an unconditional `map-controls.mjs` over
+`map-controls-core.mjs`); the per-chunk controls were not checked to corrupt their own chunk in their own way (each
+re-recorded copy must now differ from the sealed record in exactly its chunk, and a line or column shift must
+change the line count as it names); the workflow pins did not pin the step shells, the job environment or several
+properties' negative cases (they do now); and the contract's statement that a manual dry-run's `package_test`
+artifact is backed by the required `ci` run at the same commit, recorded in the preflight table above, did not hold
+for every dispatch — corrected in the contract and the workflow comments, with Step 9d's binding to a successful
+`ci` run recorded in deferred-tasks.md. Lows corrected include an early refusal of a half-configured CI
+environment, removing a refused control build's `dist`, tests of the already-sealed refusal's order, of a failed
+receipt write, of the version's start anchor and of `verifySealedDist`'s every output and read bounds, and the
+summary, checkout and already-sealed wording. Four lows, and one medium for Step 9d, are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24). The five mutants the
+corrections target now fail the real runner, each on its own control or self-check.
+
+**Author evidence at `3e6ae33c`.** The full `pnpm run ci` (exit 0, about 73 minutes, with `check:map-controls`
+recording 25 of 25 expected controls on a clean tree, the real producer and consumer smoke and every causal-control
+family).
+
+**Round 1 at `3e6ae33c` — NONCLEAN.** Five lenses and a critic, every finding adversarially verified. Four lenses
+reported a regression in the author's own record (medium): commit `9f8b0890`, which recorded the native-identity
+increment, replaced the start of deferred-tasks.md's "Phase 2.6.5 deferrals" heading instead of inserting before it,
+so the approved CR-70, CR-93 and CR-95 deferrals fell under the new section; the heading is restored exactly, and an
+audit of every line any 9a.2b commit removed found no other loss. The tests lens reported that nothing tested the
+entry point's exit code (medium): a test now runs the real `map-controls.mjs` beside a stand-in core and requires
+exit 0 for a passing run, exit 1 naming the control for a failed or missing one, and exit 1 with only the fixed code
+for a run that throws. Lows corrected: the contract's earlier sentence that the same commit's `ci` runs the controls
+now says when an artifact is backed; the runner no longer aborts without a summary when a refusal breaks (an
+`aborted` entry and every missing control are reported, and the broken control is named); every refused control
+build that ran the bundler has its `dist` removed; the seventeen fixed controls are pinned in a test; the "restores
+the file" wording excepts `dist`; the checkpoint's counts (25 controls, 932 tests, four lows and one medium) and the
+9a.2a push-CI job count (fourteen required jobs) are corrected; and the status lines name the NI increment.
+
+Round 2 accepted the increment; see the acceptance below.
+
+### Wave 3 Step 9a.2b acceptance — 2026-10-24
+
+**Step 9a.2b is independently accepted on `development` at `0f73c253` (2026-10-24)** under the Acceptance row as
+amended on 2026-10-23. Round 2, a NEW independent complete cumulative review of `436d7c67..0f73c253` with every
+reviewer in its own worktree detached at that head, reported no blocker, high or medium finding and no regression;
+its separate security sitting, run at the same head as its own reviewer and report, reported one low; the plan and
+correctness lenses were clean. The plan reviewer checked the commit order (the flip never exists in a tree without
+the controls, the required job and its guard before it), ran the real runner at the reviewed head (25 of 25
+expected controls on a clean tree) and showed that removing the artifact half of `PACKED_CLI_ALREADY_SEALED` fails
+both re-seal controls. The round's seven verified findings (five low, two nits) are recorded in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24) or corrected in the
+acceptance commit, which changes no code: the plan's increment count now includes NI, deferred-tasks.md's freshness
+line names it, and the contract and the interrupted-runner record say that directory can still hold the baseline
+public tarball and receipt. The receipt now records `package_test`; the native-identity increment NI is next, then
+Step 9b.
+
+**Push CI.** `development` was pushed at `10993bb8` (the acceptance commit on top of `0f73c253`), after a full local
+`pnpm run ci` at that head passed with all 25 map controls. All fifteen required jobs of
+[run 40137915608](https://github.com/HodeTech/Relavium/actions/runs/40137915608) passed, among them the first CI run
+of the required product map controls job, the originating pack, the four same-tarball installed-CLI consumers and
+their aggregate, lint, typecheck and test, the engine coverage floor and the causal-control families. The three
+advisory jobs passed too, including the Windows job whose earlier failure opened NI.
+
+### Wave 3 NI preflight decisions — 2026-10-25
+
+A read-only preflight (three readers and a synthesis at `10993bb8`; the detailed record and a Turkish decision
+register are local and Git-ignored) mapped every file and directory identity comparison in the tree. The maintainer
+approved each recommendation on 2026-10-25; no new ADR or runtime dependency follows, and ADR-0105 and ADR-0106
+receive dated correction notes after the precedent of ADR-0106's 2026-10-13 exact temporary claim identity
+correction. The sites are the row's five files: the filesystem policy's canonical and lexical root pins; the
+workflow catalog's open check, the only swap guard on Windows, where `O_NOFOLLOW` is undefined; and the media
+store's root pin, its file snapshot and owned-file check (the authority to delete), its read check, its publish
+handle and the temporary sweep's claim directory, child, marker and moved-blob checks with the `Number` cross-check
+inside `nativeFile`. One test precondition reads number identities as well. No persisted format changes:
+`media-claim-v2` names already carry exact base-36 tokens, and the v1 reader admits only safe tokens, whose bigint
+form is identical.
+
+Three facts were verified after the preflight. Node 22 fills bigint stats from a signed `BigInt64Array`, so a 64-bit
+file ID with its top bit set (an NTFS sequence number of 0x8000 or more) reads negative; exact equality is
+unaffected, but the claim token refused it and such a temporary was retained forever. The defect is not
+Windows-only: Linux overlayfs's `xino` feature "uses the high inode number bits for fsid" (kernel documentation).
+And on ReFS, including Dev Drive, Microsoft documents that the 64-bit file identifier "is not guaranteed to be
+unique" (ReFS uses 128-bit identifiers).
+
+| Decision | Ruling |
+| --- | --- |
+| Snapshot shape | The media store reads each identity with one bigint stat and projects it once into an internal record: bigint `dev` and `ino`, number `nlink`, `size` and `mtimeMs` (from `mtimeNs`, so today's sub-millisecond values stay), and the type predicates of the same stat. A path is never stat'ed twice for one snapshot. The CLI sites keep `BigIntStats`, since no other field there meets an identity check. |
+| Permanent proof | Five filesystem causal controls, one per site: the policy pins, the catalog open check, the root pin, the owned-file check and the temporary sweep's `same`. Each mutant returns that site's whole comparison to `Number` and is witnessed by a real replacement under injected identities above 2^60, where adjacent numbers are 256 apart. The read check, the `nativeFile` cross-check and the per-read variants are covered by the recorded mutation sweep and the type checks. |
+| Windows evidence | Acceptance rests on the deterministic proof. `fs-policy.test.ts` gains a Windows-only probe (about 200 rename-and-`mkdir` pairs, each distinct as bigints, logging how many collide as numbers or read negative) and `{ repeats: 20 }` on its real replacement tests. The Windows clause closes after three consecutive green advisory Windows runs on pushed heads, with the logged counts recorded; the existing Windows steps are unchanged. |
+| Tooling sites | The three same-class tooling checks are fixed in NI after the `tools/cli-package/files.mjs` pattern, each with an injected-identity check: the overflow capture's destination check, the budget-replay evidence retention's directory identity (it deletes recursively) and that tool's lifecycle-smoke precondition. |
+| Read check | Converted for uniformity. Its second-stat comparison is tested with a faked second stat and recorded as a consistency check that a real filesystem cannot fail; its `dev` comparisons are exact on every platform. No permanent control. |
+| Sign and ReFS | `nativeIdentityToken` maps each value with `BigInt.asUintN(64, …)`, in one place: tokens compare with tokens, and every value without its top bit set keeps a byte-identical token, so existing names stay compatible. A test shows that a negative identity can be claimed. ReFS is recorded in deferred-tasks.md as a scoped limit, since a fix needs native code or a dependency. The claim becomes exact identity on filesystems whose 64-bit file indexes are unique, such as NTFS, ext4 and APFS. |
+
+Engineering defaults recorded with the rulings:
+- No identity helper is shared across packages, and the shards get no pin.
+- `nativeFile` keeps its second `lstat`.
+- The temporary sweep's token comparison line stays byte-identical, since its precision control anchors on it.
+- New witnesses go into new test files, so no pinned count moves.
+- `CAS_COOPERATIVE_READ` is the one anchor that drifts; it is updated in the same commit.
+- No identity value enters an error, event, log or JSON.
+- ADR-0105's cooperative-parent assumption is unchanged.
+
+### Wave 3 NI implementation checkpoint — 2026-10-25
+
+**Scope and source.** The native-identity increment (register row NI; ADR-0105, ADR-0106) is implemented on
+`development` after the 9a.2b acceptance and the [NI preflight decisions](#wave-3-ni-preflight-decisions--2026-10-25)
+(`451223f7`), in five ordered commits and this record:
+
+1. **CLI fix.** The filesystem policy's canonical and lexical root pins and the workflow catalog's open check read
+   with `{ bigint: true }` into bigint fields. A witness file has four injected-identity real-replacement cases, and
+   the fs-invocation precondition reads exactly.
+2. **Windows evidence.** A Windows-only probe in `fs-policy.test.ts` makes 200 rename-and-`mkdir` pairs, asserts
+   each pair is distinct as exact identities and logs how many collide as Numbers or read negative. Its real
+   replacement tests repeat twenty times.
+3. **Media-store fix.** One internal `ExactStats` projection holds bigint `dev` and `ino` and number `nlink`, `size`
+   and `mtimeMs`; the last comes from `mtimeNs` by Node's own formula and was bit-identical on 307 checked files,
+   including fractional and negative times. It serves file snapshots, the owned-file check, the read's
+   descriptor stats, the publish handle and the temporary sweep's claim directory, children, marker and moved
+   blob; the root pin keeps its own bigint stats. `nativeFile` loses its `Number()`, and the claim token encodes the unsigned value
+   (`BigInt.asUintN(64, …)`). A witness file has seven cases, and the exact-claim vectors gain two negative
+   identities. `CAS_COOPERATIVE_READ`'s anchor follows the new parameter type.
+4. **Tooling fix.** The overflow capture's destination check, the budget-replay evidence retention's directory
+   identity and its lifecycle-smoke precondition, each with a substituted-identity mode in its smoke.
+5. **Permanent controls.** Five filesystem causal controls: `fs-root-identity-precision`,
+   `catalog-identity-precision`, `cas-root-pin-precision`, `cas-owned-identity-precision` and
+   `media-temp-same-precision`. Each passed its fixed, removal and restored phases through the real runner. The
+   declaration grows to 115 controls / 345 phases, in shards of 58 and 57.
+6. **Documents.** The policy and physical storage paragraphs of the
+   [built-in tools reference](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits),
+   dated corrections to ADR-0105 and ADR-0106, the NI entry and two scoped limits in
+   [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24), and
+   the status lines.
+
+No runtime dependency or ADR is added, and no persisted format changes.
+
+**Proof.** The witnesses substitute every inode the code reads, keyed by its real device and inode, with
+2^60 + k; device numbers stay real. Adjacent substitutes there are distinct bigints but one Number. Each witness asserts that its fixture collides as Numbers only, keeps the original
+alive so the platform cannot recycle its inode, and asserts its outcome once with a named marker.
+
+A recorded sweep at the implementation commits applied 28 mutants, and each failed:
+
+- every comparison returned to a Number, which failed its named witness — the canonical and lexical reads and the
+  root pin's canonical and entry reads each have their own case;
+- every read without its option, which failed its witness and also fails typecheck and the projection;
+- the token's signed refusal restored, which failed on the negative vectors;
+- each capture and retention read or comparison reverted, which failed its smoke (the lifecycle smoke's
+  precondition reads are test-side and were not swept; see the acceptance below).
+
+Number mutants on `dev` alone are equivalent on every supported platform and are not claimed: Windows `dev` is a
+32-bit volume serial, and POSIX device numbers are small. The read's second-stat comparison is tested with a faked
+second stat; it is a consistency check that no real filesystem fails. By decision, one number comparison remains:
+the causal-control source graph's hard-link check, which can only refuse falsely. It is recorded as a scoped limit.
+
+**Windows evidence.** The advisory Windows job runs the probe and the repeated replacement tests after the push. The
+Windows clause closes after three consecutive green advisory runs on pushed heads, with the logged counts recorded.
+
+**Author evidence at `209e7193`.** The full `pnpm run ci` passed (exit 0), including all 115 filesystem causal
+controls with the five new ones, the product map controls and both changed smokes.
+
+**Internal rigor pass, 2026-10-25.** Under the rigor-before-review rule, an internal pass at `209e7193` ran claims,
+platform, security, tests and integration lenses with a completeness critic, and every finding was adversarially
+verified; the detailed record is local. It confirmed one medium finding: nothing pinned that a negative identity's
+claim token is the unsigned value. Two encodings that alias a negative identity onto another value's token
+(`asUintN(63, …)` and an absolute value) therefore passed the whole suite on the deletion-authority path. Corrected:
+the exact-claim vectors now assert each claim name's token against a literal, and both mutants fail on
+`MEDIA_TEMP_NATIVE_IDENTITY_TOKEN`.
+
+Low findings corrected:
+- The recovery-marker fixture builds claim names with production's unsigned token.
+- The scratch descriptor's real replacement test repeats like the others.
+- The catalog's byte precheck gets two tests, each failing its own mutant: one refuses an oversized file before
+  any read, the other admits a dense multibyte file within the character cap.
+- The claim-directory guard gets a test that retains a regular file under a claim name as an unsafe entry.
+- The ADR-0106 note now names `nativeFile`'s Number cross-check, not the token, as what refused a top-bit identity
+  before NI (the message of commit `ed690d04` still says the token).
+- The scoped limit now says FAT and exFAT can fail open, since their file IDs derive from directory-entry positions.
+- The status lines and the controls' comment now say every *product* identity check, since one tooling check
+  remains by decision.
+- Also corrected: the row's status, current.md's freshness line, the budget-replay README's replacement-control
+  count, and this checkpoint's commit count and root-pin wording.
+
+The pass measured the export capacity: one new control's phase manifest is 203,728 bytes, so a 58-control shard's
+174 manifests come to 35,448,672 bytes, 52.8 % of the 64-MiB bound.
+
+### Wave 3 NI acceptance — 2026-10-25
+
+**The native-identity increment NI is independently accepted on `development` at `fc5af701` (2026-10-25)** under
+the Acceptance row as amended on 2026-10-23. Round 1 was a NEW independent complete cumulative review of
+`451223f7..fc5af701`, with every reviewer in its own worktree detached at that head. It reported no blocker, high or
+medium finding and no regression. Its separate security sitting, run at the same head as its own reviewer and report,
+was clean. It verified that a replacement fails closed at the policy pins, the catalog open check, the media root pin,
+the owned-file check, the temporary sweep's checks and the tooling retention check, and that the unsigned token is a
+bijection on Node's reachable identities. It also verified that no identity value reaches an error, event, log, JSON
+or IPC. The plan, correctness and integration lenses were clean. The plan reviewer found every commit's anchors valid
+and its packages typechecked, with `CAS_COOPERATIVE_READ` moving in the same commit as its target. It also applied the
+five control removals, and each failed its named witness.
+
+**Author evidence at `fc5af701`.** The full `pnpm run ci` ran alongside the round and passed (exit 0). Every causal-control family completed, among them all 115 filesystem controls with the five NI controls. All 25 product map controls and both changed smokes passed.
+
+The round's verified findings were four lows and four nits:
+- Three lows are recorded in
+  [deferred-tasks.md](../deferred-tasks.md#wave-3-ni--recorded-low-findings-2026-10-25): the lifecycle smoke's
+  precondition reads can revert unnoticed; nothing tests the projection's `mtimeMs` formula; the catalog's
+  dense-multibyte case catches only a byte bound below 1.5 times the character cap.
+- The fourth low is corrected in the acceptance commit, which changes no code: the fs-policy-controls README's
+  110-control shard sentence is now dated.
+- Of the nits, the docs' wording now says the witnesses substitute inodes keyed by device and inode, not whole
+  identities, and the checkpoint's proof bullet no longer claims a lifecycle-smoke sweep.
+- The witness files' comments keep their wording: two nits, that devices stay real and that overlayfs inodes can
+  exceed 2^53.
+- The CLI witness stays off the pinned Windows list: one nit. Its proof uses injected identities and does not
+  depend on the platform.
+
+The NI entry stays open until its Windows clause closes: three consecutive green advisory Windows runs on pushed
+heads, with the probe's logged counts recorded. Step 9b is next.
+
+**Windows clause, run 1 of 3 (2026-10-25).** Push CI
+[run 40151763770](https://github.com/HodeTech/Relavium/actions/runs/40151763770) at `c8c0d41b` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `1 of 200 replacement pairs collide as Numbers; 0 read
+negative`: on the runner itself a replaced directory's file ID rounded to its original's once in 200 pairs, the
+diagnosed mechanism, while every pair stayed distinct as exact identities, and the repeated replacement tests passed.
+
+**Windows clause, run 2 of 3 (2026-10-25).** Push CI
+[run 40211801913](https://github.com/HodeTech/Relavium/actions/runs/40211801913) at `56ccae62` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
+negative`, and the repeated replacement tests passed.
+
+**Windows clause, run 3 of 3 (2026-10-26) — closed.** Push CI
+[run 40276471445](https://github.com/HodeTech/Relavium/actions/runs/40276471445) at `5a328bca` passed all eighteen
+jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
+negative`, and the repeated replacement tests passed. With three consecutive green advisory Windows runs on pushed
+heads, the Windows clause and the NI entry in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24)
+are closed; NI's scoped limits stay recorded there.
+
+### Wave 3 Step 9b preflight decisions — 2026-10-25
+
+A read-only preflight (four readers and a synthesis at `c8c0d41b`) mapped Step 9b's obligations, the code it meets and
+GnuPG's mechanics on this machine and the CI runners; the detailed record and a Turkish decision register are local
+and Git-ignored. The maintainer approved each recommendation on 2026-10-25. No new ADR or runtime dependency follows:
+GnuPG is release tooling (packaging.md's recipient custody), the container is the in-house strict USTAR dialect the
+2026-10-19 C1 ruling requires, and SHA-256 comes from `node:crypto`. The 2026-10-19 C2 ruling stands: GnuPG ≥ 2.2.8 is
+required by local `pnpm run ci` and the Ubuntu runner, and the controls fail rather than skip.
+
+| Decision | Ruling |
+| --- | --- |
+| Placement | A library plus synthetic controls only. `producePackage`, `sealPackage`, the package-test receipt, the interim release guard and both workflows stay unchanged; encryption in the originating job is Step 9d's. SEC-9A2A-2's trigger (sandbox the capture child when 9b designs the custody job) is re-recorded to 9d with a dated note. |
+| Release binding receipt | Step 9b defines its schema v1, its validator and a sealer that writes only after the ciphertext exists. Step 9d adds the origin, map-check and `ci`-run binding and replaces the guard. |
+| Recipient selection | `--recipient-file` with `--no-keyring`: the file holds exactly one key, whose only usable encryption subkey is the pinned one, so there is no keyring, import, trustdb or agent. The single-usable-subkey rule is also the unexpected-recipient rule; Wave 4b's export becomes `gpg --export '<subkey fingerprint>!'`. |
+| Ciphertext profile | SEIPDv1 with MDC and AES-256 (`BEGIN_ENCRYPTION 2 9`) is required and an AEAD profile refused, so `gpg -d \| tar -x` with GnuPG ≥ 2.2.8 stays true. A recipient key must not advertise AEAD, a new Wave 4b key clause. |
+| Round-trip key | An ephemeral key per run, in an owner-only short-path home whose agent is stopped and whose socket directory is removed afterwards, with a test that no tracked file holds a PGP private-key block. No private key enters the repository or CI. |
+| Key policy | Every recipient, fixtures included, must be OpenPGP v4 with a cv25519 or RSA ≥ 3072 encryption subkey. Expiry refuses at `now` with no margin; Wave 4b may add a margin with the real key. |
+| Container layout | Staging-relative: `manifest.json`, `finalized.json`, `metafile-esm.json` and `maps/<chunk>.js.map`. The 2026-10-19 ruling's "repository-relative paths" is read as relative POSIX paths with no host path; a decrypted, extracted archive is a staging directory that the manifest reader and symbolication consume unchanged. |
+| Split | 9b.1 (USTAR, container, GnuPG runner, pre-check, fixtures, `encryptOnce`, prerequisite documentation) and 9b.2 (reuse, binding receipt, production loader, scope separation), each with its own round and security sitting; the plan has 32 increments. |
+
+Engineering defaults recorded with the rulings:
+- Every GnuPG call goes through the existing bounded, shell-free `runCommand` in its own process group.
+- The call passes `--no-options --no-autostart --no-keyring --no-encrypt-to --no-auto-key-locate --no-auto-key-retrieve --trust-model always --compress-algo none --status-fd 1 --set-filename`.
+- It never passes `--yes`, `--hidden-recipient`, `--throw-keyids`, `--faked-system-time`, `--ignore-*` or `--allow-*`.
+- Recipients are classified from a colon listing, because `INV_RECP` reasons do not tell the cases apart.
+- Success requires one `BEGIN_ENCRYPTION`, one `END_ENCRYPTION`, exit 0 and exactly one `ENC_TO` for the pinned subkey on the ciphertext.
+- An existing ciphertext refuses with zero GnuPG calls, and the ciphertext is published with `wx`.
+- Plaintext lives in an owner-only work directory that is removed on every path.
+- Errors are fixed `PACKED_CLI_CUSTODY_<CODE>` codes, and GnuPG's stderr never surfaces.
+- The tests join `test:acceptance-tools`, so they run in local `pnpm run ci` and the four Ubuntu jobs already inside `ci`'s needs, with no workflow edit.
+- Windows has no GnuPG on its image, and the 2.2.8 floor is enforced only by the version check; both are recorded limits.
+- Before the first external round, the custody tests run in a local `ubuntu:24.04` container with the distribution's GnuPG, to gather 2.4.4 evidence.
+
+### Wave 3 Step 9b.1 implementation checkpoint — 2026-10-25
+
+**Scope and source.** Step 9b.1 (the 9b.1 row; #46, ADR-0111) is implemented on `development` after the
+[Step 9b preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25) (`12883df4`), in five ordered commits
+and this record:
+
+1. **One strict USTAR dialect.** `ustar.mjs` extracts the archive inspector's reader with a path rule, a mode rule,
+   an entry hook and a refusal reporter, and promotes the writer. The inspector delegates with its refusal codes and
+   order unchanged, and `archive.test.mjs` and `seal.test.mjs` pass unchanged.
+2. **The private container.** `container.mjs` builds and reads the owner-only container in the approved
+   staging-relative layout, every map checked against the manifest and the finalizer's record.
+3. **The isolated GnuPG runner.** `gnupg.mjs`, with GnuPG ≥ 2.2.8 added to the local prerequisites.
+4. **Synthetic fixtures.** Committed armored public keys for the recipient classes GnuPG can produce,
+   their pins and a maintainer-only generator; crafted listings cover the other classes, and the round-trip key
+   is generated per run.
+5. **Encrypt once.** `custody.mjs`: pins, the colon pre-check, `encryptOnce` and its tests.
+
+The [packaging contract](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b1) records
+the mechanism, the tooling README and deferred-tasks.md (SEC-9A2A-2 re-recorded to Step 9d, two Wave 4b key
+clauses, two named limits) the rest. Product paths, the receipt, the guard and both workflows are unchanged; no
+runtime dependency or ADR is added.
+
+**Measured before writing the parsers.** One script listed every fixture, encrypted to each and listed the
+ciphertext's recipients on GnuPG 2.5.21 (local) and 2.4.4 (`ubuntu:24.04`):
+- `BEGIN_ENCRYPTION 2 9` for a key without the AEAD feature, `0 9 2` (OCB) for one with it, on both versions.
+- `--list-only` exits 0 with one `ENC_TO`; `--list-packets` exits 2.
+- `INV_RECP` reasons do not tell expired, revoked and sign-only apart, and the `FAILURE` numbers differ between
+  calls, so neither is keyed on.
+- An `INV_RECP` line carries the recipient file's absolute path, which is why status output is never surfaced.
+- GnuPG 2.4.4 cannot list an expired or revoked key under `--trust-model always` without a trust database (`Fatal:
+  can't open trustdb.gpg`), so the listing runs in its own home with the default trust model.
+- With `--trust-model always`, the encryption home gains only `random_seed`.
+
+**Author evidence at `85a9aebe`.**
+- The four custody test files passed locally: 32 tests on GnuPG 2.5.21.
+- They also passed in a clean clone in `ubuntu:24.04`: 32 of 32 with none skipped, as a non-root user, on its
+  GnuPG 2.4.4 after a fresh frozen install, with no GnuPG process left afterwards.
+- The archive, seal, packed-CLI pin and tooling typecheck and lint suites passed.
+
+**Internal rigor pass, 2026-10-25.** Two checks preceded the first round:
+- an author mutation sweep at `0bd1953f`, 44 mutants;
+- an internal pass at `45bc5654`, with claims, platform, crypto/custody pre-sitting, tests and integration lenses
+  and a completeness critic, every finding adversarially verified (the record is local).
+
+Commit `45bc5654` fixed the sweep's survivors. Its message says three survived; a fourth, the container's pre-write
+total check, had been counted as killed only because a flaky interrupt test failed under it.
+
+The pass confirmed seven medium findings, all corrected:
+- **Host errors escaped with their path.** Errors raised before `encryptOnce`'s main try block carried their
+  path: a missing destination or root, a failed listing or path resolution. The whole function now sits inside
+  the fixed-code boundary. A missing destination refuses `PLACEMENT`, a missing root `PRIVATE_ROOT`, and a work
+  directory that cannot be removed `CLEANUP`.
+- **The AEAD control was version-blind.** It asserted `PROFILE`, which holds only on GnuPG 2.3 and later. It now
+  takes the expectation from the installed version, never skipping: GnuPG 2.2 has no AEAD, encrypts SEIPDv1 and
+  succeeds.
+- **The interrupt test raced the reaping.** It probed the stand-in's process once, racing the reaping of its
+  killed group, and failed about once in 30 runs. It now polls with a deadline and failed 0 of 30.
+- **The success test checked the record against itself.** The record's SHA-256 and GnuPG version are now
+  computed independently.
+- **Three guards had no isolating test.** The MDC half of the profile check, the pinned-primary-as-subkey guard
+  and the finalizer record's map binding (path, digest and size) each have one now.
+- **The checked recipient copy and its bound were unproven.** Nothing proved that the copy is the one encrypted
+  to, or that the 256 KiB bound holds. One test now changes the caller's file mid-run, and another exceeds the
+  bound.
+
+Low findings corrected:
+- The publish is atomic: a temporary sibling, hard-linked to the final name.
+- The version call carries the isolation flags.
+- The metafile must parse as a JSON object, and the contract says what binds each record.
+- The pre-write total refuses with its own code.
+- More USTAR header, status-keyword and classification cases are tested.
+- The contract's wording on the modification-time field, listed keys, future creation, the fixture classes and
+  Windows is corrected (the Windows image ships Git's MSYS2 `gpg`, and the tests use POSIX tools, so Windows
+  developers use WSL), and so is deferred-tasks.md's freshness line.
+
+Two lows are recorded in deferred-tasks.md: an interrupted test run can leave the ephemeral key's home, and the
+pre-check counts only the keys GnuPG lists. A rerun sweep of 52 mutants left no survivor.
+
+**CI at `45bc5654`.** The full `pnpm run ci` failed one test outside the increment. The usage-coverage
+inventory's `vitest list` collection exceeded its 30-second spawn timeout while the rigor pass's agents held the
+load average at 40–66. On a quiet machine it passed three of three runs in 10–12 seconds. The full CI reruns at
+the corrected head, alone, before the first round.
+
+**Author evidence at `f0555a61`.** The full `pnpm run ci` passed alone (exit 0): `test:acceptance-tools` 969 of
+969, all 25 product map controls, and every causal-control family complete.
+
+**Round 1 at `f0555a61` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. They
+reported three medium findings, all corrected:
+- **Global configuration.** GnuPG reads its installation's `<sysconfdir>/gpg.conf` even under `--no-options`, so
+  the "no options file" claim was false. The reviewer showed that a global `log-file` with debug options wrote
+  the AES session key outside every home while the encryption passed every check. The installation's `gpgconf`
+  now names that directory before any key is handled, and a `gpg.conf` or `common.conf` there refuses
+  (`GPG_CONFIG`). The contract names the installation as trusted.
+- **Container host errors.** `buildPrivateContainer` still let host errors carrying the staging path escape; the
+  rigor pass had named it with `encryptOnce`, and only `encryptOnce` was corrected. They now refuse
+  `CONTAINER_UNREADABLE`.
+- **Algorithm policy.** Nothing tested the algorithm-ID half of the policy: an ElGamal subkey would pass once
+  that half was removed. ElGamal cases now refuse.
+
+Lows corrected:
+- **Overlap.** The destination and root are compared by device and inode, not spelling; a case-variant test runs
+  on case-insensitive volumes and is skipped where the volume is case-sensitive.
+- **Publish order.** The listed ciphertext file must still be the bytes published, and the plaintext work
+  directory is removed before anything is published, so a `CLEANUP` refusal publishes nothing.
+- **Tests.** New cases cover revocation before expiry, an expired second subkey, `ssb`-only secret material, the
+  default clock's unit, the record items' exact keys, the isolated environment, the C locale and owner-only homes,
+  and the forbidden `--ignore-*` family.
+- **Wording.** Corrected in the fixture comment, the contract's secret-material wording, the Wave 4b clause (an
+  AES256 preference) and this checkpoint's fixture item.
+
+Two lows are recorded in deferred-tasks.md: secret material GnuPG neither lists nor reads is admitted, and the
+atomic publish has no fault-injection test. Every corrected guard's mutant now fails a test.
+
+**Author evidence at `dea32ea6`.** The full `pnpm run ci` passed alone (exit 0): `test:acceptance-tools` 975 of
+975. On Ubuntu 24.04 with GnuPG 2.4.4 (in Docker), the 41 USTAR, container, GnuPG and custody tests ran: 40
+passed and the case-insensitive-volume case skipped, as it does on a case-sensitive volume.
+
+**Round 2 at `dea32ea6` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan
+and integration lenses were clean. One medium, corrected:
+- **The outer `CLEANUP` override was untested.** Round 1 added a removal before publishing, and the only `CLEANUP`
+  test then reached that inner removal alone. Deleting the outer override, which turns an earlier refusal into
+  `CLEANUP` when its work directory cannot be removed, failed no test, so a caller could be told `STATUS` while
+  plaintext remained. A refusal whose work directory then cannot be removed is now tested to report `CLEANUP`.
+
+Lows corrected, none deferred:
+- **gpgconf's answer.** `gpgconf --list-dirs sysconfdir` prints a named directory raw; only the unnamed listing
+  is percent-escaped. The percent-decoding turned a literal `%41` in the path into another directory, so a global
+  configuration there was admitted. The answer is now taken as printed, and anything but exactly one absolute
+  path ended by one newline refuses (CRIT-9B1-R2-1; checked against the real gpgconf 2.5.21).
+- **Windows.** The owner-only check admitted any directory on Windows, where modes say nothing about access. No
+  private root qualifies there now, so `encryptOnce` refuses before any GnuPG call, and the named limit says so
+  (SEC-9B1-R2-2).
+- **Pins.** A pin that only converts to a fingerprint, such as a one-element array, passed. Pins must now be
+  strings (CRIT-9B1-R2-2).
+- **Record bounds.** The container admitted a `manifest.json` of up to 16 MiB, which the manifest reader refuses
+  over 4 MiB. Each record is now held to its own reader's bound, one `RECORD_BYTES` map shared by the manifest
+  readers, the metafile read in `seal.mjs` and the container (CRIT-9B1-R2-3).
+- **Fixture.** The ephemeral key's home was created before its path-length check, so a failed check left it
+  behind (T-9B1-R2-8).
+- **Tests.** New cases cover:
+  - a duplicated or second `KEY_CONSIDERED`, and a `sec` record without `ssb`;
+  - the environment and bounds of every GnuPG call;
+  - the private root's group bits, a linked root and another user's root;
+  - the work directory's, homes' and plaintext files' modes;
+  - the ciphertext name as the contract spells it;
+  - every container bound met exactly, and the entry bound on reading;
+  - the build's read-back self-check, through a chunk name too long for the dialect's name field;
+  - empty and block-aligned USTAR entries;
+  - a planted ambient environment.
+
+  (COR-9B1-R2-1/2, T-9B1-R2-2 to T-9B1-R2-7, SEC-9B1-R2-1.)
+- **Wording.** The contract's secret-material sentence now names the recorded limit, its "every call" is
+  narrowed to every `gpg` call, and its runbook citation is a relative link. The runbook names the
+  global-configuration requirement. The 9b row carries its split note, and the CLI reference index names 9b.1
+  (PLAN-9B1-R2-1/2/3, INT-9B1-R2-1/2, COR-9B1-R2-3).
+
+A 30-mutant sweep over the corrected guards and the round's named mutants left no survivor. That includes the
+owner check's uid half, which no earlier test covered.
+
+**Author evidence at `ade62b7e`.** A first full run was started with `CI=true GITHUB_ACTIONS=true` set for the
+whole chain. `check:map-controls` refuses such a half-configured GitHub environment before it builds anything
+(`PACKED_CLI_MAP_CONTROL_ORIGIN`), as designed, so that run certified nothing. Rerun plain and alone, the full
+`pnpm run ci` passed (exit 0): `test:acceptance-tools` 979 of 979, all 25 product map controls, and every
+causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in Docker), the 45 USTAR, container, GnuPG and custody
+tests ran: 44 passed and the case-insensitive-volume case skipped. The commit recording this evidence also
+corrects one contract phrase and changes no code.
+
+**Round 3 at `b3eaebaf` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan,
+security and integration lenses were clean. Two mediums, both in tests, corrected:
+- **The environment assertion did not name the work directory.** Round 2's check that every GnuPG call runs in the
+  work directory's environment accepted any directory named `custody-*`, and the test's own private root and
+  destination are named that way, so an environment built on either passed. Round 2's sweep had tried a leaked
+  process environment, never a wrong directory. Every call's environment must now be that of the one work
+  directory holding every home, in `mkdtemp`'s name shape, the gpgconf query's included.
+- **A hidden recipient beside the pinned one was untested.** The cases covered a duplicated pinned line, a wrong
+  ID, a hidden ID alone and no recipient, so a filter that ignored anonymous `ENC_TO` lines passed. The pinned
+  subkey with a hidden or another recipient beside it now refuses `RECIPIENTS` in tests.
+
+Lows corrected, none deferred:
+- **Additional decryption subkeys.** The pre-check did not classify an ADSK (capability `r`, GnuPG 2.4.1 and
+  later), which GnuPG adds as a further recipient, so a key carrying one passed it and only GnuPG's own refusal
+  and the recipient check stopped it. A usable ADSK now refuses `RECIPIENT_UNEXPECTED` before encryption, checked
+  against a real key carrying one on GnuPG 2.5.21 (COR-9B1-R3-1).
+- **Tests.** New cases cover the finalizer record's output paths, a same-count map rename, the read-side entry
+  count one past its bound, the creation time to the second, a prefixed status line, gpgconf beside a linked
+  gpg's real binary, a directory named `gpg` on PATH, an empty USTAR name, a regular-file private root and a
+  missing configuration directory (T-9B1-R3-3 to T-9B1-R3-6, CRIT-9B1-R3-1).
+- **Wording.** The 9b.1 row says which record is bound to what, round 2's record names the readers that share
+  `RECORD_BYTES`, the contract and its JSDoc claim only the size bound, and the runbook and a test comment no
+  longer say Homebrew and Ubuntu ship an empty configuration directory (PLAN-9B1-R3-1/2, CRIT-9B1-R3-2/3).
+
+**Sweeps.** The 48 named mutants (round 2's 30 and round 3's 18) all fail a test. A generated sweep then mutated
+every one-line refusal, condition clause and comparison of `custody.mjs`, `gnupg.mjs`, `container.mjs` and
+`ustar.mjs`: 182 mutants, 168 killed at first. Five survivors were real gaps and gained cases:
+- a fingerprint record before any key;
+- a ciphertext that can no longer be read after its listing;
+- a `null` record item and a `null` finalizer record;
+- a one-character USTAR name.
+
+The other nine are equivalent:
+- two distinct status lines never share an index;
+- the record items' type checks refuse with the same code at the comparison that follows;
+- two sort comparators never meet a tie that matters;
+- the build's map-name check refuses with the same code as the name-set check;
+- the self-check's comparison cannot differ with the current writer;
+- the checksum loop's extra index reads `?? 0`;
+- twelve octal digits are always a safe integer.
+
+
+### Wave 3 Step 9b.1 acceptance — 2026-10-25
+
+**Step 9b.1 is independently accepted on `development` at `147c2788` (2026-10-25)** under the Acceptance row as
+amended on 2026-10-23. Rounds 1–3 were not accepted, each with mediums corrected as the
+[checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25) records:
+- round 1, a global GnuPG configuration the "no options file" claim missed;
+- round 2, round 1's correction left the outer `CLEANUP` override untested;
+- round 3, round 2's environment assertion accepted the wrong directory, and no case put a hidden recipient beside
+  the pinned one.
+
+Round 4 was a NEW independent complete cumulative review of `12883df4..147c2788`, with every reviewer in its own
+worktree detached at that head. It reported no blocker, high or medium finding and no regression. Its separate
+crypto/custody security sitting, run at the same head as its own reviewer and report, was clean. The plan lens was
+clean too. It mapped every clause of the 9b.1 row and rulings L1–L8, C1 and C2 to code, found the inventory pin and
+every import valid at all twelve commits, and confirmed that nothing outside the tests imports the library.
+
+**Author evidence at `147c2788`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+980 of 980, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in
+Docker), the 46 USTAR, container, GnuPG and custody tests ran: 45 passed and the case-insensitive-volume case
+skipped.
+
+The round's verified findings were five lows:
+- Four are recorded in
+  [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b1--recorded-low-findings-2026-10-25):
+  - a temporary sibling that cannot be removed after a successful link reports `UNEXPECTED`, although the ciphertext
+    is published;
+  - no test pins the metafile's 4 MiB value;
+  - no test builds the container from a real finalizer's staging;
+  - the overlap check misses containment through a bind mount of a directory inside the other.
+- The fifth is corrected in the acceptance commit, which changes no code: the contract and the Windows named limit
+  no longer call Git for Windows' build the image's only `gpg`. The same commit narrows the contract's overlap
+  sentence to what the check catches.
+
+Step 9b.2 is next.
+
+### Wave 3 Step 9b.2 preflight decisions — 2026-10-25
+
+A read-only preflight (four readers and a synthesis at `56ccae62`) mapped Step 9b.2's obligations, the code it builds
+on and what 9c, 9d and Wave 4b will need from it; the detailed record and a Turkish decision register are local and
+Git-ignored. The maintainer approved each recommendation on 2026-10-25. No new ADR or runtime dependency follows: the
+receipt identifies files by SHA-256 from `node:crypto`, with no signature or HMAC (packaging.md's public binding
+receipt), and every module is release tooling. All four parts are new modules, so no accepted 9b.1 file changes and
+none of 9b.1's "next change to the file" lows fire.
+
+| Decision | Ruling |
+| --- | --- |
+| Schema v1 | Carries every field the contract lists now, `origin` and `mapCheck` included, checked for shape only. 9d adds trust checks against these fields (the origin against the GitHub run, `mapCheck` against a successful `ci` run at the source commit) and no new field; there is no `ciRun` field. |
+| Release-smoke inventory | Not embedded. 9d derives the public file inventory and package metadata from the digest-verified tarball with the inspector that produces the package-test receipt, a recorded 9d obligation. |
+| Toolchain identity | The manifest's per-file `inputs` (lock and configuration files only), the five tools plus the GnuPG version, and the target: checkable file by file against the commit, and not the per-source inventory ADR-0111 forbids. |
+| Scope enforcement | A new `encryptCandidate` gate in front of the unchanged `encryptOnce`, with a module-private registry of the records it returns. Production scope requires the loader's brand and a clean, non-synthetic source; synthetic scope requires the synthetic source, so the per-run ephemeral key can never encrypt a product staging. The sealer accepts only a record that gate returned, and only once. |
+| Production loader | A fixed committed path, `tools/cli-package/release-recipient/`, holding `recipient.asc` and a `pins.json` with an append-only `current`/`retired` history: exactly one `current`, no entry ever removed. In Wave 3 the directory is absent and the loader refuses `PRODUCTION_RECIPIENT_ABSENT`; there is no environment variable, flag or fallback, and a fixture fingerprint refuses. Rotation controls are built now (ADR-0111's acceptance 5); Wave 4b only adds the files. |
+
+Engineering defaults recorded with the rulings:
+- **Files.** `release-recipient.mjs` (the loader and its brand), `release-binding.mjs` (schema, validator and reuse,
+  whose import closure cannot start a process, so reuse's zero GnuPG calls are structural), `release-custody.mjs` (the
+  gate and the sealer, the only module that reaches GnuPG) and the test-only `release-fixture.mjs`. Each test file
+  joins `test:acceptance-tools` in the commit that creates it.
+- **Receipt bytes.** The receipt is written once in canonical bytes as `release-binding-receipt.json`, the name the
+  interim guard already keys on. Verifiers parse the exact bytes and never re-serialize, so a duplicated key, a
+  reordering, a BOM or trailing data refuses.
+- **Sealer.** It refuses an existing receipt before reading anything, admits exactly the tarball and the ciphertext
+  in the destination, and re-reads the ciphertext's size and digest against the record and the tarball's digest
+  against the manifest. It then publishes once, by `wx` and a link. A sibling that cannot be removed after the link
+  is not a refusal, and a write port allows fault injection: the lessons of COR-9B1-R4-1 and T-9B1-R1-3.
+- **Reuse.** It admits exactly the three files and checks each asset's size, then its bounded bytes and SHA-256,
+  against the receipt and the expected recipient history. It returns the verified bytes rather than paths and writes
+  nothing. Re-checking `ENC_TO` would need GnuPG and is a named limit.
+- **Static controls.** Only `release-custody.mjs` imports `encryptOnce`; no product path or workflow names a release
+  module until 9d; the release-binding closure excludes every subprocess module; no recipient directory is tracked
+  until Wave 4b. The interim guard stays unchanged and still refuses a valid synthetic candidate.
+- **Gate.** A rigor pass and a generated mutation sweep before the first round; the full `pnpm run ci` alone; the
+  custody tests on Ubuntu 24.04 with GnuPG 2.4.4 in Docker; one new complete cumulative round and a separate
+  crypto/custody security sitting.
+
+### Wave 3 Step 9b.2 implementation checkpoint — 2026-10-25
+
+Step 9b.2 is implemented on `development` in the commits from `84b8e455` through `4d49176b` and this record, under the
+[preflight decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25). Its canonical description is packaging.md's
+[Step 9b.2 boundary](../../reference/cli/packaging.md#recipient-custody-implementation-boundary--step-9b2). No Step
+9b.1 module changed, and nothing outside the new tests calls the new modules.
+- **The production recipient** (`release-recipient.mjs`). The loader reads the committed
+  `tools/cli-package/release-recipient/` directory and refuses `PRODUCTION_RECIPIENT_ABSENT` in Wave 3, because no
+  recipient is committed. A linked or malformed directory refuses `PRODUCTION_RECIPIENT_INVALID`, and a history naming
+  a committed fixture key refuses `FIXTURE_RECIPIENT`. The loaded value is branded through a module-private set.
+- **The receipt, its validator and reuse** (`release-binding.mjs`). Schema v1 carries every field the contract lists,
+  with a required expectation and canonical bytes. Reuse admits exactly the three files and returns the verified bytes.
+  The module's import closure, pinned by a test, holds only `archive.mjs`, `custody-error.mjs`, `files.mjs`,
+  `release-recipient.mjs` and `ustar.mjs`.
+- **The gate and the sealer** (`release-custody.mjs`). Every scope refusal comes before any GnuPG call, and a
+  module-private registry ties the sealer to the records the gate returned. The receipt is published once through a
+  hard link, and a sibling left after the link is not a refusal.
+- **Tests.** Four new files join `test:acceptance-tools`, with 34 tests before the rigor pass and 39 after it: `release-recipient`, `release-binding`,
+  `release-custody` and `release-scope`. They include a production round trip, in which an ephemeral key under a
+  rotated history decrypts to the container whose manifest the receipt binds, and fault injection after the link and
+  after encryption.
+- **Docs.** packaging.md's Step 9b.2 boundary is the schema's canonical home. deferred-tasks.md records the named
+  limits (as of round 1: an orphaned ciphertext, no recipient re-check on reuse, a sibling left after the link, the
+  fixture denylist's coverage, the test ports and Windows not exercised), the Step 9d handoffs and a Wave 4b clause on
+  the recipient's committed form.
+
+**Sweeps before the rigor pass.** A generated sweep mutated every refusal statement, every guarded one-line refusal,
+every clause of a multi-line condition and every comparison of the three modules; an inner clause of a one-line
+compound condition is not mutated on its own:
+131 mutants, 119 killed at first. Five survivors were real gaps and gained cases:
+- a `pending` status beside the current one;
+- a one-entry inputs map;
+- a receipt passed as a `Uint8Array`;
+- a host failure in the gate, and one after encryption.
+
+The other seven are equivalent:
+- the history's type and read checks: removing one leads to a host error that the loader's wrapper maps to the same
+  code, or for an empty history to the one-current rule;
+- the inputs sort comparator, whose keys are unique;
+- the receipt bound's `>=` flip, since no canonical receipt reaches 64 KiB.
+
+24 named semantic mutants, which the generator cannot produce, all fail a test. They cover the brand, the fixture
+denylist, the root's shape, the current pins, the registry's consumption, the best-effort removal, the `EEXIST`
+mapping, the canonical bytes, the sealer's fields and the link-aware presence check.
+
+**Rigor pass at `d94ed705`.** Internal lenses (claims, platform, crypto/custody pre-sitting, tests and integration)
+and a critic ran, every finding adversarially verified. The platform lens was clean. Three mediums, corrected:
+- **The loader's seams minted a production recipient.** The exported `root` and `fixtures` parameters let any caller
+  brand any key, a fixture key or the per-run key included, with the denylist switched off; only a comment and an
+  interim control stood in the way. `loadProductionRecipient()` now takes no argument, and tests load temporary roots
+  through a separately named `loadRecipientForTests`. Two permanent controls keep every call of the loader
+  argument-free and its test seam out of product and tooling code (CLAIM-9B2-1, SIT-9B2-4).
+- **The import control matched three spellings.** A `../custody.mjs` import from `smoke/`, a workflow's `./tools/…`
+  path or a query suffix passed unseen. The control now resolves every quoted specifier against its file, or a
+  workflow's against the repository root, and has its own positive and negative self-test (SIT-9B2-1, T-9B2-R1-1).
+- **The primary half of the recipient pair was untested.** A pair matching only by its subkey now refuses in both
+  scopes (T-9B2-R1-2).
+
+Lows corrected:
+- the gate reads its scope once and encrypts its own copy of the container, and the validator snapshots its
+  expectation (SIT-9B2-2, T-9B2-R1-3);
+- the gate resolves the destination before encrypting (`PLACEMENT`) and checks the tarball against the manifest
+  (`TARBALL_DRIFT`), so nothing after publication can fail on the destination and the likeliest orphan causes refuse
+  first (CRIT-9B2-3, SIT-9B2-5);
+- an integer-like input name refuses, so the canonical bytes list inputs by path (CLAIM-9B2-5, SIT-9B2-8);
+- the fixtures' pins file is parsed strictly (SIT-9B2-3);
+- the closure control also reads `export * as`, forbids `cluster` and `module`, and scans the closure's files for
+  `require`, `createRequire`, `getBuiltinModule` and `process.binding` (SIT-9B2-7, T-9B2-R1-5, INT-9B2-R1-2,
+  CRIT-9B2-1);
+- the guard control uses a complete, valid synthetic candidate (T-9B2-R1-4, INT-9B2-R1-1);
+- new tests cover the origin's length bounds, a genuine invalid UTF-8 byte, a reused asset swapped for a link after
+  its size check, and the reuse refusal after a sibling is left (T-9B2-R1-6, T-9B2-R1-7, T-9B2-R1-8, SIT-9B2-6);
+- wording: the contract's diagnostics, canonical-bytes and orphan sentences, the module header, the README and this
+  checkpoint's commit range (CLAIM-9B2-4, CLAIM-9B2-6, INT-9B2-R1-3 to INT-9B2-R1-6, CRIT-9B2-4).
+
+Recorded in deferred-tasks.md: the fixture denylist misses an unlisted second subkey, a left sibling blocks reuse
+until it is removed, the append-only rule needs a Wave 4b control, and the release job's checkout must include the
+fixtures' pins file (CLAIM-9B2-2, CLAIM-9B2-3, SIT-9B2-6, CRIT-9B2-2).
+
+**Sweeps at the corrected head.** The generated sweep ran 137 mutants and killed 128 at first. One more gap, a
+malformed fixture subkey, gained a case. The other eight are equivalent: six history, fixture and read checks whose
+removal the loader's wrapper maps to the same code, the inputs comparator, and the receipt bound's `>=` flip. Of 29
+named mutants, 28 are killed. The survivor, the synthetic recipient's snapshot, is equivalent: synthetic scope admits
+any recipient, and `encryptOnce` checks the file it reads against the pins it parsed.
+
+**Author evidence at `91d08a65`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,019 of 1,019, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in
+Docker, a fresh clone, a non-root user), the 85 tests of the 9b.1 custody files and the four release files ran: 84
+passed and the case-insensitive-volume case skipped.
+
+**Round 1 at `91d08a65` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. Three
+mediums, corrected:
+- **The rigor pass's destination fix dropped a 9b.1 refusal.** Resolving the destination in the gate and handing
+  `encryptOnce` the resolved path let a linked destination through, which `encryptOnce` alone refuses. The gate now
+  refuses a link itself (`PLACEMENT`, before anything is read through it) and passes `encryptOnce` the caller's
+  destination, so its refusals apply unchanged (PLAN-9B2-R1-1, COR-9B2-R1-1, SIT-R1-1).
+- **A stray entry led to an unsealable ciphertext.** The gate checked the tarball but not the destination's other
+  entries, which the sealer refuses. It now requires exactly the tarball: an existing ciphertext refuses
+  `ALREADY_ENCRYPTED`, and anything else, including a tarball name in another case, refuses `CANDIDATE_ENTRIES`, all
+  before any GnuPG call (SIT-R1-2, PLAN-9B2-R1-2, COR-9B2-R1-2).
+- **A bare `custody.mjs` specifier escaped the import control.** The control now reads every quoted literal, nested
+  ones included, decodes percent-escapes, ignores a query or fragment, and resolves a bare name as Node resolves
+  `new URL(…, import.meta.url)`; package scripts join its scan (INT-9B2-R1-A, TEST-9B2-R1-7, COR-9B2-R1-4,
+  PLAN-9B2-R1-3).
+
+Lows corrected:
+- the validator reads each field once, and the public validator, parser and reuse refuse a malformed call or a
+  throwing accessor with a fixed code (SIT-R1-6, COR-9B2-R1-3); a vanished asset refuses `CANDIDATE_ASSET`
+  (COR-9B2-R1-5);
+- `pins.json` must be its canonical serialization, so a duplicated key refuses, and the checks that this subsumes are
+  removed (CRIT-9B2-R1-2);
+- the closure control is an allowlist of its own files and listed builtins, and refuses a non-literal dynamic import
+  and `process.execve` (SIT-R1-3, INT-9B2-R1-B);
+- the fixture control covers every `*-fixture.mjs` name (SIT-R1-4);
+- the overhead constant's parity reads custody.mjs's own declaration (TEST-9B2-R1-6);
+- new tests cover anchored patterns, a non-string whose string form matches, the forwarding of the clock and the
+  GnuPG installation, the reuse snapshot and a directory under the tarball's name (TEST-9B2-R1-2, TEST-9B2-R1-3,
+  TEST-9B2-R1-5, CRIT-9B2-R1-1);
+- wording: this checkpoint's named-limit list and its sweep description (INT-9B2-R1-C, CRIT-9B2-R1-1).
+
+Recorded in deferred-tasks.md: the release entry points accept the test ports (SIT-R1-5), and the production loader's
+own denylist wiring is exercised only once Wave 4b commits the files (TEST-9B2-R1-4). The oversized-receipt case of
+TEST-9B2-R1-1 stays as it is: no canonical receipt reaches the 64 KiB bound, which only spares the parser an
+oversized input.
+
+**Sweeps at the round 1 corrections.** The generated sweep ran 131 mutants and killed 127. The four survivors are
+equivalent: the fixture entry's record check and the recipient files' read refusal, whose removal leads to a host error
+that the loader's wrapper maps to the same code, the inputs comparator, and the receipt bound's `>=` flip. Of 38 named
+mutants, 36 are killed. The two survivors are equivalent: passing `encryptOnce` the resolved destination, because the
+gate's own `lstat` refuses every link first and `encryptOnce` resolves the path itself, and the synthetic recipient's
+snapshot, as above.
+
+**Author evidence at `5cda6459`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,022 of 1,022, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4, the
+88 tests ran: 87 passed and the case-insensitive-volume case skipped.
+
+**Round 2 at `5cda6459` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. Two
+mediums, corrected:
+- **A nested package script escaped the import control.** pnpm runs a package's scripts in that package's directory,
+  but the control resolved every manifest against the repository root, so a script in `apps/cli/package.json` could
+  reach `custody.mjs` unseen; a workflow step's working directory left the same gap. No single base is right, so the
+  control now refuses any quoted reference, outside the gate, to a file named `custody.mjs`, the one tracked file of
+  that name, with separators, queries, fragments, percent-escapes and case normalized (PLAN-9B2-R2-1, COR-R2-1,
+  T-R2-3).
+- **A trailing separator bypassed the link refusal.** `lstat('link/')` follows the link, so a linked destination
+  spelled with a trailing `/` or `/.` was admitted. The gate now requires the destination and the private root in
+  normalized absolute form, and checks the destination before probing it for a receipt, so a link refuses
+  `PLACEMENT` before anything is read through it (COR-R2-2, SIT2-R2-1, PLAN-9B2-R2-2, INT-9B2-R2-1).
+
+Lows corrected:
+- the sealer reads its options inside its fixed-code boundary (SIT2-R2-2, COR-R2-4, T-R2-1);
+- the validator reads the origin and the inputs once (COR-R2-5);
+- a dynamic import in the receipt's closure must be exactly one string literal, a rule with its own self-test
+  (COR-R2-3);
+- a recipient root whose parent is a file refuses `PRODUCTION_RECIPIENT_INVALID`, never absent (T-R2-2);
+- the Step 9d handoff widens the gate's, the sealer's and reuse's directory admission together (CRIT-9B2-R2-1).
+
+Recorded in deferred-tasks.md: `encryptOnce` called directly still follows a link spelled with a trailing separator.
+Nothing outside the gate and the tests calls it, and the gate requires normalized paths (the 9b.1 half of COR-R2-2).
+
+**Sweeps at the round 2 corrections.** The generated sweep ran 135 mutants and killed 131; the four survivors are the
+equivalents named above. Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.
+
+**Author evidence at `463a047c`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,023 of 1,023, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4, the
+89 tests ran: 88 passed and the case-insensitive-volume case skipped.
+
+**Round 3 at `463a047c` — NONCLEAN.** Five lenses and a critic ran, every finding adversarially verified. The plan and
+integration lenses were clean, and the security sitting reported lows only. The tests lens reported four mediums, all
+in tests or static controls; the code they cover was correct:
+- **A non-`EEXIST` link failure was untested.** Turning that `throw` into a `return` passed every test, so a seal could
+  have reported success with no receipt. An injected `EPERM` link now refuses `UNEXPECTED` with no host text, publishes
+  nothing and leaves the record sealable (T4-1).
+- **The gate's refusal of a linked tarball was untested.** A tarball that is a link to a file with the right bytes
+  now refuses `TARBALL_DRIFT` before any GnuPG call (T4-2).
+- **No test pinned the patterns' trailing anchors.** A suffix after each valid value now refuses (T4-3).
+- **A template literal escaped the `custody.mjs` control.** A substitution containing a space hid
+  `` `${join(here, base)}/custody.mjs` ``, and whitespace-bearing scripts, unquoted arguments and JavaScript escapes
+  hid other spellings. The control no longer looks for quoted specifiers: after JavaScript and percent escapes,
+  separators and case are normalized, it refuses any mention of the name outside the gate, comments included
+  (T4-4, PLAN-9B2-R3-1, SIT3-L2).
+
+Lows corrected:
+- the closure scan reads every specifier after `from` or `import`, whatever the spacing, so spaced, compact and
+  multi-line imports are seen (SIT3-L1, T4-5);
+- new tests cover single reads of the gate's recipient, the validator's origin and inputs, throwing options on the gate
+  and on reuse, same-count renames for the sealer and reuse, the toolchain's length bounds, and the receipt bytes
+  returned by reuse while the file changes (COR3-R3-1, COR3-R3-2, T4-6, T4-7, T4-8);
+- the contract's diagnostics bullet names every path's code (CRIT-9B2-R3-1).
+
+**Sweeps at the round 3 corrections.** The generated sweep gained the operator classes the rounds had found by hand: a
+`throw` turned into a `return`, each regex anchor removed, each `||` and `&&` swapped inside one-line conditions, each
+integer bound raised by one, and each single-line call statement deleted. It ran 233 mutants. Three survivors were
+real gaps, the `typescript`, `tsup` and `esbuild` length bounds, and gained cases. Ten are equivalent:
+- the four named above;
+- `isRecord`'s two operator swaps and the history guard's `||`, which let through only values that still refuse with
+  the same code;
+- `string()`'s default maximum, used only by fixed-length patterns;
+- deleting `writePublicFile`'s `fsync` or `close`, which guard durability and descriptor hygiene, not anything a test
+  observes.
+
+Of 40 named mutants, 38 are killed; the two survivors are the equivalents named above.
+
+### Wave 3 Step 9b.2 acceptance — 2026-10-26
+
+**Step 9b.2 is independently accepted on `development` at `563402e6` (2026-10-26)** under the Acceptance row as
+amended on 2026-10-23. An internal rigor pass and rounds 1–3 were not accepted, each with mediums corrected as the
+[checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25) records:
+- the rigor pass: the loader's exported seams could brand any key, the import control matched three spellings, and
+  half the recipient pair was untested;
+- round 1: the rigor fix's resolved destination dropped a 9b.1 refusal, stray destination entries led to an unsealable
+  ciphertext, and a bare specifier escaped the import control;
+- round 2: a nested package script escaped the import control, and a trailing separator bypassed the link refusal;
+- round 3: four untested paths or control gaps, in the link failure, a linked tarball, the trailing anchors and a
+  template literal.
+
+Round 4 was a NEW independent complete cumulative review of `819f8cbb..563402e6`, with every reviewer in its own
+worktree detached at that head. It reported no blocker, high or medium finding and no regression. Its separate
+crypto/custody security sitting, run at the same head as its own reviewer and report, found lows only. The
+integration lens and the critic were clean. The plan lens confirmed the inventory pin at every commit and that no 9b.1
+module, product path, receipt, guard or workflow changed.
+
+**Author evidence at `563402e6`.** The full `pnpm run ci` passed plain and alone (exit 0): `test:acceptance-tools`
+1,024 of 1,024, all 25 product map controls, and every causal-control family. On Ubuntu 24.04 with GnuPG 2.4.4 (in
+Docker, a fresh clone, a non-root user), the 90 tests of the 9b.1 custody files and the four release files ran: 89
+passed and the case-insensitive-volume case skipped.
+
+The round's verified findings were twelve lows and one nit:
+- Two are corrected in the acceptance commit, which changes no code. The contract's diagnostics bullet no longer
+  says every host failure on the destination is `PLACEMENT`: a destination that cannot be listed refuses `UNEXPECTED`
+  (PLAN-9B2-R4-3, SIT9B2-R4-L2, COR-R4-1). The `custody.mjs` control's claim now names the escapes it decodes
+  (PLAN-9B2-R4-1, COR-R4-2).
+- The rest are recorded in
+  [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b2--recorded-low-findings-2026-10-26), each with its example
+  and re-check.
+
+Step 9c was next; Wave 3 was paused on 2026-10-26 behind the CLI MVP ([MVP priority reset](#mvp-priority-reset--2026-11-04)).
+
+## MVP priority reset — 2026-11-04
+
+**Wave 3 is paused after Step 9b.2.** On 2026-10-26 the maintainer stopped the Step 9c preflight and redirected the
+project to an MVP: features and bugfixes that a CLI user feels, in `apps/cli` and `packages/core` first. Steps
+9c–19 (25 of the 32 increments; the plan grew from 29 with the 9a.2, NI and 9b splits) are **pending, not
+declined**: each keeps its row, its recorded ADR amendments and its security sittings. The live order is
+canonical in [current.md](../current.md#next-work--the-cli-mvp); this section records the evidence, the decisions
+and the amendments to this register.
+
+**Evidence.** A read-only multi-agent review at `development` `5a328bca` read every roadmap document and the code:
+eight scoped readers (661 open items), eight adversarial verifiers (three re-run on 2026-11-04 after a spend
+limit), a synthesis and a completeness critic. The detailed reports and a Turkish decision register stay local and
+Git-ignored. Its main findings, each re-checked against the code before the decisions:
+
+- The engine is solid; the agent and presentation layers are not. The built-in chat agent grants only
+  `read_file`, `list_directory` and `git_status` (`apps/cli/src/chat/default-agent.ts:35`) and starts in `ask`
+  (`apps/cli/src/chat/chat-mode.ts:31`); no edit, search or find tool exists; `run_command` is refused before any
+  approval unless allowlisted (`packages/core/src/tools/registry.ts:762-770`).
+- Run results are invisible on the human surfaces (no outputs, no run id, no finished-run listing, crashed runs stay
+  `running`); replies are raw markdown; a resumed chat opens empty; Anthropic chat turns default to a 4,096-token
+  output estimate (`packages/llm/src/output-cap.ts:37`).
+- Nothing newer than `0.1.1` can be published: the Step 9a.1 guard sets `process.exitCode = 1` before evaluating
+  (`tools/cli-package/release-guard.mjs:13`), and it exists only on `development` — `main` has no guard.
+- The published `0.1.1` prints unsanitized model output in its `relavium run` view (#56); `LICENSE` §2 grants no
+  usage right without a written agreement.
+
+**Decisions (maintainer, 2026-11-04).** D58–D72 are recorded in the
+[decision table](../current.md#wave-gating-decisions) with their rulings. In short: the larger MVP (v0.2.0 after
+MVP-1…MVP-10, including conversational authoring, web, the Home hub and MCP management; milestone M3.5); release
+path B (D59); the license unchanged (D60); a scoped `development`→`main` checkpoint now (D61); the default agent
+may write, with `[chat].default_mode` (D62); a `run_command` approval card with remembered grants outside the
+repository (D63); a tiered acceptance bar (D64); six recorded splits plus #61 (D65); `current.md` reduced to live
+status (D66); the CR-71 residual un-deferred and CR-70 after the release with ADR-0096 §5 (D67); first-run defaults and one
+keymap ADR (D68); authoring → web → Home → MCP (D69); no pre-release (D70); the parity items in the MVP (D71); no
+action on `0.1.1`'s #56 (D72).
+
+**Recorded splits (D65), ID coverage unchanged.** Each split keeps its row's recorded ADR amendment and security
+sitting, and lands in the named MVP milestone:
+
+| From | Split | Lands in | Order amendment |
+|---|---|---|---|
+| 10b | Excess positional arguments refused on every non-variadic command | MVP-2 | — |
+| 15a | #65: tabs expanded to 8 cells before width measurement | MVP-2 | Lands before #58/#62/G40/G51 (row 15's strict arrow amended) |
+| 15c | #63: 80×24 on both chat surfaces with no hidden affirmative input there or on the Home strip (approved ADR-0057 amendment, approval-path sitting); with it, the Home strip row budget (2.6.F's open obligation) | MVP-3 | Lands before 15a/15b's remaining items |
+| 11b | Ctrl-C at a pending approval rejects it | MVP-4 | Lands before 11a. The 2026-10-19 "maps to `/cancel`" wording is superseded by the keymap ADR (D68): reject first, then the ordinary interrupt semantics; the approval-path sitting stays |
+| 16b | #51: the persistent, current-state keyless nudge (keychain/config sitting) | MVP-2 | Lands before 16a |
+| 17a | #24: the one-shot stdin hint | MVP-2 | — |
+| 13a–13c | G30: chat HTTP authority under ADR-0112 (egress/config-trust sitting) | MVP-7 | Row 13's "after decomposition" no longer holds: 13a/13b land before Step 12; 13c is re-scoped when MVP-7 starts because 12b's shared helpers do not exist yet |
+| Wave 5a | #61: full-screen word-wrap | MVP-2 | Its Wave 5a ownership ([later-wave ownership](#existing-later-wave-ownership-and-approval-gate)) ends |
+
+**Amendments to the 2026-10-19 rulings** (dated, the original text kept):
+
+- *Acceptance (D64):* tiered. An increment touching an approval or consent path, egress, keys or secrets,
+  filesystem writes, a new terminal sink for untrusted content, the lease or resume paths, or release and
+  publication keeps the 2026-10-23 bar — a rigor pass, one NEW complete cumulative round with no blocker, high or
+  medium finding and no regression, and a separate security sitting. Other UX, rendering and command increments are
+  reviewed per MVP milestone: author self-review, `pnpm run ci` plus `pnpm coverage:enforced`, and one independent
+  scoped round with no high or medium finding; lows go to [deferred-tasks.md](../deferred-tasks.md).
+- *Publication (D61):* a scoped `development`→`main` checkpoint follows this reset; the Wave 3 PR still follows
+  Step 19 when the wave resumes.
+- *Interim release guard (D59):* to be superseded by a new pre-1.0 release ADR (option B) with a sunset at 1.0 or
+  when 9c/9d land, whichever comes first. The guard stays in force, in code and procedurally, until that ADR is
+  Accepted and its guard change passes a security sitting.
+
+**Recorded risks.** The published package grants no usage right (D60). The published `0.1.1` keeps #56's
+unsanitized `relavium run` output; the maintainer accepted it because the product has no users yet (D72).
+
+**NI's Windows clause is closed** (2026-10-26): run 3 of 3 is recorded in the
+[NI acceptance](#wave-3-ni-acceptance--2026-10-25).
+
+## Execution record moved from current.md — 2026-11-04
+
+> Moved verbatim from `docs/roadmap/current.md` on 2026-11-04 (decision D66) when that page was reduced to live
+> status and order; only relative links were rewritten for this directory and heading levels lowered by one.
+> It keeps the 2026-07-26 execution plan's baseline, axes, Waves 0–1 and the PR #81 closing list — the only
+> definition of `#W15-1`…`#W15-24`, which code comments cite. The live order is in [current.md](../current.md).
+> This first pass moved only that plan; the records it left out follow in
+> [the PR #96 review correction](#moved-by-the-pr-96-review-correction--2026-11-04).
+
+### Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
+
+> **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's
+> definition, size, file list and finding ids live in its phase file —
+> [phase-2.5.5](phase-2.5.5-hardening-and-remediation.md) (176 work items, sub-streams A–I) and
+> [phase-2.6](phase-2.6-conversational-authoring.md) (15 open workstreams) — and nothing below
+> restates them. Items are cited as `<sub-stream> · <the bullet's bold lead-in> (<finding ids>)`, which
+> greps directly against the phase file.
+>
+> Derived 2026-07-26 from a full pass over both phase files, their own sequencing sections, and the live
+> tree. Where it departs from a phase file's own prose, see [Departures](../current.md#departures-from-the-phase-files-own-sequencing).
+
+#### Ordering root — one baseline ✅ **discharged 2026-07-26**
+
+The plan opened on a divergence neither phase file modelled: Phase 2.5.5's whole backlog is written against
+`f88b0e8`, which existed only on `development` behind PR #76, so every `file:line` citation in it resolved
+against a tree nobody was branching from. **PR #76 and #77 are both merged** — `f88b0e8` is on `origin/main`,
+`origin/development` and `origin/main` held identical trees with no open PRs as of 2026-07-26. Every
+citation in this plan now resolves. (PR #79 and PR #80 have opened since.)
+
+One consequence survives and is worth keeping until the phases close:
+
+> **Branch from `origin/development`, never from a local `main`.** A long-lived `development` merged into
+> `main` by merge commit leaves a stale local `main` behind after every PR, silently and without conflict.
+> Run `git fetch` and cut from `origin/development`.
+
+Also settled while discharging this: `main` now carries branch protection (PR required, `lint · typecheck ·
+test` required, force-push and deletion blocked) and a `v*` tag ruleset restricting tag creation to the
+maintain/admin roles — closing the Phase-0 obligation that made `ci.yml`'s own "REQUIRED status check"
+comment untrue. `release.yml` asserts its ref is reachable from `main` before `pack`, so **2.5.5.H's `G26`
+is closed ahead of Wave 0**.
+
+#### The three axes this order is built on
+
+1. **Irreversibility** — a defect whose damage a later fix cannot undo jumps every queue. That is Wave 1:
+   a credential already written into a durable `--json`-visible row, a billed turn lost after the reply
+   rendered, model-controlled ANSI inside the consent card, and the states where the cost cap is silently off.
+2. **File ownership** — whoever edits a file next inherits everyone else's rebase. Every god-file
+   decomposition and naming/convention ruling lands *before* the 2.6 workstream that piles onto it, and
+   eleven items are pulled across the phase line because they edit the exact function another item restructures.
+3. **Certification** — a wave that discharges a phase obligation certifies it while the evidence is fresh,
+   which is why 2.5.5's exit criteria 1–3 close in Wave 2 rather than at the end.
+
+Waves are readable single-branch sequences. Concurrency is expressed as *"these queues are file-disjoint,
+any order"* — never as headcount.
+
+```mermaid
+flowchart TD
+    W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
+    W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
+    LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0–W8 complete · W3 blocker closed in W8<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 merged — PR #92<br/>49/51 closed · approved deferrals retained"]
+    W2["Wave 2 — Shut the doors ✅<br/>PR #94 merged · fs jail · secrets · config trust<br/>2.5.5 EXIT 1–3 satisfied"]
+    W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
+    W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
+    W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
+    W5a["Wave 5a — Paint before you build<br/>render-v2 · theme · config"]
+    W5b["Wave 5b — Home becomes the product<br/>2.6.G/I/J · then i18n sweep"]
+    W6["Wave 6 — Hands, voice, lineage<br/>2.6.M/B/E + 2.6.N foundation"]
+    W7["Wave 7 — Orchestration & the gate<br/>2.6.O/P · go/no-go → Phase 3"]
+    W0 --> W1 --> LEDGER --> P265 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
+    W3 --> W4b
+    W4b -.->|v0.2.0 release| W7
+    W4a -.->|file-disjoint lanes| W4b
+```
+
+#### Wave 0 — One true baseline
+
+Collapse the divergence, make the required gate execute the artifact it ships, and fix the review
+checklists before ~30 security-gated PRs are reviewed against them.
+
+1. ✅ **Merge PR #76** (2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal) — **done
+   2026-07-26**, along with #77 (this plan + the Phase-2.5.5 opening + `release.yml`'s `G26` ancestry gate).
+2. ✅ **Reserve numbers** — **done**, recorded here: migrations end at `0012` and ADRs at `0072` (verified),
+   so `0013` = **ADR-0074 §4's conservative money columns** (`agent_sessions.total_conservative_microcents` + `session_costs.conservative_microcents`) — the number was freed when D8 ruled against the approval-preview scrub and is RE-USED here rather than left as a hole · `0014` = 2.5.5.C's enum CHECKs (#101) · `0015` = 2.6.H ·
+   `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0075+** for the nine unwritten 2.6 ADRs (`0073` = the history.db migration lock, `0074` = durable conservative budget commitments — both landed in Wave 1).
+3. ✅ **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** — **done 2026-07-29 (PR #80)**, all eight items:
+   2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
+   local `pnpm run ci` vs `ci.yml` divergence (#312 — and `pnpm ci` is shadowed by a pnpm builtin, so the
+   script was unreachable by the name everyone types) → the coverage-floor **ruling and its implementation**
+   (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
+   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, landed in
+   #77; its tag-protection half is configured.)* The PR also closed the four blockers from the 2026-07-29
+   roadmap review, and its own CI caught two real defects in it — a TS4111 that `turbo run typecheck` does not
+   cover, and `pnpm ci` being unreachable because pnpm reserves `ci` as a builtin.
+4. ✅ **2.5.5.F · three skills' hardcoded foreign-project paths** (#162) — **done 2026-07-29.** Filed as docs,
+   actually a functional bug: they pointed at `/Users/dev/…/Agent-Organizer/`, so `add-package`'s `mkdir -p`
+   would have created a tree outside the repo. All three now anchor on `$(git rev-parse --show-toplevel)`.
+5. ✅ **One markdown PR** — **done 2026-07-29**: `packages/mcp` added to all five inventory sites (#128, #129,
+   #153, #163, #254), the reviewer agent's secrets item extended to the shipped CLI floor (#164), the
+   security-review skill's SSRF step now requires reusing the shared guard rather than re-deriving one (#167),
+   and the i18n clause settled by the D5 ruling (#74, #260, #134).
+6. ✅ **The locale-bar amendment** (D5, `en`+`tr`) and the **snapshot regen** (D3) — **done**, propagated to
+   all seven locale sites and merged as PR #79 (two price rises taken, nine retirements accepted).
+
+> ✅ **Wave 0 is COMPLETE (2026-07-29).** The required gate now executes the binary it ships,
+> `apps/cli/drizzle/**` is a declared turbo output, and `lint · typecheck · test` +
+> `engine coverage floor (llm, mcp)` are both required checks under branch protection. In phase terms this
+> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 followed and is also complete
+> (2026-07-30, PR #81) — see below; Wave 2 is next.**
+
+#### Wave 1 — Stop the bleeding
+
+All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
+lanes, any order between them, plus the money hole they left open.
+
+**✅ Wave 1 is COMPLETE — lanes (a)–(d) on 2026-07-30 (PR #81), lane (e) on 2026-08-09 (`#W15-3`).**
+
+> **Superseded 2026-08-09 — kept because the correction is the record.** Lane (e) closed with `#W15-3`:
+> `/cost --release` makes §1's escape hatch reachable, and `/cost` renders the durability state. The
+> retraction below was accurate when written and is no longer; it stays so the history of the false
+> completion claim is not quietly erased.
+>
+> **Retraction (2026-07-30).** This section previously said Wave 1 was complete and ADR-0074 fully implemented.
+> That was wrong on lane (e) and I am correcting it rather than leaving it: **§1's release escape hatch is
+> exposed on `GovernorWiring` but reachable from no command, REPL action or Home affordance**, and `/cost` never
+> renders `conservativeDurabilityBroken`. §1 names this exact state as forbidden — "a single usage-less response
+> would permanently shrink a long-lived chat's cap with no way out" — and this PR REMOVED the accidental escape
+> a restart used to provide. A section whose compensating bound is unreachable is not implemented, and marking
+> it done made four other documents inherit the error. Two independent reviews flagged it; both were right.
+>
+> Lane (e)'s remaining work, and two defects it exposed that ADR-0074 does not cover, are tracked in
+> **[PR #81's closing list](#pr-81s-closing-list-and-the-two-items-that-need-an-adr)** below. Every lane below is verified against the shipped code, not
+against its own task text — the check for each is stated inline. Two gaps are recorded rather than closed; both
+are named in their lane and marked in the source, and neither is a shipped defect:
+
+1. the engine-level composition test for ADR-0074 §3's abort-breakable media-job hold (`engine.ts`, at the abort
+   listener) — the governor's own state machine is mutation-verified, the composition with `#countRunning`'s
+   termination gate is not;
+2. the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime` → `GovernorWiring`
+   (`session-host.test.ts`) — `AgentSession.resume` calling the hook IS mutation-verified in `packages/core`;
+   only the spread that supplies it is unproven.
+
+- ✅ **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
+  (#91). *(The originally-planned migration 0013 scrubbing already-persisted previews was ruled OUT — see D8.)* *Closed: `previewFor()` now scrubs the DISPLAY copy while `rawPreviewFor()` keeps an
+  `unredactedPreview` for in-process classification — splitting the two uses, because a whole-string scrub
+  flipped the protected-path decision and a per-segment one reopened the leak. Verified: `registry.ts` and
+  `tools/types.ts` both carry `unredactedPreview`.*
+- ✅ **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
+  the blocking `Atomics.wait` (#226) → **the chat-persister safety net** (#228, CRITICAL) →
+  serialize `runMigrations` (#99) co-landed with the unconditional 0600 self-heal (#28, #33) →
+  `createClient` typed error + PRAGMA docstring (#104, #105). `deprecationDate` crash guard (G1) is a
+  standalone one-liner, droppable anywhere.
+- ✅ **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
+  reached** (G34, G44, #56, #57, CRITICAL — one PR at the shared helper, its own security review) →
+  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *Closed at all four boundaries the register names, verified by call count:
+  `RunApp.tsx` (#56) 9, `final-summary.ts` (#57) 6, `render-error.ts` (G34) 4, `clack-prompter.ts` (G44) 4. G0's
+  run/gate `SIGTSTP`/`SIGCONT` is `render/run-job-control.ts`; #50 is closed by ordering —
+  `drive-home.tsx` subscribes signals at `:808`, before `runOnboardingWizard` at `:855`.*
+- ✅ **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
+  `max_parallel` (G38) → re-armed `budget:warning` + projected `thresholdPct` (G39, G47, G49) → **2.6.Q's
+  strict-cap half**. Then `fallback-chain.ts`/`cost-tracker.ts` only: 2.5.5.B · `maxRetries: 0` + jitter +
+  `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
+  **2.6.Q's realized-cost half**.
+
+- 🔶 **(e) ADR-0074 — durable conservative budget commitments (§2–§5 shipped; §1 INCOMPLETE)** · the money hole the other four lanes leave open:
+  a bounded estimate retained when a provider may already have billed but returned no trustworthy usage was
+  kept only in memory, so a crash or a resume reopened a strict cap against money that may already be owed.
+  §5 (a forward-compatible stored-event READ, the precondition for emitting anything new) → §2 (the
+  `budget:estimate_committed` contract, the governor's durability barrier, the checkpoint fold and the resume
+  restore) → §3 (freeze an async media job's accepted units + price) → §4 (the session's conservative
+  aggregate + per-model attribution + migration + transactional persister write).
+
+> 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
+> `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
+> **Closes M2.5.5-1.**
+>
+> **Outstanding inside lane (e) — restated at close, because §4 changed the facts.** ADR-0074 §1 ties a
+> commitment's release to the surface that renders it.
+>
+> **Rendering: done on all three surfaces.** The run TUI and `relavium logs` shipped with §2; `/cost` shipped
+> with §4's fold and reads *estimated, possibly billed*, with `(no completed call)` for a model that has one
+> without a completed call. All three are mutation-verified.
+>
+> **Release: reachable, as of `#W15-3` (2026-08-09).** `/cost --release` on the chat surface — the one that
+> renders the amount, which is what §1 ties it to — clears the durable per-model and aggregate columns first
+> and the live governor second, so a released commitment does not return on the next `chat-resume`. `/cost`
+> also renders the durability state. This note previously said no affordance called it; that was true and no
+> longer is.
+>
+> The reserved `budget:estimate_released` event stays **reserved and unemitted**, and that is a decision, not
+> an omission: the session path restores its conservative total from COLUMNS rather than by replaying events,
+> so zeroing them is what makes the release durable there. The event is needed only by a workflow-run release
+> surface, which does not exist — a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node
+> bypass or raising the YAML cap are §1's own analogy. §1's dated note in
+> [ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) carries the same statement.
+
+#### PR #81's closing list, and the two items that need an ADR
+
+Two independent adversarial reviews of PR #81 (2026-07-30) found that the cap's core safety claim does not yet
+hold across a process boundary.
+
+**Almost all of this belongs to PR #81 itself, not to a later wave** — a first framing filed it as one, which
+was wrong. The test is simple: this PR either ADDED the code a finding is in (`background-failure.ts`), or
+claimed to have closed the area it sits in (the terminal-safety boundaries, ADR-0074 §1), or REMOVED a
+protection without replacing it (§1's escape hatch, which a restart used to provide). Shipping a regression and
+deferring its fix is not a schedule decision.
+
+**Only §A is genuinely separable.** Both of its items need an append-only ADR before any code — one changes what
+"spent" means across a crash, the other supersedes a decision ADR-0074 §5 already recorded. Those earn their own
+PRs. Everything from §B down is #81's to close.
+
+Ordered by whether the repo currently states something untrue, then by blast radius.
+
+**Every item names the check that would close it, not just the defect.**
+
+> **Status — 24 of 24 closed and MERGED, across two PRs.** Everything marked ✅ below is fixed and
+> break-verified with the mutation confirmed applied; the two PRs are recorded separately because the closure
+> dates differ:
+>
+> - **23 items merged to `main` via PR #81** (2026-08-09).
+> - **`#W15-1`, the last one, closed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and **merged to `main`
+>   via PR #82** (2026-08-11), together with the first Phase 2.6.5 batch.
+>
+> §E's six coverage gaps are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort
+> listener is removed, which is the unkillable run reproduced exactly rather than an assertion standing in
+> for it.
+>
+> **`#W15-2` closed 2026-08-09** as [ADR-0075](../../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
+> amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
+> DISPLAY stays tolerant. It landed first on purpose — `#W15-1` adds a new durable event type, and an older
+> binary reading it falls straight into §5's skip path, so this decision governs how that event degrades.
+>
+> **One gap this closing deliberately left open**, named here rather than implied: ADR-0075's refusal is
+> pinned at `gate.ts`'s own catch (where the blocker was) and at `toUserFacing`, but NOT through
+> `dispatch.ts` / `specs.ts` to the process exit. A re-wrapping `try/catch` added in either layer reproduces
+> the same blocker and leaves both tests green. Closing it needs a `run(argv, io)` drive with a redirected
+> HOME and a seeded on-disk `history.db`; no such harness exists for `gate` yet, and the marker sits at the
+> test it concerns.
+>
+> **`#W15-1` is what remains, and its DECISION is now made**:
+> [ADR-0076](../../decisions/0076-durable-per-attempt-realized-cost-ledger.md) (Accepted 2026-08-09) — an
+> additive durable run event recording one settled provider attempt, emitted through ADR-0074 §2's barrier and
+> folded into a `run_costs` row at persist time. It landed after ADR-0075 on purpose: a new durable event type
+> is exactly the input that decision governs.
+>
+> **The implementation is staged, and starts here.** In order, because each step is a precondition for the
+> next:
+>
+> 1. `packages/shared/src/run-event.ts` — `cost:attempt_settled`'s schema, its union arm, and
+>    `parseStoredRunEvent`. Until this lands nothing else compiles.
+> 2. `docs/reference/contracts/sse-event-schema.md` — the canonical shape + which of the two cost events is
+>    authoritative (ADR-0076's last Negative names that drift risk).
+> 3. `packages/db/src/run-history-store.ts` — the `applyDerived` arm writing the `run_costs` row in the SAME
+>    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
+>    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
+>    no-double-count claim.
+> 4. The attempt boundary and its barriers — **corrected by
+>    [ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)**. ADR-0076
+>    §1 asked for an `await` at the settle point; there is no `await` to be had there. The seam's observer is
+>    `onAttempt?: (record) => void` — synchronous, void — and BOTH money events are emitted from that one
+>    callback a few lines apart, which `budget-governor.ts` already states outright ("which cannot await"). So
+>    the ledger takes ADR-0074 §2's shape: **start** the write at the settle instant on a chained in-flight
+>    promise, **join** it at three barriers — before the next egress admission, **before tool dispatch**
+>    (`agent-turn.ts`'s `await dispatchToolCalls(...)`, the barrier this adds beyond §2), and at the turn/node
+>    terminal. Every barrier awaits AND observes the failure, because `#emitDurable` is total for store faults
+>    and resolves.
+> 5. `packages/core/src/engine/checkpoint.ts` — **corrected during implementation**. The instruction here was
+>    "fold it as a SUM of deltas", borrowing ADR-0074 §2's reasoning, and the wrong half of that cost two
+>    rewrites. Summing into the realized total double-counts (a node terminal's snapshot already contains its
+>    attempts); summing into a separate accumulator and maxing the two families UNDER-counts (a media node
+>    writes a snapshot and emits no attempt row, so every attempt after the last boundary vanishes). What is
+>    correct is the fold already two arms above it: `Math.max` over every durable ABSOLUTE total. §2's
+>    rejection of `Math.max` does not carry — it was rejected there only because a release can DECREASE a
+>    conservative total, and realized spend is monotonic.
+>
+> **STATUS: all five steps are landed** (`8d7ffcf` … `50c60bd`), each with an Opus and a Sonnet round folded.
+> The break-verify that matters most was step 4's ordering, and it now holds: with the tests draining to
+> quiescence before asserting, deleting B2 reddens the tool-dispatch test and deleting B3 reddens the node-
+> terminal test. B1 is masked by B2 on the current fixture (the second egress only comes after the tool), so
+> it is covered by construction rather than by a red — named rather than implied.
+>
+> **This is now the prerequisite of Phase 2.6.5, not a parallel track.** Its five steps touch the same four
+> files `CR-10` (ordered append tail) and `CR-12` (effect journal) restructure, so it lands first — see the
+> 2.6.5 section below.
+>
+> **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
+> A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
+> duplicate EFFECT is the harm, and no cost bookkeeping prevents it. That needs a durable effect journal with
+> a prepare/receipt pair, which is a different decision about a different failure and earns its own ADR. It is
+> the natural next one after this chain (forward-compatibility → conservative commitment → realized cost).
+>
+> Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
+> `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
+> write and the next turn is clean; it now stops instead, because continuing to spend above a transcript that
+> has fallen behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other
+> `packages/db` stores share the same outer-`db`-inside-a-transaction convention, which remains open, is
+> stated here rather than implied closed, and has its own PR queued after this one.
+
+##### A. Needs an ADR first — the only part that is NOT PR #81's to close
+
+- ✅ **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+  *Closed 2026-08-10 by ADR-0076 + ADR-0077 and the five staged steps; the barrier is a chain-and-join, not
+  the inline await ADR-0076 §1 first specified. See the staged plan below for what each step landed and the
+  three carried-forward gaps.*
+  `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
+  and the checkpoint can only recover cost from a LATER `node:completed`/gate snapshot. So: a paid call
+  succeeds → the model asks for a tool → the process dies during the tool → the realized cost is gone and the
+  resumed node re-runs the same paid call, against a cap that has forgotten the first one. ADR-0074 makes only
+  the CONSERVATIVE commitment durable; a call that returned trustworthy usage has no equivalent barrier.
+  *Needs an ADR: an idempotent per-attempt durable ledger, written before the next tool side-effect, the next
+  egress and the turn/node terminal. Not a local fix — it changes what "spent" means across a crash.*
+- ✅ **`#W15-2` (blocker) — a tolerant read is fail-OPEN on the resume path.** ADR-0074 §5 drops an event whose
+  `type` an older binary does not know, and `checkpointer.ts` builds resumable state from what remains. An
+  older binary cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a
+  cost commitment — so it may re-run completed or already-submitted work. Preserving the sequence high-water
+  mark prevents a UNIQUE collision; it does not restore lost state. Tolerance is right for `logs`/`status`
+  (read-only); it is wrong for a replay that changes the world.
+  *Needs a superseding ADR (§5 is append-only): fail closed on the resume path with "a newer Relavium is
+  required" when any row was skipped, while read-only surfaces stay tolerant — or classify events as
+  state-bearing vs not, and tolerate only the latter.*
+
+##### B. PR #81 — ADR-0074 §1, the half that makes the rest safe
+
+- ✅ **`#W15-3`** (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.
+  `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
+  REPL action or Home affordance calls either. §1 requires the surface that RENDERS the amount to also expose
+  clearing it, and this PR removed the accidental escape a restart used to provide.
+  *Closed by `/cost --release`: `/cost` renders the durability state, and the release clears the per-model AND
+  aggregate columns before the live governor, so it survives `chat-resume`. The durable
+  `budget:estimate_released` named here was NOT needed — the session path restores from columns, not from an
+  event replay — so it stays reserved; see the lane-(e) note above.*
+
+##### C. PR #81 — data integrity, each with a concrete failure
+
+- ✅ **`#W15-4`** (blocker) — session persistence failures are invisible to the producer. `RunEventBus` isolates
+  listener errors by design, so a persister that cannot write still lets the turn complete. Two consequences:
+  `persister.ts` advances the in-memory cost total BEFORE the DB write, so a failed `recordSessionCost` leaves
+  the durable total low and a resume restores a cap that has forgotten real spend; and a failed `commitTurn`
+  leaves the staged turn uncleared, so the next `beginUserTurn` overwrites the previous user message and the
+  durable transcript loses an exchange the in-memory session still has.
+  *Closes when: cost and transcript persistence move to an awaited durability port (UI subscribers may stay
+  passive), and a persistent write failure puts the session in a durability-degraded state that refuses new
+  egress rather than reporting success.*
+- ✅ **`#W15-5`** (high) — stored payloads are not checked against the authoritative columns. `readEventLog`
+  selects `seq`/`event_type` alongside the payload but never compares them to the parsed event's own `runId`,
+  `sequenceNumber` and `type`. A row with `seq = 2` carrying `sequenceNumber: 1` is accepted, leaving the
+  high-water mark wrong and the resume colliding on the next write.
+  *Closes when: every denormalized projection is compared after parse and any mismatch is a
+  `CorruptRunEventError`.*
+- ✅ **`#W15-6`** (high) — terminal cost snapshots on failed/cancelled runs are dropped by the read models.
+  `node:failed`, `run:failed` and `run:cancelled` all carry cost in the shared schema, but the store folds
+  none of them, the checkpoint folds none, and the run TUI's summary ignores the terminal figure. A sibling's
+  paid media cleanup after a root failure exists ONLY on `run:failed.cumulativeCostMicrocents`, so replay and
+  history lose it. Pre-dates this PR, but the PR touches all three files and claims cost safety.
+- ✅ **`#W15-7`** (medium) — `media_job:submitted` accepts a half-frozen basis. `units` and
+  `acceptedCostMicrocents` are independently optional, so a row with a frozen cost and no frozen units resumes
+  with the old reservation and a re-derived volume. The invariant is not "both or neither" (the approved-bypass
+  case legitimately has units only) but **`acceptedCostMicrocents` present ⇒ `units` required**.
+
+##### D. PR #81 — security and correctness
+
+- ✅ **`#W15-8`** (high) — the new failure-reporting paths can leak credentials. `background-failure.ts` prints an
+  arbitrary rejection message and, under `RELAVIUM_DEBUG`, a raw stack; `sanitize.ts` strips ANSI/control/bidi
+  but performs no secret redaction. Same class in the session listener notice, `render-error.ts`'s verbose
+  stack and `index.ts`'s fatal debug stack. The rejection can be an MCP error, a provider response body or a
+  tool result — all of which carry keys, `Bearer` headers or credentialed URLs. Existing tests plant ANSI, never
+  a secret.
+  *Closes when: the shared secret-shape redactor runs BEFORE terminal sanitization on every one of those paths
+  (stacks included), with tests planting `sk-*`, `Bearer`, `Basic`, credentialed URLs, query tokens and PEM.*
+- ✅ **`#W15-9`** (high) — the stream path can throw out of a contract that says it never throws.
+  `#runStreamAttempt` calls `#emitSuccess` OUTSIDE its try/catch (the `generate()` path has it inside), so a
+  provider returning non-integer usage makes `assertAccountableUsage` throw raw out of the async generator —
+  and `streamOneTurn`'s `for await` has no try/catch, so it crashes the turn unclassified, AFTER the content was
+  produced and paid for.
+- ✅ **`#W15-10`** (high) — `--json` output is not sanitized. `status --json` / `gate list --json` carry
+  model-controlled text; `JSON.stringify` does not escape Unicode bidi overrides (CVE-2021-42574). The human
+  render path is sanitized; the JSON branch is not. `createJsonRenderer` is the same gap on the NDJSON path.
+- ✅ **`#W15-11`** (high) — `createPlainRenderer` sanitizes AFTER splitting on newlines, so an embedded newline
+  still forges a line. Every other boundary this PR touched sanitizes first; `renderer.ts` is the exception.
+- ✅ **`#W15-12`** (high) — `isBlankPreview` treats a fully-redacted preview as informative (`chat-mode.ts`), so a
+  user pressing "always" on `Approve write to [redacted]?` auto-approves every `write_file`/`run_command`/
+  `http_request` for the session, having been shown nothing.
+- ✅ **`#W15-13`** (medium) — the config reader chmods PROJECT configs to 0600. `reassertOwnerOnly` runs on every
+  layer, but `config-spec.md` says project files are committed and shared. Reading a config mutates repo file
+  permissions, and `statSync`/`chmodSync` follow symlinks. Self-heal belongs to the canonical global config
+  only.
+- ✅ **`#W15-14`** (medium) — a provider `Retry-After` sleep is not abort-aware. `fallback-chain.ts` passes the
+  delay straight to an injected `sleep` with no signal, and the real hosts use a plain `setTimeout`. A cancel
+  during a 60 s clamped wait hangs until the timer fires. The existing abort test resolves `sleep` immediately,
+  so the window is untested. The docblock also says an oversized value becomes `undefined`; the code clamps.
+- ✅ **`#W15-15`** (medium) — corruption is reported to a multi-run view as "no data". `readPerRunOrDegrade`
+  returns only the fallback, so `gate list` can print "No pending human gates." for a run whose gates were lost
+  to corruption. It must return the degradation alongside the value, with a warning in human output and a
+  machine-readable marker under `--json`.
+
+##### E. PR #81 — coverage gaps it shipped knowingly
+
+All six are now CLOSED and their in-source markers removed. None had been a shipped defect — each had
+mutation-verified coverage one layer down — but closing them surfaced one that was: `onLegacyMediaJobHold`
+reached `WorkflowEngine` from a real `gate.ts` sentence and the constructor never read it, so ADR-0074 §3's
+hold notice was dead and a `relavium gate` resume of a legacy parked media job stalled silently. Found by
+the review of `#W15-16`, fixed with it, and now the signal that test drives.
+
+- ✅ **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
+  listener leaves the whole suite green.
+- ✅ **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
+- ✅ **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
+  the block does not seed).
+- ✅ **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
+- ✅ **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
+- ✅ **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
+  `agent run`.
+
+##### F. PR #81 — standards and documentation drift
+
+- ✅ **`#W15-22`** (low) — the PR's "no unsafe `as`" conformance claim is false. Two assertions in new production
+  code: `shared.ts`'s `readRetryAfter` casts an arbitrary `headers.get`, and `openai.ts`'s `mapOpenAiApiError`
+  casts a `headers` field back onto a parameter type that lacks it. A structural `headers?:` plus runtime
+  narrowing removes both.
+- ✅ **`#W15-23`** (medium) — `persistEvent`'s `applyDerived` uses the outer `db`, not the transaction handle.
+  Harmless under `better-sqlite3`, but it breaks ADR-0005's Postgres-portability promise on the highest-volume
+  money write.
+- ✅ **`#W15-24`** (low) — canonical docs describe code that was not shipped. `tool-registry.md` says path
+  redaction is per-segment (it is whole-string, and the same file says so correctly three paragraphs later);
+  `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
+  note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
+### Moved by the PR #96 review correction — 2026-11-04
+
+> The first pass above moved only current.md's 2026-07-26 plan (its lines 502–919 at `5a328bca`). A PR #96 review
+> found that the rest of its unique records had left the docs, against D66's ruling to relocate them, so they are
+> moved here verbatim too: the Wave 2 and Wave 3 sections of that plan, the rows the reset edited in place (as they
+> read before), and current.md's, CLAUDE.md's and AGENTS.md's status blocks. Only relative links were rewritten and
+> heading levels lowered by one; a heading in brackets is added. The Phase 2.6.5 interlude and the W7/W8 records are
+> in [Phase 2.6.5's record](phase-2.6.5-core-reliability-remediation.md#execution-record-moved-from-currentmd--2026-11-04),
+> Phase 2's status in [Phase 2's](phase-2-cli.md#status-record-moved-from-currentmd--2026-11-04) and the
+> "Not started yet" summary in [Phase 2.6's](phase-2.6-conversational-authoring.md#status-record-moved-from-currentmd--2026-11-04).
+
+#### Wave 2 — Shut the doors
+
+**Complete on `main`, 2026-10-15, merged as PR #94 (`ab08209e`).** The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) joins all forty queue IDs, the exit/D sign-off and final correction evidence. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
+
+1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
+   (G19) and MCP tool-definition poisoning (#202); see the
+   [W4 closing register](phase-2.6.5-core-reliability-remediation.md#w4-closing-register).
+2. **MCP queue, strict — EXECUTED AS PHASE 2.6.5 `W4`, and COMPLETE there (2026-09-01, [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)).** The queue below landed in five steps, plus `#202` and `G19` from step 1 of this wave and the MCP half of `#21` from 2.5.5.E — all the same threat class and the same security sitting, so splitting them would have booked the reviewer twice. Certify the 2.5.5 ids from the `W4` closing register in [phases/phase-2.6.5-core-reliability-remediation.md](phase-2.6.5-core-reliability-remediation.md).
+   *The original queue, for the record:* Connect-phase timeouts on every transport
+   (#35, G32, #205) → transport/discovery/result size bounds against a hostile server (G33, #201, #209, #288) →
+   structured `serverId`/`reason` discriminants (#203, #204) → the two fail-loud violations (#206, #207) →
+   per-file transport-adapter tests (#297) → `CLIENT_INFO.version` (#208). These finding ids keep their home in
+   [phases/phase-2.5.5-hardening-and-remediation.md]() and
+   certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
+   spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
+   sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
+3. ✅ **The fs jail, ONE reviewed change set — complete on `main`, PR #94** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+   (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
+   `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
+   is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
+4. ✅ `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
+   `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
+   workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
+5. ✅ Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
+   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), and certification of
+   W7's structural session/tool-content controls (#115, Wave D15). 2.5.5.A · chat-export continuity/slug
+   completion and existing tool-content exclusion (#80, #81, #83, D14), plus `analyzeSecretTaint`'s
+   context sites (G22). 2.5.5.D · the dormant `default_headers` admission/custody gate (G20, D13).
+6. ✅ **Phase 2.5.5 exit criteria 1, 2 and 3 and sub-stream D acceptance are satisfied on `main` by PR #94.** The D half of M2.5.5-2 is complete; the I half remains open.
+
+> Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
+> config-trust), not ~30 per-PR passes. The **hostile-MCP** sitting moved to Phase 2.6.5 with the queue-2 work;
+> it covers `CR-16` and `CR-40`–`CR-42` there. Reviewer availability, not code, is this wave's critical path.
+
+
+#### Wave 3 — Clear the ground
+
+**Implementation in progress — Steps 1–8 merged to `main` (PR #95, 2026-10-18); Steps 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted on `development` (2026-10-24/26), Steps 9c–19 NOT STARTED — 2026-10-26.**
+ADR-0110–0113, their linked contracts and the nineteen-increment plan were approved on 2026-10-16.
+[Steps 1–8 were independently accepted](#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`, with whole Step 8 reviewed at `c83c8575`, and published as the scoped checkpoint
+[PR #95](https://github.com/HodeTech/Relavium/pull/95); its [merge checkpoint](#wave-3-steps-18-merge-checkpoint--2026-10-18) is the canonical record of
+what merged. The phase register owns each increment's source, tests, cumulative review rounds, security sittings and
+platform/publication evidence, including historical NONCLEAN R1–R24 records, the
+[previous corrective review completion](#pr-95-corrective-review-completion--2026-10-18),
+the [second correction register](#pr-95-second-systematic-review-corrections--2026-10-18),
+the [second corrective source-review completion](#pr-95-second-corrective-source-review-completion--2026-10-18)
+(accepted at `ec0f3e10`), the [native Windows admission preparation](#pr-95-native-windows-admission-preparation--2026-10-18)
+and the [supplemental fixture acceptance](#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Those scopes are not widened: the delta from `ec0f3e10` to the merged head is two independently accepted test-fixture
+increments, documentation and the independent review's corrections at `a3e164b5`, which merged with author
+verification only and were then independently reviewed after the merge
+([review record](#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19));
+the follow-up corrections are on `development`, not yet on `main`. Whole-wave acceptance remains Step 19. No new decision, credential, billing or provider capture gate is introduced.
+
+Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
+**The multi-file queue is Step 1 and runs first.** The approved
+[nineteen-step execution plan](#proposed-implementation-increments),
+recorded as 29 increments since 2026-10-19, owns the full order and review gates: finish each increment and its fresh reviews
+before advancing; no parallel edits of shared hot files.
+
+The groups below retain the original scope inventory and within-file dependency
+arrows, not independent scheduling permission or current completion claims. The
+[source-corrected preflight dispositions](#wave-3-preflight-and-proposed-execution-plan--2026-10-15)
+own whether/how each original finding needs implementation or preservation.
+
+Two orderings here are not this plan's invention — they are the intra-phase serializations
+[2.5.5 records under Positioning](#positioning): **E before I**
+on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded code), and **C before E** on
+`packages/db/src/client.ts` (C types the error path in Wave 1; E's `openLocalDb` rewrite lands last, here).
+
+- ✅ **Multi-file Step 1 accepted — 2026-10-16** ([evidence](#wave-3-step-1-acceptance--2026-10-16)) — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
+  discipline to `resolve.ts`/`catalog.ts`/`chat-export.ts` (#4, G11) → `const exhaustive: never` across the
+  six sites (#300, #301, G3, which also makes `relavium run` render `agent:reasoning`).
+- **`chat.ts` (strict)** — 2.5.5.G · the four money/token reimplementations (#236, #237, #242, #307) →
+  `swapAgentModel` → `reseatAgentModel` (#218) → 2.5.5.E · SIGINT actually calling `session.abort()` (#21, #23)
+  → `budgetWarningText` → **2.5.5.I · decompose `chat.ts`** (#220, #244). Then **2.6.M's `allowedDomains`
+  chat gap (G30)**, pulled forward into `session-host.ts`.
+- **`home-controller.ts` (strict)** — 2.5.5.E · `selectGatePrompter` test (G37) → the swallowed palette
+  rejection (#281) → **2.5.5.I · decompose `createHomeController` + the overlay discriminated union**
+  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222).
+  Settle #125/D26 before decomposition: the approved preflight certifies the planned scope of the real
+  in-Home-chat cost path and retaining chat-only scope. If a new bare-Home cost
+  surface is selected, wire its explicit session target before decomposition.
+- **`chat-ink.tsx`** — 1,906 lines at preflight (the original queue recorded 1,795), decomposed by **neither** phase doc.
+  **Recommendation: decline** a new decomposition (decision D18); take only the exhaustiveness guard and the
+  min-terminal-size guard (#63), and hand restructuring to 2.6.M's render-v2 in Wave 5a.
+- **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
+  2.5.5.G · tab expansion before width measurement (#65) → per-cluster width cache + resize debounce
+  (#64, #66), refined to frame coalescing in the proposed plan. Alt-screen word-wrap
+  (#61) retains the approved Wave 5a ownership; it is not an unapproved Wave 3 prerequisite.
+- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` implementation or preservation at the
+  schema dispositions (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
+  the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
+- **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Accepted ADR-0113) → `ctx.fsScope` (#93) →
+  `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
+  denial copy (#308); then the four schema length caps (#95), the `llmVisibleParams` rewrite (#96, #98),
+  stale doc comments (#78, #97, #214); then `#armRunTimeout` (#75), `#dispatch` dead branch (#79),
+  `AbortSignal` into `resolvePrompt` + the human-gate recheck (#76, G9).
+- **Process/CLI boundary (strict head)** — the revised plan serializes pure flag/descriptor/owner substrate → lazy guarded runtime graph → native crash integration → map/archive custody → command behaviour. It covers 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
+  #269), the `--help`/`--version` historical ~400 ms tax (#43, #44, #271), and the flag-system ruling (#45, #264,
+  #265, #268), the exit-code and `--help --json` rulings (G35, #13), durable-only logs preservation (G15 refuted), the `--input`
+  namespace ruling (#18, #310). **`openLocalDb` wrap-and-redact (#278, #280) lands LAST** — it touches 8+
+  call sites the other queues are still moving.
+- The numbered plan assigns the remaining 2.5.5.A/E/G/I tails and keeps the central
+  DB refactor last before whole-wave acceptance. Step 19 owns sub-stream **A, E
+  and G sign-offs**, the reconciled **EXIT:4 reading** (D22), and **M2.5.5-3**
+  closure. Full I acceptance remains in Wave 5a.
+
+
+#### [Rows of current.md edited in place on 2026-11-04 — their wording before]
+
+
+- **Sub-stream B, C and H acceptance sign-offs**, then **cut and publish v0.2.0**. **Closes M2.5.5-4.**
+
+
+Roughly 60 open decisions sit across both phases: the ~14 that 2.5.5 flags **blocked** inline
+([Dependencies](#dependencies)), the nine unwritten 2.6 ADRs
+
+| D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
+
+| D50 | 6 | ADR row 11: adopt `ink-syntax-highlight`, or build in-house? | **Decline the dependency** per CLAUDE.md rule 2 — the markdown renderer is already in-house and untrimmed `highlight.js` is the phase's own named bundle risk |
+
+
+This ordering is compatible with both phase files' stated dependencies. It departs from their prose in six
+places, each deliberate:
+
+### [current.md's status block, as of 2026-10-25]
+
+This page tracks what is active **right now** and the immediate next concrete actions.
+The full phase plan and the global milestone spine are in [README.md](../README.md).
+**Phase 2.5 (CLI Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — its
+breakdown, now historical, is in
+[phases/phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md).
+A 2026-07-19 full-project code review then opened **Phase 2.5.5 (Hardening and Remediation)**, an
+interstitial phase holding the review's verified findings against the pre-2.6 codebase; it runs
+**concurrently with Phase 2.6, not before it** — see
+[phases/phase-2.5.5-hardening-and-remediation.md]()
+and [Active now](../current.md#what-is-active-now).
+**Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
+2026-07-08); its plan is in
+[phases/phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
+Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
+(PR #74, 2026-07-11), and so is **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
+PR #75, 2026-07-13) — see [Active now](../current.md#what-is-active-now). **2.6.Q** (dynamic model-catalog
+enrichment) is **no longer blocked**: [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md)
+and [ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) are both
+**Accepted**, resolving the six open maintainer questions the phase file had cited, and the P1–P5
+implementation steps are **merged to `main`** (PR #76, 2026-07-26). P6 and the `/settings` → `/models`
+visibility toggle remain open; the bundled offline snapshot was **regenerated** in PR #79 after the D3
+price ruling.
+
+**The unified build order across both phases is in
+[Execution order — Phase 2.5.5 + Phase 2.6](../current.md#execution-order--phase-255--phase-26-temporary) below** — a
+temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
+and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
+merged too (PR #85, 2026-08-28).
+
+### Wave 2 merged — Shut the doors
+
+**Wave 2 merged to `main` on 2026-10-15 as [PR #94](https://github.com/HodeTech/Relavium/pull/94),
+merge commit `ab08209e`. All eight steps and the maintainer corrections are complete.**
+The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15)
+joins the forty item dispositions, four new security sittings plus W4 revalidation,
+original whole-wave acceptance and all subsequent correction scopes. Existing incoming
+navigation anchors are retained; dated implementation checkpoints remain historical.
+
+Completed work covers invocation-authorized filesystem boundaries and scratch-policy
+composition; bounded secret stdin, early admission and private bridge diagnostics;
+faithful-snapshot warnings, structural session privacy and export completion; verified
+bounded media/CAS/native lifecycles; and the interim provider-header gate. Maintainer
+corrections include runner-level error rejection, valid Opus/Vorbis publication,
+FLAC structural consistency, generated-result streaming and finite pin-error provenance.
+
+Final reviewed correction source `4cdfe011` has two NEW independent complete clean
+cumulative rounds covering all 67 correction paths / 188 hunks / 24 complete new files.
+These scoped rounds do not claim a new review of every original PR path. Full local
+CI, ordinary/enforced coverage and all nine jobs in each PR/push CI workflow pass;
+SonarCloud and selected native Windows/Node-floor controls pass. Local coverage records
+588 files / 12,983 passing tests / 20 explicit skips; CI records 12,982 / 21 with its
+established extra CI-only skip. Complete physical controls are independently inspected.
+The merge tree matches the reviewed source; no new merge-commit execution is inferred.
+
+**Satisfied on `main`:** Phase 2.5.5 exit criteria 1–3 and sub-stream D acceptance.
+**Still open:** M2.5.5-2's I half, whole Phase 2.5.5/2.6, M/N production lifecycle,
+future live headers and existing approved residuals. Wave 2 has no remaining implementation,
+review, publication, ADR approval, provider capture, credential, billing or user-decision gate.
+The [deferred register](../deferred-tasks.md) retains its existing limits; closure adds no deferral.
+
+
+### Wave 3 Steps 1–8 merged — PR #95
+
+**Wave 3 Steps 1–8 merged to `main` on 2026-10-18 as [PR #95](https://github.com/HodeTech/Relavium/pull/95),
+merge commit `6d2a7372` (22:44 UTC). Wave 3 itself is not complete: Steps 9–19 had not started at
+that merge (Steps 9a.1, 9a.2a and 9a.2b are now accepted on `development`, the native-identity increment NI and Steps 9b.1 and 9b.2 are accepted too, and Steps 9c–19 have not started) and whole-wave acceptance
+remains Step 19.** The [merge checkpoint](#wave-3-steps-18-merge-checkpoint--2026-10-18)
+joins the completed scope, every review attribution, the independent review's dispositions and the
+publication state observed at merge. It was the maintainer-authorized, scoped publication checkpoint.
+
+On `main` now: close handling, safe source labels and exhaustiveness guards (Step 1); shared admission and
+diagnostics (2); secret provenance at public sinks, ADR-0113 (3); the typed error/envelope substrate (4); tool and
+engine tails (5); the pure process/discovery substrate, ADR-0110 (6); the lazy runtime, finite compiled graph and
+exact-tarball consumers, ADR-0111 (7); and creation-owned native process integration (8).
+
+Three points were recorded rather than papered over; all three are now resolved. The merged head `a3e164b5` carried
+corrections from a further independent review (a secret-scrubbing production rule, two behaviour-neutral import moves,
+tests and causal-control pins) with **author verification only** at merge; a post-merge independent review — four
+rounds and a security sitting, with fixes in follow-up commits — accepted them, as the
+[review record](#independent-review-of-a3e164b5-and-its-follow-up-corrections--2026-10-19) shows. CI had not finished when the merge
+happened (the required `lint · typecheck · test` job was still running); the three runs later completed `success`,
+15 of 15 jobs each, as the [merge checkpoint](#publication-state-observed-at-merge)
+records. And SonarCloud's quality gate, which had failed on `main` since at least PR #90 because its dispositions lived
+only on PR branches, was cleared on 2026-10-19 (zero open vulnerabilities, gate OK). Open findings remain, including two
+security residuals that predate the follow-up — an `api-key:Bearer <token>` token leak and unmasked userinfo with a raw
+`?`/`#` — in [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18).
+
+
+### Next work — Wave 3 — Clear the ground
+
+Wave 3 implementation continues on `development`: Steps 1–8 are merged. A pre-implementation document/source review
+of Steps 9–19 and the maintainer's rulings are recorded in the
+[2026-10-19 rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+(no new ADR; 29 recorded increments). **The PR95 increment is closed on `development`** — the PR #95
+scrubber residuals, including the two security residuals — under the maintainer's 2026-10-21 masker acceptance
+bar and round cap, as its
+[implementation checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20) records: rounds 1–10 were NONCLEAN; the high and
+medium findings through round 9 are corrected, and after round 10, the last round, only GEN-R10-1, which the
+maintainer counted as high on 2026-10-22, is corrected (in the summary, by the author alone). Its other findings
+are recorded in
+[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is independently accepted on `development` at `cf97b7f1` (2026-10-24): its round 13 reported no blocker, high or medium finding and its security sitting was clean, and the round's low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)); Step 9a.2 is split into 9a.2a and 9a.2b, and Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24) after three rounds, the third with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24) after two rounds, the second with no blocker, high or medium finding and no regression ([acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)), and the native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25) after one round with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-ni-acceptance--2026-10-25)), its Windows clause open until three green advisory Windows runs; Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)), and Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` ([acceptance](#wave-3-step-9b1-acceptance--2026-10-25)), and Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the absent production recipient loader and scope separation) is independently accepted on `development` at `563402e6` ([acceptance](#wave-3-step-9b2-acceptance--2026-10-26)), with Step 9c next; the substrate's
+9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
+[increment table](#proposed-implementation-increments) and end with
+whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the
+review scope of new commits. See the [Wave 3 queue](../current.md#wave-3--clear-the-ground).
+
+
+### Where we are
+
+**Phase 1 — Engine and LLM is COMPLETE** (milestone **M2** reached, PR #27, 2026-06-16;
+all workstreams 1.A–1.AH merged through PR #38, 2026-06-21). The engine runs end-to-end:
+YAML parse → DAG → run loop → node execution (agent + the six non-agent handlers) →
+checkpoint/resume → node retry → provider failover, with per-attempt cost tracking and a
+gap-free `sequenceNumber`. The `@relavium/llm` seam is frozen and proven behind a
+provider-agnostic `LLMProvider` interface with all three adapters (Anthropic,
+OpenAI/DeepSeek, Gemini) and the `FallbackChain` runner. Two additive sub-spines also
+completed: the agent-first entry point (`AgentSession` multi-turn + session persistence +
+export-to-workflow, Lane C / 1.m5, 1.V–1.AA) and multimodal I/O (media input + engine
+plumbing + inline & async output generation + generative adapters, 1.m6, 1.AD–1.AH). See
+[Phase 1 detail](phase-1-engine-and-llm.md), the [decision index](../../decisions),
+and the [reference specs](../../reference).
+
+> **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):**
+> (1) The CI `ci` job became a required check under `main` branch protection, alongside a
+> `v*` tag ruleset limiting tag creation to maintain/admin. The optional `TURBO_TOKEN`/
+> `TURBO_TEAM` secrets for cross-runner remote cache were recorded as unset at that checkpoint;
+> this does not assert their current configuration. (2) The former v0.1.1 publish-pending note
+> was stale: the [npm registry](https://registry.npmjs.org/relavium) records `relavium@0.1.1`
+> published on 2026-06-28. This resolves the package-publication status, without asserting the
+> current `NPM_TOKEN`, npm 2FA or GitHub release-workflow state. The release procedure remains
+> [ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
+> [release-a-surface.md](../../runbooks/release-a-surface.md).
+
+
+### What is active now
+
+#### 2026-07-19 full-project code review — triaged, Phase 2.5.5 opened
+
+A multi-agent code review of the whole tree at HEAD `f88b0e8` ran while the toolchain was green
+throughout (lint, typecheck, and all 226 test files passing) — every finding is a defect a green
+build cannot catch. 377 findings went through two-lens adversarial verification (one agent trying
+to refute each finding against the code, one auditing its materiality); 373 survived and were
+triaged into 205 work items. The review's central conclusion: the gap to first-class is a gap in
+**propagation**, not competence — the correct pattern almost always already exists in the repo and
+fails to reach the next site (a redaction helper not called twenty lines away, terminal
+sanitization built for chat and never carried to `relavium run`, `withBusyRetry` applied to every
+writer but the three oldest, cancel-wins implemented in four node handlers and omitted in the
+fifth). That makes the remediation cheap and low-risk: the reference implementation is already
+in-tree.
+
+Disposition: 176 work items opened the new **[Phase 2.5.5 — Hardening and Remediation]()**
+(engine/LLM/persistence hardening, MCP/secrets, the CLI operator-safety net, TUI terminal safety,
+docs accuracy, CI/test-infrastructure, and hygiene), running **concurrently with Phase 2.6, not
+before it** (327 findings); 27 findings (16 work items) were folded directly into the charter of an
+already-open 2.6 workstream; 16 findings (10 work items) were already tracked in
+[deferred-tasks.md](../deferred-tasks.md) and were re-confirmed rather than duplicated; 3 needed no
+action per the finding's own argument. Severity of the 373 triaged findings: 3 critical, 48 high, 134
+medium, 155 low, 33 polish.
+
+The three critical findings, visible here so they aren't buried in the phase file:
+
+- **A tool-approval preview that is not secret-redacted** (`packages/core/src/tools/registry.ts`)
+  — the persisted, `--json`-visible `ToolActionPreview` echoes a command/path verbatim instead of
+  going through the same redaction its sibling input-sanitizer already applies.
+- **A transient `history.db` write failure silently drops a chat turn, then crashes the session**
+  (`apps/cli/src/chat/persister.ts`) — an async write failure surfaces after the reply was already
+  shown to the user, as an unhandled rejection.
+- **Missing terminal-output sanitization on the `relavium run` TUI** (`apps/cli/src/render/tui/RunApp.tsx`)
+  — `stripTerminalControls`/`sanitizeInline` is applied at nearly every other dynamic-text display
+  boundary but never reaches this one, leaving an ANSI/OSC/Trojan-Source injection hole.
+
+
+### [CLAUDE.md's status block, as of 2026-10-26]
+
+**Status: Phase 1 is complete** (2026-06-21) — the engine runs end-to-end behind the
+`LLMProvider` seam with all three adapters, `AgentSession`, multimodal I/O, and the full
+run-loop. **Phase 2 (CLI) is feature-complete** (published as v0.1.1):
+`relavium chat` / `chat-resume` / `agent run`, `relavium run` with `--json`, the
+inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
+**Phase 2.5 (CLI Consolidation) is complete** (M2.5-4, PR #69, 2026-07-08): the bare-invocation
+Home, the two-registry command system (`/` palette + shell commands), per-tool
+approval/modes (ask/plan/accept-edits/auto), `@`-mention file injection, context
+compaction, the onboarding wizard + live model catalog, reasoning rendering, and regression
+hardening. **Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress** — two
+workstreams are merged to `main`: **2.6.F** (the platform floor + the full-screen TUI renderer,
+PR #74, 2026-07-11) and **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
+PR #75, 2026-07-13). The phase is a full-screen Home-managed CLI with conversational workflow authoring, management
+browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
+run-ops resume follow-up.
+
+**The interlude between remediation Waves 1 and 2 is complete: Phase 2.6.5 (Core reliability),
+49 of 51 items closed on `main`, with approved CR-70/93 and scoped deferrals retained.
+W8 merged on 2026-10-11 as PR #92; W7 had restored the non-deferrable criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+2026-08-24 (PR #83) behind [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md):
+ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
+the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
+MCP spawn. **`W2` — liveness and deadlines — merged 2026-08-28 (PR #85)** behind
+[ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md): the authored
+agent `timeout_ms` now bounds the node, every media call is bounded, a resume re-arms the run cap and a
+pending gate at their REMAINING time rather than renewing them (the node bound is the deliberate exception —
+ADR-0085 §2 records why), and an executor that ignores its signal can no longer leave a run without a
+terminal. **`W3` — resource governance and bounds — merged 2026-08-30 (PR #86) behind
+[ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)**: authored values carry
+absolute admission ceilings, node output / workflow state / durable events are size-bounded, and a long-lived
+engine no longer retains every finished run. **It merged with a live blocker** — an un-pulled event stream
+drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
+in the `W3` residuals of [deferred-tasks.md](../deferred-tasks.md).
+[ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and, after a
+review that refused acceptance until nine dated corrections existed, was **Accepted (2026-09-04) with its §1
+unimplemented**. That blocker is now closed by W8/PR #92. Its §3 turned out to be implemented already, in `W5`. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
+behind [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
+cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
+refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
+untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
+A systematic review of PR #87 found **five merge blockers** in `W4` — all reproduced and fixed before it
+merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — MERGED 2026-09-02 (PR #88)** behind
+[ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) and
+[ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): `read_media` delivers
+over the media-input rail on a marked, fenced synthesized message; tool and attachment capability is gated on
+the MODEL; Gemini's function-call continuation token rides the part it belongs to; a media body streams from
+the network into the store under a size ceiling, an idle deadline and the run signal; a `url` output is pinned
+to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
+zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
+before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
+rather than left inside a checked box. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
+`merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
+is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
+and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
+ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
+time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
+existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven internal review rounds found that **most defects
+were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
+expression scan's no-false-refusal claim was false in eight ways, and a stand-down gate silently removed the
+check it was added to protect; each is a dated correction inside its own ADR. A systematic maintainer review
+then returned **two merge blockers**, both breaking a headline claim of the wave — `required` was not enforced
+when a property's schema constrained nothing, and the expression scanner's regex was quadratic and synchronous
+on a parser that accepts 2 MiB — plus eight further High findings, all reproduced and fixed before the merge.
+
+
+**Between `W6` and `W7`, the two remaining non-deferrable items closed (2026-09-06)**: `CR-73` — `invoke_agent`
+was advertised to every model granted it while `ctx.invokeAgent` is wired nowhere in the tree, so the
+advertise-filter now checks a tool's declared dispatch DELEGATE and not only its `ToolHost` arm (`read_media`
+rides along, for the same reason and by `CR-50`'s own argument) — and `CR-80` — a rejected custom provider
+`base_url` was caught and the DEFAULT adapter left standing, which is the official API, so a drifted config
+silently sent prompts and keys to `api.openai.com`; it now installs a refusing adapter naming the URL's shape,
+never its credentials. The test that was supposed to pin `CR-80` asserted only `toBeDefined()`, which a
+refusing adapter satisfies too, so it passed either way — the finding under the defect was the test.
+[ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
+(2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
+at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
+**W8 merged to `main` on 2026-10-11 as PR #92 (`ef0ffa54`); Phase 2.6.5 is complete with approved deferrals.**
+All seven steps, CR-81/82 and ADR-0087 §1 are complete on `main`; the register is **49/51**.
+The [merge checkpoint](phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins the original whole-wave acceptance, all maintainer-correction dispositions and final reviewed-head
+`3d4491df` PR/push CI plus SonarCloud success. The ordinary/enforced-coverage inventory is
+511 files / 11,026 passing tests / 12 established skips; four wire and 23 usage mechanisms pass.
+Every correction increment has two NEW independent complete clean cumulative rounds after its final fix;
+scoped correction reviews are not a new whole-PR certification. Fresh full local CI and bare/enforced
+coverage at `6139563e` retain their separate source attribution. No merge-commit execution is inferred.
+Two nonblocking Sonar complexity suggestions remain visible. Historical counts and pending states
+throughout the registers describe their original checkpoints.
+
+CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
+and existing exact-capacity/scoped residuals retain their approved limits in
+[deferred-tasks.md](../deferred-tasks.md). No new deferral, provider capture, billing,
+credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](../current.md#wave-2-merged--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
+next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground).
+Phase 2.5.5 and Phase 2.6 remain in progress.
+
+**W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
+Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
+lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items are closed
+(47/51 at the W7 merge); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
+[closing register](phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
+stay in [deferred-tasks.md](../deferred-tasks.md); W8 subsequently merged in PR #92 and closed the phase with approved deferrals. No user decision,
+billing setup, credential or provider capture is pending.
+
+**Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
+each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
+correction also has two NEW complete clean rounds. The [post-closure register](phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
+passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
+billing, key or user decision is pending. The [merge checkpoint](phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
+records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
+Existing approved limits are unchanged; W8 has no open implementation or landing gate.
+
+**Joint Wave 2 merged to `main` — 2026-10-15, PR #94 (`ab08209e`).**
+All eight implementation steps and the maintainer corrections are complete on `main`
+under Accepted ADR-0105–0109. The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15)
+joins forty item dispositions, security sittings, the final reviewed source `4cdfe011`,
+two NEW clean complete cumulative correction rounds and successful PR/push CI,
+coverage, native-platform and independently inspected physical controls. Earlier
+whole-wave and correction reviews retain their exact source scopes; no new whole-PR
+review or merge-commit execution is inferred. Detailed review records remain local
+and Git-ignored.
+
+Exit criteria 1–3 and the D half of M2.5.5-2 are satisfied on `main`. The I half,
+whole Phase 2.5.5/2.6, full M/N production lifecycle, future live provider headers
+and existing approved deferrals remain open in their canonical homes. No Wave 2
+implementation, review, publication, ADR approval, provider capture, credential,
+billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10-16.
+Its serialized multi-file Step 1 is independently accepted on `development`
+(2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
+following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
+is independently accepted after two NEW complete cumulative clean rounds and a
+separate clean security sitting. Step 4 (error/envelope substrate) is independently
+accepted after two NEW complete cumulative clean rounds. Step 5 (tools and engine
+tails) is independently accepted after two NEW complete cumulative clean rounds
+following its registry-documentation correction and a separate clean security
+sitting. Step 6 (pure process/discovery substrate) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7a (lazy runtime and finite compiled graph) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7b and whole Step 7 are independently accepted at `c836ffe6` after two NEW
+complete cumulative clean rounds, a clean security sitting and successful exact-tarball
+Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separately
+attributed status. Step 8a implements origin adapters and an inert native foundation;
+it is independently accepted at `e0a5ae19` after two NEW complete cumulative
+clean rounds and a separate clean security sitting.
+Step 8b (creation-owned native processes) is independently accepted at
+`e16a7659` after two NEW complete cumulative clean rounds and a separate clean
+security sitting following its canonical-reference correction. Its unchanged
+runtime/control evidence and successful full CI plus all four same-tarball
+platform consumers remain attributed to `ab50be11`, with independently verified
+source/dependency equivalence. Step 8c workflow/preparation/terminal integration
+is independently accepted at `dbab25d8` after two NEW complete cumulative clean
+rounds, a separate clean security sitting and successful full CI. All four
+same-tarball platform consumers pass at that reviewed source.
+**Step 8d and whole Step 8 are independently accepted on `development` at
+`c83c8575` — 2026-10-17.** Two NEW complete cumulative CLEAN rounds (R25/R26)
+each cover all 342 paths / 1,842 ordered hunks after the final fixture correction.
+A NEW separate clean security sitting and all fifteen full-CI jobs pass at that
+reviewed source, as do all four actual same-tarball platform consumers. Original
+failed reviewer-preparation records and source/native/platform limits remain
+explicit; source CI does not certify later documentation commits. The
+[acceptance register](#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+joins exact evidence and historical corrections. Steps 1–8 are accepted;
+**Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
+itself is NOT complete: Steps 9–19 had not started at that merge (Step 9a.1, the first, is now
+accepted on `development`, below, as are Steps 9a.2a and 9a.2b; the native-identity increment NI and Steps 9b.1 and 9b.2 are accepted too, and Steps 9c–19 have not started) and whole-wave acceptance remains Step 19.
+The [merge checkpoint](#wave-3-steps-18-merge-checkpoint--2026-10-18)
+records what merged and its review attributions. The final head `a3e164b5` (corrections from a
+further independent review, including a secret-scrubbing rule) merged with author verification
+only and was then independently reviewed (four rounds and a security sitting, with follow-up
+fixes on `development`, not yet on `main`); CI for it and the merge commit finished green, and SonarCloud's `main`
+gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
+and the maintainer's [2026-10-19 rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
+(the scrubber residuals, including both security residuals) is closed on `development` under the
+maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)): rounds 1–10 were
+NONCLEAN; the high and medium findings through round 9 are corrected, and after round 10, the last
+round, only GEN-R10-1, which the maintainer counted as high on 2026-10-22, is corrected (in the summary,
+by the author alone). The other findings are recorded in deferred-tasks.md. Step 9a.1 (the candidate build and finalizer, the first increment of the release map/custody substrate, #46/ADR-0111) is independently accepted on `development` at `cf97b7f1` (2026-10-24): after twelve NONCLEAN rounds and an internal rigor pass, its round 13 reported no blocker, high or medium finding and its security sitting was clean; the round's low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)). Step 9a.2 is split into 9a.2a and 9a.2b ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)); Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24): rounds 1 and 2 were not accepted (a medium, then a regression from round 1's correction), and round 3 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)). Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24): round 1 was not accepted (a regression in the author's own deferral record and an untested exit code), and round 2 reported no blocker, high or medium finding and no regression; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)). The native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25): round 1 reported no blocker, high or medium finding and no regression, with a clean security sitting; every product file and directory identity check now compares exact bigints, its low findings are recorded in deferred-tasks.md, and its Windows clause closes after three green advisory Windows runs ([acceptance](#wave-3-ni-acceptance--2026-10-25)). Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)); Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` (2026-10-25): rounds 1–3 were not accepted (one, one and two mediums, each corrected), and round 4 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9b1-acceptance--2026-10-25)). Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the production recipient loader, absent in Wave 3, and scope separation; synthetic recipients only) is independently accepted on `development` at `563402e6` (2026-10-26): an internal rigor pass and rounds 1–3 were not accepted (mediums each time, all corrected), and round 4 reported no blocker, high or medium finding and no regression, its security sitting lows only; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9b2-acceptance--2026-10-26)). Step 9c is next. `development` is pushed after each accepted increment. No provider,
+credential, billing or new ADR approval is pending for the approved implementation plan.
+
+### [AGENTS.md's status block, as of 2026-10-26]
+
+**Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (published as v0.1.1);
+Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
+(Conversational Authoring and the First-Class CLI) is in progress, with an interlude —
+Phase 2.6.5 (Core reliability remediation) — completed between remediation Waves 1 and 2:
+49 of 51 items closed on `main`, with approved deferrals retained; W8 merged 2026-10-11 in PR #92 (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` merged to `main` on 2026-10-10 (PR #90), with ADR-0095–ADR-0103
+accepted) — all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24), the `W2`
+liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings at that merge** — the blocker is now closed by W8/PR #92; scoped residuals remain in docs/roadmap/deferred-tasks.md — and `W4`, the hostile MCP boundary (ADR-0088), merged 2026-09-01 as PR #87 — a systematic review of the branch found five merge blockers, all reproduced and fixed before it merged. `W5`, media correctness (ADR-0089 + ADR-0090), **merged 2026-09-02 as PR #88** — a systematic review of that branch returned six merge blockers, all reproduced and fixed before the merge. `W6`, authoring correctness (ADR-0091–ADR-0094), **MERGED 2026-09-04 as PR #89** — `merge_strategy: first` means first DECLARED, a widened tool grant is refused when the plan is BUILT, an expression sees only its transitive closure with a literal out-of-closure read refused at parse, and an `output_schema` is compiled at parse and enforced at run time with **no new dependency**. Seven internal review rounds found that most defects were in the FIXES rather than the code they repaired; a systematic maintainer review then returned two merge blockers, both breaking a headline claim of the wave, plus eight further High findings — all reproduced and fixed before the merge. Each is a dated correction inside its own ADR.
+**W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
+Steps 1–11, all five genuine overflow records, ADR-0102 request ownership and consolidated ADR-0103
+host integration have independent acceptance. ADR-0095–ADR-0103 are Accepted. All six W7 register
+items are closed (47/51 at the W7 merge); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
+[closing register](phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+joins evidence and every submitted review disposition. W8 subsequently merged in PR #92; approved deferrals remain.
+No user decision, billing setup, credential or provider capture is pending.
+**W8 merged to `main` on 2026-10-11 as PR #92 (`ef0ffa54`); Phase 2.6.5 is complete with approved deferrals.**
+All seven steps, CR-81/82 and ADR-0087 §1 are complete on `main`; the register is **49/51**.
+The [merge checkpoint](phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins original whole-wave acceptance, maintainer corrections and final reviewed-head `3d4491df`
+PR/push CI and SonarCloud success. Published ordinary/enforced coverage records 511 files /
+11,026 passing tests / 12 established skips; all four wire and 23 usage mechanisms pass.
+CR-70/93, CR-95's long continuation and exact-capacity/scoped residuals remain approved deferrals.
+The joint [Wave 2 — Shut the doors](../current.md#wave-2-merged--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
+next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground).
+Phase 2.5.5 and Phase 2.6 remain in progress. No W8 implementation or landing gate remains.
+**Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
+each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
+correction also has two NEW complete clean rounds. The [post-closure register](phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
+passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
+billing, key or user decision is pending. The [merge checkpoint](phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
+records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
+Existing approved limits are unchanged.
+
+**PR #92 maintainer corrections:** the [correction register](phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+records all four increments and the subsequent publication correction accepted after two NEW
+clean complete cumulative rounds each. Fresh full CI and bare/enforced coverage pass at `6139563e`,
+including four wire and 23 usage controls.
+Final reviewed head `3d4491df` passed PR/push CI and SonarCloud before PR #92 merged.
+No merge-commit execution or new whole-PR review is inferred. Two nonblocking Sonar complexity
+suggestions remain visible; no new deferral or decision is added.
+
+**Joint Wave 2 merged to `main` — 2026-10-15, PR #94 (`ab08209e`).**
+All eight implementation steps and the maintainer corrections are complete on `main`
+under Accepted ADR-0105–0109. The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15)
+joins forty item dispositions, security sittings, the final reviewed source `4cdfe011`,
+two NEW clean complete cumulative correction rounds and successful PR/push CI,
+coverage, native-platform and independently inspected physical controls. Earlier
+whole-wave and correction reviews retain their exact source scopes; no new whole-PR
+review or merge-commit execution is inferred. Detailed review records remain local
+and Git-ignored.
+
+Exit criteria 1–3 and the D half of M2.5.5-2 are satisfied on `main`. The I half,
+whole Phase 2.5.5/2.6, full M/N production lifecycle, future live provider headers
+and existing approved deferrals remain open in their canonical homes. No Wave 2
+implementation, review, publication, ADR approval, provider capture, credential,
+billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10-16.
+Its serialized multi-file Step 1 is independently accepted on `development`
+(2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
+following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
+is independently accepted after two NEW complete cumulative clean rounds and a
+separate clean security sitting. Step 4 (error/envelope substrate) is independently
+accepted after two NEW complete cumulative clean rounds. Step 5 (tools and engine
+tails) is independently accepted after two NEW complete cumulative clean rounds
+following its registry-documentation correction and a separate clean security
+sitting. Step 6 (pure process/discovery substrate) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7a (lazy runtime and finite compiled graph) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7b and whole Step 7 are independently accepted at `c836ffe6` after two NEW
+complete cumulative clean rounds, a clean security sitting and successful exact-tarball
+Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separately
+attributed status. Step 8a implements origin adapters and an inert native foundation;
+it is independently accepted at `e0a5ae19` after two NEW complete cumulative
+clean rounds and a separate clean security sitting.
+Step 8b (creation-owned native processes) is independently accepted at
+`e16a7659` after two NEW complete cumulative clean rounds and a separate clean
+security sitting following its canonical-reference correction. Its unchanged
+runtime/control evidence and successful full CI plus all four same-tarball
+platform consumers remain attributed to `ab50be11`, with independently verified
+source/dependency equivalence. Step 8c workflow/preparation/terminal integration
+is independently accepted at `dbab25d8` after two NEW complete cumulative clean
+rounds, a separate clean security sitting and successful full CI. All four
+same-tarball platform consumers pass at that reviewed source.
+**Step 8d and whole Step 8 are independently accepted on `development` at
+`c83c8575` — 2026-10-17.** Two NEW complete cumulative CLEAN rounds (R25/R26)
+each cover all 342 paths / 1,842 ordered hunks after the final fixture correction.
+A NEW separate clean security sitting and all fifteen full-CI jobs pass at that
+reviewed source, as do all four actual same-tarball platform consumers. Original
+failed reviewer-preparation records and source/native/platform limits remain
+explicit; source CI does not certify later documentation commits. The
+[acceptance register](#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+joins exact evidence and historical corrections. Steps 1–8 are accepted;
+**Steps 1–8 merged to `main` on 2026-10-18 as PR #95 (merge commit `6d2a7372`).** Wave 3
+itself is NOT complete: Steps 9–19 had not started at that merge (Step 9a.1, the first, is now
+accepted on `development`, below, as are Steps 9a.2a and 9a.2b; the native-identity increment NI and Steps 9b.1 and 9b.2 are accepted too, and Steps 9c–19 have not started) and whole-wave acceptance remains Step 19.
+The [merge checkpoint](#wave-3-steps-18-merge-checkpoint--2026-10-18)
+records what merged and its review attributions. The final head `a3e164b5` (corrections from a
+further independent review, including a secret-scrubbing rule) merged with author verification
+only and was then independently reviewed (four rounds and a security sitting, with follow-up
+fixes on `development`, not yet on `main`); CI for it and the merge commit finished green, and SonarCloud's `main`
+gate (red since at least PR #90) was cleared on 2026-10-19. A pre-implementation review of Steps 9–19
+and the maintainer's [2026-10-19 rulings](#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+give every open PR #95 finding an owner and record 29 increments (no new ADR). The PR95 increment
+(the scrubber residuals, including both security residuals) is closed on `development` under the
+maintainer's 2026-10-21 masker acceptance bar and round cap ([checkpoint](#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)): rounds 1–10 were
+NONCLEAN; the high and medium findings through round 9 are corrected, and after round 10, the last
+round, only GEN-R10-1, which the maintainer counted as high on 2026-10-22, is corrected (in the summary,
+by the author alone). The other findings are recorded in deferred-tasks.md. Step 9a.1 (the candidate build and finalizer, the first increment of the release map/custody substrate, #46/ADR-0111) is independently accepted on `development` at `cf97b7f1` (2026-10-24): after twelve NONCLEAN rounds and an internal rigor pass, its round 13 reported no blocker, high or medium finding and its security sitting was clean; the round's low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)). Step 9a.2 is split into 9a.2a and 9a.2b ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)); Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24): rounds 1 and 2 were not accepted (a medium, then a regression from round 1's correction), and round 3 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)). Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24): round 1 was not accepted (a regression in the author's own deferral record and an untested exit code), and round 2 reported no blocker, high or medium finding and no regression; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)). The native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25): round 1 reported no blocker, high or medium finding and no regression, with a clean security sitting; every product file and directory identity check now compares exact bigints, its low findings are recorded in deferred-tasks.md, and its Windows clause closes after three green advisory Windows runs ([acceptance](#wave-3-ni-acceptance--2026-10-25)). Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)); Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` (2026-10-25): rounds 1–3 were not accepted (one, one and two mediums, each corrected), and round 4 reported no blocker, high or medium finding and no regression, with a clean security sitting; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9b1-acceptance--2026-10-25)). Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the production recipient loader, absent in Wave 3, and scope separation; synthetic recipients only) is independently accepted on `development` at `563402e6` (2026-10-26): an internal rigor pass and rounds 1–3 were not accepted (mediums each time, all corrected), and round 4 reported no blocker, high or medium finding and no regression, its security sitting lows only; its low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9b2-acceptance--2026-10-26)). Step 9c is next. `development` is pushed after each accepted increment. No provider,
+credential, billing or new ADR approval is pending for the approved implementation plan.

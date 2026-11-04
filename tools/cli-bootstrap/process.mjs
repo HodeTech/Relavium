@@ -3,6 +3,28 @@ import { Buffer } from 'node:buffer';
 import { setTimeout, clearTimeout } from 'node:timers';
 
 export const maxOutputBytes = 256 * 1024;
+
+/** Every bounded child still running, so that an interrupted caller can stop them before it exits. */
+const liveChildren = new Set();
+
+/**
+ * Synchronously kill every bounded child that has not closed yet: its process group, or the child
+ * itself where it has none. For a signal handler that exits without waiting for `spawnBounded`.
+ */
+export function stopBoundedChildren() {
+  for (const { child, grouped } of liveChildren) {
+    if (grouped) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+        continue;
+      } catch {
+        // The group already exited.
+      }
+    }
+    child.kill('SIGKILL');
+  }
+  liveChildren.clear();
+}
 /** Bound bytes and wall time, kill only this owned process group, and wait for close. */
 export function spawnBounded(
   args,
@@ -16,6 +38,8 @@ export function spawnBounded(
       detached: grouped,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const live = { child, grouped };
+    if (child.pid !== undefined) liveChildren.add(live);
     const output = { stdout: [], stderr: [] };
     let bytes = 0,
       timedOut = false,
@@ -48,6 +72,7 @@ export function spawnBounded(
       spawnError = error.message;
     });
     child.once('close', (code, signal) => {
+      liveChildren.delete(live);
       clearTimeout(timer);
       kill();
       resolve({

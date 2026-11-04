@@ -126,7 +126,7 @@ function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): 
     const canonical = realpathSync.native(path);
     if (!isWithinFsRoot(root, canonical))
       return invalidEntry(path, rel, 'outside the project catalog');
-    const stats = statSync(canonical);
+    const stats = statSync(canonical, { bigint: true });
     // statSync FOLLOWS a symlink, so a `.yaml` symlinked to a directory, FIFO, or character device (e.g.
     // /dev/zero) resolves here — and readFileSync on a FIFO/char-device BLOCKS INDEFINITELY (a local DoS via a
     // crafted symlink in the catalog dir). Reject anything that is not a regular file BEFORE reading; the size
@@ -138,7 +138,7 @@ function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): 
     // bytes/char, so `chars * 4` is a byte ceiling that never false-rejects a within-limit file (a dense
     // multibyte file just under the char cap is not wrongly hidden) while still bailing before we slurp a
     // genuinely huge file into memory. The parser then re-applies the exact char cap.
-    if (stats.size > MAX_SOURCE_CHARS * 4) {
+    if (stats.size > BigInt(MAX_SOURCE_CHARS * 4)) {
       return invalidEntry(path, rel, 'exceeds the size limit');
     }
     // Contained aliases are allowed; open their canonical target without following a newly planted final link.
@@ -147,7 +147,9 @@ function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): 
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
-      const opened = fstatSync(fd);
+      // Exact bigint identities: Windows has no O_NOFOLLOW, so this is its only swap guard, and its
+      // 64-bit file IDs exceed a Number's precision.
+      const opened = fstatSync(fd, { bigint: true });
       if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) {
         return invalidEntry(path, rel, 'not the admitted regular file');
       }

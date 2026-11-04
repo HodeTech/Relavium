@@ -23,6 +23,7 @@ import { utf8ByteLength } from '@relavium/shared';
 // while the IMPLEMENTATION lives in `@relavium/shared` — see its header for why it moved.
 export { utf8ByteLength };
 
+import { fixedPointOf, toFixedPoint } from './fixed-point.js';
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 export interface BoundedResult {
@@ -54,8 +55,9 @@ function countLines(text: string): number {
  * I3 gap where a `read_media` (or any) tool result carrying a `{ kind:'base64', data }` source would be
  * JSON-stringified into the `agent:tool_result.outputSummary` event / the spill / the over-cap preview —
  * a durable/event boundary the emit-time `deInlineMedia` choke point cannot catch, since it sees only the
- * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
- * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
+ * resulting flat string, not a structured media source). Only this text projection is redacted; the
+ * model-facing value keeps the bytes while it fits the ceiling, and `boundForModel` counts the omitted bytes
+ * against that ceiling ({@link OmittedMedia}). Cycle-safe.
  */
 /** A PLAIN object (Object/null prototype) — NOT a Date/RegExp/Map/Set/class instance, which JSON.stringify
  *  renders natively and the walk must leave untouched (else a Date would collapse to `{}`). Narrows without an `as`. */
@@ -74,12 +76,28 @@ function isPlainObject(value: object): value is Record<string, unknown> {
  * sees only a flat string). Display-only — the dispatch already ran on the real args. Cycle-safe.
  */
 export function redactInlineMedia(value: unknown): unknown {
-  return redactInlineMediaForText(value, new WeakSet<object>());
+  return redactInlineMediaForText(value, new WeakSet<object>(), { bytes: 0 });
 }
 
-function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
+/**
+ * The size of the inline media a text projection replaced with a marker. The model-facing value still holds
+ * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1), so media inside a dispatch
+ * result is ordinary text to the model and to the effect journal. A PR #96 review found a 30 MiB data URI
+ * measured as its 25-character marker, passed whole to the model and settled into `history.db`.
+ */
+interface OmittedMedia {
+  bytes: number;
+}
+
+function redactInlineMediaForText(
+  value: unknown,
+  seen: WeakSet<object>,
+  omitted: OmittedMedia,
+): unknown {
   if (typeof value === 'string') {
-    return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;
+    if (!isBase64DataUri(value)) return value;
+    omitted.bytes += utf8ByteLength(value);
+    return '[base64 data URI omitted]';
   }
   if (typeof value !== 'object' || value === null) {
     return value;
@@ -90,9 +108,10 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => redactInlineMediaForText(item, seen));
+      return value.map((item) => redactInlineMediaForText(item, seen, omitted));
     }
     if (isBinaryBuffer(value)) {
+      omitted.bytes += binaryByteLength(value);
       return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
     }
     if (!isPlainObject(value)) {
@@ -100,14 +119,16 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     }
     if (isCanonicalBase64Source(value)) {
       const data = value['data'];
+      const base64Length = typeof data === 'string' ? data.length : 0;
+      omitted.bytes += base64Length;
       // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
-      return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
+      return { kind: 'base64', base64Length };
     }
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
       // Preserve an own data key such as __proto__; assignment would invoke an inherited setter.
       Object.defineProperty(out, key, {
-        value: redactInlineMediaForText(item, seen),
+        value: redactInlineMediaForText(item, seen, omitted),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -118,6 +139,12 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     // Only an ancestor is cyclic; a completed sibling can legitimately share this object.
     seen.delete(value);
   }
+}
+
+/** A binary buffer's byte length; every kind `isBinaryBuffer` admits has an own `byteLength`. */
+function binaryByteLength(value: object): number {
+  const length: unknown = Reflect.get(value, 'byteLength');
+  return typeof length === 'number' ? length : 0;
 }
 
 // One definition builds both the complete matcher and its necessary-prefix preflight. Prefixes
@@ -162,7 +189,46 @@ const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.sli
 const SCHEME_CREDENTIAL =
   /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
 
-type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
+// A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:`. The optional quote BEFORE the
+// separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body), and its
+// optional backslash the same shape one JSON string down (`\"access_token\":\"…\"`). Kept an
+// analyzable LITERAL (not composed via `new RegExp`) so Sonar's static super-linear-runtime (S5852)
+// check still covers this security-critical pattern; its keyword-alternation breadth is deliberate
+// (and `apikey` is dropped — `api[_-]?key` already subsumes it). The value is read after it, in
+// `visitSecretKeyValues`.
+const SECRET_KEY =
+  /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}(?:\\?["'])?\s*[=:]\s*/gi;
+
+/**
+ * One recognized span of the projection's input and the text that replaces it. Every rule reports
+ * its spans on the same text, and overlapping spans merge before anything is replaced
+ * ({@link replaceRanges}), so no rule's mask can erase the key name, scheme label, PEM marker or URL
+ * scheme another rule reads.
+ */
+interface SecretRange {
+  readonly start: number;
+  readonly end: number;
+  readonly replacement: string;
+}
+
+/**
+ * A URL userinfo's context. `schemeStart` is where its identifying prefix starts: a removed LF/TAB
+ * anywhere from there on splits the credential, so a separator inside `scheme://` counts even though
+ * only the userinfo is replaced. Up to `ownsUntil` the userinfo owns its text: a key or query
+ * parameter there names the user, not a credential of its own.
+ */
+interface UrlUserinfo {
+  readonly schemeStart: number;
+  readonly ownsUntil: number;
+}
+
+/** Reports one recognized span; `url` is set for a URL's userinfo. */
+type SecretSpanVisitor = (
+  start: number,
+  end: number,
+  replacement: string,
+  url?: UrlUserinfo,
+) => void;
 
 /**
  * A failed JWT probe must not rescan an admitted-size token run at every original boundary,
@@ -244,18 +310,6 @@ function visitJoinedStandaloneCredentials(
   }
 }
 
-function redactStandaloneCredentials(text: string): string {
-  const parts: string[] = [];
-  let copied = 0;
-  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
-    parts.push(text.slice(copied, start), replacement);
-    copied = end;
-  });
-  if (parts.length === 0) return text;
-  parts.push(text.slice(copied));
-  return parts.join('');
-}
-
 /**
  * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
  * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
@@ -290,23 +344,25 @@ function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretS
 }
 
 /**
- * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
- * ordinary spaces remain boundaries and public text is never globally normalized for identity.
- * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
- * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ * LF/TAB may split finite credential shapes. Map the spans recognized in the joined view back onto
+ * the original text and report the ones a removed separator actually splits; ordinary spaces remain
+ * boundaries and public text is never globally normalized for identity. Token-character
+ * continuations after LF/TAB are intentionally part of a recognized credential. The two cursors
+ * advance monotonically, with no per-character offset array or recursive matcher.
  */
-function redactJoinedCredentialSpans(
+function visitSplitSpans(
   text: string,
   visit: (joined: string, mask: SecretSpanVisitor) => void,
+  report: SecretSpanVisitor,
   boundary?: RegExp,
-): string {
-  if (!/[\n\t]/.test(text)) return text;
+  // URL userinfo owns a separator at either edge: one right after the scheme or before the @ splits it.
+  ownsEdges = false,
+): void {
+  if (!/[\n\t]/.test(text)) return;
   const joined = text.replace(/[\n\t]+/g, '');
-  const parts: string[] = [];
   const separators = /[\n\t]+/g;
   let next = separators.exec(text);
   let removed = 0;
-  let copied = 0;
   function advance(target: number, includeAtBoundary = false): number {
     while (
       next !== null &&
@@ -317,37 +373,140 @@ function redactJoinedCredentialSpans(
     }
     return target + removed;
   }
-  visit(joined, (start, end, replacement) => {
-    const originalStart = advance(start, true);
-    const originalEnd = advance(end);
+  visit(joined, (start, end, replacement, url) => {
+    // A separator right before a URL's scheme is outside the URL, so it splits nothing.
+    const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
+    const originalStart = advance(start, !ownsEdges);
+    const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
+    const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;
-    if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;
-    parts.push(text.slice(copied, originalStart), replacement);
-    copied = originalEnd;
+    if (!/[\n\t]/.test(text.slice(schemeStart ?? originalStart, originalEnd))) return;
+    // A split userinfo owns nothing past its first removed separator: the next line may hold a key
+    // of its own (`https://\nDB_PASSWORD=P@ss`).
+    const split =
+      ownsUntil === undefined ? -1 : text.slice(originalStart, ownsUntil).search(/[\n\t]/);
+    report(
+      originalStart,
+      originalEnd,
+      replacement,
+      schemeStart === undefined || ownsUntil === undefined
+        ? undefined
+        : { schemeStart, ownsUntil: split < 0 ? ownsUntil : originalStart + split },
+    );
   });
-  if (parts.length === 0) return text;
-  parts.push(text.slice(copied));
+}
+
+/** LF/TAB-split URL userinfo and standalone credentials (`visitSplitSpans`). */
+function visitSplitCredentials(text: string, report: SecretSpanVisitor): void {
+  visitSplitSpans(text, visitUrlUserinfo, report, undefined, true);
+  visitSplitSpans(
+    text,
+    (joined, mask) => {
+      visitJoinedStandaloneCredentials(text, joined, mask);
+    },
+    report,
+    /\w/,
+  );
+}
+
+/**
+ * The text as a rule reads it right after the given credentials: each one is filled like an applied
+ * mask, so a label or credential glued to its end still starts at a word boundary.
+ */
+function afterMasks(text: string, ranges: readonly SecretRange[]): string {
+  return fillRanges(text, ranges);
+}
+
+/**
+ * Join every LF/TAB-split header label, so the key=value rule reads it like an unsplit one. A label
+ * starts at a word boundary, and a credential or a PEM block right before it is one (`afterMasks`).
+ */
+function joinSplitHeaderLabels(text: string): string {
+  // A label ends in ':' (visitJoinedHeaderLabels) and no fill adds one, so a text without one has none.
+  if (!/[\n\t]/.test(text) || !text.includes(':')) return text;
+  const masks: SecretRange[] = [];
+  const firstLines: SecretRange[] = [];
+  const mask: SecretSpanVisitor = (start, end, replacement) => {
+    masks.push({ start, end, replacement });
+    firstLines.push({ start, end, replacement });
+  };
+  // A split credential's LF/TAB continuation can take in a label at the start of the next line
+  // (`sk-…\napi-k\tey: <v>`), so labels are read a second time with each split credential filled only
+  // up to its first removed separator. The credentials' own masks are unchanged.
+  visitSplitCredentials(text, (start, end, replacement) => {
+    masks.push({ start, end, replacement });
+    const split = text.slice(start, end).search(/[\n\t]/);
+    firstLines.push({ start, end: split < 0 ? end : start + split, replacement });
+  });
+  visitPemBlocks(text, mask);
+  visitJoinedStandaloneCredentials(text, text, mask);
+  const labels: SecretRange[] = [];
+  for (const boundaries of new Set([afterMasks(text, masks), afterMasks(text, firstLines)])) {
+    visitSplitSpans(
+      boundaries,
+      (joined, label) => {
+        visitJoinedHeaderLabels(boundaries, joined, label);
+      },
+      (start, end, replacement) => {
+        labels.push({ start, end, replacement });
+      },
+      /[A-Za-z0-9_-]/,
+    );
+  }
+  return replaceRanges(text, labels);
+}
+
+/**
+ * Replace each run of overlapping ranges once, with the replacement of the range that starts it.
+ * Ranges that only touch stay separate runs, so a key=value mask and the scheme label's token after
+ * it read `[redacted] [redacted]`.
+ */
+function replaceRanges(text: string, ranges: readonly SecretRange[]): string {
+  if (ranges.length === 0) return text;
+  const ordered = [...ranges].sort((left, right) => left.start - right.start);
+  const parts: string[] = [];
+  let copied = 0;
+  let run: { start: number; end: number; replacement: string } | undefined;
+  for (const range of ordered) {
+    if (run !== undefined && range.start < run.end) {
+      run.end = Math.max(run.end, range.end);
+      continue;
+    }
+    if (run !== undefined) {
+      parts.push(text.slice(copied, run.start), run.replacement);
+      copied = run.end;
+    }
+    run = { start: range.start, end: range.end, replacement: range.replacement };
+  }
+  if (run === undefined) return text;
+  parts.push(text.slice(copied, run.start), run.replacement, text.slice(run.end));
   return parts.join('');
 }
 
-function redactSplitCredentials(text: string): string {
-  if (!/[\n\t]/.test(text)) return text;
-  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);
-  const keys = redactJoinedCredentialSpans(
-    urls,
-    (joined, mask) => {
-      visitJoinedStandaloneCredentials(urls, joined, mask);
-    },
-    /\w/,
-  );
-  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');
-  return redactJoinedCredentialSpans(
-    schemes,
-    (joined, mask) => {
-      visitJoinedHeaderLabels(schemes, joined, mask);
-    },
-    /[A-Za-z0-9_-]/,
-  );
+/**
+ * The same text with each run of overlapping ranges replaced by a run of the same length that reads
+ * like a mask (`[xx…x]`): no line break, quote, delimiter or key inside, and a word boundary at either
+ * end. Offsets stay valid, so a rule that reads it reports ranges of the original text.
+ */
+function fillRanges(text: string, ranges: readonly SecretRange[]): string {
+  if (ranges.length === 0) return text;
+  const runs: { start: number; end: number }[] = [];
+  for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
+    if (range.end <= range.start) continue;
+    const last = runs.at(-1);
+    if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else runs.push({ start: range.start, end: range.end });
+  }
+  if (runs.length === 0) return text;
+  const parts: string[] = [];
+  let copied = 0;
+  for (const run of runs) {
+    const length = run.end - run.start;
+    parts.push(text.slice(copied, run.start), length < 2 ? '[' : `[${'x'.repeat(length - 2)}]`);
+    copied = run.end;
+  }
+  parts.push(text.slice(copied));
+  return parts.join('');
 }
 
 /**
@@ -363,45 +522,223 @@ function redactSplitCredentials(text: string): string {
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
-  const projected = redactOpaqueQueryValues(redactUrlUserinfo(redactSplitCredentials(text)))
-    // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
-    // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
-    .replace(
-      /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
-      '[redacted]',
-    )
-    // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
-    // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
-    // For every open-ended token minimum below, a bounded lookahead enforces the same floor before
-    // one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
-    // equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
-    .replace(SCHEME_CREDENTIAL, '$1 [redacted]')
-    // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
-    // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
-    // value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
-    // including JSON's escaped quotes/backslashes; otherwise a valid password such as `a\"secret-tail`
-    // left its tail exposed. The two alternatives inside each repetition are disjoint: a backslash
-    // consumes exactly the following non-newline character, while the ordinary class excludes it.
-    // No ambiguous nested repetition/backref is needed. Unquoted values retain their delimiter and
-    // minimum-length policy. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
-    // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
-    // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
-    .replace(
-      /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*'|(?=[^\s"',;&]{6})[^\s"',;&]+)/gi,
-      '[redacted]',
-    );
+  // One pass can change the context a later pass decides on, so the projection repeats until it is
+  // stable and fails closed otherwise: its output is stable under another projection.
+  return toFixedPoint(redactSecretShapedOnce, text, '[redacted]');
+}
+
+/**
+ * The summary's projection (`makeSummary`). A summary is shown, never compared, so it decides three things
+ * differently. In the key rule (`visitSecretKeyValues`), a quoted value that stops at a line break is masked
+ * through a later quote that could close it, else to the end of its line, and one that reaches the end of
+ * its string or of the text without closing is masked to that end: left to the one-line pass, such a value
+ * lost its key to a mask before it (`token='a password="first\nsecond" done`), and JSON escaping hid it in a
+ * structured result; and a value whose escaped opening quote ends an earlier mask's backslashes opens where
+ * that mask keeps them. It also reads private-key markers that whitespace wraps (`visitPemBlocks`) and the
+ * rules a separator decides behind escaped separators (`visitEscapedSeparators`).
+ */
+function redactSecretShapedSummaryText(text: string): string {
+  return toFixedPoint((value) => redactSecretShapedOnce(value, true), text, '[redacted]');
+}
+
+function redactSecretShapedOnce(text: string, throughCloser = false): string {
+  const source = joinSplitHeaderLabels(text);
+  return replaceRanges(source, secretRanges(source, throughCloser));
+}
+
+/**
+ * Every span the projection masks in `text`; each rule is described at its visitor. `throughCloser` selects
+ * the summary's decisions (`redactSecretShapedSummaryText`).
+ */
+function secretRanges(text: string, throughCloser: boolean): readonly SecretRange[] {
+  const ranges: SecretRange[] = [];
+  // Ranges merge instead of erasing context, yet some reads see the text as already masked: a key or
+  // parameter in a URL userinfo's own text (`UrlUserinfo.ownsUntil`) is that userinfo's, a key's
+  // value runs through every span an earlier rule masks, line breaks included, and a scheme label
+  // may start right after a credential, as each would with the masks applied.
+  const owned: SecretRange[] = [];
+  const masked: SecretRange[] = [];
+  const report: SecretSpanVisitor = (start, end, replacement, url) => {
+    const range = { start, end, replacement };
+    ranges.push(range);
+    masked.push(range);
+    if (url !== undefined) owned.push({ start, end: url.ownsUntil, replacement });
+  };
+  const record: SecretSpanVisitor = (start, end, replacement) => {
+    ranges.push({ start, end, replacement });
+  };
+  // The key rule's own masks, which a value that does not close is also read without.
+  const keyValues = new Set<SecretRange>();
+  const recordValue: SecretSpanVisitor = (start, end, replacement) => {
+    const range = { start, end, replacement };
+    ranges.push(range);
+    keyValues.add(range);
+  };
+  const schemes: SecretRange[] = [];
+  visitSplitCredentials(text, report);
+  visitUrlUserinfo(text, report);
+  const names = fillRanges(text, owned);
+  visitOpaqueQueryValues(names, text, report);
+  visitPemBlocks(text, report, throughCloser);
+  // No value runs through a scheme label's token: `authorization: Bearer <t>` keeps both masks.
+  visitSchemeCredentials(text, (start, end, replacement) => {
+    record(start, end, replacement);
+    schemes.push({ start, end, replacement });
+  });
+  const values = fillRanges(text, masked);
+  const views = quoteViews(text, masked, schemes);
+  const unclosed = visitSecretKeyValues(names, values, views, recordValue, throughCloser);
   // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
   // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
-  // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
-  // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
-  // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
-  // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
-  // EXPOSED (a real redaction regression, pinned in bounding.test.ts). The canonical fragments therefore
-  // construct one complete alternation, with a separate bounded prefix-absence preflight. Failed probes
-  // use the bounded preview before the full greedy matcher; overlap and admitted-size tests pin that path.
+  // single leftmost-longest scan covers two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
+  // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) with the outer greedy match as a
+  // single span (pinned in bounding.test.ts). The canonical fragments therefore construct one complete
+  // alternation, with a separate bounded prefix-absence preflight. Failed probes use the bounded
+  // preview before the full greedy matcher; overlap and admitted-size tests pin that path.
   // `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
   // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
-  return redactStandaloneCredentials(projected);
+  const standalone: SecretRange[] = [];
+  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
+    record(start, end, replacement);
+    standalone.push({ start, end, replacement });
+  });
+  // A scheme label glued to the end of another credential starts one of its own, even where a key's
+  // value runs on over it: labels are read again with every mask filled but key values and scheme
+  // tokens (`afterMasks`). Anything else glued to a mask is read by the projection's next pass. With no
+  // mask, that view is the text the labels were already read in.
+  if (masked.length > 0 || standalone.length > 0) {
+    visitSchemeCredentials(afterMasks(text, [...masked, ...standalone]), record);
+  }
+  // A key's quoted value that does not close on its line is decided last, when every other range of the
+  // pass is known (`visitUnclosedValues`).
+  if (unclosed.length > 0) visitUnclosedValues(text, values, ranges, keyValues, unclosed, record);
+  // A summary also reads the line breaks and tabs that JSON escaping hides (`visitEscapedSeparators`).
+  if (throughCloser) visitEscapedSeparators(text, record);
+  return ranges;
+}
+
+/**
+ * The ranges without the run of backslashes each ends with in `text`, or `ranges` itself when none ends
+ * with one. Filled, they leave a quote right after a mask the escape it has in the text (`laterClosing`).
+ * Ranges that share a backslash run read it once: each run's start is remembered at every end it serves.
+ */
+function keepingEscapes(text: string, ranges: readonly SecretRange[]): readonly SecretRange[] {
+  const runStarts = new Map<number, number>();
+  const runStart = (end: number): number => {
+    let index = end;
+    while (text[index - 1] === '\\') {
+      const known = runStarts.get(index);
+      if (known !== undefined) {
+        index = known;
+        break;
+      }
+      index -= 1;
+    }
+    for (let position = end; position > index && text[position - 1] === '\\'; position -= 1) {
+      if (runStarts.has(position)) break;
+      runStarts.set(position, index);
+    }
+    return index;
+  };
+  let changed = false;
+  const kept = ranges.map((range) => {
+    if (text[range.end - 1] !== '\\') return range;
+    changed = true;
+    return { ...range, end: Math.max(runStart(range.end), range.start) };
+  });
+  return changed ? kept : ranges;
+}
+
+/** Where a quoted value ends (`quotedValueEnd`). */
+type QuotedValueEnd = ReturnType<typeof quotedValueEnd>;
+
+/**
+ * Of two readings of a quoted value, the one that closes it later; a reading that closes beats one that
+ * does not. A quoted value is read in several views of its text (`quoteViews`, `visitUnclosedValues`):
+ * with the masks before or inside it filled, as the next pass reads them, and with each mask keeping the
+ * backslashes it ends with, as the text has them; and with the scheme labels' tokens filled too, as the
+ * key rule read them before this projection merged its rules. A mask can take the backslash that escapes a
+ * later quote, which then closes the value early in one reading
+ * (`password="Bearer\nabcdefgh token=xyz\"tail" more`), or the backslash before a quote that is the
+ * value's only closer (`password="say \"…?sig=<24 or more>\"`), which closes it in that reading alone; a
+ * scheme token can take the line break before the value's closer. The latest closing of all of them
+ * masks each of these.
+ */
+function laterClosing(first: QuotedValueEnd, second: QuotedValueEnd): QuotedValueEnd {
+  return second.closed && (!first.closed || second.end > first.end) ? second : first;
+}
+
+/**
+ * The views a quoted value is also read in beside `values` (`laterClosing`), when one of the earlier masks
+ * ends with a backslash: `plain`, which is `escapes`, those masks keeping the backslashes they end with;
+ * and `schemed`, `escapes` with the scheme labels' tokens filled too, when there is one, which only moves
+ * a closing that a plain reading reaches. With no such backslash every view reads like `values`, so none
+ * is built: a scheme token cannot move a closing that `values` itself reaches on its line. `escapes` also
+ * gives the summary's closers their second reading (`throughNearestCloser`).
+ */
+interface QuoteViews {
+  readonly escapes: string | undefined;
+  readonly plain: readonly string[];
+  readonly schemed: readonly string[];
+}
+
+function quoteViews(
+  text: string,
+  masked: readonly SecretRange[],
+  schemes: readonly SecretRange[],
+): QuoteViews {
+  const kept = keepingEscapes(text, masked);
+  if (kept === masked) return { escapes: undefined, plain: [], schemed: [] };
+  const escapes = fillRanges(text, kept);
+  const schemed = schemes.length > 0 ? [fillRanges(text, [...kept, ...schemes])] : [];
+  return { escapes, plain: [escapes], schemed };
+}
+
+/**
+ * A summary's second reading, for the line breaks and tabs that JSON escaping hides: a structured result's
+ * JSON writes each as two characters, so a credential or a scheme label right after one has no boundary,
+ * and a credential split by one is not joined. The rules that a separator decides read a view of the
+ * same length in which each such escape is its separator twice (`escapedSeparatorView`); their ranges
+ * merge with those of the JSON reading, which reads a quoted value or a PEM block across the escapes.
+ */
+function visitEscapedSeparators(text: string, report: SecretSpanVisitor): void {
+  const view = escapedSeparatorView(text);
+  if (view === text) return;
+  visitSplitCredentials(view, report);
+  visitJoinedStandaloneCredentials(view, view, report);
+  visitSchemeCredentials(view, report);
+}
+
+/** The separator each escape letter stands for. */
+const ESCAPED_SEPARATORS: ReadonlyMap<string, string> = new Map([
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+]);
+
+/**
+ * `text` with each escaped line feed, carriage return or tab (`\n`, `\r`, `\t`) replaced by that separator
+ * twice, so offsets stay valid. The backslash before the letter may end a longer run, as in a JSON text
+ * inside a member (`\\n`) or a path (`C:\new`): the view only adds masks, and a mask needs a credential
+ * after the separator. Each run of backslashes is read once.
+ */
+function escapedSeparatorView(text: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  let index = text.indexOf('\\');
+  while (index >= 0) {
+    let end = index;
+    while (text[end] === '\\') end += 1;
+    const separator = ESCAPED_SEPARATORS.get(text[end] ?? '');
+    if (separator !== undefined) {
+      parts.push(text.slice(copied, end - 1), separator, separator);
+      copied = end + 1;
+    }
+    index = text.indexOf('\\', end);
+  }
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
 }
 
 /**
@@ -410,40 +747,455 @@ export function redactSecretShapedText(text: string): string {
  * mask the whole value: a fixed-length prefix leaves a permanent credential equality oracle.
  * Scan delimiters separately instead of matching a multi-megabyte repeated value in V8's
  * RegExp stack. Both cursors advance; short unrecognized values add only bounded overlap.
+ * Parameters are read in `names`, which hides each URL userinfo's username (`UrlUserinfo.ownsUntil`);
+ * a value is measured in `text`, so a mask inside it neither ends nor extends it.
  */
-function redactOpaqueQueryValues(text: string): string {
-  if (!text.includes('?') && !text.includes('&')) return text;
+function visitOpaqueQueryValues(names: string, text: string, mask: SecretSpanVisitor): void {
+  if (!names.includes('?') && !names.includes('&')) return;
   const prefix = /[?&][\w.-]{1,64}=/g;
   const delimiter = /[\s&#"',}\]]/g;
-  const parts: string[] = [];
-  let cursor = 0;
-  for (let match = prefix.exec(text); match !== null; match = prefix.exec(text)) {
+  for (let match = prefix.exec(names); match !== null; match = prefix.exec(names)) {
     const valueStart = prefix.lastIndex;
     delimiter.lastIndex = valueStart;
     const valueEnd = delimiter.exec(text)?.index ?? text.length;
     if (valueEnd - valueStart < 24) continue;
-    parts.push(text.slice(cursor, valueStart), '[redacted]');
-    cursor = valueEnd;
+    mask(valueStart, valueEnd, '[redacted]');
     prefix.lastIndex = valueEnd;
   }
-  if (parts.length === 0) return text;
-  parts.push(text.slice(cursor));
-  return parts.join('');
 }
+
+/** A PEM block's body is bounded, so an unterminated block cannot drive an unbounded scan. */
+const PEM_BODY_MAX = 20_000;
+
+/**
+ * A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see):
+ * a BEGIN marker and the first END marker that starts at most PEM_BODY_MAX characters after it, which
+ * is what one regex with a lazy bounded body finds. That regex rescanned the whole bounded body after
+ * every unterminated BEGIN marker; here one END search serves every BEGIN marker before the END it
+ * found, so the scan stays linear. A summary also reads a marker whose words a line break, a tab or more
+ * than one space separates (`wrapped`), as a block wrapped at a fixed width can split one: its pass
+ * before normalization must not mask part of a marker that its one-line pass would pair.
+ */
+function visitPemBlocks(text: string, mask: SecretSpanVisitor, wrapped = false): void {
+  if (!text.includes('-----BEGIN')) return;
+  const begin = wrapped
+    ? /-----BEGIN\s[A-Z0-9\s]{0,40}PRIVATE\s{1,8}KEY-----/g
+    : /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
+  const end = wrapped
+    ? /-----END\s[A-Z0-9\s]{0,40}PRIVATE\s{1,8}KEY-----/g
+    : /-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g;
+  let found: RegExpExecArray | null | undefined;
+  for (let marker = begin.exec(text); marker !== null; marker = begin.exec(text)) {
+    const body = begin.lastIndex;
+    if (found === undefined || (found !== null && found.index < body)) {
+      end.lastIndex = body;
+      found = end.exec(text);
+    }
+    if (found === null) return;
+    if (found.index - body > PEM_BODY_MAX) {
+      // Like the regex, try the next start: a later BEGIN marker may be close enough to this END.
+      begin.lastIndex = marker.index + 1;
+      continue;
+    }
+    const blockEnd = found.index + found[0].length;
+    mask(marker.index, blockEnd, '[redacted]');
+    begin.lastIndex = blockEnd;
+  }
+}
+
+/**
+ * An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
+ * `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`). The range starts after the label, so
+ * the label stays and one space separates it from the mask: `Bearer [redacted]`. The scan resumes
+ * after the label rather than after the token: a label inside the token (`Bearer a/Bearer <t>`) starts
+ * a credential that reaches past this one.
+ * For every open-ended token minimum below, a bounded lookahead enforces the same floor before
+ * one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
+ * equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
+ */
+function visitSchemeCredentials(text: string, mask: SecretSpanVisitor): void {
+  // Whitespace follows every label, so a text without any has no scheme credential.
+  if (!/\s/.test(text)) return;
+  const scheme = new RegExp(SCHEME_CREDENTIAL);
+  for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
+    const labelEnd = match.index + (match[1]?.length ?? 0);
+    mask(labelEnd, scheme.lastIndex, ' [redacted]');
+    scheme.lastIndex = labelEnd;
+  }
+}
+
+/**
+ * Where the quoted value that opens at `start` ends: just past its closing quote on its line (`closed`),
+ * at a `lineBreak` it does not cross (it may still close on a later line), or, without closing, at the
+ * end of the string around it or of the text. A value opened by a plain quote (`"…"`, `'…'`) closes at
+ * the first UNESCAPED matching quote: a backslash consumes exactly the next character, as in JSON's
+ * escaped quotes and backslashes (otherwise `a\"secret-tail` left its tail exposed). A value opened by an
+ * escaped quote (`\"…\"`, as JSON inside a JSON string writes it) is read one decoding level down: each
+ * backslash pair is one character, an escaped backslash escapes the next one, an escaped `\n`/`\r` is a
+ * line break, and only its escaped quote closes it. The raw quote of its kind or the raw line break,
+ * behind a backslash or not, ends the string around it, which the value cannot cross. A raw quote of the
+ * other kind does not end it: an apostrophe is ordinary text in a JSON string. A plain scan, because a
+ * RegExp repeat over the value keeps backtracking state per character and exhausts V8's stack on an
+ * admitted-size value.
+ */
+function quotedValueEnd(
+  text: string,
+  start: number,
+): { readonly end: number; readonly closed: boolean; readonly lineBreak: boolean } {
+  const escaped = text[start] === '\\';
+  const quote = text[escaped ? start + 1 : start];
+  // A raw line break stops a plain value; one JSON string down it ends the string around the value.
+  const stop = (end: number): { end: number; closed: boolean; lineBreak: boolean } => ({
+    end,
+    closed: false,
+    lineBreak: !escaped,
+  });
+  let escapeNext = false;
+  for (let index = escaped ? start + 2 : start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\r' || char === '\n') return stop(index);
+    if (char === quote)
+      return escaped ? stop(index) : { end: index + 1, closed: true, lineBreak: false };
+    if (char !== '\\') {
+      escapeNext = false;
+      continue;
+    }
+    const next = text[index + 1];
+    if (next === undefined) break;
+    if (next === '\n' || next === '\r') return stop(index + 1);
+    if (escaped && (next === 'n' || next === 'r')) {
+      return { end: index, closed: false, lineBreak: true };
+    }
+    index += 1;
+    if (!escaped) continue;
+    if (escapeNext) escapeNext = false;
+    else if (next === quote) return { end: index + 1, closed: true, lineBreak: false };
+    else escapeNext = next === '\\';
+  }
+  return { end: text.length, closed: false, lineBreak: false };
+}
+
+/** Where an unquoted value, and the run of a quoted one that does not close, ends: whitespace, a quote, `,`, `;`, `&`. */
+function valueDelimiter(): RegExp {
+  return /[\s"',;&]/g;
+}
+
+/**
+ * A secret-ish key (`SECRET_KEY`) and its value: a whole quoted string (`quotedValueEnd`, also one JSON
+ * string down), or an unquoted run of at least six characters up to whitespace, a quote, `,`, `;` or
+ * `&`. A quoted value that does not close on its line, or one JSON string down before the end of the
+ * string around it, is returned for the journal projection to decide once the pass's other ranges are
+ * known (`visitUnclosedValues`). The summary's projection (`throughCloser`) masks a value that one of its
+ * readings stops at a line break through a later quote instead (`throughNearestCloser`), and through
+ * the closing of a reading that closes too; it also opens a value whose escaped opening quote ends an
+ * earlier mask's backslashes in the views that keep them (`?sslmode=require\nPOSTGRES_PASSWORD=\"…\"` in a
+ * structured result, where the query value runs on through the next line's key). Keys are read in
+ * `keys`, which hides each URL userinfo's username (`UrlUserinfo.ownsUntil`): a key there names the user
+ * (`https://x-access-token:<t>@github.com/o/r`), and its value would run on through the public host and
+ * path. Values are read in `values`, where every earlier mask is one run, as an applied mask would be,
+ * and a quoted value also in the other `views` (`quoteViews`); it closes at the latest of them
+ * (`laterClosing`). The key scan resumes at each value rather than after it, so a key inside a value is
+ * read too: `token=a>password: <secret>` has a second value past the first one's end. One delimiter scan
+ * serves every unquoted value, and a quoted value is scanned no further than its line in each view: a
+ * nested quoted value can only open at the closing quote of the one around it, and one that does not
+ * close leaves no quote of its kind on its line, so the scan stays linear.
+ */
+function visitSecretKeyValues(
+  keys: string,
+  values: string,
+  views: QuoteViews,
+  report: SecretSpanVisitor,
+  throughCloser: boolean,
+): readonly UnclosedValue[] {
+  // Every key ends in `=` or `:`, so names without either have no value to read.
+  if (!keys.includes('=') && !keys.includes(':')) return [];
+  const key = new RegExp(SECRET_KEY);
+  const delimiter = valueDelimiter();
+  let delimiterAt = -1;
+  const masked: SecretRange[] = [];
+  const open: OpenValue[] = [];
+  const unclosed: UnclosedValue[] = [];
+  const mask = (start: number, end: number): void => {
+    masked.push({ start, end, replacement: '[redacted]' });
+    report(start, end, '[redacted]');
+  };
+  for (let match = key.exec(keys); match !== null; match = key.exec(keys)) {
+    const valueStart = escapedValueStart(values, key.lastIndex);
+    // In a summary, a value whose escaped opening quote ends an earlier mask's backslashes (a query value
+    // that ran on through a JSON-escaped line break and the next line's key) opens where that mask keeps
+    // them, and is read only in the views that keep them.
+    const kept =
+      throughCloser && values[valueStart] !== '\\' && views.escapes?.[valueStart] === '\\'
+        ? views.escapes
+        : undefined;
+    const opener = kept ?? values;
+    const escaped = opener[valueStart] === '\\';
+    const opening = escaped ? opener[valueStart + 1] : opener[valueStart];
+    if (opening === '"' || opening === "'") {
+      const plain = views.plain.map((view) => quotedValueEnd(view, valueStart));
+      const readings = kept === undefined ? [quotedValueEnd(values, valueStart), ...plain] : plain;
+      // A scheme label's token can take the line break before a closer that a reading reaches early; a
+      // value that no reading closes is decided once every range of the pass is known instead.
+      // `readings` holds the value's own reading first; the fallback states that here.
+      const first = readings
+        .slice(1)
+        .reduce(
+          (later, reading) => laterClosing(later, reading),
+          readings[0] ?? quotedValueEnd(opener, valueStart),
+        );
+      const read = first.closed
+        ? views.schemed
+            .map((view) => quotedValueEnd(view, valueStart))
+            .reduce((later, reading) => laterClosing(later, reading), first)
+        : first;
+      const kind = escaped ? `\\${opening}` : opening;
+      if (!throughCloser) {
+        if (read.closed) mask(match.index, read.end);
+        else unclosed.push({ start: match.index, quote: valueStart, end: read.end });
+        continue;
+      }
+      const stopped = readings.find((reading) => !reading.closed && reading.lineBreak);
+      if (read.closed || stopped === undefined) mask(match.index, read.end);
+      if (stopped !== undefined) open.push({ start: match.index, end: stopped.end, quote: kind });
+      continue;
+    }
+    if (delimiterAt < valueStart) {
+      delimiter.lastIndex = valueStart;
+      delimiterAt = delimiter.exec(values)?.index ?? values.length;
+    }
+    if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt);
+  }
+  for (const range of throughNearestCloser(values, views.escapes, masked, open)) {
+    report(range.start, range.end, '[redacted]');
+  }
+  return unclosed;
+}
+
+/** A key's quoted value that does not close on its line: from its key, where its quote opens, where it stops. */
+interface UnclosedValue {
+  readonly start: number;
+  readonly quote: number;
+  readonly end: number;
+}
+
+/**
+ * The journal projection's masks for key values that do not close on their line (`visitSecretKeyValues`).
+ * Each is read again where every other range of the pass is filled: a mask that takes its line break (a
+ * scheme label's token, a nested key's value) joins its lines as the next pass would read them, so a
+ * value that then closes is masked whole, as it was before this rule. It is read with and without the
+ * key rule's own masks (`keyValues`), since another key's value can take its closing quote or end at its
+ * opening one, and in each with every range keeping the backslashes it ends with too; it closes at the
+ * latest of these readings (`laterClosing`). A reading whose view fills the value's own quote is skipped:
+ * there another range decides that quote. Otherwise the value is read as an unquoted run from after its
+ * quote, in `values`, no further than where it stopped: its quote may instead close a string the key sits
+ * in (`"token=" in prose`), and masking on past the run would give calls that differ only in that later
+ * text one projection. A run starts right after a quote, where the delimiter scan of every earlier run
+ * stops, so no two runs share a scan; a reading stops at the next quote that could close it in its view,
+ * so the readings of one kind of quote share none either.
+ */
+function visitUnclosedValues(
+  text: string,
+  values: string,
+  ranges: readonly SecretRange[],
+  keyValues: ReadonlySet<SecretRange>,
+  unclosed: readonly UnclosedValue[],
+  report: SecretSpanVisitor,
+): void {
+  const others = ranges.filter((range) => !keyValues.has(range));
+  const views: string[] = [];
+  for (const list of others.length === ranges.length ? [ranges] : [ranges, others]) {
+    views.push(fillRanges(text, list));
+    const kept = keepingEscapes(text, list);
+    if (kept !== list) views.push(fillRanges(text, kept));
+  }
+  const delimiter = valueDelimiter();
+  for (const value of unclosed) {
+    const from = value.quote + (values[value.quote] === '\\' ? 2 : 1);
+    const quote = values.slice(value.quote, from);
+    let reread: QuotedValueEnd | undefined;
+    for (const view of views) {
+      if (view.slice(value.quote, from) !== quote) continue;
+      const reading = quotedValueEnd(view, value.quote);
+      reread = reread === undefined ? reading : laterClosing(reread, reading);
+    }
+    if (reread?.closed === true) {
+      report(value.start, reread.end, '[redacted]');
+      continue;
+    }
+    delimiter.lastIndex = from;
+    const end = Math.min(delimiter.exec(values)?.index ?? values.length, value.end);
+    if (end - from >= 6) report(value.start, end, '[redacted]');
+  }
+}
+
+/**
+ * Where a key's value starts: right after its separator, or one JSON string down behind escaped tabs and
+ * line breaks (`password:\t\"…\"`, `password:\n  '…'`) when they end at an escaped quote or at an
+ * apostrophe, which JSON leaves unescaped; that quote then opens the value. A plain scan over the run,
+ * like `quotedValueEnd`'s.
+ */
+function escapedValueStart(text: string, start: number): number {
+  let index = start;
+  for (;;) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === ' ' || char === '\t') index += 1;
+    else if (char === '\\' && (next === 't' || next === 'n' || next === 'r')) index += 2;
+    else break;
+  }
+  const char = text[index];
+  const opening = text[index + 1];
+  const quoted = char === "'" || (char === '\\' && (opening === '"' || opening === "'"));
+  return index > start && quoted ? index : start;
+}
+
+/** A key's quoted value that stops at a line break, from its key; its quote is `\"` one JSON string down. */
+interface OpenValue {
+  readonly start: number;
+  readonly end: number;
+  readonly quote: string;
+}
+
+/**
+ * The kind of open value the quote at `index` could close, as `quotedValueEnd` decodes it: after an even
+ * run of backslashes the quote is unescaped and may close a plain value; after a run of 4k+1 it closes a
+ * value one JSON string down. Each run is read once, before the quote it escapes.
+ */
+function closingKind(text: string, index: number): string | undefined {
+  const char = text[index];
+  if (char !== '"' && char !== "'") return undefined;
+  let backslashes = 0;
+  while (text[index - 1 - backslashes] === '\\') backslashes += 1;
+  if (backslashes % 2 === 0) return char;
+  return backslashes % 4 === 1 ? `\\${char}` : undefined;
+}
+
+/**
+ * The summary's masks for the `open` values (`redactSecretShapedSummaryText`). A summary is shown, never
+ * compared, so each value is masked through the nearest later quote that could close it outside the
+ * `masked` values, or, when every such quote is inside one, through the last of those, in its string or
+ * not, and only else to the end of its line. Masked values that take every later quote leave what lies
+ * between them uncertain (`token='\ntoken=''<secret>'`), so the summary masks through all of it. Like a
+ * value that closes, it is read twice, with every mask filled and with each mask keeping the backslashes
+ * it ends with (`escapes` for the earlier masks), and masked through the later of the two
+ * (`laterClosing`). One backward scan, from the end of the text to the earliest end of an open value;
+ * each run of backslashes is read once, before the quote it escapes.
+ */
+function throughNearestCloser(
+  values: string,
+  escapes: string | undefined,
+  masked: readonly SecretRange[],
+  open: readonly OpenValue[],
+): readonly { readonly start: number; readonly end: number }[] {
+  if (open.length === 0) return [];
+  const byEnd = open.toSorted((left, right) => right.end - left.end);
+  const filled = fillRanges(values, masked);
+  const base = escapes ?? values;
+  const kept = keepingEscapes(base, masked);
+  const keptFilled = escapes === undefined && kept === masked ? undefined : fillRanges(base, kept);
+  // Where the nearest quote of each kind outside the masked values ends, and where the last one does, in
+  // each reading.
+  const outside = new Map<string, number>();
+  const last = new Map<string, number>();
+  const keptOutside = new Map<string, number>();
+  const keptLast = new Map<string, number>();
+  const ranges: { start: number; end: number }[] = [];
+  let next = 0;
+  for (let index = values.length - 1; next < byEnd.length; index -= 1) {
+    for (let value = byEnd[next]; value !== undefined && value.end > index; value = byEnd[next]) {
+      next += 1;
+      const end = outside.get(value.quote) ?? last.get(value.quote) ?? value.end;
+      const keptEnd = keptOutside.get(value.quote) ?? keptLast.get(value.quote) ?? value.end;
+      ranges.push({ start: value.start, end: Math.max(end, keptEnd) });
+    }
+    const kind = closingKind(filled, index);
+    if (kind !== undefined) outside.set(kind, index + 1);
+    const raw = closingKind(values, index);
+    if (raw !== undefined && !last.has(raw)) last.set(raw, index + 1);
+    if (keptFilled === undefined) continue;
+    const keptKind = closingKind(keptFilled, index);
+    if (keptKind !== undefined) keptOutside.set(keptKind, index + 1);
+    const keptRaw = closingKind(base, index);
+    if (keptRaw !== undefined && !keptLast.has(keptRaw)) keptLast.set(keptRaw, index + 1);
+  }
+  return ranges;
+}
+
+/** A host-shaped prefix: a dotted name (or IPv4), `localhost` or a bracketed IP literal, with an optional port. */
+const HOST_SHAPED_AUTHORITY =
+  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
+
+/** A DNS name has at most 253 characters (254 with a trailing dot), and a `:port` adds at most six. */
+const HOST_SHAPED_MAX_LENGTH = 260;
 
 /**
  * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
  * matches can mask the first password fragment and leave another `@` plus a credential
  * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
- * after an existing userinfo separator remain public. Before that separator, raw ?/# in a
- * colon-bearing password are masked, except an explicit public host:port prefix; a short colonless vanity handle retains the existing non-secret policy.
+ * after an existing userinfo separator remain public. Before that separator, a raw ?/#
+ * begins public query/fragment text only when the text before it is host-shaped **and** an
+ * `=` assignment follows it; anything else may be a malformed username or password. This is the
+ * same predicate as the LLM diagnostic backstop (`packages/llm/src/scrub-secrets.ts`). For such an
+ * ambiguous userinfo the backstop masks through the authority's end unless a host-shaped name follows
+ * its last `@`. This projection masks the userinfo and reads every key and parameter in it but its
+ * username's; their values keep their own extent and the rules' ranges merge
+ * (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
+ * The projection differs from that backstop by design: its authority also ends at `"`, `'`,
+ * `}` and `]`, the delimiters of the JSON and quoted texts it reads, so userinfo containing one of
+ * them (an already-masked `[REDACTED]` password among them) is left as it is; it recognizes any
+ * scheme of up to 32 characters rather than a finite list; and a userinfo with no password is a
+ * vanity handle below 16 characters and masked from 16 on, under every scheme. A `,` or `/` in a
+ * password is read on to its `@` ({@link passwordPastDelimiter}).
  */
-function isPublicHostPort(text: string): boolean {
-  const colon = text.lastIndexOf(':');
-  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
-  const hostname = text.slice(0, colon);
-  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+function isPublicQueryContact(userinfo: string, query: number): boolean {
+  // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
+  // backtrack stack at admitted size; such a prefix stays userinfo, which fails closed.
+  if (query > HOST_SHAPED_MAX_LENGTH) return false;
+  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
+
+/**
+ * The `@` of a password that holds a `,` or `/`, or -1. The authority scan stops at either, so
+ * `https://user:pa,ss@host` and `https://user:pa/ss@host` left the password's tail public (a PR #96
+ * review finding; RFC 3986 admits a raw `,` in userinfo, and a raw `/` is a malformed URL a
+ * credential can still sit in). Reads on past them only, to the first `@` within 512 characters. A
+ * port (`host:8080/a@b`, `host:8080,bob@x.io`), a public query contact as the authority scan reads
+ * one ({@link isPublicQueryContact}), another scheme, and the delimiters the authority keeps
+ * (whitespace, quotes, `}`, `]`) keep the text public.
+ */
+function passwordPastDelimiter(text: string, start: number, end: number): number {
+  if (text[end] !== ',' && text[end] !== '/') return -1;
+  const authority = text.slice(start, end);
+  const colon = authority.indexOf(':');
+  if (colon < 0 || /^\d*$/.test(authority.slice(colon + 1))) return -1;
+  const query = authority.search(/[?#]/);
+  if (query >= 0 && isPublicQueryContact(authority, query)) return -1;
+  PASSWORD_TAIL.lastIndex = end;
+  const tail = PASSWORD_TAIL.exec(text)?.[0];
+  if (tail === undefined || tail.includes('://')) return -1;
+  return end + tail.length - 1;
+}
+
+/**
+ * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}); its username owns the
+ * text before the first `:`, as in {@link visitUrlUserinfo}. Returns where the scheme scan resumes: after
+ * the `@` it masked through, or at `start` when there is none.
+ */
+function maskPasswordPastDelimiter(
+  text: string,
+  schemeStart: number,
+  start: number,
+  end: number,
+  mask: SecretSpanVisitor,
+): number {
+  const passwordAt = passwordPastDelimiter(text, start, end);
+  if (passwordAt < 0) return start;
+  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: text.indexOf(':', start) });
+  return passwordAt + 1;
+}
+
+/** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
+const PASSWORD_TAIL = /[^\s"'}\]?#@]{0,512}@/y;
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
@@ -457,32 +1209,30 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const firstQuery = authority.search(/[?#]/);
     const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
     const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
-    if (at < 0) continue;
+    if (at < 0) {
+      scheme.lastIndex = maskPasswordPastDelimiter(text, match.index, start, end, mask);
+      continue;
+    }
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
     const query = userinfo.search(/[?#]/);
-    // Raw ?/# can belong to a malformed password. An explicit host:port prefix instead
-    // introduces a public query/fragment; its contact values must not become userinfo.
-    if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
-      continue;
+    // Raw ?/# can belong to a malformed username or password. A host-shaped prefix followed by
+    // an assignment instead introduces a public query/fragment whose contact must not become userinfo.
+    if (query >= 0 && isPublicQueryContact(userinfo, query)) continue;
     const hasPassword = colon >= 0 && colon < userinfo.length - 1;
     if (!hasPassword && userinfo.length < 16) continue;
-    mask(start, start + at, '[redacted]');
+    // Only a username owns its text: the part before the first ':' when no raw ?/# comes first. A key
+    // there names the user (`https://x-access-token:<t>@github.com/o/r` keeps its host). A key in the
+    // password, after a raw ?/# or in a userinfo with no username is read by the key/value and
+    // opaque-query rules, which mask its value to its own end (`jdbc:…;password=P@ss;…`).
+    const ownsUntil = colon >= 0 && (query < 0 || colon < query) ? colon : 0;
+    mask(start, start + at, '[redacted]', {
+      schemeStart: match.index,
+      ownsUntil: start + ownsUntil,
+    });
     // Skip the recognized userinfo without hiding a later scheme in the public host/tail.
     scheme.lastIndex = start + at + 1;
   }
-}
-
-function redactUrlUserinfo(text: string): string {
-  const parts: string[] = [];
-  let cursor = 0;
-  visitUrlUserinfo(text, (start, end, replacement) => {
-    parts.push(text.slice(cursor, start), replacement);
-    cursor = end;
-  });
-  if (parts.length === 0) return text;
-  parts.push(text.slice(cursor));
-  return parts.join('');
 }
 
 /**
@@ -494,7 +1244,116 @@ function redactUrlUserinfo(text: string): string {
  * position is redacted, closing that leak path too). Cycle-safe; model/dispatch values stay unchanged.
  */
 export function redactSecretShapedValue(value: unknown): unknown {
-  return redactSecretShapedWalk(value, new WeakSet<object>());
+  return redactSecretShapedWalk(value, new WeakSet<object>(), redactSecretShapedText);
+}
+
+/**
+ * The journal projection of a tool's arguments (`redactSecretShapedValue`) and whether it settled. A string
+ * whose projection still changes on its third pass becomes `[redacted]`, and two member names of one object
+ * that project alike leave one member, either of which would give different calls one journal identity, so
+ * the registry refuses such an effect before it is prepared
+ * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §11).
+ */
+export function projectSecretShapedValue(value: unknown): {
+  readonly value: unknown;
+  readonly settled: boolean;
+} {
+  let settled = true;
+  const projected = redactSecretShapedWalk(
+    value,
+    new WeakSet<object>(),
+    (text) => {
+      const fixed = fixedPointOf(redactSecretShapedOnce, text);
+      if (fixed !== undefined) return fixed;
+      settled = false;
+      return '[redacted]';
+    },
+    () => {
+      settled = false;
+    },
+  );
+  return { value: projected, settled };
+}
+
+/** How the walk projects each string: the display projection, or the journal's settle-checking one. */
+type TextProjection = (text: string) => string;
+
+/**
+ * What the walk puts in place of a value it masks whole, a credential member or a credential flag's
+ * argument, given that value and its `mask` (`[redacted]`, or a canonical scheme label and `[redacted]`).
+ */
+type WholeMask = (value: unknown, mask: string) => string;
+
+/** The journal's and the display's whole mask: the mask itself. */
+const maskWhole: WholeMask = (_value, mask) => mask;
+
+/**
+ * The text a non-string result's summary is made from (`toText`): its JSON with every value the walk masks
+ * whole (`redactSecretShapedWalk`) masked, and read once by the text rules before those masks, so a quoted
+ * value or a PEM block that runs into or out of such a value keeps the context it is read in, as the JSON
+ * of the unwalked result would give it. The walk leaves a private-use placeholder for each such value; the
+ * value's own JSON goes back where its placeholder is, and its mask is one more range of that reading. A
+ * result whose JSON already holds a placeholder character, or one that has no JSON form, keeps the walk's
+ * masks in place and skips the reading.
+ */
+function structuredSummaryText(safe: unknown): string {
+  const holes: { readonly value: unknown; readonly mask: string }[] = [];
+  const marked = jsonText(() =>
+    redactSecretShapedWalk(
+      safe,
+      new WeakSet<object>(),
+      (text) => text,
+      undefined,
+      (value, mask) => `\uE000${holes.push({ value, mask }) - 1}\uE001`,
+    ),
+  );
+  if (holes.length === 0) return marked;
+  const placeholders = [...marked.matchAll(/\uE000(\d+)\uE001/g)];
+  if (placeholders.length !== holes.length || marked.split('\uE000').length - 1 !== holes.length) {
+    return jsonText(() => redactSecretShapedWalk(safe, new WeakSet<object>(), (text) => text));
+  }
+  const parts: string[] = [];
+  const masks: SecretRange[] = [];
+  let length = 0;
+  let copied = 0;
+  for (const placeholder of placeholders) {
+    const hole = holes[Number(placeholder[1])];
+    if (hole === undefined) continue;
+    // A placeholder that is a whole JSON string stands for any value; one inside a string (a
+    // `--password=<value>` argument) stands for a string's text there.
+    let start = placeholder.index;
+    let end = start + placeholder[0].length;
+    let json: string;
+    let mask: string;
+    if (marked[start - 1] === '"' && marked[end] === '"') {
+      start -= 1;
+      end += 1;
+      // A value with no JSON form (a function, a bigint, a cycle) is read as its mask.
+      json = jsonValue(hole.value) ?? JSON.stringify(hole.mask);
+      mask = JSON.stringify(hole.mask);
+    } else {
+      json = JSON.stringify(typeof hole.value === 'string' ? hole.value : hole.mask).slice(1, -1);
+      mask = JSON.stringify(hole.mask).slice(1, -1);
+    }
+    const before = marked.slice(copied, start);
+    parts.push(before, json);
+    length += before.length;
+    masks.push({ start: length, end: length + json.length, replacement: mask });
+    length += json.length;
+    copied = end;
+  }
+  parts.push(marked.slice(copied));
+  const text = parts.join('');
+  return replaceRanges(text, [...secretRanges(text, true), ...masks]);
+}
+
+/** The JSON of one value, or `undefined` where it has none or its serialization throws. */
+function jsonValue(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -534,12 +1393,18 @@ function isSecretishKey(key: string): boolean {
  * answers one with the other's recorded result — the exact failure the digest exists to prevent.
  */
 function keyWords(key: string): readonly string[] {
-  return key
+  return nameWords(key).map((word) =>
+    word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word,
+  );
+}
+
+/** A name's lowercase words as written, before {@link keyWords} folds plurals. */
+function nameWords(name: string): readonly string[] {
+  return name
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .split(/[^A-Za-z0-9]+/)
     .filter((word) => word.length > 0)
-    .map((word) => word.toLowerCase())
-    .map((word) => (word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word));
+    .map((word) => word.toLowerCase());
 }
 
 /** Names that mean "this is a credential" on their own. */
@@ -578,40 +1443,74 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
  * FOLLOWING a secret-ish flag is redacted; the flag itself is kept, because which flag was passed is
  * diagnostic and is not the secret.
  */
-function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unknown[] {
+function redactArgVector(
+  items: readonly unknown[],
+  seen: WeakSet<object>,
+  project: TextProjection,
+  collide: (() => void) | undefined,
+  whole: WholeMask,
+): unknown[] {
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
     if (redactNext !== undefined) {
-      out.push(redactCredentialArgument(redactNext, item));
+      const masked = redactCredentialArgument(redactNext, item, whole);
+      out.push(masked ?? redactSecretShapedWalk(item, seen, project, collide, whole));
       redactNext = undefined;
       continue;
     }
-    if (typeof item === 'string') {
-      const separator = item.indexOf('=');
-      const flag = separator > 0 ? item.slice(0, separator) : '';
-      if (isSecretishFlag(flag)) {
-        const value = item.slice(separator + 1);
-        out.push(`${flag}=${redactCredentialArgument(flag, value)}`);
-        continue;
-      }
-      if (isSecretishFlag(item)) redactNext = item;
+    const inline = typeof item === 'string' ? redactInlineCredential(item, whole) : undefined;
+    if (inline !== undefined) {
+      out.push(inline);
+      continue;
     }
-    out.push(redactSecretShapedWalk(item, seen));
+    if (typeof item === 'string' && isCredentialFlag(item)) redactNext = item;
+    out.push(redactSecretShapedWalk(item, seen, project, collide, whole));
   }
   return out;
 }
 
-/** One credential-value rule for both argv spellings; only ambiguous -p may name a public port. */
-function redactCredentialArgument(flag: string, value: unknown): string {
-  if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
-    return value;
+/**
+ * One argument that carries its own credential, masked: a credential flag's `--flag=value` spelling or curl's
+ * glued `-ualice:secret`. `undefined` when the argument is neither, so the vector walks it as usual.
+ */
+function redactInlineCredential(item: string, whole: WholeMask): string | undefined {
+  const separator = item.indexOf('=');
+  const flag = separator > 0 ? item.slice(0, separator) : '';
+  if (isCredentialFlag(flag)) {
+    const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
+    if (masked !== undefined) return `${flag}=${masked}`;
   }
-  return '[redacted]';
+  const glued = gluedUserPassword(item);
+  return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;
 }
 
 /**
- * A CLI flag that introduces a credential — `--token`, `--password`, `-p`.
+ * One credential-value rule for both argv spellings; only ambiguous -p may name a public port. `undefined`
+ * means the value is not a credential after all (a `-u`/`--user` name without a password) and is walked as
+ * any other element.
+ */
+function redactCredentialArgument(
+  flag: string,
+  value: unknown,
+  whole: WholeMask,
+): string | undefined {
+  if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
+    return value;
+  }
+  if (isUserPasswordFlag(flag)) {
+    return looksLikeUserPassword(value) ? whole(value, '[redacted]') : undefined;
+  }
+  return whole(value, '[redacted]');
+}
+
+/** A flag whose next argument (or `=` value) is a credential, or a `user:password` pair. */
+function isCredentialFlag(flag: string): boolean {
+  return isSecretishFlag(flag) || isUserPasswordFlag(flag);
+}
+
+/**
+ * A CLI flag that introduces a credential — `--token`, `--password`, `--auth-token`, `-p`.
  *
  * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
  * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
@@ -620,7 +1519,27 @@ function redactCredentialArgument(flag: string, value: unknown): string {
  * `-p` ambiguity retains that exception; explicitly named credential flags do not. Both separate and
  * `--password=…` argument spellings use the entire value, rather than a partial text-pattern match.
  * See {@link looksLikePort}.
+ *
+ * Besides the anchored names, a flag counts when its LAST word names a credential, read with the object-key
+ * rule's words ({@link SECRET_WORDS}, or `key` qualified by the word before it): `--auth-token`,
+ * `--access-token`, `--db-password`, `--pwd`, `--x-api-key`. A PR #96 review found those passing verbatim
+ * while the key rule masked the same names as object keys. The last word, not any word, because a flag
+ * that only MENTIONS a credential is usually a boolean or names a file — `--password-stdin`, `--token-file`
+ * — and masking the element after it would make calls that differ only there share one journal identity.
+ * For the same reason the word is read as written, without the key rule's plural folding (`--max-tokens`
+ * is a count), with `credentials` the one plural admitted, and a `no-` flag (`--no-password`) never counts.
  */
+function isSecretishFlag(item: string): boolean {
+  if (SECRETISH_FLAG.test(item)) return true;
+  const name = /^--?([A-Za-z][\w-]{0,63})$/.exec(item)?.[1];
+  if (name === undefined) return false;
+  const words = nameWords(name);
+  if (words[0] === 'no') return false;
+  const last = words.at(-1) ?? '';
+  if (SECRET_WORDS.has(last) || last === 'credentials') return true;
+  return last === 'key' && KEY_QUALIFIERS.has(words.at(-2) ?? '');
+}
+
 /**
  * The flag names, as one anchored alternation.
  *
@@ -631,8 +1550,31 @@ function redactCredentialArgument(flag: string, value: unknown): string {
 const SECRETISH_FLAG =
   /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i; // NOSONAR — the metric is counting NAMES; see above
 
-function isSecretishFlag(item: string): boolean {
-  return SECRETISH_FLAG.test(item);
+/**
+ * curl's `-u`/`--user` carries `user:password` in ONE argument, so its value is a credential only when it
+ * holds a `:`. A `uid[:gid]` (`docker run -u 1000:1000`) and a URL (`pip install --user git+https://…`)
+ * are public.
+ */
+function isUserPasswordFlag(flag: string): boolean {
+  return flag === '-u' || flag === '--user';
+}
+
+function looksLikeUserPassword(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.includes(':') &&
+    !value.includes('://') &&
+    !/^\d+(?::\d+)?$/.test(value)
+  );
+}
+
+/** The value of curl's glued `-ualice:secret` spelling, when it is a `user:password` pair. */
+function gluedUserPassword(item: string): string | undefined {
+  if (!item.startsWith('-u') || item.length < 3 || item[2] === '-' || item[2] === '=') {
+    return undefined;
+  }
+  const value = item.slice(2);
+  return looksLikeUserPassword(value) ? value : undefined;
 }
 
 /** Port-shaped values disambiguate `-p`; an explicit credential flag has no port exception. */
@@ -647,32 +1589,46 @@ function looksLikePort(value: string): boolean {
  * remaining text is public. Do not traverse a credential container or carry any partially scrubbed value
  * into the journal. Only an anchored, known auth scheme may survive as a fixed diagnostic label.
  */
-function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unknown {
+function redactUnderKey(
+  key: string,
+  item: unknown,
+  seen: WeakSet<object>,
+  project: TextProjection,
+  collide: (() => void) | undefined,
+  whole: WholeMask,
+): unknown {
   if (!isSecretishKey(key) || item === null || item === undefined)
-    return redactSecretShapedWalk(item, seen);
+    return redactSecretShapedWalk(item, seen, project, collide, whole);
   if (typeof item === 'string') {
     // Match only the bounded label and the start of a nonempty remainder, never return that remainder.
     // Canonical labels also keep caller-controlled casing out of the credential projection.
     const scheme = /^(bearer|basic|token)[ \t]+\S/i.exec(item)?.[1]?.toLowerCase();
     switch (scheme) {
       case 'bearer':
-        return 'Bearer [redacted]';
+        return whole(item, 'Bearer [redacted]');
       case 'basic':
-        return 'Basic [redacted]';
+        return whole(item, 'Basic [redacted]');
       case 'token':
-        return 'Token [redacted]';
+        return whole(item, 'Token [redacted]');
     }
   }
-  return '[redacted]';
+  return whole(item, '[redacted]');
 }
 
-function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
-  if (typeof value === 'string') return redactSecretShapedText(value);
+function redactSecretShapedWalk(
+  value: unknown,
+  seen: WeakSet<object>,
+  project: TextProjection,
+  // Reports two member names of one object that project alike, which leaves only the later member.
+  collide?: () => void,
+  whole: WholeMask = maskWhole,
+): unknown {
+  if (typeof value === 'string') return project(value);
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
   try {
-    if (Array.isArray(value)) return redactArgVector(value, seen);
+    if (Array.isArray(value)) return redactArgVector(value, seen, project, collide, whole);
     if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
     const out: Record<string, unknown> = {};
     // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
@@ -682,8 +1638,10 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
       // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
       // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
       // field does not become a phantom `[redacted]` in a diagnostic.
-      Object.defineProperty(out, redactSecretShapedText(key), {
-        value: redactUnderKey(key, item, seen),
+      const name = project(key);
+      if (Object.hasOwn(out, name)) collide?.();
+      Object.defineProperty(out, name, {
+        value: redactUnderKey(key, item, seen, project, collide, whole),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -695,33 +1653,67 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
   }
 }
 
-/** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
- *  media bytes are redacted first so the summary/spill/preview can never carry base64 (I3). */
-function toText(result: unknown): string {
+/**
+ * Render any result to the text the model would see (a string is itself; else compact JSON) and to the text
+ * its summary is made from. Inline media bytes are redacted first so the summary/spill/preview can never
+ * carry base64 (I3). A non-string result's summary text is its JSON with every member under a
+ * credential-named key and every argument after a credential flag masked whole (`structuredSummaryText`):
+ * the text rules read those values once in the unwalked JSON, with the whole masks as ranges of that same
+ * pass, and the later passes read only the masks. The text rules read the JSON as one text (`makeSummary`),
+ * a value one JSON string down included, so a PEM block or a quoted value that runs across members keeps
+ * the context it is read in; projecting each string alone would mask a key or a PEM marker that a later
+ * member's text needs.
+ */
+function toText(result: unknown): {
+  readonly text: string;
+  readonly summaryText: string;
+  /** The inline media bytes the texts replaced with markers but the model-facing `result` still holds. */
+  readonly omittedBytes: number;
+} {
+  const omitted: OmittedMedia = { bytes: 0 };
   if (typeof result === 'string') {
-    return isBase64DataUri(result) ? '[base64 data URI omitted]' : result;
+    const text = isBase64DataUri(result) ? '[base64 data URI omitted]' : result;
+    return { text, summaryText: text, omittedBytes: text === result ? 0 : utf8ByteLength(result) };
   }
   if (result === undefined) {
-    return '';
+    return { text: '', summaryText: '', omittedBytes: 0 };
   }
+  let safe: unknown;
   try {
     // Always run the redaction walk for a non-string result (inside the try so a throwing getter/proxy
     // degrades to '[unserializable]' rather than escaping): it strips inline base64 sources, base64 data:
     // URIs, AND raw binary buffers at any nesting before JSON-serialisation, so no media bytes (base64 or
     // decimal) can ride the summary/spill/preview (I3). A non-media object is returned as a structural clone
-    // (same JSON). JSON.stringify returns undefined for a value with no JSON form (a bare function/symbol);
-    // the `??` keeps a string without an `[object Object]`.
-    const safe = redactInlineMediaForText(result, new WeakSet<object>());
-    return JSON.stringify(safe) ?? '[unserializable]';
+    // (same JSON). Both texts are made from this one walk.
+    safe = redactInlineMediaForText(result, new WeakSet<object>(), omitted);
   } catch {
-    return '[unserializable]'; // circular reference / throwing toJSON / throwing getter during redaction
+    return { text: '[unserializable]', summaryText: '[unserializable]', omittedBytes: 0 }; // throwing getter during redaction
+  }
+  return {
+    text: jsonText(() => safe),
+    summaryText: structuredSummaryText(safe),
+    omittedBytes: omitted.bytes,
+  };
+}
+
+/**
+ * JSON of a value, or `[unserializable]` for one that has no JSON form (JSON.stringify returns undefined for
+ * a bare function/symbol; the `??` keeps a string without an `[object Object]`) or whose serialization throws
+ * (a circular reference, a throwing toJSON).
+ */
+function jsonText(value: () => unknown): string {
+  try {
+    return JSON.stringify(value()) ?? '[unserializable]';
+  } catch {
+    return '[unserializable]';
   }
 }
 
 function makeSummary(text: string): string {
   // Recognize LF/TAB-split shapes in the complete materialized text before one-line normalization. Clip only after recognition: a closing quote or URL
   // authority separator can be beyond the preview. Raw model/spill text stays unchanged.
-  const oneLine = redactSecretShapedText(redactSplitCredentials(text).replace(/\s+/g, ' ').trim());
+  const recognized = /[\n\t]/.test(text) ? redactSecretShapedSummaryText(text) : text;
+  const oneLine = redactSecretShapedSummaryText(recognized.replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 
@@ -849,9 +1841,11 @@ export async function boundForModel(
   host: ToolHost,
   signal?: AbortSignalLike,
 ): Promise<BoundedResult> {
-  const text = toText(result);
-  const summary = makeSummary(text);
-  const bytes = utf8ByteLength(text);
+  const { text, summaryText, omittedBytes } = toText(result);
+  const summary = makeSummary(summaryText);
+  // The ceiling is the model-facing value's, so inline media the texts omit still counts; the spill and the
+  // preview below are made from the media-free text, so an over-ceiling result never hands them base64.
+  const bytes = utf8ByteLength(text) + omittedBytes;
   const lines = countLines(text);
 
   if (bytes <= limits.maxBytes && lines <= limits.maxLines) {
@@ -878,5 +1872,10 @@ export async function boundForModel(
     ref === undefined
       ? `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output unavailable (${unavailableNote}) …]`
       : `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output at ${ref} …]`;
-  return { value: makePreview(text, limits) + marker, truncated: true, summary };
+  // Over the ceiling only by the media it omits, the text itself is the preview, not a doubled head and tail.
+  const preview =
+    utf8ByteLength(text) <= limits.maxBytes && lines <= limits.maxLines
+      ? text
+      : makePreview(text, limits);
+  return { value: preview + marker, truncated: true, summary };
 }

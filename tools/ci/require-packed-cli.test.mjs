@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
@@ -126,7 +126,7 @@ function checkAggregate(job, packId, consumerId) {
 }
 
 function checkUnprivilegedPackageJobs(workflow) {
-  for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli']) {
+  for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli', 'map-controls']) {
     const job = workflow.jobs[id];
     for (const key of ['TURBO_TOKEN', 'TURBO_TEAM']) {
       assert.equal(job.env?.[key], '', `${id} must clear inherited ${key}`);
@@ -141,7 +141,7 @@ test('all PR-controlled installed-package jobs clear inherited remote-cache cred
   checkUnprivilegedPackageJobs(readWorkflow('ci'));
 });
 
-for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli'])
+for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli', 'map-controls'])
   for (const key of ['TURBO_TOKEN', 'TURBO_TEAM'])
     for (const value of [undefined, '${{ secrets.REMOTE_CACHE_CREDENTIAL }}'])
       test(`package privilege guard refuses ${id} ${key}: ${String(value)}`, () => {
@@ -227,6 +227,165 @@ for (const [name, packId, consumerId] of [
   });
 }
 
+const mapControlsCommand = 'pnpm check:map-controls';
+const mapControlsGuard = 'Require complete product map controls';
+
+/** The product map controls job: uncached, unprivileged, no upload, joined to required CI only. */
+function checkMapControls(workflow) {
+  const job = workflow.jobs['map-controls'];
+  requiredJob(job);
+  // Every step runs in the default shell with only the job's own environment.
+  assert.equal(workflow.defaults, undefined);
+  assert.equal(job.defaults, undefined);
+  assert.equal(workflow.jobs.ci.defaults, undefined);
+  assert.deepEqual(job.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
+  assert.equal(job.needs, undefined);
+  assert.equal(job.strategy, undefined);
+  assert.equal(job['runs-on'], 'ubuntu-latest');
+  // Checkout, pnpm and Node only: no cache, upload or download action.
+  assert.deepEqual(
+    job.steps.filter((step) => step.uses).map((step) => step.uses),
+    [actions.checkout, actions.pnpm, actions.node],
+  );
+  assert.deepEqual(job.steps.find((step) => step.uses === actions.checkout).with, {
+    'persist-credentials': false,
+  });
+  assert.equal(job.steps.find((step) => step.uses === actions.pnpm).with, undefined);
+  assert.deepEqual(job.steps.find((step) => step.uses === actions.node).with, {
+    'node-version-file': '.nvmrc',
+  });
+  assert.deepEqual(
+    job.steps.filter((step) => step.run).map((step) => step.run),
+    ['pnpm install --frozen-lockfile', mapControlsCommand],
+  );
+  const controls = job.steps.find((step) => step.run === mapControlsCommand);
+  assert.deepEqual(Object.keys(controls).sort(), ['env', 'name', 'run']);
+  assert.deepEqual(controls.env, { RELAVIUM_PACKAGE_SOURCE_SHA: '${{ github.sha }}' });
+  // Required CI waits for it and refuses every result except success; the package aggregate does not.
+  const ci = workflow.jobs.ci;
+  assert.ok(ci.needs.includes('map-controls'));
+  assert.ok(![workflow.jobs['packed-cli'].needs].flat().includes('map-controls'));
+  const guard = ci.steps.find((step) => step.name === mapControlsGuard);
+  assert.ok(guard, mapControlsGuard);
+  assert.deepEqual(Object.keys(guard).sort(), ['env', 'name', 'run']);
+  assert.deepEqual(guard.env, { MAP_CONTROLS_RESULT: '${{ needs.map-controls.result }}' });
+  assert.equal(
+    guard.run,
+    "node -e \"require('node:assert/strict').equal(process.env.MAP_CONTROLS_RESULT, 'success')\"",
+  );
+  assert.equal(guard.if, undefined);
+  assert.equal(guard['continue-on-error'], undefined);
+}
+
+test('required CI runs the product map controls uncached and without uploads; release does not', () => {
+  checkMapControls(readWorkflow('ci'));
+  // The release workflow's graph belongs to Step 9d (the 2026-10-24 ruling).
+  assert.equal(readWorkflow('release').jobs['map-controls'], undefined);
+});
+
+for (const [name, mutate] of [
+  [
+    'a pnpm cache',
+    (job) => (job.steps.find((step) => step.uses === actions.node).with.cache = 'pnpm'),
+  ],
+  [
+    'a cache action',
+    (job) =>
+      job.steps.splice(3, 0, {
+        uses: 'actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830',
+        with: { path: '.turbo', key: 'turbo' },
+      }),
+  ],
+  [
+    'an upload',
+    (job) => job.steps.push({ uses: actions.upload, with: { name: 'maps', path: 'x' } }),
+  ],
+  ['credentials kept in the checkout', (job) => (job.steps[0].with['persist-credentials'] = true)],
+  ['a build before the controls', (job) => job.steps.splice(4, 0, { run: 'pnpm turbo run build' })],
+  ['a tolerated failure', (job) => (job['continue-on-error'] = true)],
+  ['a disabled job', (job) => (job.if = '${{ false }}')],
+  ['a longer deadline', (job) => (job['timeout-minutes'] = 30)],
+  [
+    'no source identity',
+    (job) => delete job.steps.find((step) => step.run === mapControlsCommand).env,
+  ],
+  [
+    'a tolerated controls step',
+    (job) =>
+      (job.steps.find((step) => step.run === mapControlsCommand)['continue-on-error'] = true),
+  ],
+  [
+    'a custom shell on the controls step',
+    (job) => (job.steps.find((step) => step.run === mapControlsCommand).shell = 'true {0}'),
+  ],
+  ['a default shell for the job', (job) => (job.defaults = { run: { shell: 'true {0}' } })],
+  ['a preload in the job environment', (job) => (job.env.NODE_OPTIONS = '--import ./x.mjs')],
+  ['write permissions', (job) => (job.permissions = { contents: 'write' })],
+  ['another platform', (job) => (job['runs-on'] = 'macos-latest')],
+  ['a dependency', (job) => (job.needs = 'pack-cli')],
+  ['a matrix', (job) => (job.strategy = { matrix: { os: ['ubuntu-latest'] } })],
+  [
+    'pnpm setup inputs',
+    (job) => (job.steps.find((step) => step.uses === actions.pnpm).with = { version: '9.12.3' }),
+  ],
+])
+  test(`map controls job refuses ${name}`, () => {
+    const workflow = readWorkflow('ci');
+    mutate(workflow.jobs['map-controls']);
+    assert.throws(() => checkMapControls(workflow), assert.AssertionError);
+  });
+
+for (const [name, mutate] of [
+  [
+    'removal from required CI',
+    (jobs) => (jobs.ci.needs = jobs.ci.needs.filter((id) => id !== 'map-controls')),
+  ],
+  [
+    'joining the package aggregate',
+    (jobs) => (jobs['packed-cli'].needs = [...jobs['packed-cli'].needs, 'map-controls']),
+  ],
+  [
+    'a removed guard',
+    (jobs) => (jobs.ci.steps = jobs.ci.steps.filter((step) => step.name !== mapControlsGuard)),
+  ],
+  [
+    'a disabled guard',
+    (jobs) => (jobs.ci.steps.find((step) => step.name === mapControlsGuard).if = '${{ false }}'),
+  ],
+  [
+    'a guard that admits other results',
+    (jobs) => (jobs.ci.steps.find((step) => step.name === mapControlsGuard).run = 'true'),
+  ],
+  [
+    'a guard reading another result',
+    (jobs) =>
+      (jobs.ci.steps.find((step) => step.name === mapControlsGuard).env = {
+        MAP_CONTROLS_RESULT: '${{ needs.packed-cli.result }}',
+      }),
+  ],
+  [
+    'a tolerated guard',
+    (jobs) =>
+      (jobs.ci.steps.find((step) => step.name === mapControlsGuard)['continue-on-error'] = true),
+  ],
+  [
+    'a custom shell on the guard',
+    (jobs) => (jobs.ci.steps.find((step) => step.name === mapControlsGuard).shell = 'true {0}'),
+  ],
+  ['a default shell for ci', (jobs) => (jobs.ci.defaults = { run: { shell: 'true {0}' } })],
+])
+  test(`required CI refuses ${name} of the map controls`, () => {
+    const workflow = readWorkflow('ci');
+    mutate(workflow.jobs);
+    assert.throws(() => checkMapControls(workflow), assert.AssertionError);
+  });
+
+test('a workflow-wide default shell refuses the map controls', () => {
+  const workflow = readWorkflow('ci');
+  workflow.defaults = { run: { shell: 'true {0}' } };
+  assert.throws(() => checkMapControls(workflow), assert.AssertionError);
+});
+
 test('required CI joins packed acceptance and explicitly refuses every result except success', () => {
   const job = readWorkflow('ci').jobs.ci;
   assert.ok(job.needs.includes('packed-cli'));
@@ -268,8 +427,51 @@ test('release keeps main ancestry, version, real-push publication and npm proven
   );
   assert.deepEqual(
     jobs.publish.steps.filter((step) => step.run).map((step) => step.run),
-    ['npm publish ./artifact/*.tgz --provenance --access public'],
+    [
+      'node tools/cli-package/release-guard.mjs ./artifact',
+      'npm publish ./artifact/*.tgz --provenance --access public',
+    ],
   );
+});
+
+test('release publication is refused fail-closed until a verified release candidate exists', () => {
+  const workflow = readWorkflow('release');
+  const steps = workflow.jobs.publish.steps;
+  const checkout = steps.find((step) => step.uses === actions.checkout);
+  assert.deepEqual(checkout.with, {
+    'persist-credentials': false,
+    'sparse-checkout':
+      '.nvmrc\ntools/cli-package/release-guard.mjs\ntools/cli-package/release-guard-core.mjs\n',
+    'sparse-checkout-cone-mode': false,
+  });
+  const guard = steps.find(
+    (step) => step.name === 'Refuse anything but a verified release candidate',
+  );
+  const publish = steps.find((step) => step.name === 'Publish');
+  assert.equal(guard.run, 'node tools/cli-package/release-guard.mjs ./artifact');
+  // An unconditional, non-advisory guard runs after the download and before any publish, under the
+  // runner's default shell and directory: no condition, shell, environment or defaults at the step,
+  // job or workflow level, and no earlier `run` step that could write the job's environment.
+  assert.deepEqual(Object.keys(guard).sort(), ['name', 'run']);
+  // The deployment environment scopes the npm token and its reviewer; it writes no job environment.
+  assert.equal(workflow.jobs.publish.environment, 'release');
+  assert.deepEqual(Object.keys(workflow.jobs.publish).sort(), [
+    'environment',
+    'if',
+    'name',
+    'needs',
+    'permissions',
+    'runs-on',
+    'steps',
+    'timeout-minutes',
+  ]);
+  assert.deepEqual(Object.keys(workflow).sort(), ['concurrency', 'jobs', 'name', 'on']);
+  assert.ok(steps.slice(0, steps.indexOf(guard)).every((step) => step.run === undefined));
+  assert.ok(
+    steps.indexOf(steps.find((step) => step.uses === actions.download)) < steps.indexOf(guard),
+  );
+  assert.equal(steps.indexOf(guard) + 1, steps.indexOf(publish));
+  assert.equal(publish.if, undefined);
 });
 
 for (const [label, alter] of [
@@ -400,3 +602,20 @@ for (const command of ['pnpm smoke:cli-bootstrap', 'pnpm smoke:budget-replay']) 
     });
   }
 }
+
+test('every CLI package, closure, bootstrap and CI tooling test runs in test:acceptance-tools', () => {
+  // The list is the only place CI runs these files, so an unlisted test would silently never run.
+  const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+  const listed = new Set(manifest.scripts['test:acceptance-tools'].split(' '));
+  for (const directory of [
+    'tools/cli-package',
+    'tools/cli-package/smoke',
+    'tools/bundle-closure',
+    'tools/cli-bootstrap',
+    'tools/ci',
+  ]) {
+    for (const name of readdirSync(new URL(directory, root))) {
+      if (name.endsWith('.test.mjs')) assert.ok(listed.has(`${directory}/${name}`), name);
+    }
+  }
+});

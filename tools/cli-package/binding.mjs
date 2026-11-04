@@ -1,11 +1,18 @@
 import { isDeepStrictEqual } from 'node:util';
 import { BOOTSTRAP_CONTROL_COUNT } from '../cli-bootstrap/inventory.mjs';
-import { ARCHIVE_LIMITS, assertPublicPackagePath } from './archive.mjs';
+import { ARCHIVE_LIMITS, assertPublicPackagePath, isPublicRuntimeDependency } from './archive.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
 
 /** @typedef {{kind: 'local'} | {kind: 'github', repository: string, workflow: string, runId: string, runAttempt: string, event: string, source: string}} Origin */
 /** @typedef {{path: string, bytes: number, sha256: string, mode: number}} PublicFile */
 /** @typedef {{source: string, origin: Origin, nodeMajor: number, allowLocal?: boolean}} Expected */
+
+/**
+ * The package-test receipt's mode (Step 9a.2b): the producer verified the maps and symbolicated actual
+ * packed frames before writing it, and the product map controls are required by the same commit's
+ * `ci`. The mode is a claim, not evidence of those checks; the earlier `compiled_package_test` is refused.
+ */
+export const PACKAGE_TEST_MODE = 'package_test';
 
 export const REQUIRED_CONSUMER_LEGS = Object.freeze([
   'current-linux',
@@ -65,9 +72,19 @@ function sha(value) {
 function sourceSha(value) {
   return string(value, /^[0-9a-f]{40}$/u);
 }
+const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
+/**
+ * Whether `value` is a package version a receipt admits: a SemVer core with an optional prerelease and
+ * build, at most 100 characters. The private manifest admits exactly the same versions.
+ * @param {unknown} value @returns {value is string}
+ */
+export function isPackageVersion(value) {
+  return typeof value === 'string' && value.length <= 100 && PACKAGE_VERSION.test(value);
+}
 /** @param {unknown} value */
 function version(value) {
-  return string(value, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u, 100);
+  if (!isPackageVersion(value)) refuse('VALUE');
+  return value;
 }
 /** @param {unknown} value */
 function nodeVersion(value) {
@@ -201,13 +218,7 @@ function publicPackage(value) {
     refuse('PACKAGE');
   for (const [name, requirement] of Object.entries(dependencies)) {
     string(name, /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u, 200);
-    if (
-      name.startsWith('@relavium/') ||
-      typeof requirement !== 'string' ||
-      requirement.length > 100 ||
-      /(?:workspace|catalog|file|link):/u.test(requirement)
-    )
-      refuse('PACKAGE');
+    if (!isPublicRuntimeDependency(name, requirement)) refuse('PACKAGE');
   }
   // Full package metadata is public npm material. Keep it bounded; private map
   // manifests and build/source inventories have no admitted top-level field.
@@ -235,7 +246,7 @@ export function validatePackageReceipt(value, expected) {
   ]);
   if (
     receipt.version !== 1 ||
-    receipt.mode !== 'compiled_package_test' ||
+    receipt.mode !== PACKAGE_TEST_MODE ||
     receipt.source !== expected.source ||
     typeof receipt.dirty !== 'boolean'
   )
@@ -258,7 +269,7 @@ export function validatePackageReceipt(value, expected) {
   if (manifest.version !== packageVersion) refuse('PACKAGE');
   return {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: PACKAGE_TEST_MODE,
     source: expected.source,
     dirty: receipt.dirty,
     packageVersion,

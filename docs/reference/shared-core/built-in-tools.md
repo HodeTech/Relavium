@@ -93,17 +93,183 @@ This is conservative pattern masking, not proof that arbitrary sensitive content
 absent; raw dispatch/model results, full spills and historical rows retain their
 existing content-sensitive handling.
 
-LF/TAB inside a recognized token-shaped credential extends the masked original span.
-An ambiguous token-alphabet continuation after LF/TAB is conservatively masked with
-that credential. Ordinary spaces and punctuation separate public prose; the masker
-does not discard the whole diagnostic because a credential appears. Supported split
-shapes are recognized **before** complete-text one-line normalization, followed by
-ordinary recognition and length clipping. This preserves multiline quoted-value
-recognition without exposing a split token's suffix. Public argument bytes are not
+A raw `?` or `#` before a URL authority's `@` begins public query or fragment text only when the
+text before it is host-shaped (a dotted name or IPv4, `localhost` or a bracketed IP literal, with an
+optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked. This is the
+same predicate as the
+[LLM diagnostic backstop](diagnostic-secret-backstop.md), including
+its 260-character bound on the host-shaped prefix. Masked userinfo that holds such a raw `?` or `#`
+leaves the authority ambiguous: the userinfo may also be a query that another rule reads
+(`https://gateway?password=P@ss.word1`). The backstop masks through the authority's end unless a
+host-shaped name follows its last `@`. This projection, like the backstop, finds every rule's ranges
+on the same text and merges overlapping ranges before it replaces anything, so no rule's mask
+removes the key name, scheme label, PEM marker or URL scheme another rule reads. Its key/value and
+opaque-query rules read every key and parameter in a userinfo but its username's and mask each value
+they recognize — a secret key's, unquoted from six characters, or an opaque one of 24 or more
+characters — to its own end: through the last `@`, and on through the host, path and query when no
+delimiter of theirs comes first (`https://gateway?password=P@ss.word1` → `https://[redacted]`;
+`jdbc:sqlserver://db.example:1433;user=sa;password=P@ssw0rd2024;encrypt=true` →
+`jdbc:sqlserver://[redacted];encrypt=true`; `https://user:password=<v>@host.example/v1/a` →
+`https://[redacted]`). Such a value is a recognized credential, so calls that differ only in the
+host or path it runs through share a journal projection. A value no rule recognizes is masked only
+as far as the userinfo's last `@`, so its text after that `@` reads as the host
+(`https://svc?a=1&code=Adm1n@2024prod` → `https://[redacted]@2024prod`), where the backstop masks an
+authority with no host-shaped name after its last `@` to its end. The username is the text before
+the userinfo's first `:` when no raw `?` or `#` comes before that colon; a userinfo with no such
+colon has none, and a username never reaches past an LF or TAB. A key in the username names the
+user, so its value does not run on through the public host and path
+(`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`), and a key on
+the line after a split URL masks its value to its own end
+(`see https://\nDB_PASSWORD=P@ssw0rd123 now` → `see https://\n[redacted] now`). The projection
+otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `}` and `]`,
+the delimiters of the JSON and quoted texts it reads, so userinfo that contains one of them — an
+already-masked `[REDACTED]` password among them — is left as it is; it recognizes any scheme of up to
+32 characters rather than a finite list; and a userinfo with no password is kept as a vanity handle
+below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 a `,` or `/` in a
+password no longer ends the authority: the userinfo is read on to the first `@` within 512 characters
+(`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`). A port
+(`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
+scheme, or a quote, `}`, `]` or whitespace first keeps the text public; the backstop still stops at a
+`/` (a recorded low).
+
+In an argument vector, the element after a credential flag, or the value of its `--flag=value`
+spelling, is masked whole. A flag is a credential flag when it is one of the anchored names (`-p`,
+`--password`, `--token`, `--api-key`, …) or its last word names a credential, read with the object-key
+rule's words as written (`--auth-token`, `--access-token`, `--db-password`, `--pwd`, `--x-api-key`,
+`--credentials`). A flag that only mentions a credential (`--password-stdin`, `--token-file`,
+`--max-tokens`) or begins with `no-` does not count, so the argument after it keeps its own identity.
+Only `-p` keeps a port exception. curl's `-u`/`--user` value, glued (`-ualice:secret`) or not, is
+masked when it holds a `:`, unless it is a `uid[:gid]` or a URL.
+
+LF/TAB inside a recognized token-shaped credential extends the masked original span. An ambiguous
+token-alphabet continuation after LF/TAB is conservatively masked with that credential; an
+LF/TAB-split header label that begins a line inside such a continuation is still read (`sk-…` ending
+a line before a split `api-k\tey:` label). A credential that begins such a line is masked as far as
+the continuation reaches, so when the continuation takes the start of its prefix and the credential
+is itself split again, its rest stays visible (`hf_…` ending a line before an LF-split `glpat-…`).
+An LF or TAB right after a URL's `://`, right before its userinfo's `@` or inside its `scheme://`
+belongs to the split userinfo, which is masked as one span. A credential glued to the end of another
+starts at the earlier mask's boundary, so it is read on the next pass; a run of three or more glued
+credentials (`AKIA…ASIA…AKIA…`) therefore does not settle (below). When the earlier mask takes the
+start of the glued credential's prefix — for example a variable-length token masked to the end of
+its alphabet (`ghp_<body>ghp_<body>`) or its LF/TAB continuation, a scheme label's token, or a key's
+value masked to its delimiter — the rest of that credential stays visible, as it did before this
+projection's corrections; so does the first line of a glued credential split by an LF or TAB whose
+continuation another rule masks in the same pass, which leaves that line below its family's minimum
+(`AKIA…ghp_<15 characters>\n<continuation>token=…`). A quoted value closes on its line, at the later
+of two readings: one with the masks before and inside it filled, as the next pass reads them, and one
+where each mask keeps the backslashes it ends with, as the text has them. So a mask that takes the
+backslash escaping a later quote neither closes the value early
+(`password="Bearer\nabcdefgh token=xyz\"tail" more` → `[redacted] more`) nor, when that quote is the
+value's only closer, leaves it open (`password="say \"…?sig=<24 or more characters>\"` →
+`[redacted]`), in a summary too. Both readings are also taken with the scheme labels' tokens filled,
+as the key rule read them before this projection merged its rules, so a token that takes the value's
+line break lets it close at its real quote. One that does not close on its line is decided once the
+pass's other masks are known: when one of them takes its line break (a scheme label's token, a nested
+key's value), it closes as the next pass reads it and is masked whole, as before this rule, and it is
+read with and without the key rule's own masks, so another key's value that takes its closing quote,
+or ends at its opening one, does not keep it open (`password="a b Bearer\nxyzxyzxy token="q" more` →
+`[redacted] more`); otherwise it is read as an unquoted value from after its quote — a run
+of at least six characters up to whitespace, a quote, `,`, `;` or `&` — and no further than its
+line's end, since its quote may instead close a string the key sits in: the text after such a quote
+stays (`stop logging "token=" values`), so calls that differ only there keep distinct projections,
+and the later words or lines of a value that never closes or closes on a later line stay visible
+(`password="firstline\nsecond"` → `[redacted]\nsecond"`; a first line under six characters stays as
+well). A run is masked from its key in the pass that finds it, so a key or a line break that only a
+later pass reads, behind a glued credential's mask
+(`password="AKIA<16>abcdefghijklm_token: <v>\n…"`), goes with the run and the value behind it stays.
+A value opened by an escaped quote (`\"…\"`, as JSON inside a JSON string writes it) is read one
+decoding level down, also behind escaped tabs and line breaks after its separator
+(`password:\t\"…\"`), where an apostrophe, which JSON leaves unescaped, opens a value too
+(`password:\n '…'`); a raw double quote behind them, as `util.inspect` or `repr` print one
+(`password:\t"…"`), does not, a documented limit. A key inside an opaque query value loses its value
+to that value's mask, which runs to the escaped quote and takes its backslash
+(`?state=<24 or more characters>;password=\"…\"` keeps the quoted text), a documented limit. Only
+its escaped quote closes it: a raw line break, behind a backslash or not, or a raw quote of its own
+kind ends the string around it, so a value that has not closed by then is read as a run, like one
+that does not close on its line (`"stop logging \"token=\" values"` stays as it is); a raw quote of
+the other kind does not end that string, since an apostrophe is ordinary text in a JSON string, so
+inside a string delimited by that kind the value runs on. One quoted two or more JSON levels down is
+outside the shapes, and so is a single-quoted value inside a JSON string whose apostrophe is escaped
+(`'ab\'…'` written as `'ab\\'…'`): JSON doubles the backslash, so the value closes at that
+apostrophe and the rest stays. A key's value runs through every span an earlier rule masks, line
+breaks included, as through an applied mask, so a quoted value that carries a split credential or a
+PEM block is masked whole. A key word must start within the first 33 characters of its word, counted
+from the last word boundary (a `-` starts one, a `_` does not), so a longer name is no key
+(`MY_APPLICATION_PRODUCTION_DATABASE_PASSWORD=…` stays). A key's mask starts where its word starts,
+so a credential glued to the front of a key name (`<token>password=…`) is masked with that key's
+value and stays when the value is empty or too short to mask; a glued token of 33 or more characters
+puts the key word past that window, so no key is read and the value stays visible unless another rule
+recognizes it (`ghp_<36 characters>password=…`). A key inside another key's value, and
+a scheme label inside another label's token, start a credential of their own
+(`token=a>password: <secret>` → `[redacted]`; `Bearer a/Bearer <t>` →
+`Bearer [redacted] [redacted]`), and an LF/TAB-split header label or a scheme label may start right
+after a credential or a PEM block, as after an applied mask. Core's scheme rule reads one unquoted
+label followed by whitespace, so a self-quoted label (`"Bearer" <t>`) or a concatenated run
+(`BearerBearer <t>`), which the backstop masks, is outside its shapes. A scheme label that takes a
+URL scheme as its token no longer hides that URL's password (`token postgres://app:pw@db` →
+`token [redacted]://[redacted]@db`). The projection repeats until its output stops changing, at most
+three passes, and becomes `[redacted]` if it has not settled — as a run of glued credentials or a
+key whose short value names the next key can need more — so projecting a projection changes nothing;
+a display field that does not settle (three glued fixed-length ids suffice) therefore shows as
+`[redacted]` whole, and of such calls only a tiered one is refused. A tiered call whose journal
+projection has not settled, or whose arguments hold two member names of one object that project
+alike, which leaves one of the members, is refused before it is prepared
+([tool registry](tool-registry.md#resolution--the-dispatch-lifecycle)), so neither that constant nor
+a lost member stands for two different arguments in the journal. Every rule's scan stays linear in
+the admitted text, and none uses a backtracking pattern whose stack an admitted value can exhaust: a
+quoted value is read by a character scan no further than its line, and a summary decides its values
+that stop at a line break by one backward scan. Ordinary spaces and punctuation separate public
+prose; the masker does not discard the whole diagnostic because a credential appears. A summary uses
+the projection with the differences below, since a summary is shown, never compared. A quoted value
+that one of its readings stops at a line break is masked through the nearest later quote that could
+close it outside the values the rule masks or, when every such quote is inside one, through the last
+of them, and only else to the end of its line, in whichever reading reaches further, and through the
+closing of a reading that closes too; one that reaches the end of the string around it or of the text
+without closing is masked to that end. A key's value whose escaped opening quote ends an earlier
+mask's backslashes opens where that mask keeps them, so a query value at the end of a line that runs
+on through the next line's key in a structured result's JSON does not hide that key's value (a
+`cat .env` result's `?sslmode=require\nPOSTGRES_PASSWORD=\"…\"` → `?sslmode=[redacted]\n`); the
+journal projection keeps its reading, so the same JSON as a text argument still shows such a value, a
+documented limit. A structured (non-string) result is summarized from its JSON with
+every member under a credential-named key and every argument after a credential flag masked whole
+(a count such as `input_tokens` too, the text rules then masking the member's name with it). The text
+rules read that JSON once before those masks, which the same pass applies, so a quoted value or a PEM
+block that runs into or out of a masked member is masked across members, as reading the unwalked JSON
+masks it. The summary marks those values with the private-use character U+E000, so a result whose JSON
+already holds one is summarized from the walk's masks alone and such a value or block is not masked
+across members there, a documented limit. The text rules read the JSON as one text, a value one
+JSON string down included, so a JSON-escaped line break is no delimiter and a PEM block or a quoted
+value that runs across members keeps its key and markers. A summary also reads a private-key marker whose words a line break, a tab or more than
+one space separates (`-----END RSA PRIVATE\nKEY-----`), as a block wrapped at a fixed width can split
+one: one to eight whitespace characters between `PRIVATE` and `KEY`, and up to 40 characters of type
+words and whitespace after `BEGIN` or `END`. A marker wrapped further is read only after the summary's
+one-line normalization, which a key's value that takes the BEGIN marker first prevents
+(`PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n<body>\n-----END PRIVATE\n        KEY-----` shows the body),
+a documented limit. The journal projection reads such a marker as before, and a structured result's
+summary does not read one whose line break or tab its JSON escapes
+(`{"a":"…-----END RSA PRIVATE\nKEY-----"}`), a documented limit. A private-key block is masked only from a BEGIN marker to an END marker that starts
+at most 20,000 characters after it, so a block cut off before its END marker (`head -n 5 key.pem`)
+stays visible in every projection, a documented limit. A block ends at its first END marker even where
+another rule's match is glued to it (`?sig=<v>-----END …`): text after that marker stays, and a key's
+quoted value whose closing quote lies inside the block shows its front
+(`api_key='x <v> -----BEGIN …' ?sig=<v>-----END …` → `api_key='x <v> [redacted]`); base masked these only
+because its rules ran in turn and the glued match erased the marker, a documented relaxation. In a
+summary, a key's unquoted value behind an escaped line break and indentation (`password:\n  <v>` in a
+structured result's JSON) is not read, a documented limit. Every summary also reads its text a second time with each
+escaped line feed, carriage return or tab (`\n`, `\r`, `\t`, behind any run of backslashes) as that
+separator, for the rules a separator decides: a credential or a scheme label right after one, and a
+credential split by one, are masked as in raw text (`{"stdout":"keys:\nsk-…"}` →
+`{"stdout":"keys:\n[redacted]"}`), while a header label split by one is not read; the journal
+projection reads no escape. Core does not read a credential or a scheme label glued to a terminal
+sequence's final byte (`ESC[1msk-…`), which leaves no word boundary there, a documented limit; the
+backstop's terminal handling is in [error handling](../../standards/error-handling.md). Supported
+split shapes are recognized **before** complete-text one-line normalization, by that projection's
+full fixed point, followed by ordinary recognition and length clipping. This preserves multiline
+quoted-value recognition without exposing a split token's suffix. Public argument bytes are not
 globally whitespace-normalized for journal identity. The
-[journal contract](effect-journal.md#11-secrets-what-a-row-may-hold) owns recognized-
-credential equality and persisted compatibility; diagnostic masking grants no
-permission to repeat an effect.
+[journal contract](effect-journal.md#11-secrets-what-a-row-may-hold) owns recognized-credential
+equality and persisted compatibility; diagnostic masking grants no permission to repeat an effect.
 
 ## Subprocess environment
 
@@ -124,7 +290,7 @@ A valid host-issued scratch descriptor conditionally adds only its exact subtree
 
 ### CLI authority and floors
 
-The CLI owns an immutable, process-local policy with pinned lexical/canonical directory identities, rechecked at each capability operation. Read/list/glob, mention/completion, discovery and write boundaries check lexical provenance and canonical targets; recursive enumeration prunes denied directories **before descent**. An ordinary extra-root grant never overrides confidentiality or protected-write floors, including full tier and auto mode.
+The CLI owns an immutable, process-local policy with pinned lexical/canonical directory identities, rechecked at each capability operation. Device and inode compare as exact bigints: a 64-bit file ID (NTFS, or an overlayfs `xino` inode) exceeds a Number's precision. Read/list/glob, mention/completion, discovery and write boundaries check lexical provenance and canonical targets; recursive enumeration prunes denied directories **before descent**. An ordinary extra-root grant never overrides confidentiality or protected-write floors, including full tier and auto mode.
 
 Synchronous root admission uses native canonical resolution, matching asynchronous file operations. Windows short-name and long-name spellings must resolve to the same canonical authority; lexical spellings remain separately pinned for provenance and confidentiality checks. Native path membership alone cannot equate two unresolved aliases.
 
@@ -155,7 +321,7 @@ Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automa
 
 ### Physical media storage and limits
 
-The filesystem CAS pins its canonical root on the first admitted operation; reads/GC do not create an unused store, and later absence/replacement/retargeting revokes access. Shards/final descendants cannot be symlinks; files must be regular without extra hard links, with exclusive no-follow temporary ownership, one-fd read identity checks, atomic publication and the same physical containment checked for read, delete and GC. CAS has no pnpm exemption. Handle/port semantics live in the [MediaStore reference](llm-provider-seam.md).
+The filesystem CAS pins its canonical root on the first admitted operation; reads/GC do not create an unused store, and later absence/replacement/retargeting revokes access. Every root pin, file snapshot, owned-file, claim-directory, marker and read identity check compares device and inode as exact bigints taken from one stat. Shards/final descendants cannot be symlinks; files must be regular without extra hard links, with exclusive no-follow temporary ownership, one-fd read identity checks, atomic publication and the same physical containment checked for read, delete and GC. CAS has no pnpm exemption. Handle/port semantics live in the [MediaStore reference](llm-provider-seam.md).
 
 An opened CAS read descriptor may become unlinked when a cooperating publisher atomically republishes the same handle. Reads validate the current root/shard/final-entry floor independently, retain the one opened regular descriptor (at most one remaining link), and verify its bytes against the requested hash before delivery. They do not require the final pathname to retain that descriptor's inode. Temporary ownership and destructive operations retain their stricter identity checks.
 
@@ -197,7 +363,10 @@ the fixed primary acquisition error or expose native diagnostics.
 
 New `media-claim-v2` records encode native bigint device/inode identities as bounded
 canonical unsigned 64-bit tokens. Claim creation, post-move admission and final recovery
-revalidation compare these exact identities without a Number conversion. Existing v1
+revalidation compare these exact identities without a Number conversion. Node reports a
+64-bit file ID with its top bit set as a negative bigint; its token is the unsigned value
+(`BigInt.asUintN(64, …)`), so such a temporary can be claimed, and every other value keeps
+its token. Existing v1
 claims retain their safe-integer/canonical validation; an ambiguous unsafe historical
 token is retained, never promoted to deletion authority. Producer, maintenance and
 recovery-marker layouts are unchanged. This targeted identity check supplements the

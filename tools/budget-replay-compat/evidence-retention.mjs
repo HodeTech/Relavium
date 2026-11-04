@@ -16,9 +16,11 @@ import { basename, dirname, join } from 'node:path';
 
 const kind = 'relavium-budget-replay-evidence-v1';
 function directory(path) {
-  const stat = lstatSync(path);
+  // Exact identities: a 64-bit file ID (NTFS, overlayfs xino) exceeds a Number's precision, and this
+  // identity alone tells a lookalike replacement from the completed directory before its deletion.
+  const stat = lstatSync(path, { bigint: true });
   assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'replay evidence directory redirected');
-  if (process.getuid !== undefined) assert.equal(stat.uid, process.getuid());
+  if (process.getuid !== undefined) assert.equal(stat.uid, BigInt(process.getuid()));
   return { dev: stat.dev, ino: stat.ino };
 }
 function readRecord(path) {

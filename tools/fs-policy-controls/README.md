@@ -176,10 +176,34 @@ retain their original source attribution. The generated-result correction adds
 one object-preflight control: removing both encoded/exact decoded guards must
 break the capacity +1 and +3 pre-reservation witnesses in the complete 18-case
 generated-result suite. Request-input and direct-store ceilings remain separate.
-The current declaration in `mutations.mjs` contains 110 controls /330 phases,
+The declaration before NI contained 110 controls /330 phases,
 projecting 1,987 retained files (110 × 18 + 7) under the unchanged
 2,000-file /64-MiB ceilings. This is capacity arithmetic, not a measured export or
 completed capture; historical captures retain their own source heads and actual counts.
+
+That arithmetic counted files only. Every phase also retains its exact source manifest,
+one per phase and about 200 KB each because it lists the whole source graph, and the
+export's raw manifests share the 64-MiB bound. Once Wave 3's PR95 increment grew that
+graph, a manifest measured 203,421 bytes and the 330 manifests of one export
+67,128,930 bytes, 20,066 over the bound, so CI's export refused (2026-10-22). Like the
+secrets family, the 110-control declaration then ran as two round-robin shards of 55 controls
+(`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: 165 manifests
+(33,564,465 bytes) and 997 retained files (55 × 18 + 7). Both shards ran locally with
+`RELAVIUM_ACCEPTANCE_EVIDENCE` set at `2a1f7359`'s source; every control passed, and
+the exports measured 25.65 MiB and 25.59 MiB. That is one local measurement, not a CI
+capture.
+
+NI (2026-10-25) appends five precision controls: `fs-root-identity-precision`,
+`catalog-identity-precision`, `cas-root-pin-precision`, `cas-owned-identity-precision`
+and `media-temp-same-precision`. Each removal returns one site's whole native identity
+comparison to `Number`. Its complete witness file (four CLI cases or seven media-store
+cases) substitutes every inode the code reads, keyed by its real device and inode, with
+2^60 + k, which stays distinct as a bigint but collapses to one Number, so a real replacement must refuse with the named
+assertion. The declaration is now 115 controls /345 phases. Its round-robin shards hold
+58 and 57 controls, projecting 174 and 171 phase manifests and 1,051 and 1,033 retained
+files under the unchanged ceilings. One new control's export at `209e7193` measured a phase
+manifest of 203,728 bytes, so the larger shard's manifests come to 35,448,672 bytes (52.8 %
+of the bound); that is one local measurement, not a CI capture.
 
 The declaration is not acceptance evidence by itself. The complete matrix
 still requires a stable committed head, all fixed/removal/restored phases,

@@ -256,7 +256,13 @@ host is touched once, in the middle.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
 The durable [effect bracket](effect-journal.md) prepares a tiered call after approval and settles it
-after model-facing bounding. Immediately before step 5, after any asynchronous approval and preparation,
+after model-facing bounding. Its prepare carries the journal projection of the effective arguments;
+when that projection has not settled within three passes (credential-shaped text with no stable
+redacted form, [built-in-tools.md](built-in-tools.md#finite-diagnostic-credential-masking)), or when two
+member names of one object project alike and would leave one member for two argument sets, the call
+is refused with a loop-correctable `ToolArgsInvalidError` before anything is prepared or dispatched. It
+names the affected arguments through the same masker, since an open schema lets the model choose an
+argument's name. Immediately before step 5, after any asynchronous approval and preparation,
 the registry invokes the optional trusted `ctx.beforeDispatch(toolId)` synchronously for **every actual
 dispatch**, including unjournaled tools. No asynchronous work may occur in that hook. It uses the resolved
 registry id and does not run for a retained-result replay. A refusal proves no dispatch started: a prepared
@@ -412,6 +418,12 @@ distinct from the *event* `outputSummary`, which the registry bounding stage pro
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
+The bound counts the inline media a result still holds — a base64 `data:` URI, a canonical base64
+source, a binary buffer — at its full size, although the summary, spill and preview show only a
+marker for it: a builtin's media rides the attachment rail ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1),
+so media left in a dispatch result is text to the model and is settled into the journal. Over the
+ceiling, the model gets the media-free preview and the marker reports the full byte count (2026-11-04;
+a 30 MiB data URI had been measured as its marker).
 
 Observability and journal-argument projections distinguish shared siblings from ancestor cycles.
 Each walk removes a visited object when its branch finishes, including native/binary/media early
@@ -480,7 +492,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
 | `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** — EXCEPT `media_scope_denied` is `recoverable` (a Step-14 SCOPE denial; see the note below) |
 | `ToolDeniedByUserError` | an interactive **per-tool approval** denial ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3) — `user_rejected` (rejected by the user / mode policy), `no_approval_hook` (fail-closed: a governed dispatch under an active regime with no confirm hook wired), `approval_error` (fail-closed: the hook threw a non-abort error, so consent could not be obtained) | `tool_denied` | **fatal** (never retried; not loop-correctable — re-asking re-prompts/re-denies, like `ToolPolicyError`) |
-| `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint | `validation` | fatal (loop-correctable first) |
+| `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint, or a tiered call's journal projection does not settle or projects two member names alike | `validation` | fatal (loop-correctable first) |
 | `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `tool_unavailable` | **fatal** (names the tool + the unwired arm actionably — never a bare `internal`; EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |
 | *(AbortSignal abort)* | the run was cancelled mid-tool | `cancelled` | fatal (cancel path, not `tool_failed`) |

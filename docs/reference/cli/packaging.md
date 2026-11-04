@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; Step 9 map/custody and release gates remain staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; the Step 9a.1 candidate build and finalizer are independently accepted on `development` (2026-10-24); Step 9a.2a's strict decoder, private manifest and symbolication are independently accepted on `development` (2026-10-24); Step 9a.2b's product map controls, post-receipt rebuild refusals and `package_test` receipt are independently accepted on `development` (2026-10-24); Step 9b.1's private container, isolated GnuPG runner and encrypt-once library are independently accepted on `development` (2026-10-25; synthetic recipients only); Step 9b.2's ciphertext reuse, release binding receipt v1, absent production loader and scope separation are independently accepted on `development` (2026-10-26; synthetic recipients only); the remaining Step 9 custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -149,8 +149,8 @@ removal precedes success receipt/summary publication. Worker or cleanup failure
 prevents publication, and secondary cleanup/diagnostic failure preserves the
 primary outcome. Private worker identity stays outside public receipts.
 
-Required workflows share one public tarball and a `compiled_package_test` receipt
-with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
+Required workflows share one public tarball and a package-test receipt (mode `package_test`
+since Step 9a.2b, `compiled_package_test` before it) with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
 untouched-entry bootstrap controls and actual workflow, gate, budget, chat/resume,
 SQLite, native-load, MCP-version and media-cleanup behavior. Their aggregate checks
 all four actual success records and immutable artifact/source/origin identities.
@@ -159,9 +159,11 @@ The [tooling guide](../../../tools/cli-package/README.md) describes invocation a
 bounded retry evidence. These runners are implemented; required platform execution
 and independent acceptance are recorded separately in the Wave 3 register.
 
-This intermediate receipt does not claim the full map-bearing package-test mode
-below. Original-TypeScript symbolication, private staging and release custody
-remain Step 9. Native fatal-owner integration is covered by [Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+Since Step 9a.2b the receipt records `package_test`: before writing it the producer verified its
+maps and symbolicated actual packed frames (Steps 9a.1 and 9a.2a), and the `ci` workflow requires the
+product map controls; an artifact is backed by them only where a successful `ci` run exists at exactly
+its commit (below). Release custody remains Steps 9b–9d. Native fatal-owner integration is covered by
+[Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 No intermediate local result closes Step 9 or certifies a release.
 
 ### Candidate finalization — Step 9
@@ -229,6 +231,274 @@ candidate for that version refuses instead of silently superseding it.
 The finalized JS/map receipt is sealed locally before encryption; the binding
 receipt is sealed after ciphertext exists. These are distinct, named artifacts.
 
+### Candidate build and finalizer implementation boundary — Step 9a.1
+
+Step 9a.1 implements items 1–3 above and the producer half of item 4. This section
+describes the implemented mechanism; independent acceptance is recorded in the
+[Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
+- **Owned candidate tree.** `pnpm package:cli:pack` never builds in the developer's
+  workspace. It records the original checkout's commit, full porcelain status and the
+  tracked files Git is told not to check (skip-worktree or assume-unchanged, which make
+  the identity `dirty` whatever their bytes), copies every file Git would ship (tracked
+  plus untracked-but-not-ignored, minus deletions, by the repository's ignore rules and
+  the developer's global excludes file, as the developer's own Git finds it (also through
+  command-scope `GIT_CONFIG_*` configuration) and passed explicitly; that Git reads no home,
+  global or system configuration or attributes and ignores replace refs) into a fresh
+  owner-only tree, and refuses if any of the three changed during the copy. A clean status is
+  then confirmed byte for byte (Step 9a.2a): each copied file's Git blob id — the hash of its raw
+  bytes, no filter — must equal the commit tree's entry, because line-ending conversion
+  (`core.autocrlf`, the Git for Windows default) and Git's stat cache can report converted bytes as
+  unchanged; a copy that differs makes the identity `dirty`, so the build is symbolicated against
+  the bytes it was built from and a trusted origin refuses it. A link, as a listed file or as any parent directory of one
+  below the checkout, refuses the copy, so a tracked directory replaced by an ignored link
+  cannot bring in bytes from outside the checkout; so does an untracked nested repository,
+  which Git lists only as its directory. Every build and install pnpm call runs in the
+  private home's isolated environment (only the store discovery below also sees the
+  caller's store-location variables), and a corepack-managed pnpm runs from the developer's
+  own corepack cache (`COREPACK_HOME`, as corepack computes it), never from the temporary
+  directory, where another local user could plant a module on its lookup path.
+  Ignored output, caches, dependencies and private notes never enter it. The locked
+  closure is installed there offline, frozen and with `--ignore-scripts` from the
+  existing content-addressed store, which pnpm discovers in the repository with only
+  `HOME`, `USERPROFILE`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `LOCALAPPDATA`, `APPDATA`,
+  `PNPM_HOME`, `npm_config_store_dir` and `NPM_CONFIG_STORE_DIR` of the caller's environment. Every `@relavium/*`
+  link of the CLI and the five inlined engine packages must resolve to that package inside
+  the tree, no other `@relavium/*` link is admitted, and the root `node_modules` must
+  resolve inside the tree too.
+- **Fresh upstream maps.** The five engine packages compile in order with the installed
+  compiler's `--sourceMap true --inlineSources false --incremental false` overrides after
+  their `dist` and incremental files are removed. No Turbo or other build cache is
+  invoked, and a Turbo directory, `*.tsbuildinfo` or `node_modules/.cache` left in the
+  tree refuses before the seal. Ordinary builds keep their explicit `sourceMap: false`.
+- **Sole prepack build.** `prepack` is the tooling orchestrator
+  `tools/cli-package/prepack.mjs`, which runs the installed tsup once. Without a staging
+  directory it then runs the ordinary closure guard, as before. The CLI configuration
+  emits external maps with `sourcesContent` disabled whenever
+  `RELAVIUM_CLI_CANDIDATE_STAGING` is defined; prepack first refuses unless it names an
+  absolute, canonical, empty directory outside the candidate (both compared by the real
+  paths and letter case the filesystem stores), owner-only where POSIX modes are
+  observable, and then runs the finalizer in place of the ordinary guard. That guard
+  refuses any map a build outside prepack leaves in `dist`.
+- **Finalizer.** Before any write it accounts for every emitted file (each runtime JS
+  output paired with exactly one map, plus the metafile, nothing else). It validates every
+  consumed upstream tsc map: exact terminal map link, version 3, matching `file`, empty
+  `sourceRoot`, no embedded sources, and only that package's existing original
+  TypeScript; its mappings may be empty only when the module's types all erase, which tsc
+  emits as exactly `export {};`. It validates every final map:
+  version 3, no embedded sources or unreviewed fields, and sources resolving to existing
+  `apps/cli/src` or engine `src` TypeScript that equal exactly the original sources of
+  the inputs contributing bytes to that output, so a bundler fallback to compiled JS
+  refuses. A code-splitting facade with no contributing input must have an empty map.
+  It removes only tsup's exact terminal `//# sourceMappingURL=<name>.map` trailer and
+  requires the remaining bytes to equal the size esbuild recorded. Then it stages the
+  rewritten maps (repository-relative sources; mappings and names unchanged) and the
+  metafile owner-only outside the package, re-runs the finite closure and the
+  migration-copy check on the finalized files, and only then hashes into a private record.
+  A refusal names a fixed code and at most a fixed label or a repository-relative path that
+  has passed validation: a metafile string that escapes the repository or is not a plain
+  path is left out, and no map or source content is ever printed.
+- **Seal.** The seal takes the candidate root, the staging directory and the original
+  checkout's identity explicitly and never resolves a repository from its own location.
+  Public JS must be exactly the staged metafile's runtime outputs, byte-identical to the
+  finalizer's record; the actual tarball is inspected as in Step 7b. The receipt remained
+  `compiled_package_test` until Step 9a.2b flipped it to `package_test`.
+- **Ordinary map-free control.** The ordinary closure guard refuses any map, map link or
+  unreviewed file in `dist`, and the five build configurations and the CLI configuration
+  are pinned map-free outside a named candidate.
+
+Private maps, the metafile, the hash record and the candidate tree are removed when the
+producer succeeds, fails or is interrupted (SIGINT, SIGTERM, SIGHUP); an interrupt also stops
+the build's child processes and empties the artifact directory, which was empty at the start,
+before the producer exits with the signal's code — also when it arrives after the build's last
+child exited, during the seal or the final removal. A failed production prints only prepack's own
+fixed `✗ CLI …` lines and one fixed code, never a build child's captured output, which can quote a
+malformed map. A step of an interrupt's cleanup that fails leaves one fixed line, never a path,
+and the producer still exits with the signal's code. An interrupted consumer likewise stops its
+child processes, including the bootstrap witness's, and removes its installation, the witness's
+fixtures and the installed smoke's working directory; the native fixture targets the installed CLI
+starts in their own process groups end on their own once the smoke worker that owns their case is
+gone. On POSIX the local `pnpm smoke:cli-package` forwards an interrupt to the producer or
+consumer it started rather than ending first (on Windows they share the console and receive
+Ctrl-C themselves), starts no later stage once one arrived, and exits with the signal's code after
+removing its root. On POSIX a stage past its deadline is interrupted (SIGTERM) first, and its whole
+process group is killed when a grace period ends or as soon as the stage exits, whichever comes first,
+so it stops its own build children before the root goes; on Windows its whole tree is killed at the deadline, and its private directories go
+with the check's root. These Windows interrupt and deadline paths are not exercised by any CI job:
+the tooling tests run on Linux only. SIGHUP aborts and cleans up like the other two signals even
+under `nohup`, which these listeners replace; detach a long local run with `setsid` or a terminal
+multiplexer instead. A producer killed outright, a crash or a lost host can leave the
+owner-only root in the temporary directory, and no secure erasure is claimed. The local consumer
+installs the CLI under the temporary directory, so on a host whose temporary directory other
+local users can write to (a shared `/tmp`), a module another user plants in its `node_modules`
+could satisfy an optional `require` of the installed CLI; CI runners are single-tenant and macOS's
+per-user temporary directory is not shared. This is a named limit of the local consumer, owned
+by [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). "Owner-only" in this
+section means mode 0700 for directories and 0600 for staged files, set — and for the staging
+directory verified together with this process's uid — where POSIX modes are observable. On Windows
+no mode evidence is claimed: the candidate root and staging inherit the temporary directory's ACL,
+which is not verified, as the graph checks above claim no unobservable POSIX mode bits. The
+private map manifest and actual packed CLI and engine symbolication are Step 9a.2a (below);
+`check:map-controls` and the `package_test` receipt flip are Step 9a.2b;
+recipient custody, the release state controller and the workflow graph are Steps 9b–9d.
+Until those and Wave 4b's production recipient exist, the release workflow's publish job
+refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).
+
+> Amended 2026-11-04: decision D59 (release path B, in the
+> [MVP priority reset](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04))
+> replaces "until those exist" with a pre-1.0 release ADR that publishes the smoke-verified package-test
+> tarball, with a sunset at 1.0 or when Steps 9c/9d land. That ADR must explicitly override
+> [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md)'s "missing custody cannot
+> downgrade to test mode". The guard stays in force until the ADR is Accepted and its guard change passes a
+> security sitting. The publish job runs in the `release` deployment environment, which holds the npm token.
+
+### Private manifest and symbolication implementation boundary — Step 9a.2a
+
+Step 9a.2a (a [recorded split](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)
+of 9a.2, maintainer-approved on 2026-10-24) implements items 4 and 5 above for the package-test
+producer. The receipt stayed `compiled_package_test` until 9a.2b's product map controls existed.
+"Owner-only" in this section has the meaning the 9a.1 section gives it: mode 0700 or 0600 where
+POSIX modes are observable; on Windows the private root inherits the temporary directory's ACL,
+which is not verified. The producer needs Node 22.15 or later, whose `module.registerHooks` the
+preload uses (CI's pack jobs run the `.nvmrc` major); on an older Node it refuses with
+`PACKED_CLI_PRODUCER_NODE` before anything is built.
+
+- **Strict maps.** The finalizer decodes every consumed upstream map's and every final map's
+  `mappings` strictly — base64 VLQ only, no truncated or oversized value, segments of one, four or
+  five fields, increasing generated columns, in-range source and name indices, no negative position —
+  and requires every generated position inside the text the map was generated for and every
+  original position inside its source text (a position at a line's end is a caret position). A
+  violation refuses with its own code (`UPSTREAM_MAP_MAPPINGS`, `UPSTREAM_MAP_RANGE`,
+  `MAP_MAPPINGS`, `MAP_RANGE`) before anything is written; a well-formed charset alone no longer
+  decides, and the bundler's silent fallback for a malformed upstream map is not relied on. Node's
+  built-in source map decoder is lenient, so it serves only as an independent test oracle.
+- **Private manifest.** After the archive inspection the seal writes `manifest.json` into private
+  staging (owner-only, never overwritten): version 1; the source commit, the commit's Git tree and
+  the `dirty` flag; the package version; the build target; Node, pnpm, TypeScript, tsup and esbuild
+  versions from the installed tools; SHA-256 digests of the lockfile, every package manifest and
+  every build configuration with the configurations it extends; every final JS file keyed as
+  `dist/<chunk>.js` with its SHA-256, its map's package-relative path (`dist/<chunk>.js.map`) and
+  the staged map's SHA-256; a SHA-256 for every original source a final map names
+  (repository-relative, no content); and the tarball's SHA-256. The staged maps must still be the
+  bytes the finalizer recorded and each JS digest must be the tarball entry's. It holds no host path,
+  credential or source text and is removed with the staging.
+- **Actual frames.** The seal then runs the finalized `dist` — which the inspection has proven
+  byte-equal to the tarball entry by entry — under a tooling-only `node --import` preload while it
+  imports a canary workflow (`relavium import`, with its home, project and captured frames in an
+  owner-only directory of the private root). The project's own `.relavium/` exists before the run,
+  so the CLI's upward search for a project stops there and never adopts an ancestor's — a
+  developer's real project on Windows, where the temporary directory lies below the home — and the
+  run must have imported the canary into it (`CAPTURE_PROJECT`). The preload wraps the external
+  `yaml` package's `parse`, records V8's structured call sites for the canary document alone,
+  restores the stack formatter and limit, replaces the keyring package with a module that refuses
+  every use, and makes any native addon load refuse, so the run loads no native module and reads no
+  secret. Through a synchronous resolution hook that sees `require` as well as `import`, it also
+  refuses any module that resolves outside the candidate, so an optional dependency the candidate
+  does not install (ws's `bufferutil`, for example) can never be satisfied by a `node_modules` that
+  another local user creates above it in a shared temporary directory. These refusals are installed
+  in the capture process itself: a thread or subprocess the candidate starts without the preload (an
+  eval Worker or a `node -e` child, for example) is not covered, and `relavium import` starts none,
+  though nothing enforces that. Exactly one captured stack is required.
+- **Symbolication.** Each frame inside the finalized `dist` must be a file the manifest and the
+  tarball record (re-hashed after the run), its map must be the staged bytes the manifest records,
+  and only a frame that lands exactly on a mapping segment counts. Five named call sites must be
+  reached — three in the CLI and two in the inlined `@relavium/core`, each the one call to a named
+  function inside another, and the table itself refuses fewer than two distinct core or three
+  distinct CLI call sites — at the line and UTF-16 column that the matching source revision's
+  syntax tree gives: for a
+  clean candidate the checkout's Git objects at the recorded commit, read as the raw blob (no filter
+  or text conversion) by Git without home, global or system configuration and without replace refs
+  (the checkout's own configuration is still read), and for a dirty local one the candidate copy,
+  both bound to the manifest's per-source digests. Wrong JS, a wrong map, permuted map sources and a
+  wrong source revision therefore cannot reach the anchors. A refusal prints one fixed code
+  (`PACKED_CLI_MANIFEST_*`, `PACKED_CLI_SYMBOLICATION_*`) and never a frame, path or source text, and
+  no receipt is written.
+
+The capture child is not sandboxed: it runs the candidate CLI's runtime import closure as the
+producer's user, with network access, beside the private staging, confined only by its isolated
+environment, its owner-only work directory and, within the capture process only, the refusal of any
+module outside the candidate and the refused keyring and native modules. `relavium
+import` makes no network request, but nothing enforces that. This is a named limit of the
+package-test producer, owned by
+[deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).
+
+### Product map controls and the package-test receipt — Step 9a.2b
+
+Step 9a.2b (the [preflight decisions](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-preflight-decisions--2026-10-24),
+maintainer-approved on 2026-10-24) closes ADR-0111's post-receipt rebuild refusal for the
+package-test producer, adds the product map controls and only then flips the receipt.
+
+- **Rebuild refusals.** A second prepack into a sealed staging refuses before any build
+  (`STAGING_NOT_EMPTY`). `sealPackage` refuses with `PACKED_CLI_ALREADY_SEALED` at its entry, before
+  the inspection and any capture, when a receipt already lies beside the tarball or the staging already
+  holds a manifest (checked without following a link); any other extra file in the artifact directory
+  keeps the public artifact check's own refusal (`PACKED_CLI_UNEXPECTED_PUBLIC_ARTIFACT`), and a receipt
+  another seal wrote meanwhile refuses with the same code. The refusal is keyed on the artifact
+  directory and the staging, not on the candidate's identity. Immediately before the receipt is
+  written, `verifySealedDist` compares the whole `dist` inventory, every output's digest and the
+  tarball's digest with the manifest just sealed (`PACKED_CLI_MANIFEST_DIST_DRIFT`,
+  `PACKED_CLI_MANIFEST_TARBALL_CHANGED`), so a `dist` rebuilt or changed after the inspection refuses,
+  also in a chunk whose map names no anchor source. Release-mode retry and no-rebuild rules stay with
+  Steps 9c and 9d.
+- **Product map controls.** `pnpm check:map-controls` (`tools/cli-package/map-controls.mjs`, an
+  unconditional entry point over `map-controls-core.mjs`) runs one real package-test production at the
+  checked-out commit through the producer's own ports. A half-configured CI environment refuses before
+  anything is built (`PACKED_CLI_MAP_CONTROL_ORIGIN`). Inside the seal, after the baseline receipt and
+  while the private staging still exists, each control corrupts one product copy — the owned candidate
+  tree, or a copy of its private staging re-recorded so that only the layer under test can refuse —
+  requires that control's exact refusal and restores every file it corrupted by digest (`dist` itself
+  is replaced by the next build):
+  - a second prepack into the sealed staging; a re-seal of the artifact directory against a copy of
+    the staging without its manifest, and of the sealed staging beside a tarball copied without its
+    receipt, each isolating one half of `PACKED_CLI_ALREADY_SEALED` with no capture run;
+  - on every anchor-bearing chunk, wrong JS by line and by column, a map from a build one line apart
+    and rotated map sources (`PACKED_CLI_SYMBOLICATION_ANCHOR_UNMAPPED`), each checked to have changed
+    exactly its own chunk in the way it names, after a re-recorded unchanged copy is accepted;
+  - a wrong source revision, clean (`PACKED_CLI_SYMBOLICATION_SOURCE_REVISION`) and dirty
+    (`ANCHOR_UNMAPPED`);
+  - a changed chunk whose map names no anchor source, and a real rebuild from a changed source, against
+    the sealed manifest (`PACKED_CLI_MANIFEST_DIST_DRIFT`), after the sealed `dist` verifies; and the
+    seal's own check, which refuses a chunk the run changes after the inspection, writing no receipt;
+  - an upstream map that is missing, malformed (an extra `sourcesContent`, an out-of-range source
+    index) or cut inside a VLQ value, each refused by the finalizer with its own fixed line after the
+    bundler silently succeeded (one build, nothing finalized, staged or packed); a byte-truncated
+    upstream map, which fails the bundler's own build; and a shifted but strictly valid upstream map,
+    which the finalizer accepts and symbolication refuses.
+
+  A restoration production must then seal again; its tarball digest is not compared with the
+  baseline's (see deferred-tasks.md, "Two packs of one source"). Staging copies stay under the private
+  staging, which the producer removes first on success, failure and interrupt; a refused control
+  build's `dist`, which holds the bundler's maps, is removed at once. The developer's checkout is read,
+  never written (Git may refresh its own index's stat cache), and its identity must be unchanged
+  afterwards. The runner prints one JSON summary of control ids, expected and observed codes and
+  prepack's fixed lines with their repository-relative subjects — never an absolute path, frame,
+  position, map byte or raw child output — and exits 1 unless every expected control (seventeen, plus
+  four for each anchor-bearing chunk) ran exactly once with its expected outcome. It runs in
+  `pnpm run ci` right after `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at
+  most 20 minutes, read-only permissions, no remote cache credentials, no pnpm cache, no build step, no
+  custom shell and no upload, inside `ci`'s needs with a guard that refuses every result except success
+  (the required contexts stay `ci` and `coverage`). That job's production is a second, independent
+  build that is never shipped, not a retry of the packed candidate, so ADR-0111's no-rebuild rule for a
+  candidate is not touched.
+- **The `package_test` receipt.** The seal and the shared receipt validator (in its check and its
+  normalized record) use one constant, the earlier `compiled_package_test` is refused, and the receipt
+  keeps version 1 and its twelve fields; consumers and the aggregate verify identity through that
+  validator. The mode is a claim, not evidence of the map checks. The `ci` workflow at a commit
+  requires the controls, but a given artifact is backed only where a successful `ci` run exists at
+  exactly its commit: `pack-cli` uploads its artifact whatever the same run's `map-controls` job
+  concludes, a pull request's `ci` runs at its merge commit, not its head, and a release dispatch with
+  `allow_off_main` or of an intermediate commit has no `ci` run at all; a local dirty production writes
+  `package_test` too. Steps 9c and 9d must therefore never read the mode as proof. `release.yml` runs
+  no map controls of its own and its pack job keeps its `pnpm` dependency cache (public registry
+  packages only) until Step 9d rebuilds that graph, and the interim guard refuses every
+  release-workflow artifact.
+
+The runner keeps private maps and manifests longer than the producer does, always inside the
+producer's owner-only root; a runner killed outright can leave that root behind, the producer's
+existing named limit, and an interrupted runner can leave its own temporary directory, which may still
+hold the baseline public tarball and its receipt (see deferred-tasks.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
+evidence, as above.
+
 ## Recipient custody
 
 The maintainer selected encrypted CI archival. GnuPG is release tooling, never a
@@ -251,14 +521,236 @@ update for future candidates; preserve historical fingerprint/decryption capabil
 for supported versions. Existing public ciphertext cannot be recalled by revocation.
 This wave creates no automatic deletion policy or production key.
 
+### Recipient custody implementation boundary — Step 9b.1
+
+Step 9b.1 implements the container and the one-time encryption as a library with synthetic
+controls only. It holds no production recipient, encrypts no product staging, and changes
+neither `producePackage`, `sealPackage`, the package-test receipt, the interim release guard
+nor either workflow; encryption in the originating job is Step 9d's, reuse, the release
+binding receipt and the production loader are Step 9b.2's. Its review and acceptance are
+recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
+- **One strict dialect.** `ustar.mjs` owns the USTAR dialect the archive inspector reads:
+  regular files only, every header field fixed except the modification time, whose syntax
+  alone is checked, zero owner ids and device numbers, an exact end and zero padding. The
+  inspector delegates to it unchanged.
+- **The private container.** `container.mjs` builds one owner-only (0600) USTAR from the
+  sealed staging in its own layout: `finalized.json`, `manifest.json`, `metafile-esm.json` and
+  `maps/<chunk>.js.map`, sorted, with no host path. The staging must hold exactly those records
+  and the manifest's maps as regular files of at most 16 MiB each, at most 259 entries and
+  128 MiB in total (the total refused before the archive is assembled). Each record must also
+  be within the bound its own reader applies (`RECORD_BYTES`: `finalized.json` 1 MiB,
+  `manifest.json` and `metafile-esm.json` 4 MiB), so no record exceeds the size its own
+  reader accepts. Every map's digest must
+  be the manifest's, and the finalizer's record must name exactly the manifest's outputs and
+  maps with each map's size. The manifest records no digest for the metafile, which must parse
+  as a JSON object. The written container is read back before it is returned, so a path the
+  dialect's 100-byte name field cannot hold refuses (`CONTAINER_TAR_NAME`). Reading a container
+  back applies the same checks, and a decrypted container
+  extracted with `tar -x` is a staging the manifest reader consumes unchanged.
+- **The isolated runner.** `gnupg.mjs` resolves `gpg` from absolute PATH entries only and
+  refuses one older than GnuPG 2.2.8; the installation — its binary, its `gpgconf` and its
+  system-wide configuration directory — is trusted. Every call runs in the C locale and an
+  isolated environment, bounded by `runCommand`; every `gpg` call also runs in a fresh
+  owner-only home the tool creates, with `--no-options --no-autostart --no-keyring`. GnuPG
+  still reads the installation's
+  `<sysconfdir>/gpg.conf` under `--no-options`, and its `[force]` options override the command
+  line, so before any key is handled the installation's `gpgconf --list-dirs sysconfdir` is
+  read — the one call without a home — and a `gpg.conf` or `common.conf` there refuses
+  (`GPG_CONFIG`): a global configuration
+  could add or hide a recipient, redirect the output or log the session key. `gpgconf` prints a
+  named directory raw, ended by one newline; anything but exactly one absolute path refuses. The recipient listing (`--show-keys`) uses its own home
+  and the default trust model, because GnuPG 2.4 cannot list an expired or revoked key under
+  `--trust-model always` without a trust database; that home may gain only GnuPG's own
+  `trustdb.gpg`. Encryption uses `--recipient-file`, `--trust-model always` (the pinned
+  fingerprints and the colon pre-check are the assurance), an AES-256 preference, no
+  compression and a fixed literal name, in a home that may gain only `random_seed`.
+- **The recipient pre-check.** The recipient file is read bounded and copied, so the bytes
+  checked are the bytes encrypted to, and pins are exactly two strings, each a 40-digit
+  uppercase fingerprint (OpenPGP v4). An armored secret key refuses from its bytes; secret
+  material GnuPG lists refuses as secret, and a file GnuPG cannot list refuses as unreadable.
+  Secret material GnuPG neither lists nor reads, such as binary secret packets after the
+  armored block, is admitted and never reaches the ciphertext, the record or a log (a named
+  limit in [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9b1--named-limits-2026-10-25)).
+  The colon listing then refuses,
+  in this order: secret material, a missing pinned primary, more than one listed key, a missing
+  pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
+  encryption capability, a creation time in the future, or an encryption subkey other than
+  cv25519 or RSA of at least 3072 bits) and another usable encryption subkey or additional
+  decryption subkey (an ADSK, which GnuPG 2.4.1 and later adds as a further recipient). GnuPG's listing
+  omits a key it cannot use, such as one created in the future or one without a valid user ID,
+  so such a key refuses as missing or goes uncounted; GnuPG's own refusal and the
+  `KEY_CONSIDERED` and recipient checks remain the independent second layer for it.
+- **Encrypt once.** `encryptOnce` refuses before any GnuPG call when the destination already
+  holds `relavium-<version>-private-maps.tar.gpg`, when the destination and the owner-only
+  private root overlap (compared by device and inode, so one directory reached by a second
+  spelling, such as a case-insensitive variant or a bind mount of that directory, does not hide
+  the overlap; containment through a bind mount of a directory inside the other is not detected,
+  a [recorded limit](../../roadmap/deferred-tasks.md#wave-3-step-9b1--recorded-low-findings-2026-10-25)), or when either is missing or the root is not an owner-only
+  directory of this user. No root qualifies on Windows, where modes say nothing about access
+  and no ACL check exists. Success requires exit 0, exactly one
+  `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and
+  AES-256; an AEAD profile refuses) before one `END_ENCRYPTION`, exactly the expected work
+  files, a ciphertext within the container's size plus 64 KiB whose public-key packets name
+  exactly the pinned subkey and no hidden recipient and whose file is still the bytes about to
+  be published, and homes holding only what GnuPG creates. The work directory and its
+  plaintext are removed before anything is published, so a failed removal publishes nothing.
+  The ciphertext is then published atomically: written to a fresh sibling, then hard-linked to
+  its final name, which never replaces an existing file, so a failed write never leaves a
+  partial file under that name. It returns a frozen custody record: name, size, SHA-256, pins
+  and GnuPG version.
+- **Plaintext and diagnostics.** The plaintext container and the recipient copy exist only in
+  an owner-only work directory under the caller's private root, removed on every path; an
+  interrupt in the caller's `exitOnInterrupt` scope stops GnuPG and removes the root. No secure
+  erasure is claimed. Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`, including a host
+  failure (`UNEXPECTED`, or `CONTAINER_UNREADABLE` for a staging that cannot be read) and a
+  work directory that cannot be removed (`CLEANUP`); GnuPG's stdout and stderr, paths and host
+  error text never surface.
+- **Synthetic fixtures.** `custody-fixtures/` commits armored public v4 keys under
+  `fixture.invalid` for the classes GnuPG can produce — good cv25519 and RSA-3072 keys, one
+  advertising AEAD, an RSA-2048 subkey, an expired primary and subkey, a revoked primary and
+  subkey, a sign-only key and a key with two encryption subkeys — with their pins and a
+  maintainer-only generator that is never run in CI; the other classes are covered by crafted
+  listings. No secret key is committed: the decryption round trip generates one per
+  run in a short owner-only home and stops its agent afterwards, and a test refuses any tracked
+  PGP private-key block.
+- **Where it runs.** The custody tests are part of `test:acceptance-tools`, so they run in local
+  `pnpm run ci` and the four Ubuntu jobs inside `ci`'s needs, against the runner's GnuPG; they
+  fail, never skip, without GnuPG ≥ 2.2.8 or with a global configuration
+  ([local-dev-setup.md](../../runbooks/local-dev-setup.md)). They do not run
+  on Windows: no Windows job runs `test:acceptance-tools`, the `gpg` on the image's PATH is
+  Git for Windows' MSYS2 build and MSYS2's own GnuPG under `C:\msys64` is installed off PATH,
+  neither exercised here, and the tests use POSIX process and permission
+  tools; `encryptOnce` itself refuses there. The 2.2.8 floor is enforced by the version check
+  without being exercised.
+
+### Recipient custody implementation boundary — Step 9b.2
+
+Step 9b.2 implements the reuse of a retained ciphertext without re-encryption, the release binding
+receipt's schema v1 with its validator and sealer, the production recipient loader (absent in Wave 3)
+and the separation of synthetic and production scope
+([decisions](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-preflight-decisions--2026-10-25)).
+It is release tooling with synthetic controls only, in new modules: no Step 9b.1 module changes and
+nothing outside its tests calls it. Step 9d wires it into the originating job, binds the receipt's
+origin and map-check claims to the trusted run, and replaces the interim release guard, which still
+refuses every artifact. Its review and acceptance are recorded in the
+[Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
+- **The production recipient.** `release-recipient.mjs` loads it from one committed directory,
+  `tools/cli-package/release-recipient/`, holding exactly `recipient.asc` (the
+  `gpg --armor --export '<subkey>!'` export, at most 64 KiB) and `pins.json`:
+  `{"version": 1, "recipients": [{"primary", "subkey", "status"}]}` with 1–32 entries of 40-digit
+  uppercase fingerprints, each `current` or `retired`, exactly one `current` and no subkey twice. An
+  entry must never be removed, so that a candidate sealed before a rotation still verifies; the
+  loader sees one revision and cannot detect a removal, so that rule is kept by review until a
+  control over the file's history exists (a recorded Wave 4b handoff). `loadProductionRecipient()`
+  takes no argument: there is no environment variable, flag or fallback. In Wave 3 the directory
+  does not exist and the loader refuses `PRODUCTION_RECIPIENT_ABSENT`; a linked or malformed
+  directory, and any host failure while loading, refuses `PRODUCTION_RECIPIENT_INVALID`. A history
+  naming a fingerprint that the committed fixtures' `pins.json` lists refuses `FIXTURE_RECIPIENT`, and
+  a malformed fixtures file refuses rather than weaken that denylist. `pins.json` must be exactly its
+  canonical serialization (`JSON.stringify(value, null, 2)` plus a newline, fields in the order above),
+  so a duplicated key, which `JSON.parse` would resolve silently to its last value, refuses and the file a
+  reviewer reads is the history loaded. The loaded value is frozen and
+  branded: only that value counts as a production recipient, never a copy. Tests load temporary
+  roots through the separately named `loadRecipientForTests`, which `release-scope.test.mjs`
+  permanently keeps out of every product and tooling file. Wave 4b commits the files.
+- **Scope.** A synthetic candidate is one whose private manifest records the fixtures' sentinel
+  source, commit `c`×40 and tree `b`×40. `encryptCandidate` admits production scope only with the
+  loaded recipient and a clean, non-synthetic candidate, and encrypts to the recipient's current
+  pins (`RECIPIENT_SOURCE`, `DIRTY_SOURCE`, `SYNTHETIC_SOURCE`). It admits synthetic scope only with a
+  synthetic candidate (`FIXTURE_SCOPE`), so neither a fixture key nor the per-run round-trip key can
+  encrypt a product staging. An unknown scope refuses `SCOPE`. The destination and the private root
+  must be normalized absolute paths (`PLACEMENT`, `PRIVATE_ROOT`), so that a trailing separator, `.` or
+  `..` cannot make a link look like a directory. The destination must then be a plain, resolvable
+  directory (`PLACEMENT`; a link refuses before anything is read through it, as `encryptOnce` requires)
+  holding exactly the tarball the manifest names: a receipt there refuses `ALREADY_SEALED`, the ciphertext
+  `ALREADY_ENCRYPTED`, any other entry, or a tarball named otherwise, `CANDIDATE_ENTRIES`, and a different
+  tarball `TARBALL_DRIFT`. A ciphertext is therefore never encrypted where the sealer would refuse its
+  directory. Every one of these refuses before any GnuPG call. The gate reads the caller's scope once
+  and encrypts its own copy of the container, so neither can change midway; `encryptOnce` then runs
+  unchanged, on that copy and the caller's destination.
+- **The release binding receipt v1.** The public `release-binding-receipt.json` beside the ciphertext,
+  the name the interim guard already keys on:
+
+  | Field | Content | Checked here | Trust Step 9d adds |
+  | --- | --- | --- | --- |
+  | `version`, `kind` | `1`, `"release_binding"` | exact | — |
+  | `packageVersion` | the private manifest's version | equals the expectation | the tag |
+  | `source` | the manifest's `{commit, tree, dirty}` | the commit equals the expectation; production refuses `dirty` and the synthetic source, synthetic requires it | the run's commit |
+  | `tarball` | `{name, bytes, sha256}`, `relavium-<version>.tgz`, 18 B–16 MiB | the name follows the version; the sealer binds the digest to the manifest's `tarballSha256` | — |
+  | `ciphertext` | `{name, bytes, sha256}`, `relavium-<version>-private-maps.tar.gpg`, 1 B–128 MiB + 64 KiB | the name follows the version; the sealer re-reads the file | — |
+  | `recipient` | `{primary, subkey}` | production: a pair of the loaded history; synthetic: the expected pins | — |
+  | `toolchain` | the manifest's node, pnpm, typescript, tsup and esbuild versions, and the GnuPG version | format | — |
+  | `target` | the manifest's target | format | — |
+  | `inputs` | the manifest's per-file lock and configuration digests, by path | format: 1–64 repository-relative paths | — |
+  | `mapCheck` | `{"status": "complete"}` | exact | a successful `ci` run with the product map controls at `source.commit` |
+  | `origin` | `{kind: "github", repository, workflow, runId, runAttempt, event: "push", source}` | format; `source` equals `source.commit` | the originating run and attempt |
+
+  It carries no map, source, per-source inventory, host path or user ID, and no scope field: scope
+  always comes from the verifier's expectation. Every field is a claim until Step 9d binds the last
+  two. Release smoke on a reused candidate derives the public file inventory and package metadata from
+  the digest-verified tarball (Step 9d).
+- **Canonical bytes.** The receipt is `JSON.stringify(receipt, null, 2)` plus a newline, its fields in
+  the table's order and its inputs sorted by path; an integer-like input name, which JavaScript would
+  order first, refuses. A verifier parses the exact bytes, at most 64 KiB, and refuses
+  `BINDING_BYTES` for anything but the canonical serialization of the value it validates: a
+  duplicated key, a reordering, other whitespace, a BOM or trailing data. A verifier accepts only
+  those exact bytes and never writes a receipt back.
+- **The validator.** `validateReleaseBinding(value, expected)` and `parseReleaseBinding(bytes, expected)`
+  take a required expectation: `{scope: 'production', recipient, packageVersion, source}` with the
+  loaded recipient, whose whole history verifies, or `{scope: 'synthetic', pins, packageVersion}`.
+  Each reads the expectation once. They refuse `BINDING_VERSION`, `BINDING_SHAPE` (an unknown, missing or malformed field at any level),
+  `BINDING_CANDIDATE`, `BINDING_NAME`, `BINDING_SIZE`, `BINDING_DIRTY`, `BINDING_SCOPE`,
+  `RECIPIENT_SOURCE`, `BINDING_RECIPIENT`, `BINDING_MAP_CHECK` and `BINDING_ORIGIN`.
+- **The sealer.** `sealReleaseBinding(record, {origin})` accepts only a record `encryptCandidate`
+  returned and not yet sealed (`RECORD_SOURCE`); a failed seal leaves the record usable. It refuses an
+  existing receipt before reading anything (`ALREADY_SEALED`), admits exactly the tarball and the
+  ciphertext in the destination (`CANDIDATE_ENTRIES`), and re-reads the ciphertext's size and SHA-256
+  against the record (`CIPHERTEXT_DRIFT`) and the tarball's digest against the manifest
+  (`TARBALL_DRIFT`). It validates its own receipt, then publishes it once: written to a fresh sibling,
+  then hard-linked to its name, which never replaces an existing receipt. A sibling that cannot be
+  removed after the link is left behind rather than reported, because the receipt is then published;
+  the candidate is not reusable (`CANDIDATE_ENTRIES`) until that sibling is removed by hand. A
+  ciphertext whose seal never succeeds before its process exits — after a crash, or a refusal on an
+  input the gate does not check, such as the origin — can never be sealed and needs manual recovery.
+- **Reuse.** `verifyRetainedCandidate({directory, expected})` admits a directory holding exactly the
+  receipt, the tarball and the ciphertext (`CANDIDATE_ENTRIES`) and parses the receipt. It checks each
+  asset's size (`CANDIDATE_SIZE`), reads it as a bounded ordinary file (`CANDIDATE_ASSET`), checks its
+  SHA-256 (`CANDIDATE_DIGEST`), and returns the verified bytes, never a path to open again. It writes,
+  renames and removes nothing. Its module imports nothing that can start a process, so reuse makes no
+  GnuPG call, and it cannot re-check the ciphertext's recipients: a named limit.
+- **Diagnostics.** Every refusal is a fixed `PACKED_CLI_CUSTODY_<CODE>`. A host failure is `UNEXPECTED`,
+  except on a named path, which carries that path's code: `PLACEMENT` when the destination cannot be
+  checked or resolved (one that resolves but cannot be listed is `UNEXPECTED`), `CANDIDATE_ASSET`,
+  `CIPHERTEXT_DRIFT` and `TARBALL_DRIFT` for the files read, and `PRODUCTION_RECIPIENT_INVALID` while
+  loading the recipient; inside encryption, `encryptOnce`'s own codes apply. No path, key or receipt content surfaces.
+- **Where it runs.** `release-recipient.test.mjs`, `release-binding.test.mjs`, `release-custody.test.mjs`
+  and `release-scope.test.mjs` join `test:acceptance-tools`, as the 9b.1 tests do; the custody test
+  needs GnuPG ≥ 2.2.8. `release-scope.test.mjs` pins the separation statically:
+  - no product or tooling code reaches a test fixture, and only the loader reads the fixture pins;
+  - only the release gate mentions `custody.mjs`, the one tracked file of that name, anywhere in source,
+    workflow and package-script text, comments included, once `\x`, `\u`, `\u{…}` and percent escapes,
+    separators and case are normalized; a path built at run time from pieces, or spelled with another
+    escape, is beyond this control (a recorded limit);
+  - the loader is never called with an argument, and its test seam appears in no product or tooling
+    file (permanent controls);
+  - the receipt module's import closure, read from every `from` or `import` specifier whatever the
+    spacing, holds only its own files and listed Node builtins, with no package, process module or
+    `require`-like call, and every dynamic import takes exactly one string literal;
+  - the interim guard still refuses a complete, valid synthetic candidate;
+  - until Step 9d no product path or workflow names a release module, and until Wave 4b no recipient
+    directory is committed.
+
 ## Package-test and release modes
 
 **Package-test mode** is required on PR/push and manual dry-run. In its isolated
 uncached originating pack job, build once, inspect exact tarball, verify maps and
 CLI/engine symbolication locally, then discard all private maps/manifests/metafiles.
-Share only the tarball and a nonsecret package-test receipt (version, mode
-package_test, source SHA, package version, tarball digest and originating workflow
-identity) with platform consumers. It needs no production recipient. GPG fixture
+Share only the tarball and a nonsecret package-test receipt (version 1 with mode
+`package_test`; the source SHA and dirty flag; the package version; the tarball's name,
+digest and size; the public file inventory and package metadata; the originating workflow
+identity and the producer toolchain) with platform consumers. It needs no production recipient. GPG fixture
 controls remain separate and use synthetic map payloads only.
 
 A package-test artifact is never promoted to a release candidate after private

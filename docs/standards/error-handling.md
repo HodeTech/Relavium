@@ -120,6 +120,17 @@ owns the fixture-pinned classification and custom-endpoint downgrade. Actual usa
 with a failed native response is still priced and recorded; a reserved estimate is never
 reported as actual usage. Surfaces supply their own policy-aware commands.
 
+### Diagnostic secret backstop
+
+`makeLlmError` passes every `message` and `code` through `scrubSecrets`
+(`packages/llm/src/scrub-secrets.ts`), and the CLI's display sanitizer composes the same function.
+It is a defense-in-depth **backstop**: the adapter still owns passing an already-redacted
+message, and the backstop masks a finite set of secret **shapes**, not arbitrary sensitive
+content.
+
+The finite shape list, with its documented limits, is specified in
+[diagnostic-secret-backstop.md](../reference/shared-core/diagnostic-secret-backstop.md).
+
 ## No silent catches
 
 - A `catch` block must do one of: handle the error meaningfully, enrich and rethrow it, or

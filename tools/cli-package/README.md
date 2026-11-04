@@ -6,17 +6,30 @@ The canonical package and release contract lives in
 [packaging.md](../../docs/reference/cli/packaging.md).
 Step 8b adds required creation-owned native process controls to the same installed
 artifact cohort. Step 8d adds installed global fatal/background/output-hook
-controls; complete Step 8d acceptance remains separate.
+controls; complete Step 8d acceptance remains separate. Step 9a.1 makes the producer
+build an owned map-bearing candidate and finalize it before packing.
 
 ```sh
 pnpm package:cli:pack /absolute/empty/artifact-directory
 pnpm package:cli:consume /absolute/artifact-directory /absolute/fresh/report-directory
 pnpm smoke:cli-package
+pnpm check:map-controls
 ```
 
-The producer emits the five inlined dependency packages in order with the installed
-compiler and no build cache. Prepack performs the sole final CLI build. The runner
-observes one actual prepack build-start record, checks the emitted graph, and
+The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
+It copies the files Git would ship, by the repository's ignore rules and the developer's
+global excludes file (its Git reads no other home, global or system configuration or attributes), into a
+fresh owner-only candidate tree (owner-only where POSIX modes are observable; on Windows it
+inherits the temporary directory's ACL, which is not verified), refusing if the original checkout's commit, status or set of
+files Git is told not to check changes during the copy (such a skip-worktree or assume-unchanged
+file makes the source `dirty`), and installs the locked closure there offline, frozen and
+without lifecycle scripts from the existing store. In that tree it emits the five
+inlined dependency packages in order with the installed compiler, upstream maps and no
+build cache. Prepack (`prepack.mjs`) performs the sole final CLI build in candidate
+mode and runs the finalizer (`finalize.mjs`), which validates every consumed upstream map and every
+final map, removes only the exact map-link trailers and stages maps, metafile and its hash
+record in a private directory outside the artifact. The runner observes one actual
+prepack build-start record and one finalization, checks the emitted graph, and
 independently inspects the produced gzip/USTAR bytes. The inspector never extracts
 the archive. Every JS and migration byte must match the finalized build and
 canonical migrations; package metadata must match pnpm's publication transform.
@@ -27,10 +40,61 @@ An exact public allowlist, checksums, modes, hashbangs, byte ceilings and negati
 controls exclude links, traversal, duplicates, extra files, maps and private build
 inventories. This deliberately supports the pinned packer's dialect, not general tar.
 
-The resulting public `package-test-receipt.json` records `compiled_package_test`.
-It does **not** certify original-TypeScript maps, symbolication, encrypted custody
-or a production release candidate. Those are Step 9 obligations. No private map,
-metafile or per-source inventory enters the public artifact.
+The resulting public `package-test-receipt.json` records `package_test` (Step 9a.2b; it recorded
+`compiled_package_test` before the product map controls existed).
+The candidate's maps are built, validated and then removed with the rest of the
+private staging, also when the producer is interrupted (SIGINT, SIGTERM, SIGHUP), which
+stops the build first and empties the artifact directory, even after the last build child
+exited. An interrupted consumer stops its children, the bootstrap witness's included, and
+removes its installation, the witness's fixtures and the installed smoke's working directory; the
+installed CLI's detached native fixture targets end once the smoke worker that owns them is gone.
+On POSIX `pnpm smoke:cli-package` forwards an interrupt to the producer or consumer it started
+instead of ending before them, and it interrupts a stage past its deadline before it kills the
+stage's process group, so the stage stops its own children; on Windows the stages receive Ctrl-C
+from the shared console and a stage past its deadline is killed with its tree at once (no CI job
+exercises these Windows paths). It starts no later stage after an interrupt. SIGHUP aborts and
+cleans up even under `nohup`; use `setsid` or a terminal multiplexer to detach a long run. A
+producer killed outright can leave its owner-only root in the temporary directory. The local
+consumer installs under the temporary directory, so a shared `/tmp` is a named limit
+(packaging.md). A failed
+production prints only prepack's own fixed `✗ CLI …` lines and one fixed code
+(`production-failure.mjs`), never a build child's captured output, which can quote a map. A
+corepack-managed pnpm always runs from the developer's own corepack cache, never from the shared
+temporary directory that holds the isolated homes (`corepackHome` in `process.mjs`). The finalizer
+decodes every private map strictly (`source-map.mjs`). Before the receipt is written, the seal seals
+the private manifest (`manifest.mjs`) and symbolicates actual packed CLI and core frames, captured
+by a tooling-only preload while the CLI imports a canary into a private project
+(`frame-capture.mjs`, which refuses any module that resolves outside the candidate, the keyring and
+native addons in its own process, and needs Node 22.15 or later; an older producer Node refuses with
+`PACKED_CLI_PRODUCER_NODE` before building), through the strictly decoded maps of the chunks those frames land in against
+the matching source revision (`symbolicate.mjs`). The manifest is discarded with the staging, and
+the capture's home, project and frames with the private root. The
+receipt does **not** certify encrypted custody or a production release candidate (Steps 9b–9d),
+and its `package_test` mode is a claim, never evidence (packaging.md says when a `ci` run backs it). An
+artifact directory with a receipt, or a staging with a manifest, is never sealed again
+(`PACKED_CLI_ALREADY_SEALED`), and `dist` and the tarball must still be the manifest's when the receipt
+is written (`verifySealedDist`). `pnpm check:map-controls` (`map-controls.mjs` over
+`map-controls-core.mjs`) runs every named negative control on product copies of one real production,
+prints one JSON summary of codes and fixed lines (no absolute path, frame or map byte) and exits 1
+unless every expected control ran once with its expected outcome; the required `map-controls` CI job
+runs it uncached and uploads nothing. Step 9b.1's custody library (nothing outside Step 9b.2's release
+modules and the tests calls it) builds one owner-only USTAR of the sealed staging (`container.mjs`, over the one strict
+dialect in `ustar.mjs`) and encrypts it once to one pinned recipient with GnuPG ≥ 2.2.8 in fresh
+isolated homes (`custody.mjs` over `gnupg.mjs`; POSIX only, since no private root qualifies on
+Windows): a colon pre-check refuses missing, expired, revoked, unusable or unexpected recipients and the
+secret material it can detect, the ciphertext must be SEIPDv1 with MDC and
+AES-256 naming exactly the pinned subkey, an existing ciphertext is never overwritten, the plaintext
+work directory is removed on every path and every refusal is a fixed `PACKED_CLI_CUSTODY_*` code.
+`custody-fixtures/` holds the committed synthetic public keys; no secret key is committed. Step 9b.2 adds, again
+with nothing calling it yet, the release binding receipt v1 with its validator and verified reuse
+(`release-binding.mjs`, whose import closure starts no process), the scope gate and the sealer that writes the
+receipt once after re-reading the ciphertext (`release-custody.mjs`), and the production recipient loader
+(`release-recipient.mjs`), which refuses in Wave 3 because no recipient is committed. No private map,
+metafile, manifest or per-source inventory enters the public artifact. The release workflow's
+`release-guard.mjs` refuses every artifact until verified release custody exists: it
+sets its exit code to 1 before it evaluates its rule (`release-guard-core.mjs`), so a rule
+that returns, throws or cannot load still refuses, and no way of invoking it can skip the
+refusal.
 
 The consumer verifies the chosen bytes before installation, installs a copy outside
 the workspace, and compares every installed public file with the archive receipt.

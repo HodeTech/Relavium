@@ -47,6 +47,14 @@ and the bundle boundary are [ADR-0051](../decisions/0051-cli-distribution-thin-b
 
 **This is the first release flow; desktop and VS Code inherit its shape (pack → cross-OS smoke → publish).**
 
+> **Publication is refused — interim, 2026-10-22 (Wave 3 Step 9a.1).** The `publish` job first runs
+> a fail-closed guard that refuses every artifact: only a verified release candidate (exact tarball,
+> original ciphertext and release binding receipt) may publish, and none can exist until Wave 3 Step
+> 9d's custody graph and Wave 4b's production recipient do, so a tag push stops after the cross-OS smoke and nothing — not
+> even a v0.1.x patch — reaches npm (the [Interim release guard ruling](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).
+> The steps below describe the pre-custody flow; Step 9d replaces them with the
+> [custody graph](../reference/cli/packaging.md#archive-retry-and-publication).
+
 ### What the build produces
 
 - `apps/cli/dist/index.js` — the single ESM bin (shebang, minified, **no** source map: a map would ship the

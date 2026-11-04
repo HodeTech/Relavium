@@ -154,6 +154,21 @@ test('native child and target need same pinned child PID, parent link and depend
       assert.throws(() => assertEvaluations(candidate, { files }, target.path, graph, options));
   });
 });
+test('shards deal the declaration round-robin into disjoint, complete parts', () => {
+  const entries = ['a', 'b', 'c', 'd', 'e'].map((id) => ({
+    id,
+    before: 'old',
+    after: 'new',
+    expectedTests: 1,
+  }));
+  const ids = (args) => selectControls(entries, args).map((entry) => entry.id);
+  assert.deepEqual(ids(['--shard', '1/2']), ['a', 'c', 'e']);
+  assert.deepEqual(ids(['--shard', '2/2']), ['b', 'd']);
+  assert.deepEqual(ids(['--shard', '1/1']), ['a', 'b', 'c', 'd', 'e']);
+  for (const shard of ['0/2', '3/2', '1/6', '1/0', '01/2', '1/2/3', 'x/2', '', '-1/2'])
+    assert.throws(() => selectControls(entries, ['--shard', shard]));
+  assert.throws(() => selectControls(entries, ['--shard']));
+});
 test('unknown, ambiguous, empty and ineffective selection refuse before work', () => {
   const entry = { id: 'declared', before: 'old', after: 'new', expectedTests: 1 };
   assert.deepEqual(selectControls([entry], ['--mechanism', 'declared']), [entry]);
@@ -267,10 +282,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 57);
+  assert.equal(secretsControls.length, 130);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    336,
+    513,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -309,7 +324,42 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-raw-password-userinfo',
       'core-joined-original-boundary-recovery',
       'core-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 142]),
+      'core-userinfo-contact-assignment',
+      'core-userinfo-contact-host',
+      'core-userinfo-host-length',
+      'core-userinfo-host-anchors',
+      'core-userinfo-split-scheme',
+      'core-userinfo-split-edges',
+      'core-fixed-point',
+      // Round 6: core's merged ranges and the mechanisms they read through.
+      'core-merged-ranges',
+      'core-userinfo-query-zone',
+      'core-key-value-nested',
+      'core-key-value-through-masks',
+      'core-scheme-nested-label',
+      'core-mask-boundaries',
+      // Round 7: userinfo ownership, the quoted-value scan, the summary and the journal.
+      'core-userinfo-username-zone',
+      'core-split-zone-cap',
+      'core-quoted-value-scan',
+      'core-summary-fixed-point',
+      'core-journal-settled',
+      // Round 8: structured summaries, escaped and unclosed quotes, continuation labels.
+      'core-summary-walk',
+      'core-escaped-quote',
+      'core-unclosed-run',
+      'core-unclosed-closing-view',
+      'core-continuation-label',
+      // Pre-review: the summary's closer and whole-JSON reading, colliding names, values one JSON level down.
+      'core-summary-through-closer',
+      'core-summary-whole-json',
+      'core-journal-key-collision',
+      'core-escaped-value-start',
+      // Sixth pre-review and round 9: a summary's escaped separators and its unwalked reading.
+      'core-summary-escape-view',
+      'core-summary-pem-markers',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 234]),
+    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 116],
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
@@ -317,7 +367,49 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-raw-password-userinfo',
       'diagnostic-joined-original-boundary-recovery',
       'diagnostic-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 103]),
+      'diagnostic-header-scheme-label',
+      'diagnostic-userinfo-contact-assignment',
+      'diagnostic-userinfo-contact-host',
+      'diagnostic-connection-scheme-userinfo',
+      'diagnostic-joined-url-userinfo',
+      'diagnostic-url-glued-scheme',
+      'diagnostic-url-scheme-window',
+      'diagnostic-header-stacked-labels',
+      'diagnostic-header-label-whitespace',
+      'diagnostic-userinfo-host-length',
+      'diagnostic-userinfo-host-anchors',
+      'diagnostic-header-label-bound',
+      'diagnostic-header-concat-bound',
+      'diagnostic-header-token-not-label',
+      'diagnostic-header-not-nested',
+      'diagnostic-header-nested-stop',
+      'diagnostic-header-lookbehind',
+      'diagnostic-header-escaped-separator',
+      'diagnostic-header-quote-run',
+      'diagnostic-header-escaped-stop',
+      'diagnostic-label-token-not-label',
+      'diagnostic-label-quoted-label',
+      'diagnostic-label-glued-label',
+      'diagnostic-label-embedded-stop',
+      'diagnostic-label-masked-tail',
+      'diagnostic-merged-masking',
+      'diagnostic-mask-merge',
+      'diagnostic-token-only-mask',
+      // Round 4: one label rule for both labels, and each new leak or totality mechanism.
+      ...['concat-run', 'concat-stop', 'start-bound', 'lead', 'run-bound'].map(
+        (mechanism) => `diagnostic-label-${mechanism}`,
+      ),
+      'diagnostic-header-concat-run',
+      'diagnostic-query-merge',
+      'diagnostic-mask-merge-extent',
+      'diagnostic-fixed-point',
+      'diagnostic-userinfo-authority-rest',
+      'diagnostic-userinfo-rest-length',
+      'diagnostic-url-split-retry',
+      'diagnostic-split-probe-raw',
+      'diagnostic-label-run-normalized',
+      'diagnostic-label-run-raw',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 224]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],

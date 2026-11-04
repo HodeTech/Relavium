@@ -15,10 +15,10 @@ export class FsPolicyError extends HostDeniedError {
 interface DirectoryPin {
   readonly lexical: string;
   readonly canonical: string;
-  readonly dev: number;
-  readonly ino: number;
-  readonly lexicalDev: number;
-  readonly lexicalIno: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly lexicalDev: bigint;
+  readonly lexicalIno: bigint;
   readonly linked: boolean;
 }
 
@@ -59,8 +59,9 @@ function pinDirectory(path: string): DirectoryPin {
     // Match fs/promises.realpath's native canonicalization. The legacy synchronous
     // walker preserves Windows 8.3 spellings, which are not equal to their long names.
     const canonical = realpathSync.native(lexical);
-    const stat = statSync(canonical);
-    const entry = lstatSync(lexical);
+    // Exact native identities: a 64-bit file ID (NTFS, overlayfs xino) exceeds a Number's precision.
+    const stat = statSync(canonical, { bigint: true });
+    const entry = lstatSync(lexical, { bigint: true });
     if (!stat.isDirectory()) throw new FsPolicyError();
     return Object.freeze({
       lexical,

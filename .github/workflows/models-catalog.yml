@@ -113,6 +113,33 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      # One configured key keeps the run from being a false green, but each missing key still skips its
+      # provider's lane while the job stays green (a PR #96 review: only DEEPSEEK_API_KEY was configured).
+      # Name every lane as live or skipped, as a warning and in the job summary, until all four keys exist
+      # (decision D37) and a missing one can fail the run instead. Only emptiness is tested; no value prints.
+      - name: Report which provider lanes run live
+        shell: bash
+        run: |
+          {
+            echo '### Live effort conformance lanes'
+            echo ''
+            echo '| Provider | Lane |'
+            echo '|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for provider in ANTHROPIC OPENAI GEMINI DEEPSEEK; do
+            variable="${provider}_API_KEY"
+            if [ -n "${!variable}" ]; then
+              echo "| ${provider} | live |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::${variable} is not configured; the ${provider} live effort probes are skipped, not verified."
+              echo "| ${provider} | skipped: no key |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       # The conformance suite (fixtures + the `it.skipIf(<key> === '')` live cases). With the provider keys set here
       # the live cases execute — and a catalog that claims a tier a model rejects fails red — while a missing key
       # simply skips that provider's lane. Scoped to `src/conformance` so a flaky live case cannot widen the red

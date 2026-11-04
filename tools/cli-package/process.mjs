@@ -1,10 +1,33 @@
 /** Native tooling boundary. Never starts a shell or inherits credentials/config/preloads. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, extname, isAbsolute, join } from 'node:path';
-import { clearTimeout, setTimeout } from 'node:timers';
+import { constants, homedir } from 'node:os';
+import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
+import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
+
+/**
+ * Corepack's own cache, computed as corepack computes it (`COREPACK_HOME`, else `XDG_CACHE_HOME`, else
+ * `LOCALAPPDATA`, else the home directory's `.cache` or `AppData/Local`, plus `node/corepack`), from
+ * this process's environment, which is the developer's own or carries a `COREPACK_HOME` a caller
+ * computed from it. An isolated child passes it on, so a corepack-managed pnpm runs from that cache —
+ * never from an isolated home in the shared temporary directory, where its optional module lookups
+ * would reach a `node_modules` that another local user can create.
+ * @param {Record<string, string | undefined>} [environment]
+ */
+export function corepackHome(environment = process.env) {
+  return resolve(
+    environment.COREPACK_HOME ??
+      join(
+        environment.XDG_CACHE_HOME ??
+          environment.LOCALAPPDATA ??
+          join(homedir(), process.platform === 'win32' ? join('AppData', 'Local') : '.cache'),
+        'node',
+        'corepack',
+      ),
+  );
+}
 
 export function isolatedEnvironment(home) {
   const env = {
@@ -19,10 +42,37 @@ export function isolatedEnvironment(home) {
     NO_COLOR: '1',
     TERM: 'dumb',
     COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+    // A location only, never configuration: see `corepackHome`.
+    COREPACK_HOME: corepackHome(),
   };
   for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'LANG'])
     if (process.env[key] !== undefined) env[key] = process.env[key];
   return env;
+}
+
+/**
+ * The null device as Git names it on every platform. Git for Windows maps only `nul` and this literal
+ * to the device; Node's `os.devNull` there (`\\.\nul`) reaches the C runtime, which refuses it, and
+ * Git then exits rather than read no configuration.
+ */
+export const GIT_NULL_DEVICE = '/dev/null';
+
+/**
+ * Git with no global or system configuration, for reading the original checkout: its own `.git/config`
+ * and ignore rules still apply and a caller passes the developer's global excludes explicitly, but no
+ * `.gitconfig`, `git/config`, `git/ignore` or `git/attributes` in a home, configuration or system
+ * location is read — not even one inside the checkout itself (the callers also name the attributes and
+ * excludes files explicitly, so no default location applies either). Replace refs are ignored, so a status
+ * compares the working tree with the commit HEAD names, never a substitute for it.
+ */
+export function isolatedGitEnvironment() {
+  return {
+    ...isolatedEnvironment(GIT_NULL_DEVICE),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_ATTR_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
+    GIT_NO_REPLACE_OBJECTS: '1',
+  };
 }
 
 /** Resolve reviewed pnpm JS shims or the action's standalone executable, without cmd.exe. */
@@ -58,9 +108,125 @@ export function resolvePnpm(path = process.env.PATH ?? '', platform = process.pl
   throw new Error('PACKED_CLI_PINNED_PNPM_NOT_FOUND');
 }
 
+/** Every child tree a `runCommand` call still owns, so that an interrupted tool can stop them first. */
+const liveChildren = new Set();
+
+/**
+ * Synchronously kill every child tree that `runCommand` still owns: a POSIX process group, or a
+ * Windows tree through taskkill. For a signal handler that must stop detached builds before it exits.
+ */
+export function stopLiveCommands() {
+  for (const child of liveChildren) {
+    if (child.grouped) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The group already exited.
+      }
+      continue;
+    }
+    const systemRoot = process.env.SystemRoot;
+    if (systemRoot && isAbsolute(systemRoot)) {
+      spawnSync(
+        join(systemRoot, 'System32', 'taskkill.exe'),
+        ['/PID', String(child.pid), '/T', '/F'],
+        { shell: false, stdio: 'ignore' },
+      );
+    } else {
+      try {
+        process.kill(child.pid, 'SIGKILL');
+      } catch {
+        // The child already exited.
+      }
+    }
+  }
+  liveChildren.clear();
+}
+
+/** The interrupts after which a tool still stops its children and cleans up before it exits. */
+const INTERRUPTS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP']);
+
+/**
+ * Let the event loop poll for I/O once more. Node hands a caught signal to its listener only when the
+ * loop next polls, and work that ran from an I/O callback (a child's exit, a file read) can end its
+ * first turn before that poll: a listener removed then drops the signal. After two turns the loop has
+ * polled. A signal caught in the instant between that poll and the listener's removal is still lost;
+ * Node offers no way to drain it.
+ */
+async function deliverCaughtSignals() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Run `body` while SIGINT, SIGTERM and SIGHUP stop every child tree `runCommand` owns, run the
+ * synchronous `interrupted` and end the process with 128 + the signal's number. The handlers stay
+ * until the loop has polled once after `body` settled (`deliverCaughtSignals`), so an interrupt caught
+ * during the body's synchronous tail or its own final cleanup is honoured, never dropped with its
+ * listener. A process killed outright runs nothing.
+ * @template T
+ * @param {() => void} interrupted
+ * @param {() => Promise<T>} body
+ * @returns {Promise<T>}
+ */
+export async function exitOnInterrupt(interrupted, body) {
+  const handler = (signal) => {
+    stopLiveCommands();
+    interrupted();
+    process.exit(128 + (constants.signals[signal] ?? 0));
+  };
+  for (const signal of INTERRUPTS) process.on(signal, handler);
+  try {
+    return await body();
+  } finally {
+    await deliverCaughtSignals();
+    for (const signal of INTERRUPTS) process.off(signal, handler);
+  }
+}
+
+/**
+ * While a tool waits on children that clean up after themselves (the producer, the consumer),
+ * forward SIGINT, SIGTERM and SIGHUP to every child tree `runCommand` owns instead of dying first: a
+ * detached child shares no terminal process group, so it would never receive the interrupt. On
+ * Windows the children share the console and receive Ctrl-C themselves. The caller runs its own cleanup, awaits `dispose`
+ * and exits with 128 + the number of the signal `received` reports.
+ * @returns {{received: () => string | undefined, dispose: () => Promise<void>}}
+ */
+export function forwardInterrupts() {
+  let received;
+  const forward = (signal) => {
+    received ??= signal;
+    for (const child of liveChildren) {
+      if (!child.grouped) continue;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // The group already exited.
+      }
+    }
+  };
+  for (const signal of INTERRUPTS) process.on(signal, forward);
+  return {
+    received: () => received,
+    // An interrupt caught during the caller's cleanup is still recorded (`deliverCaughtSignals`).
+    dispose: async () => {
+      await deliverCaughtSignals();
+      for (const signal of INTERRUPTS) process.off(signal, forward);
+    },
+  };
+}
+
+/**
+ * Run one tool child in its own process group (POSIX) and settle when it closed. Past `timeoutMs` its
+ * group (on Windows its whole tree) is killed. On POSIX with a positive `graceMs` the group first gets
+ * SIGTERM and `graceMs` more, so a child that stops its own detached children and removes its private
+ * directories on an interrupt (the producer, the consumer) does so before anything is killed; the group
+ * is killed when the grace ends or as soon as the child closes, whichever comes first.
+ */
 export function runCommand(command, args, options = {}) {
-  const { timeoutMs = 300_000, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
+  const { timeoutMs = 300_000, graceMs = 0, maxBytes = 8 * 1024 * 1024, ...spawnOptions } = options;
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
+  assert.ok(Number.isSafeInteger(graceMs) && graceMs >= 0);
   assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0);
   return new Promise((resolve, reject) => {
     const grouped = process.platform !== 'win32';
@@ -70,11 +236,14 @@ export function runCommand(command, args, options = {}) {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const live = { pid: child.pid, grouped };
+    if (child.pid !== undefined) liveChildren.add(live);
     let bytes = 0,
       fault,
       closed = false,
       killer,
-      killerTimer;
+      killerTimer,
+      graceTimer;
     const output = { stdout: [], stderr: [] };
     function stop() {
       if (closed || child.pid === undefined) return;
@@ -103,7 +272,19 @@ export function runCommand(command, args, options = {}) {
     }
     const timer = setTimeout(() => {
       fault ??= new Error('PACKED_CLI_CHILD_TIMEOUT');
-      stop();
+      if (graceMs === 0 || !grouped || child.pid === undefined) {
+        stop();
+        return;
+      }
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch {
+        // The group already exited; the timeout fault already stands.
+      }
+      graceTimer = setTimeout(() => {
+        graceTimer = undefined;
+        stop();
+      }, graceMs);
     }, timeoutMs);
     for (const sink of ['stdout', 'stderr'])
       child[sink].on('data', (chunk) => {
@@ -118,7 +299,18 @@ export function runCommand(command, args, options = {}) {
     });
     child.once('close', async (code, signal) => {
       closed = true;
+      liveChildren.delete(live);
       clearTimeout(timer);
+      if (graceTimer !== undefined) {
+        // The leader exited on the SIGTERM before the grace ran out: a group member that ignored it
+        // is killed now, as it would have been when the grace ended.
+        clearTimeout(graceTimer);
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') fault ??= error;
+        }
+      }
       if (killer && killer.exitCode === null && killer.signalCode === null)
         await new Promise((done) => killer.once('close', done));
       clearTimeout(killerTimer);

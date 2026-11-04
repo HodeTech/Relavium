@@ -17,6 +17,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BundleClosureError, checkBundleClosure } from './closure.mjs';
+import { emittedInventory } from './inventory.mjs';
 
 // Use the exact esbuild installed behind the existing CLI tsup tool, not a new
 // dependency, a copied metadata generator, or the product build. Everything is
@@ -77,6 +78,47 @@ async function fixture(splitting = true) {
   };
 }
 const original = await fixture();
+
+// Every fixture is built before the first test is registered: a top-level await after a registration
+// lets the runner finish the earlier tests and run this file's `after` hook, which removes `scratch`.
+// A finalized candidate (Wave 3 Step 9a.1): esbuild emitted external maps that the finalizer moved
+// out of the package; their metafile entries remain and must pair exactly with runtime outputs.
+async function stagedFixture() {
+  const built = await build({
+    absWorkingDir: scratch,
+    entryPoints: { index: 'src/index.ts' },
+    outdir: 'dist',
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    bundle: true,
+    splitting: true,
+    minify: true,
+    metafile: true,
+    write: false,
+    sourcemap: 'external',
+    sourcesContent: false,
+    external: ['commander', '@modelcontextprotocol/sdk', '@modelcontextprotocol/sdk/*'],
+  });
+  const files = {};
+  for (const output of built.outputFiles) {
+    const path = relative(scratch, output.path).split(sep).join('/');
+    if (path.endsWith('.map')) continue;
+    files[path] = {
+      contents: output.text,
+      mode: path === 'dist/index.js' ? 0o755 : 0o644,
+      kind: 'file',
+    };
+  }
+  return {
+    metafile: built.metafile,
+    manifest: { dependencies: { commander: '1', '@modelcontextprotocol/sdk': '1' } },
+    files,
+    maps: 'staged',
+  };
+}
+const stagedOriginal = await stagedFixture();
+const staged = () => JSON.parse(JSON.stringify(stagedOriginal));
 function candidate() {
   return JSON.parse(JSON.stringify(original));
 }
@@ -383,6 +425,10 @@ test('JS byte drift, unexpected permissions and hashbang drift each refuse', () 
     const path = entry ? 'dist/index.js' : lazyFile(value);
     value.files[path].mode = entry ? 0o644 : 0o755;
     refuses(value, 'OUTPUT_MODE');
+    // A set-id or sticky bit is part of the mode, not ignored beside it.
+    const special = candidate();
+    special.files[path].mode = entry ? 0o4755 : 0o2644;
+    refuses(special, 'OUTPUT_MODE');
     const other = candidate();
     setContents(
       other,
@@ -442,7 +488,7 @@ test('thin CLI inventories actual files from its package root and refuses missin
     join(root, 'node_modules'),
     process.platform === 'win32' ? 'junction' : 'dir',
   );
-  for (const name of ['check.mjs', 'closure.mjs']) {
+  for (const name of ['check.mjs', 'closure.mjs', 'inventory.mjs']) {
     copyFileSync(fileURLToPath(new URL(name, import.meta.url)), join(tooling, name));
   }
   writeFileSync(join(pkg, 'package.json'), JSON.stringify(original.manifest));
@@ -460,6 +506,14 @@ test('thin CLI inventories actual files from its package root and refuses missin
     assert.equal(result.error, undefined);
     return result;
   }
+  assert.equal(run().status, 0);
+  // An ordinary build is map-free: a planted map or unreviewed file in dist refuses.
+  writeFileSync(join(pkg, 'dist/index.js.map'), '{}');
+  assert.match(run().stderr, /MAP_OUTPUT/u);
+  rmSync(join(pkg, 'dist/index.js.map'));
+  writeFileSync(join(pkg, 'dist/notes.txt'), 'x');
+  assert.match(run().stderr, /EXTRA_OUTPUT/u);
+  rmSync(join(pkg, 'dist/notes.txt'));
   assert.equal(run().status, 0);
   writeFileSync(join(pkg, 'dist/extra.js'), 'export {};');
   assert.match(run().stderr, /EXTRA_OUTPUT/u);
@@ -490,3 +544,181 @@ test('POSIX modes require actual evidence; Windows graph evidence is explicitly 
   missing.modeEvidence = 'unverified';
   refuses(missing, 'MODE_EVIDENCE');
 });
+
+test('a finalized candidate passes with paired staged maps; an ordinary build may not carry maps', () => {
+  const value = staged();
+  const maps = Object.keys(value.metafile.outputs).filter((path) => path.endsWith('.map'));
+  assert.ok(maps.length >= 4);
+  assert.equal(checkBundleClosure(value).outputs.length, maps.length);
+  value.maps = 'none';
+  refuses(value, 'MAP_OUTPUT');
+  const implicit = staged();
+  delete implicit.maps;
+  refuses(implicit, 'MAP_OUTPUT');
+});
+
+for (const [label, mutate, code] of [
+  [
+    'an unpaired runtime output',
+    (value) => delete value.metafile.outputs['dist/index.js.map'],
+    'MAP_PAIRING',
+  ],
+  [
+    'an orphan map',
+    (value) =>
+      (value.metafile.outputs['dist/orphan.js.map'] = {
+        imports: [],
+        exports: [],
+        inputs: {},
+        bytes: 1,
+      }),
+    'MAP_PAIRING',
+  ],
+  [
+    'map metadata with inputs',
+    (value) =>
+      (value.metafile.outputs['dist/index.js.map'].inputs = {
+        'src/index.ts': { bytesInOutput: 1 },
+      }),
+    'MAP_OUTPUT',
+  ],
+  [
+    'map metadata with imports',
+    (value) =>
+      value.metafile.outputs['dist/index.js.map'].imports.push({
+        path: 'commander',
+        kind: 'import-statement',
+        external: true,
+      }),
+    'MAP_OUTPUT',
+  ],
+  [
+    'map metadata with an entry point',
+    (value) => (value.metafile.outputs['dist/index.js.map'].entryPoint = 'src/index.ts'),
+    'MAP_OUTPUT',
+  ],
+  [
+    'map metadata with exports',
+    (value) => (value.metafile.outputs['dist/index.js.map'].exports = ['run']),
+    'MAP_OUTPUT',
+  ],
+  [
+    'a nested map',
+    (value) =>
+      (value.metafile.outputs['dist/nested/index.js.map'] = {
+        imports: [],
+        exports: [],
+        inputs: {},
+        bytes: 1,
+      }),
+    'OUTPUT_PATH',
+  ],
+  ...[-1, 1.5, '7'].map((bytes) => [
+    `map metadata with malformed bytes ${JSON.stringify(bytes)}`,
+    (value) => (value.metafile.outputs['dist/index.js.map'].bytes = bytes),
+    'METADATA_SHAPE',
+  ]),
+  ['an unknown map mode', (value) => (value.maps = 'external'), 'MAP_MODE'],
+]) {
+  test(`staged closure refuses ${label}`, () => {
+    const value = staged();
+    mutate(value);
+    refuses(value, code);
+  });
+}
+
+test('runtime code may never link a map, in an ordinary build or a finalized candidate', () => {
+  // Node honours both comment forms; V8 and DevTools also honour the legacy `@` marker.
+  for (const link of [
+    '//# sourceMappingURL=index.js.map',
+    '//@ sourceMappingURL=index.js.map',
+    '/*# sourceMappingURL=index.js.map */',
+  ]) {
+    for (const value of [candidate(), staged()]) {
+      setContents(value, 'dist/index.js', `${value.files['dist/index.js'].contents}${link}`);
+      refuses(value, 'MAP_LINK');
+    }
+  }
+});
+
+test('the emitted inventory refuses maps and unreviewed files and admits only named private files', () => {
+  const pkg = mkdtempSync(join(scratch, 'inventory-'));
+  mkdirSync(join(pkg, 'dist'));
+  writeFileSync(join(pkg, 'dist/index.js'), '#!/usr/bin/env node\n');
+  writeFileSync(join(pkg, 'dist/metafile-esm.json'), '{}');
+  assert.deepEqual(Object.keys(emittedInventory(pkg, { privateFiles: ['metafile-esm.json'] })), [
+    'dist/index.js',
+  ]);
+  // An unnamed build file is not private: a finalized candidate's dist holds no metafile at all.
+  assert.throws(
+    () => emittedInventory(pkg),
+    (error) => error instanceof BundleClosureError && error.code === 'EXTRA_OUTPUT',
+  );
+  for (const [path, code] of [
+    ['dist/index.js.map', 'MAP_OUTPUT'],
+    ['dist/nested/chunk.js.map', 'MAP_OUTPUT'],
+    ['dist/notes.txt', 'EXTRA_OUTPUT'],
+    ['dist/nested/metafile-esm.json', 'EXTRA_OUTPUT'],
+  ]) {
+    mkdirSync(dirname(join(pkg, path)), { recursive: true });
+    writeFileSync(join(pkg, path), 'x');
+    assert.throws(
+      () => emittedInventory(pkg, { privateFiles: ['metafile-esm.json'] }),
+      (error) => error instanceof BundleClosureError && error.code === code,
+      path,
+    );
+    rmSync(join(pkg, path));
+  }
+});
+
+test('the emitted inventory never lists dist through a link', () => {
+  const pkg = mkdtempSync(join(scratch, 'linked-dist-'));
+  mkdirSync(join(pkg, 'real-dist'));
+  writeFileSync(join(pkg, 'real-dist', 'index.js'), '#!/usr/bin/env node\n');
+  symlinkSync(
+    join(pkg, 'real-dist'),
+    join(pkg, 'dist'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  assert.throws(
+    () => emittedInventory(pkg),
+    (error) => error instanceof BundleClosureError && error.code === 'OUTPUT_KIND',
+  );
+});
+
+test(
+  'the emitted inventory records a special file named like a chunk without reading it',
+  { skip: process.platform === 'win32' },
+  () => {
+    const pkg = mkdtempSync(join(scratch, 'fifo-'));
+    mkdirSync(join(pkg, 'dist'));
+    assert.equal(spawnSync('mkfifo', [join(pkg, 'dist', 'chunk.js')]).status, 0);
+    // Reading a FIFO would block until a writer appears, so the inventory runs in a bounded child.
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `import { emittedInventory } from ${JSON.stringify(new URL('inventory.mjs', import.meta.url).href)};
+process.stdout.write(JSON.stringify(emittedInventory(${JSON.stringify(pkg)})));`,
+      ],
+      { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL' },
+    );
+    assert.equal(run.signal, null, 'the inventory blocked on a FIFO');
+    assert.equal(run.status, 0, run.stderr);
+    const { kind, contents } = JSON.parse(run.stdout)['dist/chunk.js'];
+    assert.deepEqual({ kind, contents }, { kind: 'other', contents: '' });
+  },
+);
+
+test(
+  'the emitted inventory reports set-id and sticky bits in the mode',
+  { skip: process.platform === 'win32' },
+  () => {
+    const pkg = mkdtempSync(join(scratch, 'special-mode-'));
+    mkdirSync(join(pkg, 'dist'));
+    writeFileSync(join(pkg, 'dist', 'index.js'), '#!/usr/bin/env node\n');
+    chmodSync(join(pkg, 'dist', 'index.js'), 0o4755);
+    assert.equal(emittedInventory(pkg)['dist/index.js'].mode, 0o4755);
+  },
+);

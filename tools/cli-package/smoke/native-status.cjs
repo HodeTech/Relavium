@@ -19,12 +19,23 @@ assert.ok(
     'bootstrap-output',
   ].includes(config.mode),
 );
+assert.ok(Number.isSafeInteger(config.owner) && config.owner > 0);
+// The fixture never outlives the smoke worker that owns its case: an interrupted consumer kills that
+// worker, and nothing else would stop a target in its own process group. Unreferenced, so it never
+// keeps a fixture alive that would otherwise exit.
+setInterval(() => {
+  try {
+    process.kill(config.owner, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') process.exit(0);
+  }
+}, 100).unref();
 record({ operation: 'native-fixture-root', pid: process.pid });
 if (config.mode === 'exit-fallback') {
   process.stdout.write('RELAVIUM_NATIVE_FIXTURE_READY\n');
   setInterval(() => {}, 1000);
 } else {
-  const descendant = spawn(config.node, [config.descendant, config.log], {
+  const descendant = spawn(config.node, [config.descendant, config.log, String(config.owner)], {
     shell: false,
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });

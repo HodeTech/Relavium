@@ -1,6 +1,8 @@
 import type { AbortSignalLike, Scope, ToolPolicy } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
+import { projectSecretShapedValue } from './bounding.js';
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import {
   ToolArgsInvalidError,
@@ -21,10 +23,18 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolCallPart,
+  ToolDef,
   ToolDispatchContext,
   ToolHost,
 } from './types.js';
 import { createInMemoryEffectJournal } from '../engine/execution-host.js';
+
+// Observe the journal projection, retaining its actual implementation, so a case can force a value that
+// does not settle on arguments of its choosing; another uses a real input that does not settle.
+vi.mock('./bounding.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./bounding.js')>();
+  return { ...actual, projectSecretShapedValue: vi.fn(actual.projectSecretShapedValue) };
+});
 
 /* --- helpers --- */
 
@@ -428,6 +438,29 @@ describe('ToolRegistry — git_commit human-gate', () => {
     );
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(settle).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles a bounded preview, not a 30 MiB data URI, into the effect journal', async () => {
+    // A PR #96 review: the ceiling was measured on the data URI's text marker, so the whole value reached
+    // the model and `settleCommitted` wrote it to `history.db`.
+    const uri = `data:image/png;base64,${'A'.repeat(30 * 1024 * 1024)}`;
+    const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+      Promise.resolve({ exitCode: 0, stdout: uri, stderr: '', durationMs: 1 }),
+    );
+    const context = ctx({ toolPolicy: { allowedCommands: ['ls'] } });
+    const settle = vi.fn(context.effects.settle);
+    const out = await registry(stubHost({ process: { spawn } })).dispatch(
+      call('run_command', { command: 'ls' }),
+      {
+        ...context,
+        effects: { ...context.effects, settle },
+      },
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(settle).toHaveBeenCalledTimes(1);
+    const settled = JSON.stringify(settle.mock.calls[0]?.[3]);
+    expect(settled).not.toContain('AAAAAAAA');
+    expect(settled.length).toBeLessThan(64 * 1024);
   });
 });
 
@@ -1652,4 +1685,191 @@ describe('ToolRegistry — remaining hardening regressions (TG-2, TG-4)', () => 
     );
     expect(err.reason).toBe('insecure_url');
   });
+});
+
+describe('ToolRegistry — journal identity of credential-shaped arguments (PR95 round 7)', () => {
+  it('refuses a tiered effect whose journal projection does not settle, before preparing it', async () => {
+    const actual = await vi.importActual<typeof import('./bounding.js')>('./bounding.js');
+    vi.mocked(projectSecretShapedValue).mockImplementation((value) => ({
+      value: actual.projectSecretShapedValue(value).value,
+      settled: !JSON.stringify(value).includes('UNSETTLED'),
+    }));
+    try {
+      const writeFile = vi.fn<NonNullable<ToolHost['fs']>['writeFile']>((path, data) =>
+        Promise.resolve({ path, bytesWritten: data.length }),
+      );
+      const host = stubHost();
+      if (host.fs === undefined) throw new Error('missing stub fs');
+      const context = ctx();
+      const prepare = vi.fn(context.effects.prepare);
+      const err: unknown = await registry(stubHost({ fs: { ...host.fs, writeFile } }))
+        .dispatch(
+          call('write_file', { path: './out.txt', content: 'UNSETTLED body', append: true }),
+          {
+            ...context,
+            effects: { ...context.effects, prepare },
+          },
+        )
+        .catch((error: unknown) => error);
+      expect(err, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBeInstanceOf(ToolArgsInvalidError);
+      if (!(err instanceof ToolArgsInvalidError)) throw new Error('missing refusal');
+      expect(err.fields, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toEqual(['content']);
+      expect(err.message.includes('UNSETTLED'), 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBe(false);
+      expect(prepare, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+      expect(writeFile, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(projectSecretShapedValue).mockImplementation(actual.projectSecretShapedValue);
+    }
+  });
+
+  it('names the arguments it refuses through the same masker', async () => {
+    const actual = await vi.importActual<typeof import('./bounding.js')>('./bounding.js');
+    vi.mocked(projectSecretShapedValue).mockImplementation((value) => ({
+      value: actual.projectSecretShapedValue(value).value,
+      settled: !JSON.stringify(value).includes('UNSETTLED'),
+    }));
+    try {
+      // An MCP tool's open schema lets the model choose the argument names themselves.
+      const dispatch = vi.fn(() => Promise.resolve({ receipt: 'published' }));
+      const tool: ToolDef = {
+        id: 'open_publish',
+        source: 'mcp',
+        description: 'Offline open-schema fixture',
+        llmVisibleParams: { type: 'object' },
+        parseArgs: (raw) => z.record(z.string(), z.unknown()).parse(raw),
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        effect: () => 3,
+        dispatch,
+      };
+      const context = ctx({ grantedToolIds: new Set([tool.id]) });
+      const prepare = vi.fn(context.effects.prepare);
+      const err: unknown = await createToolRegistry({ tools: [tool], host: stubHost() })
+        .dispatch(
+          call('open_publish', {
+            content: 'UNSETTLED body',
+            ghp_abcdefghijklmnopqrstuvwxyz0123UNSETTLED: 'x',
+            'sk-proj-abcdefghijklmnopqrstuvUNSETTLED': 'y',
+          }),
+          { ...context, effects: { ...context.effects, prepare } },
+        )
+        .catch((error: unknown) => error);
+      expect(err, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBeInstanceOf(ToolArgsInvalidError);
+      if (!(err instanceof ToolArgsInvalidError)) throw new Error('missing refusal');
+      expect(err.fields, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toEqual(['content', '[redacted]']);
+      for (const raw of ['ghp_', 'sk-proj', 'UNSETTLED']) {
+        expect(err.message.includes(raw), 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBe(false);
+      }
+      expect(prepare, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+      expect(dispatch, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(projectSecretShapedValue).mockImplementation(actual.projectSecretShapedValue);
+    }
+  });
+
+  it('names every argument when only the whole projection does not settle', async () => {
+    const actual = await vi.importActual<typeof import('./bounding.js')>('./bounding.js');
+    vi.mocked(projectSecretShapedValue).mockImplementation((value) => ({
+      value: actual.projectSecretShapedValue(value).value,
+      settled: !(typeof value === 'object' && value !== null && Object.keys(value).length > 1),
+    }));
+    try {
+      const writeFile = vi.fn<NonNullable<ToolHost['fs']>['writeFile']>((path, data) =>
+        Promise.resolve({ path, bytesWritten: data.length }),
+      );
+      const host = stubHost();
+      if (host.fs === undefined) throw new Error('missing stub fs');
+      const context = ctx();
+      const prepare = vi.fn(context.effects.prepare);
+      const err: unknown = await registry(stubHost({ fs: { ...host.fs, writeFile } }))
+        .dispatch(call('write_file', { path: './out.txt', content: 'body', append: true }), {
+          ...context,
+          effects: { ...context.effects, prepare },
+        })
+        .catch((error: unknown) => error);
+      expect(err, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBeInstanceOf(ToolArgsInvalidError);
+      if (!(err instanceof ToolArgsInvalidError)) throw new Error('missing refusal');
+      expect(err.fields, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toEqual([
+        'append',
+        'content',
+        'path',
+      ]);
+      expect(prepare, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+      expect(writeFile, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(projectSecretShapedValue).mockImplementation(actual.projectSecretShapedValue);
+    }
+  });
+
+  it('refuses an open-schema effect whose argument names collide after masking', async () => {
+    // Two names that project alike would leave one member for two argument sets.
+    const dispatch = vi.fn(() => Promise.resolve({ receipt: 'published' }));
+    const tool: ToolDef = {
+      id: 'open_publish',
+      source: 'mcp',
+      description: 'Offline open-schema fixture',
+      llmVisibleParams: { type: 'object' },
+      parseArgs: (raw) => z.record(z.string(), z.unknown()).parse(raw),
+      policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+      effect: () => 3,
+      dispatch,
+    };
+    const context = ctx({ grantedToolIds: new Set([tool.id]) });
+    const prepare = vi.fn(context.effects.prepare);
+    const err: unknown = await createToolRegistry({ tools: [tool], host: stubHost() })
+      .dispatch(
+        call('open_publish', {
+          'sk-AAAAAAAAAAAAAAAAAAAA': 'rm -rf build',
+          'sk-BBBBBBBBBBBBBBBBBBBB': 'echo done',
+        }),
+        { ...context, effects: { ...context.effects, prepare } },
+      )
+      .catch((error: unknown) => error);
+    expect(err, 'SECRETS_B8_CORE_KEY_COLLISION').toBeInstanceOf(ToolArgsInvalidError);
+    if (!(err instanceof ToolArgsInvalidError)) throw new Error('missing refusal');
+    expect(err.fields, 'SECRETS_B8_CORE_KEY_COLLISION').toEqual(['[redacted]']);
+    expect(err.message.includes('sk-'), 'SECRETS_B8_CORE_KEY_COLLISION').toBe(false);
+    expect(prepare, 'SECRETS_B8_CORE_KEY_COLLISION').not.toHaveBeenCalled();
+    expect(dispatch, 'SECRETS_B8_CORE_KEY_COLLISION').not.toHaveBeenCalled();
+  });
+
+  it('refuses a real tiered effect whose arguments never settle', async () => {
+    // Four glued ids need four passes, one more than the projection's bound.
+    const ids = 'AKIAAAAAAAAAAAAAAAAAASIABBBBBBBBBBBBBBBB'.repeat(2);
+    const writeFile = vi.fn<NonNullable<ToolHost['fs']>['writeFile']>((path, data) =>
+      Promise.resolve({ path, bytesWritten: data.length }),
+    );
+    const host = stubHost();
+    if (host.fs === undefined) throw new Error('missing stub fs');
+    const context = ctx();
+    const prepare = vi.fn(context.effects.prepare);
+    const err: unknown = await registry(stubHost({ fs: { ...host.fs, writeFile } }))
+      .dispatch(call('write_file', { path: './keys.txt', content: `${ids}\n`, append: true }), {
+        ...context,
+        effects: { ...context.effects, prepare },
+      })
+      .catch((error: unknown) => error);
+    expect(err, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBeInstanceOf(ToolArgsInvalidError);
+    if (!(err instanceof ToolArgsInvalidError)) throw new Error('missing refusal');
+    expect(err.fields, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toEqual(['content']);
+    expect(prepare, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+    expect(writeFile, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+  });
+
+  it('projects an exactly admitted-size quoted write after the write lands', async () => {
+    const size = 8 * 1024 * 1024;
+    const writeFile = vi.fn<NonNullable<ToolHost['fs']>['writeFile']>((path, data) =>
+      Promise.resolve({ path, bytesWritten: data.length }),
+    );
+    const host = stubHost();
+    if (host.fs === undefined) throw new Error('missing stub fs');
+    const out = await registry(stubHost({ fs: { ...host.fs, writeFile } })).dispatch(
+      call('write_file', { path: './out.txt', content: `password="${'a'.repeat(size - 11)}"` }),
+      ctx(),
+    );
+    expect(writeFile, 'SECRETS_B7_CORE_QUOTED_SCAN').toHaveBeenCalledTimes(1);
+    expect(out.events.call.toolInput, 'SECRETS_B7_CORE_QUOTED_SCAN').toEqual({
+      path: './out.txt',
+      content: '[redacted]',
+    });
+  }, 15_000);
 });

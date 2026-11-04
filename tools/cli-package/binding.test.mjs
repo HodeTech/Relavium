@@ -14,6 +14,7 @@ import {
   REQUIRED_CONSUMER_LEGS,
   requirePackageJobResults,
   validateConsumerRecord,
+  isPackageVersion,
   validatePackageReceipt,
 } from './binding.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
@@ -25,7 +26,7 @@ const expected = { source, origin: { kind: 'local' }, nodeMajor: 24 };
 function receipt() {
   return {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: 'package_test',
     source,
     dirty: false,
     packageVersion: '0.1.1',
@@ -108,6 +109,13 @@ test('one actual artifact binds every required OS/minimum-runtime consumer', () 
   assert.equal(result.tarballSha256, digest);
 });
 
+test('a package version is a SemVer core from its first character', () => {
+  assert.equal(isPackageVersion('0.1.1'), true);
+  for (const version of ['v0.1.1', 'x0.1.1', '../0.1.1', 'relavium-0.1.1', ' 0.1.1', '0.1.1 ']) {
+    assert.equal(isPackageVersion(version), false, version);
+  }
+});
+
 test('strict receipt refuses omitted or added private/custody claims', () => {
   for (const key of Object.keys(receipt()))
     refuses(() => validatePackageReceipt(omit(receipt(), key), expected));
@@ -122,6 +130,8 @@ test('strict receipt refuses omitted or added private/custody claims', () => {
   }
   for (const changed of [
     { mode: 'release' },
+    // The mode before the product map controls existed.
+    { mode: 'compiled_package_test' },
     { source: '0'.repeat(40) },
     { dirty: 'false' },
     { version: 2 },
@@ -176,6 +186,9 @@ test('package metadata is public-only and keeps private packages out of runtime'
     { dependencies: { '@relavium/core': '0.0.0' } },
     { dependencies: { commander: 'workspace:*' } },
     { dependencies: { commander: 'catalog:' } },
+    ...['npm:evil@1.0.0', 'github:attacker/commander', 'https://example.invalid/c.tgz', '*'].map(
+      (requirement) => ({ dependencies: { commander: requirement } }),
+    ),
   ])
     refuses(() =>
       validatePackageReceipt({ ...pack, package: { ...pack.package, ...changed } }, expected),

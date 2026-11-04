@@ -3,10 +3,12 @@
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
-# Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Wire, usage, filesystem, secrets and packed CLI jobs feed `ci` through an explicit
-# success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
-# self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
+# Branch protection (set in the GitHub repo settings, not here): `ci`, `coverage` and `windows-concurrency`
+# are the REQUIRED status checks to merge into `main` (the Windows job since 2026-11-04: ADR-0106's
+# acceptance names required CI for the platform-scoped claims it carries). Wire, usage, filesystem, secrets,
+# packed CLI and product map control jobs feed `ci` through an explicit success-only aggregation; they cannot
+# silently skip or fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
+# `peer-dep-gate`.
 #
 # `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
 # `packages/core` is measured and printed by the same run but does not fail it: its branch margin is +0.83
@@ -57,7 +59,8 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations, packed-cli]
+    needs:
+      [wire-mutations, usage-mutations, fs-mutations, secrets-mutations, packed-cli, map-controls]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
@@ -102,17 +105,20 @@ jobs:
           PACKED_CLI_RESULT: ${{ needs.packed-cli.result }}
         run: node -e "require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')"
 
+      - name: Require complete product map controls
+        env:
+          MAP_CONTROLS_RESULT: ${{ needs.map-controls.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.MAP_CONTROLS_RESULT, 'success')"
+
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
       - name: Ensure immutable replay predecessor is available
         shell: bash
         run: |
           BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
-          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
-            if ! git fetch --no-tags origin "$BASELINE"; then
-              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
-              exit 1
-            fi
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}" && ! git fetch --no-tags origin "$BASELINE"; then
+            echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+            exit 1
           fi
           git --no-replace-objects cat-file -e "$BASELINE^{commit}"
 
@@ -245,13 +251,21 @@ jobs:
   # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
   # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
   fs-mutations:
-    name: Wave 2 filesystem causal controls
+    name: Wave 2 filesystem causal controls (shard ${{ matrix.shard }} of 2)
     # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
     # The 20-minute job historically reached only 46 of 93 controls; the later budget covered 99.
-    # The current cohort is 110 controls (2026-10-15); this comment does not certify its execution.
+    # The current cohort is 115 controls (2026-10-25); this comment does not certify its execution.
     # Per-phase 90-second/test 15-second deadlines and output/evidence ceilings remain unchanged.
+    # Every phase retains a manifest of the whole source graph (about 200 KB each), so the 330 phase
+    # manifests of one export passed the unchanged 64-MiB retained-evidence bound once Wave 3's PR95
+    # increment grew that graph (2026-10-22). As for the secrets controls, two legs each run and
+    # export a disjoint round-robin half (`--shard k/2`) under the unchanged bounds.
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -268,23 +282,32 @@ jobs:
       - name: Run filesystem removal and restoration controls
         env:
           RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
-        run: pnpm check:fs-mutations
+        run: pnpm check:fs-mutations --shard ${{ matrix.shard }}/2
       - name: Retain bounded filesystem control metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wave2-filesystem-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wave2-filesystem-${{ matrix.shard }}-of-2-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/filesystem
           if-no-files-found: warn
           retention-days: 7
 
   secrets-mutations:
-    name: Wave 2 secrets causal controls
+    name: Wave 2 secrets causal controls (shard ${{ matrix.shard }} of 2)
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # The current cohort is 57 controls (2026-10-18); this comment does not certify its execution.
-    # Per-phase, case/hook, output and retained-evidence bounds remain unchanged.
-    timeout-minutes: 30
+    # Wave 3's PR95 increment grows the cohort to 130 controls (2026-10-21): each scrubber
+    # control runs its eight-MiB-heavy file in three phases (about 24 s locally). One export
+    # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so two
+    # legs each run and export a disjoint round-robin half (`--shard k/2`) under the
+    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds. A leg took up to 48 minutes
+    # by 2026-11-04 (runner variance, not imbalance), so its allowance is 75 minutes rather than the
+    # filesystem job's 60. This comment does not certify execution.
+    timeout-minutes: 75
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -301,12 +324,12 @@ jobs:
       - name: Run secrets removal and restoration controls
         env:
           RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
-        run: pnpm check:secrets-mutations
+        run: pnpm check:secrets-mutations --shard ${{ matrix.shard }}/2
       - name: Retain bounded secrets control metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wave2-secrets-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wave2-secrets-${{ matrix.shard }}-of-2-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/secrets
           if-no-files-found: warn
           retention-days: 7
@@ -365,11 +388,9 @@ jobs:
         shell: bash
         run: |
           BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
-          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
-            if ! git fetch --no-tags origin "$BASELINE"; then
-              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
-              exit 1
-            fi
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}" && ! git fetch --no-tags origin "$BASELINE"; then
+            echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+            exit 1
           fi
           git --no-replace-objects cat-file -e "$BASELINE^{commit}"
 
@@ -472,8 +493,9 @@ jobs:
     runs-on: ubuntu-latest
     # One file worker isolates unchanged admitted-size case budgets from instrumentation
     # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
-    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds.
-    timeout-minutes: 30
+    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds. By
+    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -520,7 +542,7 @@ jobs:
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
-    name: windows · db concurrency + filesystem + headless smoke (advisory)
+    name: windows · db concurrency + filesystem + headless smoke
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -619,7 +641,11 @@ jobs:
           node-version-file: .nvmrc
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # The runner builds inlined dependencies fresh, then prepack performs the sole final CLI build.
+      # The runner builds inlined dependencies fresh in an owned candidate tree, then prepack performs the sole
+      # final CLI build, where original-TS maps are built, validated, staged privately and discarded (Wave 3
+      # Step 9a.1); the seal then writes the private manifest and symbolicates actual packed frames, both
+      # discarded too (Step 9a.2a); only the tarball and its package_test receipt leave this job. The mode is a
+      # claim: the map-controls job below runs the negative controls, and `ci` requires its success (Step 9a.2b).
       - name: Pack once and independently inspect the public package
         env:
           RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
@@ -633,6 +659,35 @@ jobs:
             ${{ runner.temp }}/packed-cli-artifact/package-test-receipt.json
           retention-days: 7
           if-no-files-found: error
+
+  # Product map controls (Wave 3 Step 9a.2b): a second, independent real production at this commit whose
+  # every named corruption must refuse with its exact code; its private maps, manifests and copies stay in
+  # the producer's owner-only root and are removed with it. Uncached, and nothing is uploaded.
+  map-controls:
+    name: product map controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Corrupt product copies and require each exact refusal
+        env:
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: pnpm check:map-controls
 
   packed-cli-consumer:
     name: installed CLI (${{ matrix.id }})

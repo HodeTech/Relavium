@@ -1,17 +1,20 @@
-/** Bind the sole prepack result to independently inspected bytes. No build or archive extraction. */
+/**
+ * Bind the sole prepack result to independently inspected bytes. No build or archive extraction.
+ * Every input is explicit: the owned candidate root, its private staging directory and the source
+ * identity the producer captured from the original checkout. Nothing resolves a repository from
+ * this module's own location, so a candidate copy cannot be sealed against different files.
+ */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
-import { originFromEnvironment, validatePackageReceipt } from './binding.mjs';
-import { flatFiles, oneTarball, readOrdinaryFile } from './files.mjs';
-import { isolatedEnvironment, runCommand } from './process.mjs';
+import { PACKAGE_TEST_MODE, originFromEnvironment, validatePackageReceipt } from './binding.mjs';
+import { flatFiles, oneTarball, readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
+import { MANIFEST_FILE, RECORD_BYTES, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
+import { symbolicateCandidate } from './symbolicate.mjs';
 
-const repository = fileURLToPath(new URL('../../', import.meta.url));
-
-export function producerNodeMajor(root = repository) {
+export function producerNodeMajor(root) {
   const declared = readOrdinaryFile(join(root, '.nvmrc'), 20).toString('utf8').trim();
   assert.match(declared, /^[1-9]\d*$/u, 'PACKED_CLI_INVALID_PRODUCER_NODE');
   const major = Number(declared);
@@ -22,7 +25,7 @@ export function producerNodeMajor(root = repository) {
   return major;
 }
 
-export function expectedPackManifest(root = repository) {
+export function expectedPackManifest(root) {
   const require = createRequire(join(root, 'apps/cli/package.json'));
   const { parse } = require('yaml');
   const catalog = parse(readFileSync(join(root, 'pnpm-workspace.yaml'), 'utf8')).catalog;
@@ -48,20 +51,39 @@ export function expectedPackManifest(root = repository) {
   return manifest;
 }
 
-export function finalizedPublicFiles(root = repository) {
+/**
+ * The finalized public files of a candidate: exactly the runtime outputs named by its staged
+ * metafile, byte-identical to the finalizer's private hash record, plus canonical migrations and
+ * the public documents. The finalized dist holds no map and no build metadata.
+ */
+export function finalizedPublicFiles(root, staging) {
   const cli = join(root, 'apps/cli');
   const files = new Map();
-  const graph = JSON.parse(readOrdinaryFile(join(cli, 'dist/metafile-esm.json'), 4 * 1024 * 1024));
-  const outputs = Object.keys(graph.outputs).map((path) => path.replaceAll('\\', '/'));
+  const graph = JSON.parse(
+    readOrdinaryFile(join(staging, 'metafile-esm.json'), RECORD_BYTES['metafile-esm.json']),
+  );
+  const outputs = Object.keys(graph.outputs)
+    .map((path) => path.replaceAll('\\', '/'))
+    .filter((path) => !path.endsWith('.map'));
   assert.ok(outputs.length > 0 && outputs.length <= 256);
+  const actual = [];
   for (const path of outputs) {
     assert.match(path, /^dist\/[A-Za-z0-9_-]+\.js$/u, 'PACKED_CLI_UNREVIEWED_GRAPH_OUTPUT');
-    files.set(`package/${path}`, readOrdinaryFile(join(cli, path), 8 * 1024 * 1024));
+    const bytes = readOrdinaryFile(join(cli, path), 8 * 1024 * 1024);
+    files.set(`package/${path}`, bytes);
+    actual.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
   }
   assert.deepEqual(
-    readdirSync(join(cli, 'dist')).sort(),
-    [...outputs.map((path) => basename(path)), 'metafile-esm.json'].sort(),
+    readdirSync(join(cli, 'dist')).sort(byCodeUnit),
+    outputs.map((path) => basename(path)).sort(byCodeUnit),
     'PACKED_CLI_EXTRA_FINAL_OUTPUT',
+  );
+  const record = JSON.parse(readOrdinaryFile(join(staging, 'finalized.json'), 1024 * 1024));
+  const byPath = (left, right) => byCodeUnit(left.path, right.path);
+  assert.deepEqual(
+    [...record.outputs].sort(byPath),
+    [...actual].sort(byPath),
+    'PACKED_CLI_FINALIZED_RECORD_DRIFT',
   );
   const canonical = flatFiles(join(root, 'packages/db/drizzle'), 'package/drizzle');
   const copied = flatFiles(join(cli, 'drizzle'), 'package/drizzle');
@@ -73,32 +95,77 @@ export function finalizedPublicFiles(root = repository) {
   return files;
 }
 
-export async function sealPackage(artifactDirectory) {
+/** Whether anything exists at `path`, without following a link. */
+function present(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Inspect the tarball, then seal the candidate's private map manifest, then symbolicate actual packed
+ * frames against it, then verify that `dist` and the tarball are still the manifest's, and only then
+ * write the receipt: a refusal at any step leaves no receipt. An artifact directory that already holds
+ * a receipt, or a staging that already holds a manifest, is never sealed again: either refuses before
+ * the inspection and any capture.
+ * @param {string} artifactDirectory the public artifact directory holding exactly one tarball
+ * @param {{repository: string, staging: string, source: string, dirty: boolean, checkout: string,
+ *   work: string, ports?: {manifest?: typeof sealPrivateManifest,
+ *   symbolicate?: typeof symbolicateCandidate, verify?: typeof verifySealedDist}}} candidate the
+ *   candidate root and its private staging, the original checkout's identity and object store, and a
+ *   private work directory
+ */
+export async function sealPackage(
+  artifactDirectory,
+  { repository, staging, source, dirty, checkout, work, ports = {} },
+) {
+  const {
+    manifest = sealPrivateManifest,
+    symbolicate = symbolicateCandidate,
+    verify = verifySealedDist,
+  } = ports;
   const tarball = oneTarball(artifactDirectory);
-  const source = (
-    await runCommand('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], {
-      cwd: repository,
-      env: isolatedEnvironment(repository),
-    })
-  ).stdout.trim();
-  assert.match(source, /^[0-9a-f]{40}$/u);
-  const dirty =
-    (
-      await runCommand('git', ['status', '--porcelain'], {
-        cwd: repository,
-        env: isolatedEnvironment(repository),
-      })
-    ).stdout !== '';
+  assert.match(source, /^[0-9a-f]{40}$/u, 'PACKED_CLI_SOURCE_IDENTITY');
+  assert.equal(typeof dirty, 'boolean', 'PACKED_CLI_SOURCE_IDENTITY');
+  assert.ok(
+    typeof checkout === 'string' &&
+      isAbsolute(checkout) &&
+      typeof work === 'string' &&
+      isAbsolute(work),
+    'PACKED_CLI_SEAL_INPUTS',
+  );
+  // ADR-0111's post-receipt rebuild refusal (Step 9a.2b): a sealed candidate is never sealed again.
+  assert.ok(
+    readdirSync(artifactDirectory).length === 1 && !present(join(staging, MANIFEST_FILE)),
+    'PACKED_CLI_ALREADY_SEALED',
+  );
   const archive = inspectPackageArchive(readOrdinaryFile(tarball, 16 * 1024 * 1024), {
-    expectedFiles: finalizedPublicFiles(),
-    expectedPackage: expectedPackManifest(),
+    expectedFiles: finalizedPublicFiles(repository, staging),
+    expectedPackage: expectedPackManifest(repository),
   });
   const origin = originFromEnvironment(process.env);
   const pnpm = JSON.parse(readFileSync(join(repository, 'package.json'), 'utf8')).packageManager;
   assert.equal(pnpm, 'pnpm@9.12.3');
+  // Only now, with the packed bytes proven to be the finalized ones, the private manifest is sealed;
+  // actual packed frames are then symbolicated against it before any receipt exists.
+  const sealed = await manifest({
+    candidate: repository,
+    staging,
+    checkout,
+    source,
+    dirty,
+    archive,
+  });
+  await symbolicate({ candidate: repository, staging, checkout, work, archive });
+  // The capture ran the candidate: its dist and the tarball must still be the ones just sealed.
+  await verify({ candidate: repository, manifest: sealed, tarball });
   const receipt = {
     version: 1,
-    mode: 'compiled_package_test',
+    mode: PACKAGE_TEST_MODE,
     source,
     dirty,
     packageVersion: archive.package.version,
@@ -113,18 +180,19 @@ export async function sealPackage(artifactDirectory) {
   validatePackageReceipt(receipt, {
     source,
     origin,
-    nodeMajor: producerNodeMajor(),
+    nodeMajor: producerNodeMajor(repository),
     allowLocal: origin.kind === 'local',
   });
-  writeFileSync(
-    join(artifactDirectory, 'package-test-receipt.json'),
-    JSON.stringify(receipt, null, 2) + '\n',
-    { flag: 'wx' },
-  );
+  try {
+    writeFileSync(
+      join(artifactDirectory, 'package-test-receipt.json'),
+      JSON.stringify(receipt, null, 2) + '\n',
+      { flag: 'wx' },
+    );
+  } catch (error) {
+    // Another seal wrote its receipt meanwhile.
+    if (error?.code === 'EEXIST') assert.fail('PACKED_CLI_ALREADY_SEALED');
+    throw error;
+  }
   return receipt;
-}
-
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  assert.equal(process.argv.length, 3, 'one artifact directory required');
-  console.log(JSON.stringify(await sealPackage(resolve(process.argv[2]))));
 }

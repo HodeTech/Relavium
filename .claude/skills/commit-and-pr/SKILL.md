@@ -25,10 +25,10 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
 
 ## Workflow
 1. **Gate first.** Run ../standards-check/SKILL.md and `pnpm turbo run lint typecheck test`. Do not commit red.
-2. **Branch if on the default branch.** Never commit straight to `main`.
+2. **Commit on `development`, never straight to `main`.** Work reaches `main` through a PR from `development`; create no other branch unless the maintainer asks (the [Git workflow](../../../AGENTS.md#git-workflow) in AGENTS.md is the canonical rule).
    ```bash
    git rev-parse --abbrev-ref HEAD
-   # if main: git switch -c feat/<scope>-<short-topic>
+   # if main: git switch development
    ```
 3. **One scope per commit.** Stage only one package's changes. A change spanning packages is usually two commits; if genuinely atomic, pick the primary scope and name the rest in the body. Do not bundle generated/formatting churn with logic.
 4. **Write the message** in Conventional Commits form. Summary is imperative, lower-case, no trailing period, ≤ ~72 chars. Body (expected for anything non-obvious) explains the *why*, not a restatement of the diff. Reference the ADR in a trailer; end with the required co-author trailer.

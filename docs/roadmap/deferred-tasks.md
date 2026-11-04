@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-18 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are accepted on `development`, with PR #95 under review. Existing approved deferrals remain.
+> Last updated: 2026-11-04 — the CLI MVP comes first (maintainer, 2026-10-26; decisions D58–D72 ruled 2026-11-04): Wave 3 is paused after Step 9b.2 and its Steps 9c–19 are pending, not declined; the order is in [current.md](current.md#next-work--the-cli-mvp). Wave 2 is merged in PR #94 and Wave 3 Steps 1–8 in PR #95; PR95, 9a.1, 9a.2a, 9a.2b, NI (its Windows clause closed on 2026-10-26), 9b.1 and 9b.2 are accepted on `development` with their recorded findings below. The independent PR #95 review's findings keep the maintainer's 2026-10-19 owner rulings, and the masker's edge cases the 2026-10-21 bar and the 2026-10-22 rulings. Existing approved deferrals remain; entries the MVP pulls forward say so.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
@@ -368,6 +368,745 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
+## PR #95 independent review — unactioned findings (2026-10-18)
+
+An independent systematic review of [PR #95](https://github.com/HodeTech/Relavium/pull/95) at `19c99968`
+reported no blocker or high finding. Its medium and three of its four low findings were corrected in `a3e164b5`
+([disposition table](phases/phase-2.5.5-hardening-and-remediation.md#independent-review-of-the-published-head-and-its-corrections));
+what follows was **not** actioned in that pass. **Owner rulings, 2026-10-19:** the maintainer approved an owner for
+every open item ([rulings](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)).
+Each `- [ ]` below is now **Scheduled** to a Wave 3 increment (the PR95 increment runs before Step 9a) and stays unchecked until
+that increment lands, except LOW-1 and LOW-2, which are approved deferrals with their recorded triggers. Items
+marked *(reviewer)* are quoted from that review and were not re-verified by the author; items marked *(author)* were
+measured or counted here.
+
+- **DONE 2026-10-19 — SonarCloud's quality gate was red on `main` after every merge.** *(author)* The `main`
+  analysis failed `new_security_rating` (C, required A) against the `previous_version` baseline (2026-06-04) because nine
+  vulnerabilities were open there: seven `githubactions:S6505` ("omitting `--ignore-scripts`") on the
+  `pnpm install --frozen-lockfile` lines in `.github/workflows/ci.yml` (120, 432, 463, 487), `release.yml` (94) and
+  `models-catalog.yml` (51, 95); one `jssecurity:S8707` at `tools/budget-replay-compat/lifecycle-smoke.mjs:47`; one
+  `javascript:S4036` at `tools/cli-package/aggregate.mjs:58`. The gate had failed after the PR #90, #92, #94 and #95
+  merges while the PR-level analyses passed, because SonarCloud statuses are per branch and the existing dispositions lived
+  on PR branches and on other `main` records. SonarCloud is not a required check. At the maintainer's direction the
+  dispositions were applied on `main` through the SonarCloud API after re-verifying each rationale at `6d2a7372`: the seven
+  S6505 and the S8707 as false positives (same reasons as their `main` siblings; the install-script posture comment at the top of
+  `ci.yml` and the Sonar backlog section below), the S4036 accepted as on the PR #95 branch. SonarCloud then reported zero
+  open vulnerabilities and an OK gate for `main`. No rule, threshold or gate was changed; the per-issue record is local
+  and Git-ignored. *(was medium · process)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. An `api-key` header label erases the `Bearer`/`Basic` label that follows it, so the token leaks.** *Low (security).* *(author)* `scrubSecrets('api-key:Bearer abcdefghijkl123456')` returns `api-key:[REDACTED] abcdefghijkl123456` — the `api-key` rule consumes the word `Bearer` as the header's value and the Bearer rule then has no label to anchor on. The pre-PR matcher returned `api-key:Bearer [REDACTED]`. Surfaced by the post-merge security sitting, reproduced independently; it comes from the PR's rule order, not from `a3e164b5`, and is **not fixed**. A plain `Authorization: Bearer …` is unaffected. Fix idea: let the header value skip a following `Bearer`/`Basic` label, or run those rules first. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. URL userinfo containing a raw `?` or `#` before the first `:` (or with no `:`) is not masked.** *Ruled 2026-10-19:* mask unless the text before the `?`/`#` is host-shaped (a dotted hostname, `localhost` or a bracketed IP, with an optional `:port`) **and** an `=` assignment lies between the `?`/`#` and the authority `@`; a plain host-shaped exemption would still leave `https://my.user:1234?TOKEN@h/` open. The same predicate applies to core's twin in `packages/core/src/tools/bounding.ts` (its colonless short-handle rule and `]` delimiter stay, recorded as differences). *Low (security).* *(author, from two independent differential runs)* `https://us?er:TOKEN@h/`, `http://#TOKEN@h` and `https://my.user:1234?TOKEN@h/` pass through unchanged; the pre-PR matcher masked all of them. It follows from the deliberate host-query policy in `maskUrlUserinfo` (a raw `?`/`#` may begin public query text, e.g. `https://host?contact=a@b.c`) and the colon-first cases are pinned by tests; it is identical at `19c99968` and is not introduced by the follow-up. **A maintainer call** whether a username shaped that way is worth the false positives. Fix idea: exempt only when the text before the `?`/`#` is non-empty and host-shaped (contains `.`, a `:port`, `localhost` or a bracketed IPv6), otherwise mask. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Credentials in URLs of other schemes are outside the finite rule.** *Ruled 2026-10-19:* extend the finite list with postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp and smtps, masking only colon-bearing userinfo for the new schemes; malformed `https:/u:p@h`, a raw `/` inside a password and invisible characters inside the scheme stay documented limits. *Low, informational.* `postgres://`, `redis://`, `mongodb(+srv)://`, `ssh://` userinfo, malformed `https:/u:p@h`, a raw `/` inside a password, and invisible characters inside the scheme are not masked, identically before and after the follow-up. The file states its shapes are finite; a database connection error is the realistic carrier, so the scheme list may deserve a decision. *(info · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The URL rule's split-credential scan costs 2.1–2.5× on letter-heavy input, and nothing times that loop.** *Low / nit.* With `NO_BOUNDARY` the scanner tests every ASCII letter start for the URL rule; at 8 MiB the worst case stays under about 1.1 s and linear (1–16 MiB scaling checked). A prefilter on `h`/`w`/`f` would recover most of it. The existing 8 MiB timing case contains no `@`, so it returns before the loop; a guard would use a leading `a\nhttps://u@h ` plus 8 MiB of letters, but see the load-sensitive timing item below before adding another wall-clock assertion. SonarCloud was not run on the never-matching `NO_BOUNDARY = /(?!)/`; check its next analysis. *(low · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Two latent invariants in `hasSplitCredential` are unchecked.** *Nit.* A boundary-bearing rule with neither `\b` nor a `joinedPattern` makes `scrubSecrets` throw a `SyntaxError` on LF/TAB input no earlier rule has redacted (the suite fails at once, so it is caught, but it would break `makeLlmError`'s no-throw claim); and `wordBlocksStart` tests `boundary.test('a')` as a proxy for "rejects every ASCII word character", true for all current boundaries. An assertion at module load would pin both. *(nit · packages/llm/src/scrub-secrets.ts)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The userinfo control's joined-view half is not separately witnessed.** *Low (coverage).* *(author, from an independent run)* Mutating only `joinedPattern` of the URL rule leaves 111/111 tests green. The whitespace-stripped residual probe independently catches the class the existing cases use, so it may be largely an equivalent mutant; an added case that did not discriminate it was reverted rather than kept. No causal control pins the glued-scheme behaviour either — only ordinary tests do. *(low · tools/secrets-controls/mutations.mjs)*
+- [ ] **Approved deferral (maintainer, 2026-10-19). `LOW-2` (the 1 s default `waitFor` on a real child) was examined and deliberately not changed.** *Low.* The only wait that observes a real child booting is `holdNativeToolProcess`'s marker wait, whose sole caller sits inside `drive-home.test.ts` waits (lines 633 and 637) that use the 1 s default and enclose the boot, so a longer inner bound cannot help; a retune must raise those outer waits together. No failure was reproduced (0 in dozens of loaded runs). `testing.md` also states that no readiness or case deadline is extended to pass the workspace gate. **Trigger: a recorded boot-time failure.** *(low · apps/cli/src/commands/native-forwarding.test-support.ts, apps/cli/src/home/drive-home.test.ts)*
+- [ ] **Scheduled → Wave 3 17b. Join-table test nits.** *Nit.* The `process-close.test.ts` gate margin is nominally 100 ms but `waitFor`'s 50 ms poll makes it 100–150 ms, so a publication more than about 150 ms late is invisible; the three rejection cases assert the message but not the `ProcessCapabilityError` class; the `mcp-orphan.e2e.test.ts` comment's statement that its cases have only ever run on POSIX is historical and unverifiable; the abort case's `await spawned.promise` is unbounded (a spawn that never happens fails only as the 5 s case timeout), its closed-child `waitFor` carries no tag, and the 100/300/3,000 ms margins are bare literals. *(nit · apps/cli/src/engine/tool-host/process-close.test.ts, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-19). Native-lifetime watchdogs are fixed 5 s bounds inside 10 s cases (`LOW-1`).** *Low.* The watchdogs in
+  `apps/cli/src/process/native-process-owner.test.ts`, `engine/tool-host/os-native-lifetime.test.ts`,
+  `render/editor-native-lifetime.test.ts`, `render/fixtures/native-editor.mjs` and
+  `tools/cli-package/smoke/native-process.test.mjs` assert that a slow-but-correct close did not trip them, so a
+  loaded runner produces red without a defect. *(author)* The constants are **coupled** — the Home editor case
+  has a 5 s fixture watchdog, a 3 s ready wait, a 6 s release wait and a 10 s case bound — so raising one alone
+  does nothing, and three runs of the three vitest files (52 tests) passed at a load average of 80–96 on macOS.
+  The reviewer could not observe the Windows root cause either. **Trigger: a Windows trace that names the bound
+  that fired**; retune the coupled set together then. *(low · the files above)*
+- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. `bounds admitted-size failed header and URL preparation` is load-sensitive.** *Low.* *(author)* It allows
+  5 s for two 8 MiB scrubs that take about 0.75 s in total, and it failed twice with the load average near 65 (6.4 s
+  in the run that logged the duration). Measured alternately, the pre-change code and the corrected code take the same
+  time, so the failures were load, not the correction. Two independent reviewers saw it too (5,590 ms and 3,453 ms at load averages near 88–97) and recorded that `tools/secrets-controls/README.md` says the fixture runs without a machine-speed threshold, which this assertion contradicts; six controls run this file, so a loaded runner can turn a fixed phase red. The test
+  guards against a quadratic regression, so any loosening must stay far below minutes. **Trigger: the next CI
+  failure of this case.** *(low · packages/llm/src/scrub-secrets.test.ts, `SECRETS_B2_HEADER_PREPARATION`)*
+- [ ] **Scheduled → Wave 3 17a (all four sites together). Raw exit-code literals where `EXIT_CODES` names exist.** *Nit.* *(reviewer)* reported
+  `result === 5 || result === 7 || result === 8` in `apps/cli/src/chat/session-surface-lifetime.ts:54`; *(author)*
+  the same literals occur in four places: that site, `commands/workflow-lifetime.ts:178`,
+  `process/command-lifetime.ts:110` and `commands/drive.ts:225`. Behaviour-neutral, but it sits on the exit-code
+  precedence that the review's red-team matrix held, so rerun the precedence tests with the change.
+  *(nit · the four files above)*
+- [ ] **Scheduled → Wave 3: `session-ink-input.ts` → 15c, `HomeDeps.exit` → 14a, the `lazy-dispatch.ts` cause-wrap → 10a. CLI lifetime and API-drift nits.** *Nit, (reviewer).* `chat/session-ink-input.ts:40-42,124-131` guards only
+  the `readable` listener (Ink's kitty `data` path is latent because `kittyKeyboard` is unused);
+  `home/drive-home.tsx:165-166,1067,1115-1116` keeps `HomeDeps.exit` although the owned path never calls it;
+  `commands/lazy-dispatch.ts:49` imports the media route without the cause-wrap the sibling routes carry.
+  *(nit · the files above)*
+- [ ] **Scheduled → Wave 3: the purity-guard root set → 10a; the remaining test-evidence nits → 17b. Test-evidence nits.** *Nit, (reviewer).* `process/pure-substrate-graph.test.ts:117-133` — the purity-guard
+  root set omits the ADR-0111 eager-boot files (the reviewer verified that opaque marking fixes it); three
+  no-argument `toHaveBeenCalled()` positives outside `native-process-owner.test.ts`;
+  `packages/llm/src/adapters/list-models-lifetime.test.ts:122` labels a fake-`fetch` case "real installed SDK";
+  `apps/cli/src/harness/concurrency.e2e.test.ts:434-441` uses a fixed 100 ms contention margin;
+  `tools/cli-package/consumer-lifetime.test.mjs:54-59` pre-marks every synthetic case `passed: true` (by design;
+  real detection is the packed-consumer CI). *(nit · the files above)*
+- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *The tooling half is accepted with Wave 3 Step 9a.1 (implemented 2026-10-22, accepted at `cf97b7f1` on 2026-10-24):* the unreachable `TAR_FORMAT` branches are removed, and `installedModulesOwner` (`tools/cli-package/smoke/installation.mjs`) replaces the ancestor loop; the duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
+  `tools/cli-package/archive.mjs:126,135`; no `break` in the ancestor loop at `tools/cli-package/smoke/worker.mjs:64-65`
+  (the outermost `node_modules` wins); and repeated heading texts in the phase register, whose later occurrences
+  take a `-1` slug suffix. *(author)* A scan finds repeated H2–H4 headings (the 2.5.5.B–I sub-stream headings and the
+  Wave 2 checkpoint's sub-headings among them); no link is broken today. *(nit · the files above)*
+- **No action, recorded 2026-10-19 — informational items kept in view.** No change is proposed for any of them; the `git_commit` approval wording is already covered by Wave 3 Step 5's #308 disposition. *(reviewer)* `packages/mcp/src/manager.ts:228-236` — a comment omits
+  the bare `Error` in the throwing-observer branch (behaviour is canonical); `packages/core/src/tools/bounding.ts` —
+  the removed 4k pre-clip in `makeSummary` is required for correctness (8 MiB takes about 49 ms, about 200 ms with
+  line feeds) and the alias DAG is `2^d` (depth 18 is 786k nodes in 404 ms) for host/embedder graphs only, never model
+  JSON; `packages/core/src/tools/builtins.ts:451-452` — the `git_commit` description promises human-gate approval
+  while no producer sets `gateApproved=true` (not verified by the reviewer); `commands/workflow-lifetime.ts:204`
+  can return a raw signal code above 9 that the physical exit never uses, a note for future embedders. No action
+  is proposed for any of these.
+
+## PR #95 masker edge cases — approved deferrals (2026-10-21 and 2026-10-22)
+
+Under the [masker acceptance bar](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)
+that the maintainer set on 2026-10-21, a low finding in the open-ended masker work
+(`packages/llm/src/scrub-secrets.ts` and core's twin projection in `packages/core/src/tools/bounding.ts`) is
+recorded here instead of being corrected in the review loop, and under the round cap of the same day so is
+every medium and low finding of round 10, the last round, after which only high findings are corrected. The
+entries up to round 9 are not regressions against base `9902e0a0`; the round-10 entries say when they are, in the
+shapes they name. The maintainer counted round 10's GEN-R10-1 (a `.env` password in a structured result's
+summary) as high on 2026-10-22, so its summary half is corrected and only its journal half is recorded here, and
+approved the two private-key block gaps the author found after round 9. The shapes that neither masker reads by design stay described in
+their canonical homes, [built-in-tools.md](../reference/shared-core/built-in-tools.md) for core and
+[error-handling.md](../standards/error-handling.md) for the scrubber; this list holds the review findings and the
+re-checks they need. **Trigger for every entry:** a real tool result, journal entry or diagnostic that carries the
+shape, or the next change to the rule the entry names. The generative harnesses that found them are not part of
+the repository, so each entry names the input and the property to re-check by hand or in a test.
+
+- [ ] **Approved deferral (maintainer, 2026-10-21). A header label split by a JSON escape is not joined in a
+  summary.** *Low, unchanged from base.* *(author)* `boundForModel({ stdout: 'api-k\tey: <value>' })` shows the
+  value in its summary, while the same text as a string result is `[redacted]`. The summary's second reading
+  (`visitEscapedSeparators`) runs the standalone, scheme-label and split-credential rules, not the split
+  header-label join, which rewrites the text instead of reporting ranges. **Re-check:** whether a real tool output
+  splits a header label across a line break; a fix reports the joined labels as ranges of the escaped view.
+  *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). A private-key block split across array elements shows its
+  body in the journal and display projections.** *Low, unchanged from base.* *(author)*
+  `redactSecretShapedValue(['--private-key', '<BEGIN marker>', 'MIIE…', '<END marker>'])` keeps `'MIIE…'` and the
+  END marker, and `{ argv: ['ssh', '-i', '<BEGIN marker>\nMIIE…', '…\n<END marker>'] }` stays whole. Both
+  projections read each string alone; only a summary reads a structured value's JSON as one text. **Re-check:**
+  `redactSecretShapedWalk` under `projectSecretShapedValue` and `redactSecretShapedValue`; a fix changes `v5:`
+  journal digests, so it needs the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). A summary does not read a key's unquoted value behind an
+  escaped line break and indentation.** *Low, unchanged from base.* *(round 9 critic, CRIT-R9-1)*
+  `boundForModel({ stdout: 'database:\n  password:\n  Qx7vT2mN9pL4kR8s\n  user: app' })` shows the value, while
+  the same text as a string result is masked. The key rule reads a value behind escaped separators only when a
+  quote opens it (`escapedValueStart`), and the summary's escaped-separator view runs no key rule. **Re-check:** a
+  fix lets the summary's key rule read an unquoted value behind escaped separators and spaces, or runs it over
+  `escapedSeparatorView`; the journal is unchanged. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). Core does not read a credential glued to a terminal
+  sequence's final byte.** *Low, unchanged from base.* *(round 9, R9-GEN-4)* `ESC[1msk-<body>` and
+  `ESC[0mBearer <token>` keep the credential: the SGR final byte `m` is a word character, so the standalone and
+  scheme rules see no boundary; built-in-tools.md names the limit. **Re-check:** read those two rules in a view
+  where CSI sequences are filled, as the backstop's normalized probe does. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-21). The quoted value's later-closing rule has tests but no causal
+  control.** *Low, partial.* *(round 9, TST-R9-2)* The mutations that keep a single reading, drop the kept
+  backslashes or skip the summary's second closer are each killed by
+  `closes a quoted value at the later of its readings with and without the masks`, but no declaration in
+  `tools/secrets-controls/mutations.mjs` targets it. **Re-check:** add a control (for example `keepingEscapes`
+  returning `ranges`) when the secrets family is next extended, with its counts.
+  *(low · tools/secrets-controls/mutations.mjs)*
+- [ ] **Approved deferral (maintainer, 2026-10-22). A private-key block cut off before its END marker is not
+  masked.** *Unchanged from base; found by the author after round 9, outside any review finding.*
+  `redactSecretShapedText('<BEGIN marker>\nMIIE…')` and the summary of the same text keep the whole body, as does
+  a block whose END marker starts more than 20,000 characters after its BEGIN marker (`PEM_BODY_MAX`):
+  `visitPemBlocks` masks only a BEGIN…END pair, and the LLM backstop reads no private-key block. A real tool output
+  can cut a key short (`head -n 5 key.pem`, a tool that clips its own output). built-in-tools.md names the limit.
+  **Re-check:** mask an unclosed BEGIN marker through its base64 body lines in every projection, linear at admitted
+  size; a journal change needs the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-22). A structured result's summary does not read a private-key
+  marker split by a line break or tab.** *Unchanged from base; found by the author after round 9.*
+  `boundForModel({ a: '<BEGIN marker>\nMIIE…\n-----END RSA PRIVATE\nKEY-----' })` shows the block in its summary,
+  while the same text as a string result is `[redacted]`: JSON escapes the line break or tab, so the wrapped-marker
+  patterns, which read raw whitespace, see none; more than one space still collapses in the summary's one-line
+  pass. built-in-tools.md names the limit. **Re-check:** read the wrapped markers in `escapedSeparatorView` as well
+  (`visitEscapedSeparators`). *(packages/core/src/tools/bounding.ts)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A summary reads a wrapped private-key marker only within its
+  whitespace bounds.** *Medium, regression against base.* *(round 10, R10-SCRUB-1)*
+  `boundForModel('PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE\n        KEY-----')` shows the
+  body in its summary, which base masked: the wrapped patterns take one to eight whitespace characters between
+  `PRIVATE` and `KEY` and up to 40 characters of type words, and the key's unquoted value takes the BEGIN marker
+  before the one-line pass can pair the block. A line break with seven or more spaces of indentation in CRLF text,
+  nine tabs and a 31-column hanging indent leak the same way. built-in-tools.md names the bound. **Re-check:** let
+  each whitespace run grow as one simple quantifier (`PRIVATE\s+KEY`, type words separated by `\s+` with a bounded
+  word count) under the admitted-size case deadline, and add summary tests with nine or more whitespace characters
+  behind a key prefix. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A U+E000 in a structured result brings back walk-first masking
+  in its summary.** *Medium, regression against base.* *(round 10, R10-SCRUB-2, INT-R10-1 and PR95-R10-SEC-1)*
+  `boundForModel({ icon: ' ok', private_key: '<BEGIN marker>\nMIIEAAAAfirst', rest: 'MIIEBBBBsecond\n<END marker>' })`
+  shows the second half of the body and the END marker in its summary; `{ argv: ['mysql', "--password='correct",
+  'horse', "battery'"], icon: '' }` shows `horse` and `battery'`. The summary marks each whole-masked value with
+  a U+E000 placeholder and, when the result's JSON already holds that character, falls back to the walk's masks
+  applied before the text rules. A planted character or a glyph (a Nerd Font icon) is enough. built-in-tools.md
+  names the limit. **Re-check:** pick a placeholder that the result's JSON does not hold (an unused private-use code
+  point or a nonce) so that the unwalked reading always runs, and add tests with U+E000 beside a cross-member PEM
+  block and an argv password. *(medium · packages/core/src/tools/bounding.ts `structuredSummaryText`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). A private-key block ends at its first END marker even where
+  another rule's match is glued to it.** *Medium, regression against base since `b89ac62e`.* *(round 10,
+  R10-SCRUB-3)* `redactSecretShapedText("api_key='x Wsecret12 -----BEGIN RSA PRIVATE KEY-----' ?sig=<24 a>-----END RSA PRIVATE KEY-----")`
+  is `api_key='x Wsecret12 [redacted]` (base: `[redacted] ?sig=[redacted] RSA PRIVATE KEY-----`), and
+  `'<BEGIN marker>\n?s=<26 characters><END marker>W<END marker>'` leaves `W<END marker>`, which base masked; base's
+  rules ran in turn, so the glued match erased the marker. built-in-tools.md names the relaxation. **Re-check:** end
+  a block only at an END marker that no other rule's match is glued to, or read a value's closing quote inside a
+  PEM range as closing. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`, `visitSecretKeyValues`)*
+- [ ] **Approved deferral (round cap, 2026-10-21). Whitespace inside a wrapped marker's type words has no killing
+  test.** *Medium, test gap.* *(round 10, TST-R10-1)* Changing either wrapped pattern's type class
+  `[A-Z0-9\s]{0,40}` to `[A-Z0-9 ]{0,40}` leaves every bounding case passing, while the summary of
+  `PRIVATE_KEY=-----BEGIN RSA\nPRIVATE KEY-----\nMIIE…\n-----END RSA PRIVATE KEY-----`, or of the same split in the
+  END marker, then shows the body. **Re-check:** add both inputs to `reads a private-key marker that a line break, a
+  tab or a doubled space splits in a summary` and run both class mutants.
+  *(medium · packages/core/src/tools/bounding.test.ts)*
+- [ ] **Approved deferral (round cap, 2026-10-21). The summary's no-throw handling of a whole-masked value with no
+  JSON form has no killing test.** *Low, test gap.* *(round 10, TST-R10-2)* With `jsonValue` reduced to
+  `return JSON.stringify(value);`, `boundForModel({ password: 10n, ok: 1 })` and
+  `boundForModel(['--password', 10n, 'x'])` reject and every test still passes; the existing no-JSON-form test holds
+  no credential key. **Re-check:** add both inputs (summaries `{"[redacted],"ok":1}` and
+  `["--password","[redacted]","x"]`) and run the mutant. *(low · packages/core/src/tools/bounding.test.ts)*
+- [ ] **Approved deferral (maintainer, 2026-10-22). The journal projection of JSON text keeps a value whose escaped
+  opening quote an earlier mask took.** *Unchanged from base; the journal half of GEN-R10-1, whose summary half is
+  corrected.* `redactSecretShapedText(JSON.stringify({ stdout: 'DATABASE_URL=postgres://db.example.com/app?sslmode=require\nPOSTGRES_PASSWORD="<v>"\n' }))`
+  shows `<v>`: the query value runs on through the JSON-escaped line break and the next line's key and takes the
+  backslash of the value's escaped quote. A summary opens such a value where that mask keeps its backslashes; the
+  journal does not, so `v5:` digests do not change, and a test pins that. **Re-check:** drop the `throughCloser`
+  gate of the kept opening in `visitSecretKeyValues`, with the compatibility review of
+  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
+  *(packages/core/src/tools/bounding.ts)*
+
+## Wave 3 Step 9a.1 — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.1 at `1f247772`, run before its round 13 under the
+[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
+corrected every verified code defect and test gap it could close inside the increment. These low findings are
+recorded instead: each needs a change of scope (a new CI leg, a refactor of a Step 7b script) or concerns a
+local-only path no claim covers. **Trigger for every entry:** the next change to the file it names, or a
+real run that shows the shape.
+
+- [ ] **The local consumer installs under the shared temporary directory.** *Low, unchanged since Step 7b.*
+  *(rigor pass, SEC-1/PLAT-6)* `consume.mjs` installs the packed CLI under `mkdtemp(tmpdir())`, so the
+  installed CLI's optional bare requires (for example `ws`'s `require('bufferutil')`, loaded by the
+  `provider list` smoke case) fall through to `<tmpdir>/node_modules`, which another local user can create on
+  a POSIX host with a shared `/tmp`. CI runners are single-tenant and macOS's per-user temporary directory is
+  not shared; packaging.md names the limit. **Re-check:** install under a per-user parent no other user can
+  write (for example a 0700 directory in the user's cache directory), with a test that plants
+  `<temporary>/node_modules/bufferutil` and shows it never runs, as round 10's corepack test does.
+  *(low · tools/cli-package/consume.mjs)*
+- [ ] **An interrupt during the consumer's publication leaves its receipt.** *Low.* *(rigor pass, PLAT-4)*
+  `publish()` runs inside `completeConsumer`'s interrupt scope, and the interrupt path removes the fixtures,
+  smoke roots and installation but not `installed-consumer.json`, so a consumer interrupted while publishing
+  exits 130 beside a success receipt (the producer empties its artifact directory in the same case). A later
+  local run into the same report directory then fails on the `wx` write; CI uploads only on success.
+  **Re-check:** write the receipt under a temporary name and rename it after the interrupt scope returns, or
+  retract it on the interrupt path, with a test that interrupts during `publish`.
+  *(low · tools/cli-package/consumer-lifetime.mjs)*
+- [ ] **Two producers can share one artifact directory.** *Nit.* *(rigor pass, PLAT-9)* Both pass the
+  emptiness check (`mkdirSync` recursive plus `readdirSync`), so one seal can read the other's tarball. It
+  needs user error: the local check always uses a fresh root. **Re-check:** require that the directory does
+  not exist yet and create it without `recursive`, or take an exclusive lock file first.
+  *(nit · tools/cli-package/produce.mjs)* *Re-checked in Step 9a.2a (2026-10-24), which changed
+  `produce.mjs` to add the symbolication work directory and the producer-Node refusal, which runs before the
+  emptiness check: unchanged, still needs user error.*
+- [ ] **The consumer's and the smoke worker's composition has no node test.** *Low, unchanged since Step 7b.*
+  *(rigor pass, F6 and F7)* `consume.mjs` hands `completeConsumer` the `supportRoot` that
+  `runInstalledSmoke` uses and gives the local source lookup `isolatedGitEnvironment()`, and the worker picks
+  its `node_modules` owner with `installedModulesOwner` and its root with `createInstalledSmokeRoot`; each
+  line can be changed wrongly without a node test failing, and a CI consumer, never interrupted, would not
+  notice a wrong `supportRoot`. The helpers themselves are tested. **Re-check:** export the consumer's
+  composition with ports, as `produce.mjs` is, and assert that one `supportRoot` binding reaches both calls and
+  that the Git call's environment equals `isolatedGitEnvironment()`.
+  *(low · tools/cli-package/consume.mjs, tools/cli-package/smoke/worker.mjs)*
+- [ ] **The Windows interrupt, deadline and mode branches are not exercised.** *Low.* *(rigor pass, F14 and
+  MCG-9)* `stopLiveCommands`' taskkill path, `runCommand`'s ungrouped deadline, `forwardInterrupts`' skip of
+  ungrouped children, `stopBoundedChildren`'s fallback and the inventory's `not-observable-windows` mode
+  evidence run only on Windows, and `pnpm test:acceptance-tools` runs only on Linux; packaging.md says so.
+  **Re-check:** a Windows leg of the interrupt-free lifecycle checks (a stage past its deadline is killed at
+  once with `graceMs > 0`) and of `tools/bundle-closure/closure.test.mjs`.
+  *(low · tools/cli-package/process.mjs, tools/cli-bootstrap/process.mjs, tools/bundle-closure/inventory.mjs)*
+
+Round 13, the acceptance round at `cf97b7f1` (no blocker, high or medium finding; security sitting clean),
+reported ten verified findings, six of them distinct. Under the 2026-10-23 bar they are recorded here; the
+documentation-only ones were also corrected in the acceptance commit, which changes no code.
+
+- [ ] **`forwardInterrupts`' group-wide forwarding has no test.** *Low.* *(round 13, TCA-9A1-R13-1)*
+  `forwardInterrupts` sends the signal to each child's process group (`process.kill(-child.pid, signal)`), as
+  its docblock says, but changing it to `process.kill(child.pid, signal)` passes `process.test.mjs` and
+  `check.test.mjs`: the forwarding test checks only the leader's own marker. Every stage child today is
+  detached into its own group, so the real composition behaves the same. **Re-check:** in the forwarding
+  harness, have the detached child start a non-detached grandchild in its group that writes a marker on
+  SIGINT, and assert both markers. *(low · tools/cli-package/process.mjs)*
+- [x] **The map-source length bound is pinned on its admitted side only.** *Nit; closed in Step 9a.2a (2026-10-24), whose finalizer tests add the 1025-character source.* *(round 13, TCA-9A1-R13-2)*
+  `finalize.test.mjs` admits a 1024-character source and refuses a 1031-character one, so loosening
+  `source.length > 1024` to any bound up to 1030 passes. The source must still resolve to an existing original
+  file, so nothing is exposed. **Re-check:** add a 1025-character source (`../src/${'a/'.repeat(507)}x.ts`)
+  expecting `MAP_SOURCE_PATH`. *(nit · tools/cli-package/finalize.test.mjs)*
+- [ ] **A rule that lowers the exit code would let the guard exit 0.** *Nit, code half.* *(round 13,
+  CRIT-9A1-R13-N1)* `release-guard.mjs` sets `process.exitCode = 1` once, so a rule that set
+  `process.exitCode = 0` or called `process.exit(0)` would make the publish guard exit 0; today's rule always
+  throws, and the guarantee that no way of invoking the guard skips the refusal holds. The wording that said
+  the entry point "exits 1" is corrected. **Re-check:** when Step 9d replaces the rule, re-assert the code before
+  the final line and keep it with an `exit` listener, with a test for each variant.
+  *(nit · tools/cli-package/release-guard.mjs)*
+- [x] **Documentation corrected in the acceptance commit.** *(round 13)* The contract's store-discovery list
+  now names `NPM_CONFIG_STORE_DIR`, which the code forwards (low; PLAN-9A1-R13-1 = INT-9A1-R13-1, also
+  PFC-R13-N1 and TCA-9A1-R13-3); the deadline's group kill is described as happening when the grace ends or as
+  soon as the stage exits (PLAN-9A1-R13-N1); the guard's wording says it sets its exit code to 1 before its rule
+  runs (CRIT-9A1-R13-N1, wording half); and this file's freshness line is current (PLAN-9A1-R13-N2 =
+  INT-9A1-R13-N1). **Re-check:** the contract's list equals `STORE_DISCOVERY_VARIABLES` in
+  `tools/cli-package/candidate.mjs`. *(docs/reference/cli/packaging.md, tools/cli-package/README.md,
+  .github/workflows/release.yml)*
+
+Observed in 9a.1's push CI and its preflight for 9a.2 (2026-10-24):
+
+- [ ] **A migration-running database test lacks the explicit timeout its siblings carry.** *Low.* *(author,
+  push CI run 40050981969)* In `packages/db/src/session-effect-turns.test.ts`, the parametrized case
+  `refuses issuance inside an outer %s transaction before any key can escape a rollback` runs every migration
+  per case under vitest's default 5 s, while its siblings that migrate pass `30_000`; on the advisory Windows
+  runner the `exclusive` case took 7.7 s and failed. 9a.1 changed no database source. The advisory Windows job
+  failed 6 times in the last 40 CI runs, each a default 5 s timeout on a different SQLite- or
+  process-heavy test (`fs-workspace-admission`, `concurrency.e2e`, the runner-abort ownership case and this
+  one); the job is advisory and every required job passed. **Re-check:** give the case its siblings' `30_000`
+  bound, and review the other three tests' bounds against the Windows runner, when the file is next edited or
+  the advisory job next fails. *(low · packages/db/src/session-effect-turns.test.ts)*
+- [ ] **`--verbose` never prints a real stack.** *Low, for Step 10a.* *(9a.2 preflight)*
+  `apps/cli/src/process/render-user-facing.ts` (`ownErrorStack`) prints a stack only when `stack` is an own
+  data property, but V8 defines a real error's `stack` as an accessor (get/set), so a thrown `Error` prints
+  nothing under `--verbose`; `render-error.test.ts` constructs a data `stack`, so the tests pass. Step 10a
+  replaces this raw-stack branch (row 10a). **Re-check:** the replacement prints a real error's frames, tested
+  with a thrown `Error` rather than a constructed property. *(low · apps/cli/src/process/render-user-facing.ts)*
+
+## Wave 3 Step 9a.2a — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.2a at `1ab4c134`, run before its first review round under the
+[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
+corrected both high findings, every medium one and every low or nit it could close inside the increment
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2a-implementation-checkpoint--2026-10-24)).
+These are recorded instead. **Trigger for every entry:** the next change to the file it names, or a real run
+that shows the shape.
+
+- [ ] **The symbolication child is not sandboxed.** *Low; a named limit.* *(rigor pass, SEC-9A2A-2)*
+  `captureFrames` runs the candidate CLI's runtime import closure — packages that before 9a.2a ran only in the
+  consumer jobs — as the producer's user, with network access, in the job whose sibling `staging` directory
+  holds the private maps and manifest. Its isolated environment and owner-only work directory confine it,
+  and, within the capture process only, the refusal of any module outside the candidate and the refused
+  keyring and native addons (added after review round 1); a thread or subprocess the candidate started
+  without the preload (an eval Worker, a `node -e` child) would have none of them, and `relavium import`
+  starts none, though nothing enforces that or that it stays offline. packaging.md names the limit.
+  **Re-check:** when Step 9b designs the custody job, run the capture child and every descendant under an
+  OS sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
+  *Re-checked after rounds 1 and 2 (2026-10-24): the module confinement narrows the limit; the record and
+  packaging.md now say the refusals are in-process only.* *Re-recorded 2026-10-25 (Step 9b preflight
+  decisions): Step 9b adds a library and synthetic controls and designs no custody job, so the trigger moves
+  to Step 9d, which designs the release job.*
+- [ ] **Two packs of one source can differ in the packed manifest's key order.** *Low, for Step 9c.* *(rigor
+  pass, integration lens)* Two productions of the same tree packed the five `@relavium/*` `devDependencies`,
+  which pnpm rewrites from `workspace:*` to versions at pack time, in different orders (`core, llm, shared,
+  mcp, db` and `core, db, shared, llm, mcp`; the source order is alphabetical). Every other tarball entry was
+  byte-equal and the sorted contents agree, but the two tarballs' SHA-256 differ (`84065f84…` and
+  `d0f5b8da…`). The package-test receipt binds the one tarball it inspected, so nothing is wrong today; a
+  release candidate simply cannot be rebuilt to the same digest. **Re-check:** in Step 9c's no-rebuild rules,
+  never compare a rebuilt digest, or make the published manifest's key order deterministic, with a test that
+  packs twice and compares the digests. *(low · tools/cli-package/prepack.mjs and pnpm's pack step)*
+
+Round 3, the acceptance round at `a92a7602` (no blocker, high or medium finding and no regression; the security
+sitting, plan, correctness and integration lenses and the critic clean), reported three verified findings. The
+wording nit is corrected in the acceptance commit, which changes no code (the PLAT-9 re-check note above now
+names both `produce.mjs` changes, INT-9A2A-R3-1); the two test gaps are recorded here.
+
+- [ ] **Symbolication's three read bounds have no test.** *Low.* *(round 3, TCA-9A2A-R3-1)* `symbolicate.mjs`
+  reads the dirty source copy under 8 MiB (`readSourceRevision`), the staged map under 16 MiB (`mapsOf`) and
+  each re-hashed frame file under 16 MiB; raising all three tenfold leaves `symbolicate.test.mjs` passing. It is
+  defense in depth: the manifest step reads the same maps and sources under the same bounds, and every file is
+  bound by digest. **Re-check:** one case per site, as `manifest.test.mjs`'s bounded reads do — pad the dirty
+  copy, the staged map (re-recording its manifest digest) and a dist chunk (re-sealing) one byte past the bound
+  and expect a refusal before any digest comparison — then rerun the three mutants.
+  *(low · tools/cli-package/symbolicate.mjs, tools/cli-package/symbolicate.test.mjs)*
+- [ ] **No test shows that an injected anchor table is enforced.** *Nit.* *(round 3, TCA-9A2A-R3-2)* A mutant
+  that loops over the module's `ANCHORS` instead of the `anchors` argument survives: the only injected table
+  that reaches mapping, `[...ANCHORS, ANCHORS[0]]`, repeats a reached anchor. Production uses the default.
+  **Re-check:** add an anchor whose source the manifest maps and whose call site resolves in the source revision
+  but that no captured frame reaches, and expect `ANCHOR_UNMAPPED`. *(nit · tools/cli-package/symbolicate.test.mjs)*
+
+## Wave 3 Step 9a.2b — recorded low findings (2026-10-24)
+
+The internal rigor pass over Step 9a.2b at `77ee5d0a`, run before its first review round under the
+2026-10-23 acceptance amendment, corrected its high finding, every medium one and the lows it could close
+inside the increment
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-implementation-checkpoint--2026-10-24)).
+These are recorded instead. **Trigger for every entry:** the next change to the file it names, or Step 9d
+for the two release entries.
+
+- [ ] **The runner's cleanup and its copies' placement have no test.** *Low.* *(rigor pass, F5)* Removing
+  `runMapControls`' removal of its own temporary root, or moving a control's copies out of the staging, passes
+  every test; the real runner shows the placement, but nothing asserts it. **Re-check:** a test that runs the
+  runner's composition with recording ports (as `produce.test.mjs` does) and asserts every `scratch` path lies
+  under the staging and the temporary root is gone afterwards. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **An interrupted runner can leave its own temporary directory.** *Low.* *(rigor pass, PLAT-9A2B-6 =
+  SEC-9a2b-5 = INT-2; round 2, CRIT-9A2B-R2-1)* The producer's interrupt handler empties the artifact directory and
+  exits, so `runMapControls`' `finally` never removes `relavium-map-controls-*/artifact`; and an interrupt after
+  `producePackage` returned, during the final identity check, leaves the baseline public tarball and its
+  `package_test` receipt in it. Nothing private.
+  **Re-check:** remove the runner's root from the interrupt path too (for example with `exitOnInterrupt` around
+  the run), with an interrupt test. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **The runner's own self-check refusals have no test.** *Low.* *(rigor pass, CRIT-9A2B-2)*
+  `PACKED_CLI_MAP_CONTROL_CHECKOUT_CHANGED`, `_RESTORE`, `_NO_ANCHOR_CHUNK`, `_TARGET`, `_KIND` and `_ORIGIN` are
+  checked only by reading and, for the target and kind checks, by a runner mutation run. **Re-check:** unit
+  tests that drive each refusal through the runner's composition with stubbed ports. *(low ·
+  tools/cli-package/map-controls-core.mjs)*
+- [ ] **Release artifacts are not bound to a successful `ci` run at their commit.** *Medium, for Step 9d.*
+  *(rigor pass, PLAT-9A2B-2 = CLM-9A2B-4 = INT-1)* A release dispatch with `allow_off_main`, or of an intermediate
+  commit, writes a `package_test` receipt at a commit no `ci` run (so no map-controls run) ever covered;
+  packaging.md now says the mode is a claim and when it is backed, and the interim guard refuses every such
+  artifact. **Re-check:** Step 9d's release graph or custody validator requires a successful `ci` run (with
+  `map-controls`) at exactly the candidate's commit. *(medium · .github/workflows/release.yml)*
+- [ ] **The release pack job keeps its `pnpm` dependency cache.** *Low, for Step 9d.* *(rigor pass,
+  CLM-9A2B-8)* `release.yml`'s pack job sets `cache: pnpm` while `ci.yml`'s `pack-cli` and `map-controls` refuse
+  it; the store holds only content-addressed public registry packages, which packaging.md permits, so no map
+  can enter it. **Re-check:** when Step 9d rebuilds the release graph, drop the cache or record why the release
+  pack keeps it. *(low · .github/workflows/release.yml)*
+
+Round 2, the acceptance round at `0f73c253` (no blocker, high or medium finding and no regression; the plan and
+correctness lenses clean, the security sitting one low), reported seven verified findings. The plan's increment
+count, the freshness line and the interrupted-runner wording are corrected in the acceptance commit, which changes
+no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending the entry above); these are recorded.
+
+- [ ] **The workflow-level environment of the map-controls job is not pinned.** *Low.* *(round 2, SEC-9A2B-R2-1 =
+  TCA-9A2B-R2-3)* `checkMapControls` pins the job's own `env` but not ci.yml's top-level `env`, which every job
+  inherits, nor a job `container` or `services` key; a workflow-wide `NODE_OPTIONS` preload or a secret would reach
+  the controls step with every pin passing. **Re-check:** pin `Object.keys(workflow.env)` to the two Turbo keys the
+  job overrides, assert `job.container` and `job.services` are undefined, and add the negative cases.
+  *(low · tools/ci/require-packed-cli.test.mjs)*
+- [ ] **A narrowed set of anchor-bearing chunks goes unnoticed.** *Low.* *(round 2, TCA-9A2B-R2-1)* The verdict
+  derives the per-chunk ids from the runner's own chunk count, required only to be at least one, so a regression
+  that drops a chunk (for example `.slice(0, 1)` on the derivation) leaves the runner green with 21 controls.
+  **Re-check:** derive the expected count independently — every ANCHORS source covered by at least one controlled
+  chunk — or test the composition with recording ports. *(low · tools/cli-package/map-controls-core.mjs)*
+- [ ] **Removing a refused control build's `dist` has no test.** *Low.* *(round 2, TCA-9A2B-R2-2)* Deleting the
+  `rmSync` in `pack()` passes everything; the bundler's maps would stay in the candidate's `dist` (inside the
+  producer's owner-only root) until the next build. **Re-check:** with the composition test of the F5 entry, assert
+  `dist` holds no `.map` file after each refused control build. *(low · tools/cli-package/map-controls-core.mjs)*
+
+## Wave 3 Step 9b.1 — named limits (2026-10-25)
+
+Recorded with the Step 9b.1 implementation
+([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).
+**Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
+
+- [ ] **The custody tests do not run on Windows, and `encryptOnce` refuses there.** *Low; a named limit.*
+  No Windows job runs `test:acceptance-tools`; the `gpg` on the Windows image's PATH is Git for Windows'
+  MSYS2 build in `usr\bin`, and MSYS2's own GnuPG under `C:\msys64` is installed off PATH, neither exercised
+  here, and the tests use POSIX process and permission tools (`ps`,
+  owner-only modes), so `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. Windows modes
+  say nothing about access and no ACL check exists, so since round 2 (SEC-9B1-R2-2) no private root
+  qualifies there and every encryption refuses `PRIVATE_ROOT` before any GnuPG call. **Re-check:** before
+  a release producer runs on Windows, add an ACL-based owner-only check for the private root and its work
+  directory, then run the custody tests on that runner and record which of the two `gpg.exe` builds `resolveGpg` selects
+  and whether its Windows path handling and gpgconf's line ending pass. *(low ·
+  tools/cli-package/custody.mjs, tools/cli-package/gnupg.mjs)*
+- [ ] **An interrupted custody test run can leave its ephemeral key home.** *Low; test-only.* *(rigor pass,
+  SEC-9B1-PS-2)* `gpg-fixture.mjs` removes the round-trip key's home, its synthetic secret export and its
+  agent in `after()`, which a SIGINT to `node --test` skips: the `rg-*` and `rge-*` directories under the
+  temporary directory and an orphaned `gpg-agent` remain. The key is synthetic and never decrypts a
+  product archive. **Re-check:** stop the agent and remove both directories from a process exit hook as
+  well. *(low · tools/cli-package/gpg-fixture.mjs)*
+- [ ] **The pre-check counts only the keys GnuPG lists.** *Low; fail-closed.* *(rigor pass, SEC-9B1-PS-5)*
+  `--show-keys` omits a key an import would reject, for example one whose user ID packet was removed, so a
+  recipient file holding such a key before the pinned one passes the one-key rule. GnuPG then encrypts to
+  the first key in the file and refuses it, and `KEY_CONSIDERED` and the recipient check refuse any other
+  outcome, so nothing is published. **Re-check:** count primary-key packets independently of import
+  filtering if a recipient file is ever produced by anything but `gpg --export`. *(low ·
+  tools/cli-package/custody.mjs)*
+- [ ] **Secret material GnuPG neither lists nor reads is admitted.** *Low; round 1, R1-COR-2.* A binary
+  secret key appended after the armored public block is ignored by GnuPG's listing and encryption, so the
+  pre-check admits the file and the ciphertext is published. The secret stays in the recipient file and
+  never reaches the ciphertext, the record or a log. **Re-check:** refuse any byte after the armored public
+  block's end line (or any secret-key packet tag in a packet walk) if recipient files are ever produced by
+  anything but `gpg --armor --export`. *(low · tools/cli-package/custody.mjs)*
+- [ ] **The atomic publish has no fault-injection test.** *Low; round 1, T-9B1-R1-3.* `publish` writes a
+  temporary sibling and hard-links it to the final name; writing the final name directly also passes every
+  test, because no test makes the write fail midway. **Re-check:** inject a write failure (a full
+  filesystem or a writer port) and assert no file exists under the final name afterwards. *(low ·
+  tools/cli-package/custody.mjs)*
+- [ ] **The GnuPG 2.2.8 floor is enforced, never exercised.** *Low; a named limit.* The version check
+  refuses an older GnuPG, but the tests ran only on 2.5.21 (local) and 2.4.4 (Ubuntu 24.04), so neither
+  encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests
+  against GnuPG 2.2.8 (for example in a container that ships it) before a recovery runbook names that
+  version. *(low · tools/cli-package/gnupg.mjs)*
+
+## Wave 3 Step 9b.1 — recorded low findings (2026-10-25)
+
+Recorded with the Step 9b.1 acceptance after round 4
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-acceptance--2026-10-25)).
+**Trigger for every entry:** the next change to the file it names, or Step 9d's release integration.
+
+- [ ] **A temporary sibling that cannot be removed after the link reports `UNEXPECTED`.** *Low; round 4,
+  COR-9B1-R4-1.* `publish` removes its `.partial` sibling in a `finally`. If that removal fails (`EACCES`,
+  `EROFS`, `EIO`) after `linkSync` succeeded, `encryptOnce` refuses `UNEXPECTED` with no record although the
+  ciphertext is published; the sibling, ciphertext only and never plaintext, stays beside it, and a retry
+  refuses `ALREADY_ENCRYPTED`. Example: make the destination 0500 right after the link. **Re-check:** make the
+  removal best-effort once the link succeeded, or refuse with a code that says the ciphertext was published, and
+  inject that failure in a test alongside T-9B1-R1-3's. *(low · tools/cli-package/custody.mjs)*
+- [ ] **No test pins the metafile's 4 MiB bound.** *Low; round 4, T-9B1-R4-1.* The container's record-bound
+  tests pad from `RECORD_BYTES` itself, so changing `'metafile-esm.json'` to 8 MiB passes every test while the
+  contract says 4 MiB; `manifest.test.mjs` pins the other two values. The container and `seal.mjs` share the
+  constant, so every record still stays within its reader's bound. **Re-check:** assert `RECORD_BYTES`'s literal
+  values, or pad the metafile to a literal 4 MiB plus one byte. *(low · tools/cli-package/manifest.mjs)*
+- [ ] **No test builds the container from a real finalizer's staging.** *Low; round 4, INT-9B1-R4-1.* The
+  container requires the finalizer record's exact key sets, but every container and custody test uses
+  `candidate-fixture.mjs`'s hand-written record and a stub metafile. A field added to `finalize.mjs`'s record
+  would pass every gate and refuse `CONTAINER_RECORD` on every real staging. A reviewer's probe built,
+  encrypted, decrypted and extracted a real production's staging at `147c2788` without a refusal. **Re-check:**
+  build and read back the container once from a real production's sealed staging (map-controls' seal port holds
+  one), or pin the record's key set in `finalize.test.mjs`; at the latest in Step 9d. *(low ·
+  tools/cli-package/container.mjs, tools/cli-package/finalize.mjs)*
+- [ ] **The overlap check misses containment through a bind mount.** *Low; round 4, CRIT-9B1-R4-1.* `within`
+  compares device and inode along each path's own ancestors. It catches one directory reached by two spellings
+  (a case-insensitive variant, or a bind mount of exactly that directory), but not a root that is a bind mount
+  of a directory inside the destination, or the reverse: the work directory and its plaintext then sit inside
+  the destination's tree while GnuPG runs. A bind mount needs privileges to set up. The acceptance commit
+  narrows the contract's sentence; `custody.mjs`'s comment still says a bind mount can give one directory two
+  spellings, without the limit. **Re-check:** in Step 9d, create the root and destination as fresh sibling
+  directories of the job, or compare against the mount table, before relying on the refusal; narrow the comment
+  on the next change to `custody.mjs`. *(low · tools/cli-package/custody.mjs)*
+
+## Wave 3 Step 9b.2 — named limits and handoffs (2026-10-25)
+
+Recorded with the Step 9b.2 implementation
+([decisions](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-preflight-decisions--2026-10-25)).
+The release modules are library code with synthetic controls only: nothing outside their tests calls them.
+**Trigger for every entry:** Step 9d's release integration, or the next change to the file it names.
+
+- [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* Only a record the gate returned in
+  the same process seals, so a ciphertext whose seal never succeeds before its process exits — after a crash, or
+  a refusal on an input the gate does not check, such as a malformed origin or an entry added to the
+  destination after encryption — is named by no record. The gate refuses a linked or unresolvable destination,
+  any entry but the tarball and a different tarball before encrypting, which removes the likeliest causes. The candidate then needs manual recovery
+  (packaging.md's missing-asset state); it is never re-encrypted. **Re-check:** in Step 9c's reservation
+  states, classify such a directory as incomplete and route it to manual recovery. *(low ·
+  tools/cli-package/release-custody.mjs)*
+- [ ] **Reuse cannot re-check the ciphertext's recipients.** *Low; a named limit.* `verifyRetainedCandidate`
+  binds each asset's size and SHA-256 to the receipt, and the receipt's recipient to the expected history, but
+  re-reading the ciphertext's public-key packets (`ENC_TO`) needs GnuPG, which reuse never calls. The digest
+  ties the bytes to the ones the sealer re-read after encryption checked their single recipient. **Re-check:**
+  if a retained ciphertext can ever come from anything but the sealer, verify its recipients with the isolated
+  runner before reuse. *(low · tools/cli-package/release-binding.mjs)*
+- [ ] **A sibling left after the receipt's link keeps the candidate from reuse.** *Low; a named limit (rigor
+  pass, SIT-9B2-6).* When the sealer cannot remove its `.partial` sibling after the link, the receipt is
+  published and the seal succeeds, but `verifyRetainedCandidate` admits exactly three entries and refuses
+  `CANDIDATE_ENTRIES` until the sibling is removed by hand; a test pins that state. **Re-check:** in Step 9c's
+  state classification, report such a directory as sealed with a stray sibling. *(low ·
+  tools/cli-package/release-custody.mjs)*
+- [ ] **The fixture denylist covers only the fingerprints the fixtures' pins file lists.** *Low; a named limit
+  (rigor pass, CLAIM-9B2-2).* `two-encryption-subkeys.asc` carries a second encryption subkey,
+  `7BC68AC7D2944C2AB3240A521D784594073951D5`, that `custody-fixtures/pins.json` does not list, so a production
+  history naming it would load. The loader reads no key material (it makes no GnuPG call), and encrypting to it
+  would still need its armored key in the committed recipient file. **Re-check:** list every committed fixture
+  fingerprint in the denylist when the fixtures are next generated. *(low · tools/cli-package/release-recipient.mjs)*
+- [ ] **`encryptOnce` called directly follows a link spelled with a trailing separator.** *Low; a named limit
+  (round 2, COR-R2-2).* 9b.1's `plainDirectory` and `privateDirectory` lstat the path as given, and `lstat('link/')`
+  follows the link, so a direct caller of `encryptOnce` can encrypt into a linked destination or use a linked
+  private root. The release gate requires both paths in normalized absolute form and refuses a link itself, so
+  no release path reaches this; nothing outside the gate and the tests calls `encryptOnce`. **Re-check:** on the
+  next change to `custody.mjs`, require normalized absolute paths there too. *(low · tools/cli-package/custody.mjs)*
+- [ ] **The release entry points accept the test ports.** *Low; a named limit (round 1, SIT-R1-5).*
+  `encryptCandidate` forwards `encryptOnce`'s `run` and `gpg` ports and `sealReleaseBinding` takes a `write`
+  port, in production scope too, so an in-process caller could replace GnuPG and defeat its checks. Like the
+  brand, the ports guard against an honest mistake, not hostile code in the same process. **Re-check:** in Step
+  9d, call both without ports from the release job and add a permanent control that no product call passes
+  them. *(low · tools/cli-package/release-custody.mjs)*
+- [ ] **The release modules do not run on Windows.** *Low; a named limit.* Like the 9b.1 tests, the release
+  tests run only in `test:acceptance-tools`, which no Windows job runs; `encryptCandidate` refuses there
+  through `encryptOnce`'s `PRIVATE_ROOT`, while reuse is platform-neutral but unexercised. **Re-check:** with
+  the 9b.1 Windows limit. *(low · tools/cli-package/release-binding.mjs)*
+- [ ] **Step 9d handoffs.** *Scheduled → Step 9d.* Wire `encryptCandidate` and `sealReleaseBinding` into the
+  originating job, with the origin from `originFromEnvironment`; bind the receipt's `origin` to the trusted run
+  and attempt (on reuse, the original run) and `mapCheck` to a successful `ci` run with the product map
+  controls at `source.commit`; derive release smoke's public inventory and package metadata from the
+  digest-verified tarball with the package-test inspector; check the production recipient before any
+  reservation, so a recipient refusal never leaves an incomplete reservation; if the package-test receipt
+  travels beside the tarball, widen the gate's, the sealer's and reuse's directory admission together, since all
+  three admit exact entries (round 2, CRIT-9B2-R2-1); replace the interim guard; then update
+  `release-scope.test.mjs`'s interim control that no product path or workflow names a release module, keeping
+  its permanent controls (the loader takes no argument and its test seam stays out of product code; only the
+  gate imports `encryptOnce`); and include `tools/cli-package/custody-fixtures/pins.json` in every checkout
+  that loads the production recipient, because the loader reads it as its denylist. The guard test's
+  non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
+  tools/cli-package/release-custody.mjs, tools/cli-package/release-guard-core.mjs)*
+
+## Wave 3 Step 9b.2 — recorded low findings (2026-10-26)
+
+Recorded with the Step 9b.2 acceptance after round 4
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-acceptance--2026-10-26)).
+**Trigger for every entry:** Step 9d's update of `release-scope.test.mjs` and the release modules, or the next change
+to the file it names.
+
+- [ ] **The `custody.mjs` control does not decode identity or legacy octal escapes.** *Low; round 4, PLAN-9B2-R4-1,
+  COR-R4-2.* `namesFile` decodes `\x`, `\u`, `\u{…}` and percent escapes, but a specifier such as
+  `'./custo\dy.mjs'` (an identity escape) or a sloppy-mode octal escape still loads `custody.mjs` unseen. The
+  spelling is deliberate, never an honest mistake. **Re-check:** also match a variant with each stray backslash
+  removed and octal escapes decoded, or refuse any backslash in a specifier. *(low ·
+  tools/cli-package/release-scope.test.mjs)*
+- [ ] **The static controls skip `tools/lint-fixtures/assert-fence.mjs`.** *Low; round 4, PLAN-9B2-R4-2.* The scan
+  treats all of `tools/lint-fixtures/` as test-only, but `assert-fence.mjs` is CI tooling (`pnpm lint:fence-check`), so
+  a `custody.mjs`, fixture or test-seam reference there passes the controls. **Re-check:** exempt only the quarantined
+  `.ts` fixtures and add the script to the scan's own assertion. *(low · tools/cli-package/release-scope.test.mjs)*
+- [ ] **The closure's specifier scan has blind spellings.** *Low; round 4, SIT9B2-R4-L1, COR-R4-3, T-R4-3.* A comment
+  between `from` or `import` and the specifier, a specifier containing the other quote character, and computed member
+  access such as `process['getBuiltin' + 'Module']` each pass the closure control, which proves reuse starts no
+  process. Each spelling is deliberate, and today's closure contains none. **Re-check:** strip comments and tokenize
+  string literals properly before scanning, and refuse computed access on `process` in closure files. *(low ·
+  tools/cli-package/release-scope.test.mjs)*
+- [ ] **The loader reads the root by path after its link check.** *Low; round 4, COR-R4-4.* `lstat` then `readdir`
+  and the two reads leave a window in which a swapped root is read through a link and branded. Only a committed,
+  maintainer-owned directory is read in production. **Re-check:** open the root with `O_DIRECTORY | O_NOFOLLOW` and
+  compare its device and inode before and after the reads, as `readOrdinaryFile` does for files. *(low ·
+  tools/cli-package/release-recipient.mjs)*
+- [ ] **Some exact rules have no isolating test.** *Low; round 4, T-R4-1, T-R4-2, T-R4-4.* No history puts its current
+  entry before a retired one, so choosing the last entry would pass; the toolchain's prerelease suffix (its character
+  set and 64-character bound) and the target's digit count (three admitted, four refused) are unpinned; and a nit:
+  the sealed-link case asserts the first link's target, and the non-POSIX fallback of the linked-tarball case removes
+  the tarball instead. **Re-check:** add those cases on the next change to the release tests. *(low ·
+  tools/cli-package/release-recipient.test.mjs, tools/cli-package/release-binding.test.mjs,
+  tools/cli-package/release-custody.test.mjs)*
+
+## PR #96 review — recorded findings and Sonar dispositions (2026-11-04)
+
+Recorded by the PR #96 review correction. The review's verified high and medium findings and SonarCloud's 27 bugs and
+10 vulnerabilities were fixed in that correction; these are the verified lows and the code smells the maintainer
+ruled on 2026-11-04 to record rather than refactor now. **Trigger for every entry:** the next change to the file it
+names, unless the entry names another.
+
+**Sonar code smells (gate-neutral; maintainability stays A):**
+
+- [ ] **Cognitive complexity (`S3776`) in fifteen functions.** *Low.* `packages/core/src/tools/bounding.ts` (five,
+  25–38), `packages/llm/src/scrub-secrets.ts:411`, `tools/cli-package/source-map.mjs:47` (35), `map-controls-core.mjs`,
+  `release-custody.mjs`, `candidate.mjs`, `release-binding.mjs`, `symbolicate.mjs`, `ustar.mjs`,
+  `tools/bundle-closure/closure.mjs` and `inventory.mjs`. Each is security-critical redaction or release tooling, so a
+  refactor needs its own mutation sweep and review. *(low · the files named)*
+- [ ] **Regex complexity (`S5843`) in eight patterns.** *Low.* `bounding.ts`'s standalone and key rules and five
+  `scrub-secrets.ts` rules: their "complexity" is the length of a finite name or shape alternation (as the existing
+  `NOSONAR` notes say), and each is a causal-control anchor. The three `S5869` reports on `scrub-secrets.ts:138` are
+  the `i` flag making `A-Z` and `a-z` overlap, not a duplicate. **Re-check:** split a rule only with its controls.
+  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **`S1994` on the closing-view loop.** *Low.* `bounding.ts`'s backward scan tests `next` but steps `index`; a
+  `while` rewrite must keep the step that its `continue` skips. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **`S6582` in `media-store-paths.ts` (three).** *Low.* The optional-chain rewrites are equivalent, but the lines
+  are filesystem causal-control anchors; change them with those controls. *(low · packages/db/src/media-store-paths.ts)*
+- **DECLINED — `S9382` (seven sequential awaits) and `S7758` (five `charCodeAt`).** The awaits are ordered process
+  steps by design (`map-controls-core.mjs`, `pipeline.mjs`, `symbolicate.mjs`), and `source-map.mjs` is a code-unit
+  VLQ parser that advances one code unit at a time, which `codePointAt` would misstate.
+
+**Redaction:**
+
+- [ ] **The LLM backstop leaves a `/` in a URL password.** *Low.* `scrubSecrets('https://user:pa/ss@host')` keeps the
+  password, because its userinfo pattern stops at `/`; core masks it since this correction. Matching core needs its
+  port guard (`host:8080/a@b` stays public). *(low · packages/llm/src/scrub-secrets.ts)*
+- [ ] **A glued `-pSECRET` (`mysql -uroot -pSecret`) is not masked.** *Low.* A glued `-p` is ambiguous with
+  `cp -pR` and `tar -pxf`, so only the separate and `=` spellings are read. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **The object-key rule masks count keys such as `max_tokens`.** *Low.* Its plural folding reads `tokens` as
+  `token`, so two calls that differ only in `max_tokens` share a journal identity. The argv rule reads words as written
+  and does not. *(low · packages/core/src/tools/bounding.ts)*
+- [ ] **Zero-width characters break the `sk-` and `Bearer` shapes; header names are matched with hyphens only.**
+  *Low; verified.* *(low · packages/llm/src/scrub-secrets.ts)*
+- [ ] **A model-supplied tool name reaches an error message unmasked and unbounded.** *Low; verified.* *(low ·
+  packages/core/src/tools/errors.ts:21)*
+- [ ] **Two redaction engines and two fixed-point copies; the parity test compares booleans only.** *Low; verified.*
+  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **Permanent causal controls for this correction's three mechanisms.** *Low.* The credential-flag words, the
+  `,`/`/` password reading and the omitted-media bytes are pinned by permanent tests and a manual mutation sweep (every
+  mutant killed), not by `check:secrets-mutations` controls. The secrets evidence has about 15 MiB of headroom per
+  shard. *(low · tools/secrets-controls/mutations.mjs)*
+
+**Release, custody and tooling (verified lows):**
+
+- [ ] **`isProductionRecipient` accepts seam values; the distinction rests on a grep control.** *(low ·
+  tools/cli-package/release-recipient.mjs:52)* Trigger: Step 9d or Wave 4b.
+- [ ] **A revocation is visible only in the committed recipient snapshot.** *(low · docs/reference/cli/packaging.md)*
+- [ ] **`resolveGpg` checks `isFile`, not `X_OK`.** *(low · tools/cli-package/gnupg.mjs:33)*
+- [ ] **A developer's own `core.excludesFile` directory can let private untracked files into the candidate.** The
+  public tarball is not affected; an explicit `RELAVIUM_GIT_EXCLUDES_FILE` naming a directory already fails in Git.
+  *(low · tools/cli-package/candidate.mjs)*
+- [ ] **`prepack.mjs` selects the finalizer by environment variable; `symbolicate.mjs` may load TypeScript from a parent
+  directory.** The closure check is equivalent for the first. *(low · tools/cli-package/prepack.mjs:36,
+  tools/cli-package/symbolicate.mjs:306)*
+- [ ] **`runCommand` does not follow detached grandchildren after a successful exit; `causal-controls` starts a
+  detached group without a Ctrl-C handler; the smoke's cleanup can skip its PID kill after a parse error.** *(low ·
+  tools/cli-package/process.mjs, tools/causal-controls/, tools/cli-package/smoke/)*
+- [ ] **`mcp-orphan.e2e` scans the process table by fixture name, which sibling tests share; `vi.waitFor` keeps its
+  1-second default.** *(low · packages/mcp)*
+- [ ] **The case-insensitive custody tests run in no CI job.** *Medium as reviewed, low in practice.* Ubuntu skips
+  them and no macOS or Windows job runs `custody.test.mjs`; the local `pnpm run ci` on macOS runs them. A CI lane
+  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:830, .github/workflows/ci.yml)*
+- **DECLINED — declaring `RELAVIUM_CLI_CANDIDATE_STAGING` in `turbo.json`.** The candidate build never runs through
+  Turbo (`pnpm exec tsc` and `pnpm pack`), and Turbo 2's strict environment mode withholds an undeclared variable, so
+  a Turbo build is always map-free; declaring it would let one become a candidate build.
+
+**Not yet recorded here:** the review's unverified lows (its section F) wait for the consolidated file from that
+review session, and two roadmap lows ("DONE entries whose body still describes the open state", "MVP items without an
+annotation") need the entries they name.
+
+## Wave 3 NI — recorded low findings (2026-10-25)
+
+Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
+([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)). **Trigger for
+every entry:** the next change to the file it names.
+
+- [ ] **The lifecycle smoke's precondition reads can revert to numbers unnoticed.** *Low; test-side.* *(round 1,
+  PLAN-NI-R1-1)* Restoring `fs.lstatSync(candidate.owned).ino` at `tools/budget-replay-compat/lifecycle-smoke.mjs`
+  lines 325 and 369 still passes `pnpm smoke:budget-replay`: in the collision mode a bigint and a Number never
+  compare strictly equal, and in the other modes the real inodes differ. Production's retention identity is
+  witnessed separately. **Re-check:** assert both values are bigints before the comparison; reverting either read
+  must then fail the smoke. *(low · tools/budget-replay-compat/lifecycle-smoke.mjs)*
+- [ ] **Nothing tests the projection's `mtimeMs` formula.** *Low.* *(round 1, NI-T-1)* Replacing it in
+  `packages/db/src/media-store-paths.ts` `exactStats` with whole milliseconds (`Number(info.mtimeNs / 1_000_000n)`)
+  or whole seconds passes every media-store test. The bit-identical claim rests on an author probe of 307 files, and
+  a silent change could shift `listHandles()`'s `mtimeMs` and the sweep's age inputs by up to a second.
+  **Re-check:** a case that sets a fractional and a negative fractional mtime and asserts the projection is
+  `Object.is`-equal to `lstatSync(path).mtimeMs`; both mutants must fail. *(low ·
+  packages/db/src/media-store-paths.ts)*
+- [ ] **The catalog's dense-multibyte case catches only a byte bound below 1.5 times the character cap.** *Low.*
+  *(round 1, NI-T-2)* `apps/cli/src/workflows/catalog.test.ts` writes three-byte characters to about
+  1.5 × `MAX_SOURCE_CHARS` bytes, so `BigInt(MAX_SOURCE_CHARS * 3)`, `* 2` or a `>=` boundary in `catalog.ts`'s
+  precheck still pass, although a file of four-byte characters just under the character cap would then be refused.
+  **Re-check:** use four-byte characters to within one character of 4 × `MAX_SOURCE_CHARS` bytes; the 3×, 2× and
+  `>=` mutants must fail. *(low · apps/cli/src/workflows/catalog.test.ts)*
+
+## Native file identity on Windows — approved increment (2026-10-24)
+
+Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate
+increment, after 9a.2b and before 9b (register row NI), rather than a deferral; this entry tracks it until then.
+NI is independently accepted on `development` at `fc5af701` (2026-10-25,
+[acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the item stays
+open until the Windows clause below closes it after three consecutive green advisory Windows runs on pushed heads.
+**Closed 2026-10-26:** the third consecutive green advisory Windows run (push CI run 40276471445 at `5a328bca`, probe
+`0 of 200`) closed the Windows clause ([NI acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the scoped limits below stay open.
+
+- [x] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
+  Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a
+  number, but on Windows `ino` is the volume's 64-bit file ID; above 2^53 neighbouring IDs round to the same value,
+  so a replaced file or directory can compare as the original. `apps/cli/src/engine/tool-host/fs-policy.test.ts`,
+  "revokes a selected subdirectory replacement even when its enclosing grant is unchanged", read the replacement on
+  the Windows runner (its first failure in sixty runs). Sites: `apps/cli/src/engine/tool-host/fs-policy.ts`
+  (`pinDirectory`/`validatePin`), `apps/cli/src/workflows/catalog.ts` (the open check), and
+  `packages/db/src/media-store-paths.ts` (directory pins and `assertOwnedFile`), `media-store-read.ts` (the
+  read's before/after check) and `media-store-temporaries.ts` (`same` and the `Number(...)` comparison in
+  `nativeFile`). **Re-check:** every identity is read with `{ bigint: true }` and compared as `bigint` (or its exact
+  string), with a replacement test per site that fails when the comparison goes back to a number; the Windows job
+  passes the fs-policy test repeatedly. *(high · the five files above)*
+
+Scoped limits recorded with NI (2026-10-25):
+
+- [ ] **ReFS, Dev Drive, FAT and exFAT do not give unique, stable 64-bit file IDs.** *Low; Windows ReFS/Dev
+  Drive and FAT/exFAT volumes.* Microsoft documents that the 64-bit identifier "is not guaranteed to be unique on
+  ReFS", and that a FAT file ID is derived from the position of the file's directory entry, which renaming a file
+  to a longer name moves. NI makes every comparison exact, so the claim is exact identity on filesystems whose
+  64-bit file IDs are unique, such as NTFS, ext4 and APFS. On ReFS two files could share an index; on FAT or exFAT
+  a replacement created in a freed directory entry could inherit the pinned ID, so a check would admit it (fail
+  open), whatever the comparison's precision. Minimal example: a pinned directory `selected` on a FAT volume is
+  renamed to `selected-old` and a new `selected` is created in the freed entry. **Re-check:** if ReFS, Dev Drive,
+  FAT or exFAT workspaces become a supported target, read the 128-bit `FILE_ID_INFO` identity, pair the identity
+  with a second discriminator such as creation time, or refuse such volumes; native code or a dependency needs an
+  ADR. *(low · `apps/cli/src/engine/tool-host/fs-policy.ts`, `packages/db/src/media-store-paths.ts`)*
+- [ ] **The causal-control source graph's hard-link check still compares `ino` as a number.** *Low; tooling,
+  fail-closed.* `tools/usage-coverage-controls/source-graph.mjs` asserts that each copied source file's `ino`
+  differs from its original's, so a collision can only refuse a copy falsely; four causal families share the
+  file, and NI left it unchanged rather than perturb them. **Re-check:** switch both reads to `{ bigint: true }`
+  the next time that file changes. *(low · `tools/usage-coverage-controls/source-graph.mjs`)*
+
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
 **Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
@@ -401,6 +1140,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
         ADR-0081's role boundary; ids unique per session; validity proven by the live conformance suite; a
         user-scoped `[preferences]` toggle.
       *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
+      **Scheduled 2026-11-04 (D67):** v0.2.1, right after the CLI MVP's v0.2.0, designed together with ADR-0096 §5's
+      in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
 
 - [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
       [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
@@ -429,6 +1170,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
+      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
+      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment drafted in Gate 0.
 
 - [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
       upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
@@ -1265,6 +2008,9 @@ so directly: these "should remain visible rather than disappear behind the green
 
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
+>
+> **Scheduled 2026-11-04:** the CLI MVP's MVP-2 repaints a resumed session's transcript
+> ([current.md](current.md#next-work--the-cli-mvp)); close this entry when that lands.
 
 `relavium chat-resume <sessionId>` restores the model's context from `history.db`, but opens on an **empty
 viewport** — the prior conversation is never repainted. This is **not** the 2.6.F regression F1 is: it has been
@@ -2171,6 +2917,28 @@ future test cannot silently re-acquire it.
 
 ## Wave 3 approved later-wave ownership — 2026-10-16
 
+- [ ] **Scheduled → Wave 4b: production recipient key constraints.** Approved with the Wave 3
+  Steps 9–19 rulings (2026-10-19, [Step 9 mechanics ruling](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)):
+  the confirmed production recipient for encrypted release custody must be an OpenPGP v4 key
+  with a cv25519 or RSA≥3072 encryption-capable subkey. Wave 3 Step 9 implements custody with
+  synthetic keys only; an actual release fails closed until this recipient, its offline
+  recovery check and backup ownership exist. *Added 2026-10-25 (Step 9b preflight decisions):* the key
+  must not advertise the AEAD feature, because custody requires SEIPDv1 with MDC and AES-256 so that
+  `gpg -d | tar -x` with GnuPG ≥ 2.2.8 stays true; and the committed recipient file is the export of the
+  primary with only the pinned encryption subkey (`gpg --armor --export '<subkey fingerprint>!'`),
+  because a second usable encryption subkey refuses. *Added after Step 9b.1's review round 1:* its
+  cipher preferences must include AES256, since custody passes an AES-256 preference and refuses any
+  other cipher. *Added with Step 9b.2:* the recipient is committed at
+  `tools/cli-package/release-recipient/` as `recipient.asc` and `pins.json`, whose history is append-only
+  (exactly one `current`, a rotated recipient `retired`, never removed); a fixture fingerprint refuses. Wave 4b
+  then updates `release-recipient.test.mjs`'s absence test and `release-scope.test.mjs`'s interim control that no
+  recipient directory is committed. Any expiry margin is passed as the `now` the custody check uses. The
+  loader sees one revision of `pins.json` and cannot detect a removed or rewritten entry, so Wave 4b adds a
+  control that every committed revision keeps the previous one's entries, with only `current` becoming
+  `retired` (rigor pass, CLAIM-9B2-3). With the files committed, Wave 4b also replaces the absence test with a
+  load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
+  exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
+
 - [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur
@@ -2179,3 +2947,5 @@ future test cannot silently re-acquire it.
   [approved execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
   and [Wave 5a owner](current.md#wave-5a--paint-before-you-build) retain the split; close only
   after actual word-wrap implementation and regression evidence land.
+  **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
+  ownership ends, and the close condition above stands.

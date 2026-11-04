@@ -1,11 +1,16 @@
 import { RelaviumError } from '@relavium/shared';
 
 import { randomUUID } from 'node:crypto';
-import { constants, lstatSync, readdirSync, realpathSync, type Stats } from 'node:fs';
+import { constants, lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import {
+  exactStats,
+  MediaStoreFilesystemError,
+  MediaStorePaths,
+  type ExactStats,
+} from './media-store-paths.js';
 import { withOwnedFilesystem, withOwnedFilesystemAsync } from './storage-failure-facts.js';
 
 export type MediaTemporaryRetentionReason =
@@ -45,6 +50,7 @@ const CLAIM = new RegExp(
 const LEGACY_ROOT = new RegExp(`^stream\\.${UUID}\\.tmp$`);
 const LEGACY_SHARD = new RegExp(`^[0-9a-f]{62}\\.${UUID}\\.tmp$`);
 const MIN_AGE = 24 * 60 * 60 * 1000;
+const MIN_NATIVE_IDENTITY = -(1n << 63n);
 const MAX_NATIVE_IDENTITY = (1n << 64n) - 1n;
 const MAX_NATIVE_TOKEN = MAX_NATIVE_IDENTITY.toString(36);
 
@@ -53,8 +59,11 @@ interface NativeIdentity {
   readonly ino: string;
 }
 function nativeIdentityToken(value: bigint): string {
-  if (value < 0n || value > MAX_NATIVE_IDENTITY) throw new MediaStoreFilesystemError('unsafe_path');
-  return value.toString(36);
+  if (value < MIN_NATIVE_IDENTITY || value > MAX_NATIVE_IDENTITY)
+    throw new MediaStoreFilesystemError('unsafe_path');
+  // Node fills bigint stats from a signed array, so a 64-bit file ID with its top bit set reads
+  // negative; the token is the unsigned value the filesystem reports.
+  return BigInt.asUintN(64, value).toString(36);
 }
 function canonicalNativeToken(field: string): boolean {
   return (
@@ -80,10 +89,10 @@ function live(pid: string): Liveness {
 function code(error: unknown): unknown {
   return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
 }
-function same(a: Stats, b: Stats): boolean {
+function same(a: ExactStats, b: ExactStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
-function age(info: Stats, now: number): MediaTemporaryRetentionReason | undefined {
+function age(info: ExactStats, now: number): MediaTemporaryRetentionReason | undefined {
   if (!Number.isFinite(info.mtimeMs) || info.mtimeMs > now) return 'future_timestamp';
   return now - info.mtimeMs < MIN_AGE ? 'too_young' : undefined;
 }
@@ -203,7 +212,7 @@ export class MediaStoreTemporaries {
     const marker = join(root, `media-maintenance-v1.${process.pid}.${randomUUID()}`);
     const identity = await this.createMarker(marker);
     try {
-      const candidates: Array<{ path: string; info: Stats }> = [];
+      const candidates: Array<{ path: string; info: ExactStats }> = [];
       // The marker is visible before this scan. New producers recheck after exclusive open;
       // old admitted producers remain visible here until publication/cleanup.
       for (const name of this.entries(root)) {
@@ -262,7 +271,7 @@ export class MediaStoreTemporaries {
       throw this.paths.error(error);
     }
   }
-  private async createMarker(path: string): Promise<Stats> {
+  private async createMarker(path: string): Promise<ExactStats> {
     this.paths.assertParent(path);
     return this.acquireMarker(
       path,
@@ -273,9 +282,9 @@ export class MediaStoreTemporaries {
   /** Keep captured fd identity available when close or the post-close ownership check fails. */
   private async acquireMarker(
     path: string,
-    assertOwned: (identity: Stats) => void,
-    cleanup: (identity: Stats) => Promise<void>,
-  ): Promise<Stats> {
+    assertOwned: (identity: ExactStats) => void,
+    cleanup: (identity: ExactStats) => Promise<void>,
+  ): Promise<ExactStats> {
     const file = await withOwnedFilesystemAsync(() =>
       open(
         path,
@@ -289,14 +298,18 @@ export class MediaStoreTemporaries {
     ).catch((error: unknown) => {
       throw this.paths.error(error);
     });
-    let identity: Stats | undefined;
+    let identity: ExactStats | undefined;
     let acquired = false;
     let cleanupError: MediaStoreFilesystemError | undefined;
     try {
       try {
-        identity = await withOwnedFilesystemAsync(() => file.stat()).catch((error: unknown) => {
-          throw this.paths.error(error);
-        });
+        identity = exactStats(
+          await withOwnedFilesystemAsync(() => file.stat({ bigint: true })).catch(
+            (error: unknown) => {
+              throw this.paths.error(error);
+            },
+          ),
+        );
       } finally {
         try {
           await withOwnedFilesystemAsync(() => file.close());
@@ -327,16 +340,16 @@ export class MediaStoreTemporaries {
       }
     }
   }
-  private async removeOwned(path: string, identity: Stats): Promise<void> {
+  private async removeOwned(path: string, identity: ExactStats): Promise<void> {
     this.paths.assertOwnedFile(path, identity);
     await withOwnedFilesystemAsync(() => unlink(path)).catch((error: unknown) => {
       throw this.paths.error(error);
     });
   }
-  private directory(root: string, name: string, identity?: Stats): Stats {
+  private directory(root: string, name: string, identity?: ExactStats): ExactStats {
     this.paths.root(false);
     const path = join(root, name);
-    const info = withOwnedFilesystem(() => lstatSync(path));
+    const info = exactStats(withOwnedFilesystem(() => lstatSync(path, { bigint: true })));
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
@@ -347,10 +360,17 @@ export class MediaStoreTemporaries {
     this.paths.root(false);
     return info;
   }
-  private child(root: string, name: string, identity: Stats, child: string): Stats | undefined {
+  private child(
+    root: string,
+    name: string,
+    identity: ExactStats,
+    child: string,
+  ): ExactStats | undefined {
     this.directory(root, name, identity);
     try {
-      const info = withOwnedFilesystem(() => lstatSync(join(root, name, child)));
+      const info = exactStats(
+        withOwnedFilesystem(() => lstatSync(join(root, name, child), { bigint: true })),
+      );
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
         throw new MediaStoreFilesystemError('unsafe_path');
       return info;
@@ -360,14 +380,14 @@ export class MediaStoreTemporaries {
     }
   }
   /** Exact claim identity supplements, rather than replaces, the existing cooperative path floor. */
-  private nativeFile(path: string, expected: Stats): NativeIdentity {
+  private nativeFile(path: string, expected: ExactStats): NativeIdentity {
     const info = withOwnedFilesystem(() => lstatSync(path, { bigint: true }));
     if (
       !info.isFile() ||
       info.isSymbolicLink() ||
       info.nlink !== 1n ||
-      Number(info.dev) !== expected.dev ||
-      Number(info.ino) !== expected.ino
+      info.dev !== expected.dev ||
+      info.ino !== expected.ino
     )
       throw new MediaStoreFilesystemError('unsafe_path');
     return { dev: nativeIdentityToken(info.dev), ino: nativeIdentityToken(info.ino) };
@@ -375,7 +395,7 @@ export class MediaStoreTemporaries {
   private async claim(
     root: string,
     source: string,
-    info: Stats,
+    info: ExactStats,
     pid: string,
     nonce: string,
   ): Promise<boolean> {
@@ -513,9 +533,9 @@ export class MediaStoreTemporaries {
   private assertRecoveryMarker(
     root: string,
     name: string,
-    identity: Stats,
+    identity: ExactStats,
     marker: string,
-    markerInfo: Stats,
+    markerInfo: ExactStats,
   ): void {
     const own = this.child(root, name, identity, marker);
     if (
@@ -530,9 +550,9 @@ export class MediaStoreTemporaries {
   private async removeRecoveryMarker(
     root: string,
     name: string,
-    identity: Stats,
+    identity: ExactStats,
     marker: string,
-    markerInfo: Stats,
+    markerInfo: ExactStats,
   ): Promise<void> {
     this.assertRecoveryMarker(root, name, identity, marker, markerInfo);
     await withOwnedFilesystemAsync(() => unlink(join(root, name, marker)));
@@ -540,9 +560,9 @@ export class MediaStoreTemporaries {
   private async cleanupRecovery(
     root: string,
     name: string,
-    identity: Stats,
+    identity: ExactStats,
     marker: string,
-    markerInfo: Stats,
+    markerInfo: ExactStats,
   ): Promise<boolean> {
     await this.removeRecoveryMarker(root, name, identity, marker, markerInfo);
     try {

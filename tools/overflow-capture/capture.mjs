@@ -58,7 +58,8 @@ async function main() {
   process.on('SIGINT', abort);
   process.on('SIGTERM', abort);
   try {
-    identity = fstatSync(fd);
+    // Exact identities: a 64-bit file ID (NTFS, overlayfs xino) exceeds a Number's precision.
+    identity = fstatSync(fd, { bigint: true });
     const artifact = await captureResponse(options, key, {
       fetch,
       newAbortController: () => new globalThis.AbortController(),
@@ -70,7 +71,7 @@ async function main() {
       signal: caller.signal,
     });
     const stillOwnsDestination = () => {
-      const current = lstatSync(options.out, { throwIfNoEntry: false });
+      const current = lstatSync(options.out, { bigint: true, throwIfNoEntry: false });
       return current?.dev === identity.dev && current.ino === identity.ino;
     };
     if (!stillOwnsDestination()) throw new CaptureError('destination_changed');

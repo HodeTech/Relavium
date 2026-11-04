@@ -66,6 +66,134 @@ const rawPasswordAssignments = ['?', '#'].map(
   (separator) =>
     `preserves public ${separator} tails after userinfo and masks raw password assignments`,
 );
+// PR95: the extended URL scheme list, the header scheme label and the raw ?/# contact predicate.
+const urlSchemes = String.raw`https?|wss?|ftps?|postgres(?:ql)?|mysql|mariadb|rediss?|mongodb(?:\+srv)?|amqps?|ssh|sftp|ldaps?|smtps?`;
+const colonlessSchemes = ['http', 'https', 'ws', 'wss', 'ftp', 'ftps'];
+const connectionSchemes = [
+  'postgres',
+  'postgresql',
+  'mysql',
+  'mariadb',
+  'redis',
+  'rediss',
+  'mongodb',
+  'mongodb+srv',
+  'amqp',
+  'amqps',
+  'ssh',
+  'sftp',
+  'ldap',
+  'ldaps',
+  'smtp',
+  'smtps',
+];
+const headerSchemeLabelMarker = 'SECRETS_B2_HEADER_SCHEME_LABEL';
+const headerSchemeLabelCases = [
+  ...['api-key', 'x-api-key', 'x-goog-api-key', 'X-Api-Key'].map(
+    (name) => `masks the token after a scheme label in the ${name} header`,
+  ),
+  'masks every LF/TAB split position inside a scheme label after a header',
+  'masks the next token, failing closed, when a scheme label ends the line',
+  'masks the token after stacked or quoted scheme labels in a header value',
+  'masks the token after more than one whitespace character following a scheme label',
+  'masks quoted and escaped tokens beside header scheme labels',
+];
+const schemeLabel = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c`;
+const headerName = String.raw`(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:`;
+// The header rule, piece by piece, so a control can remove or weaken exactly one guard.
+const header = {
+  boundary: '(?<![A-Za-z0-9_-])',
+  separator: String.raw`\\*["']?\s*:\s*["']?`,
+  labelRun: String.raw`(?:[^\w\s]*(?:${schemeLabel})(?:[\\"']*(?:${schemeLabel})){0,7}[\\"']*\s+){0,8}`,
+  notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
+  prefix: String.raw`[\\"']*`,
+  notNested: `(?!(?<=[^A-Za-z0-9_-])${headerName})`,
+  token: String.raw`(?<token>[^\s"',;}\\][^\s"',;}]*?)`,
+  stop: String.raw`(?=(?<=[^A-Za-z0-9_-])${headerName}|\\{0,15}[\s"',;}]|\\{0,15}$)`,
+};
+const headerLine = (part = {}) => {
+  const value = { ...header, ...part };
+  return (
+    `      /${value.boundary}(?:(?:x-)?api-key|x-goog-api-key)${value.separator}${value.labelRun}` +
+    `${value.notLabel}${value.prefix}${value.notNested}${value.token}${value.stop}/dgi,`
+  );
+};
+// The one standalone label rule, piece by piece; its first label is either label.
+const label = {
+  first: String.raw`\b(?:${schemeLabel})`,
+  concat: String.raw`(?:[\\"']*(?:${schemeLabel})){0,7}`,
+  close: String.raw`[\\"']*\s+`,
+  notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
+  lead: String.raw`[\\"']*`,
+  token: String.raw`(?<token>(?=[^\s\\"'])\S*?[^\s\\"',;}])`,
+  trail: String.raw`[\\"',;}]*`,
+  stop: String.raw`(?=(?<=[^\w])(?:${schemeLabel})(?:[\\"']*(?:${schemeLabel})){0,7}[\\"']*(?:\s|$)|\s|$)`,
+};
+const labelLine = (part = {}) => {
+  const value = { ...label, ...part };
+  return (
+    `      /${value.first}${value.concat}${value.close}${value.notLabel}${value.lead}${value.token}` +
+    `${value.trail}${value.stop}/dgi,`
+  );
+};
+const mergedMasking = [
+  '  return maskRanges(',
+  '    text,',
+  '    SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
+  '  );',
+].join('\n');
+const queryRule = (names) => String.raw`/[?&#](?:${names})=(?<token>[^&\s#]+)/dgi`;
+const queryNames =
+  '(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret';
+const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
+const mergeExtent = '      open.end = Math.max(open.end, range.end);';
+const hostFollowsLine =
+  '  return host.length <= HOST_SHAPED_MAX_LENGTH && HOST_SHAPED_AUTHORITY.test(host);';
+const llmFixedPoint = '  return toFixedPoint(scrubOnce, text, MASKED);';
+const coreFixedPoint = "  return toFixedPoint(redactSecretShapedOnce, text, '[redacted]');";
+const coreUserinfoZone =
+  '    const ownsUntil = colon >= 0 && (query < 0 || colon < query) ? colon : 0;';
+const headerTokenMask = '    mask: tokenGroup,\n    joinedPattern:';
+const stackedLabelCase =
+  'masks a header token after up to eight stacked labels and fails closed beyond them';
+const standaloneStackCase = 'masks the token after any number of stacked standalone labels';
+const fixedPointCase = 'keeps already-masked scheme tokens as fixed points';
+const hostLengthGuard = '  if (query > HOST_SHAPED_MAX_LENGTH) return false;';
+const hostShapedLine = String.raw`  /^(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?$/i;`;
+const hostShapedUnanchored = String.raw`  /(?:[a-z\d-]+(?:\.[a-z\d-]+)+\.?|localhost|\[[\da-f:.]+\])(?::\d{1,5})?/i;`;
+const hostLookalikeCases = [
+  'https://john.doe:s3cret?x=1@h.example/',
+  'https://localhostuser:pw?a=b@h.example/',
+  'https://user:pw.evil.com?x=1@h.example/',
+  'https://h.example:123456?x=1@h.example/',
+].map((input) => `masks userinfo whose prefix only resembles a host: ${input}`);
+const userinfoContactMarker = 'SECRETS_B2_USERINFO_CONTACT';
+const coreUserinfoContactMarker = 'SECRETS_B2_CORE_USERINFO_CONTACT';
+const contactAssignmentCases = (secondInput) =>
+  ['https://my.user:1234?TOKEN@h.example/', secondInput].map(
+    (input) => `masks a host-shaped prefix that no assignment follows: ${input}`,
+  );
+const contactHostCase =
+  'masks userinfo whose raw ?/# follows no host-shaped prefix: https://us?er=1:TOKEN@h.example/';
+const contactAssignment =
+  "  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);";
+const connectionSchemeMarker = 'SECRETS_B2_CONNECTION_SCHEME';
+// sftp also matches the original list by its ftp suffix, so the old list still masks it.
+const connectionSchemeCases = connectionSchemes
+  .filter((scheme) => scheme !== 'sftp')
+  .map((scheme) => `masks colon-bearing ${scheme} userinfo and keeps a bare user`);
+const urlJoinedMarker = 'SECRETS_B2_URL_JOINED';
+const urlJoinedCases = (schemes) => [
+  ...schemes.map((scheme) => `masks a split ${scheme} credential around an inner masked span`),
+  ...['?', '#'].map(
+    (raw) => `masks a split credential holding a raw ${raw} and an inner masked span`,
+  ),
+];
+const urlGluedMarker = 'SECRETS_B2_URL_GLUED_SCHEME';
+const urlGluedCases = ['\n', '\t'].map(
+  (separator) =>
+    `masks a glued scheme whose split credential holds a raw @ (${JSON.stringify(separator)})`,
+);
 const originalBoundaryMarker = 'SECRETS_B2_ORIGINAL_BOUNDARY';
 const originalBoundaryCases = ['sk-proj-', 'AIza'].flatMap((prefix) =>
   ['\n', '\t'].map(
@@ -131,18 +259,6 @@ const coreOriginalBoundary = String.raw`  const candidates = /(^|[^\w])([A-Za-z]
   }
 }
 
-function redactStandaloneCredentials(text: string): string {
-  const parts: string[] = [];
-  let copied = 0;
-  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
-    parts.push(text.slice(copied, start), replacement);
-    copied = end;
-  });
-  if (parts.length === 0) return text;
-  parts.push(text.slice(copied));
-  return parts.join('');
-}
-
 /**
  * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
  * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
@@ -177,23 +293,25 @@ function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretS
 }
 
 /**
- * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
- * ordinary spaces remain boundaries and public text is never globally normalized for identity.
- * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
- * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ * LF/TAB may split finite credential shapes. Map the spans recognized in the joined view back onto
+ * the original text and report the ones a removed separator actually splits; ordinary spaces remain
+ * boundaries and public text is never globally normalized for identity. Token-character
+ * continuations after LF/TAB are intentionally part of a recognized credential. The two cursors
+ * advance monotonically, with no per-character offset array or recursive matcher.
  */
-function redactJoinedCredentialSpans(
+function visitSplitSpans(
   text: string,
   visit: (joined: string, mask: SecretSpanVisitor) => void,
+  report: SecretSpanVisitor,
   boundary?: RegExp,
-): string {
-  if (!/[\n\t]/.test(text)) return text;
+  // URL userinfo owns a separator at either edge: one right after the scheme or before the @ splits it.
+  ownsEdges = false,
+): void {
+  if (!/[\n\t]/.test(text)) return;
   const joined = text.replace(/[\n\t]+/g, '');
-  const parts: string[] = [];
   const separators = /[\n\t]+/g;
   let next = separators.exec(text);
   let removed = 0;
-  let copied = 0;
   function advance(target: number, includeAtBoundary = false): number {
     while (
       next !== null &&
@@ -204,9 +322,12 @@ function redactJoinedCredentialSpans(
     }
     return target + removed;
   }
-  visit(joined, (start, end, replacement) => {
-    const originalStart = advance(start, true);
-    const originalEnd = advance(end);
+  visit(joined, (start, end, replacement, url) => {
+    // A separator right before a URL's scheme is outside the URL, so it splits nothing.
+    const schemeStart = url === undefined ? undefined : advance(url.schemeStart, true);
+    const originalStart = advance(start, !ownsEdges);
+    const ownsUntil = url === undefined ? undefined : advance(url.ownsUntil, ownsEdges);
+    const originalEnd = advance(end, ownsEdges);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
 const withoutCoreOriginalBoundary = coreOriginalBoundary
   .replace(
@@ -214,6 +335,8 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
     String.raw`  const candidates = /([A-Za-z])/g;`,
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+/** The complete core projection test file every core projection control runs. */
+const CORE_PROJECTION_CASES = 234;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -221,12 +344,16 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    142,
+    CORE_PROJECTION_CASES,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
   );
 }
+/** The complete registry test file the journal-identity control runs. */
+const REGISTRY_CASES = 116;
+/** The complete scrubber test file every LLM diagnostic control runs. */
+const LLM_SCRUB_CASES = 224;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
   return control(
     id,
@@ -234,7 +361,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    103,
+    LLM_SCRUB_CASES,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -342,8 +469,8 @@ export const mutations = [
   control(
     'query-names',
     scrubSecretsLeaf,
-    String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
-    String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
+    queryRule(queryNames),
+    queryRule('(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret'),
     ['packages/llm/src/llm-error.test.ts'],
     98,
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
@@ -458,8 +585,14 @@ export const mutations = [
   control(
     'non-query-before-query',
     scrubSecretsLeaf,
-    '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
-    '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
+    mergedMasking,
+    [
+      '  const queried = applyRule(text, QUERY_SECRET_RULE);',
+      '  return maskRanges(',
+      '    queried,',
+      '    NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(queried, rule)),',
+      '  );',
+    ].join('\n'),
     overlapFiles,
     278,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
@@ -750,7 +883,7 @@ export const mutations = [
     '    if (scrubSecrets(probe) !== probe) matches += 1;',
     '    void probe;',
     ['apps/cli/src/authoring/snapshot-notice.test.ts'],
-    10,
+    11,
     'detects existing credential shapes without values or arbitrary keys in the notice',
     'SNAPSHOT_CAUSAL_DETECTOR',
   ),
@@ -912,8 +1045,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-joined-credential-spans',
-    '  visit(joined, (start, end, replacement) => {',
-    "  visit('', (start, end, replacement) => {",
+    '  visit(joined, (start, end, replacement, url) => {',
+    "  visit('', (start, end, replacement, url) => {",
     [
       'masks every LF/TAB split without losing the surrounding public identity',
       ...splitCoreHeaders,
@@ -961,15 +1094,643 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-split-header-label',
-    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,`,
+    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:/gi,`,
     'joinedPattern: /a^/g,',
     ['masks each split position in the finite API header names'],
   ),
   diagnosticControl(
     'diagnostic-raw-password-userinfo',
-    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
-    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi;`,
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s]*@/gi;`,
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s?#]*@/gi;`,
     [...diagnosticPasswords, ...rawPasswordAssignments],
+  ),
+  // PR95: a header value's leading Bearer/Basic labels are skipped and its token is masked. Without
+  // the label run, the probes see an unmasked label and token and blank the whole diagnostic.
+  diagnosticControl(
+    'diagnostic-header-scheme-label',
+    headerLine(),
+    headerLine({ labelRun: '' }),
+    headerSchemeLabelCases,
+    headerSchemeLabelMarker,
+  ),
+  control(
+    'diagnostic-header-stacked-labels',
+    scrubSecretsLeaf,
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s+)?`) }),
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    LLM_SCRUB_CASES,
+    'masks the token after stacked or quoted scheme labels in a header value',
+    headerSchemeLabelMarker,
+    [{ target: stackedLabelCase, marker: 'SECRETS_B2_STACKED_LABEL' }],
+  ),
+  diagnosticControl(
+    'diagnostic-header-label-whitespace',
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s){0,8}`) }),
+    ['masks the token after more than one whitespace character following a scheme label'],
+    headerSchemeLabelMarker,
+  ),
+  // Every quantified label group is bounded so no admitted-size run can exhaust the RegExp stack.
+  diagnosticControl(
+    'diagnostic-header-label-bound',
+    headerLine(),
+    headerLine({ labelRun: header.labelRun.replace(String.raw`\s+){0,8}`, String.raw`\s+)*`) }),
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
+  ),
+  diagnosticControl(
+    'diagnostic-header-concat-bound',
+    headerLine(),
+    headerLine({ notLabel: header.notLabel.replace('{1,8}', '+') }),
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
+  ),
+  // Round 4: a run of up to eight concatenated labels is one label, in a header value and alone.
+  diagnosticControl(
+    'diagnostic-header-concat-run',
+    headerLine(),
+    headerLine({
+      labelRun: header.labelRun.replace(String.raw`(?:[\\"']*(?:${schemeLabel})){0,7}`, ''),
+    }),
+    ['masks the token after a concatenated label run in every context'],
+    'SECRETS_B4_CONCAT_LABEL',
+  ),
+  ...[
+    ['diagnostic-label-concat-run', { concat: '' }],
+    ['diagnostic-label-concat-stop', { stop: label.stop.replace(label.concat, '') }],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      labelLine(),
+      labelLine(part),
+      ['masks the token after a concatenated label run in every context'],
+      'SECRETS_B4_CONCAT_LABEL',
+    ),
+  ),
+  // The concatenated run is bounded; the residual of a separate-label run reaches it.
+  diagnosticControl(
+    'diagnostic-label-start-bound',
+    labelLine(),
+    labelLine({ concat: label.concat.replace('{0,7}', '*') }),
+    ['keeps admitted-size label runs linear and fails closed'],
+    'SECRETS_B2_HEADER_LABEL_BOUND',
+  ),
+  diagnosticControl(
+    'diagnostic-label-lead',
+    labelLine(),
+    labelLine({ lead: '' }),
+    ['masks a quoted standalone token after either label'],
+    'SECRETS_B4_LABEL_LEAD',
+  ),
+  // Nine concatenated labels exceed every bounded run, so the diagnostic fails closed, read in the
+  // normalized view and in the raw text alike (round 7: each half has its own control).
+  ...[
+    [
+      'diagnostic-label-run-normalized',
+      '  if (LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
+      'fails closed on nine labels that only the normalized view joins',
+    ],
+    [
+      'diagnostic-label-run-raw',
+      '  if (LABEL_RUN_PAST_BOUND.test(normalized)) return MASKED;',
+      'fails closed on nine labels behind a terminal sequence',
+    ],
+  ].map(([id, after, target]) =>
+    diagnosticControl(
+      id,
+      '  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
+      after,
+      [target],
+      'SECRETS_B4_LABEL_RUN_BOUND',
+    ),
+  ),
+  diagnosticControl(
+    'diagnostic-label-run-bound',
+    '  if (LABEL_RUN_PAST_BOUND.test(normalized) || LABEL_RUN_PAST_BOUND.test(text)) return MASKED;',
+    '',
+    [
+      'fails closed on nine concatenated labels and keeps eight in place',
+      'keeps admitted-size label runs total, concatenated or separate',
+    ],
+    'SECRETS_B4_LABEL_RUN_BOUND',
+  ),
+  // A header token is never a label or a run of labels that whitespace or the end follows, nor a
+  // nested header name.
+  diagnosticControl(
+    'diagnostic-header-token-not-label',
+    headerLine(),
+    headerLine({ notLabel: '' }),
+    ['treats a whitespace-separated labels-only header value alike in every context'],
+    'SECRETS_B3_LABEL_CONTEXT',
+  ),
+  ...[
+    ['diagnostic-header-not-nested', { notNested: '' }],
+    [
+      'diagnostic-header-nested-stop',
+      { stop: header.stop.replace(`(?<=[^A-Za-z0-9_-])${headerName}|`, '') },
+    ],
+    ['diagnostic-header-lookbehind', { boundary: '(?:^|[^A-Za-z0-9_-])' }],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      headerLine(),
+      headerLine(part),
+      ['keeps every header value and label token apart from a nested header name'],
+      'SECRETS_B3_NESTED_HEADER',
+    ),
+  ),
+  // Quotes and escapes around a header token, also in JSON-encoded JSON.
+  ...[
+    [
+      'diagnostic-header-escaped-separator',
+      { separator: header.separator.replace(String.raw`\\*["']?\s*:`, String.raw`["']?\s*:`) },
+    ],
+    ['diagnostic-header-quote-run', { prefix: String.raw`(?:\\*["'])?` }],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      headerLine(),
+      headerLine(part),
+      ['masks a header token after any run of quotes or escapes, also in JSON-encoded JSON'],
+      'SECRETS_B3_HEADER_ESCAPES',
+    ),
+  ),
+  diagnosticControl(
+    'diagnostic-header-escaped-stop',
+    headerLine(),
+    headerLine({
+      stop: header.stop.replace(
+        String.raw`|\\{0,15}[\s"',;}]|\\{0,15}$)`,
+        String.raw`|[\s"',;}]|$)`,
+      ),
+    }),
+    [fixedPointCase],
+    'SECRETS_B2_MASKED_FIXED_POINT',
+  ),
+  // The standalone label rule: no label as a token, labels closed by a quote, glued labels.
+  diagnosticControl(
+    'diagnostic-label-token-not-label',
+    labelLine(),
+    labelLine({ notLabel: '' }),
+    [standaloneStackCase],
+    'SECRETS_B2_STACKED_LABEL',
+  ),
+  diagnosticControl(
+    'diagnostic-label-quoted-label',
+    labelLine(),
+    labelLine({ close: String.raw`\s+` }),
+    ['masks the token after a label closed by its own quote'],
+    'SECRETS_B3_QUOTED_LABEL',
+  ),
+  ...[
+    [
+      'diagnostic-label-glued-label',
+      { notLabel: label.notLabel.replace(String.raw`[^\w\s]*`, String.raw`[\\"']*`) },
+    ],
+    [
+      'diagnostic-label-embedded-stop',
+      {
+        stop: label.stop.replace(
+          String.raw`(?<=[^\w])(?:${schemeLabel})${label.concat}[\\"']*(?:\s|$)|`,
+          '',
+        ),
+      },
+    ],
+  ].map(([id, part]) =>
+    diagnosticControl(
+      id,
+      labelLine(),
+      labelLine(part),
+      ['masks the token after a label glued behind punctuation or inside another token'],
+      'SECRETS_B3_GLUED_LABEL',
+    ),
+  ),
+  // Reintroducing round 2's masked-marker guard exposes a tail glued to the marker again.
+  diagnosticControl(
+    'diagnostic-label-masked-tail',
+    labelLine(),
+    labelLine({
+      lead: String.raw`(?![\\"']*\[REDACTED\](?:[\s"',;}]|$))` + label.lead,
+    }),
+    ["masks a tail glued to a masked token, including the scrubber's own masks"],
+    'SECRETS_B3_MASKED_TAIL',
+  ),
+  // Masks come from the original text and are merged; each token rule masks only its token.
+  diagnosticControl(
+    'diagnostic-merged-masking',
+    mergedMasking,
+    '  return SECRET_RULES.reduce((masked, rule) => applyRule(masked, rule), text);',
+    ['masks the token after a label glued behind punctuation or inside another token'],
+    'SECRETS_B3_GLUED_LABEL',
+  ),
+  // Round 4: applying the query names after the merged pass loses a value a header token cut short.
+  diagnosticControl(
+    'diagnostic-query-merge',
+    mergedMasking,
+    [
+      '  return applyRule(',
+      '    maskRanges(',
+      '      text,',
+      '      NON_QUERY_SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)),',
+      '    ),',
+      '    QUERY_SECRET_RULE,',
+      '  );',
+    ].join('\n'),
+    ['masks a literal query value in the same pass as every other rule'],
+    'SECRETS_B4_QUERY_MERGE',
+  ),
+  diagnosticControl(
+    'diagnostic-mask-merge-extent',
+    mergeExtent,
+    '      open.end = range.end;',
+    ['masks the whole of a range that contains a later one'],
+    'SECRETS_B4_MERGE_EXTENT',
+  ),
+  diagnosticControl(
+    'diagnostic-fixed-point',
+    llmFixedPoint,
+    '  return scrubOnce(text);',
+    ['reaches a fixed point'],
+    'SECRETS_B4_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-mask-merge',
+    overlapMerge,
+    '    if (open !== undefined && false) {',
+    headerSchemeLabelCases,
+    headerSchemeLabelMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-token-only-mask',
+    headerTokenMask,
+    '    mask: WHOLE_MATCH,\n    joinedPattern:',
+    [fixedPointCase],
+    'SECRETS_B2_MASKED_FIXED_POINT',
+  ),
+  // PR95 round 1: the host-shaped prefix is bounded before the RegExp and anchored at both ends.
+  diagnosticControl(
+    'diagnostic-userinfo-host-length',
+    hostLengthGuard,
+    '',
+    [
+      'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+      'bounds the host-shaped prefix at exactly 260 characters, case-insensitively',
+    ],
+    'SECRETS_B2_USERINFO_HOST_LENGTH',
+  ),
+  coreProjectionControl(
+    'core-userinfo-host-length',
+    hostLengthGuard,
+    '',
+    [
+      'masks an admitted-size dotted userinfo prefix without exhausting the RegExp stack',
+      'bounds the host-shaped prefix at exactly 260 characters, case-insensitively',
+    ],
+    'SECRETS_B2_CORE_USERINFO_HOST_LENGTH',
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-host-anchors',
+    hostShapedLine,
+    hostShapedUnanchored,
+    hostLookalikeCases,
+    userinfoContactMarker,
+  ),
+  coreProjectionControl(
+    'core-userinfo-host-anchors',
+    hostShapedLine,
+    hostShapedUnanchored,
+    hostLookalikeCases,
+    coreUserinfoContactMarker,
+  ),
+  // PR95: raw ?/# userinfo is public only after a host-shaped prefix AND an assignment.
+  diagnosticControl(
+    'diagnostic-userinfo-contact-assignment',
+    contactAssignment,
+    '  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));',
+    contactAssignmentCases('https://host.example#sec@x.example'),
+    userinfoContactMarker,
+  ),
+  control(
+    'diagnostic-userinfo-contact-host',
+    scrubSecretsLeaf,
+    contactAssignment,
+    "  return userinfo.includes('=', query + 1);",
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    LLM_SCRUB_CASES,
+    contactHostCase,
+    userinfoContactMarker,
+    rawPasswordAssignments.map((target) => ({ target, marker: diagnosticMarker })),
+  ),
+  coreProjectionControl(
+    'core-userinfo-contact-assignment',
+    contactAssignment,
+    '  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));',
+    contactAssignmentCases('https://provider.example#section@x.example'),
+    coreUserinfoContactMarker,
+  ),
+  control(
+    'core-userinfo-contact-host',
+    coreProjection,
+    contactAssignment,
+    "  return userinfo.includes('=', query + 1);",
+    coreProjectionCases,
+    CORE_PROJECTION_CASES,
+    contactHostCase,
+    coreUserinfoContactMarker,
+    rawPasswordAssignments.map((target) => ({ target, marker: coreProjectionMarker })),
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-authority-rest',
+    '  return { start, end: start + at + (hostFollows(tail) ? 0 : 1 + tail.length) };',
+    '  return { start, end: start + at };',
+    ['masks an ambiguous authority through its end unless a host follows its last @'],
+    'SECRETS_B4_AUTHORITY_REST',
+  ),
+  diagnosticControl(
+    'diagnostic-userinfo-rest-length',
+    hostFollowsLine,
+    '  return HOST_SHAPED_AUTHORITY.test(host);',
+    ['bounds the host test after an ambiguous authority at admitted size'],
+    'SECRETS_B4_REST_LENGTH',
+  ),
+  // Round 6: core's rules report ranges on one text and merge them, as the scrubber's do. An
+  // ambiguous userinfo's query is read by the later rules, a key or scheme label inside a value
+  // starts its own credential, a value runs through earlier masks, and a split header label, a
+  // scheme label or a credential may start right after another credential.
+  coreProjectionControl(
+    'core-merged-ranges',
+    '    if (run !== undefined && range.start < run.end) {',
+    '    if (run !== undefined && false) {',
+    [
+      'keeps every credential and its context when core masks overlap',
+      ...['\n', '\t', 'word\t', 'DATABASE_URL:\n'].map(
+        (prefix) =>
+          `masks an ambiguous userinfo with its query values behind ${JSON.stringify(prefix)}`,
+      ),
+      'masks an ambiguous userinfo whose scheme is split by an LF',
+    ],
+    'SECRETS_B6_CORE_MERGE',
+  ),
+  coreProjectionControl(
+    'core-userinfo-query-zone',
+    coreUserinfoZone,
+    '    const ownsUntil = at;',
+    [
+      'masks an ambiguous userinfo with the query values its later rules would mask whole',
+      'masks an admitted-size query value inside an ambiguous userinfo',
+    ],
+    'SECRETS_B5_CORE_QUERY_EXTENT',
+  ),
+  coreProjectionControl(
+    'core-key-value-nested',
+    '    if (delimiterAt - valueStart >= 6) mask(match.index, delimiterAt);',
+    '    if (delimiterAt - valueStart >= 6) {\n      mask(match.index, delimiterAt);\n      key.lastIndex = delimiterAt;\n    }',
+    ["reads a key inside another key's value"],
+    'SECRETS_B6_CORE_NESTED_KEY',
+  ),
+  coreProjectionControl(
+    'core-key-value-through-masks',
+    '  const values = fillRanges(text, masked);',
+    '  const values = names;',
+    ['reads a value through earlier masks of every kind, in text order'],
+    'SECRETS_B6_CORE_VALUE_THROUGH_MASK',
+  ),
+  coreProjectionControl(
+    'core-scheme-nested-label',
+    '    scheme.lastIndex = labelEnd;',
+    '',
+    [
+      "reads a scheme label inside another label's token",
+      'keeps nested values, labels and open PEM blocks linear at admitted size',
+    ],
+    'SECRETS_B6_CORE_NESTED_LABEL',
+  ),
+  coreProjectionControl(
+    'core-mask-boundaries',
+    '  return fillRanges(text, ranges);',
+    '  return text;',
+    [
+      'joins a split header label right after a credential or a PEM block',
+      'reads a scheme label or a credential glued to the end of another credential',
+    ],
+    'SECRETS_B6_CORE_MASK_BOUNDARY',
+  ),
+  coreProjectionControl(
+    'core-userinfo-split-scheme',
+    '      schemeStart: match.index,',
+    '      schemeStart: start,',
+    ['\n', '\t'].map(
+      (separator) =>
+        `masks URL userinfo whose scheme is split by an LF or TAB (${JSON.stringify(separator)})`,
+    ),
+    'SECRETS_B5_CORE_SPLIT_SCHEME',
+  ),
+  coreProjectionControl(
+    'core-userinfo-split-edges',
+    '  visitSplitSpans(text, visitUrlUserinfo, report, undefined, true);',
+    '  visitSplitSpans(text, visitUrlUserinfo, report);',
+    ['\n', '\t'].map(
+      (separator) =>
+        `masks URL userinfo split at either of its edges (${JSON.stringify(separator)})`,
+    ),
+    'SECRETS_B4_CORE_SPLIT_EDGE',
+  ),
+  // Round 7: only a username owns its userinfo's text, and none past an LF or TAB; quoted values are
+  // scanned without a RegExp repeat; the summary uses the projection's fixed point; and an effect whose
+  // journal projection never settles is refused before it is prepared.
+  coreProjectionControl(
+    'core-userinfo-username-zone',
+    coreUserinfoZone,
+    '    const ownsUntil = query < 0 ? at : colon >= 0 && colon < query ? query : 0;',
+    ["reads a key in a userinfo's password or parameter position"],
+    'SECRETS_B7_CORE_USERNAME_ZONE',
+  ),
+  coreProjectionControl(
+    'core-split-zone-cap',
+    '        : { schemeStart, ownsUntil: split < 0 ? ownsUntil : originalStart + split },',
+    '        : { schemeStart, ownsUntil },',
+    ["owns no text past a split userinfo's first LF or TAB"],
+    'SECRETS_B7_CORE_SPLIT_ZONE',
+  ),
+  coreProjectionControl(
+    'core-quoted-value-scan',
+    '      const readings = kept === undefined ? [quotedValueEnd(values, valueStart), ...plain] : plain;',
+    String.raw`      const quoted = opening === '"' ? /"(?:[^"\\\r\n]|\\[^\r\n])*"/y : /'(?:[^'\\\r\n]|\\[^\r\n])*'/y;
+      quoted.lastIndex = valueStart;
+      const value = quoted.test(values)
+        ? { end: quoted.lastIndex, closed: true, lineBreak: false }
+        : { end: valueStart, closed: false, lineBreak: true };
+      const readings = kept === undefined ? [value, ...plain] : plain;`,
+    ['projects exactly admitted-size quoted values without exhausting the RegExp stack'],
+    'SECRETS_B7_CORE_QUOTED_SCAN',
+  ),
+  coreProjectionControl(
+    'core-summary-fixed-point',
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedSummaryText(text) : text;`,
+    String.raw`  const recognized = /[\n\t]/.test(text) ? redactSecretShapedOnce(text, true) : text;`,
+    ["summarizes with the projection's fixed point before one-line normalization"],
+    'SECRETS_B7_CORE_SUMMARY',
+  ),
+  coreProjectionControl(
+    'core-journal-settled',
+    "      settled = false;\n      return '[redacted]';",
+    "      return '[redacted]';",
+    ['reports whether a journal projection settled'],
+    'SECRETS_B7_CORE_JOURNAL_SETTLED',
+  ),
+  control(
+    'core-unsettled-refusal',
+    'packages/core/src/tools/registry.ts',
+    '  if (journal.unsettled.length > 0) {',
+    '  if (false) {',
+    ['packages/core/src/tools/registry.test.ts'],
+    REGISTRY_CASES,
+    'refuses a tiered effect whose journal projection does not settle, before preparing it',
+    'SECRETS_B7_CORE_UNSETTLED_REFUSAL',
+    [
+      'refuses a real tiered effect whose arguments never settle',
+      'names every argument when only the whole projection does not settle',
+    ].map((target) => ({ target, marker: 'SECRETS_B7_CORE_UNSETTLED_REFUSAL' })),
+  ),
+  // Round 8: a structured result is summarized from its projection, quoted values are read one JSON
+  // string down, one that does not close on its line is read as an unquoted run unless the pass's other
+  // masks join its lines, and a label may start at a line start inside a split continuation.
+  coreProjectionControl(
+    'core-summary-walk',
+    '  const summary = makeSummary(summaryText);',
+    '  const summary = makeSummary(text);',
+    ['summarizes a structured result from its JSON once credential members are masked'],
+    'SECRETS_B8_CORE_SUMMARY_WALK',
+  ),
+  coreProjectionControl(
+    'core-escaped-quote',
+    '    const opening = escaped ? opener[valueStart + 1] : opener[valueStart];',
+    '    const opening = opener[valueStart];',
+    ['reads a quoted value one JSON string down'],
+    'SECRETS_B8_CORE_ESCAPED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-unclosed-run',
+    "    if (end - from >= 6) report(value.start, end, '[redacted]');",
+    '',
+    ['reads a quoted value that does not close on its line as an unquoted run'],
+    'SECRETS_B8_CORE_UNCLOSED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-unclosed-closing-view',
+    '    views.push(fillRanges(text, list));',
+    '    views.push(values);',
+    ['reads a quoted value that does not close on its line as an unquoted run'],
+    'SECRETS_B8_CORE_UNCLOSED_QUOTE',
+  ),
+  // Pre-review: the summary masks a value that a later quote could close through that quote and reads
+  // a structured result's JSON as one text, a journal projection whose member names collide does not
+  // settle, one JSON level down a value opens behind escaped tabs and line breaks, and a value that
+  // does not close is decided once the pass's other masks are known.
+  coreProjectionControl(
+    'core-summary-through-closer',
+    "  return toFixedPoint((value) => redactSecretShapedOnce(value, true), text, '[redacted]');",
+    "  return toFixedPoint((value) => redactSecretShapedOnce(value, false), text, '[redacted]');",
+    ['summarizes a value that closes on a later line whole'],
+    'SECRETS_B8_CORE_SUMMARY_CLOSER',
+  ),
+  coreProjectionControl(
+    'core-summary-whole-json',
+    '      (text) => text,',
+    '      redactSecretShapedSummaryText,',
+    ["reads a structured result's values across its line breaks and members"],
+    'SECRETS_B8_CORE_SUMMARY_JSON',
+  ),
+  coreProjectionControl(
+    'core-journal-key-collision',
+    '      if (Object.hasOwn(out, name)) collide?.();',
+    '',
+    ['reports a journal projection whose member names collide as unsettled'],
+    'SECRETS_B8_CORE_KEY_COLLISION',
+  ),
+  coreProjectionControl(
+    'core-escaped-value-start',
+    '    const valueStart = escapedValueStart(values, key.lastIndex);',
+    '    const valueStart = key.lastIndex;',
+    ['reads a quoted value one JSON string down'],
+    'SECRETS_B8_CORE_ESCAPED_QUOTE',
+  ),
+  coreProjectionControl(
+    'core-continuation-label',
+    '  for (const boundaries of new Set([afterMasks(text, masks), afterMasks(text, firstLines)])) {',
+    '  for (const boundaries of new Set([afterMasks(text, masks)])) {',
+    ['reads a label at a line start inside a split continuation'],
+    'SECRETS_B8_CORE_CONTINUATION_LABEL',
+  ),
+  // Sixth pre-review and round 9: a summary reads the line breaks and tabs that JSON escaping hides, and
+  // reads a structured result's JSON before the walk's whole masks, which that pass applies.
+  coreProjectionControl(
+    'core-summary-escape-view',
+    '  if (throughCloser) visitEscapedSeparators(text, record);',
+    '',
+    ["reads a structured summary's JSON-escaped line breaks and tabs"],
+    'SECRETS_B8_CORE_SUMMARY_ESCAPES',
+  ),
+  coreProjectionControl(
+    'core-summary-pem-markers',
+    '  return replaceRanges(text, [...secretRanges(text, true), ...masks]);',
+    '  return replaceRanges(text, masks);',
+    ["reads a structured summary's members before the walk masks them whole"],
+    'SECRETS_B8_CORE_SUMMARY_PEM',
+  ),
+  coreProjectionControl(
+    'core-fixed-point',
+    coreFixedPoint,
+    '  return redactSecretShapedOnce(text);',
+    ['reaches a fixed point'],
+    'SECRETS_B4_CORE_FIXED_POINT',
+  ),
+  diagnosticControl(
+    'diagnostic-split-probe-raw',
+    "    if (rawJoined !== undefined && hasSplitCredential(text, rawJoined, rule)) return '[REDACTED]';",
+    '',
+    ['blanks a split credential whose first letter a bare terminal introducer would take'],
+    'SECRETS_B8_SPLIT_RAW',
+  ),
+  diagnosticControl(
+    'diagnostic-url-split-retry',
+    String.raw`          /[\n\t]/.test(text[originalOffset + 1] ?? '') &&`,
+    '          false &&',
+    ['blanks an LF/TAB-split ftp credential after a line that ends in s'],
+    'SECRETS_B5_SPLIT_SFTP',
+  ),
+  // PR95: connection-string schemes join the finite URL list.
+  diagnosticControl(
+    'diagnostic-connection-scheme-userinfo',
+    String.raw`  /(?:${urlSchemes}):\/\/[^/\s]*@/gi;`,
+    String.raw`  /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
+    connectionSchemeCases,
+    connectionSchemeMarker,
+  ),
+  // PR95: only the joined scanner sees a split credential around an inner masked span.
+  diagnosticControl(
+    'diagnostic-joined-url-userinfo',
+    '    joinedPattern: URL_USERINFO_PATTERN,',
+    '    joinedPattern: /a^/g,',
+    urlJoinedCases([...colonlessSchemes, ...connectionSchemes]),
+    urlJoinedMarker,
+  ),
+  // PR95: the URL rule blocks no start, so a glued scheme is scanned like any other.
+  diagnosticControl(
+    'diagnostic-url-glued-scheme',
+    '    boundary: NO_BOUNDARY,',
+    String.raw`    boundary: /\w/,`,
+    urlGluedCases,
+    urlGluedMarker,
+  ),
+  // PR95: the `://` prefilter window must cover every listed scheme (`ws` alone fits in two).
+  diagnosticControl(
+    'diagnostic-url-scheme-window',
+    "    anchor: { text: '://', window: URL_SCHEME_WINDOW },",
+    "    anchor: { text: '://', window: 2 },",
+    urlJoinedCases([...colonlessSchemes, ...connectionSchemes].filter((scheme) => scheme !== 'ws')),
+    urlJoinedMarker,
   ),
   // R1-LN-1: recover a valid original start hidden inside a rejected greedy joined candidate.
   coreProjectionControl(

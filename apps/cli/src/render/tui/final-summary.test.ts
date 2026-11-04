@@ -221,4 +221,22 @@ describe('renderFinalSummary', () => {
     expect(lines[1]).toContain('✓ deploy completed');
     expect(lines).not.toContain('  ✓ deploy completed');
   });
+
+  it('masks a secret shape in the failure message before it reaches the terminal', () => {
+    // A PR #96 review: the summary row collapsed separators but did not mask, unlike every other
+    // untrusted diagnostic sink.
+    const key = `sk-${'Qz7'.repeat(8)}`;
+    const state: RunViewState = {
+      ...initialRunViewState(),
+      summary: {
+        outcome: 'failed',
+        errorMessage: `provider rejected Authorization: Bearer ${key}`,
+      },
+    };
+
+    const output = renderFinalSummary(state);
+    expect(output).not.toContain(key);
+    expect(output).toContain('provider rejected');
+    expect(output).toContain('[REDACTED]');
+  });
 });
