@@ -1181,11 +1181,11 @@ function passwordPastDelimiter(text: string, start: number, end: number): number
 }
 
 /**
- * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}). As in
- * {@link visitUrlUserinfo}, its username owns the text before the first `:` only when no raw `?`/`#` comes
- * first; otherwise a key there (`http://svc?token=a:b/c@d`) is read by the key/value rules, which mask its
- * value to its own end. Returns where the scheme scan resumes: after the `@` it masked through, or at
- * `start` when there is none.
+ * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}). Its username owns no
+ * text, unlike in {@link visitUrlUserinfo}: every key there (`x-access-token:`, `?token=`, `;password=`) is
+ * still read by the key/value rules, which mask its value to its own end as they did before this reading
+ * existed, so the reading only adds masks. Returns where the scheme scan resumes: after the `@` it masked
+ * through, or at `start` when there is none.
  */
 function maskPasswordPastDelimiter(
   text: string,
@@ -1196,10 +1196,7 @@ function maskPasswordPastDelimiter(
 ): number {
   const passwordAt = passwordPastDelimiter(text, start, end);
   if (passwordAt < 0) return start;
-  const colon = text.indexOf(':', start);
-  const query = text.slice(start, end).search(/[?#]/);
-  const usernameEnd = query < 0 || colon - start < query ? colon : start;
-  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: usernameEnd });
+  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: start });
   return passwordAt + 1;
 }
 
@@ -1462,17 +1459,17 @@ function redactArgVector(
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
-    // A credential flag in value position (`--ask-password --password <pw>`), and a `-u`/`--user` value that is
-    // no user:password pair, are processed as any element, so a credential flag there still masks its own value
-    // (D64 round-1 and round-2 findings on the PR #96 correction).
+    // A credential flag in value position may be the previous flag's value (`--password -MySecret`) or a flag
+    // of its own (`--ask-password --password <pw>`): it is masked as a value and still masks the element after
+    // it, so neither reading leaks. A `-u`/`--user` value that is no user:password pair is processed as any
+    // element (D64 round-1 to round-3 findings on the PR #96 correction).
     const flag = typeof item === 'string' && isCredentialFlag(item);
     const masked =
-      redactNext === undefined || flag
-        ? undefined
-        : redactCredentialArgument(redactNext, item, whole);
+      redactNext === undefined ? undefined : redactCredentialArgument(redactNext, item, whole);
     redactNext = undefined;
     if (masked !== undefined) {
       out.push(masked);
+      if (flag) redactNext = item;
       continue;
     }
     const inline =

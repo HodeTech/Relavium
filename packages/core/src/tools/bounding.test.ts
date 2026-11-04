@@ -943,6 +943,7 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
           '--user=dave',
           '-uroot',
           '-u=1000:1000',
+          '-u-x:y',
         ],
         ...['--user', 'git+https://example.invalid/r.git'],
       ],
@@ -953,25 +954,40 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(
       JSON.stringify(redactSecretShapedValue({ args: ['--user', key, '-u', key] })),
     ).not.toContain(key);
-    // A boolean flag whose last word names a credential leaves the credential flag after it in force too,
-    // in both projections; and a flag-shaped name keeps no secret shape in its `=` spelling.
+    // A credential flag in value position is masked as the previous flag's value AND masks the element
+    // after it: a boolean last-word flag before a credential flag, and a flag-shaped password, both stay
+    // masked, in both projections; a flag-shaped name keeps no secret shape in its `=` spelling.
     const ghp = `ghp_${'Q'.repeat(36)}`;
     for (const [args, expected] of [
       [
-        ['helm', '--pass-credentials', '--password', 'Qz7pw', '--with-token', '--token', 'Qz7pw'],
         [
           'helm',
           '--pass-credentials',
           '--password',
-          '[redacted]',
+          'Qz7pw',
+          'r',
           '--with-token',
           '--token',
+          'Qz7pw',
+        ],
+        [
+          'helm',
+          '--pass-credentials',
+          '[redacted]',
+          '[redacted]',
+          'r',
+          '--with-token',
+          '[redacted]',
           '[redacted]',
         ],
       ],
       [
         ['--ask-password', '--passphrase', '--secret', '-p', 'Qz7pw'],
-        ['--ask-password', '--passphrase', '--secret', '-p', '[redacted]'],
+        ['--ask-password', '[redacted]', '[redacted]', '[redacted]', '[redacted]'],
+      ],
+      [
+        ['mysql', '--password', '-Qz7Secret', 'db', '--token', '--Qz7-password'],
+        ['mysql', '--password', '[redacted]', '[redacted]', '--token', '[redacted]'],
       ],
       [[`--github-${ghp}-token=Qz7pw`], ['--github-[redacted]-token=[redacted]']],
     ] as const) {
@@ -1425,9 +1441,11 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       ['https://user:pa/ss@host.example/@scope/pkg', 'https://[redacted]@host.example/@scope/pkg'],
       // A raw `?` that is not a host's public query stays userinfo, as the authority scan reads it.
       ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
-      // A key in the username names the user, so its value stops at the `@` and the host stays.
-      ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
-      ['https://x-access-token:pa?x,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
+      // The username owns nothing here: a key there masks its value to its own end, as it did before this
+      // reading existed, so a password's text after a raw `@` stays masked.
+      ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]'],
+      ['https://x-access-token:Ab/cd@Ef9Gh2Jk@github.com/o/r.git', 'https://[redacted]'],
+      ['http://svc;token=a:b/c@d', 'http://[redacted]'],
       // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
       // After a raw `?`/`#` there is no username: the key there masks its value to its own end.
@@ -1454,6 +1472,12 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       // A raw `?`/`#` after the delimiter may begin a path's query: a recorded limit.
       'https://user:pa,ss?1@host.example/',
       'https://user:pa/ss#1@host.example/',
+      // Each delimiter the authority keeps also stops the read on its own.
+      '{"a":"https://h.example:x/p","b":"c@d.example"}',
+      "https://u:pw/x'@y.example",
+      'https://u:pw/x}@y.example',
+      'https://u:pw/x]@y.example',
+      'https://u:pw/x @y.example',
     ]) {
       expect(redactSecretShapedText(input), input).toBe(input);
     }
