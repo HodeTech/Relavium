@@ -72,7 +72,7 @@ The eleven Step 4 controls remove separate production mechanisms:
 
 The Step 4 declarations require 52 additional named assertion witnesses. Every
 selected workload remains a complete test file: 33 input cases, 14 action-forwarding
-cases, 32 dispatch cases, 85 run-command cases, three run-consent cases, 73 gate cases,
+cases, 32 dispatch cases, 85 run-command cases, three run-consent cases, 74 gate cases,
 28 top-level parser cases, or 131 native integration cases, as declared per control.
 The coordinator independently enforces exact case counts, unique complete case
 identities and identical fixed/removal/restored inventories. It accepts only a

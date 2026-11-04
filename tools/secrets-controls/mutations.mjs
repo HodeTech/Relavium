@@ -699,7 +699,7 @@ export const mutations = [
     '    const mayPrompt = args.secretStdin !== true;',
     '    const mayPrompt = true;',
     ['apps/cli/src/commands/gate.test.ts'],
-    73,
+    74,
     'refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant',
     'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
   ),
