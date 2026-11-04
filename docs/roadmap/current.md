@@ -80,8 +80,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 
 0. **Gate 0 — decide and re-order (no product code).** This reset and the `development`→`main` checkpoint (D61) —
    **both done:** PR #96 merged on 2026-11-04 ([checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)); its review
-   correction's D64 rounds 1–4 found five, one, one and one medium findings, all fixed since, and a clean round 5
-   is pending;
+   correction's D64 rounds 1–4 found five, one, one and one medium findings, all fixed since; by the maintainer's
+   ruling of 2026-11-05 one careful pass closed it instead of a fifth round (the `,`/`/` URL reading removed, A4 a
+   recorded limit again);
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the

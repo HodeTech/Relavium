@@ -425,8 +425,8 @@ the following element or the complete value in `--token=value` form, with the ex
 `user:password` pair; a credential flag in value position also masks the element after it). Only the
 ambiguous `-p` spelling retains the existing port-shaped exception; explicitly named
 credential flags have none. Since 2026-11-04 the credential flags include every flag whose last
-word names a credential and curl's `-u`/`--user` pair, and a URL password's `,` or `/` no longer
-ends its userinfo ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
+word names a credential and curl's `-u`/`--user` pair
+([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
 with the PR95 tightening above, a `v5:` row whose arguments these project differently now refuses
 matching prepare, and every other row keeps its digest. Both rules are program-agnostic, so a value a
 boolean flag happens to precede is masked as well — a `name:group` after `-u` (`docker run -u app:app`), the

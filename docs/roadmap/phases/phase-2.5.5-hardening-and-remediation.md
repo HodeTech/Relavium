@@ -10804,7 +10804,20 @@ escape shapes (one million; 70,280 at `7a12ee6f`). The round's lows were fixed w
 refused, batch packing pinned, the `ci` aggregate's guard steps pinned to their keys, the W7 summary moved back beside
 its copy, the release runbook and `code-review.md` notes, and smaller corrections). A cleanup race in a test failed
 the usage controls job once at `7a12ee6f` (ESRCH between a liveness check and a kill) and was fixed in `93a8b033`.
-**D64's bar is still not met:** acceptance needs a NEW round 5 with no blocker, high or medium finding.
+**D64's bar was still not met.**
+
+**Resolution (maintainer, 2026-11-05).** Four rounds each found one medium regression in the correction's two
+heuristic readings, each fix exposing the next case. The maintainer ruled against a fifth round: one careful pass by
+the author, then continue. That pass separated what can be shown from what cannot. The argv rules provably only add
+masks: at the base an element was masked when the element before it was an anchored credential flag that was not
+itself masked, and now whenever the element before it is any credential flag, a set that contains the anchored names;
+a `--flag=value` or glued `-u` spelling keeps text only where the text rules keep it. The `,`/`/` URL reading cannot
+be shown so, because the projection repeats until stable and a reading's masks can change the text other rules read in
+a later pass, so it was removed: the text projection is again the base's (no difference over 200,000 generated texts),
+and the review's A4 is a recorded limit again
+([deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04)). Both
+superset oracles find no violation at the resulting head. D64's bar of a clean NEW round is waived for this correction
+by that ruling, a recorded deviation.
 
 ## Execution record moved from current.md — 2026-11-04
 

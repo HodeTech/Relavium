@@ -131,28 +131,15 @@ user, so its value does not run on through the public host and path
 (`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`), and a key on
 the line after a split URL masks its value to its own end
 (`see https://\nDB_PASSWORD=P@ssw0rd123 now` → `see https://\n[redacted] now`). The projection
-otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `}` and `]`,
-the delimiters of the JSON and quoted texts it reads, so userinfo that contains one of them — an
-already-masked `[REDACTED]` password among them — is left as it is; it recognizes any scheme of up to
-32 characters rather than a finite list; and a userinfo with no password is kept as a vanity handle
-below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 a `,` or `/` in a
-password no longer ends an authority that holds no `@` before it: the userinfo is read on to the first `@`
-within 512 characters
-(`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`), while a `,` in the
-username still ends the authority (`https://us,er:pw@host` stays as it is; the backstop masks it). A port
-(`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
-scheme, a quote, `}`, `]` or whitespace, or any raw `?` or `#` after the `,` or `/` (which may begin a path's
-query, as in `https://host:abc/p?e=a@b`) keeps the text public: `https://user:pa,ss?1@host` stays as it is,
-a recorded limit the backstop does not share for the comma spelling. It is skipped when a nested scheme's `://`
-straddles the `,` or `/` (`https://proxy:https://u:p@ss@h`) or the authority holds a backslash, a JSON escape the
-key rules read: both are left to the other rules. This reading only adds masks: its username
-owns no text, so every key there — a credential-word username, or one after a raw `?`, `#`, `;` or `&` — masks its
-value to its own end as before 2026-11-04 (`https://x-access-token:pa,ss@github.com/o/r` and
-`http://svc?token=a:b/c@d` → `https://[redacted]`, `http://[redacted]`). A password with an `@` before its `,`
-or `/` keeps its tail after that `@` (`https://user:p@ss/word@vault/x`), a recorded limit. The backstop still stops at a `/` (a recorded low). Two
-further recorded limits: a password that begins with the `,` or `/` (`https://user:/pw@host`) stays public,
-and a non-numeric port with an `@` in its path (`http://localhost:$PORT/users/@me`) reads as a password through
-that `@`, which masks benign text and merges the journal identities of calls that differ there.
+otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and
+`]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them — is
+left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
+userinfo with no password is kept as a vanity handle below 16 characters and masked from 16 on,
+under every scheme. A `,` or `/` in a password therefore ends the authority, and the text after it stays
+public unless another rule reads it (`https://user:pa,ss@host`; the backstop masks that comma spelling), a
+recorded limit (the PR #96 review's A4). A reading past the delimiter was tried and removed on 2026-11-05:
+under the repeated projection its masks could change the text other rules read, so it could not be shown to
+only add masks.
 
 In an argument vector, the element after a credential flag, or the value of its `--flag=value`
 spelling, is masked whole. A flag is a credential flag when it is one of the anchored names (`-p`,
@@ -168,7 +155,10 @@ previous flag's value (`--password -MySecret`) or a flag of its own (`--ask-pass
 so it is masked as a value and still masks the element after it: neither reading leaks, at the cost of the flag
 name there. After a `-u`/`--user` with no pair (`unzip -u -P <password>`) the element is read as any other. A
 `--flag=value` spelling keeps an anchored name (`--password=[redacted]`), and a last-word name only where the
-text rules keep it too; where they mask it with its value (`--db-token=<value>`), the whole element is masked.
+text rules keep it too; where they mask it with its value (`--db-token=<value>`), the whole element is masked,
+and a glued `-u` pair keeps its `-u` on the same terms. These rules only add masks to the anchored rule of
+before 2026-11-04: an element is masked whenever the element before it is any credential flag, and a
+`--flag=value` or glued spelling never shows text the text rules mask.
 Short-option clusters (`curl -su alice:secret`),
 `-U`/`--proxy-user` and flags whose last word is not a listed credential word (`--oauth2-bearer`,
 `--pass`, openssl's `-passin`, keytool's `-storepass`) are outside the rule, a recorded limit.

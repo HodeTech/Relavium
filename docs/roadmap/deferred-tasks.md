@@ -997,9 +997,15 @@ names, unless the entry names another.
 
 **Redaction:**
 
-- [ ] **The LLM backstop leaves a `/` in a URL password.** *Low.* `scrubSecrets('https://user:pa/ss@host')` keeps the
-  password, because its userinfo pattern stops at `/`; core masks it since this correction. Matching core needs its
-  port guard (`host:8080/a@b` stays public). *(low · packages/llm/src/scrub-secrets.ts)*
+- [ ] **A URL password that holds a `,` or `/` keeps its tail after it public (the PR #96 review's A4).** *Medium as
+  reviewed; pre-existing, not a regression.* Core's authority scan ends at either, so `https://user:pa,ss@host` and
+  `https://user:pa/ss@host` keep `ss` visible in `toolInput`, summaries and the journal digest input; the LLM backstop
+  masks the comma spelling but stops at `/` too. A reading past the delimiter landed with the PR #96 correction and
+  was removed on 2026-11-05 (maintainer: one careful pass, then continue): the projection repeats until stable, so a
+  reading's mask can change the text other rules read in a later pass, and D64 rounds 1, 3 and 4 each found a
+  credential it newly showed. **Trigger:** a design that merges a new reading's ranges with the base rules' on the
+  original text, so it provably only adds masks, with a superset oracle validated on a known-bad version. *(medium as
+  reviewed · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
 - [ ] **A glued `-pSECRET` (`mysql -uroot -pSecret`) is not masked.** *Low.* A glued `-p` is ambiguous with
   `cp -pR` and `tar -pxf`, so only the separate and `=` spellings are read. *(low · packages/core/src/tools/bounding.ts)*
 - [ ] **The object-key rule masks count keys such as `max_tokens`.** *Low.* Its plural folding reads `tokens` as
@@ -1057,14 +1063,14 @@ lows are recorded:
   `-kualice:pw`), `-U`/`--proxy-user`, `--oauth2-bearer`, `--pass`, `--proxy-pass`, `--tlspassword`, openssl's
   `-passin pass:…` and keytool's `-storepass`/`-keypass`. None is a regression; documented as a limit in
   built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-1 F6, SEC-4)*
-- [ ] **A raw `?` or `#` after a URL password's `,` or `/` keeps the password public** (`https://user:pa,ss?1@host`);
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A raw `?` or `#` after a URL password's `,` or `/` keeps the password public** (`https://user:pa,ss?1@host`);
   the LLM backstop masks the comma spelling. Admitting them needs a public-query test on the tail like
   `isPublicQueryContact`. Documented in built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-1 F5,
   DOC-2)*
-- [ ] **The `,`/`/` reading stops at the first `@`; the main userinfo path masks to the last.**
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **The `,`/`/` reading stops at the first `@`; the main userinfo path masks to the last.**
   `https://user:pa/ss@word9@host.example/x` keeps `word9` visible. Extend the mask to the last `@` before the next
   `/`, `?`, `#`, whitespace or quote. *(low · packages/core/src/tools/bounding.ts · round-1 SEC-6)*
-- [ ] **The `,`/`/` tail scan runs once per scheme occurrence.** On dense `scheme://x:y,` input at the 1 MiB CLI
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **The `,`/`/` tail scan runs once per scheme occurrence.** On dense `scheme://x:y,` input at the 1 MiB CLI
   output cap the projection costs about six times more than before (linear: each scan stops at 512 characters, so no
   ReDoS). Track the next `@` monotonically across matches and pin the cost with an admitted-size case. *(low ·
   packages/core/src/tools/bounding.ts · round-1 F7)*
@@ -1088,12 +1094,12 @@ lows are recorded:
 boolean flag whose last word names a credential consuming the credential flag after it (`--pass-credentials --password
 <pw>`), and it was fixed with the round's lows but these two recorded limits:
 
-- [ ] **A URL password that begins with its `,` or `/` stays public** (`postgres://app:/Xk9@db`,
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A URL password that begins with its `,` or `/` stays public** (`postgres://app:/Xk9@db`,
   `https://user:,pw@host`): the port test reads the empty text after the colon as a port. Treating only a non-empty
   digit run as a port needs the scheme check to cover the authority's trailing colon
   (`https://xhttps://user:pw@h.example/`). Documented in built-in-tools.md. *(low ·
   packages/core/src/tools/bounding.ts · round-2 RED-2)*
-- [ ] **A non-numeric port with an `@` in its path reads as a password** (`http://localhost:$PORT/users/@me` →
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A non-numeric port with an `@` in its path reads as a password** (`http://localhost:$PORT/users/@me` →
   `http://[redacted]@me`), masking benign text and merging the journal identities of calls that differ there. Fix
   idea: leave a placeholder-shaped port (`$NAME`, `${…}`, `<…>`) after a host-shaped name public. Documented in
   built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-2 RED-3)*
@@ -1102,7 +1108,7 @@ boolean flag whose last word names a credential consuming the credential flag af
 second claim downgraded to low were fixed by making both readings add masks only; the round's lows were fixed with
 them but these:
 
-- [ ] **A URL password with an `@` before its `,` or `/` keeps its tail after that `@`**
+- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A URL password with an `@` before its `,` or `/` keeps its tail after that `@`**
   (`https://user:p@ss/word@vault/x` → `https://[redacted]@ss/word@vault/x`): the authority scan finds the `@` first,
   so the `,`/`/` reading never runs. Pre-existing; documented in built-in-tools.md. Fix idea: when the userinfo before
   the first `@` holds a password and the next delimiter is `,` or `/`, read on through the next `@` with the port
@@ -1119,6 +1125,11 @@ downgraded claim (a masked `--flag=value` name shown) were fixed, with the round
   `93a8b033`): `tools/cli-bootstrap/witness.test.mjs:488,552`,
   `tools/cli-package/process.test.mjs:252,409,424,495,523,581`, `produce.test.mjs:593,806` and `check.test.mjs:218`.
   Replace each with a kill that ignores ESRCH only. *(low · the files named · round-4 CI-R4-1)*
+
+**Resolution (maintainer, 2026-11-05).** No fifth round: one careful pass removed the `,`/`/` URL reading, which could
+not be shown to only add masks under the repeated projection, and showed the argv rules to be a superset of the base
+([D61 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)). The
+entries about that reading above are closed as moot, and A4 is recorded under **Redaction**.
 
 **The review's unverified first-pass lows, triaged at `f25fb83d` (2026-11-04).** Two agents checked all 86 against the
 merged head: 81 still hold (78 entries below once duplicates merge), R1a-06 was fixed by `e8121aa4`, R1a-04 and R9a-05
