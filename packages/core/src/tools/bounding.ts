@@ -76,7 +76,7 @@ function isPlainObject(value: object): value is Record<string, unknown> {
  * sees only a flat string). Display-only — the dispatch already ran on the real args. Cycle-safe.
  */
 export function redactInlineMedia(value: unknown): unknown {
-  return redactInlineMediaForText(value, new WeakSet<object>());
+  return redactInlineMediaForText(value, new WeakSet<object>(), { bytes: 0 });
 }
 
 /**
@@ -92,11 +92,11 @@ interface OmittedMedia {
 function redactInlineMediaForText(
   value: unknown,
   seen: WeakSet<object>,
-  omitted?: OmittedMedia,
+  omitted: OmittedMedia,
 ): unknown {
   if (typeof value === 'string') {
     if (!isBase64DataUri(value)) return value;
-    if (omitted !== undefined) omitted.bytes += utf8ByteLength(value);
+    omitted.bytes += utf8ByteLength(value);
     return '[base64 data URI omitted]';
   }
   if (typeof value !== 'object' || value === null) {
@@ -111,7 +111,7 @@ function redactInlineMediaForText(
       return value.map((item) => redactInlineMediaForText(item, seen, omitted));
     }
     if (isBinaryBuffer(value)) {
-      if (omitted !== undefined) omitted.bytes += binaryByteLength(value);
+      omitted.bytes += binaryByteLength(value);
       return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
     }
     if (!isPlainObject(value)) {
@@ -120,7 +120,7 @@ function redactInlineMediaForText(
     if (isCanonicalBase64Source(value)) {
       const data = value['data'];
       const base64Length = typeof data === 'string' ? data.length : 0;
-      if (omitted !== undefined) omitted.bytes += base64Length;
+      omitted.bytes += base64Length;
       // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
       return { kind: 'base64', base64Length };
     }
