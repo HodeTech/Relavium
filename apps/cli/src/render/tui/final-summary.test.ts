@@ -111,7 +111,16 @@ describe('renderFinalSummary', () => {
     };
     const completed = reduceAll([
       started,
-      { type: 'run:completed', runId: RUN, timestamp: TS, sequenceNumber: 2, outputs: {} },
+      {
+        type: 'run:completed',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        outputs: {},
+        durationMs: 10,
+        totalTokensUsed: { input: 0, output: 0 },
+        totalCostMicrocents: 0,
+      },
     ]);
     expect(renderFinalSummary(completed)).toContain(
       `  run id ${RUN} — replay with \`relavium logs ${RUN}\``,
