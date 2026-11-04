@@ -33,7 +33,7 @@ import { basename, isAbsolute, join, posix } from 'node:path';
 import { TextDecoder, isDeepStrictEqual } from 'node:util';
 import { checkBundleClosure } from '../bundle-closure/closure.mjs';
 import { MODE_EVIDENCE, emittedInventory } from '../bundle-closure/inventory.mjs';
-import { flatFiles, readOrdinaryFile, sha256 } from './files.mjs';
+import { flatFiles, readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { within } from './paths.mjs';
 import {
   SourceMapError,
@@ -236,7 +236,7 @@ function upstreamSources(repository, packageName, jsPath, texts) {
   const map = readJson(onDisk(repository, mapPath), LIMITS.upstreamMapBytes, mapPath);
   if (
     !isRecord(map) ||
-    !isDeepStrictEqual(Object.keys(map).sort(), [
+    !isDeepStrictEqual(Object.keys(map).sort(byCodeUnit), [
       'file',
       'mappings',
       'names',
@@ -362,7 +362,7 @@ function finalMap(repository, jsName, map, expected, code, texts) {
     ),
   );
   if (new Set(sources).size !== sources.length) refuse('MAP_SOURCE_DUPLICATE', subject);
-  if (!isDeepStrictEqual([...sources].sort(), [...expected].sort())) {
+  if (!isDeepStrictEqual([...sources].sort(byCodeUnit), [...expected].sort(byCodeUnit))) {
     refuse('MAP_SOURCE_COVERAGE', subject);
   }
   checkMappings(repository, map, code, sources, texts, 'MAP', subject);
@@ -466,7 +466,10 @@ export function finalizeCandidate({ repository, staging }) {
   const entries = readdirSync(dist, { withFileTypes: true });
   if (
     entries.some((entry) => !entry.isFile()) ||
-    !isDeepStrictEqual(entries.map((entry) => entry.name).sort(), expectedEntries.sort())
+    !isDeepStrictEqual(
+      entries.map((entry) => entry.name).sort(byCodeUnit),
+      [...expectedEntries].sort(byCodeUnit),
+    )
   ) {
     refuse('OUTPUT_INVENTORY');
   }

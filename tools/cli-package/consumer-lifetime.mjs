@@ -49,7 +49,7 @@ export async function completeConsumer({ exercise, cleanup, cleanupFailed, publi
       primaryFailure = true;
     }
     try {
-      await cleanup();
+      cleanup(); // synchronous by contract, see above
     } catch (error) {
       if (!primaryFailure) throw error;
       secondary();

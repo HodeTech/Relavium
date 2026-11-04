@@ -32,7 +32,7 @@ import { basename, dirname, join } from 'node:path';
 import { originFromEnvironment } from './binding.mjs';
 import { sourceIdentity } from './candidate.mjs';
 import { CANDIDATE_STAGING_ENV } from './finalize.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { readPrivateManifest, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
 import { producePackage } from './produce.mjs';
@@ -218,8 +218,10 @@ async function runControls(context, state) {
   const record = (id, expected, observed) => state.results.push({ id, expected, observed });
   const controls = privateDirectory(join(staging, 'controls'));
   let count = 0;
-  const scratch = (id) =>
-    privateDirectory(join(controls, `${String((count += 1)).padStart(2, '0')}-${id}`));
+  const scratch = (id) => {
+    count += 1;
+    return privateDirectory(join(controls, `${String(count).padStart(2, '0')}-${id}`));
+  };
   const cli = join(candidate, 'apps', 'cli');
   const tarball = join(artifact, receipt.tarball);
   const sealed = readPrivateManifest(staging);
@@ -283,8 +285,8 @@ async function runControls(context, state) {
       [...finalized.outputs, ...finalized.maps]
         .filter((entry) => sealedDigests.get(entry.path) !== entry.sha256)
         .map((entry) => entry.path)
-        .sort(),
-      [...changed].sort(),
+        .sort(byCodeUnit),
+      [...changed].sort(byCodeUnit),
       'PACKED_CLI_MAP_CONTROL_TARGET',
     );
     writeFileSync(join(copy, 'finalized.json'), JSON.stringify(finalized), {

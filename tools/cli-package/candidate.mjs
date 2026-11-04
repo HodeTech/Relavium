@@ -7,7 +7,6 @@
  * output, and no build cache is read or written.
  */
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -21,7 +20,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ENGINE_PACKAGES } from './finalize.mjs';
-import { readOrdinaryFile } from './files.mjs';
+import { readOrdinaryFile, byCodeUnit } from './files.mjs';
 import { within } from './paths.mjs';
 import {
   GIT_NULL_DEVICE,
@@ -76,7 +75,7 @@ const GIT_CONFIG_VARIABLES = Object.freeze([
   'SystemRoot',
   'WINDIR',
 ]);
-const GIT_CONFIG_ENTRY = /^GIT_CONFIG_(?:KEY|VALUE)_(?:0|[1-9][0-9]{0,3})$/u;
+const GIT_CONFIG_ENTRY = /^GIT_CONFIG_(?:KEY|VALUE)_(?:0|[1-9]\d{0,3})$/u;
 
 /**
  * The developer's global Git excludes file, so that the candidate's isolated Git ignores what the
@@ -161,7 +160,7 @@ function readArguments(excludes) {
  */
 function uncheckedPaths(output) {
   return gitPaths(output)
-    .filter((entry) => entry[0] === 'S' || /^[a-z]$/u.test(entry[0]))
+    .filter((entry) => entry.startsWith('S') || /^[a-z]$/u.test(entry[0]))
     .map((entry) => entry.slice(2));
 }
 
@@ -229,7 +228,7 @@ export async function candidateFiles(
   const deleted = new Set(
     gitPaths((await run('git', ['ls-files', '-z', '--deleted'], options)).stdout),
   );
-  const files = [...new Set(listed)].filter((path) => !deleted.has(path)).sort();
+  const files = [...new Set(listed)].filter((path) => !deleted.has(path)).sort(byCodeUnit);
   assert.ok(files.length > 0 && files.length <= limits.files, 'PACKED_CLI_CANDIDATE_FILES');
   return files;
 }
@@ -319,9 +318,10 @@ export async function dependencyStore({ repository, environment, home, pnpm = ru
 /**
  * Whether every copied file is byte for byte the commit's blob. A clean status does not prove it:
  * line-ending conversion (`core.autocrlf`, the Git for Windows default) and Git's stat cache can report
- * converted working-tree bytes as unchanged, and the candidate is built from those bytes. Each copy's
- * Git blob id (SHA-1 of the blob header and its raw bytes, no filter) must equal the commit tree's
- * entry for its path.
+ * converted working-tree bytes as unchanged, and the candidate is built from those bytes. Each copy,
+ * an ordinary file, must have the commit tree's blob id for its path, as Git itself names its raw bytes
+ * (`hash-object --no-filters`): Git's collision-detecting SHA-1 in the repository's object format, not a
+ * plain hash of ours.
  * @param {{repository: string, candidate: string, source: string, files: readonly string[],
  *   run?: typeof runCommand}} options
  */
@@ -332,22 +332,55 @@ export async function copyMatchesCommit({
   files,
   run = runCommand,
 }) {
-  const listing = (
-    await run('git', ['--no-replace-objects', 'ls-tree', '-r', '-z', '--full-tree', source], {
-      cwd: repository,
-      env: isolatedGitEnvironment(),
-    })
-  ).stdout;
+  const git = async (args) =>
+    (
+      await run('git', ['--no-replace-objects', ...args], {
+        cwd: repository,
+        env: isolatedGitEnvironment(),
+      })
+    ).stdout;
   const blobs = new Map();
-  for (const entry of gitPaths(listing)) {
-    const match = /^[0-7]{6} blob ([0-9a-f]{40})\t(.+)$/su.exec(entry);
+  for (const entry of gitPaths(await git(['ls-tree', '-r', '-z', '--full-tree', source]))) {
+    const match = /^[0-7]{6} blob ([0-9a-f]{40,64})\t(.+)$/su.exec(entry);
     if (match !== null) blobs.set(match[2], match[1]);
   }
-  return files.every((path) => {
-    const bytes = readOrdinaryFile(join(candidate, ...path.split('/')), CANDIDATE_LIMITS.fileBytes);
-    const id = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
-    return blobs.get(path) === id;
-  });
+  const copies = files.map((path) => join(candidate, ...path.split('/')));
+  // `hash-object` follows a symbolic link, so each copy is first proven an ordinary, bounded file.
+  for (const copy of copies) readOrdinaryFile(copy, CANDIDATE_LIMITS.fileBytes);
+  for (const batch of hashObjectBatches(copies)) {
+    const ids = await git(['hash-object', '--no-filters', '--', ...batch.paths]);
+    const names = ids.split('\n').filter((line) => line !== '');
+    if (names.length !== batch.paths.length) return false;
+    for (const [offset, id] of names.entries()) {
+      if (blobs.get(files[batch.start + offset]) !== id) return false;
+    }
+  }
+  return true;
+}
+
+/** Windows caps one command line at 32,767 characters; a batch of paths stays well inside it. */
+const HASH_OBJECT_BATCH_CHARACTERS = 16 * 1024;
+
+/**
+ * Consecutive batches of paths for one `git hash-object` each, with the index of each batch's first path.
+ * @param {readonly string[]} paths
+ * @returns {{start: number, paths: string[]}[]}
+ */
+function hashObjectBatches(paths) {
+  const batches = [];
+  let current = { start: 0, paths: [] };
+  let characters = 0;
+  for (const [index, path] of paths.entries()) {
+    if (current.paths.length > 0 && characters + path.length + 1 > HASH_OBJECT_BATCH_CHARACTERS) {
+      batches.push(current);
+      current = { start: index, paths: [] };
+      characters = 0;
+    }
+    current.paths.push(path);
+    characters += path.length + 1;
+  }
+  if (current.paths.length > 0) batches.push(current);
+  return batches;
 }
 
 /**

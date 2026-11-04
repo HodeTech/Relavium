@@ -26,8 +26,9 @@ const SOCKET = '/S.gpg-agent.browser';
 
 /** Every process whose command line names `home`. */
 export function processesNaming(home) {
+  // An absolute path, not a PATH lookup; `/bin/ps` exists on macOS and on Linux (merged-/usr or not).
   const listing = spawnSync(
-    'ps',
+    '/bin/ps',
     process.platform === 'darwin' ? ['-axo', 'command'] : ['-eo', 'args'],
     { encoding: 'utf8' },
   );
@@ -70,8 +71,12 @@ export function ephemeralKey() {
     return run.stdout;
   };
   const dispose = () => {
-    spawnSync('gpgconf', ['--homedir', home, '--kill', 'all'], { stdio: 'ignore', env });
-    spawnSync('gpgconf', ['--homedir', home, '--remove-socketdir'], { stdio: 'ignore', env });
+    // The `gpgconf` of the same installation, not a PATH lookup.
+    spawnSync(gpg.gpgconf.command, ['--homedir', home, '--kill', 'all'], { stdio: 'ignore', env });
+    spawnSync(gpg.gpgconf.command, ['--homedir', home, '--remove-socketdir'], {
+      stdio: 'ignore',
+      env,
+    });
     rmSync(home, { recursive: true, force: true });
     rmSync(exportDirectory, { recursive: true, force: true });
   };

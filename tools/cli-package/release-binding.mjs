@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import { ARCHIVE_LIMITS } from './archive.mjs';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { isProductionRecipient, isSyntheticSource } from './release-recipient.mjs';
 
 /** The receipt's file name beside the ciphertext, as the interim release guard keys on it. */
@@ -61,7 +61,10 @@ const isRecord = (value) => value !== null && typeof value === 'object' && !Arra
 
 /** @param {unknown} value @param {readonly string[]} keys */
 function exact(value, keys) {
-  if (!isRecord(value) || !isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())) {
+  if (
+    !isRecord(value) ||
+    !isDeepStrictEqual(Object.keys(value).sort(byCodeUnit), [...keys].sort(byCodeUnit))
+  ) {
     refuseCustody('BINDING_SHAPE');
   }
   return /** @type {Record<string, unknown>} */ (value);
@@ -332,8 +335,9 @@ function verify(directory, expected) {
     RELEASE_BINDING_FILE,
     tarballName(packageVersion),
     ciphertextFileName(packageVersion),
-  ].sort();
-  if (!isDeepStrictEqual(readdirSync(directory).sort(), names)) refuseCustody('CANDIDATE_ENTRIES');
+  ].sort(byCodeUnit);
+  if (!isDeepStrictEqual(readdirSync(directory).sort(byCodeUnit), names))
+    refuseCustody('CANDIDATE_ENTRIES');
   let bytes;
   try {
     bytes = readOrdinaryFile(join(directory, RELEASE_BINDING_FILE), RECEIPT_BYTES);

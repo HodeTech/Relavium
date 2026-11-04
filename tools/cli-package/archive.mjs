@@ -80,6 +80,32 @@ function unpack(bytes) {
 }
 
 /** @param {string} path */
+/**
+ * A runtime dependency requirement the public manifest may carry: an exact, caret or tilde registry
+ * version, the form pnpm publishes for a `catalog:` entry. An allowlist rather than a list of refused
+ * protocols, so `npm:` aliases, `github:`, git and tarball URLs, `file:`/`link:`/`workspace:`/`catalog:`
+ * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding).
+ */
+const REGISTRY_REQUIREMENT = /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,64})?$/u;
+
+/**
+ * Whether one public runtime dependency entry is admitted: an npm package name outside the private
+ * `@relavium/` scope, required at a registry version. Shared by the archive inspector and the package
+ * receipt binding so the two cannot drift.
+ * @param {string} name
+ * @param {unknown} requirement
+ * @returns {boolean}
+ */
+export function isPublicRuntimeDependency(name, requirement) {
+  return (
+    /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u.test(name) &&
+    name.length <= 200 &&
+    !name.startsWith('@relavium/') &&
+    typeof requirement === 'string' &&
+    REGISTRY_REQUIREMENT.test(requirement)
+  );
+}
+
 export function assertPublicPackagePath(path) {
   if (
     !/^package\/(?:dist\/[A-Za-z0-9_-]+\.js|drizzle\/[0-9]{4}_[a-z0-9_]+\.sql|drizzle\/meta\/(?:[0-9]{4}_snapshot|_journal)\.json|package\.json|README\.md|CHANGELOG\.md|LICENSE)$/u.test(
@@ -122,13 +148,7 @@ function manifest(bytes, expected) {
     if (dependencies === undefined) continue;
     if (!isRecord(dependencies)) refuse('MANIFEST_RUNTIME');
     for (const [name, version] of Object.entries(dependencies)) {
-      if (
-        name.startsWith('@relavium/') ||
-        typeof version !== 'string' ||
-        /^(?:workspace|catalog|file|link):/u.test(version)
-      ) {
-        refuse('MANIFEST_RUNTIME');
-      }
+      if (!isPublicRuntimeDependency(name, version)) refuse('MANIFEST_RUNTIME');
     }
   }
   return parsed;

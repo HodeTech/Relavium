@@ -3,11 +3,11 @@
  * can build a package tarball from an in-memory inventory. `package/dist/index.js` is 0755, every
  * other entry 0644. The dialect itself is `ustar.mjs`'s.
  */
-import { ustarEntry, writeChecksum, writeUstar } from './ustar.mjs';
+import { ustarEntry, writeUstar } from './ustar.mjs';
 
 const packageMode = (path) => (path === 'package/dist/index.js' ? 0o755 : 0o644);
 
-export { writeChecksum as checksum };
+export { writeChecksum as checksum } from './ustar.mjs';
 
 /** @param {string} path @param {Uint8Array} bytes */
 export function entry(path, bytes) {

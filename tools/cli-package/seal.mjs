@@ -10,7 +10,7 @@ import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { inspectPackageArchive } from './archive.mjs';
 import { PACKAGE_TEST_MODE, originFromEnvironment, validatePackageReceipt } from './binding.mjs';
-import { flatFiles, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
+import { flatFiles, oneTarball, readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { MANIFEST_FILE, RECORD_BYTES, sealPrivateManifest, verifySealedDist } from './manifest.mjs';
 import { symbolicateCandidate } from './symbolicate.mjs';
 
@@ -74,15 +74,15 @@ export function finalizedPublicFiles(root, staging) {
     actual.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
   }
   assert.deepEqual(
-    readdirSync(join(cli, 'dist')).sort(),
-    outputs.map((path) => basename(path)).sort(),
+    readdirSync(join(cli, 'dist')).sort(byCodeUnit),
+    outputs.map((path) => basename(path)).sort(byCodeUnit),
     'PACKED_CLI_EXTRA_FINAL_OUTPUT',
   );
   const record = JSON.parse(readOrdinaryFile(join(staging, 'finalized.json'), 1024 * 1024));
-  const byPath = (left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const byPath = (left, right) => byCodeUnit(left.path, right.path);
   assert.deepEqual(
     [...record.outputs].sort(byPath),
-    actual.sort(byPath),
+    [...actual].sort(byPath),
     'PACKED_CLI_FINALIZED_RECORD_DRIFT',
   );
   const canonical = flatFiles(join(root, 'packages/db/drizzle'), 'package/drizzle');

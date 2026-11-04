@@ -40,7 +40,10 @@ export const posixModes = process.platform !== 'win32';
 export const PRELOAD = fileURLToPath(new URL('./frame-capture.mjs', import.meta.url));
 let count = 0;
 /** A fresh scratch directory name. */
-export const fresh = (name) => join(scratch, `${name}-${(count += 1)}`);
+export const fresh = (name) => {
+  count += 1;
+  return join(scratch, `${name}-${count}`);
+};
 
 export const SOURCES = {
   'packages/core/src/yaml-decode.ts': [
@@ -138,7 +141,8 @@ export function put(root, path, bytes) {
 export async function candidate({ sources = SOURCES, parent = scratch } = {}) {
   const root = fresh('candidate');
   const staging = fresh('staging');
-  const work = join(parent, `work-${(count += 1)}`);
+  count += 1;
+  const work = join(parent, `work-${count}`);
   for (const directory of [staging, work]) {
     mkdirSync(directory, { recursive: true });
     chmodSync(directory, 0o700);
@@ -186,7 +190,7 @@ export async function candidate({ sources = SOURCES, parent = scratch } = {}) {
   const outputs = [];
   const maps = [];
   for (const file of built.outputFiles) {
-    const name = posix.basename(file.path.split('\\').join('/'));
+    const name = posix.basename(file.path.replaceAll('\\', '/'));
     if (name.endsWith('.map')) {
       const map = JSON.parse(file.text);
       map.sources = map.sources.map((source) =>

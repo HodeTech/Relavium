@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
-import { readOrdinaryFile } from './files.mjs';
+import { readOrdinaryFile, byCodeUnit } from './files.mjs';
 
 /** The committed production recipient directory, without a trailing separator so a link is never followed. */
 export const PRODUCTION_RECIPIENT_ROOT = fileURLToPath(
@@ -108,7 +108,7 @@ function fixtureFingerprints(file) {
     !entries.every(
       (entry) =>
         isRecord(entry) &&
-        isDeepStrictEqual(Object.keys(entry).sort(), ['primary', 'subkey']) &&
+        isDeepStrictEqual(Object.keys(entry).sort(byCodeUnit), ['primary', 'subkey']) &&
         isFingerprint(entry.primary) &&
         isFingerprint(entry.subkey),
     )

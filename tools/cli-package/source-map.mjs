@@ -59,7 +59,7 @@ export function decodeMappings(mappings, { sources, names }) {
   const finish = () => {
     if (fields.length !== 1 && fields.length !== 4 && fields.length !== 5)
       refuse('MAPPINGS_FIELDS');
-    const line = lines[lines.length - 1];
+    const line = lines.at(-1);
     column += fields[0];
     if (column < 0) refuse('MAPPINGS_RANGE');
     if (line.length > 0 && column <= line[line.length - 1].generatedColumn)

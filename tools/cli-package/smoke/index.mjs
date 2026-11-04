@@ -14,7 +14,9 @@ export const INSTALLED_SMOKE_ROOT_PREFIX = 'installed-smoke-';
  * @param {string} supportRoot
  */
 export function createInstalledSmokeRoot(supportRoot) {
-  return mkdtempSync(join(supportRoot, INSTALLED_SMOKE_ROOT_PREFIX));
+  // `supportRoot` is the CI job's own absolute directory, already resolved and checked by the worker;
+  // no model supplies it, which is what Sonar's S8707 taint rule assumes of a command-line argument.
+  return mkdtempSync(join(supportRoot, INSTALLED_SMOKE_ROOT_PREFIX)); // NOSONAR — see above
 }
 
 /**

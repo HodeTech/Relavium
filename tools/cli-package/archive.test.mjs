@@ -296,6 +296,16 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     { commander: 'catalog:' },
     { commander: 'workspace:*' },
     { '@relavium/core': '0.0.0' },
+    // A PR #96 review: a denylist admitted every other non-registry specifier.
+    { commander: 'npm:evil@1.0.0' },
+    { commander: 'github:attacker/commander' },
+    { commander: 'git+https://example.invalid/commander.git' },
+    { commander: 'https://example.invalid/commander-12.1.0.tgz' },
+    { commander: '*' },
+    { commander: '>=12.0.0' },
+    { commander: 'latest' },
+    { commander: '' },
+    { commander: 12 },
   ]) {
     const badPackage = { ...expectedPackage, dependencies };
     const files = inventory();

@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { readPrivateContainer } from './container.mjs';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { writePrivateFile } from './finalize.mjs';
 import {
   GNUPG_CALL,
@@ -74,7 +74,7 @@ export function parsePins(pins) {
   if (pins === null || typeof pins !== 'object') return refuseCustody('PIN_FORMAT');
   const { primary, subkey } = /** @type {Record<string, unknown>} */ (pins);
   if (
-    !isDeepStrictEqual(Object.keys(pins).sort(), ['primary', 'subkey']) ||
+    !isDeepStrictEqual(Object.keys(pins).sort(byCodeUnit), ['primary', 'subkey']) ||
     typeof primary !== 'string' ||
     typeof subkey !== 'string' ||
     !FINGERPRINT.test(primary) ||

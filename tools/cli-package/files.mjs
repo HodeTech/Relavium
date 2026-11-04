@@ -14,6 +14,18 @@ import { join } from 'node:path';
 
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+/**
+ * Code-unit order for a string sort: deterministic and locale-independent, exactly what `Array#sort` does
+ * without a comparator. Manifests, inventories and digests depend on that order, so `localeCompare` would
+ * be wrong here; the explicit comparator only states it.
+ * @param {string} left
+ * @param {string} right
+ */
+export function byCodeUnit(left, right) {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
 export function readOrdinaryFile(path, maxBytes) {
   assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0);
   const info = lstatSync(path, { bigint: true });

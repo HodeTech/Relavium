@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { BOOTSTRAP_CONTROL_COUNT } from '../cli-bootstrap/inventory.mjs';
-import { ARCHIVE_LIMITS, assertPublicPackagePath } from './archive.mjs';
+import { ARCHIVE_LIMITS, assertPublicPackagePath, isPublicRuntimeDependency } from './archive.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
 
 /** @typedef {{kind: 'local'} | {kind: 'github', repository: string, workflow: string, runId: string, runAttempt: string, event: string, source: string}} Origin */
@@ -218,13 +218,7 @@ function publicPackage(value) {
     refuse('PACKAGE');
   for (const [name, requirement] of Object.entries(dependencies)) {
     string(name, /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u, 200);
-    if (
-      name.startsWith('@relavium/') ||
-      typeof requirement !== 'string' ||
-      requirement.length > 100 ||
-      /(?:workspace|catalog|file|link):/u.test(requirement)
-    )
-      refuse('PACKAGE');
+    if (!isPublicRuntimeDependency(name, requirement)) refuse('PACKAGE');
   }
   // Full package metadata is public npm material. Keep it bounded; private map
   // manifests and build/source inventories have no admitted top-level field.

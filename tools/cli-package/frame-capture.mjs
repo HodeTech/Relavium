@@ -19,7 +19,7 @@ const manifest = process.env.RELAVIUM_FRAME_CAPTURE_PACKAGE;
 const canary = process.env.RELAVIUM_FRAME_CAPTURE_CANARY;
 if (!log || !manifest || !canary) throw new Error('The symbolication preload is not configured');
 if (typeof nodeModule.registerHooks !== 'function') {
-  throw new Error('The symbolication preload needs module.registerHooks');
+  throw new TypeError('The symbolication preload needs module.registerHooks');
 }
 
 // The candidate root holds `apps/cli/package.json`; pnpm installs the CLI's dependencies below it.

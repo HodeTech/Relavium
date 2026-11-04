@@ -25,7 +25,7 @@ import { ARCHIVE_LIMITS } from './archive.mjs';
 import { readPrivateContainer } from './container.mjs';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
 import { encryptOnce } from './custody.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import {
   RELEASE_BINDING_FILE,
   RELEASE_BINDING_KIND,
@@ -224,7 +224,12 @@ function seal(record, origin, write) {
   // An existing receipt refuses before anything is read; one is never written over.
   if (present(join(destination, RELEASE_BINDING_FILE))) refuseCustody('ALREADY_SEALED');
   const tarball = tarballName(manifest.packageVersion);
-  if (!isDeepStrictEqual(readdirSync(destination).sort(), [record.name, tarball].sort())) {
+  if (
+    !isDeepStrictEqual(
+      readdirSync(destination).sort(byCodeUnit),
+      [record.name, tarball].sort(byCodeUnit),
+    )
+  ) {
     refuseCustody('CANDIDATE_ENTRIES');
   }
   // The ciphertext must still be the bytes encrypted: the receipt is sealed only after it exists.

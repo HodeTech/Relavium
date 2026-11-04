@@ -875,6 +875,23 @@ function preparation({
           .join('\0'),
       };
     }
+    // Git names each copy's raw bytes, asked of the original checkout like the listing.
+    if (args[1] === 'hash-object') {
+      assert.deepEqual(args.slice(0, 4), [
+        '--no-replace-objects',
+        'hash-object',
+        '--no-filters',
+        '--',
+      ]);
+      assert.equal(options.cwd, repository);
+      assert.deepEqual(options.env, isolatedGitEnvironment());
+      return {
+        stdout: args
+          .slice(4)
+          .map((path) => `${blobId(readFileSync(path))}\n`)
+          .join(''),
+      };
+    }
     throw new Error(`unexpected git ${key}`);
   };
   let installOptions;
@@ -937,6 +954,20 @@ test('candidate preparation copies, re-checks identity, installs and verifies li
     `git ${READ()}status --porcelain=v1 -z --untracked-files=all`,
     'git ls-files -v -z',
     `git --no-replace-objects ls-tree -r -z --full-tree ${SHA}`,
+    `git --no-replace-objects hash-object --no-filters -- ${[
+      'package.json',
+      'core',
+      'db',
+      'llm',
+      'mcp',
+      'shared',
+    ]
+      .map((name) =>
+        name === 'package.json'
+          ? join(ports.candidate, name)
+          : join(ports.candidate, 'packages', name, 'package.json'),
+      )
+      .join(' ')}`,
     'pnpm store path',
     `pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir ${ports.store}`,
   ]);
@@ -1011,6 +1042,86 @@ test('a checkout whose line endings Git converts copies bytes that are not the c
       candidate,
       source: identity.source,
       files: ['kept.ts', 'extra.ts'],
+    }),
+    false,
+  );
+});
+
+test('every hash-object batch is compared, the last included', async () => {
+  const { repository, inRepository } = await committedRepository('hash-object-batches');
+  // Enough long paths for several 16 KiB command lines, committed, then copied unchanged.
+  const files = Array.from(
+    { length: 240 },
+    (_, index) => `nested/${String(index).padStart(3, '0')}-${'n'.repeat(90)}.ts`,
+  );
+  for (const path of files)
+    write(join(repository, ...path.split('/')), `export const v = '${path}';\n`);
+  await inRepository(['add', 'nested']);
+  await inRepository([
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@example.invalid',
+    'commit',
+    '-qm',
+    'two',
+  ]);
+  const identity = await sourceIdentity(repository);
+  const candidate = fresh('batched-copy');
+  copyCandidateTree({ repository, destination: candidate, files });
+  const calls = [];
+  const run = (command, args, options) => {
+    if (args[1] === 'hash-object') calls.push(args.length - 4);
+    return runCommand(command, args, options);
+  };
+  const matches = () =>
+    copyMatchesCommit({ repository, candidate, source: identity.source, files, run });
+  assert.equal(await matches(), true);
+  assert.ok(calls.length >= 2, `expected several batches, saw ${calls.length}`);
+  assert.equal(
+    calls.reduce((sum, count) => sum + count, 0),
+    files.length,
+  );
+  // A change in the final batch's last file is still seen.
+  writeFileSync(join(candidate, ...files.at(-1).split('/')), 'export const v = 0;\n');
+  assert.equal(await matches(), false);
+});
+
+test(
+  'a copy that is a symbolic link to the committed bytes is refused, not hashed through',
+  {
+    skip: !posixModes,
+  },
+  async () => {
+    const { repository } = await committedRepository('linked-copy');
+    const identity = await sourceIdentity(repository);
+    const candidate = fresh('linked-copy-candidate');
+    const elsewhere = join(fresh('linked-copy-target'), 'kept.ts');
+    write(elsewhere, 'export {};\n');
+    symlinkSync(elsewhere, join(candidate, 'kept.ts'));
+    await assert.rejects(
+      copyMatchesCommit({ repository, candidate, source: identity.source, files: ['kept.ts'] }),
+      /PACKED_CLI_FILE_KIND_OR_BOUND/,
+    );
+  },
+);
+
+test('a hash-object answer missing a line is not a match', async () => {
+  const { repository } = await committedRepository('short-answer');
+  const identity = await sourceIdentity(repository);
+  const candidate = fresh('short-answer-candidate');
+  copyCandidateTree({ repository, destination: candidate, files: ['kept.ts'] });
+  const run = async (command, args, options) => {
+    const result = await runCommand(command, args, options);
+    return args[1] === 'hash-object' ? { ...result, stdout: '' } : result;
+  };
+  assert.equal(
+    await copyMatchesCommit({
+      repository,
+      candidate,
+      source: identity.source,
+      files: ['kept.ts'],
+      run,
     }),
     false,
   );

@@ -19,7 +19,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { assertNoBuildCache, globalExcludesFile, prepareCandidate } from './candidate.mjs';
 import { within } from './paths.mjs';
 import { exitOnInterrupt, isolatedEnvironment, runPnpm } from './process.mjs';
@@ -67,8 +67,13 @@ export async function producePackage({
   } = ports;
   // The seal's symbolication needs Node 22.15 or later; refuse an older producer before anything exists.
   assert.ok(capturable(), 'PACKED_CLI_PRODUCER_NODE');
-  mkdirSync(destination, { recursive: true });
-  assert.deepEqual(readdirSync(destination), [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
+  // The artifact directory is the maintainer's or CI's argument and may be anywhere; it must be
+  // absolute (pack.mjs resolves it) and empty. No model supplies it, which is what Sonar's S8707
+  // taint rule assumes of a command-line argument.
+  assert.ok(isAbsolute(destination), 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
+  mkdirSync(destination, { recursive: true }); // NOSONAR — a maintainer/CI path, see above
+  const present = readdirSync(destination); // NOSONAR — a maintainer/CI path, see above
+  assert.deepEqual(present, [], 'PACKED_CLI_FRESH_DESTINATION_REQUIRED');
   const home = realpathSync.native(mkdtempSync(join(temporary, 'relavium-package-build-')));
   let root;
   /** Remove each of `paths`, attempting every one; the first failure, if any. */

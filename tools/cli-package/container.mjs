@@ -11,7 +11,7 @@ import { lstatSync, readdirSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CustodyError, refuseCustody } from './custody-error.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { MANIFEST_FILE, RECORD_BYTES, validateManifest } from './manifest.mjs';
 import { readUstar, writeUstar } from './ustar.mjs';
 
@@ -50,7 +50,7 @@ function recorded(list) {
     !list.every(
       (item) =>
         isRecord(item) &&
-        isDeepStrictEqual(Object.keys(item).sort(), ['bytes', 'path', 'sha256']) &&
+        isDeepStrictEqual(Object.keys(item).sort(byCodeUnit), ['bytes', 'path', 'sha256']) &&
         typeof item.path === 'string' &&
         Number.isSafeInteger(item.bytes) &&
         typeof item.sha256 === 'string',
@@ -86,8 +86,8 @@ function checkContents(files) {
   const maps = manifest.outputs.map((output) => `maps/${posix.basename(output.map.path)}`);
   if (
     !isDeepStrictEqual(
-      [...files.keys()].filter((path) => !RECORDS.includes(path)).sort(),
-      [...maps].sort(),
+      [...files.keys()].filter((path) => !RECORDS.includes(path)).sort(byCodeUnit),
+      [...maps].sort(byCodeUnit),
     )
   ) {
     refuseCustody('CONTAINER_SET');
@@ -104,7 +104,7 @@ function checkContents(files) {
   const record = json(/** @type {Buffer} */ (files.get('finalized.json')), 'CONTAINER_RECORD');
   if (
     !isRecord(record) ||
-    !isDeepStrictEqual(Object.keys(record).sort(), [
+    !isDeepStrictEqual(Object.keys(record).sort(byCodeUnit), [
       'maps',
       'outputs',
       'upstreamMaps',
@@ -172,7 +172,9 @@ function build(staging, limits) {
       return refuseCustody('CONTAINER_ENTRY');
     }
   };
-  if (!isDeepStrictEqual(readdirSync(staging).sort(), [...RECORDS, 'maps'].sort())) {
+  if (
+    !isDeepStrictEqual(readdirSync(staging).sort(byCodeUnit), [...RECORDS, 'maps'].sort(byCodeUnit))
+  ) {
     refuseCustody('CONTAINER_SET');
   }
   // lstat: a linked maps directory is not a directory.

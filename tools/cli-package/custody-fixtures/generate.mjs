@@ -13,17 +13,20 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveGpg } from '../gnupg.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 // A short home: the agent's socket path must fit the platform's limit (104 bytes on macOS).
 const home = mkdtempSync(join(tmpdir(), 'rg-'));
+// The installation from absolute PATH entries only, as the release path resolves it.
+const installation = resolveGpg();
 const PAST = '20200101T000000!';
 const NO_AEAD = 'AES256 AES192 AES SHA512 SHA384 SHA256 ZLIB ZIP Uncompressed';
 
 /** @param {string[]} args @param {{input?: string, past?: boolean}} [options] */
 function gpg(args, { input, past = false } = {}) {
   const run = spawnSync(
-    'gpg',
+    installation.command,
     [
       '--homedir',
       home,
@@ -149,7 +152,8 @@ try {
     assert.ok(!readFileSync(join(here, name), 'utf8').includes('PRIVATE KEY'), name);
   }
 } finally {
-  spawnSync('gpgconf', ['--homedir', home, '--kill', 'all'], { stdio: 'ignore' });
-  spawnSync('gpgconf', ['--homedir', home, '--remove-socketdir'], { stdio: 'ignore' });
+  const gpgconf = installation.gpgconf.command;
+  spawnSync(gpgconf, ['--homedir', home, '--kill', 'all'], { stdio: 'ignore' });
+  spawnSync(gpgconf, ['--homedir', home, '--remove-socketdir'], { stdio: 'ignore' });
   rmSync(home, { recursive: true, force: true });
 }

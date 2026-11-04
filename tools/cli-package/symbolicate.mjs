@@ -337,7 +337,7 @@ export async function symbolicateCandidate({
   };
   const reached = [];
   for (const frame of frames) {
-    if (frame.async || frame.file === null || !frame.file.startsWith('file:')) continue;
+    if (frame.async || !frame.file?.startsWith('file:')) continue;
     let path;
     try {
       path = realpathSync.native(fileURLToPath(frame.file));

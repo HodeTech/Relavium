@@ -10,6 +10,12 @@ import { posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
 
+/** Code-unit order: deterministic and locale-independent, as `Array#sort` without a comparator. */
+function byCodeUnit(left, right) {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
 export class BundleClosureError extends Error {
   constructor(code, detail) {
     super(`${code}: ${detail}`);
@@ -223,7 +229,12 @@ function runtimeOutputs(outputs, directory, maps) {
     const entry = record(output, `map output ${path}`);
     bytes(entry.bytes, `map output ${path}.bytes`);
     if (
-      !isDeepStrictEqual(Object.keys(entry).sort(), ['bytes', 'exports', 'imports', 'inputs']) ||
+      !isDeepStrictEqual(Object.keys(entry).sort(byCodeUnit), [
+        'bytes',
+        'exports',
+        'imports',
+        'inputs',
+      ]) ||
       Object.keys(record(entry.inputs, `map output ${path}.inputs`)).length > 0 ||
       strings(entry.exports, `map output ${path}.exports`).length > 0 ||
       imports(entry.imports, `map output ${path}`).length > 0

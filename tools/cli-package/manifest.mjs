@@ -13,7 +13,7 @@ import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isPackageVersion } from './binding.mjs';
 import { ENGINE_PACKAGES, writePrivateFile } from './finalize.mjs';
-import { readOrdinaryFile, sha256 } from './files.mjs';
+import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { isolatedGitEnvironment, runCommand } from './process.mjs';
 
 export const MANIFEST_FILE = 'manifest.json';
@@ -45,7 +45,7 @@ const OUTPUT = /^dist\/[A-Za-z0-9_-]+\.js$/u;
 const SEGMENT = '[A-Za-z0-9_-][A-Za-z0-9_.-]*';
 /** A repository-relative original source the finalizer admits: CLI or engine TypeScript. */
 const SOURCE = new RegExp(
-  `^(?:apps/cli|packages/(?:${ENGINE_PACKAGES.join('|')}))/src/(?:${SEGMENT}/)*${SEGMENT}\\.tsx?$`,
+  String.raw`^(?:apps/cli|packages/(?:${ENGINE_PACKAGES.join('|')}))/src/(?:${SEGMENT}/)*${SEGMENT}\.tsx?$`,
   'u',
 );
 const VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,64})?$/u;
@@ -105,7 +105,8 @@ function isRecord(value) {
  */
 export function validateManifest(value) {
   const exact = (record, keys) =>
-    isRecord(record) && isDeepStrictEqual(Object.keys(record).sort(), [...keys].sort());
+    isRecord(record) &&
+    isDeepStrictEqual(Object.keys(record).sort(byCodeUnit), [...keys].sort(byCodeUnit));
   if (
     !exact(value, [
       'version',
@@ -235,7 +236,7 @@ export async function sealPrivateManifest({
   const sources = Object.fromEntries(
     [...named]
       .map(String)
-      .sort()
+      .sort(byCodeUnit)
       .map((name) => {
         if (!SOURCE.test(name)) refuse('SOURCE_PATH');
         return [name, sha256(read(candidate, name, 8 * 1024 * 1024))];
@@ -311,7 +312,7 @@ export function verifySealedDist({ candidate, manifest, tarball }) {
   } catch {
     refuse('DIST_DRIFT');
   }
-  const expected = manifest.outputs.map((output) => basename(output.path)).sort();
+  const expected = manifest.outputs.map((output) => basename(output.path)).sort(byCodeUnit);
   if (!isDeepStrictEqual(names, expected)) refuse('DIST_DRIFT');
   for (const output of manifest.outputs) {
     let bytes;
