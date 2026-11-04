@@ -125,6 +125,7 @@ import type {
   BudgetDispatchPreparation,
   NodePreparationContext,
 } from './node-executor.js';
+import { decisionsForGateType, gateAcceptsDecision } from './gate-decision-fit.js';
 import { sameBudgetAllowanceQuote } from './budget-allowance.js';
 import type { DispatchAllowanceToken } from './dispatch-allowance.js';
 import { NodeMediaPinError } from './media-pin-error.js';
@@ -1714,7 +1715,10 @@ class RunExecution {
     decision: GateDecision,
     gateAlreadyResolved: boolean,
   ): Promise<void> {
-    if (!gateAlreadyResolved) this.#assertGatePending(gateId);
+    // Before any write of this resume: a decision the gate's type does not accept is refused here, and the
+    // caller's catch retires the execution and releases its fence (2.6.K).
+    if (!gateAlreadyResolved)
+      this.#assertDecisionFitsGate(this.#assertGatePending(gateId), gateId, decision);
     await this.#startUsageCoverage('legacy_unverified');
     if (!this.#resumeAdmitted && !(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
@@ -1868,6 +1872,24 @@ class RunExecution {
     return gate;
   }
 
+  /**
+   * A human gate's decision must fit its authored `gate_type` (2.6.K, ruled 2026-11-05): `relavium gate --input`
+   * against an approval gate used to write the wrong decision shape with no error. A budget gate keeps its own
+   * rules. Throws {@link EngineStateError} (`invalid_decision`) naming the type and the kinds it accepts.
+   */
+  #assertDecisionFitsGate(gate: PendingGate, gateId: string, decision: GateDecision): void {
+    if (gate.isBudgetGate) return;
+    const config = this.#plan.vertices.get(gate.vertexId)?.config;
+    if (config?.kind !== 'human_in_the_loop') return;
+    const gateType = config.node.gate_type;
+    if (gateAcceptsDecision(gateType, decision.decision)) return;
+    throw new EngineStateError(
+      'invalid_decision',
+      `this ${gateType} gate accepts ${decisionsForGateType(gateType).join(' or ')}, not ${decision.decision}`,
+      { runId: this.runId, gateId },
+    );
+  }
+
   resume(gateId: string, decision: GateDecision, alreadyGated = false): Promise<void> {
     return this.#hostWork.invoke(() => this.#resume(gateId, decision, alreadyGated));
   }
@@ -1902,6 +1924,8 @@ class RunExecution {
       await this.#resumeBudgetGate(gateId, gate, decision, alreadyGated);
       return;
     }
+    // Synchronous, before the claim: a decision the gate's type does not accept is refused with nothing claimed.
+    this.#assertDecisionFitsGate(gate, gateId, decision);
     this.#resolvedGates.add(gateId);
     // …and only now, holding the claim, the effect gate. **`#pendingGates.delete` stays BELOW this await**,
     // and that ordering is load-bearing in the other direction: with the gate already removed, the idle

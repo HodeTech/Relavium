@@ -1966,6 +1966,30 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(true);
   });
 
+  it("refuses an in-process decision its gate's type does not accept, claims nothing, then takes a fitting one (2.6.K)", async () => {
+    const engine = engineWith({
+      g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }),
+    });
+    const handle = engine.start({ workflow: workflow(GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0] ?? '';
+        await expect(
+          engine.resume(handle.runId, gateId, {
+            decision: 'input_provided',
+            decidedBy: 'tester',
+            payload: { text: 'x' },
+          }),
+        ).rejects.toMatchObject({ code: 'invalid_decision' });
+        await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+      }
+    }
+    expect(events.filter((e) => e.type === 'human_gate:resumed')).toHaveLength(1);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
   it('de-inlines a media-bearing gate decision.payload to a handle on human_gate:resumed (no base64)', async () => {
     // The resume() decision.payload (z.unknown()) is the one #emitDurable de-inline caller a gate exercises;
     // it must flow through the SAME I3 choke point, so the delivered + persisted human_gate:resumed carries a
@@ -2583,6 +2607,33 @@ ${chain
     expect(terminalsIn(eventsB)[0]?.type).toBe('run:completed');
     // The resumed stream continues gap-free from the last persisted sequence number (no reset, no gap).
     eventsB.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + 1 + index));
+  });
+
+  it("refuses a checkpoint decision its gate's type does not accept before writing, and releases the run (2.6.K)", async () => {
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+    const persisted = store.eventsFor(runId).length;
+    const engineB = engineWith({}, createInMemoryHost({ store }));
+    await expect(
+      engineB.resumeFromCheckpoint({
+        runId,
+        workflow: workflow(GATED),
+        gateId,
+        decision: { decision: 'input_provided', decidedBy: 'tester', payload: { text: 'x' } },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_decision' });
+    expect(store.eventsFor(runId)).toHaveLength(persisted);
+    // The refused resume left the run parked and unowned: a fitting decision resumes it to completion.
+    const engineC = engineWith({}, createInMemoryHost({ store }));
+    const events = await drain(
+      await engineC.resumeFromCheckpoint({
+        runId,
+        workflow: workflow(GATED),
+        gateId,
+        decision: { decision: 'rejected', decidedBy: 'tester' },
+      }),
+    );
+    expect(events.some((e) => e.type === 'human_gate:resumed')).toBe(true);
   });
 
   // H2 (governor re-seed) is pinned at the unit level: the checkpoint fold restores the cumulative from the

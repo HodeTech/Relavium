@@ -205,6 +205,7 @@ export type {
   GateRequest,
   GateType,
 } from './engine/node-executor.js';
+export { decisionsForGateType, gateAcceptsDecision } from './engine/gate-decision-fit.js';
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
 export {
