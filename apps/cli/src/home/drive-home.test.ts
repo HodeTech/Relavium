@@ -14,11 +14,12 @@ import { fileURLToPath } from 'node:url';
 import {
   createClient,
   createEffectJournalStore,
+  createRunHistoryStore,
   createSessionStore,
   runMigrations,
   type DbClient,
 } from '@relavium/db';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render as renderInk, type Instance } from 'ink';
 import { createElement, isValidElement } from 'react';
@@ -26,6 +27,7 @@ import { createElement, isValidElement } from 'react';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
@@ -535,6 +537,58 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const snap = props.controller.getSnapshot().snapshot;
     expect(snap.isEmpty).toBe(true);
     expect(snap.attention.gates).toEqual([]);
+
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('reconciles a crashed run BEFORE the first strip read (2.6.G liveness, #229)', async () => {
+    // A run whose process died: `run:started` is durable, there is no terminal and no lease.
+    const runs = createRunHistoryStore(client.db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+      workflow: { slug: 'crashed', name: 'crashed', definitionJson: '{}' },
+    });
+    const runId = randomUUID();
+    await runs.persistEvent(
+      RunEventSchema.parse({
+        type: 'run:started',
+        runId,
+        timestamp: '2026-11-05T10:00:00.000Z',
+        sequenceNumber: 1,
+        workflowId: await runs.resolveWorkflowId('crashed'),
+        inputs: {},
+        executionMode: 'local',
+      }),
+    );
+    const order: string[] = [];
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps(
+      (p) => {
+        order.push('mount');
+        captured = p;
+      },
+      {
+        openSessionStore: () => ({
+          store: createSessionStore(client.db),
+          db: client.db,
+          close: closeSpy,
+          reconcileInterruptedRuns: async () => {
+            order.push('reconcile');
+            await reconcileInterruptedRuns(client.db, join(cwd, 'terminal-outbox.ndjson'));
+          },
+        }),
+      },
+    );
+    const drivePromise = driveHome(deps);
+    await flush();
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    expect(order).toEqual(['reconcile', 'mount']);
+    // The first snapshot already shows the run as failed, in "attention" — never as a `running` row.
+    const snap = props.controller.getSnapshot().snapshot;
+    expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);
 
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);

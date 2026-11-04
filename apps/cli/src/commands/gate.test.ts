@@ -66,14 +66,14 @@ vi.mock('../mcp/consent-prompt.js', () => ({
  * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
  * into deterministically (they need a concurrent-settle race).
  *
- * `drainTerminalOutbox` is stubbed too because `gateCommand` calls it at start (ADR-0078 §4/§5). A stub that
+ * `reconcile` is stubbed too because `gateCommand` calls it at start (ADR-0078 §4/§5, 2.6.G). A stub that
  * omits it throws a `TypeError` the command's own error mapping then reports as an invocation fault — which
  * is how these two tests found the wiring rather than the wiring finding them.
  */
 function stubEngine(resumeFromCheckpoint: WorkflowEngine['resumeFromCheckpoint']): WorkflowEngine {
   return {
     resumeFromCheckpoint,
-    drainTerminalOutbox: () => Promise.resolve([]),
+    reconcile: () => Promise.resolve([]),
   } as unknown as WorkflowEngine;
 }
 

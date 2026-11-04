@@ -563,10 +563,11 @@ async function resumeGateOwned(
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
     lifetime.adoptEngine(engine, args.runId);
-    // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
-    // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
+    // Same reconcile as the `run` path (ADR-0078 §4/§5, ADR-0079 §7) — a gate resume is equally "the next
+    // `relavium` start", and it is the one a user reaches for after seeing the `durabilityUncertain` exit code
+    // on a gated run. The run this command resumes is parked at its gate, so `reconcile()` leaves it alone.
     lifetime.checkpoint();
-    await engine.drainTerminalOutbox().catch(() => undefined);
+    await engine.reconcile().catch(() => undefined);
     lifetime.checkpoint();
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
