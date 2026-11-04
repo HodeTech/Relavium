@@ -1176,6 +1176,24 @@ function passwordPastDelimiter(text: string, start: number, end: number): number
   return end + tail.length - 1;
 }
 
+/**
+ * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}); its username owns the
+ * text before the first `:`, as in {@link visitUrlUserinfo}. Returns where the scheme scan resumes: after
+ * the `@` it masked through, or at `start` when there is none.
+ */
+function maskPasswordPastDelimiter(
+  text: string,
+  schemeStart: number,
+  start: number,
+  end: number,
+  mask: SecretSpanVisitor,
+): number {
+  const passwordAt = passwordPastDelimiter(text, start, end);
+  if (passwordAt < 0) return start;
+  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: text.indexOf(':', start) });
+  return passwordAt + 1;
+}
+
 /** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
 const PASSWORD_TAIL = /[^\s"'}\]?#@]{0,512}@/y;
 
@@ -1192,13 +1210,7 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
     const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
     if (at < 0) {
-      const passwordAt = passwordPastDelimiter(text, start, end);
-      if (passwordAt >= 0) {
-        // Its username owns the text before the first ':', as below.
-        const url = { schemeStart: match.index, ownsUntil: start + authority.indexOf(':') };
-        mask(start, passwordAt, '[redacted]', url);
-        scheme.lastIndex = passwordAt + 1;
-      }
+      scheme.lastIndex = maskPasswordPastDelimiter(text, match.index, start, end, mask);
       continue;
     }
     const userinfo = authority.slice(0, at);
@@ -1447,26 +1459,30 @@ function redactArgVector(
       redactNext = undefined;
       continue;
     }
-    if (typeof item === 'string') {
-      const separator = item.indexOf('=');
-      const flag = separator > 0 ? item.slice(0, separator) : '';
-      if (isCredentialFlag(flag)) {
-        const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
-        if (masked !== undefined) {
-          out.push(`${flag}=${masked}`);
-          continue;
-        }
-      }
-      const glued = gluedUserPassword(item);
-      if (glued !== undefined) {
-        out.push(`-u${whole(glued, '[redacted]')}`);
-        continue;
-      }
-      if (isCredentialFlag(item)) redactNext = item;
+    const inline = typeof item === 'string' ? redactInlineCredential(item, whole) : undefined;
+    if (inline !== undefined) {
+      out.push(inline);
+      continue;
     }
+    if (typeof item === 'string' && isCredentialFlag(item)) redactNext = item;
     out.push(redactSecretShapedWalk(item, seen, project, collide, whole));
   }
   return out;
+}
+
+/**
+ * One argument that carries its own credential, masked: a credential flag's `--flag=value` spelling or curl's
+ * glued `-ualice:secret`. `undefined` when the argument is neither, so the vector walks it as usual.
+ */
+function redactInlineCredential(item: string, whole: WholeMask): string | undefined {
+  const separator = item.indexOf('=');
+  const flag = separator > 0 ? item.slice(0, separator) : '';
+  if (isCredentialFlag(flag)) {
+    const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
+    if (masked !== undefined) return `${flag}=${masked}`;
+  }
+  const glued = gluedUserPassword(item);
+  return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;
 }
 
 /**

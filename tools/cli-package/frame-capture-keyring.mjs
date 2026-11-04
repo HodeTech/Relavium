@@ -3,11 +3,20 @@
 const refused = () => {
   throw new Error('The symbolication run refuses the keyring');
 };
-// A class, not a function, so the exports below extend it as the real package's classes do.
+// A class, not a function, so the exports below extend it as the real package's classes do; its methods
+// mirror the real `Entry`'s and refuse too, although the constructor already has.
 export class Entry {
-  // NOSONAR — see above
   constructor() {
     refused();
+  }
+  getPassword() {
+    return refused();
+  }
+  setPassword() {
+    return refused();
+  }
+  deletePassword() {
+    return refused();
   }
 }
 export class AsyncEntry extends Entry {}

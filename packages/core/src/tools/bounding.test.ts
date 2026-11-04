@@ -1360,6 +1360,10 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       ['https://user:pa/ss@host.example/@scope/pkg', 'https://[redacted]@host.example/@scope/pkg'],
       // A raw `?` that is not a host's public query stays userinfo, as the authority scan reads it.
       ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
+      // A key in the username names the user, so its value stops at the `@` and the host stays.
+      ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
+      // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
+      ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(expected);
     }
