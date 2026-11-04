@@ -81,9 +81,10 @@ export function redactInlineMedia(value: unknown): unknown {
 
 /**
  * The size of the inline media a text projection replaced with a marker. The model-facing value still holds
- * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1), so media inside a dispatch
- * result is ordinary text to the model and to the effect journal. A PR #96 review found a 30 MiB data URI
- * measured as its 25-character marker, passed whole to the model and settled into `history.db`.
+ * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1). The seam refuses raw media bytes
+ * in `tool_result.result` (ADR-0031), while the effect journal settles the value as it is. A PR #96 review
+ * found a 30 MiB data URI measured as its 25-character marker and settled whole into `history.db`; counting
+ * the bytes turns such a result into a media-free preview.
  */
 interface OmittedMedia {
   bytes: number;
@@ -1161,7 +1162,9 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
  * credential can still sit in). Reads on past them only, to the first `@` within 512 characters. A
  * port (`host:8080/a@b`, `host:8080,bob@x.io`), a public query contact as the authority scan reads
  * one ({@link isPublicQueryContact}), another scheme, and the delimiters the authority keeps
- * (whitespace, quotes, `}`, `]`) keep the text public.
+ * (whitespace, quotes, `}`, `]`) keep the text public, and so does any raw `?` or `#` after the `,` or
+ * `/`, which may begin a path's query (`host:abc/p?e=a@b`): `https://user:pa,ss?1@host` stays public, a
+ * recorded limit (the LLM backstop masks that comma spelling, and neither masks its `/` twin).
  */
 function passwordPastDelimiter(text: string, start: number, end: number): number {
   if (text[end] !== ',' && text[end] !== '/') return -1;
@@ -1177,9 +1180,11 @@ function passwordPastDelimiter(text: string, start: number, end: number): number
 }
 
 /**
- * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}); its username owns the
- * text before the first `:`, as in {@link visitUrlUserinfo}. Returns where the scheme scan resumes: after
- * the `@` it masked through, or at `start` when there is none.
+ * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}). As in
+ * {@link visitUrlUserinfo}, its username owns the text before the first `:` only when no raw `?`/`#` comes
+ * first; otherwise a key there (`http://svc?token=a:b/c@d`) is read by the key/value rules, which mask its
+ * value to its own end. Returns where the scheme scan resumes: after the `@` it masked through, or at
+ * `start` when there is none.
  */
 function maskPasswordPastDelimiter(
   text: string,
@@ -1190,7 +1195,10 @@ function maskPasswordPastDelimiter(
 ): number {
   const passwordAt = passwordPastDelimiter(text, start, end);
   if (passwordAt < 0) return start;
-  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: text.indexOf(':', start) });
+  const colon = text.indexOf(':', start);
+  const query = text.slice(start, end).search(/[?#]/);
+  const usernameEnd = query < 0 || colon - start < query ? colon : start;
+  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: usernameEnd });
   return passwordAt + 1;
 }
 
@@ -1453,10 +1461,13 @@ function redactArgVector(
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
-    if (redactNext !== undefined) {
-      const masked = redactCredentialArgument(redactNext, item, whole);
-      out.push(masked ?? redactSecretShapedWalk(item, seen, project, collide, whole));
-      redactNext = undefined;
+    // A `-u`/`--user` value that is no user:password pair is processed as any element, so a credential flag
+    // there (`unzip -u -P <pw>`) still masks its own value (a D64 round-1 finding on the PR #96 correction).
+    const masked =
+      redactNext === undefined ? undefined : redactCredentialArgument(redactNext, item, whole);
+    redactNext = undefined;
+    if (masked !== undefined) {
+      out.push(masked);
       continue;
     }
     const inline = typeof item === 'string' ? redactInlineCredential(item, whole) : undefined;

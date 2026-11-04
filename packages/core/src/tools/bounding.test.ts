@@ -923,7 +923,7 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(redactSecretShapedValue(benign)).toEqual(benign);
   });
 
-  it('STRUCTURAL_ARGV_USERINFO masks a curl user:password in every spelling, and only that', () => {
+  it('STRUCTURAL_ARGV_USERINFO masks a curl user:password in its separate, `=` and glued spellings, and only that', () => {
     expect(
       redactSecretShapedValue({
         args: ['-u', 'alice:Qz7pw', '-ualice:Qz7pw', '--user=bob:Qz7pw', '--user', 'carol:Qz7pw'],
@@ -943,6 +943,36 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(
       JSON.stringify(redactSecretShapedValue({ args: ['--user', key, '-u', key] })),
     ).not.toContain(key);
+    // A boolean -u/--user (unzip's update flag) leaves the credential flag after it in force.
+    expect(
+      redactSecretShapedValue({
+        args: [
+          'unzip',
+          '-u',
+          '-P',
+          'Qz7pw',
+          'a.zip',
+          '--user',
+          '--api-key',
+          'Qz7pw',
+          '-u',
+          '--token=Qz7pw',
+        ],
+      }),
+    ).toEqual({
+      args: [
+        'unzip',
+        '-u',
+        '-P',
+        '[redacted]',
+        'a.zip',
+        '--user',
+        '--api-key',
+        '[redacted]',
+        '-u',
+        '--token=[redacted]',
+      ],
+    });
   });
 
   it('leaves ordinary structured args alone — the negative control', () => {
@@ -1364,6 +1394,10 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
       // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
+      // After a raw `?`/`#` there is no username: the key there masks its value to its own end.
+      ['http://svc?token=abc:de/fgh@ijk9', 'http://[redacted]'],
+      ['http://svc#token=abc:de,fgh@ijk9', 'http://[redacted]'],
+      ['https://gw?token=ab:cd/ef@gh@host.example/', 'https://[redacted]'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(expected);
     }
@@ -1381,6 +1415,9 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       "'https://u:pw/x', 'a@b.example'",
       'https://a:b/https://c@d.example',
       `https://user:pa/${'s'.repeat(600)}@host.example/`,
+      // A raw `?`/`#` after the delimiter may begin a path's query: a recorded limit.
+      'https://user:pa,ss?1@host.example/',
+      'https://user:pa/ss#1@host.example/',
     ]) {
       expect(redactSecretShapedText(input), input).toBe(input);
     }
