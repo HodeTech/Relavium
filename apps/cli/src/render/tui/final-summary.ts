@@ -54,6 +54,16 @@ export function renderFinalSummary(state: RunViewState): string {
   }
   lines.push(meta.join(' · '));
 
+  // The run id `logs`, `status` and `gate` accept (MVP-A2), with the command that continues from here.
+  if (state.runId !== undefined) {
+    const id = sanitizeInline(state.runId);
+    lines.push(
+      summary?.outcome === 'paused'
+        ? `  run id ${id} — resume with \`relavium gate ${id}\``
+        : `  run id ${id} — replay with \`relavium logs ${id}\``,
+    );
+  }
+
   if (summary?.errorMessage !== undefined) {
     // A summary error occupies ONE structural row. Collapse line/column separators as well as terminal
     // controls, so provider/model text cannot forge a believable node-status row beneath the headline.

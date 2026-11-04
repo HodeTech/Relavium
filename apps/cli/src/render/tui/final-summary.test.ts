@@ -99,6 +99,41 @@ describe('renderFinalSummary', () => {
     expect(renderFinalSummary(state)).toContain('run paused at gate approve-1');
   });
 
+  it('shows the run id with the command that continues from the outcome (MVP-A2)', () => {
+    const started: RunEvent = {
+      type: 'run:started',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    };
+    const completed = reduceAll([
+      started,
+      { type: 'run:completed', runId: RUN, timestamp: TS, sequenceNumber: 2, outputs: {} },
+    ]);
+    expect(renderFinalSummary(completed)).toContain(
+      `  run id ${RUN} — replay with \`relavium logs ${RUN}\``,
+    );
+    const paused = reduceAll([
+      started,
+      {
+        type: 'run:paused',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        pendingGateCount: 1,
+        gateIds: ['approve-1'],
+      },
+    ]);
+    expect(renderFinalSummary(paused)).toContain(
+      `  run id ${RUN} — resume with \`relavium gate ${RUN}\``,
+    );
+    // Before any run:started the summary has no id to offer.
+    expect(renderFinalSummary(reduceAll([]))).not.toContain('run id');
+  });
+
   it('is plain text — no ANSI escape codes (scrollback-safe / --no-color)', () => {
     const state = reduceAll([
       { type: 'run:cancelled', runId: RUN, timestamp: TS, sequenceNumber: 1 },

@@ -49,6 +49,21 @@ describe('RunApp terminal projection', () => {
     expect(frame).not.toContain('\x1b');
   });
 
+  it('shows the run id in the live footer once the run has started (MVP-A2)', async () => {
+    const state = reduceRunEvent(initialRunViewState(), {
+      type: 'run:started',
+      runId: 'run-visible-1',
+      timestamp: '2026-10-16T00:00:00.000Z',
+      sequenceNumber: 1,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    });
+    const { lastFrame } = render(<RunApp store={staticStore(state)} />);
+    await waitFor(() => (lastFrame() ?? '').includes('run run-visible-1'));
+    expect(lastFrame() ?? '').toContain('run run-visible-1  ·  cost');
+  });
+
   it('removes terminal and bidi controls from every untrusted display field in a real Ink frame (#56)', async () => {
     const nodeId = `node visible${ATTACK}\nforged row`;
     const state: RunViewState = {
