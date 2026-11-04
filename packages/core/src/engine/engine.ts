@@ -1077,11 +1077,16 @@ class RunExecution {
       // once `run:started` has folded, so an acquire before the first event fails the foreign key. Doing it
       // here keeps the store free of any lease coupling.
       //
-      // The window it opens is a run that is durable and momentarily unowned. It is not reachable in
-      // practice — the `runId` came from `ids.newId()` in the same tick and no other process has yet had a
-      // chance to see it — and it is not harmful even if it were: a racing process would acquire first, our
-      // acquire would be refused, and this run would fail before executing a single node. Refused, never
-      // duplicated.
+      // The window it opens is a run that is durable and momentarily unowned. The only process that can see
+      // the run in it is one calling `reconcile()` (the CLI does at every `run`/`gate` start and Home open,
+      // 2.6.G), and it must list, drain and acquire inside the few microtask turns between the two commits —
+      // reachable only if this process is descheduled right there. The outcome is measured (the CLI's
+      // `history/reconcile.test.ts`): the reconciler writes `run:failed{internal}` and releases its claim, so
+      // the acquire below usually SUCCEEDS; our next guarded write then conflicts with that terminal, no node
+      // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
+      // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
+      // our terminal takes the reconciler's sequence number, so `UNIQUE(run_id, seq)` refuses it first. One
+      // terminal either way, never two.
       if (!(await this.#acquireLease())) {
         // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
         // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
@@ -6531,12 +6536,14 @@ export class WorkflowEngine {
    * Retry every terminal a prior process could not write — the PUBLIC entry point, and it exists because
    * without one the mechanism was unreachable.
    *
-   * `reconcile()` drains as its first step, but `reconcile()` has no shipping caller: it also REPAIRS every
-   * interrupted run, which is a much larger behaviour to switch on, so no surface has ever called it. That
-   * left `CR-92`'s outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had
-   * no command that would ever move their run to `durable`, while the exit code's own documentation said one
-   * would. Draining is the narrow half a surface can call at start with no other consequence: it writes only
-   * terminals the engine itself already produced, and only for runs whose log still lacks one.
+   * `reconcile()` drains as its first step, but when this was added `reconcile()` had no shipping caller: it
+   * also REPAIRS every interrupted run, which is a much larger behaviour to switch on. That left `CR-92`'s
+   * outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had no command
+   * that would ever move their run to `durable`, while the exit code's own documentation said one would.
+   * Draining is the narrow half a surface can call with no other consequence: it writes only terminals the
+   * engine itself already produced, and only for runs whose log still lacks one. The CLI now calls
+   * `reconcile()` itself (at `run`/`gate` start and on Home open, 2.6.G); this entry point stays for a
+   * surface that wants the drain without the repair.
    */
   async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
     const interrupted = await this.#host.store.listInterruptedRuns();

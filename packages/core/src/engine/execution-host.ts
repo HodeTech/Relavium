@@ -38,6 +38,7 @@ import {
   type MediaStore,
   type MediaWritePort,
   nodeIdFromRunScope,
+  RunAlreadyTerminalError,
   type RunEvent,
   RunSuspensionReducer,
   type RunLeaseInfo,
@@ -156,7 +157,11 @@ export interface RunStore {
    * The residual risk is real and named: a future production caller that forgets `ctx` writes unguarded and
    * nothing fails. What closes it is that the engine has exactly two `persistEvent` call sites — `#emitDurable`
    * and `reconcile()` — both of which pass it, both of which are pinned by tests. A store may refuse an
-   * unguarded write outright; none does today.
+   * unguarded write outright; none does today, apart from the second-terminal refusal below.
+   *
+   * **A store refuses a second terminal**, guarded or not, with `RunAlreadyTerminalError` (ADR-0036's
+   * exactly-one-terminal). The engine's terminal is exempt from the append guard and an unowned writer carries
+   * no fence, so this refusal is the only thing that holds the invariant across writers.
    */
   persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   /** Runs with a `run:started` but no terminal event — for startup crash reconciliation. */
@@ -340,6 +345,13 @@ function counterUuid(n: number): string {
   return `00000000-0000-4000-8000-${hex}`;
 }
 
+/** The run terminals the reference store refuses to repeat, as the SQLite store does. */
+const IN_MEMORY_TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>([
+  'run:completed',
+  'run:failed',
+  'run:cancelled',
+]);
+
 /**
  * An in-memory {@link RunStore} — deterministic and dependency-free. Persists events per run so a *new*
  * engine constructed over the *same* store sees the prior "process'" runs, which is how the tests
@@ -425,6 +437,14 @@ export class InMemoryRunStore implements RunStore {
           ),
         );
       }
+    }
+    // …and the SAME exactly-one-terminal refusal (ADR-0036), mirrored for the reason above: neither check
+    // stops an unguarded, unfenced terminal behind one already in the log.
+    if (
+      IN_MEMORY_TERMINAL_TYPES.has(event.type) &&
+      (bucket ?? []).some((e) => IN_MEMORY_TERMINAL_TYPES.has(e.type))
+    ) {
+      return Promise.reject(new RunAlreadyTerminalError(event.runId));
     }
     if (bucket === undefined) {
       this.#events.set(event.runId, [event]);
