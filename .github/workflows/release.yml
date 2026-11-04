@@ -10,6 +10,12 @@
 # both exist every tag push stops at the guard, after the cross-OS smoke, so not even a v0.1.x patch publishes.
 # The flow description below is the pre-custody shape the guard now blocks.
 #
+# Amended 2026-11-04 (decision D59, release path B): the condition above is to be superseded by a pre-1.0
+# release ADR that publishes the smoke-verified package-test tarball, with a sunset at 1.0 or when Steps
+# 9c/9d land. That ADR must explicitly override ADR-0111's "missing custody cannot downgrade to test mode".
+# Until it is Accepted and its guard change passes a security sitting, the guard below stays as it is.
+# `publish` runs in the `release` deployment environment, so the npm token can be scoped to it.
+#
 # Flow: `pack` builds the engine-inlined bundle and `pnpm pack`s it (resolving catalog:/workspace: to
 # concrete versions) into a tarball artifact → `smoke` installs THAT SAME tarball outside the workspace on ubuntu /
 # macOS / Windows and the minimum Node runtime and asserts the binary works (prebuilt native addons load, the bundled engine runs) →
@@ -221,6 +227,9 @@ jobs:
     # manually dispatched run publish. Every manual run now stops after the cross-OS smoke.
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    # The deployment environment that holds `NPM_TOKEN` and its required reviewer (repo settings); a
+    # repository-level secret is readable by any workflow a writer pushes. It sets no job environment.
+    environment: release
     timeout-minutes: 10
     permissions:
       contents: read

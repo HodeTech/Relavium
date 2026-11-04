@@ -344,6 +344,14 @@ recipient custody, the release state controller and the workflow graph are Steps
 Until those and Wave 4b's production recipient exist, the release workflow's publish job
 refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).
 
+> Amended 2026-11-04: decision D59 (release path B, in the
+> [MVP priority reset](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04))
+> replaces "until those exist" with a pre-1.0 release ADR that publishes the smoke-verified package-test
+> tarball, with a sunset at 1.0 or when Steps 9c/9d land. That ADR must explicitly override
+> [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md)'s "missing custody cannot
+> downgrade to test mode". The guard stays in force until the ADR is Accepted and its guard change passes a
+> security sitting. The publish job runs in the `release` deployment environment, which holds the npm token.
+
 ### Private manifest and symbolication implementation boundary — Step 9a.2a
 
 Step 9a.2a (a [recorded split](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2-preflight-decisions--2026-10-24)

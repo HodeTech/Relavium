@@ -3,10 +3,12 @@
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
-# Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Wire, usage, filesystem, secrets, packed CLI and product map control jobs feed `ci` through an explicit
-# success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
-# self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
+# Branch protection (set in the GitHub repo settings, not here): `ci`, `coverage` and `windows-concurrency`
+# are the REQUIRED status checks to merge into `main` (the Windows job since 2026-11-04: ADR-0106's
+# acceptance names required CI for the platform-scoped claims it carries). Wire, usage, filesystem, secrets,
+# packed CLI and product map control jobs feed `ci` through an explicit success-only aggregation; they cannot
+# silently skip or fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
+# `peer-dep-gate`.
 #
 # `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
 # `packages/core` is measured and printed by the same run but does not fail it: its branch margin is +0.83
@@ -114,11 +116,9 @@ jobs:
         shell: bash
         run: |
           BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
-          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
-            if ! git fetch --no-tags origin "$BASELINE"; then
-              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
-              exit 1
-            fi
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}" && ! git fetch --no-tags origin "$BASELINE"; then
+            echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+            exit 1
           fi
           git --no-replace-objects cat-file -e "$BASELINE^{commit}"
 
@@ -299,9 +299,10 @@ jobs:
     # control runs its eight-MiB-heavy file in three phases (about 24 s locally). One export
     # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so two
     # legs each run and export a disjoint round-robin half (`--shard k/2`) under the
-    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds; the allowance
-    # matches the filesystem job's 60 minutes. This comment does not certify execution.
-    timeout-minutes: 60
+    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds. A leg took up to 48 minutes
+    # by 2026-11-04 (runner variance, not imbalance), so its allowance is 75 minutes rather than the
+    # filesystem job's 60. This comment does not certify execution.
+    timeout-minutes: 75
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -387,11 +388,9 @@ jobs:
         shell: bash
         run: |
           BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
-          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
-            if ! git fetch --no-tags origin "$BASELINE"; then
-              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
-              exit 1
-            fi
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}" && ! git fetch --no-tags origin "$BASELINE"; then
+            echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+            exit 1
           fi
           git --no-replace-objects cat-file -e "$BASELINE^{commit}"
 
@@ -494,8 +493,9 @@ jobs:
     runs-on: ubuntu-latest
     # One file worker isolates unchanged admitted-size case budgets from instrumentation
     # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
-    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds.
-    timeout-minutes: 30
+    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds. By
+    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -542,7 +542,7 @@ jobs:
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
-    name: windows · db concurrency + filesystem + headless smoke (advisory)
+    name: windows · db concurrency + filesystem + headless smoke
     runs-on: windows-latest
     timeout-minutes: 25
     steps:

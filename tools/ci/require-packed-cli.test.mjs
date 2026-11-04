@@ -453,7 +453,10 @@ test('release publication is refused fail-closed until a verified release candid
   // runner's default shell and directory: no condition, shell, environment or defaults at the step,
   // job or workflow level, and no earlier `run` step that could write the job's environment.
   assert.deepEqual(Object.keys(guard).sort(), ['name', 'run']);
+  // The deployment environment scopes the npm token and its reviewer; it writes no job environment.
+  assert.equal(workflow.jobs.publish.environment, 'release');
   assert.deepEqual(Object.keys(workflow.jobs.publish).sort(), [
+    'environment',
     'if',
     'name',
     'needs',

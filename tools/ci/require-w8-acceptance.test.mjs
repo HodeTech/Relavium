@@ -92,14 +92,14 @@ test('the actual required workflow joins both full offline controls and checks t
   assert.equal(secretsGuard['continue-on-error'], undefined);
   // Both families run as two legs that each run and export a disjoint half under the unchanged
   // 64-MiB retained-evidence bound, which one export of either whole cohort no longer fits.
-  for (const [kind, directory] of [
-    ['fs', 'filesystem'],
-    ['secrets', 'secrets'],
+  for (const [kind, directory, minutes] of [
+    ['fs', 'filesystem', 60],
+    ['secrets', 'secrets', 75],
   ]) {
     const job = workflow.jobs[`${kind}-mutations`];
     assert.equal(job['continue-on-error'], undefined);
     assert.equal(job.if, undefined);
-    assert.equal(job['timeout-minutes'], 60);
+    assert.equal(job['timeout-minutes'], minutes);
     // Two legs, each running and exporting a disjoint half; neither may stop the other early.
     assert.deepEqual(job.strategy, { 'fail-fast': false, matrix: { shard: [1, 2] } });
     assert.ok(job.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
