@@ -300,6 +300,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 > **Node overrides narrow, they never escalate.** A node may override `model` / `temperature` /
 > `max_tokens` / `system_prompt_append`, and its `tools:` list may only **narrow** the agent's granted
 > tools — it can never add a tool the agent lacks (validator-enforced; [ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
+> A granted tool must also be one the running surface wires: `relavium run` refuses an egress or os tool before
+> the run starts ([where each tool runs](../shared-core/built-in-tools.md#the-built-in-tools)).
 > A `model` override is **resolved against the model catalog at parse time**; an unknown model id fails
 > parse with the list of valid options — never a silent fallback. The optional `output_schema` (also on
 > `transform`) validates the node's output and powers type-safe downstream interpolation
