@@ -424,7 +424,8 @@ jobs:
   # Node-22 prebuild (ABI 127 — one binary for ALL of 22.x, so 22.13.0 loads the same artifact 22.0.0 would;
   # no node-gyp C++ source build). What it does NOT prove is that no RUNTIME dep requires >22.0.0 — that is
   # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
-  # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
+  # A SEPARATE, advisory job (the required checks are `ci`, `coverage` and `windows-concurrency`; see the header);
+  # promote once confirmed stable.
   floor-check:
     name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest

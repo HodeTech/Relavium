@@ -1082,6 +1082,12 @@ test('every hash-object batch is compared, the last included', async () => {
     copyMatchesCommit({ repository, candidate, source: identity.source, files, run });
   assert.equal(await matches(), true);
   assert.ok(calls.length >= 2, `expected several batches, saw ${calls.length}`);
+  // Batches are packed, not one path apiece: the paths fill no more than one batch beyond their total.
+  const characters = files.reduce(
+    (sum, path) => sum + join(candidate, ...path.split('/')).length + 1,
+    0,
+  );
+  assert.ok(calls.length <= Math.ceil(characters / (16 * 1024)) + 1, `saw ${calls.length} batches`);
   assert.equal(
     calls.reduce((sum, count) => sum + count, 0),
     files.length,
@@ -1109,6 +1115,18 @@ test(
     );
   },
 );
+
+test('a relative candidate or repository root is refused', async () => {
+  for (const [repository, candidate] of [
+    ['relative-repository', fresh('absolute-candidate')],
+    [fresh('absolute-repository'), 'relative-candidate'],
+  ]) {
+    await assert.rejects(
+      copyMatchesCommit({ repository, candidate, source: 'a'.repeat(40), files: ['kept.ts'] }),
+      /PACKED_CLI_CANDIDATE_ROOT/,
+    );
+  }
+});
 
 test('a hash-object answer missing a line or carrying an extra one is not a match', async () => {
   const { repository } = await committedRepository('short-answer');

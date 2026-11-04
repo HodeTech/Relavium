@@ -224,6 +224,14 @@ test('required checks keep their branch-protection names and cannot be skipped',
   }
   // The aggregate keeps its required context name (its `if: always()` is pinned with its needs).
   assert.equal(workflow.jobs.ci.name, 'lint · typecheck · test');
+  // Its guard steps keep exactly their keys: no `if`, `continue-on-error` or `shell` can soften one.
+  assert.equal(workflow.jobs.ci.defaults, undefined);
+  const guards = workflow.jobs.ci.steps.filter((step) => step.name?.startsWith('Require '));
+  assert.ok(guards.length >= 6);
+  for (const guard of guards) {
+    const keys = guard.env === undefined ? ['name', 'run'] : ['env', 'name', 'run'];
+    assert.deepEqual(Object.keys(guard).sort(), keys, guard.name);
+  }
   for (const step of workflow.jobs.coverage.steps) {
     assert.equal(step.if, undefined, step.name ?? step.uses);
     assert.equal(step['continue-on-error'], undefined, step.name ?? step.uses);

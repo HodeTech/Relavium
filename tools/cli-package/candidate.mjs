@@ -332,6 +332,8 @@ export async function copyMatchesCommit({
   files,
   run = runCommand,
 }) {
+  // Both roots are absolute: the ordinary-file proof reads against this process and Git against the checkout.
+  assert.ok(isAbsolute(repository) && isAbsolute(candidate), 'PACKED_CLI_CANDIDATE_ROOT');
   const git = async (args) =>
     (
       await run('git', ['--no-replace-objects', ...args], {
