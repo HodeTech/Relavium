@@ -16,10 +16,11 @@ import { fileURLToPath } from 'node:url';
 import { resolveGpg } from '../gnupg.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
+// The installation from absolute PATH entries only, as the release path resolves it; resolved before the
+// home exists, so a refusal leaves no temporary directory behind.
+const installation = resolveGpg();
 // A short home: the agent's socket path must fit the platform's limit (104 bytes on macOS).
 const home = mkdtempSync(join(tmpdir(), 'rg-'));
-// The installation from absolute PATH entries only, as the release path resolves it.
-const installation = resolveGpg();
 const PAST = '20200101T000000!';
 const NO_AEAD = 'AES256 AES192 AES SHA512 SHA384 SHA256 ZLIB ZIP Uncompressed';
 

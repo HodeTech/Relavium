@@ -4,8 +4,8 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci`, `coverage` and `windows-concurrency`
-# are the REQUIRED status checks to merge into `main` (the Windows job since 2026-11-04: ADR-0106's
-# acceptance names required CI for the platform-scoped claims it carries). Wire, usage, filesystem, secrets,
+# are the REQUIRED status checks to merge into `main` (the Windows job since the maintainer's 2026-11-04
+# ruling: it is the CI lane that validates ADR-0106's Windows-scoped claims). Wire, usage, filesystem, secrets,
 # packed CLI and product map control jobs feed `ci` through an explicit success-only aggregation; they cannot
 # silently skip or fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
 # `peer-dep-gate`.
@@ -537,8 +537,8 @@ jobs:
   # Runs the @relavium/db concurrency suite (the real Windows native-addon + WAL exercise) + the CLI
   # concurrency/perf harness there, the native Step 2 filesystem boundaries (ADR-0105), plus a headless
   # no-TTY smoke. Native links/containment complement portable Windows lexical vectors; these results are
-  # evidence only after this job actually runs. A SEPARATE, advisory job (the required check
-  # stays the ubuntu `ci` job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700
+  # evidence only after this job actually runs. A SEPARATE job and, since 2026-11-04, a REQUIRED check in
+  # branch protection beside `ci` and `coverage` (see the header). POSIX 0600/0700
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:

@@ -203,6 +203,35 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(floorCommand['continue-on-error'], undefined);
 });
 
+test('required checks keep their branch-protection names and cannot be skipped', () => {
+  // GitHub counts a skipped required check as passing, so a job-level `if`, `continue-on-error` or rename
+  // would silently drop a required gate (a D64 round-1 finding on the PR #96 correction).
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  for (const [id, name] of [
+    ['coverage', 'engine coverage floor (llm, mcp)'],
+    ['windows-concurrency', 'windows · db concurrency + filesystem + headless smoke'],
+  ]) {
+    const job = workflow.jobs[id];
+    assert.equal(job.name, name, id);
+    assert.equal(job.if, undefined, id);
+    assert.equal(job['continue-on-error'], undefined, id);
+  }
+  const steps = workflow.jobs['windows-concurrency'].steps;
+  const build = steps.findIndex((step) => step.id === 'windows-build');
+  assert.ok(build > 0);
+  assert.ok(steps.length > build + 1);
+  for (const step of steps.slice(build + 1)) {
+    assert.equal(
+      step.if,
+      "${{ !cancelled() && steps.windows-build.outcome == 'success' }}",
+      step.name,
+    );
+    assert.equal(step['continue-on-error'], undefined, step.name);
+  }
+});
+
 test('Windows cohorts retain twelve serial filesystem files and media cases', () => {
   const require = createRequire(new URL('apps/cli/package.json', root));
   const { parse } = require('yaml');

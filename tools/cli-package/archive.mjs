@@ -79,14 +79,16 @@ function unpack(bytes) {
   }
 }
 
-/** @param {string} path */
 /**
  * A runtime dependency requirement the public manifest may carry: an exact, caret or tilde registry
  * version, the form pnpm publishes for a `catalog:` entry. An allowlist rather than a list of refused
  * protocols, so `npm:` aliases, `github:`, git and tarball URLs, `file:`/`link:`/`workspace:`/`catalog:`
- * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding).
+ * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding). The
+ * prerelease follows semver's dot-separated identifiers, since npm reads an empty one (`1.2.3-.`,
+ * `1.2.3-a..b`) as a dist-tag.
  */
-const REGISTRY_REQUIREMENT = /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,64})?$/u;
+const REGISTRY_REQUIREMENT =
+  /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64}){0,15})?$/u;
 
 /**
  * Whether one public runtime dependency entry is admitted: an npm package name outside the private
@@ -106,6 +108,7 @@ export function isPublicRuntimeDependency(name, requirement) {
   );
 }
 
+/** @param {string} path */
 export function assertPublicPackagePath(path) {
   if (
     !/^package\/(?:dist\/[A-Za-z0-9_-]+\.js|drizzle\/[0-9]{4}_[a-z0-9_]+\.sql|drizzle\/meta\/(?:[0-9]{4}_snapshot|_journal)\.json|package\.json|README\.md|CHANGELOG\.md|LICENSE)$/u.test(

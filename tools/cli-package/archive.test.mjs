@@ -3,7 +3,12 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { ARCHIVE_LIMITS, inspectPackageArchive, PackageArchiveError } from './archive.mjs';
+import {
+  ARCHIVE_LIMITS,
+  inspectPackageArchive,
+  isPublicRuntimeDependency,
+  PackageArchiveError,
+} from './archive.mjs';
 import { checksum, entry, ustar } from './ustar-fixture.mjs';
 
 const expectedPackage = {
@@ -304,6 +309,9 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     { commander: '*' },
     { commander: '>=12.0.0' },
     { commander: 'latest' },
+    // npm reads an empty prerelease identifier as a dist-tag.
+    { commander: '1.2.3-.' },
+    { commander: '1.2.3-a..b' },
     { commander: '' },
     { commander: 12 },
   ]) {
@@ -318,6 +326,26 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
         }),
       (error) => error instanceof PackageArchiveError && error.code === 'MANIFEST_RUNTIME',
     );
+  }
+});
+
+test('a runtime dependency is admitted at an exact, caret, tilde or prerelease registry version', () => {
+  for (const requirement of ['12.1.0', '^14.0.0', '~12.1.0', '^1.0.0-rc.1', '1.2.3-alpha.01']) {
+    assert.equal(isPublicRuntimeDependency('commander', requirement), true, requirement);
+    const goodPackage = { ...expectedPackage, dependencies: { commander: requirement } };
+    const files = inventory();
+    files.set('package/package.json', Buffer.from(JSON.stringify(goodPackage)));
+    assert.doesNotThrow(
+      () =>
+        inspectPackageArchive(gzipSync(tar(files)), {
+          expectedFiles: files,
+          expectedPackage: goodPackage,
+        }),
+      requirement,
+    );
+  }
+  for (const requirement of ['1.2.3-.', '1.2.3-a.', '1.2.3-..', 'latest', '>=1.0.0']) {
+    assert.equal(isPublicRuntimeDependency('commander', requirement), false, requirement);
   }
 });
 
