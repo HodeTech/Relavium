@@ -1369,21 +1369,21 @@ workflow:
     ] as const) {
       const { io } = captureIo();
       let built = false;
-      await expect(
-        gateCommand(
-          { runId, ...flags },
-          {
-            ...deps(io),
-            buildEngine: (options) => {
-              built = true;
-              return buildEngine(options);
-            },
+      const caught: unknown = await gateCommand(
+        { runId, ...flags },
+        {
+          ...deps(io),
+          buildEngine: (options) => {
+            built = true;
+            return buildEngine(options);
           },
-        ),
-      ).rejects.toMatchObject({
-        code: 'invalid_invocation',
-        message: expect.stringContaining(hint),
-      });
+        },
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+      expect(isCliError(caught) && caught.message).toContain(hint);
       expect(built).toBe(false);
       expect(
         reader()
