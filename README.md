@@ -179,8 +179,8 @@ for the exact active wave, completed work, and open reliability obligations is
 | [`packages/db`](packages/db/) | Local SQLite persistence with a Postgres-compatible schema and migrations |
 | [`packages/mcp`](packages/mcp/) | SDK-confined inbound MCP client and schema validation |
 | [`apps/cli`](apps/cli/) | Published terminal product and integration harness |
-| [`apps/desktop`](apps/desktop/) | Tauri desktop surface under development |
-| [`apps/vscode-extension`](apps/vscode-extension/) | VS Code surface under development |
+| [`apps/desktop`](apps/desktop/) | Tauri desktop surface — a placeholder, built in Phase 3 |
+| [`apps/vscode-extension`](apps/vscode-extension/) | VS Code surface — a placeholder, built in Phase 4 |
 
 The full dependency graph and ownership rules live in
 [docs/project-structure.md](docs/project-structure.md).

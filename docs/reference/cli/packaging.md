@@ -481,7 +481,7 @@ package-test producer, adds the product map controls and only then flips the rec
   `pnpm run ci` right after `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at
   most 20 minutes, read-only permissions, no remote cache credentials, no pnpm cache, no build step, no
   custom shell and no upload, inside `ci`'s needs with a guard that refuses every result except success
-  (the required contexts stay `ci` and `coverage`). That job's production is a second, independent
+  (the required contexts are `ci`, `coverage` and, since 2026-11-04, the Windows job). That job's production is a second, independent
   build that is never shipped, not a retry of the packed candidate, so ADR-0111's no-rebuild rule for a
   candidate is not touched.
 - **The `package_test` receipt.** The seal and the shared receipt validator (in its check and its

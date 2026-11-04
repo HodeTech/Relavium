@@ -10722,10 +10722,11 @@ restored, [moved here](#moved-by-the-pr-96-review-correction--2026-11-04) and to
 the maintainer chose to record are in
 [deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04).
 
-**Evidence at the merged head.** Local `pnpm run ci` passed at `964994c7` (secrets controls 130/130, acceptance tools
-1,027/1,027) and `pnpm coverage:enforced` passed (753 files, 16,244 tests; 94.75% lines, 92.83% branches). GitHub
-CI at `f25fb83d`: push run 41848319834 and pull-request run 41848332524, 18 of 18 jobs green each. SonarCloud: the
-PR's gate OK at `f25fb83d` (0 bugs, 0 vulnerabilities, 42 recorded smells) and `main`'s gate OK at `b3cf117e`.
+**Evidence.** Local `pnpm run ci` passed at `964994c7`, three commits before the merged head (secrets controls
+130/130, acceptance tools 1,027/1,027), and `pnpm coverage:enforced` passed there (753 files, 16,244 tests; 94.75%
+lines, 92.83% branches). GitHub CI at the merged head `f25fb83d`: push run 41848319834 and pull-request run
+41848332524, 18 of 18 jobs green each. SonarCloud: the PR's gate OK at `f25fb83d` (0 bugs, 0 vulnerabilities, 42
+recorded smells) and `main`'s gate OK at `b3cf117e`.
 
 **Repository settings changed with it (maintainer, 2026-11-04).** `main`'s branch protection requires
 `windows · db concurrency + filesystem + headless smoke` beside `lint · typecheck · test` and the coverage floor;
@@ -10741,7 +10742,7 @@ reports, five distinct medium findings:
 
 | Finding | Kind | Disposition |
 | --- | --- | --- |
-| A boolean `-u`/`--user` swallowed the credential flag after it (`unzip -u -P <pw>`), a regression from `64fb8772` | Redaction | Fixed: a value that is no `user:password` pair is processed as any element |
+| A boolean `-u`/`--user` swallowed the credential flag after it (`unzip -u -P <pw>`), a regression introduced by `0826f30a` | Redaction | Fixed: a value that is no `user:password` pair is processed as any element |
 | The `,`/`/` password helper gave the username the text before the first `:` even after a raw `?`/`#`, so the tail of a credential query value stayed visible, a regression for the `/` spelling | Redaction | Fixed: the username owns that text only as in the authority scan |
 | packaging.md and `release.yml` said the `release` environment holds `NPM_TOKEN` (three reports) | Documents | Corrected to the current state |
 | built-in-tools.md omitted that a raw `?`/`#` after the `,`/`/` keeps a password public | Documents | Stated as a recorded limit |
@@ -10753,9 +10754,21 @@ prerelease grammar and tests, a stranded JSDoc, the fixture generator's temporar
 a pin that no required job can be skipped, stale pointers, move notes, empty links, the argv rule's scope, the 2.6.Q
 item narrowed to what W8 left); the rest are in
 [deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04), with the
-review's 86 unverified first-pass lows triaged against `f25fb83d`. **D64's bar is not met yet:** round 1 found
+review's 86 unverified first-pass lows triaged against `f25fb83d`. **After round 1 D64's bar was not met:** it found
 medium findings, so acceptance needs one NEW complete cumulative round over the corrected head with no blocker, high
 or medium finding.
+
+**D64 round 2 (2026-11-04, at `6155c6dd`).** A new cumulative round of the same shape (four reviewers, a security
+sitting, a verifier per medium-or-higher claim) over `64fb8772..6155c6dd` confirmed one medium finding: a boolean flag
+whose last word names a credential (`--pass-credentials`, `--with-token`, `--ask-password`) consumed the credential
+flag after it, so that flag's value showed in `toolInput` and the journal digest, a regression introduced by
+`0826f30a`. A credential flag in value position is now read as a flag. Of 17 lows, all but two recorded limits were
+fixed with it: an inline flag name read by the text rules, two surviving mutants pinned, the requirement allowlist's
+length bound and npm's name rules with a test per guard, the required-check pin extended to `needs`, the Build step,
+the coverage steps and `ci`'s name, and eight documentation corrections. Before round 3, a differential oracle over
+365,640 argument vectors (every vector of up to three items from a 40-item pool, and 300,000 random ones of four to
+seven) found no credential that `64fb8772` masked and the fixed head shows, in either projection. **D64's bar is still
+not met:** acceptance needs a NEW round 3 with no blocker, high or medium finding.
 
 ## Execution record moved from current.md — 2026-11-04
 

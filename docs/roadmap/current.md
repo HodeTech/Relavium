@@ -39,7 +39,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. The next planned checkpoint is MVP-10's |
+| Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. `development` is ahead of `main` again with the D64 fixes to that correction (from `5a1006ea`); `main` keeps the redaction regressions they fix (credential flags after a boolean flag, a query key in a `,`/`/` URL password) until the next checkpoint, MVP-10's unless the maintainer schedules one earlier |
 
 ### What a CLI user meets today
 
@@ -80,7 +80,8 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 
 0. **Gate 0 — decide and re-order (no product code).** This reset and the `development`→`main` checkpoint (D61) —
    **both done:** PR #96 merged on 2026-11-04 ([checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)); its review
-   correction's D64 round 1 found five medium findings, fixed since, and a clean round 2 is pending;
+   correction's D64 round 1 found five medium findings and round 2 one, all fixed since, and a clean round 3 is
+   pending;
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the
@@ -408,8 +409,9 @@ places, each deliberate:
   2026-11-04, the Windows job required; no approval count, since GitHub refuses a self-approval — see
   [code-review.md](../standards/code-review.md); force-push and deletion blocked; administrators not enforced) and a `v*` tag ruleset
   limited to the maintain/admin roles; `release.yml` asserts its ref is reachable from `main`, and its publish
-  job names the `release` deployment environment, which MVP-A23 creates and gives `NPM_TOKEN` (until then the
-  token is a repository secret).
+  job names the `release` deployment environment; MVP-A23 either gives it `NPM_TOKEN` under a protection policy or
+  replaces the token with npm trusted publishing, chosen in the D59 release ADR (until then the token is a
+  repository secret).
 
 ## History
 
