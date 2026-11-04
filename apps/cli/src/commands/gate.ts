@@ -54,7 +54,7 @@ import {
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
-import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
+import { assertDecisionFitsGateType, decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import {
   assertBudgetDecision,
   budgetDecisionFromFlags,
@@ -388,6 +388,9 @@ async function resumeGateOwned(
     if (kind === 'budget') {
       const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
       assertBudgetDecision(gate?.allowance, decision);
+    } else {
+      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
+      assertDecisionFitsGateType(workflow, gate?.nodeId, decision);
     }
     // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
     // A match grants nothing; the later full preparation reads a fresh price snapshot again.

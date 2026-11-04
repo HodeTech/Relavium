@@ -1,7 +1,9 @@
+import { parseWorkflow } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import {
   approvalDecision,
+  assertDecisionFitsGateType,
   decisionFromFlags,
   inputDecision,
   parseGateInput,
@@ -88,5 +90,51 @@ describe('decisionFromFlags', () => {
 
   it('rejects --comment combined with --input', () => {
     expect(decisionFromFlags({ input: 'x', comment: 'y' })).toMatchObject({ ok: false });
+  });
+});
+
+describe('assertDecisionFitsGateType (2.6.K, ruled 2026-11-05)', () => {
+  const workflow = parseWorkflow(
+    `schema_version: '1.0'\nworkflow:\n  id: gates\n  nodes:\n    - { id: start, type: input }\n    - { id: ok, type: human_gate, gate_type: approval }\n    - { id: ask, type: human_gate, gate_type: input }\n    - { id: look, type: human_gate, gate_type: review }\n    - { id: out, type: output }\n  edges:\n    - { from: start, to: ok }\n    - { from: ok, to: ask }\n    - { from: ask, to: look }\n    - { from: look, to: out }`,
+  );
+  const decision = (kind: 'approved' | 'rejected' | 'input_provided') =>
+    kind === 'input_provided'
+      ? inputDecision('x')
+      : kind === 'approved'
+        ? approvalDecision()
+        : rejectionDecision();
+
+  it('accepts each fitting decision and refuses the rest with the flags to use', () => {
+    for (const [node, fits, misfit, hint] of [
+      [
+        'ok',
+        ['approved', 'rejected'],
+        'input_provided',
+        'approval gate — use --approve or --reject',
+      ],
+      [
+        'look',
+        ['approved', 'rejected'],
+        'input_provided',
+        'review gate — use --approve or --reject',
+      ],
+      [
+        'ask',
+        ['input_provided', 'rejected'],
+        'approved',
+        'input gate — use --input <json> or --reject',
+      ],
+    ] as const) {
+      for (const kind of fits) {
+        expect(() => assertDecisionFitsGateType(workflow, node, decision(kind))).not.toThrow();
+      }
+      expect(() => assertDecisionFitsGateType(workflow, node, decision(misfit))).toThrow(hint);
+    }
+  });
+
+  it('leaves a node it cannot find to the engine', () => {
+    expect(() =>
+      assertDecisionFitsGateType(workflow, 'missing', decision('input_provided')),
+    ).not.toThrow();
   });
 });

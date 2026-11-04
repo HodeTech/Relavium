@@ -1360,6 +1360,44 @@ workflow:
     });
   });
 
+  it("refuses a decision the gate's type does not accept before the engine is built, and keeps the run parked (2.6.K)", async () => {
+    const approval = await setupPausedRun();
+    const input = await setupPausedRun(INPUT_GATED, {});
+    for (const [runId, flags, hint] of [
+      [approval.runId, { input: 'us-east-1' }, 'is an approval gate — use --approve or --reject'],
+      [input.runId, { approve: true }, 'is an input gate — use --input <json> or --reject'],
+    ] as const) {
+      const { io } = captureIo();
+      let built = false;
+      await expect(
+        gateCommand(
+          { runId, ...flags },
+          {
+            ...deps(io),
+            buildEngine: (options) => {
+              built = true;
+              return buildEngine(options);
+            },
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: 'invalid_invocation',
+        message: expect.stringContaining(hint),
+      });
+      expect(built).toBe(false);
+      expect(
+        reader()
+          .loadRunEvents(runId)
+          .some((e) => e.type === 'human_gate:resumed'),
+      ).toBe(false);
+    }
+    // A rejection fits every human gate type.
+    const { io } = captureIo();
+    expect(await gateCommand({ runId: input.runId, reject: true }, deps(io))).toBe(
+      EXIT_CODES.success,
+    );
+  });
+
   it.each([false, true])(
     'maps a closed-handle resume to an idempotent exit 0; json=%s',
     async (json) => {
