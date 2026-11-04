@@ -299,12 +299,16 @@ Resolves a pending human gate from the terminal — the surface-agnostic resume 
 ```bash
 relavium gate <runId> --approve
 relavium gate <runId> --reject --comment "Too risky"
-relavium gate <runId> --input '{"region": "us-east-1"}'      # for gate_type=input
+relavium gate <runId> --input '{"region": "us-east-1"}'      # for gate_type=input (or --reject)
 relavium gate <runId> --gate <gateId> --approve            # disambiguate when >1 gate is pending
 
 # a run with `secret`-typed inputs: re-supply them on stdin, never in argv
 printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdin
 ```
+
+The decision must fit the gate's `gate_type`: `--approve` or `--reject` for an approval or review gate, `--input` or
+`--reject` for an input gate. Any other is refused as an invocation error (exit `2`) before anything is written
+([decisions by `gate_type`](../contracts/workflow-yaml-spec.md#human_gate-node)).
 
 - Exactly **one** of `--approve` / `--reject` / `--input` is required and they are mutually exclusive; `--comment <text>` annotates an approve/reject rationale and is invalid with `--input` (which carries the payload). A bad combination is an invalid invocation (exit `2`).
 - `--input <value>` is parsed as **JSON when it parses** (`'{"k":1}'` / `'42'` / `'true'` → a structured payload), else kept as the **raw string** (`--input some-token` → `"some-token"`); the result becomes the gate node's output. (The interactive prompt for a `gate_type=input` gate takes the typed value as a raw string.)
