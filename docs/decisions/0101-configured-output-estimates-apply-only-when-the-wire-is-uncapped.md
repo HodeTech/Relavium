@@ -348,3 +348,16 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+## Interactive chat output default — 2026-11-05
+
+> Amended 2026-11-05 (MVP-A7, the maintainer's D68 ruling): a chat whose bound agent authors no `max_tokens`
+> now carries one on its effective agent — `[chat].max_tokens` when configured; otherwise, for an Anthropic agent
+> with no fallback chain on the official endpoint in a session without a cost cap, the model's catalog ceiling
+> instead of the adapter's implicit 4,096-token default. This decision's order is unchanged: the request now carries
+> an effective cap, so the governor reserves that cap. A session with a cost cap keeps the adapter default unless
+> `[chat].max_tokens` is set, because a catalog-ceiling reservation (128,000 tokens on `claude-sonnet-4-6`) would
+> refuse the first turn of a modest cap; another provider and a chain keep today's uncapped or adapter behaviour.
+> Workflow runs are unchanged. The key's canonical home is
+> [config-spec.md](../reference/contracts/config-spec.md); the code is `withChatOutputDefault` in
+> `apps/cli/src/chat/session-host.ts`.
