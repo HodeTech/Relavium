@@ -288,6 +288,40 @@ describe('boundForModel', () => {
     expect(bounded.summary).toContain('omitted');
   });
 
+  it('counts a 30 MiB data URI the texts omit against the model-facing ceiling', async () => {
+    // A PR #96 review: the ceiling was measured on the 25-character marker, so the whole URI went to the
+    // model and was settled into the effect journal. The spill and the preview stay byte-free (I3).
+    const uri = `data:image/png;base64,${'A'.repeat(30 * 1024 * 1024)}`;
+    let spilledText = 'unset';
+    const spill = vi.fn((text: string) => {
+      spilledText = text;
+      return Promise.resolve({ ref: 'spill://uri', byteLength: text.length });
+    });
+    const bounded = await boundForModel(uri, BIG, host({ outputStore: { spill } }));
+    expect(bounded.truncated).toBe(true);
+    expect(String(bounded.value)).not.toContain('AAAAAAAA');
+    expect(String(bounded.value)).toBe(
+      `[base64 data URI omitted]\n\n[… truncated: ${utf8ByteLength(uri) + 25} bytes / 1 lines; full output at spill://uri …]`,
+    );
+    expect(spilledText).toBe('[base64 data URI omitted]');
+    expect(bounded.summary).not.toContain('AAAAAAAA');
+  });
+
+  it('counts base64 sources and binary buffers inside a result, and keeps one that fits', async () => {
+    const limits: ToolResultLimits = { maxBytes: 1024, maxLines: 100 };
+    const fits = { source: { kind: 'base64', data: 'Q'.repeat(512) } };
+    expect((await boundForModel(fits, limits, host())).value).toBe(fits);
+    for (const over of [
+      { source: { kind: 'base64', data: 'Q'.repeat(2048) } },
+      { thumb: new Uint8Array(2048) },
+      [{ uri: `data:audio/mpeg;base64,${'Q'.repeat(2048)}` }],
+    ]) {
+      const bounded = await boundForModel(over, limits, host());
+      expect(bounded.truncated, JSON.stringify(Object.keys(over))).toBe(true);
+      expect(String(bounded.value)).not.toContain('QQQQ');
+    }
+  });
+
   it('redacts base64 from EVERY element of an array-of-media result (the redaction walk recurses arrays)', async () => {
     const a = 'aGVsbG8gZmlyc3QgbWVkaWEgcGFydCBwYXlsb2Fk';
     const b = 'd29ybGQgc2Vjb25kIG1lZGlhIHBhcnQgcGF5bG9hZA==';
@@ -851,6 +885,66 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
   });
 
+  it.each([
+    '--auth-token',
+    '--access-token',
+    '--pwd',
+    '--db-password',
+    '--x-api-key',
+    '--apiKey',
+    '--credentials',
+    '--refresh_token',
+  ])(
+    'STRUCTURAL_ARGV_WORDS masks the value after %s, whose last word names a credential',
+    (flag) => {
+      // A PR #96 review: the object-key rule masked these names as keys while the anchored flag list passed
+      // them verbatim into `agent:tool_call` and the journal projection.
+      expect(redactSecretShapedValue({ args: [flag, 'Qz7flagValue', '--count=4'] })).toEqual({
+        args: [flag, '[redacted]', '--count=4'],
+      });
+      expect(redactSecretShapedValue({ args: [`${flag}=Qz7flagValue`] })).toEqual({
+        args: [`${flag}=[redacted]`],
+      });
+      expect(projectSecretShapedValue({ args: [flag, 'Qz7flagValue'] })).toEqual({
+        value: { args: [flag, '[redacted]'] },
+        settled: true,
+      });
+    },
+  );
+
+  it('STRUCTURAL_ARGV_WORDS leaves a flag that only mentions a credential, and its next argument', () => {
+    // Masking these would give calls that differ only in the next argument one journal identity.
+    const benign = {
+      args: [
+        ...['--max-tokens', '4096', '--password-stdin', 'next', '--token-file', '/tmp/t'],
+        ...['--no-password', '-h', 'db', '--key', 'k3', '--author', 'me', '--token-type', 'bearer'],
+      ],
+    };
+    expect(redactSecretShapedValue(benign)).toEqual(benign);
+  });
+
+  it('STRUCTURAL_ARGV_USERINFO masks a curl user:password in every spelling, and only that', () => {
+    expect(
+      redactSecretShapedValue({
+        args: ['-u', 'alice:Qz7pw', '-ualice:Qz7pw', '--user=bob:Qz7pw', '--user', 'carol:Qz7pw'],
+      }),
+    ).toEqual({
+      args: ['-u', '[redacted]', '-u[redacted]', '--user=[redacted]', '--user', '[redacted]'],
+    });
+    const benign = {
+      args: [
+        ...['-u', 'alice', '--user', 'carol', '-u', '1000:1000', '--user=dave', '-uroot'],
+        ...['--user', 'git+https://example.invalid/r.git'],
+      ],
+    };
+    expect(redactSecretShapedValue(benign)).toEqual(benign);
+    // A value that is not a user:password is still read by every other rule.
+    const key = `sk-${'Q'.repeat(20)}`;
+    expect(
+      JSON.stringify(redactSecretShapedValue({ args: ['--user', key, '-u', key] })),
+    ).not.toContain(key);
+  });
+
   it('leaves ordinary structured args alone — the negative control', () => {
     // Without this the rule above is satisfied by redacting everything, which would strip the stored row of
     // the diagnostic value that is its whole remaining purpose.
@@ -1242,18 +1336,49 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     // Core retains a colonless userinfo under 16 characters; the LLM diagnostic backstop masks it.
     expect(redactSecretShapedText('http://#TOKEN@h.example')).toBe('http://#TOKEN@h.example');
     expect(scrubSecrets('http://#TOKEN@h.example')).toBe('http://[REDACTED]@h.example');
-    // Core's authority also ends at `"`, `'`, `,`, `}` and `]`, so it leaves userinfo containing
-    // one of them as it is: an already-masked password, a bracketed-host prefix, a raw delimiter.
+    // Core's authority also ends at `"`, `'`, `}` and `]`, the delimiters of the JSON and quoted texts it
+    // reads, so it leaves userinfo containing one of them as it is: an already-masked password, a
+    // bracketed-host prefix, a raw delimiter.
     for (const [input, masked] of [
       ['https://app:[REDACTED]@h.example/', 'https://[REDACTED]@h.example/'],
       ['https://[::1]:8443?u:TOKENTOKEN@h.example/', 'https://[REDACTED]@h.example/'],
-      ['https://user:pa,ssword@host.example/', 'https://[REDACTED]@host.example/'],
       ['https://user:pa"ssword@host.example/', 'https://[REDACTED]@host.example/'],
       ["https://user:pa'ssword@host.example/", 'https://[REDACTED]@host.example/'],
       ['https://user:pa}ssword@host.example/', 'https://[REDACTED]@host.example/'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(input);
       expect(scrubSecrets(input), input).toBe(masked);
+    }
+  });
+
+  it('reads a `,` or `/` in a password through its `@`, never past a port, query or other delimiter', () => {
+    // A PR #96 review found the authority scan leaving `ssword` and `ss` public here.
+    for (const [input, expected] of [
+      ['https://user:pa,ssword@host.example/', 'https://[redacted]@host.example/'],
+      ['https://user:pa/ss@host.example/x', 'https://[redacted]@host.example/x'],
+      ['{"u":"https://user:p,w/x@h.example/v1"}', '{"u":"https://[redacted]@h.example/v1"}'],
+      ['https://user:pa/ss@host.example/@scope/pkg', 'https://[redacted]@host.example/@scope/pkg'],
+      // A raw `?` that is not a host's public query stays userinfo, as the authority scan reads it.
+      ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
+    ] as const) {
+      expect(redactSecretShapedText(input), input).toBe(expected);
+    }
+    // The backstop already reads a comma; both now mask it.
+    expect(scrubSecrets('https://user:pa,ssword@host.example/')).toBe(
+      'https://[REDACTED]@host.example/',
+    );
+    for (const input of [
+      'https://host.example:8080/a@b.example',
+      'https://host.example:8080,bob@x.example',
+      'https://host.example:8080?next=/a@b.example',
+      'https://example.com/@user',
+      'https://user:pa,ss/x',
+      '{"u":"https://h.example:p","e":"x@y.example"}',
+      "'https://u:pw/x', 'a@b.example'",
+      'https://a:b/https://c@d.example',
+      `https://user:pa/${'s'.repeat(600)}@host.example/`,
+    ]) {
+      expect(redactSecretShapedText(input), input).toBe(input);
     }
   });
 

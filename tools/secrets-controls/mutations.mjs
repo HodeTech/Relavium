@@ -102,20 +102,20 @@ const schemeLabel = String.raw`B[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|B[\n\t]
 const headerName = String.raw`(?:(?:x-)?api-key|x-goog-api-key)\\*["']?\s*:`;
 // The header rule, piece by piece, so a control can remove or weaken exactly one guard.
 const header = {
-  boundary: String.raw`(?<![A-Za-z0-9_-])`,
+  boundary: '(?<![A-Za-z0-9_-])',
   separator: String.raw`\\*["']?\s*:\s*["']?`,
   labelRun: String.raw`(?:[^\w\s]*(?:${schemeLabel})(?:[\\"']*(?:${schemeLabel})){0,7}[\\"']*\s+){0,8}`,
   notLabel: String.raw`(?![^\w\s]*(?:(?:${schemeLabel})[\\"']*){1,8}(?:\s|$))`,
   prefix: String.raw`[\\"']*`,
-  notNested: String.raw`(?!(?<=[^A-Za-z0-9_-])${headerName})`,
+  notNested: `(?!(?<=[^A-Za-z0-9_-])${headerName})`,
   token: String.raw`(?<token>[^\s"',;}\\][^\s"',;}]*?)`,
   stop: String.raw`(?=(?<=[^A-Za-z0-9_-])${headerName}|\\{0,15}[\s"',;}]|\\{0,15}$)`,
 };
 const headerLine = (part = {}) => {
   const value = { ...header, ...part };
   return (
-    String.raw`      /${value.boundary}(?:(?:x-)?api-key|x-goog-api-key)${value.separator}${value.labelRun}` +
-    String.raw`${value.notLabel}${value.prefix}${value.notNested}${value.token}${value.stop}/dgi,`
+    `      /${value.boundary}(?:(?:x-)?api-key|x-goog-api-key)${value.separator}${value.labelRun}` +
+    `${value.notLabel}${value.prefix}${value.notNested}${value.token}${value.stop}/dgi,`
   );
 };
 // The one standalone label rule, piece by piece; its first label is either label.
@@ -132,8 +132,8 @@ const label = {
 const labelLine = (part = {}) => {
   const value = { ...label, ...part };
   return (
-    String.raw`      /${value.first}${value.concat}${value.close}${value.notLabel}${value.lead}${value.token}` +
-    String.raw`${value.trail}${value.stop}/dgi,`
+    `      /${value.first}${value.concat}${value.close}${value.notLabel}${value.lead}${value.token}` +
+    `${value.trail}${value.stop}/dgi,`
   );
 };
 const mergedMasking = [
@@ -143,7 +143,8 @@ const mergedMasking = [
   '  );',
 ].join('\n');
 const queryRule = (names) => String.raw`/[?&#](?:${names})=(?<token>[^&\s#]+)/dgi`;
-const queryNames = String.raw`(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret`;
+const queryNames =
+  '(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret';
 const overlapMerge = '    if (open !== undefined && range.start < open.end) {';
 const mergeExtent = '      open.end = Math.max(open.end, range.end);';
 const hostFollowsLine =
@@ -174,7 +175,8 @@ const contactAssignmentCases = (secondInput) =>
   );
 const contactHostCase =
   'masks userinfo whose raw ?/# follows no host-shaped prefix: https://us?er=1:TOKEN@h.example/';
-const contactAssignment = String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);`;
+const contactAssignment =
+  "  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);";
 const connectionSchemeMarker = 'SECRETS_B2_CONNECTION_SCHEME';
 // sftp also matches the original list by its ftp suffix, so the old list still masks it.
 const connectionSchemeCases = connectionSchemes
@@ -334,7 +336,7 @@ const withoutCoreOriginalBoundary = coreOriginalBoundary
   )
   .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
 /** The complete core projection test file every core projection control runs. */
-const CORE_PROJECTION_CASES = 221;
+const CORE_PROJECTION_CASES = 234;
 function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
   return control(
     id,
@@ -349,7 +351,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete registry test file the journal-identity control runs. */
-const REGISTRY_CASES = 115;
+const REGISTRY_CASES = 116;
 /** The complete scrubber test file every LLM diagnostic control runs. */
 const LLM_SCRUB_CASES = 224;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
@@ -468,7 +470,7 @@ export const mutations = [
     'query-names',
     scrubSecretsLeaf,
     queryRule(queryNames),
-    queryRule(String.raw`(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret`),
+    queryRule('(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret'),
     ['packages/llm/src/llm-error.test.ts'],
     98,
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
@@ -1226,7 +1228,7 @@ export const mutations = [
     ['diagnostic-header-not-nested', { notNested: '' }],
     [
       'diagnostic-header-nested-stop',
-      { stop: header.stop.replace(String.raw`(?<=[^A-Za-z0-9_-])${headerName}|`, '') },
+      { stop: header.stop.replace(`(?<=[^A-Za-z0-9_-])${headerName}|`, '') },
     ],
     ['diagnostic-header-lookbehind', { boundary: '(?:^|[^A-Za-z0-9_-])' }],
   ].map(([id, part]) =>
@@ -1405,7 +1407,7 @@ export const mutations = [
   diagnosticControl(
     'diagnostic-userinfo-contact-assignment',
     contactAssignment,
-    String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));`,
+    '  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));',
     contactAssignmentCases('https://host.example#sec@x.example'),
     userinfoContactMarker,
   ),
@@ -1413,7 +1415,7 @@ export const mutations = [
     'diagnostic-userinfo-contact-host',
     scrubSecretsLeaf,
     contactAssignment,
-    String.raw`  return userinfo.includes('=', query + 1);`,
+    "  return userinfo.includes('=', query + 1);",
     ['packages/llm/src/scrub-secrets.test.ts'],
     LLM_SCRUB_CASES,
     contactHostCase,
@@ -1423,7 +1425,7 @@ export const mutations = [
   coreProjectionControl(
     'core-userinfo-contact-assignment',
     contactAssignment,
-    String.raw`  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));`,
+    '  return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query));',
     contactAssignmentCases('https://provider.example#section@x.example'),
     coreUserinfoContactMarker,
   ),
@@ -1431,7 +1433,7 @@ export const mutations = [
     'core-userinfo-contact-host',
     coreProjection,
     contactAssignment,
-    String.raw`  return userinfo.includes('=', query + 1);`,
+    "  return userinfo.includes('=', query + 1);",
     coreProjectionCases,
     CORE_PROJECTION_CASES,
     contactHostCase,
@@ -1693,7 +1695,7 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-url-split-retry',
-    "          /[\\n\\t]/.test(text[originalOffset + 1] ?? '') &&",
+    String.raw`          /[\n\t]/.test(text[originalOffset + 1] ?? '') &&`,
     '          false &&',
     ['blanks an LF/TAB-split ftp credential after a line that ends in s'],
     'SECRETS_B5_SPLIT_SFTP',

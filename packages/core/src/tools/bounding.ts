@@ -55,8 +55,9 @@ function countLines(text: string): number {
  * I3 gap where a `read_media` (or any) tool result carrying a `{ kind:'base64', data }` source would be
  * JSON-stringified into the `agent:tool_result.outputSummary` event / the spill / the over-cap preview —
  * a durable/event boundary the emit-time `deInlineMedia` choke point cannot catch, since it sees only the
- * resulting flat string, not a structured media source). The MODEL-facing result value is left intact
- * (the model still receives the bytes via the seam); only this text projection is redacted. Cycle-safe.
+ * resulting flat string, not a structured media source). Only this text projection is redacted; the
+ * model-facing value keeps the bytes while it fits the ceiling, and `boundForModel` counts the omitted bytes
+ * against that ceiling ({@link OmittedMedia}). Cycle-safe.
  */
 /** A PLAIN object (Object/null prototype) — NOT a Date/RegExp/Map/Set/class instance, which JSON.stringify
  *  renders natively and the walk must leave untouched (else a Date would collapse to `{}`). Narrows without an `as`. */
@@ -78,9 +79,25 @@ export function redactInlineMedia(value: unknown): unknown {
   return redactInlineMediaForText(value, new WeakSet<object>());
 }
 
-function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknown {
+/**
+ * The size of the inline media a text projection replaced with a marker. The model-facing value still holds
+ * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1), so media inside a dispatch
+ * result is ordinary text to the model and to the effect journal. A PR #96 review found a 30 MiB data URI
+ * measured as its 25-character marker, passed whole to the model and settled into `history.db`.
+ */
+interface OmittedMedia {
+  bytes: number;
+}
+
+function redactInlineMediaForText(
+  value: unknown,
+  seen: WeakSet<object>,
+  omitted?: OmittedMedia,
+): unknown {
   if (typeof value === 'string') {
-    return isBase64DataUri(value) ? '[base64 data URI omitted]' : value;
+    if (!isBase64DataUri(value)) return value;
+    if (omitted !== undefined) omitted.bytes += utf8ByteLength(value);
+    return '[base64 data URI omitted]';
   }
   if (typeof value !== 'object' || value === null) {
     return value;
@@ -91,9 +108,10 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => redactInlineMediaForText(item, seen));
+      return value.map((item) => redactInlineMediaForText(item, seen, omitted));
     }
     if (isBinaryBuffer(value)) {
+      if (omitted !== undefined) omitted.bytes += binaryByteLength(value);
       return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
     }
     if (!isPlainObject(value)) {
@@ -101,14 +119,16 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     }
     if (isCanonicalBase64Source(value)) {
       const data = value['data'];
+      const base64Length = typeof data === 'string' ? data.length : 0;
+      if (omitted !== undefined) omitted.bytes += base64Length;
       // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
-      return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
+      return { kind: 'base64', base64Length };
     }
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
       // Preserve an own data key such as __proto__; assignment would invoke an inherited setter.
       Object.defineProperty(out, key, {
-        value: redactInlineMediaForText(item, seen),
+        value: redactInlineMediaForText(item, seen, omitted),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -119,6 +139,12 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     // Only an ancestor is cyclic; a completed sibling can legitimately share this object.
     seen.delete(value);
   }
+}
+
+/** A binary buffer's byte length; every kind `isBinaryBuffer` admits has an own `byteLength`. */
+function binaryByteLength(value: object): number {
+  const length: unknown = Reflect.get(value, 'byteLength');
+  return typeof length === 'number' ? length : 0;
 }
 
 // One definition builds both the complete matcher and its necessary-prefix preflight. Prefixes
@@ -683,6 +709,13 @@ function visitEscapedSeparators(text: string, report: SecretSpanVisitor): void {
   visitSchemeCredentials(view, report);
 }
 
+/** The separator each escape letter stands for. */
+const ESCAPED_SEPARATORS: ReadonlyMap<string, string> = new Map([
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+]);
+
 /**
  * `text` with each escaped line feed, carriage return or tab (`\n`, `\r`, `\t`) replaced by that separator
  * twice, so offsets stay valid. The backslash before the letter may end a longer run, as in a JSON text
@@ -692,17 +725,16 @@ function visitEscapedSeparators(text: string, report: SecretSpanVisitor): void {
 function escapedSeparatorView(text: string): string {
   const parts: string[] = [];
   let copied = 0;
-  for (let index = text.indexOf('\\'); index >= 0; index = text.indexOf('\\', index)) {
+  let index = text.indexOf('\\');
+  while (index >= 0) {
     let end = index;
     while (text[end] === '\\') end += 1;
-    const letter = text[end];
-    const separator =
-      letter === 'n' ? '\n' : letter === 'r' ? '\r' : letter === 't' ? '\t' : undefined;
+    const separator = ESCAPED_SEPARATORS.get(text[end] ?? '');
     if (separator !== undefined) {
       parts.push(text.slice(copied, end - 1), separator, separator);
       copied = end + 1;
     }
-    index = end;
+    index = text.indexOf('\\', end);
   }
   if (parts.length === 0) return text;
   parts.push(text.slice(copied));
@@ -904,9 +936,17 @@ function visitSecretKeyValues(
       const readings = kept === undefined ? [quotedValueEnd(values, valueStart), ...plain] : plain;
       // A scheme label's token can take the line break before a closer that a reading reaches early; a
       // value that no reading closes is decided once every range of the pass is known instead.
-      const first = readings.reduce(laterClosing);
+      // `readings` holds the value's own reading first; the fallback states that here.
+      const first = readings
+        .slice(1)
+        .reduce(
+          (later, reading) => laterClosing(later, reading),
+          readings[0] ?? quotedValueEnd(opener, valueStart),
+        );
       const read = first.closed
-        ? views.schemed.map((view) => quotedValueEnd(view, valueStart)).reduce(laterClosing, first)
+        ? views.schemed
+            .map((view) => quotedValueEnd(view, valueStart))
+            .reduce((later, reading) => laterClosing(later, reading), first)
         : first;
       const kind = escaped ? `\\${opening}` : opening;
       if (!throughCloser) {
@@ -1100,11 +1140,12 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * its last `@`. This projection masks the userinfo and reads every key and parameter in it but its
  * username's; their values keep their own extent and the rules' ranges merge
  * (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
- * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
- * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
- * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
- * and a userinfo with no password is a vanity handle below 16 characters and masked from 16 on,
- * under every scheme.
+ * The projection differs from that backstop by design: its authority also ends at `"`, `'`,
+ * `}` and `]`, the delimiters of the JSON and quoted texts it reads, so userinfo containing one of
+ * them (an already-masked `[REDACTED]` password among them) is left as it is; it recognizes any
+ * scheme of up to 32 characters rather than a finite list; and a userinfo with no password is a
+ * vanity handle below 16 characters and masked from 16 on, under every scheme. A `,` or `/` in a
+ * password is read on to its `@` ({@link passwordPastDelimiter}).
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
   // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
@@ -1112,6 +1153,31 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
   if (query > HOST_SHAPED_MAX_LENGTH) return false;
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
+
+/**
+ * The `@` of a password that holds a `,` or `/`, or -1. The authority scan stops at either, so
+ * `https://user:pa,ss@host` and `https://user:pa/ss@host` left the password's tail public (a PR #96
+ * review finding; RFC 3986 admits a raw `,` in userinfo, and a raw `/` is a malformed URL a
+ * credential can still sit in). Reads on past them only, to the first `@` within 512 characters. A
+ * port (`host:8080/a@b`, `host:8080,bob@x.io`), a public query contact as the authority scan reads
+ * one ({@link isPublicQueryContact}), another scheme, and the delimiters the authority keeps
+ * (whitespace, quotes, `}`, `]`) keep the text public.
+ */
+function passwordPastDelimiter(text: string, start: number, end: number): number {
+  if (text[end] !== ',' && text[end] !== '/') return -1;
+  const authority = text.slice(start, end);
+  const colon = authority.indexOf(':');
+  if (colon < 0 || /^\d*$/.test(authority.slice(colon + 1))) return -1;
+  const query = authority.search(/[?#]/);
+  if (query >= 0 && isPublicQueryContact(authority, query)) return -1;
+  PASSWORD_TAIL.lastIndex = end;
+  const tail = PASSWORD_TAIL.exec(text)?.[0];
+  if (tail === undefined || tail.includes('://')) return -1;
+  return end + tail.length - 1;
+}
+
+/** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
+const PASSWORD_TAIL = /[^\s"'}\]?#@]{0,512}@/y;
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
@@ -1125,7 +1191,16 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const firstQuery = authority.search(/[?#]/);
     const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
     const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
-    if (at < 0) continue;
+    if (at < 0) {
+      const passwordAt = passwordPastDelimiter(text, start, end);
+      if (passwordAt >= 0) {
+        // Its username owns the text before the first ':', as below.
+        const url = { schemeStart: match.index, ownsUntil: start + authority.indexOf(':') };
+        mask(start, passwordAt, '[redacted]', url);
+        scheme.lastIndex = passwordAt + 1;
+      }
+      continue;
+    }
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
     const query = userinfo.search(/[?#]/);
@@ -1306,12 +1381,18 @@ function isSecretishKey(key: string): boolean {
  * answers one with the other's recorded result — the exact failure the digest exists to prevent.
  */
 function keyWords(key: string): readonly string[] {
-  return key
+  return nameWords(key).map((word) =>
+    word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word,
+  );
+}
+
+/** A name's lowercase words as written, before {@link keyWords} folds plurals. */
+function nameWords(name: string): readonly string[] {
+  return name
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .split(/[^A-Za-z0-9]+/)
     .filter((word) => word.length > 0)
-    .map((word) => word.toLowerCase())
-    .map((word) => (word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word));
+    .map((word) => word.toLowerCase());
 }
 
 /** Names that mean "this is a credential" on their own. */
@@ -1361,35 +1442,59 @@ function redactArgVector(
   let redactNext: string | undefined;
   for (const item of items) {
     if (redactNext !== undefined) {
-      out.push(redactCredentialArgument(redactNext, item, whole));
+      const masked = redactCredentialArgument(redactNext, item, whole);
+      out.push(masked ?? redactSecretShapedWalk(item, seen, project, collide, whole));
       redactNext = undefined;
       continue;
     }
     if (typeof item === 'string') {
       const separator = item.indexOf('=');
       const flag = separator > 0 ? item.slice(0, separator) : '';
-      if (isSecretishFlag(flag)) {
-        const value = item.slice(separator + 1);
-        out.push(`${flag}=${redactCredentialArgument(flag, value, whole)}`);
+      if (isCredentialFlag(flag)) {
+        const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
+        if (masked !== undefined) {
+          out.push(`${flag}=${masked}`);
+          continue;
+        }
+      }
+      const glued = gluedUserPassword(item);
+      if (glued !== undefined) {
+        out.push(`-u${whole(glued, '[redacted]')}`);
         continue;
       }
-      if (isSecretishFlag(item)) redactNext = item;
+      if (isCredentialFlag(item)) redactNext = item;
     }
     out.push(redactSecretShapedWalk(item, seen, project, collide, whole));
   }
   return out;
 }
 
-/** One credential-value rule for both argv spellings; only ambiguous -p may name a public port. */
-function redactCredentialArgument(flag: string, value: unknown, whole: WholeMask): string {
+/**
+ * One credential-value rule for both argv spellings; only ambiguous -p may name a public port. `undefined`
+ * means the value is not a credential after all (a `-u`/`--user` name without a password) and is walked as
+ * any other element.
+ */
+function redactCredentialArgument(
+  flag: string,
+  value: unknown,
+  whole: WholeMask,
+): string | undefined {
   if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
     return value;
+  }
+  if (isUserPasswordFlag(flag)) {
+    return looksLikeUserPassword(value) ? whole(value, '[redacted]') : undefined;
   }
   return whole(value, '[redacted]');
 }
 
+/** A flag whose next argument (or `=` value) is a credential, or a `user:password` pair. */
+function isCredentialFlag(flag: string): boolean {
+  return isSecretishFlag(flag) || isUserPasswordFlag(flag);
+}
+
 /**
- * A CLI flag that introduces a credential — `--token`, `--password`, `-p`.
+ * A CLI flag that introduces a credential — `--token`, `--password`, `--auth-token`, `-p`.
  *
  * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
  * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
@@ -1398,7 +1503,27 @@ function redactCredentialArgument(flag: string, value: unknown, whole: WholeMask
  * `-p` ambiguity retains that exception; explicitly named credential flags do not. Both separate and
  * `--password=…` argument spellings use the entire value, rather than a partial text-pattern match.
  * See {@link looksLikePort}.
+ *
+ * Besides the anchored names, a flag counts when its LAST word names a credential, read with the object-key
+ * rule's words ({@link SECRET_WORDS}, or `key` qualified by the word before it): `--auth-token`,
+ * `--access-token`, `--db-password`, `--pwd`, `--x-api-key`. A PR #96 review found those passing verbatim
+ * while the key rule masked the same names as object keys. The last word, not any word, because a flag
+ * that only MENTIONS a credential is usually a boolean or names a file — `--password-stdin`, `--token-file`
+ * — and masking the element after it would make calls that differ only there share one journal identity.
+ * For the same reason the word is read as written, without the key rule's plural folding (`--max-tokens`
+ * is a count), with `credentials` the one plural admitted, and a `no-` flag (`--no-password`) never counts.
  */
+function isSecretishFlag(item: string): boolean {
+  if (SECRETISH_FLAG.test(item)) return true;
+  const name = /^--?([A-Za-z][\w-]{0,63})$/.exec(item)?.[1];
+  if (name === undefined) return false;
+  const words = nameWords(name);
+  if (words[0] === 'no') return false;
+  const last = words.at(-1) ?? '';
+  if (SECRET_WORDS.has(last) || last === 'credentials') return true;
+  return last === 'key' && KEY_QUALIFIERS.has(words.at(-2) ?? '');
+}
+
 /**
  * The flag names, as one anchored alternation.
  *
@@ -1409,8 +1534,31 @@ function redactCredentialArgument(flag: string, value: unknown, whole: WholeMask
 const SECRETISH_FLAG =
   /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i; // NOSONAR — the metric is counting NAMES; see above
 
-function isSecretishFlag(item: string): boolean {
-  return SECRETISH_FLAG.test(item);
+/**
+ * curl's `-u`/`--user` carries `user:password` in ONE argument, so its value is a credential only when it
+ * holds a `:`. A `uid[:gid]` (`docker run -u 1000:1000`) and a URL (`pip install --user git+https://…`)
+ * are public.
+ */
+function isUserPasswordFlag(flag: string): boolean {
+  return flag === '-u' || flag === '--user';
+}
+
+function looksLikeUserPassword(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.includes(':') &&
+    !value.includes('://') &&
+    !/^\d+(?::\d+)?$/.test(value)
+  );
+}
+
+/** The value of curl's glued `-ualice:secret` spelling, when it is a `user:password` pair. */
+function gluedUserPassword(item: string): string | undefined {
+  if (!item.startsWith('-u') || item.length < 3 || item[2] === '-' || item[2] === '=') {
+    return undefined;
+  }
+  const value = item.slice(2);
+  return looksLikeUserPassword(value) ? value : undefined;
 }
 
 /** Port-shaped values disambiguate `-p`; an explicit credential flag has no port exception. */
@@ -1500,13 +1648,19 @@ function redactSecretShapedWalk(
  * the context it is read in; projecting each string alone would mask a key or a PEM marker that a later
  * member's text needs.
  */
-function toText(result: unknown): { readonly text: string; readonly summaryText: string } {
+function toText(result: unknown): {
+  readonly text: string;
+  readonly summaryText: string;
+  /** The inline media bytes the texts replaced with markers but the model-facing `result` still holds. */
+  readonly omittedBytes: number;
+} {
+  const omitted: OmittedMedia = { bytes: 0 };
   if (typeof result === 'string') {
     const text = isBase64DataUri(result) ? '[base64 data URI omitted]' : result;
-    return { text, summaryText: text };
+    return { text, summaryText: text, omittedBytes: text === result ? 0 : utf8ByteLength(result) };
   }
   if (result === undefined) {
-    return { text: '', summaryText: '' };
+    return { text: '', summaryText: '', omittedBytes: 0 };
   }
   let safe: unknown;
   try {
@@ -1515,11 +1669,15 @@ function toText(result: unknown): { readonly text: string; readonly summaryText:
     // URIs, AND raw binary buffers at any nesting before JSON-serialisation, so no media bytes (base64 or
     // decimal) can ride the summary/spill/preview (I3). A non-media object is returned as a structural clone
     // (same JSON). Both texts are made from this one walk.
-    safe = redactInlineMediaForText(result, new WeakSet<object>());
+    safe = redactInlineMediaForText(result, new WeakSet<object>(), omitted);
   } catch {
-    return { text: '[unserializable]', summaryText: '[unserializable]' }; // throwing getter during redaction
+    return { text: '[unserializable]', summaryText: '[unserializable]', omittedBytes: 0 }; // throwing getter during redaction
   }
-  return { text: jsonText(() => safe), summaryText: structuredSummaryText(safe) };
+  return {
+    text: jsonText(() => safe),
+    summaryText: structuredSummaryText(safe),
+    omittedBytes: omitted.bytes,
+  };
 }
 
 /**
@@ -1667,9 +1825,11 @@ export async function boundForModel(
   host: ToolHost,
   signal?: AbortSignalLike,
 ): Promise<BoundedResult> {
-  const { text, summaryText } = toText(result);
+  const { text, summaryText, omittedBytes } = toText(result);
   const summary = makeSummary(summaryText);
-  const bytes = utf8ByteLength(text);
+  // The ceiling is the model-facing value's, so inline media the texts omit still counts; the spill and the
+  // preview below are made from the media-free text, so an over-ceiling result never hands them base64.
+  const bytes = utf8ByteLength(text) + omittedBytes;
   const lines = countLines(text);
 
   if (bytes <= limits.maxBytes && lines <= limits.maxLines) {
@@ -1696,5 +1856,10 @@ export async function boundForModel(
     ref === undefined
       ? `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output unavailable (${unavailableNote}) …]`
       : `\n\n[… truncated: ${bytes} bytes / ${lines} lines; full output at ${ref} …]`;
-  return { value: makePreview(text, limits) + marker, truncated: true, summary };
+  // Over the ceiling only by the media it omits, the text itself is the preview, not a doubled head and tail.
+  const preview =
+    utf8ByteLength(text) <= limits.maxBytes && lines <= limits.maxLines
+      ? text
+      : makePreview(text, limits);
+  return { value: preview + marker, truncated: true, summary };
 }

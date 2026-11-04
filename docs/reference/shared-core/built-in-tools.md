@@ -97,7 +97,7 @@ A raw `?` or `#` before a URL authority's `@` begins public query or fragment te
 text before it is host-shaped (a dotted name or IPv4, `localhost` or a bracketed IP literal, with an
 optional port) **and** an `=` assignment follows it; otherwise the userinfo is masked. This is the
 same predicate as the
-[LLM diagnostic backstop](../../standards/error-handling.md#diagnostic-secret-backstop), including
+[LLM diagnostic backstop](diagnostic-secret-backstop.md), including
 its 260-character bound on the host-shaped prefix. Masked userinfo that holds such a raw `?` or `#`
 leaves the authority ambiguous: the userinfo may also be a query that another rule reads
 (`https://gateway?password=P@ss.word1`). The backstop masks through the authority's end unless a
@@ -121,11 +121,25 @@ user, so its value does not run on through the public host and path
 (`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`), and a key on
 the line after a split URL masks its value to its own end
 (`see https://\nDB_PASSWORD=P@ssw0rd123 now` → `see https://\n[redacted] now`). The projection
-otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and
-`]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them — is
-left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
-userinfo with no password is kept as a vanity handle below 16 characters and masked from 16 on,
-under every scheme.
+otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `}` and `]`,
+the delimiters of the JSON and quoted texts it reads, so userinfo that contains one of them — an
+already-masked `[REDACTED]` password among them — is left as it is; it recognizes any scheme of up to
+32 characters rather than a finite list; and a userinfo with no password is kept as a vanity handle
+below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 a `,` or `/` in a
+password no longer ends the authority: the userinfo is read on to the first `@` within 512 characters
+(`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`). A port
+(`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
+scheme, or a quote, `}`, `]` or whitespace first keeps the text public; the backstop still stops at a
+`/` (a recorded low).
+
+In an argument vector, the element after a credential flag, or the value of its `--flag=value`
+spelling, is masked whole. A flag is a credential flag when it is one of the anchored names (`-p`,
+`--password`, `--token`, `--api-key`, …) or its last word names a credential, read with the object-key
+rule's words as written (`--auth-token`, `--access-token`, `--db-password`, `--pwd`, `--x-api-key`,
+`--credentials`). A flag that only mentions a credential (`--password-stdin`, `--token-file`,
+`--max-tokens`) or begins with `no-` does not count, so the argument after it keeps its own identity.
+Only `-p` keeps a port exception. curl's `-u`/`--user` value, glued (`-ualice:secret`) or not, is
+masked when it holds a `:`, unless it is a `uid[:gid]` or a URL.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span. An ambiguous
 token-alphabet continuation after LF/TAB is conservatively masked with that credential; an

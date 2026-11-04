@@ -439,6 +439,29 @@ describe('ToolRegistry — git_commit human-gate', () => {
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(settle).toHaveBeenCalledTimes(1);
   });
+
+  it('settles a bounded preview, not a 30 MiB data URI, into the effect journal', async () => {
+    // A PR #96 review: the ceiling was measured on the data URI's text marker, so the whole value reached
+    // the model and `settleCommitted` wrote it to `history.db`.
+    const uri = `data:image/png;base64,${'A'.repeat(30 * 1024 * 1024)}`;
+    const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+      Promise.resolve({ exitCode: 0, stdout: uri, stderr: '', durationMs: 1 }),
+    );
+    const context = ctx({ toolPolicy: { allowedCommands: ['ls'] } });
+    const settle = vi.fn(context.effects.settle);
+    const out = await registry(stubHost({ process: { spawn } })).dispatch(
+      call('run_command', { command: 'ls' }),
+      {
+        ...context,
+        effects: { ...context.effects, settle },
+      },
+    );
+    expect(out.events.result.success).toBe(true);
+    expect(settle).toHaveBeenCalledTimes(1);
+    const settled = JSON.stringify(settle.mock.calls[0]?.[3]);
+    expect(settled).not.toContain('AAAAAAAA');
+    expect(settled.length).toBeLessThan(64 * 1024);
+  });
 });
 
 /* --- per-tool approval (ADR-0057 EA3) --- */

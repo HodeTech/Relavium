@@ -178,8 +178,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core projection phase executes the complete 221-case bounding file (the journal-identity
-control's phases the complete 115-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
+Every core projection phase executes the complete 234-case bounding file (the journal-identity
+control's phases the complete 116-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 

@@ -422,7 +422,11 @@ or Token scheme survives as its canonical label followed by `[redacted]`; no ori
 credential remainder or casing is retained. Credential flags in an argument vector mask
 the whole following element or the complete value in `--token=value` form. Only the
 ambiguous `-p` spelling retains the existing port-shaped exception; explicitly named
-credential flags have none. Unrecognized public fields and ordinary arguments still
+credential flags have none. Since 2026-11-04 the credential flags include every flag whose last
+word names a credential and curl's `-u`/`--user` pair, and a URL password's `,` or `/` no longer
+ends its userinfo ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
+with the PR95 tightening above, a `v5:` row whose arguments these project differently now refuses
+matching prepare, and every other row keeps its digest. Unrecognized public fields and ordinary arguments still
 contribute their complete surviving values to identity. These projections do not change
 the arguments dispatched to the host.
 
