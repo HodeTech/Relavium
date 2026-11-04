@@ -28,7 +28,7 @@ const { version } = JSON.parse(
  * metafile out of the package and removes their link trailers before anything is hashed or packed; the ordinary
  * closure guard refuses any map that a build outside prepack leaves in `dist`.
  */
-const CANDIDATE = process.env.RELAVIUM_CLI_CANDIDATE_STAGING !== undefined;
+const CANDIDATE = process.env['RELAVIUM_CLI_CANDIDATE_STAGING'] !== undefined;
 const THIRD_PARTY_EXTERNAL = [
   '@anthropic-ai/sdk',
   '@clack/prompts',

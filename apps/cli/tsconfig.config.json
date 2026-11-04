@@ -1,0 +1,10 @@
+{
+  // The build configuration is not under `src/`, so `tsconfig.json` does not check it, yet `tsup.config.ts`
+  // decides whether a build carries source maps (a candidate build) or is map-free. Typecheck it too.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["tsup.config.ts"]
+}
