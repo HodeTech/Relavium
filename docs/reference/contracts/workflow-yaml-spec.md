@@ -327,11 +327,13 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 **Decisions by `gate_type`** (ruled 2026-11-05): an `approval` or `review` gate takes `approved` or `rejected`; an
 `input` gate takes `input_provided` (its payload) or `rejected`. Any other decision is refused before anything is
 written — by `relavium gate` as an invocation error and by the engine as `invalid_decision` — so a gate never
-records a decision shape its type does not define.
+records a decision shape its type does not define. There is nothing for a deadline to approve on an `input` gate, so
+`timeout_action: approve` on one is refused at admission; a run parked before that rule fails with `run_timeout`
+at its deadline, as a refused auto-approval does.
 
 `timeout_action` requires `timeout_ms` at both standalone node and complete workflow admission. A timeout without an action keeps the safe default `reject`; omitting both sets no timeout.
 
-`timeout_action: approve` auto-approves on timeout — dangerous; use sparingly. **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
+`timeout_action: approve` auto-approves an `approval` or `review` gate on timeout — dangerous; use sparingly. An `input` gate refuses it (above). **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
 
 ### `condition` node
 

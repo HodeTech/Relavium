@@ -76,6 +76,13 @@ All contention is on the resume path, which is already async.
 > row can exist yet — the sole exemption in §2's rule, and the reason the engine models "before the first
 > acquire" as a state of its own rather than as "not owned".
 
+> **Amended 2026-11-05 (MVP-1 liveness, 2.6.G).** The window is no longer uncontended. `relavium run`, `gate`,
+> `budget resume` and Home open now call `reconcile()`, so another process can find a run in the instant between
+> its durable `run:started` and its acquire and settle it. What bounds that is the run store's exactly-one-terminal
+> refusal ([database-schema.md](../reference/shared-core/database-schema.md#concurrency--transaction-behavior)):
+> the run's own terminal is refused, it exits durability-uncertain, and its log keeps the reconciler's single
+> terminal. `run:started` stays unfenced for the reason above.
+
 ### 4. A losing resume refuses before it reads anything
 
 `resumeFromCheckpoint` acquires the lease **first**. A failed acquire throws a new typed `EngineStateError` naming the current holder and the remedy — before the checkpoint is loaded and before any `RunExecution` exists, so a loser never becomes a second producer even briefly.

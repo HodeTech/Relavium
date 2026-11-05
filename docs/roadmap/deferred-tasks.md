@@ -1472,6 +1472,43 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
   moved line to appear in the destination. *(low · docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:11125
   · first-pass R11-07)*
 
+## MVP-1 1b — recorded low findings (2026-11-05)
+
+D64 round 1 of MVP-1's security increment at `5f2a0eb8` found nine medium findings, all fixed before the next
+round, and the lows below that were not fixed with them. **Trigger for every entry:** the next change to the file it
+names.
+
+- [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
+  *(round 1, gate-2)* A direct engine caller (the coming desktop and VS Code `resume_run`, or any embedder of
+  `@relavium/core`) that sends `input_provided` to an approval gate while a `context:` source is briefly missing, or
+  an unresolved effect row blocks the resume, gets the run written `run:failed` instead of `invalid_decision` with
+  the run left parked. The CLI refuses a misfit before any engine work, so it is not affected. **Re-check:** do the
+  fit check in `#prepareCheckpointGate` right after the pending gate is found, before `prepareResumeAdmission`, and
+  add a core test with a failing context. *(low · packages/core/src/engine/engine.ts)*
+- [ ] **A long output value row soft-wraps to column 0.** *Low.* *(round 1, outputs-5)* Hard line breaks in an
+  output value are indented under its key, but a single row wider than the terminal wraps to column 0 of the next
+  visual row, where padded text can look like a summary row. The comment now says so. **Re-check:** wrap value rows
+  at the terminal width with the continuation indented (the TUI path knows the column count), or bound a row's
+  width. *(low · apps/cli/src/render/run-outputs.ts)*
+- [ ] **One damaged row in any non-terminal run stops every reconcile and outbox drain.** *Low.* *(round 1,
+  liveness-2)* `listInterruptedRuns` throws `CorruptRunEventError` for the whole listing, so `reconcile()` rejects,
+  and the CLI's best-effort catch hides it: a crashed run stays `running` on every Home open and `run`/`gate` start,
+  and a held terminal is never drained. `status` already isolates per run (`readPerRunOrDegrade`). The dependency
+  predates 1b; 1b's liveness now relies on it. **Re-check:** isolate failures per run in the interruption listing
+  and name an unreadable run once. *(low · packages/db/src/run-history-store.ts)*
+- [ ] **The compiled-CLI MCP orphan probe reads the developer's real keychain.** *Low; test-side.* *(round 1,
+  keys-6)* Since the key pre-flight, `agent run` in `tools/cli-smoke/check.mjs` asks the keychain before the env
+  var, so a stored Relavium Anthropic key shadows the synthetic one, and on macOS a keychain prompt could hold the
+  probe until its step timeout. Nothing is sent: consent refuses the first call and the server never answers the
+  second. **Re-check:** run the probe's bundle under the keyring-denied module guard the package smoke uses, so the
+  synthetic env key is the only one resolved. *(low · tools/cli-smoke/check.mjs)*
+- [ ] **Under the home directory, `/export` with no project writes into the global `~/.relavium/workflows/`.**
+  *Low.* *(round 1, export-6)* Project discovery walks up to the first `.relavium/`, and under `$HOME` that is the
+  global data directory, so the scaffold and its transcript land there and appear as a project workflow from every
+  other non-project directory under home. The reference now states this. **Re-check:** exclude the global
+  configuration directory from project discovery for `/export` (writing `<cwd>/.relavium/workflows/` instead), or
+  ask before writing there. *(low · apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
@@ -2185,10 +2222,10 @@ open — an unstated residual reads as an oversight, and the review that found t
 so directly: these "should remain visible rather than disappear behind the green test suite."
 
 - [ ] **Terminal-outbox drain, callable from any surface ([ADR-0078](../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §4/§5).**
-  `drainTerminalOutbox` is a `WorkflowEngine` method, and `run`/`gate` are the only commands that construct
-  one — `chat`, `agent run` and the bare-invocation Home run on `AgentSession` and have no engine to drain
-  with. `PR83-06` corrected the documentation and made `relavium status` NAME a run whose terminal is held
-  (`terminalHeld` in `--json`), but the drain itself is still reachable from two commands only. The real fix
+  `drainTerminalOutbox` is a `WorkflowEngine` method. **Narrowed 2026-11-05 (MVP-1 1b):** `run`, `gate`,
+  `budget resume` and Home open now drain through `reconcile()` (the Home through a reconcile-only engine,
+  `apps/cli/src/history/reconcile.ts`). What stays open: `chat` and `agent run` run on `AgentSession` and have
+  no engine to drain with, and `status` NAMES a held run (`terminalHeld` in `--json`) without draining it. The real fix
   lifts it off the engine onto its host ports (`store` + `terminalOutbox` + `runLeases` + `mediaReferences`),
   so any surface can call it at startup. **Acceptance:** a held terminal is retried before `status` reads the
   run; a drain failure stays non-fatal and preserves the entry; the entry is removed only once the exact
