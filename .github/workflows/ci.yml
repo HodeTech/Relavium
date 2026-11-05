@@ -604,8 +604,10 @@ jobs:
           # `chat` is TTY-gated on STDOUT (selectChatDriver / io.stdoutIsTty): with stdout captured (non-TTY)
           # here, the driver-selection gate picks the PLAIN driver (ink/setRawMode is never entered), and the
           # plain driver must exit cleanly on EOF — never crash. A regression routing to ink without a TTY would
-          # throw "Raw mode is not supported…", which this catches.
-          if out="$(printf '' | node apps/cli/dist/index.js chat 2>&1)"; then
+          # throw "Raw mode is not supported…", which this catches. The runner stores no provider key, and since
+          # MVP-A4 a keyless `chat` refuses with exit 2 before choosing a driver, so the chat gets a fake env key:
+          # an empty stdin sends nothing, so the key is never sent.
+          if out="$(printf '' | RELAVIUM_ANTHROPIC_API_KEY=relavium-headless-smoke-not-a-key node apps/cli/dist/index.js chat 2>&1)"; then
             chat_status=0
           else
             chat_status=$?

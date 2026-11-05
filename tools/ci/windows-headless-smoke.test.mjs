@@ -22,7 +22,7 @@ assert.match(
 );
 
 const fakeNode = `#!/usr/bin/env bash
-printf '%s\\n' "$2" >> "$HEADLESS_FAKE_CALLS"
+printf '%s\\n' "$2${'$'}{RELAVIUM_ANTHROPIC_API_KEY:+ with-key}" >> "$HEADLESS_FAKE_CALLS"
 case "$2" in
   --help) exit "${'$'}{HEADLESS_HELP_EXIT:-0}" ;;
   chat)
@@ -58,6 +58,8 @@ function exercise({
         HEADLESS_CHAT_OUTPUT: chatOutput,
         HEADLESS_CHAT_STREAM: chatStream,
         HEADLESS_HELP_EXIT: String(helpExit),
+        // Only the smoke itself may give `chat` its key: a key in the developer's shell would hide its loss.
+        RELAVIUM_ANTHROPIC_API_KEY: undefined,
       },
       encoding: 'utf8',
       timeout: 10_000,
@@ -79,7 +81,7 @@ test('the actual Windows smoke accepts the canonical chat EOF exit 4', () => {
   const result = exercise();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /windows headless no-TTY smoke passed/);
-  assert.deepEqual(result.calls, ['--help', 'chat']);
+  assert.deepEqual(result.calls, ['--help', 'chat with-key']);
 });
 
 for (const chatExit of [0, 1, 2, 130]) {
@@ -88,7 +90,7 @@ for (const chatExit of [0, 1, 2, 130]) {
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, /expected 4/);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /PRIVATE_CHILD_OUTPUT/);
-    assert.deepEqual(result.calls, ['--help', 'chat']);
+    assert.deepEqual(result.calls, ['--help', 'chat with-key']);
   });
 }
 
@@ -97,7 +99,7 @@ for (const chatStream of ['stdout', 'stderr']) {
     const result = exercise({ chatStream, chatOutput: 'setRawMode failed' });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, /entered raw mode without a TTY/);
-    assert.deepEqual(result.calls, ['--help', 'chat']);
+    assert.deepEqual(result.calls, ['--help', 'chat with-key']);
   });
 }
 
