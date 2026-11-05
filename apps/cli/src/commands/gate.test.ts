@@ -530,6 +530,42 @@ describe('gateCommand', () => {
     }
   });
 
+  it('resumes a historical input gate that approves on timeout — refused for new authoring, never for a parked run', async () => {
+    const base = parseWorkflow(GATED, { source: 'gate.test' });
+    const original: WorkflowDefinition = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        nodes: base.workflow.nodes.map((node) =>
+          node.id === 'g'
+            ? { ...node, gate_type: 'input', timeout_ms: 86_400_000, timeout_action: 'approve' }
+            : node,
+        ),
+      },
+    };
+    const freshError = /an input gate cannot approve on timeout/;
+    expect(() => WorkflowSchema.parse(original)).toThrow(freshError);
+    expect(() => parseWorkflow(JSON.stringify(original), { source: 'gate.test' })).toThrow(
+      freshError,
+    );
+    const definition = WorkflowSnapshotSchema.parse(original);
+    expect(definition).toEqual(original);
+
+    const { runId } = await setupPausedWorkflow(definition, { n: 7 });
+    expect(reader().loadRun(runId)?.status).toBe('paused');
+    const snapshot = loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot;
+
+    const { io } = captureIo();
+    expect(await gateCommand({ runId, input: '"us-east-1"' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(reader().loadRun(runId)?.status).toBe('completed');
+    expect(
+      reader()
+        .loadRunEvents(runId)
+        .filter((event) => event.type === 'human_gate:resumed'),
+    ).toEqual([expect.objectContaining({ runId, nodeId: 'g', decision: 'input_provided' })]);
+    expect(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot).toBe(snapshot);
+  });
+
   describe('secret re-supply (ADR-0083 §6)', () => {
     const SECRET = 'sk-live-not-in-the-log';
     const seedSecretRun = (): Promise<{ runId: string; gateIds: string[] }> =>
