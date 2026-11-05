@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowValidationError } from './errors.js';
 import { parseWorkflow, type WorkflowDefinition } from './parser.js';
 import {
+  MAX_REPORTED_TOOL_ARM_NODES,
   validateWorkflowToolArms,
   validateWorkflowWithCatalog,
   type WorkflowModelCatalog,
@@ -297,6 +298,37 @@ describe('run-path tool pre-flight for unwired host arms (2.6.A, MVP-1)', () => 
     ).toEqual([]);
     expect(issuesOf(workflowGranting("['web_search']"), ['os'])).toEqual([]);
     expect(issuesOf(workflowGranting("['notify']"), ['os'])).toHaveLength(1);
+  });
+
+  it('names every offending node once each, after a node that grants nothing', () => {
+    const workflow = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: gpt-4o, provider: openai, system_prompt: hi, tools: ['web_search'] }\n  nodes:\n    - { id: start, type: input }\n    - { id: a, type: agent, agent_ref: writer }\n    - { id: b, type: agent, agent_ref: writer, tools: ['notify', 'read_file'] }\n  edges: []`,
+    );
+    const issues = issuesOf(workflow, runPath.unwired);
+    expect(issues).toEqual([
+      'node `a`.tools: web_search needs a host capability this run path does not provide — remove the grant to run this workflow here',
+      'node `b`.tools: notify needs a host capability this run path does not provide — remove the grant to run this workflow here',
+    ]);
+  });
+
+  it('stays bounded on repeated grants across many nodes: each tool once, ten nodes named, the rest counted', () => {
+    const grant = `[${Array.from({ length: 2_000 }, () => "'web_search', 'notify'").join(', ')}]`;
+    const nodes = Array.from(
+      { length: 600 },
+      (_, index) => `    - { id: n${String(index)}, type: agent, agent_ref: writer }`,
+    ).join('\n');
+    const workflow = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: gpt-4o, provider: openai, system_prompt: hi, tools: ${grant} }\n  nodes:\n${nodes}\n  edges: []`,
+    );
+    const issues = issuesOf(workflow, runPath.unwired);
+    expect(issues).toHaveLength(MAX_REPORTED_TOOL_ARM_NODES + 1);
+    expect(issues[0]).toBe(
+      'node `n0`.tools: web_search, notify need a host capability this run path does not provide — remove the grant to run this workflow here',
+    );
+    expect(issues.at(-1)).toBe(
+      'workflow.nodes: 590 more agent nodes grant a tool this run path does not provide',
+    );
+    expect(issues.join('\n').length).toBeLessThan(2_000);
   });
 
   it("reads the node's narrowing `tools:` over its agent's", () => {

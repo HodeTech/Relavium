@@ -227,8 +227,9 @@ export type ToolHostArm = 'egress' | 'os';
 /** The host arm a built-in needs: `os` for the clipboard and notifications, `egress` for HTTP and search. */
 function toolHostArm(tool: ToolDef): ToolHostArm | undefined {
   if (tool.policy.os === true) return 'os';
-  // MCP reaches through its own host arm, which a run path wires (`host.mcp`), so it needs neither.
-  if (tool.policy.egress === 'http' || tool.policy.egress === 'search') return 'egress';
+  // MCP reaches through its own host arm (`host.mcp`), so it needs neither. Any other egress kind, a future one
+  // included, needs the egress arm: an unknown kind is refused rather than admitted.
+  if (tool.policy.egress !== undefined && tool.policy.egress !== 'mcp') return 'egress';
   return undefined;
 }
 
@@ -239,32 +240,59 @@ const TOOL_HOST_ARMS: ReadonlyMap<string, ToolHostArm> = new Map(
   }),
 );
 
+/** Offending nodes named one by one before the rest are counted (as `MAX_REPORTED_WIDENINGS` bounds dag.ts). */
+export const MAX_REPORTED_TOOL_ARM_NODES = 10;
+
 /**
  * The run-path tool pre-flight (2.6.A, MVP-1): refuse a workflow whose agent node grants a built-in that needs a
  * host arm this path does not wire. The CLI's `relavium run` wires neither egress nor os, so `web_search`,
  * `http_request`, `read_clipboard` or `notify` there is a certain `tool_unavailable` at its first call, partway
  * through a run that may already have spent money; refusing before the run starts is the louder signal. A `$ref`'d
  * agent with no node `tools:` is deferred, as the catalog checks defer it. Throws a {@link WorkflowValidationError}
- * listing every offending node, naming the tool, never a payload.
+ * naming each offending node and its distinct offending tools, never a payload.
+ *
+ * **Bounded.** It runs before the plan's node ceiling (ADR-0086), on a file that may hold thousands of nodes and
+ * grants with thousands of entries. Each grant list is read once (nodes that bind one inline agent share its
+ * list), a node names each offending tool once, and only the first {@link MAX_REPORTED_TOOL_ARM_NODES} nodes are
+ * named before the rest are counted.
  */
 export function validateWorkflowToolArms(
   workflow: WorkflowDefinition,
   opts: { readonly unwired: readonly ToolHostArm[] },
 ): void {
-  const issues = workflow.workflow.nodes.flatMap((node): WorkflowIssue[] => {
-    const tools = grantedTools(node, workflow).filter((tool) => {
+  const offendingByGrant = new Map<readonly string[], readonly string[]>();
+  const offendingIn = (grant: readonly string[]): readonly string[] => {
+    const known = offendingByGrant.get(grant);
+    if (known !== undefined) return known;
+    const found = new Set<string>();
+    for (const tool of grant) {
       const arm = TOOL_HOST_ARMS.get(tool);
-      return arm !== undefined && opts.unwired.includes(arm);
+      if (arm !== undefined && opts.unwired.includes(arm)) found.add(tool);
+    }
+    const offending = [...found];
+    offendingByGrant.set(grant, offending);
+    return offending;
+  };
+  const issues: WorkflowIssue[] = [];
+  let unreported = 0;
+  for (const node of workflow.workflow.nodes) {
+    const tools = offendingIn(grantedTools(node, workflow));
+    if (tools.length === 0) continue;
+    if (issues.length >= MAX_REPORTED_TOOL_ARM_NODES) {
+      unreported += 1;
+      continue;
+    }
+    issues.push({
+      field: `node \`${node.id}\`.tools`,
+      message: `${tools.join(', ')} ${tools.length === 1 ? 'needs' : 'need'} a host capability this run path does not provide — remove the grant to run this workflow here`,
     });
-    return tools.length === 0
-      ? []
-      : [
-          {
-            field: `node \`${node.id}\`.tools`,
-            message: `${tools.join(', ')} ${tools.length === 1 ? 'needs' : 'need'} a host capability this run path does not provide (available in chat) — remove the grant to run this workflow here`,
-          },
-        ];
-  });
+  }
+  if (unreported > 0) {
+    issues.push({
+      field: 'workflow.nodes',
+      message: `${String(unreported)} more agent ${unreported === 1 ? 'node grants' : 'nodes grant'} a tool this run path does not provide`,
+    });
+  }
   if (issues.length > 0) {
     throw new WorkflowValidationError(issues);
   }
