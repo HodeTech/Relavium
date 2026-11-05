@@ -283,6 +283,18 @@ describe('exportSessionToProject (MVP-A3)', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
+    'rewrites its own export by replacing the file, never by writing into the old one',
+    () => {
+      // A write into the old file keeps its inode, and a crash part-way through it leaves a truncated export that
+      // the next /export can no longer recognize. The rename puts a complete new file in its place.
+      const first = exportS1();
+      const before = statSync(first.path, { bigint: true }).ino;
+      expect(exportS1().path).toBe(first.path);
+      expect(statSync(first.path, { bigint: true }).ino).not.toBe(before);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'a dangling link where the workflows directory belongs is an invocation refusal, not an internal fault',
     () => {
       mkdirSync(join(cwd, '.relavium'));

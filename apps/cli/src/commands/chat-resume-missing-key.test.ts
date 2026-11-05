@@ -135,16 +135,21 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     return store;
   };
 
-  /** Resume `id-0` interactively, typing `lines`, and report the notices the view showed. */
+  /** Resume `id-0` interactively, typing `lines`, and report the notices and user turns the view showed. */
   const resumeInteractively = async (
     store: ReturnType<typeof createSessionStore>,
     providers: ProviderResolver,
     lines: readonly string[],
     between?: () => void,
-  ): Promise<{ readonly code: number; readonly notices: readonly string[] }> => {
+  ): Promise<{
+    readonly code: number;
+    readonly notices: readonly string[];
+    readonly userTurns: readonly string[];
+  }> => {
     const { io } = captureIo();
     let id = 0;
     let notices: readonly string[] = [];
+    let userTurns: readonly string[] = [];
     const drive: ChatDriver = async (ctx) => {
       ctx.startSession();
       await ctx.onActivated?.(() => !ctx.shouldStop());
@@ -153,10 +158,9 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
         between?.();
         if (ctx.shouldStop()) break;
       }
-      notices = ctx.store
-        .getSnapshot()
-        .state.transcript.filter((entry) => entry.role === 'notice')
-        .map((entry) => entry.text);
+      const { transcript } = ctx.store.getSnapshot().state;
+      notices = transcript.filter((entry) => entry.role === 'notice').map((entry) => entry.text);
+      userTurns = transcript.filter((entry) => entry.role === 'user').map((entry) => entry.text);
       return { kind: ctx.stopReason() };
     };
     const deps: ChatResumeCommandDeps = {
@@ -170,7 +174,7 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
       uuid: () => `r-${String(id++)}`,
     };
     const code = await chatResumeCommand({ sessionId: 'id-0' }, deps);
-    return { code, notices };
+    return { code, notices, userTurns };
   };
 
   it('opens an interactive resume, names both remedies, and sends nothing while the key is missing', async () => {
@@ -178,7 +182,7 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     const persistedBefore = store.loadFull('id-0')?.messages.length;
     const { providers, requests } = keyedResolver(() => false);
 
-    const { code, notices } = await resumeInteractively(store, providers, [
+    const { code, notices, userTurns } = await resumeInteractively(store, providers, [
       'hello again',
       '/compact',
       '/exit',
@@ -194,6 +198,7 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     }
     expect(requests()).toBe(0); // nothing reached the provider
     expect(store.loadFull('id-0')?.messages.length).toBe(persistedBefore); // nor the transcript
+    expect(userTurns).not.toContain('hello again'); // nor the view, as a turn that was never sent
   });
 
   it('lets the next message through once a key exists', async () => {
