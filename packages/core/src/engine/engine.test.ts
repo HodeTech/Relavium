@@ -2220,6 +2220,30 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     assertGapFreeSeq(events);
   });
 
+  it('fails an INPUT gate whose deadline would approve it with run_timeout, never resolving it approved', async () => {
+    // Admission refuses `timeout_action: approve` on an input gate; a run parked before that rule still carries it
+    // in its frozen snapshot. An input gate takes its input or is rejected, so the deadline cannot approve it.
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      { g: () => gate({ gateType: 'input', timeoutMs: 1000, timeoutAction: 'approve' }) },
+      host,
+    );
+    // The fit check reads the gate type from the plan, so the node itself is an input gate.
+    const handle = engine.start({
+      workflow: workflow(GATED.replace('gate_type: approval', 'gate_type: input')),
+    });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') host.fireTimers();
+    }
+    expect(events.some((e) => e.type === 'human_gate:resumed')).toBe(false);
+    const terminal = terminalsIn(events)[0];
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') expect(terminal.error.code).toBe('run_timeout');
+    assertGapFreeSeq(events);
+  });
+
   it('disarms the gate timer when a human decision arrives first (no timeout fires, single resolution)', async () => {
     const host = createInMemoryHost();
     const engine = engineWith(
@@ -6133,6 +6157,65 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();
     // crash-a's write failed and is skipped; crash-b still reconciled — one fault doesn't abandon the rest.
     expect(reconciled.map((e) => e.runId)).toEqual(['crash-b']);
+  });
+
+  it('never relabels a run failed while its held terminal is still unwritten, and lands it on a later start (ADR-0078 §4)', async () => {
+    // The crashed process held `run:completed` in the outbox because the store refused it (a full disk, say). If
+    // the store still refuses the large terminal on the next start but takes the small repair, a reconcile that
+    // repaired after a failed drain wrote `run:failed`, and the drain after that dropped the held completion.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'held-1');
+    let refuseCompletion = true;
+    const base = createInMemoryHost();
+    const host: ExecutionHost = {
+      ...base,
+      store: {
+        resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+        persistEvent: (event, options) =>
+          refuseCompletion && event.type === 'run:completed'
+            ? Promise.reject(new Error('SQLITE_FULL'))
+            : store.persistEvent(event, options),
+        listInterruptedRuns: () => store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+      },
+    };
+    await host.terminalOutbox.put({
+      type: 'run:completed',
+      runId: 'held-1',
+      timestamp: host.clock.now(),
+      sequenceNumber: 1,
+      outputs: { answer: 42 },
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    });
+    const engine = new WorkflowEngine({ host, executor: new StubExecutor() });
+
+    expect(await engine.reconcile()).toEqual([]);
+    expect(store.eventsFor('held-1').map((e) => e.type)).toEqual(['run:started']);
+    expect((await host.terminalOutbox.list()).map((e) => e.type)).toEqual(['run:completed']);
+
+    refuseCompletion = false;
+    expect((await engine.reconcile()).map((e) => e.type)).toEqual(['run:completed']);
+    expect(store.eventsFor('held-1').map((e) => e.type)).toEqual(['run:started', 'run:completed']);
+    expect(await host.terminalOutbox.list()).toEqual([]);
+  });
+
+  it('repairs nothing when the outbox cannot be read, since any run might hold a terminal there', async () => {
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'unknown-1');
+    const base = createInMemoryHost({ store });
+    const host: ExecutionHost = {
+      ...base,
+      terminalOutbox: {
+        ...base.terminalOutbox,
+        list: () => Promise.reject(new Error('unreadable')),
+      },
+    };
+    expect(await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile()).toEqual(
+      [],
+    );
+    expect(store.eventsFor('unknown-1').map((e) => e.type)).toEqual(['run:started']);
   });
 });
 

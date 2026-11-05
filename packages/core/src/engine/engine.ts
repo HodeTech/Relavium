@@ -1085,8 +1085,8 @@ class RunExecution {
       // the acquire below usually SUCCEEDS; our next guarded write then conflicts with that terminal, no node
       // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
       // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
-      // our terminal takes the reconciler's sequence number, so `UNIQUE(run_id, seq)` refuses it first. One
-      // terminal either way, never two.
+      // our terminal takes the reconciler's sequence number: the store's terminal refusal stops it, with
+      // `UNIQUE(run_id, seq)` as the fallback behind that refusal. One terminal either way, never two.
       if (!(await this.#acquireLease())) {
         // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
         // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
@@ -6349,8 +6349,15 @@ export class WorkflowEngine {
     // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
     // makes the two writers safe within one process; across processes only this order does.
     const interrupted = await this.#host.store.listInterruptedRuns();
-    const reconciled: RunEvent[] = [...(await this.#drainTerminalOutbox(interrupted))];
+    const drained = await this.#drainTerminalOutbox(interrupted);
+    const reconciled: RunEvent[] = [...drained.written];
     for (const run of interrupted) {
+      // **A run whose held terminal this pass could not write is left for the next start.** Draining first only
+      // protects a completed run if the repair below then stays away from it: repairing now would write
+      // `run:failed` past the held `run:completed`, and the next drain would drop that entry as already-terminal
+      // — the completed run relabelled failed and its outputs gone, which is exactly what the outbox exists to
+      // prevent (ADR-0078 §4). It keeps reporting `uncertain` until a drain can write what it holds.
+      if (drained.holds(run.runId)) continue;
       if (run.resumable) {
         // A run parked at a gate is intentionally left for the checkpoint/resume path (1.R):
         // rehydrating its full RunExecution from the persisted step_executions + run_events is the
@@ -6547,21 +6554,31 @@ export class WorkflowEngine {
    */
   async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
     const interrupted = await this.#host.store.listInterruptedRuns();
-    return this.#drainTerminalOutbox(interrupted);
+    return (await this.#drainTerminalOutbox(interrupted)).written;
   }
 
-  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<readonly RunEvent[]> {
+  /**
+   * Write every held terminal it can, and say which runs still hold one: `written` are the terminals that landed,
+   * `holds(runId)` is true for a run whose held terminal stayed in the outbox this pass (its claim was declined or
+   * its write failed). An outbox that cannot be read holds every run, because nothing can then prove a run has no
+   * terminal waiting — {@link reconcile} repairs none of them rather than risk relabelling a completed run.
+   */
+  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<{
+    readonly written: readonly RunEvent[];
+    readonly holds: (runId: string) => boolean;
+  }> {
     let held: readonly RunEvent[];
     try {
       held = await this.#host.terminalOutbox.list();
     } catch {
-      return [];
+      return { written: [], holds: () => true };
     }
     // `listInterruptedRuns` is the port's own answer to "does this run still lack a terminal" — a run that
     // has one is not in it. Using it rather than adding a read method keeps the drain inside the three
     // methods `RunStore` already declares, which is what lets a Phase-2 cloud store implement this at all.
     const stillOpen = new Map(interrupted.map((r) => [r.runId, r]));
     const written: RunEvent[] = [];
+    const stillHeld = new Set<string>();
     for (const event of held) {
       const runId = event.runId;
       if (runId === undefined) continue;
@@ -6579,7 +6596,10 @@ export class WorkflowEngine {
       // writing this would durably contradict the run it is finishing right now. Left in the outbox and
       // re-evaluated on the next start, when it will almost always be dropped as already-terminal.
       const fence = await this.#claimForReconcile(runId);
-      if (fence === undefined) continue;
+      if (fence === undefined) {
+        stillHeld.add(runId);
+        continue;
+      }
       try {
         await this.#host.store.persistEvent(event, {
           expectedLastSequenceNumber: open.lastSequenceNumber,
@@ -6593,12 +6613,13 @@ export class WorkflowEngine {
         written.push(event);
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the
-        // run keeps reporting `uncertain`.
+        // run keeps reporting `uncertain`, and `reconcile()` leaves it unrepaired.
+        stillHeld.add(runId);
       } finally {
         await this.#releaseReconcileClaim(runId, fence);
       }
     }
-    return written;
+    return { written, holds: (runId) => stillHeld.has(runId) };
   }
 
   /** Drop an outbox entry, swallowing a failure — a stale entry costs one read next start, never a wrong terminal. */
