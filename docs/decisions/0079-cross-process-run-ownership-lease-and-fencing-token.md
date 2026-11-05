@@ -80,8 +80,9 @@ All contention is on the resume path, which is already async.
 > `budget resume` and Home open now call `reconcile()`, so another process can find a run in the instant between
 > its durable `run:started` and its acquire and settle it. What bounds that is the run store's exactly-one-terminal
 > refusal ([database-schema.md](../reference/shared-core/database-schema.md#concurrency--transaction-behavior)):
-> the run's own terminal is refused, it exits durability-uncertain, and its log keeps the reconciler's single
-> terminal. `run:started` stays unfenced for the reason above.
+> one terminal lands either way. Usually it is the reconciler's: the run's own terminal is refused and the run
+> exits durability-uncertain. If the run's own terminal commits first, the reconciler's guarded write is refused
+> instead, and the run exits failed. `run:started` stays unfenced for the reason above.
 
 ### 4. A losing resume refuses before it reads anything
 

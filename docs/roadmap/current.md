@@ -100,9 +100,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    (security tier under D64) — human run output, the gate decision check, `/export`, the default model and missing-key
    error, and liveness. **Progress 2026-11-05:** 1a is on `development`. 1b is implemented and committed locally, not
    pushed until it is accepted. Wiring liveness exposed a second-terminal race, so the run store now refuses a second
-   terminal. The rigor pass is done. D64 rounds 1 (at `5f2a0eb8`) and 2 (at `60bc9727`) were not accepted, with nine
-   and two medium findings, all fixed; their lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md).
-   Still owed: one new complete round with no medium or higher finding, then a separate security sitting.
+   terminal. The rigor pass is done. D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`) and 3 (at `224b8f69`) were not
+   accepted, with nine, two and two medium findings, all fixed; their lows are fixed or recorded in
+   [deferred-tasks.md](deferred-tasks.md). Still owed: one new complete round with no medium or higher finding, then a
+   separate security sitting.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess

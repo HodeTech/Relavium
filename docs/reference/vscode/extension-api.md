@@ -152,7 +152,7 @@ The canonical schema these capabilities validate against is [workflow-yaml-spec.
 
 While a run executes, the active agent is shown through three simultaneous channels: a spinning codicon on the Active Runs tree node (auto-revealed), a gutter decoration on the file being processed, and a truncated status-bar label. Streaming output goes to a per-run `OutputChannel` for non-interactive runs and renders in the chat panel's React UI for interactive ones (tokens batched on a flush interval — `relavium.streamingBatchIntervalMs` — to avoid UI jank).
 
-A pending [`human_gate:paused`](../contracts/sse-event-schema.md) surfaces in up to three places depending on context: inline `[Approve]`/`[Reject]` buttons on the Active Runs tree node, an amber status-bar item that opens an approval QuickPick, and (for chat-triggered runs) an inline approval card. All three dispatch to the same resume action; if the gate has a timeout, a draining progress indicator is shown and the node's `timeout_action` applies on expiry.
+A pending [`human_gate:paused`](../contracts/sse-event-schema.md) surfaces in up to three places depending on context: inline `[Approve]`/`[Reject]` buttons on the Active Runs tree node, an amber status-bar item that opens an approval QuickPick, and (for chat-triggered runs) an inline approval card. An `input` gate takes the requested input or a rejection, never an approval, so it offers an input field and `[Reject]` in place of `[Approve]` ([decisions by `gate_type`](../contracts/workflow-yaml-spec.md#human_gate-node)). All three dispatch to the same resume action; if the gate has a timeout, a draining progress indicator is shown and the node's `timeout_action` applies on expiry.
 
 ## Security model
 

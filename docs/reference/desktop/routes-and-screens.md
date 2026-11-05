@@ -87,7 +87,7 @@ Configure a single provider. Add or rotate its API key — stored in the OS keyc
 
 ## Cross-cutting UI
 
-- **Human-gate overlay.** Mounted at the root layout so a pending [`human_gate:paused`](../contracts/sse-event-schema.md) event can surface an approval prompt over any screen. The same gate is reachable from the system tray (attention state) — see [tauri-plugins.md](tauri-plugins.md).
+- **Human-gate overlay.** Mounted at the root layout so a pending [`human_gate:paused`](../contracts/sse-event-schema.md) event can surface its prompt over any screen: an approval, or an input field for an `input` gate ([decisions by `gate_type`](../contracts/workflow-yaml-spec.md#human_gate-node)). The same gate is reachable from the system tray (attention state) — see [tauri-plugins.md](tauri-plugins.md).
 - **Command palette.** Opened by the global hotkey; lists recent workflows for instant run without surfacing the main window.
 - **Cost is always visible.** Per-run and per-node cost is a persistent element of the run-related screens, not buried in a separate billing page.
 

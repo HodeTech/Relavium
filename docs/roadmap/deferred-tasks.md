@@ -1474,9 +1474,9 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
 
 ## MVP-1 1b — recorded low findings (2026-11-05)
 
-D64 rounds 1 (at `5f2a0eb8`) and 2 (at `60bc9727`) of MVP-1's security increment found nine and two medium findings,
-all fixed before the next round, and the lows below that were not fixed with them. **Trigger for every entry:** the
-next change to the file it names.
+D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`) and 3 (at `224b8f69`) of MVP-1's security increment found nine, two
+and two medium findings, all fixed before the next round, and the lows below that were not fixed with them.
+**Trigger for every entry:** the next change to the file it names.
 
 - [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
   *(round 1, gate-2)* A direct engine caller (the coming desktop and VS Code `resume_run`, or any embedder of
@@ -1533,6 +1533,32 @@ next change to the file it names.
   or masked block says `relavium logs <runId> --json`; the plain renderer names the id. **Re-check:** fold the
   terminal's `runId` into the view state (or carry it on the summary) and pass that. *(low ·
   apps/cli/src/render/tui/final-summary.ts, apps/cli/src/render/tui/run-view-model.ts)*
+
+- [ ] **A held terminal the log has already moved past is never written, and its run is never settled.** *Low.*
+  *(round 3, liveness-1)* The drain retries an outbox entry whose sequence number is at or below the run's durable
+  last one, the store's append guard refuses it every time, and the run counts as held, so the repair skips it on
+  every start. It takes three rare events in a row: a held terminal from a gate deadline, a drain that cannot land
+  it during the next `relavium gate`, and that resume then dying after writing past it. The run stays `running`, and
+  `status` keeps calling it held. **Re-check:** in `#drainTerminalOutbox`, drop an entry whose sequence number is at
+  or below the log's last one (it can never land) instead of holding its run, and add a CLI reconcile test. *(low ·
+  packages/core/src/engine/engine.ts)*
+- [ ] **Only `relavium status` says the terminal outbox cannot be read.** *Low.* *(round 3, liveness-2)* An outbox
+  that exists but cannot be read (root-owned after a `sudo` run, a directory at its path) holds every run, so no
+  start or Home open settles anything until it can be read. Holding is the safe choice, and the reference now says
+  so, but `run`, `gate`, `budget resume` and the Home swallow the reconcile result and print nothing. **Re-check:**
+  have `reconcile()` report an unreadable outbox, and print one fixed line on stderr and in the Home naming the
+  file. *(low · packages/core/src/engine/engine.ts, apps/cli/src/history/reconcile.ts)*
+- [ ] **An export larger than the parser accepts is never recognized as the session's own.** *Low.* *(round 3,
+  export-2)* Past the parser's 2,097,152-character bound, a later `/export` of the same session writes another
+  file (`<slug>-2`, …) rather than rewriting the first, and the run hint it prints names a file `relavium run`
+  refuses. It needs a session whose attachments or shell output reach that size. **Re-check:** refuse to write a
+  scaffold over the bound, pointing at `relavium chat-export <sessionId> --out <path>`. *(low ·
+  apps/cli/src/chat/export.ts)*
+- [ ] **An `/export` before the first completed exchange is not found by a later one.** *Low.* *(round 3,
+  export-4)* With no title yet, the export's id is `exported-session-<sessionId>`; once a title exists, a later
+  `/export` searches only the title's slug, so it writes a second file and the empty first one stays in the catalog.
+  **Re-check:** also search the fallback id for the session's own export (renaming it on rewrite), or refuse
+  `/export` while there is nothing to export. *(low · apps/cli/src/chat/export.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
