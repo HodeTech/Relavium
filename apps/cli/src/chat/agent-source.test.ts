@@ -95,7 +95,7 @@ describe('resolveChatAgent', () => {
     expect(resolve([])).toMatchObject({ model: DEFAULT_CHAT_MODEL, provider: 'anthropic' });
   });
 
-  it('MVP-A4: a configured model or provider wins over the keys', () => {
+  it('MVP-A4: a configured model, or a provider a caller supplies, wins over the keys', () => {
     const keyedOpenAi = (id: string) => id === 'openai';
     expect(
       resolveChatAgent(undefined, {
@@ -106,7 +106,8 @@ describe('resolveChatAgent', () => {
         hasKey: keyedOpenAi,
       }),
     ).toMatchObject({ model: 'claude-haiku-4-5', provider: 'anthropic' });
-    // A persisted provider without a model gets that provider's starter, never the Anthropic default.
+    // A provider passed without a model gets that provider's starter, never the Anthropic default. Only a direct
+    // caller reaches this: config resolution drops a persisted provider that has no model.
     expect(
       resolveChatAgent(undefined, {
         cwd: dir,
