@@ -173,7 +173,7 @@ video = 10                         # assumed video-SECONDS per media-output turn
 focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
-default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063)
+default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063); absent there too ⇒ a model of the first provider with a key (MVP-A4, chat-session.md)
 default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
