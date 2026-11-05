@@ -13,11 +13,12 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
  * serialized**: `JSON.stringify` turns a newline into the two characters `\n`, and a key right after it would then
  * have no word boundary for the scrubber to see. Masking leaves also keeps one field's text from joining the next
  * field's into a false match. A leaf alone cannot show a shape whose name is the member's KEY (`"x-api-key": "…"`),
- * so each object member with a primitive value is also read as the one-member JSON text `{"<key>":<value>}`, the
- * form the scrubber reads in a serialized object; when that text masks, the member's value is masked whole. One
- * member never joins its neighbour. Top-level keys are authored ids, so they get the one-line {@link sanitizeInline}.
- * A secret input the engine already masked (`{ secret: true, ref }`) is rendered as that masked object, never
- * unwrapped.
+ * so each member with a primitive value, a top-level output included, also has its NAME read: as the one-member JSON
+ * text `{"<key>":"v"}` with a stand-in value, the form the scrubber reads in a serialized object. When the scrubber
+ * masks the stand-in, the member's value is masked whole. The value's own text never joins its name or a neighbour,
+ * so it cannot turn a token already masked in place into a whole-value mask. Top-level keys are authored ids, so
+ * they get the one-line {@link sanitizeInline}. A secret input the engine already masked (`{ secret: true, ref }`)
+ * is rendered as that masked object, never unwrapped.
  *
  * Outputs are the run's deliverable, not a diagnostic, so they do NOT get `sanitizeUntrusted`'s whole-text
  * fallback, which blanks a diagnostic outright when its fragments join into a shape once whitespace is removed: on
@@ -40,6 +41,8 @@ export const MAX_TOTAL_CHARS = 12_000;
 
 /** The text a member masked whole shows — the shared scrubber's own mask. */
 const MEMBER_MASK = '[REDACTED]';
+/** The stand-in value a member's name is read with: one character, which the scrubber's header rule masks. */
+const NAME_PROBE = 'v';
 
 /**
  * The outputs block as lines, each already prefixed with `indent`. Empty when there are no outputs. `runId`
@@ -106,25 +109,30 @@ function noteCause(truncated: boolean, masked: boolean): string {
 /**
  * Output `key`'s value as display text: secret shapes masked on the original text, then terminal controls stripped.
  * A string is itself; anything else is compact JSON over a copy whose every string — keys included — was masked
- * first (see the module note). A primitive value is also read with its output key, as a nested member is.
- * `masked` says whether the scrubber changed anything.
+ * first (see the module note). A primitive value's output key is also read, as a nested member's is.
+ * `masked` says whether anything was masked.
  */
 function displayValue(
   key: string,
   value: unknown,
 ): { readonly text: string; readonly masked: boolean } {
   let masked = false;
+  const onMask = (): void => {
+    masked = true;
+  };
   const scrub = (text: string): string => {
     const out = scrubSecrets(text);
-    if (out !== text) masked = true;
+    if (out !== text) onMask();
     return out;
   };
   if (typeof value === 'string') {
-    const shown = maskedAsMember(key, scrub(value), scrub);
+    const shown = maskedAsMember(key, scrub(value), onMask);
     return { text: stripTerminalControls(typeof shown === 'string' ? shown : MEMBER_MASK), masked };
   }
   try {
-    const json = JSON.stringify(maskedAsMember(key, scrubLeaves(value, scrub, new Set()), scrub));
+    const json = JSON.stringify(
+      maskedAsMember(key, scrubLeaves(value, scrub, onMask, new Set()), onMask),
+    );
     return { text: stripTerminalControls(json ?? String(value)), masked };
   } catch {
     // A value JSON cannot represent (a cycle, a BigInt, nesting too deep) — said, not thrown: the summary must
@@ -135,29 +143,31 @@ function displayValue(
 
 /**
  * A copy of `value` with every string, and every object key, passed through `scrub`, and every object member with a
- * primitive value read once more as its one-member JSON text (see the module note). It follows `JSON.stringify`'s
+ * primitive value masked whole when its name labels a credential (see the module note). It follows `JSON.stringify`'s
  * own reading of an object that defines `toJSON`, and throws on a cycle, as `JSON.stringify` would.
  */
 function scrubLeaves(
   value: unknown,
   scrub: (text: string) => string,
+  onMask: () => void,
   ancestors: Set<object>,
 ): unknown {
   if (typeof value === 'string') return scrub(value);
   if (typeof value !== 'object' || value === null) return value;
-  if (hasToJson(value)) return scrubLeaves(value.toJSON(), scrub, ancestors);
+  if (hasToJson(value)) return scrubLeaves(value.toJSON(), scrub, onMask, ancestors);
   if (ancestors.has(value)) throw new TypeError('a cyclic output value');
   ancestors.add(value);
   try {
-    if (Array.isArray(value)) return value.map((item) => scrubLeaves(item, scrub, ancestors));
+    if (Array.isArray(value))
+      return value.map((item) => scrubLeaves(item, scrub, onMask, ancestors));
     const copy: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      const member = scrubLeaves(item, scrub, ancestors);
+      const member = scrubLeaves(item, scrub, onMask, ancestors);
       // `defineProperty`, not assignment: an own `__proto__` member (JSON.parse makes one) would otherwise hit the
       // prototype setter and vanish from the display. Two keys masked to the same text keep the later one; the
       // block's note then says it was masked.
       Object.defineProperty(copy, scrub(key), {
-        value: maskedAsMember(key, member, scrub),
+        value: maskedAsMember(key, member, onMask),
         enumerable: true,
         configurable: true,
         writable: true,
@@ -170,15 +180,30 @@ function scrubLeaves(
 }
 
 /**
- * `member` (already masked leaf by leaf), or the scrubber's mask in its place when the one-member JSON text
- * `{"<key>":<member>}` masks: the key names a credential the value alone does not show. Only a primitive value is
- * read this way; an object or array value is read member by member by the walk itself.
+ * `member` (already masked leaf by leaf), or {@link MEMBER_MASK} in its place when its name labels a credential
+ * ({@link namesCredential}); `onMask` is told. Only a value JSON prints as itself is read this way: an object or
+ * array is read member by member by the walk itself, and `JSON.stringify` drops `undefined`, a function or a symbol.
  */
-function maskedAsMember(key: string, member: unknown, scrub: (text: string) => string): unknown {
+function maskedAsMember(key: string, member: unknown, onMask: () => void): unknown {
   if (typeof member === 'object' && member !== null) return member;
-  const view = JSON.stringify({ [key]: member });
-  if (view === undefined || scrub(view) === view) return member;
+  if (member === undefined || typeof member === 'function' || typeof member === 'symbol') {
+    return member;
+  }
+  if (!namesCredential(key)) return member;
+  onMask();
   return MEMBER_MASK;
+}
+
+/**
+ * Whether `key` labels a credential: read as the one-member JSON text `{"<key>":"v"}`, the form the scrubber sees in
+ * a serialized object, with a stand-in value, the scrubber masks that value. Only the name decides. The member's own
+ * text never enters this view, so its JSON escapes (`\n` for a newline) cannot stretch a token the leaf pass already
+ * masked at a line end into a whole-value mask, and a key that is itself a secret shape masks only itself (it is
+ * shown masked), not its value.
+ */
+function namesCredential(key: string): boolean {
+  const tail = `:${JSON.stringify(NAME_PROBE)}}`;
+  return !scrubSecrets(JSON.stringify({ [key]: NAME_PROBE })).endsWith(tail);
 }
 
 function hasToJson(value: object): value is { toJSON: () => unknown } {

@@ -153,6 +153,46 @@ describe('formatRunOutputs (MVP-A1)', () => {
     );
   });
 
+  it('reads only a field NAME for that, so a token masked in place at a line end never masks the whole value', () => {
+    // Read with its value, the field's JSON text wrote the newline after `Basic [REDACTED]` as the two characters
+    // `\n`; the scrubber's token then ran on into the next line, the text changed, and the whole README was masked.
+    expect(
+      formatRunOutputs({ readme: '# mytool\n\n## Basic usage\nRun it.' }, '', 'run-7'),
+    ).toEqual([
+      'outputs:',
+      '  readme:',
+      '    # mytool',
+      '    ',
+      '    ## Basic [REDACTED]',
+      '    Run it.',
+      '  (outputs masked — the full record: `relavium logs run-7 --json`)',
+    ]);
+    expect(formatRunOutputs({ result: { body: '## Basic usage\nRun it.' } }, '')[1]).toBe(
+      '  result: {"body":"## Basic [REDACTED]\\nRun it."}',
+    );
+    expect(formatRunOutputs({ raw: 'Authorization: Bearer abc\r\nnext' }, '').slice(1, 4)).toEqual([
+      '  raw:',
+      '    Authorization: Bearer [REDACTED]',
+      '    next',
+    ]);
+    // Nor does a name join its value: a URL-shaped name and an `@` in the value stay as they are, and a name that is
+    // itself a secret shape is masked, not the value beneath it.
+    expect(formatRunOutputs({ links: { 'https://acme.com': 'info@acme.com' } }, '')).toEqual([
+      'outputs:',
+      '  links: {"https://acme.com":"info@acme.com"}',
+    ]);
+    expect(formatRunOutputs({ v: { [KEY]: 1 } }, '')[1]).toBe('  v: {"[REDACTED]":1}');
+    // A name that ends in a credential's own prefix is a label, as a header name is: its value is masked.
+    expect(formatRunOutputs({ v: { 'https://h.example/a?token=': 'plainvalue' } }, '')[1]).toBe(
+      '  v: {"https://h.example/a?token=":"[REDACTED]"}',
+    );
+    // A member JSON drops is still dropped under a header name, never shown as a masked value.
+    expect(formatRunOutputs({ v: { 'x-api-key': undefined, y: 1 } }, '')).toEqual([
+      'outputs:',
+      '  v: {"y":1}',
+    ]);
+  });
+
   it('keeps an own __proto__ member, as JSON.parse makes one, rather than dropping it unsaid', () => {
     const parsed: unknown = JSON.parse('{"v":{"__proto__":{"x":"kept"},"y":1}}');
     if (typeof parsed !== 'object' || parsed === null) throw new Error('fixture');
