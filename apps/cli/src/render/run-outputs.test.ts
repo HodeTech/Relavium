@@ -104,6 +104,83 @@ describe('formatRunOutputs (MVP-A1)', () => {
     expect(lines).toContain(`  k${String(Object.keys(keys).length - 1)}: …`);
   });
 
+  it('masks a key inside a non-string value before serializing it, so an escaped newline cannot hide it', () => {
+    // JSON.stringify writes the newline as the two characters `\n`; masked after that, `nsk-…` had no boundary.
+    for (const outputs of [
+      { v: { text: `config:\n${KEY}` } },
+      { fan: { writer: `Your key:\n${KEY}`, reviewer: 'ok' } },
+      { tab: [`k\t${KEY}`] },
+      { crlf: { t: `k\r\n${KEY}` } },
+    ]) {
+      const text = formatRunOutputs(outputs, '  ', 'run-3').join('\n');
+      expect(text).not.toContain(KEY);
+      expect(text).toContain('[REDACTED]');
+      expect(text).toContain('(outputs masked — the full record: `relavium logs run-3 --json`)');
+    }
+    // An object key is masked too.
+    expect(formatRunOutputs({ v: { [KEY]: 1 } }, '').join('\n')).not.toContain(KEY);
+  });
+
+  it('masks each field of a record on its own, so a URL in one and an @ in the next stay whole', () => {
+    // Masked as one JSON text, the URL rule ran from `https://` across the field boundary to the next `@`,
+    // swallowed the email field and showed a fake host.
+    expect(
+      formatRunOutputs({ contact: { site: 'https://acme.com', email: 'info@acme.com' } }, ''),
+    ).toEqual(['outputs:', '  contact: {"site":"https://acme.com","email":"info@acme.com"}']);
+  });
+
+  it('says when a value was masked and where the exact record is, even when the scrubber masked it whole', () => {
+    // The shared scrubber's documented fail-closed residual reads a path-less URL, prose and a later `@` as URL
+    // userinfo once whitespace is removed. The value is masked whole; the note keeps that from reading as silence.
+    const prose = 'Docs are at https://acme.com and support is reachable at help@acme.com.';
+    expect(formatRunOutputs({ summary: prose }, '', 'run-5')).toEqual([
+      'outputs:',
+      '  summary: [REDACTED]',
+      '  (outputs masked — the full record: `relavium logs run-5 --json`)',
+    ]);
+  });
+
+  it('says both causes when a block is shortened and masked', () => {
+    const lines = formatRunOutputs({ a: KEY, b: 'x'.repeat(MAX_VALUE_CHARS + 1) }, '', 'run-4');
+    expect(lines.at(-1)).toBe(
+      '  (outputs shortened and masked — the full record: `relavium logs run-4 --json`)',
+    );
+  });
+
+  it('reads a value the way JSON does: toJSON is honoured, and a cycle is said rather than thrown', () => {
+    expect(formatRunOutputs({ at: { when: new Date(0) } }, '')).toEqual([
+      'outputs:',
+      '  at: {"when":"1970-01-01T00:00:00.000Z"}',
+    ]);
+    const cyclic: Record<string, unknown> = {};
+    cyclic['self'] = cyclic;
+    expect(formatRunOutputs({ loop: cyclic }, '')).toEqual([
+      'outputs:',
+      '  loop: [unrepresentable value]',
+    ]);
+  });
+
+  it('masks a key on the original text before clipping, so a cut can never leave a short unmasked prefix', () => {
+    // Clipped first, the key would end as `sk-AAAA` — too short a fragment for the scrubber to recognize.
+    const text = formatRunOutputs({ v: `${'x'.repeat(MAX_VALUE_CHARS - 8)} ${KEY}` }, '').join(
+      '\n',
+    );
+    expect(text).not.toContain('sk-');
+  });
+
+  it('treats a final newline as the end of the value, not an empty row or a cut', () => {
+    expect(formatRunOutputs({ a: 'one\ntwo\n' }, '')).toEqual([
+      'outputs:',
+      '  a:',
+      '    one',
+      '    two',
+    ]);
+    const forty = Array.from({ length: MAX_VALUE_LINES }, (_, i) => `r${String(i)}`).join('\n');
+    expect(formatRunOutputs({ a: `${forty}\n` }, '').at(-1)).toBe(
+      `    r${String(MAX_VALUE_LINES - 1)}`,
+    );
+  });
+
   it('never splits a code point at the bound', () => {
     // One ASCII unit first, so a UTF-16 code-unit cut would land in the middle of a pair.
     const lines = formatRunOutputs({ emoji: `a${'😀'.repeat(MAX_VALUE_CHARS)}` }, '');
@@ -129,7 +206,10 @@ describe('the outputs reach every human run surface (MVP-A1)', () => {
   it('the plain renderer prints them under its done line, sanitized', () => {
     const { io, out } = captureIo();
     createPlainRenderer(io).onEvent(completed({ answer: `42 ${KEY}` }));
-    expect(out()).toBe('done: run completed\n  outputs:\n    answer: 42 [REDACTED]\n');
+    expect(out()).toBe(
+      'done: run completed\n  outputs:\n    answer: 42 [REDACTED]\n' +
+        '    (outputs masked — the full record: `relavium logs run-1 --json`)\n',
+    );
   });
 
   describe('relavium logs <runId>', () => {
