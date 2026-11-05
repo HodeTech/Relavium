@@ -361,6 +361,7 @@ export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-h
 // counterpart (the CLI authoring 2.J `create`/`import`/`export` path); `sessionToWorkflow` maps a persisted
 // session + transcript into a linear-chain scaffold (ADR-0026; agent-session-spec.md §"Export to workflow").
 export { serializeWorkflow, serializeAgent, sessionToWorkflow } from './export/serializer.js';
+export { readSessionExportMarker } from './export/session-marker.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one
