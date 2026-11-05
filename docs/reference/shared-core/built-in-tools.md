@@ -36,8 +36,11 @@ A tool declaration in YAML has a `type` discriminator:
 > **Where each tool runs.** `http_request` and `web_search` need the host's egress arm, `read_clipboard` and
 > `notify` its os arm. The CLI wires both only in the approval-gated chat host; `relavium run` (and `gate`) wire
 > neither, so a workflow whose agent node grants one of these four is refused before the run starts (exit `2`),
-> naming the tool, rather than failing with `tool_unavailable` partway through (2.6.A, MVP-1). MCP tools reach
-> through their own arm and are unaffected.
+> naming the tool, rather than failing with `tool_unavailable` partway through (2.6.A, MVP-1). The check reads the
+> grant in the workflow file: a node's `tools:`, or its inline agent's. A `$ref`'d agent's own grant is not
+> resolvable from the file and is not checked. MCP tools reach through their own arm and pass, but `relavium run`
+> wires that arm only when an inline agent declares `mcp_servers`, so `mcp_call` without a declared server still
+> fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked.
 
 > **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 

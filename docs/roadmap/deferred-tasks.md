@@ -1537,7 +1537,9 @@ next group below, and the separate security sitting's two lows (at `ab5e46e1`) a
   does not join query names by design, and its query rule is private, so a per-leaf probe would be a second copy of a
   security rule. commands.md states the limit. **Re-check:** export a query-only probe from the shared scrubber and
   apply it per leaf. *(low · apps/cli/src/render/run-outputs.ts, packages/llm/src/scrub-secrets.ts)*
-- [ ] **On a resumed run the outputs note names `<runId>`.** *Low; cosmetic.* *(round 2, outputs-5)* The TUI final
+- [x] **On a resumed run the outputs note names `<runId>`.** *Low; cosmetic.* *(round 2, outputs-5)* **Fixed
+  2026-11-06** (the MVP-1 1a milestone review, runid-2): the run view takes the run id from a resumed stream's first
+  event, so the footer, the summary's id line and this note all name it. The original entry follows. The TUI final
   summary passes `state.runId`, which only `run:started` sets, so after `relavium gate` or `budget resume` a shortened
   or masked block says `relavium logs <runId> --json`; the plain renderer names the id. **Re-check:** fold the
   terminal's `runId` into the view state (or carry it on the summary) and pass that. *(low ·
@@ -1678,6 +1680,53 @@ next group below, and the separate security sitting's two lows (at `ab5e46e1`) a
   discovered directory already receives `create`'s writes. **Re-check:** refuse a project config directory whose
   real path is outside the directory that contains it, or ask before writing through a linked `.relavium`. *(low ·
   apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
+
+## MVP-1 1a milestone review — recorded low findings (2026-11-06)
+
+The milestone review of MVP-1's UX increment 1a (at `624bb2e7`, the `relavium list` sink fix included) found four
+medium findings, all fixed: a budget pause's summary pointed at `relavium gate`, `status <runId>` showed a finished
+run's open gate as pending, the run-path tool pre-flight grew with nodes times grant length before the node ceiling,
+and the chat's catalog-ceiling output cap ran into ADR-0082's 120-second absolute deadline. The lows below were not
+fixed with them. **Trigger for every entry:** the next change to the file it names.
+
+- [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
+  delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
+  stderr says another process owns the run. Following either is harmless (`gate` is idempotent or refused).
+  **Re-check:** pass the exit disposition to the summary and point a fenced run at `relavium logs`. *(low ·
+  apps/cli/src/render/tui/final-summary.ts)*
+- [ ] **`list --runs` loads every column of every run.** *Low.* *(history-2)* The listing reads full run rows,
+  inputs and outputs included, to print five fields, and offers no bound; `| head` instead exits `9` under
+  `pipefail`. **Re-check:** a projection-only recency query, and a `--limit N` option. *(low ·
+  apps/cli/src/commands/list.ts, packages/db)*
+- [ ] **No dispatch-level test passes `--runs` or a `<runId>` through.** *Low; test-side.* *(history-6)* A refactor
+  that dropped either argument in `dispatch.ts` would turn `status <runId>` back into the active listing, or
+  `list --runs` into the catalog, with every test green. **Re-check:** one `executeCommand` case per argument.
+  *(low · apps/cli/src/commands/dispatch.ts)*
+- [ ] **Commit `e4783366` credits the 85th `run.test.ts` case to the run-id test.** *Low; history only.*
+  *(docs-2)* The case that moved the secrets workload from 84 to 85 is the 2.6.A pre-flight test from `97714f9d`.
+  Commits are immutable; the pins themselves are right. **Re-check:** if the workload pins gain a provenance note,
+  credit `97714f9d`. *(low · tools/secrets-controls/mutations.mjs)*
+- [ ] **`mcp_call` with no declared server passes the run-path pre-flight.** *Low.* *(preflight-2)* `relavium run`
+  wires the MCP arm only when an inline agent declares `mcp_servers`, so an agent granting `mcp_call` without one
+  passes and fails with `tool_unavailable` at its first call. built-in-tools.md now says so. **Re-check:** give the
+  pre-flight a conditional `mcp` arm and refuse `mcp_call` when no server is declared. *(low ·
+  packages/core/src/validate-catalog.ts, apps/cli/src/commands/run.ts)*
+- [ ] **`gate` and `budget resume` do not re-run the tool pre-flight.** *Low.* *(preflight-3)* Only a run started
+  before 1a, by `relavium@0.1.x`, can carry a grant the pre-flight would refuse; resuming it fails with
+  `tool_unavailable` at the tool's first call, after the user decided the gate. built-in-tools.md now says so.
+  **Re-check:** call the pre-flight beside the catalog check in `gate.ts`, before the MCP connect and the engine
+  build. *(low · apps/cli/src/commands/gate.ts)*
+- [ ] **`/export`'s run hint names a scaffold the pre-flight refuses.** *Low.* *(preflight-6)* A chat that used an
+  egress or os tool exports a workflow granting it, and the printed `relavium run <id>` exits `2` naming the tool.
+  **Re-check:** check the exported workflow against the run profile and replace the hint with a note naming the
+  tools, or say so in chat-session.md's `/export` row. *(low · apps/cli/src/commands/chat.ts)*
+- [ ] **The larger chat cap moves auto-compaction earlier and grows budget-shaped thinking.** *Low; recorded in
+  ADR-0101's 2026-11-06 note.* *(budget-3, budget-4)* Pre-send compaction reserves the effective cap, so on a
+  200k-window model with a 64,000-token ceiling it starts at about 68% of the window instead of 80%; and on a model
+  whose effort tiers are budget-shaped, the thinking budgets derive from the effective cap and grow about 8–12×.
+  **Re-check:** reserve the configured estimate rather than the inserted default for the compaction decision, and
+  derive budget-shaped tiers from a fixed reference cap. *(low · packages/core/src/engine/agent-session.ts,
+  packages/llm/src/adapters/anthropic.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

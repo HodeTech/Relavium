@@ -196,7 +196,10 @@ the same core.
   these tools as unconditionally available. Does **not** wire the arms themselves — that stays out of
   scope per the recorded 2.5.E design boundary (Phase 3+). **Ruled 2026-11-05 (maintainer, MVP-1):** the
   pre-flight refuses such a workflow before the run starts (exit `2`), naming the tool; MCP-discovered tools are
-  exempt. Until MVP-6 back-ports `validateAuthoredWorkflow`, the check rides `validateWorkflowWithCatalog`.
+  exempt. Until MVP-6 back-ports `validateAuthoredWorkflow`, the check is `validateWorkflowToolArms`, beside
+  `validateWorkflowWithCatalog`, and `relavium run` calls it before any key is read. **Landed 2026-11-05 (MVP-1
+  1a)**; its limits ($ref grants, `mcp_call` without a server, resumes) are in
+  [built-in-tools.md](../../reference/shared-core/built-in-tools.md#the-built-in-tools).
   *(M · `apps/cli/src/engine/build-engine.ts`, `apps/cli/src/engine/tool-host/assemble.ts`; #37, G29)*
 - **Catalog-aware `max_tokens` pre-flight** *(manual-test finding 2026-07-11):* extend
   `validateWorkflowWithCatalog` so `create`/`import`/`export` reject-or-clamp a `max_tokens` that exceeds the
@@ -641,7 +644,8 @@ last drill-down position.
   Expired gates settling through 2.6.K's re-arm remain open.
 - Non-interactive parity: extend the read *commands* minimally (`relavium list --runs`, `status <runId>`
   for finished runs, `logs --follow/--failed`) so scripting keeps pace with the TUI —
-  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant.
+  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant. **`list --runs` and `status <runId>`
+  landed 2026-11-05 (MVP-1 1a)**; `logs --follow/--failed` remain open.
 - **Detached-run notification**: when a run is started as "Run detached" from the Home and completes
   (or fails), surface a notification on the Home's next idle tick — an `Attention required` row with
   the outcome, linked to the run detail. For a chat that remains open with a detached run in the
@@ -1362,7 +1366,7 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
 | MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
 | MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
-| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling, clamped, with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
+| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling (not clamped: the chat's per-attempt deadline scales with it instead, ADR-0101 2026-11-06; chat surfaces only), with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
 | MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |

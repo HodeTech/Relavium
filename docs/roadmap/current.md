@@ -104,7 +104,13 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    with nine, two, two and one medium findings, all fixed. Round 5 (at `df685a52`) found no blocker, high or medium
    finding, and the separate security sitting (at `ab5e46e1`) passed. Every round's lows and the sitting's are fixed
    or recorded in [deferred-tasks.md](deferred-tasks.md); one of them, a 0.1.x run settled by a newer reconcile,
-   needs a ruling before the v0.2.0 release. Still owed for MVP-1: the milestone review that covers 1a's UX tier.
+   needs a ruling before the v0.2.0 release. The MVP-1 milestone review of 1a (at `624bb2e7`, which includes a
+   `relavium list` sink fix for round 5's export-1) was not accepted: it found four medium findings, all fixed. They
+   were a budget pause pointed at `relavium gate`, a finished run's open gate shown as pending, an unbounded tool
+   pre-flight, and the chat's catalog-ceiling cap running into the 120-second attempt deadline. The maintainer chose
+   a chat deadline that scales with the cap, recorded as ADR-0101's 2026-11-06 note. Its lows are fixed or recorded
+   in [deferred-tasks.md](deferred-tasks.md). Still owed for MVP-1: a new milestone review round with no medium or
+   higher finding.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess

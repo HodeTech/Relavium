@@ -361,3 +361,18 @@ This dated note preserves the earlier decision and status history; W8 and the ph
 > Workflow runs are unchanged. The key's canonical home is
 > [config-spec.md](../reference/contracts/config-spec.md); the code is `withChatOutputDefault` in
 > `apps/cli/src/chat/session-host.ts`.
+
+### Chat surfaces, and the deadline that scales with the cap — 2026-11-06
+
+> Amended 2026-11-06 (the MVP-1 1a milestone review, budget-1, budget-2; the maintainer chose the scaled
+> deadline): the output default applies to chat surfaces only (`relavium chat`, `chat-resume`, the Home chat, a
+> `/models` reseat or `/clear` rebuild); the non-interactive one-shot `relavium agent run` keeps the adapter's
+> implicit cap. [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)'s per-attempt
+> deadline is absolute and does not reset per chunk, so under the catalog ceiling a healthy reply streaming past
+> its 120-second default failed as a billed timeout and was rolled back, where the 4,096 cap had ended it cleanly as
+> truncated. As ADR-0082 §6 lets a host, the chat host now arms a deadline long enough to stream its effective cap
+> at 25 tokens per second, never below the default and never above 30 minutes (`chatAttemptDeadline`); the user can
+> still cancel a stalled turn. Two side effects of the larger cap are recorded, not changed: pre-send
+> auto-compaction reserves the effective cap, so on a 200k-window model with a 64,000-token ceiling it starts at
+> about 68% of the window instead of 80%; and on a model whose effort tiers are budget-shaped, the thinking budgets
+> derive from the effective cap and grow with it.
