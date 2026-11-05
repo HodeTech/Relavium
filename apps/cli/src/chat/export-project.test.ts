@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -7,6 +8,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -20,7 +22,7 @@ import {
   type DbClient,
   type SessionStore,
 } from '@relavium/db';
-import { readSessionExportMarker } from '@relavium/core';
+import { MAX_SOURCE_CHARS, readSessionExportMarker } from '@relavium/core';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -268,6 +270,43 @@ describe('exportSessionToProject (MVP-A3)', () => {
     mkdirSync(join(cwd, '.relavium'));
     writeFileSync(workflows(), '');
     expect(refusal()).toContain('a parent of the target path is not a directory');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps the permission bits of its own earlier export across the rewrite',
+    () => {
+      const first = exportS1();
+      chmodSync(first.path, 0o600); // narrowed by the user: its transcript may be sensitive
+      expect(exportS1().path).toBe(first.path);
+      expect(statSync(first.path).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'a dangling link where the workflows directory belongs is an invocation refusal, not an internal fault',
+    () => {
+      mkdirSync(join(cwd, '.relavium'));
+      symlinkSync(join(cwd, 'nowhere'), workflows());
+      let caught: unknown;
+      try {
+        exportS1();
+      } catch (error) {
+        caught = error;
+      }
+      if (!isCliError(caught)) throw new Error('expected a CliError');
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('a parent of the target path is not a directory');
+    },
+  );
+
+  it('does not take as its own an export larger than the workflow parser accepts', () => {
+    const first = exportS1();
+    // Past the parser's character bound the file could not be run, and decoding it would cost seconds.
+    writeFileSync(
+      first.path,
+      `${readFileSync(first.path, 'utf8')}\n# ${'x'.repeat(MAX_SOURCE_CHARS)}\n`,
+    );
+    expect(exportS1().workflowId).toBe('my-session-2');
   });
 
   it('refuses once every candidate id is taken, naming the escape hatch', () => {

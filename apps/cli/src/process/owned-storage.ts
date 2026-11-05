@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
   closeSync,
+  constants,
+  fchmodSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -51,12 +54,18 @@ export function writeFileForStorage(path: string, content: string, force: boolea
  * link or reuses a file), `fsync` it, then rename it over `path`. A crash leaves either the old file or the new one,
  * never a truncated mix, and the rename replaces the directory entry rather than writing through a link at `path`.
  * The temp is removed when anything fails.
+ *
+ * It keeps what a write in place would: a file the user made read-only is refused (`EACCES`), not replaced, and the
+ * new file gets `mode`, the old file's permission bits, so a file narrowed to `0600` is not widened to the umask's
+ * default by its own rewrite.
  */
-export function replaceFileForStorage(path: string, content: string): void {
+export function replaceFileForStorage(path: string, content: string, mode: number): void {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   let fd: number | undefined;
   try {
-    fd = openSync(temp, 'wx');
+    accessSync(path, constants.W_OK);
+    fd = openSync(temp, 'wx', mode);
+    fchmodSync(fd, mode); // `open`'s mode is narrowed by the umask; this sets exactly the old bits
     writeFileSync(fd, content, 'utf8');
     fsyncSync(fd);
     closeSync(fd);

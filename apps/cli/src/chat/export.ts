@@ -48,7 +48,7 @@ export interface ExportSessionOptions {
   /**
    * `--out <path>` override (absolute, or relative to {@link cwd}); the default is `<sessionId>.relavium.yaml`
    * in cwd — keyed on the UNIQUE session id, not the (possibly shared/absent) title, so two sessions never
-   * collide on one path (which the in-REPL `/export`'s `force` would otherwise silently clobber).
+   * collide on one path (which `force` would otherwise silently clobber).
    */
   readonly outPath?: string;
   /** Overwrite an existing file at the target path; without it an existing file is a clean exit-2 fault. */
@@ -131,7 +131,7 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * the id one thing.
  *
  * The one overwrite is this session's OWN earlier export, recognized from the file itself rather than from
- * memory: a candidate file whose `metadata.relaviumExport` names this session ({@link isOwnExport}). So a second
+ * memory: a candidate file whose `metadata.relaviumExport` names this session ({@link ownExportMode}). So a second
  * `/export` updates the scaffold in place across a `/models` reseat, a `chat-resume` or a Home reopen, and a file
  * that merely sits at an old export's path — the scaffold renamed away and another workflow put there — is never
  * mistaken for it. The rewrite is atomic.
@@ -155,14 +155,13 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     opts.projectConfigDir === undefined
       ? new Set<string>()
       : takenWorkflowIds(opts.projectConfigDir, opts.cwd);
-  const own = candidates.find((id) =>
-    isOwnExport(join(dir, `${id}.relavium.yaml`), opts.sessionId),
-  );
-  if (own !== undefined) {
-    const path = join(dir, `${own}.relavium.yaml`);
-    const definition = withWorkflowId(scaffold, own);
+  for (const id of candidates) {
+    const path = join(dir, `${id}.relavium.yaml`);
+    const mode = ownExportMode(path, opts.sessionId);
+    if (mode === undefined) continue;
+    const definition = withWorkflowId(scaffold, id);
     try {
-      replaceFileForStorage(path, serializeWorkflow(definition));
+      replaceFileForStorage(path, serializeWorkflow(definition), mode);
     } catch (err) {
       throw storageBoundaryError(err);
     }
@@ -184,24 +183,29 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
 }
 
 /**
- * Whether `path` holds this session's own earlier export: a regular file — never a link, so a link planted at an
- * export's name is not followed or replaced as if it were ours — within the parser's size bound, whose
- * `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between checks, oversized,
- * undecodable) is `false`, which only ever means "do not overwrite".
+ * The permission bits of `path` when it holds this session's own earlier export: a regular file — never a link, so
+ * a link planted at an export's name is not followed or replaced as if it were ours — within the workflow parser's
+ * size bound, whose `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between
+ * checks, larger than the parser accepts, undecodable) is `undefined`, which only ever means "do not overwrite". An
+ * export the parser could not load is not recognized either; it could not be run.
  */
-function isOwnExport(path: string, sessionId: string): boolean {
+function ownExportMode(path: string, sessionId: string): number | undefined {
   let fd: number | undefined;
   try {
     const linked = lstatSync(path, { bigint: true });
-    if (!linked.isFile() || linked.size > BigInt(MAX_SOURCE_CHARS * 4)) return false;
+    if (!linked.isFile() || linked.size > BigInt(MAX_SOURCE_CHARS * 4)) return undefined;
     // `O_NOFOLLOW` is absent on Windows; the identity check below is its swap guard there.
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
     const opened = fstatSync(fd, { bigint: true });
-    if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino) return false;
-    if (opened.size > BigInt(MAX_SOURCE_CHARS * 4)) return false;
-    return readSessionExportMarker(readFileSync(fd, 'utf8')) === sessionId;
+    if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino)
+      return undefined;
+    if (opened.size > BigInt(MAX_SOURCE_CHARS * 4)) return undefined;
+    const text = readFileSync(fd, 'utf8');
+    // The parser's own bound, in characters, before any YAML is decoded.
+    if (text.length > MAX_SOURCE_CHARS) return undefined;
+    return readSessionExportMarker(text) === sessionId ? Number(opened.mode & 0o777n) : undefined;
   } catch {
-    return false;
+    return undefined;
   } finally {
     if (fd !== undefined) {
       try {
@@ -256,7 +260,8 @@ function writeScaffold(
     mkdirForStorage(dirname(path));
   } catch (err) {
     const code = exportTargetCode(err);
-    if (code === 'EEXIST' || code === 'ENOTDIR') {
+    // ENOENT/ELOOP here mean a dangling or looping link where a directory belongs; `recursive` creates the rest.
+    if (code === 'EEXIST' || code === 'ENOTDIR' || code === 'ENOENT' || code === 'ELOOP') {
       throw new CliError(
         'invalid_invocation',
         `cannot write ${label}: a parent of the target path is not a directory`,
