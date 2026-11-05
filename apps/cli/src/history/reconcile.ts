@@ -24,13 +24,14 @@ const RECONCILE_ONLY_EXECUTOR: NodeExecutor = {
 /**
  * Settle the runs a dead process left behind, from a surface that has no engine of its own (2.6.G liveness,
  * #229). The Home calls this (through `openSessionStore`) when it opens, before its first read of the runs,
- * so a crashed run shows as failed rather than as a `running` row forever. `run` and `gate` call
- * `engine.reconcile()` on the engine they already build.
+ * so a crashed run shows as failed rather than as a `running` row forever. `run`, `gate` and `budget resume`
+ * call `engine.reconcile()` on the engine they already build.
  *
- * `reconcile()` first drains the terminal outbox (ADR-0078 §4), then writes `run:failed{internal}` for each
- * interrupted run. It leaves alone a run parked at a gate and a run whose lease is live, which another process
- * is executing (ADR-0079 §7). The store, the lease port and the media-reference port are built over `db`, the
- * same connection the caller reads from.
+ * `reconcile()` first drains the terminal outbox (ADR-0078 §4), then writes `run:failed` for each interrupted
+ * run: `internal`, or `budget_exceeded` after a recorded budget rejection. It leaves alone a run parked at a gate,
+ * a run whose lease is live, which another process is executing (ADR-0079 §7), and a run whose held terminal it
+ * could not write — every run, while the outbox exists but cannot be read. The store, the lease port and the
+ * media-reference port are built over `db`, the same connection the caller reads from.
  *
  * `terminalOutboxPath` must belong to the same `~/.relavium` home as `db`: the drain DROPS an outbox entry
  * whose run is not open in `db`, so pairing one home's outbox with another home's database would delete

@@ -186,8 +186,8 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
  * The permission bits of `path` when it holds this session's own earlier export: a regular file — never a link, so
  * a link planted at an export's name is not followed or replaced as if it were ours — within the workflow parser's
  * size bound, whose `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between
- * checks, larger than the parser accepts, undecodable) is `undefined`, which only ever means "do not overwrite". An
- * export the parser could not load is not recognized either; it could not be run.
+ * checks, larger than the parser accepts, undecodable) is `undefined`, which only ever means "do not overwrite". The
+ * workflow itself is not validated: an export whose stored agent no longer validates is still this session's own.
  */
 function ownExportMode(path: string, sessionId: string): number | undefined {
   let fd: number | undefined;
