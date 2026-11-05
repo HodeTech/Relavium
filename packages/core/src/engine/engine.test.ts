@@ -6201,6 +6201,50 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     expect(await host.terminalOutbox.list()).toEqual([]);
   });
 
+  it('keeps a run held when the drain could not claim it, so the repair never writes past its held terminal', async () => {
+    // The drain's claim fails (the lease port throws under contention) but the repair's claim a moment later
+    // succeeds. Unless the declined drain claim holds the run, the repair writes `run:failed` and the next drain
+    // drops the held completion.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'declined-1');
+    const base = createInMemoryHost({ store });
+    let acquires = 0;
+    const host: ExecutionHost = {
+      ...base,
+      runLeases: {
+        ...base.runLeases,
+        acquire: (runId, ownerId, ttlMs) => {
+          acquires += 1;
+          return acquires === 1
+            ? Promise.reject(new Error('SQLITE_BUSY'))
+            : base.runLeases.acquire(runId, ownerId, ttlMs);
+        },
+      },
+    };
+    await host.terminalOutbox.put({
+      type: 'run:completed',
+      runId: 'declined-1',
+      timestamp: host.clock.now(),
+      sequenceNumber: 1,
+      outputs: { answer: 42 },
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    });
+    const engine = new WorkflowEngine({ host, executor: new StubExecutor() });
+
+    expect(await engine.reconcile()).toEqual([]);
+    expect(acquires).toBe(1);
+    expect(store.eventsFor('declined-1').map((e) => e.type)).toEqual(['run:started']);
+    expect((await host.terminalOutbox.list()).map((e) => e.type)).toEqual(['run:completed']);
+
+    expect((await engine.reconcile()).map((e) => e.type)).toEqual(['run:completed']);
+    expect(store.eventsFor('declined-1').map((e) => e.type)).toEqual([
+      'run:started',
+      'run:completed',
+    ]);
+  });
+
   it('repairs nothing when the outbox cannot be read, since any run might hold a terminal there', async () => {
     const store = new InMemoryRunStore();
     await seedStarted(store, 'unknown-1');

@@ -1092,13 +1092,14 @@ class RunExecution {
       if (!(await this.#acquireLease())) {
         // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
         // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
-        // message pointing at nothing. The docblock above already diagnoses this case; the event should say
-        // it too. Secret-free: no path, no store detail, just what could not be established.
+        // message pointing at nothing. The comment above names the other cause, a reconcile that claimed the
+        // run in the window; the event names both. Secret-free: no path, no store detail, just what could not
+        // be established.
         this.#failure = {
           error: {
             code: 'internal',
             message:
-              'the run could not take ownership of its own id — the host run-lease port refused a fresh run',
+              'the run could not take ownership of its own id — another relavium process claimed it first, or the host run-lease port refused it',
             retryable: false,
           },
         };
@@ -4166,10 +4167,12 @@ class RunExecution {
   /**
    * Acquire this run's lease and start its heartbeat (ADR-0079 §3, §6).
    *
-   * For a FRESH run this is uncontended by construction — the `runId` came from `ids.newId()` moments ago —
-   * so a refusal here means the host's lease port is broken rather than that someone else owns the run. It
-   * still fails the run rather than proceeding unowned: an unfenced run is exactly what CR-11 exists to
-   * prevent, and silently continuing would make the guarantee optional in practice.
+   * For a FRESH run no other run can own the `runId` — it came from `ids.newId()` moments ago — so a refusal
+   * here means either that a reconcile in another process claimed the run between its `run:started` and this
+   * acquire (the window the caller's comment describes, reachable since the CLI reconciles at every start,
+   * 2.6.G), or that the host's lease port is broken. Either way it fails the run rather than proceeding
+   * unowned: an unfenced run is exactly what CR-11 exists to prevent, and silently continuing would make the
+   * guarantee optional in practice.
    *
    * A RESUMED run already holds a fence, acquired before the checkpoint was read, and passes it in.
    */
@@ -6339,11 +6342,14 @@ export class WorkflowEngine {
   }
 
   /**
-   * Crash reconciliation (startup). For every run the store reports as interrupted-and-not-resumable
-   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`,
-   * or `budget_exceeded` when ordered gate history already records a budget rejection,
-   * continuing that run's `sequenceNumber` — so a crashed run never lingers as a stuck `run:started`.
-   * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
+   * Crash reconciliation (startup). First drains the terminal outbox; then, for each run the store reports as
+   * interrupted-and-not-resumable (started, no terminal event, not parked at a gate), persists a terminal
+   * `run:failed{internal}`, or `budget_exceeded` when ordered gate history already records a budget rejection,
+   * continuing that run's `sequenceNumber`. Returns the reconciled events. Resumable runs (parked at a gate)
+   * are left for `resume`. Also left alone, for a later reconcile: a run whose lease this pass could not take
+   * (another process holds a live one, or the lease port failed), a run whose held terminal this pass could not
+   * write, and every run while the outbox exists but cannot be read — so in those cases a crashed run can
+   * linger until a later start.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
     // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
