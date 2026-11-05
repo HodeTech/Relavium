@@ -29,7 +29,12 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
+import {
+  exportSessionToProject,
+  SESSION_EXPORT_REVIEW_NOTICE,
+  type ExportResult,
+} from '../chat/export.js';
+import { sourceLabel } from '../process/source-label.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
@@ -1392,6 +1397,8 @@ export function createChatLineHandler(
     store.setContextWindow?.(built.contextWindowTokens);
   let stop = false;
   let cancelled = false;
+  // This session's last `/export` (MVP-A3): a second `/export` rewrites that file in place instead of adding `-2`.
+  let lastExport: ExportResult | undefined;
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
   // it so the surface (the standalone re-drive loop, or the Home) rebuilds a fresh session instead of exiting.
   let clearRequested = false;
@@ -1464,14 +1471,20 @@ export function createChatLineHandler(
       // the file; it does NOT mark the row `exported` (a later turn's persist would clobber that — the
       // standalone `chat-export` command marks it). A failure is reported, never crashing the REPL.
       try {
-        const result = exportSession({
+        // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
+        // re-export rewrites this session's own file (`previous`).
+        const { projectConfigDir } = loadResolvedConfig({
+          cwd: deps.global.cwd,
+          configPath: deps.global.configPath,
+        });
+        const result = exportSessionToProject({
           store: opened.store,
           sessionId: built.sessionId,
           cwd: deps.global.cwd,
-          // Re-export overwrites the session's OWN scaffold: the default path is keyed on the unique session
-          // id, so `force` here can only ever clobber this session's prior export, never another session's.
-          force: true,
+          projectConfigDir,
+          ...(lastExport === undefined ? {} : { previous: lastExport }),
         });
+        lastExport = result;
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;
         if (deps.global.json) {
@@ -1481,7 +1494,10 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          deps.io.writeErr(`exported session to ${result.path}\n`);
+          // The cwd-relative path and the command that runs it — the export offers the next step.
+          deps.io.writeErr(
+            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\`\n`,
+          );
         }
       } catch (err) {
         workOwner?.failure(err);
