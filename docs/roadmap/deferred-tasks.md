@@ -1641,8 +1641,11 @@ next group below, and the separate security sitting's two lows (at `ab5e46e1`) a
   **Re-check:** suffix a colliding name (`Basic [REDACTED] (2)`, as core's bounding walk reports collisions) or mask
   every colliding value, and pin a `Basic plan` + `Basic support` case. *(low · apps/cli/src/render/run-outputs.ts,
   docs/reference/cli/commands.md)*
-- [ ] **`relavium list` prints a workflow's name without stripping terminal controls, and `/export` now feeds it
-  session titles.** *Low for 1b.* *(round 5, export-1)* The scaffold's `name` is the raw session title (only its
+- [x] **`relavium list` prints a workflow's name without stripping terminal controls, and `/export` now feeds it
+  session titles.** *Low for 1b.* *(round 5, export-1)* **Fixed 2026-11-06** (maintainer: fix it before the
+  MVP-1 milestone review): `list` passes every catalog field it prints (slug, name, tag; the parse reason already
+  did) through `sanitizeUntrustedInline`, pinned by a test whose name, tag, file-name slug and agent name carry
+  `ESC ] … BEL`, `ESC [2J` and U+202E. The original entry follows. The scaffold's `name` is the raw session title (only its
   whitespace is collapsed, so ESC and BEL survive), and since MVP-A3 `/export` writes into `.relavium/workflows/`,
   which `list` scans and prints raw; a piped first message holding an OSC or CSI sequence then reaches the terminal
   on `relavium list`. The sink predates 1b: any committed workflow name, a tag and an invalid file's stem print raw
