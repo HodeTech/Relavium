@@ -5,6 +5,7 @@ import {
   ConditionNodeSchema,
   HumanGateNodeSchema,
   NodeSchema,
+  NodeSnapshotSchema,
   ParallelNodeSchema,
 } from './node.js';
 
@@ -120,6 +121,45 @@ describe.each([
       expect(schema.parse(node)).toEqual(node);
     },
   );
+});
+
+describe.each([
+  ['human gate leaf', HumanGateNodeSchema],
+  ['node union', NodeSchema],
+] as const)('%s input-gate timeout action', (_label, schema) => {
+  const input = { id: 'ask', type: 'human_gate', gate_type: 'input', timeout_ms: 1 };
+
+  it('refuses timeout_action=approve on an input gate, at the action field', () => {
+    const result = schema.safeParse({ ...input, timeout_action: 'approve' });
+    expect(result.success).toBe(false);
+    if (!result.success)
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({
+          path: ['timeout_action'],
+          message:
+            'an input gate cannot approve on timeout — it takes its input or is rejected; use timeout_action: reject',
+        }),
+      ]);
+  });
+
+  it('permits an input gate that rejects on timeout or names no action', () => {
+    expect(schema.parse({ ...input, timeout_action: 'reject' })).toEqual({
+      ...input,
+      timeout_action: 'reject',
+    });
+    expect(schema.parse(input)).toEqual(input);
+  });
+});
+
+it('the frozen snapshot reader still loads an input gate that approves on timeout', () => {
+  const parked = {
+    id: 'ask',
+    type: 'human_gate',
+    gate_type: 'input',
+    timeout_ms: 1,
+    timeout_action: 'approve',
+  };
+  expect(NodeSnapshotSchema.parse(parked)).toEqual(parked);
 });
 
 describe('NodeSchema', () => {
