@@ -1041,7 +1041,14 @@ names, unless the entry names another.
   1-second default.** *(low · packages/mcp)*
 - [ ] **The case-insensitive custody tests run in no CI job.** *Medium as reviewed, low in practice.* Ubuntu skips
   them and no macOS or Windows job runs `custody.test.mjs`; the local `pnpm run ci` on macOS runs them. A CI lane
-  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:830, .github/workflows/ci.yml)*
+  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:855, .github/workflows/ci.yml)*
+- [ ] **CI no longer runs the real-GnuPG AEAD refusal.** *Low.* *(2026-11-05)* `ubuntu-latest` moved to ubuntu-26.04,
+  whose GnuPG reports SEIPDv1 for the AEAD-advertising fixture, so the custody test now reads GnuPG's own status line
+  and expects admission there. The real OCB refusal runs only where GnuPG picks OCB (the local `pnpm run ci` on
+  macOS); the synthetic status rewrites still cover the refusal logic on every runner, and the test's diagnostic
+  says which branch ran. The status line is also the only evidence: a GnuPG that wrote AEAD but reported `2 9` would
+  pass both the product and the test. **Re-check:** with the macOS lane above, or a packet-level `gpg
+  --list-packets` check of the ciphertext. *(low · tools/cli-package/custody.test.mjs, tools/cli-package/custody.mjs)*
 - **DECLINED — declaring `RELAVIUM_CLI_CANDIDATE_STAGING` in `turbo.json`.** The candidate build never runs through
   Turbo (`pnpm exec tsc` and `pnpm pack`), and Turbo 2's strict environment mode withholds an undeclared variable, so
   a Turbo build is always map-free; declaring it would let one become a candidate build.

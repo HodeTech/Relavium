@@ -385,7 +385,7 @@ test('an ephemeral key decrypts the ciphertext to the container, and tar extract
   assert.equal(existsSync(ephemeral.home), false);
 });
 
-test('every committed refusal fixture is refused before encryption, and AEAD after it', async () => {
+test('every committed refusal fixture is refused before encryption, and AEAD after it', async (context) => {
   for (const [name, code] of [
     ['expired-primary', 'RECIPIENT_EXPIRED'],
     ['expired-subkey', 'RECIPIENT_EXPIRED'],
@@ -399,14 +399,39 @@ test('every committed refusal fixture is refused before encryption, and AEAD aft
     refused(await attempt({ run, recipient: { file: fixture(name), pins: PINS[name] } }), code);
     assert.deepEqual(calls, ['version', 'config', 'list'], name);
   }
-  // GnuPG 2.3 and later pick OCB for a key that advertises AEAD, a profile that is refused; GnuPG 2.2
-  // has no AEAD and encrypts SEIPDv1, which the profile check admits.
-  const [major, minor] = (await installedVersion()).split('.').map(Number);
+  // For a key that advertises AEAD, GnuPG 2.5.21 (Homebrew) chose OCB, a profile that is refused;
+  // GnuPG 2.2, and the GnuPG on ubuntu-26.04 on 2026-11-05, report SEIPDv1, which is admitted. The version does not say which, so the test reads the choice from the real GnuPG's own
+  // status line, with its own pattern rather than the product's parser, expects the matching verdict, and
+  // says which branch ran.
+  /** @type {string[]} */
+  const chosen = [];
+  const { run } = recording({
+    encrypt: {
+      after: (result) => {
+        chosen.push(
+          ...String(result.stdout)
+            .split('\n')
+            .filter((line) => line.startsWith('[GNUPG:] BEGIN_ENCRYPTION ')),
+        );
+        return result;
+      },
+    },
+  });
   const aead = await attempt({
+    run,
     recipient: { file: fixture('good-aead'), pins: PINS['good-aead'] },
   });
-  if (major > 2 || (major === 2 && minor >= 3)) refused(aead, 'PROFILE');
-  else assert.equal(aead.error, undefined, String(aead.error));
+  assert.equal(
+    chosen.length,
+    1,
+    'no single real encryption status line was captured for the AEAD key',
+  );
+  context.diagnostic(`GnuPG ${await installedVersion()} chose for the AEAD key: ${chosen[0]}`);
+  if (chosen[0] === '[GNUPG:] BEGIN_ENCRYPTION 2 9') {
+    assert.equal(aead.error, undefined, String(aead.error));
+  } else {
+    refused(aead, 'PROFILE');
+  }
 });
 
 test("GnuPG's own refusal is a second layer behind the pre-check", async () => {
