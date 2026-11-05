@@ -106,6 +106,9 @@ export interface BuildEngineOptions {
   readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
+/** The tool-host profile of `relavium run` and `gate` (the author-trusted run host; see {@link buildEngine}). */
+export const RUN_TOOL_PROFILE: ToolEnvProfile = 'workflow-read-write';
+
 /**
  * Assemble a {@link WorkflowEngine} for a CLI run: a node-backed host, the standard node executor
  * (the six non-agent handlers + the agent arm), the expression sandbox, and the `ToolHost`.
@@ -117,12 +120,9 @@ export interface BuildEngineOptions {
  * conditional spread — a true merge, never a replace. The `egress` / `os` arms are **intentionally never wired
  * on this run path** — they belong only to the ADR-0057 approval-gated `chat-read-write` profile (a permanent
  * scope boundary, not a 2.5.E deferral: workflow-run egress/os is a separate author-trusted concern) — so a
- * tool needing one is cleanly `tool_unavailable`. Absent `toolEnv` (the in-memory unit/harness path) ⇒ a
- * fail-closed `{}` base host.
+ * tool needing one is cleanly `tool_unavailable`, and `relavium run` refuses such a grant before the engine is
+ * built (2.6.A). Absent `toolEnv` (the in-memory unit/harness path) ⇒ a fail-closed `{}` base host.
  */
-/** The tool-host profile of `relavium run` and `gate` (the author-trusted run host; see {@link buildEngine}). */
-export const RUN_TOOL_PROFILE: ToolEnvProfile = 'workflow-read-write';
-
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
   const providers = options.providers ?? createProviderResolver();

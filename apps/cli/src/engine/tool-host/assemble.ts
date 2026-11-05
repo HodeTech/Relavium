@@ -105,7 +105,9 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   const tier: FsScopeTier = isChat ? clampChatTier(opts.fsScopeTier) : opts.fsScopeTier;
   // The full-capability chat host (ADR-0057): `egress` + `os` ride on top of fs-write + process, made safe by
   // the per-tool approval floor (the regime + advertise-filter the session-host activates), NOT by absence.
-  const wireEgressOs = unwiredToolArms(opts.profile).length === 0;
+  // Each arm reads its own entry, so a profile that leaves only one unwired wires the other, and the pre-flight
+  // refuses exactly the arm this host lacks.
+  const unwired = unwiredToolArms(opts.profile);
   const host: ToolHost = {
     // Strings in committed config cannot grant roots: only the pre-admitted host policy can widen project scope.
     fs: createNodeFsCapability({
@@ -128,18 +130,22 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
     // native notification), so both are denied in `ask`/`plan` and prompt in `accept-edits`. The read-only chat
     // + workflow profiles wire neither: a read-only chat must not reach the network or the clipboard, and the
     // workflow run path's egress/os is a separate (author-trusted) concern, not part of the chat approval story.
-    ...(wireEgressOs
-      ? {
+    ...(unwired.includes('egress')
+      ? {}
+      : {
           egress: createNodeEgressCapability(
             opts.egressCredentialResolver === undefined
               ? {}
               : { resolveCredential: opts.egressCredentialResolver },
           ),
+        }),
+    ...(unwired.includes('os')
+      ? {}
+      : {
           os: createNodeOsCapability(
             opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses },
           ),
-        }
-      : {}),
+        }),
   };
   // Chat default: empty allowedCommands ⇒ `run_command` denied; `git_status` is pre-approved and exposes no
   // model-controlled command, so an empty allowlist never blocks it (ADR-0055). NOTE: this is inert today —
