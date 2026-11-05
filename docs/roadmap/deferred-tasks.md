@@ -1477,7 +1477,7 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
 D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) of MVP-1's security
 increment found nine, two, two and one medium findings, all fixed before the next round, and the lows below that
 were not fixed with them. Round 5 (at `df685a52`) found no blocker, high or medium finding; its nine lows are the
-last group below.
+next group below, and the separate security sitting's two lows (at `ab5e46e1`) are the last.
 **Trigger for every entry:** the next change to the file it names.
 
 - [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
@@ -1648,6 +1648,26 @@ last group below.
   mapping. chat-session.md's `/export` row states the live behaviour correctly. **Re-check:** qualify the sentence:
   `relavium chat-export`'s default filename uses the session id; the live `/export` names its file after the id it
   takes. *(low · docs/reference/contracts/agent-session-spec.md)*
+
+- [ ] **A live run whose process is stopped for longer than the lease TTL is settled by the next start.** *Low;
+  liveness only.* *(security sitting, sec-1)* A run whose owner is suspended for more than 60 seconds (SIGSTOP, or
+  Ctrl+Z on the plain driver) has an expired lease, so the next `run`, `gate`, `budget resume` or Home open takes
+  it over and writes `run:failed{internal}`. On Linux, timers do not count suspend, so after a laptop resume the
+  owner's heartbeat can lag by up to 20 seconds, and a scheduled run that starts at wake can be the trigger. On
+  macOS the monotonic clock counts sleep, so an overdue heartbeat fires on wake. Integrity holds: the takeover
+  bumps the generation, so the woken owner is fenced (exit 6) and there is one terminal; a tool call between wake
+  and the fence is the window ADR-0079 §6 accepts. **Re-check:** store the owner's pid and boot id on the lease row
+  and skip a same-host takeover while that pid is alive, as an ADR-0079 amendment. *(low ·
+  packages/core/src/engine/engine.ts, packages/db)*
+- [ ] **A `.relavium` that is a symlink sends the `/export` transcript to the link's target.** *Low.* *(security
+  sitting, sec-2; extends round 1's export-6)* Project discovery follows the link, and the catalog's containment
+  check compares against the link's own target, so `/export` creates `<target>/workflows/<slug>.relavium.yaml` with
+  the full transcript, `@`-file and `!`-shell bodies included. A cloned repository whose `.relavium` points at a
+  world-writable directory another local account prepared would receive it. Nothing is overwritten: a new file is
+  written exclusively, and the rewrite replaces only a regular file carrying this session's marker. The same
+  discovered directory already receives `create`'s writes. **Re-check:** refuse a project config directory whose
+  real path is outside the directory that contains it, or ask before writing through a linked `.relavium`. *(low ·
+  apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

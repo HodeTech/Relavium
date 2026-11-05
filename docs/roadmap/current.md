@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-04
+> Last updated: 2026-11-05
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -98,12 +98,13 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    key (MVP-A4); the interactive output budget (MVP-A7). **Sliced 2026-11-05 (maintainer):** **1a** (UX tier, reviewed
    per milestone) — the run id, `list --runs` and `status <runId>`, the run-path pre-flight, the output budget; **1b**
    (security tier under D64) — human run output, the gate decision check, `/export`, the default model and missing-key
-   error, and liveness. **Progress 2026-11-05:** 1a is on `development`. 1b is implemented and committed locally, not
-   pushed until it is accepted. Wiring liveness exposed a second-terminal race, so the run store now refuses a second
-   terminal. The rigor pass is done. D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at
-   `b70f9def`) were not accepted, with nine, two, two and one medium findings, all fixed; their lows are fixed or
-   recorded in [deferred-tasks.md](deferred-tasks.md). Still owed: one new complete round with no medium or higher
-   finding, then a separate security sitting.
+   error, and liveness. **Progress 2026-11-05:** 1a is on `development`. **1b is accepted** and on `development`.
+   Wiring liveness exposed a second-terminal race, so the run store now refuses a second terminal. After the rigor
+   pass, D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) were not accepted,
+   with nine, two, two and one medium findings, all fixed. Round 5 (at `df685a52`) found no blocker, high or medium
+   finding, and the separate security sitting (at `ab5e46e1`) passed. Every round's lows and the sitting's are fixed
+   or recorded in [deferred-tasks.md](deferred-tasks.md); one of them, a 0.1.x run settled by a newer reconcile,
+   needs a ruling before the v0.2.0 release. Still owed for MVP-1: the milestone review that covers 1a's UX tier.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess
