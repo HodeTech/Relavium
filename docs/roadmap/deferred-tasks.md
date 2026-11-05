@@ -1476,7 +1476,8 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
 
 D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) of MVP-1's security
 increment found nine, two, two and one medium findings, all fixed before the next round, and the lows below that
-were not fixed with them.
+were not fixed with them. Round 5 (at `df685a52`) found no blocker, high or medium finding; its nine lows are the
+last group below.
 **Trigger for every entry:** the next change to the file it names.
 
 - [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
@@ -1589,6 +1590,64 @@ were not fixed with them.
   choose between Approve and an input field, and no `gateId` to resume a run with more than one gate pending.
   Nothing implements it yet. **Re-check:** add both when the VS Code surface is built. *(low ·
   docs/reference/vscode/extension-api.md)*
+
+- [ ] **The exit-code table says every exit 5 is retried, but the next start drops a raced one.** *Low; reference
+  only.* *(round 5, liveness-1)* The table row and the note on what 5 and 6 mean say a held terminal is retried on
+  the next start. When a concurrent reconcile has already written the run's terminal, the next start's drain finds
+  the run closed and drops the entry instead. The exit-5 note in the same section states this, and the remedy the
+  two lines give (re-check after the next invocation) still gives the right answer. **Re-check:** qualify both
+  lines ("…or drops it when the log already ends in a terminal"). *(low · docs/reference/cli/commands.md)*
+- [ ] **The `reconcile()` docstring leaves out two kinds of run it does not settle.** *Low; comment only.* *(round
+  5, liveness-2)* A run whose repair write throws is skipped and retried on the next reconcile, and a run parked on
+  a media job is resumable and left alone like one parked at a gate. The docstring names neither; nothing it states
+  is false. **Re-check:** add "a run whose repair write failed" to the runs left for a later reconcile, and say
+  "parked at a gate or on a media job". *(low · packages/core/src/engine/engine.ts)*
+- [ ] **Before a `/models` rescue, `/clear` in a resumed session without a key ends the REPL.** *Low.* *(round 5,
+  keys-1)* A message and `/compact` consult the send guard and are refused with a pointer to `/models`; `/clear`
+  does not, so it rebuilds on the resumed session's keyless agent, the key pre-flight refuses that, and the REPL
+  ends with a remedy naming only the missing key and the same `chat-resume`. Nothing is sent or lost, and
+  chat-session.md says a `/clear` whose build fails ends the REPL. Round 2's keys-1 is the same `/clear` after the
+  rescue. **Re-check:** in `clearSession`, check the send guard first, as `compactHistory` does. *(low ·
+  apps/cli/src/commands/chat.ts)*
+- [ ] **The desktop gate overlay reference gives an input gate no Reject.** *Low; reference only.* *(round 5,
+  gate-1)* routes-and-screens.md gives an `input` gate an input field only, while the engine accepts `rejected` there
+  and the VS Code reference and `relavium gate --reject` offer it. `apps/desktop` holds only a README. **Re-check:**
+  with round 4's gate-1, when the desktop surface is built: "an input field and Reject for an `input` gate". *(low ·
+  docs/reference/desktop/routes-and-screens.md)*
+- [ ] **An output name that is a secret shape still masks its value when a delimiter or control character follows
+  the shape.** *Low; fails closed.* *(round 5, outputs-1)* Round 4's check keeps the value only when the name's own
+  scrub ends in `[REDACTED]`. The scrubber's Basic/Bearer token cannot end on `,` `;` `}` `"` `'` or `\`, and a
+  trailing tab or line break is written as `\t` or `\n` in the serialized view, so a value under `Basic plan,`,
+  `"Basic auth"` or `Basic plan\r` (the last header of a naively split CRLF file) is masked whole, with the masked
+  note. **Re-check:** strip trailing delimiters and control characters from the name's own scrub before the end
+  check, rerun the round-4 oracle with these names, and pin `Basic plan,` and `Basic plan\n`. *(low ·
+  apps/cli/src/render/run-outputs.ts)*
+- [ ] **An output name that already ends in `[REDACTED]` masks its value, through an unpinned clause.** *Low; fails
+  closed.* *(round 5, outputs-2)* The `own !== key` clause in `namesCredential` makes `Bearer [REDACTED]` or
+  `…?token=[REDACTED]` (an already-redacted log line used as a key) a label, while `Bearer token` keeps its value.
+  Dropping the clause passes every test. **Re-check:** decide what the clause is for, and pin the choice with a
+  `{ v: { 'Bearer [REDACTED]': 'x' } }` case. *(low · apps/cli/src/render/run-outputs.ts)*
+- [ ] **Two output names that mask to the same text show only the later value.** *Low.* *(round 5, docs-1; extends
+  round 2's key collision)* Since round 4 a name that is a secret shape keeps its value, so `Basic plan` and `Basic
+  support` in one object both become `Basic [REDACTED]` and only `Basic support`'s value is shown, in the first
+  member's position; commands.md says such a name's value is kept. The masked note points at the full record.
+  **Re-check:** suffix a colliding name (`Basic [REDACTED] (2)`, as core's bounding walk reports collisions) or mask
+  every colliding value, and pin a `Basic plan` + `Basic support` case. *(low · apps/cli/src/render/run-outputs.ts,
+  docs/reference/cli/commands.md)*
+- [ ] **`relavium list` prints a workflow's name without stripping terminal controls, and `/export` now feeds it
+  session titles.** *Low for 1b.* *(round 5, export-1)* The scaffold's `name` is the raw session title (only its
+  whitespace is collapsed, so ESC and BEL survive), and since MVP-A3 `/export` writes into `.relavium/workflows/`,
+  which `list` scans and prints raw; a piped first message holding an OSC or CSI sequence then reaches the terminal
+  on `relavium list`. The sink predates 1b: any committed workflow name, a tag and an invalid file's stem print raw
+  the same way, and a cloned repository reaches it more easily. **Re-check:** pass `entry.name`, each tag and an
+  invalid entry's slug through `sanitizeUntrustedInline`, as `list.ts` already does for `entry.error`, and pin it
+  with an `ESC ] … BEL` name. *(low · apps/cli/src/commands/list.ts)*
+- [ ] **The canonical export mapping still says the export file is named by session id and that ids are not
+  unique.** *Low; reference only.* *(round 5, export-2)* The live `/export` names its file after the first free
+  `<slug>`, `<slug>-2`, … and writes that id into the file, and commands.md's chat-export section now links to this
+  mapping. chat-session.md's `/export` row states the live behaviour correctly. **Re-check:** qualify the sentence:
+  `relavium chat-export`'s default filename uses the session id; the live `/export` names its file after the id it
+  takes. *(low · docs/reference/contracts/agent-session-spec.md)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
