@@ -4042,7 +4042,8 @@ class RunExecution {
   /**
    * A gate's timeout elapsed with no decision (1.Q). Idempotent: a no-op once the gate resolved (a human
    * beat the timer — resume disarmed it, but a fired-and-queued callback still guards here) or the run
-   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`); `reject` fails the run.
+   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`) — on an `input` gate that
+   * decision does not fit, so the run fails with `run_timeout`; `reject` fails the run.
    */
   async #onGateTimeout(
     gateId: string,

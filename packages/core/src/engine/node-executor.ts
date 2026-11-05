@@ -84,8 +84,9 @@ export interface GateRequest {
   readonly timeoutMs?: number;
   /**
    * What the engine does if the gate's `timeoutMs` elapses with no decision (1.Q): `approve` auto-resolves
-   * the gate as approved (`decidedBy: 'timeout'`, the run continues); `reject` fails the run with
-   * `run_timeout` (execution-model.md `AwaitingGate → Failed`). The handler supplies it from the node's
+   * the gate as approved (`decidedBy: 'timeout'`, the run continues) — except on an `input` gate, which
+   * cannot be approved, so the refused auto-approval fails the run with `run_timeout`; `reject` fails the
+   * run with `run_timeout` (execution-model.md `AwaitingGate → Failed`). The handler supplies it from the node's
    * `timeout_action` (defaulting to the safe `reject`); it is only acted on when `timeoutMs` is set.
    */
   readonly timeoutAction?: 'approve' | 'reject';
