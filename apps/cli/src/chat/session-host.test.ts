@@ -6,7 +6,7 @@ import { createCliInvocation } from '../process/invocation.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
-import { catalogModel, prepareOutputCapPlan } from '@relavium/llm';
+import { catalogModel, DEFAULT_ATTEMPT_TIMEOUT_MS, prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -46,6 +46,8 @@ import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession as buildFreshSession,
   buildGovernorWiring,
+  chatAttemptDeadline,
+  MAX_CHAT_ATTEMPT_TIMEOUT_MS,
   buildResumedChatSession as buildRestoredSession,
   swapAgentModel,
   withChatOutputDefault,
@@ -2267,6 +2269,96 @@ describe('the interactive output default (MVP-A7, ADR-0101 amendment of 2026-11-
       expect(requests[0]?.maxTokens).toBe(expected);
       expect(built.agent.max_tokens).toBeUndefined();
     }
+  });
+
+  it('scales the per-attempt deadline to the output cap, never below the default nor above 30 minutes', () => {
+    expect(chatAttemptDeadline(anthropic)).toEqual({});
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 2000 })).toEqual({});
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 8192 })).toEqual({
+      attemptTimeoutMs: 328_000,
+    });
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 128_000 })).toEqual({
+      attemptTimeoutMs: MAX_CHAT_ATTEMPT_TIMEOUT_MS,
+    });
+  });
+
+  it('arms the scaled deadline on a fresh and a resumed chat, and leaves a one-shot at the default cap and deadline', async () => {
+    if (ceiling === undefined) throw new Error('the catalog has no ceiling for claude-sonnet-4-6');
+    const scaled = Math.min(MAX_CHAT_ATTEMPT_TIMEOUT_MS, Math.ceil(ceiling / 25) * 1000);
+    expect(scaled).toBeGreaterThan(DEFAULT_ATTEMPT_TIMEOUT_MS);
+    const armed = (): { delays: number[]; deadlineTimer: (ms: number) => () => void } => {
+      const delays: number[] = [];
+      return {
+        delays,
+        deadlineTimer: (ms) => {
+          delays.push(ms);
+          return () => undefined;
+        },
+      };
+    };
+    const turn = async (
+      built: {
+        session: {
+          start: () => void;
+          sendMessage: (text: string) => Promise<unknown>;
+          cancel: () => void;
+        };
+        recordedEvents: Promise<unknown>;
+      },
+      start = true,
+    ): Promise<void> => {
+      if (start) built.session.start();
+      await built.session.sendMessage('go');
+      built.session.cancel();
+      await built.recordedEvents;
+    };
+
+    const fresh = armed();
+    const freshWire = capturingResolver([textTurn('hi')]);
+    await turn(await build({ providers: freshWire.providers, deadlineTimer: fresh.deadlineTimer }));
+    expect(freshWire.requests[0]?.maxTokens).toBe(ceiling);
+    expect(fresh.delays).toContain(scaled);
+
+    const oneShot = armed();
+    const oneShotWire = capturingResolver([textTurn('hi')]);
+    await turn(
+      await build({
+        providers: oneShotWire.providers,
+        oneShot: true,
+        deadlineTimer: oneShot.deadlineTimer,
+      }),
+    );
+    expect(oneShotWire.requests[0]?.maxTokens).toBeUndefined();
+    expect(oneShot.delays).toContain(DEFAULT_ATTEMPT_TIMEOUT_MS);
+    expect(oneShot.delays).not.toContain(scaled);
+
+    // A resumed (or `/models`-reseated) session recomputes the default and its deadline from the current config.
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const resumed = armed();
+    const resumedWire = capturingResolver([textTurn('hi')]);
+    const restored = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-cap',
+        agentSlug: anthropic.id,
+        agentSnapshot: anthropic,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: resumedWire.providers,
+      deadlineTimer: resumed.deadlineTimer,
+    });
+    await turn(restored, false);
+    expect(resumedWire.requests[0]?.maxTokens).toBe(ceiling);
+    expect(resumed.delays).toContain(scaled);
   });
 });
 

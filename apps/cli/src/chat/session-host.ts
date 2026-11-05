@@ -31,6 +31,7 @@ import {
 } from '@relavium/core';
 import {
   catalogModel,
+  DEFAULT_ATTEMPT_TIMEOUT_MS,
   effortTiersFor,
   type EndpointKind,
   type PricingOverlay,
@@ -107,6 +108,13 @@ export interface BuildChatSessionOptions {
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
+  /**
+   * `relavium agent run`: a non-interactive one-shot. MVP-A7's chat output default and the deadline scaled to it
+   * apply to chat surfaces only, so a one-shot keeps the adapter's implicit cap and ADR-0082's default deadline.
+   */
+  readonly oneShot?: boolean;
+  /** Test seam: the timer ADR-0082 §6's per-attempt deadline arms. Default {@link hostDeadlineTimer}. */
+  readonly deadlineTimer?: typeof hostDeadlineTimer;
   /** Host-owned transient policy; never part of SessionContext or the durable snapshot. */
   readonly fsPolicy?: FsPathPolicy;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
@@ -333,6 +341,7 @@ type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'chat'
   | 'maxTokensEstimate'
+  | 'deadlineTimer'
   | 'now'
   | 'providers'
   | 'toolHost'
@@ -704,7 +713,7 @@ function buildSessionRuntime(
     sleep: hostSleep,
     // ADR-0082 §6's per-attempt deadline. The controller this host already supplies for the per-turn cancel
     // doubles as the deadline's merged signal; the TIMER is what arms it.
-    setTimer: hostDeadlineTimer,
+    setTimer: opts.deadlineTimer ?? hostDeadlineTimer,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
@@ -1025,16 +1034,21 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     const attached: { handle?: SessionHandle } = {};
     const whenReady = (): Promise<void> =>
       attached.handle?.whenConsumersReady() ?? Promise.resolve();
+    const wired = narrowToWired(withMcpGrant(agent, mcp), host, deps.tools);
+    const sessionAgent =
+      opts.oneShot === true
+        ? wired
+        : withChatOutputDefault(wired, chatOutputSettings(opts.chat), officialEndpointOf(deps));
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
-      agent: withChatOutputDefault(
-        narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
-        chatOutputSettings(opts.chat),
-        officialEndpointOf(deps),
-      ),
+      agent: sessionAgent,
       context,
-      deps: { ...deps, whenReady },
+      deps: {
+        ...deps,
+        ...(opts.oneShot === true ? {} : chatAttemptDeadline(sessionAgent)),
+        whenReady,
+      },
     });
     const handle = createSessionHandle(
       bus,
@@ -1167,7 +1181,12 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
-  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy' | 'nativeProcesses' | 'workOwner'
+  | 'afterTurnCompaction'
+  | 'onCompactionStart'
+  | 'fsPolicy'
+  | 'nativeProcesses'
+  | 'workOwner'
+  | 'deadlineTimer'
 > {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
@@ -1312,18 +1331,20 @@ export async function buildResumedChatSession(
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
     const attached: { handle?: SessionHandle } = {};
+    const sessionAgent = withChatOutputDefault(
+      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      chatOutputSettings(opts.chat),
+      officialEndpointOf(deps),
+    );
     const session = AgentSession.resume(
       {
         sessionId: record.id,
         agentRef: agent.id,
-        agent: withChatOutputDefault(
-          narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
-          chatOutputSettings(opts.chat),
-          officialEndpointOf(deps),
-        ),
+        agent: sessionAgent,
         context,
         deps: {
           ...deps,
+          ...chatAttemptDeadline(sessionAgent),
           whenReady: () => attached.handle?.whenConsumersReady() ?? Promise.resolve(),
         },
       },
@@ -1570,6 +1591,28 @@ function chatOutputSettings(chat: ResolvedChatConfig): {
   readonly costCapped: boolean;
 } {
   return { maxTokens: chat.maxTokens, costCapped: (chat.maxCostMicrocents ?? 0) > 0 };
+}
+
+/** The output throughput a chat attempt's deadline assumes, thinking included: deliberately slow, in tokens per second. */
+export const CHAT_STREAM_TOKENS_PER_SECOND = 25;
+/** The longest per-attempt deadline a chat gets, however large its output cap. */
+export const MAX_CHAT_ATTEMPT_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * The per-attempt deadline for a chat session whose effective agent carries `max_tokens` (MVP-A7 × ADR-0082 §6).
+ * ADR-0082's deadline is ABSOLUTE per attempt and does not reset per chunk, so with the catalog ceiling (128,000 on
+ * claude-sonnet-4-6) a healthy reply streaming past 120 s would fail as a billed timeout and be rolled back, where
+ * the old 4,096 cap ended it cleanly as truncated. The chat host overrides the default, as §6 lets a host, with a
+ * deadline long enough to stream the whole cap at {@link CHAT_STREAM_TOKENS_PER_SECOND}: never below the default,
+ * never above {@link MAX_CHAT_ATTEMPT_TIMEOUT_MS}. A stalled stream is still bounded, and the user can cancel it.
+ */
+export function chatAttemptDeadline(agent: AgentDefinition): {
+  readonly attemptTimeoutMs?: number;
+} {
+  if (agent.max_tokens === undefined) return {};
+  const streamMs = Math.ceil(agent.max_tokens / CHAT_STREAM_TOKENS_PER_SECOND) * 1000;
+  if (streamMs <= DEFAULT_ATTEMPT_TIMEOUT_MS) return {};
+  return { attemptTimeoutMs: Math.min(MAX_CHAT_ATTEMPT_TIMEOUT_MS, streamMs) };
 }
 
 /** Whether the session reaches a provider's official endpoint; unknown metadata counts as not official. */

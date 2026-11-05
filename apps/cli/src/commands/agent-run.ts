@@ -165,6 +165,7 @@ async function agentRunOwned(
         workOwner,
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         chat: config.chat,
+        oneShot: true, // MVP-A7's chat output default and its scaled deadline are for chat surfaces only.
         fsPolicy,
         afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
         ...(config.maxTokensEstimate === undefined
