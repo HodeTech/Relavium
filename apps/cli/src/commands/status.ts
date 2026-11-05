@@ -258,7 +258,8 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
     io.writeOut(
       '  ⚠ this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n' +
-        '    Recovery is attempted by `relavium run`, `relavium gate` and `relavium budget resume`; the next one retries it.\n',
+        '    Recovery is attempted by `relavium run`, `relavium gate`, `relavium budget resume` and opening the\n' +
+        '    `relavium` Home; the next one retries it.\n',
     );
   }
   if (status.gatesUnavailable) {

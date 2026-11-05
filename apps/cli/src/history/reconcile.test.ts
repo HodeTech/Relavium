@@ -208,8 +208,9 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
   it('…and when the reconciler still holds its claim, the run is refused and still leaves one terminal', async () => {
     // The other order inside the same window: the reconciler's terminal is durable and its lease is still
     // live when the run tries to acquire. The acquire is refused, and the run settles at once — so its
-    // terminal takes the reconciler's sequence number and `UNIQUE(run_id, seq)` refuses it before the
-    // store's terminal refusal is reached. Pinned for the outcome, which must not depend on the order.
+    // terminal takes the reconciler's sequence number. The store's terminal refusal stops it, and
+    // `UNIQUE(run_id, seq)` would stop it if that refusal were gone, which is why removing the refusal alone
+    // does not fail this case. Pinned for the outcome, which must not depend on the order.
     const s = store();
     let injected = false;
     const hooked: RunStore = {
