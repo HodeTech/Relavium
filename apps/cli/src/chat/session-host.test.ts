@@ -522,6 +522,23 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     return path;
   }
 
+  it('refuses a keyless provider BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {
+    const consentGate = vi.fn(() => Promise.resolve(new Map()));
+    const startMcpClient = vi.fn(() => Promise.reject(new Error('must not start')));
+    const caught = await build({
+      agentRef: writeMcpAgent(),
+      providers: { ...scriptedResolver([textTurn('hi')]), hasKey: () => false },
+      consentGate,
+      startMcpClient,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(isCliError(caught) && caught.message).toContain('set-key anthropic');
+    expect(consentGate).not.toHaveBeenCalled();
+    expect(startMcpClient).not.toHaveBeenCalled();
+  });
+
   it('grants the discovered tool, routes a call to the connection by original name, and tears it down', async () => {
     const calls: { name: string; args: unknown }[] = [];
     let closed = 0;
@@ -2315,5 +2332,48 @@ describe('the default model follows the stored key (MVP-A4)', () => {
       consentGate: () => Promise.resolve(new Map()),
     });
     expect(await refusalOf(resumed)).toContain('set-key anthropic');
+
+    // An interactive resume defers it: the session builds and names the provider, so `/models` can still rescue it.
+    const deferred = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-k',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate: () => Promise.resolve(new Map()),
+      deferMissingKey: true,
+    });
+    expect(deferred.missingKeyProvider).toBe('anthropic');
+    deferred.session.cancel();
+    await deferred.whenHostSafeToClose();
+  });
+
+  it('asks the key store once per provider per build, so the choice and the pre-flight cannot disagree', async () => {
+    const asked: string[] = [];
+    const built = await build({
+      providers: {
+        ...scriptedResolver([textTurn('hi')]),
+        hasKey: (id) => {
+          asked.push(id);
+          return id === 'anthropic';
+        },
+      },
+    });
+    expect(built.agent.provider).toBe('anthropic');
+    expect(asked).toEqual(['anthropic']); // the default-model choice asked; the pre-flight reused its answer
+    built.session.cancel();
+    await built.whenHostSafeToClose();
   });
 });

@@ -28,9 +28,10 @@ export interface ResolveChatAgentOptions {
 /**
  * The default agent's model and provider (MVP-A4).
  *
- * A configured `defaultModel` wins, with its persisted provider (ADR-0059). Otherwise the provider is the
- * configured `defaultProvider`, else the first provider in {@link KNOWN_PROVIDER_IDS} order that has a key, else
- * Anthropic. Anthropic keeps the long-standing zero-config {@link DEFAULT_CHAT_MODEL}; any other provider gets the
+ * A configured `defaultModel` wins, with its persisted provider (ADR-0059). Otherwise the provider is a
+ * `defaultProvider` the caller passed, else the first provider in {@link KNOWN_PROVIDER_IDS} order that has a key,
+ * else Anthropic. Config resolution never passes a provider without a model (it drops a stray one), so from config
+ * the choice is always the key-aware one. Anthropic keeps the long-standing zero-config {@link DEFAULT_CHAT_MODEL}; any other provider gets the
  * onboarding wizard's starter model (`KNOWN_PROVIDERS[id].testModel`), so a user with only an OpenAI key reaches a
  * working chat instead of an Anthropic credential failure.
  */

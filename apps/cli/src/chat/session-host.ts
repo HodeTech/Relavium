@@ -823,7 +823,7 @@ function buildSessionRuntime(
  */
 function bindChatAgent(
   opts: BuildChatSessionOptions,
-  providers: ProviderResolver,
+  hasKey: (id: ProviderId) => boolean,
 ): ResolvedChatAgent {
   if (opts.agent !== undefined) return { agent: opts.agent, artifact: undefined };
   return resolveChatAgentSource(opts.agentRef, {
@@ -831,7 +831,7 @@ function bindChatAgent(
     projectConfigDir: opts.projectConfigDir,
     defaultModel: opts.chat.defaultModel,
     // MVP-A4: with no configured default, the default agent's model comes from a provider that has a key.
-    hasKey: (id) => providerHasKey(providers, id),
+    hasKey,
     // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
     // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
     ...(opts.chat.defaultProvider === undefined
@@ -852,11 +852,25 @@ function bindChatAgent(
  * "credential resolution failed" — deliberately, since a host error could carry a secret — so the user saw an
  * opaque failure instead of the remedy. This asks the boolean `hasKey`, never for the key, and throws the same
  * actionable message `keyFor` would. Only the PRIMARY provider is checked: an `auth` failure is fatal to the whole
- * chain, so a keyless primary can never work, while a keyless fallback entry fails only if it is reached.
+ * chain, so a keyless primary cannot answer until a key is stored or the model changes, while a keyless fallback
+ * entry fails only if it is reached. An interactive resume defers this refusal to each send
+ * ({@link BuildResumedChatSessionOptions.deferMissingKey}), because there `/models` can still change the model.
  */
-function assertProviderKey(agent: AgentDefinition, providers: ProviderResolver): void {
-  if (providerHasKey(providers, agent.provider)) return;
+function assertProviderKey(agent: AgentDefinition, hasKey: (id: ProviderId) => boolean): void {
+  if (hasKey(agent.provider)) return;
   throw new CliError('invalid_invocation', missingKeyMessage(agent.provider));
+}
+
+/** {@link providerHasKey}, asked at most once per provider for the life of the returned function. */
+function memoizedHasKey(providers: ProviderResolver): (id: ProviderId) => boolean {
+  const answers = new Map<ProviderId, boolean>();
+  return (id) => {
+    const known = answers.get(id);
+    if (known !== undefined) return known;
+    const answer = providerHasKey(providers, id);
+    answers.set(id, answer);
+    return answer;
+  };
 }
 
 /**
@@ -960,8 +974,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   const sessionId = opts.uuid();
   // One resolver for the default-model choice, the key pre-flight and the session runtime.
   const providers = opts.providers ?? createProviderResolver();
-  const { agent, artifact } = bindChatAgent(opts, providers);
-  assertProviderKey(agent, providers);
+  // The default-model choice and the pre-flight ask the same question of the same provider; one answer per
+  // provider per build keeps them agreeing by construction and keeps the build at one keychain read per provider.
+  const hasKey = memoizedHasKey(providers);
+  const { agent, artifact } = bindChatAgent(opts, hasKey);
+  assertProviderKey(agent, hasKey);
   const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.fsPolicy === undefined ? opts.cwd : fsPolicyWorkspace(opts.fsPolicy),
@@ -1141,6 +1158,11 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
    * session does not collide on the `(session_id, sequence_number)` UNIQUE index.
    */
   readonly nextSequenceNumber: number;
+  /**
+   * The bound provider that has no key, when the caller asked to defer that refusal
+   * ({@link BuildResumedChatSessionOptions.deferMissingKey}). Absent ⇒ the provider has a key.
+   */
+  readonly missingKeyProvider?: ProviderId;
 }
 
 export interface BuildResumedChatSessionOptions extends Pick<
@@ -1150,6 +1172,13 @@ export interface BuildResumedChatSessionOptions extends Pick<
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
+  /**
+   * Build even when the snapshot's provider has no key, and report it as
+   * {@link BuiltResumedChatSession.missingKeyProvider} instead of refusing (MVP-A4). Only an INTERACTIVE
+   * `chat-resume` sets it: there the user can still `/models` to a provider that has a key, which a refusal before
+   * the REPL would make impossible. Absent/`false` (every reseat, the Home, a non-interactive resume) ⇒ refuse.
+   */
+  readonly deferMissingKey?: boolean;
   /**
    * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
    * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
@@ -1237,7 +1266,10 @@ export async function buildResumedChatSession(
     );
   }
   const providers = opts.providers ?? createProviderResolver();
-  assertProviderKey(agent, providers);
+  const missingKeyProvider = providerHasKey(providers, agent.provider) ? undefined : agent.provider;
+  if (missingKeyProvider !== undefined && opts.deferMissingKey !== true) {
+    throw new CliError('invalid_invocation', missingKeyMessage(missingKeyProvider));
+  }
   // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
   // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
@@ -1324,6 +1356,7 @@ export async function buildResumedChatSession(
       emitSessionEvent: emit,
       resumeState,
       nextSequenceNumber,
+      ...(missingKeyProvider === undefined ? {} : { missingKeyProvider }),
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined
         ? {}
