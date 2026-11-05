@@ -139,8 +139,87 @@ describe('renderFinalSummary', () => {
     expect(renderFinalSummary(paused)).toContain(
       `  run id ${RUN} — resume with \`relavium gate ${RUN}\``,
     );
-    // Before any run:started the summary has no id to offer.
+    // Before any event the summary has no id to offer.
     expect(renderFinalSummary(reduceAll([]))).not.toContain('run id');
+  });
+
+  it('points each outcome at the command that accepts it: logs, gate, budget resume or status (MVP-A2)', () => {
+    const started: RunEvent = {
+      type: 'run:started',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    };
+    const budgetPause: RunEvent = {
+      type: 'budget:paused',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 2,
+      nodeId: 'writer',
+      spentMicrocents: 11,
+      limitMicrocents: 10,
+      gateId: 'budget-1',
+    };
+    const paused = (sequenceNumber: number, gateIds: string[]): RunEvent => ({
+      type: 'run:paused',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber,
+      pendingGateCount: gateIds.length,
+      gateIds,
+      ...(gateIds.length === 0 ? { pendingMediaJobNodeIds: ['render'] } : {}),
+    });
+    const logs = `  run id ${RUN} — replay with \`relavium logs ${RUN}\``;
+    const gate = `  run id ${RUN} — resume with \`relavium gate ${RUN}\``;
+    const budget = `  run id ${RUN} — approve or abort the budget gate with \`relavium budget resume ${RUN} --gate budget-1\` (\`relavium status ${RUN}\` shows the amount)`;
+    const linesOf = (events: readonly RunEvent[]): string[] =>
+      renderFinalSummary(reduceAll(events))
+        .split('\n')
+        .filter((line) => line.startsWith('  run id'));
+
+    const failed: RunEvent = {
+      type: 'run:failed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 2,
+      error: { code: 'internal', message: 'boom', retryable: false },
+      partialOutputs: {},
+    };
+    const cancelled: RunEvent = {
+      type: 'run:cancelled',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 2,
+    };
+    expect(linesOf([started, failed])).toEqual([logs]);
+    expect(linesOf([started, cancelled])).toEqual([logs]);
+    expect(linesOf([started])).toEqual([logs]); // no terminal yet: "run ended"
+    // A budget gate is resumed by `budget resume`, which `gate` refuses.
+    expect(linesOf([started, budgetPause, paused(3, ['budget-1'])])).toEqual([budget]);
+    // A human gate beside it still names `gate` first.
+    expect(linesOf([started, budgetPause, paused(3, ['approve-1', 'budget-1'])])).toEqual([
+      gate,
+      budget,
+    ]);
+    // A run parked on a media job only has no gate to resume.
+    expect(linesOf([started, paused(2, [])])).toEqual([
+      `  run id ${RUN} — check it with \`relavium status ${RUN}\``,
+    ]);
+    // A resumed stream (`relavium gate`) carries no run:started; the id comes from its first event.
+    const resumed: RunEvent = {
+      type: 'human_gate:resumed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 7,
+      nodeId: 'approve',
+      gateId: 'approve-1',
+      decision: 'approved',
+      decidedBy: 'cli',
+    };
+    expect(linesOf([resumed, paused(8, ['approve-2'])])).toEqual([gate]);
   });
 
   it('is plain text — no ANSI escape codes (scrollback-safe / --no-color)', () => {

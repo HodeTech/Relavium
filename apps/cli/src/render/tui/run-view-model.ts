@@ -332,6 +332,15 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     };
   }
 
+  // A resumed stream (`relavium gate`, `budget resume`) never re-emits `run:started`, so the view takes the run id
+  // from its first applied event: the footer, the summary and its outputs note all name it (MVP-A2). An event newer
+  // than this reducer leaves the state as it was (the `default` arm below).
+  const unlatched = base;
+  const eventRunId: string | undefined = event.runId;
+  if (base.runId === undefined && eventRunId !== undefined) {
+    base = { ...base, runId: eventRunId };
+  }
+
   switch (event.type) {
     case 'run:started':
       return { ...base, runId: event.runId };
@@ -536,7 +545,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     default: {
       const exhaustive: never = event;
       void exhaustive; // Keep compile-time exhaustiveness and tolerate newer external runtime events.
-      return base;
+      return unlatched;
     }
   }
 }

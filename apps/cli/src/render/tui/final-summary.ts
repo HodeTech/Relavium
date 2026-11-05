@@ -7,6 +7,7 @@ import {
 } from './format.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
+import { resumeCommandBase } from '../../gate/budget.js';
 import { formatRunOutputs } from '../run-outputs.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 
@@ -57,12 +58,7 @@ export function renderFinalSummary(state: RunViewState): string {
 
   // The run id `logs`, `status` and `gate` accept (MVP-A2), with the command that continues from here.
   if (state.runId !== undefined) {
-    const id = sanitizeInline(state.runId);
-    lines.push(
-      summary?.outcome === 'paused'
-        ? `  run id ${id} — resume with \`relavium gate ${id}\``
-        : `  run id ${id} — replay with \`relavium logs ${id}\``,
-    );
+    lines.push(...continuationLines(state, state.runId));
   }
 
   if (summary?.errorMessage !== undefined) {
@@ -101,4 +97,37 @@ export function renderFinalSummary(state: RunViewState): string {
   }
 
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The run id line, with the command that continues from the outcome: `relavium logs` for a run that ended, and for a
+ * paused run the command for what it is parked on — `relavium gate` for a human gate, `relavium budget resume` for a
+ * budget gate (which `gate` refuses), and `relavium status` for a run parked on a media job only.
+ */
+function continuationLines(state: RunViewState, runId: string): string[] {
+  const id = sanitizeInline(runId);
+  if (state.summary?.outcome !== 'paused') {
+    return [`  run id ${id} — replay with \`relavium logs ${id}\``];
+  }
+  const parked = state.summary.pausedGateIds ?? [];
+  const budgetGates = new Set(
+    state.pendingBudgetNotices.filter((gate) => gate.runId === runId).map((gate) => gate.gateId),
+  );
+  const lines: string[] = [];
+  if (parked.some((gateId) => !budgetGates.has(gateId))) {
+    lines.push(`  run id ${id} — resume with \`relavium gate ${id}\``);
+  }
+  for (const gateId of parked.filter((parkedId) => budgetGates.has(parkedId))) {
+    // The same shell-inert check the plain renderer and `status` apply before printing a copyable command.
+    const command = resumeCommandBase('budget', runId, gateId);
+    lines.push(
+      command === undefined
+        ? `  run id ${id} — a budget gate is waiting: \`relavium status ${id}\` shows how to approve or abort it`
+        : `  run id ${id} — approve or abort the budget gate with \`${command}\` (\`relavium status ${id}\` shows the amount)`,
+    );
+  }
+  if (lines.length === 0) {
+    lines.push(`  run id ${id} — check it with \`relavium status ${id}\``);
+  }
+  return lines;
 }
