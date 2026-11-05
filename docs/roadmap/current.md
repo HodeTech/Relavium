@@ -98,7 +98,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    key (MVP-A4); the interactive output budget (MVP-A7). **Sliced 2026-11-05 (maintainer):** **1a** (UX tier, reviewed
    per milestone) — the run id, `list --runs` and `status <runId>`, the run-path pre-flight, the output budget; **1b**
    (security tier under D64) — human run output, the gate decision check, `/export`, the default model and missing-key
-   error, and liveness.
+   error, and liveness. **Progress 2026-11-05:** 1a is on `development`. 1b is implemented and committed locally, not
+   pushed until it is accepted. Wiring liveness exposed a second-terminal race, so the run store now refuses a second
+   terminal. Still owed: the rigor pass, one new complete review round and a separate security sitting.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess
