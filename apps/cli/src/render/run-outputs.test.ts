@@ -193,6 +193,41 @@ describe('formatRunOutputs (MVP-A1)', () => {
     ]);
   });
 
+  it('a name the scrubber masks up to its end is masked itself and keeps its value', () => {
+    // In the serialized view such a name's own token has nothing after it, so it runs on into the stand-in value;
+    // that is the name's secret shape, not a label for the value beneath it.
+    expect(
+      formatRunOutputs(
+        { plans: { 'Basic plan': '$9/month', 'Pro plan': '$29/month' } },
+        '',
+        'run-8',
+      ),
+    ).toEqual([
+      'outputs:',
+      '  plans: {"Basic [REDACTED]":"$9/month","Pro plan":"$29/month"}',
+      '  (outputs masked — the full record: `relavium logs run-8 --json`)',
+    ]);
+    expect(
+      formatRunOutputs({ auth: { 'Bearer token': 'supported', 'Basic support': true } }, '')[1],
+    ).toBe('  auth: {"Bearer [REDACTED]":"supported","Basic [REDACTED]":true}');
+    expect(
+      formatRunOutputs({ links: { 'https://x.example/reset?token=abc': 'HTTP 200' } }, '')[1],
+    ).toBe('  links: {"https://x.example/reset?token=[REDACTED]":"HTTP 200"}');
+    // A top-level output's name is an authored id, shown as written; it masks its value no more than a member's does.
+    expect(formatRunOutputs({ 'Basic tier': 'free' }, '')[1]).toBe('  Basic tier: free');
+    // A label the scrubber leaves whole on its own still masks the value: a header name, with a colon or a space
+    // after it, a URL ending in a credential's prefix, and a header name after a secret shape the name also holds.
+    for (const name of [
+      'x-api-key',
+      'X-Api-Key:',
+      'api-key ',
+      'https://h.example/a?b=1&token=',
+      `${KEY} x-api-key`,
+    ]) {
+      expect(formatRunOutputs({ v: { [name]: 'opaque' } }, '')[1]).toMatch(/:"\[REDACTED\]"\}$/u);
+    }
+  });
+
   it('keeps an own __proto__ member, as JSON.parse makes one, rather than dropping it unsaid', () => {
     const parsed: unknown = JSON.parse('{"v":{"__proto__":{"x":"kept"},"y":1}}');
     if (typeof parsed !== 'object' || parsed === null) throw new Error('fixture');

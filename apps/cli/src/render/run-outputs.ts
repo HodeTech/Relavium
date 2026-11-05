@@ -15,9 +15,10 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
  * field's into a false match. A leaf alone cannot show a shape whose name is the member's KEY (`"x-api-key": "…"`),
  * so each member with a primitive value, a top-level output included, also has its NAME read: as the one-member JSON
  * text `{"<key>":"v"}` with a stand-in value, the form the scrubber reads in a serialized object. When the scrubber
- * masks the stand-in, the member's value is masked whole. The value's own text never joins its name or a neighbour,
- * so it cannot turn a token already masked in place into a whole-value mask. Top-level keys are authored ids, so
- * they get the one-line {@link sanitizeInline}. A secret input the engine already masked (`{ secret: true, ref }`)
+ * masks the stand-in, the member's value is masked whole, unless the name is a secret shape of its own that the
+ * scrubber masks up to its end (`Basic plan`): that name is not a label. The value's own text never joins its name
+ * or a neighbour, so it cannot turn a token already masked in place into a whole-value mask. Top-level keys are
+ * authored ids, so they get the one-line {@link sanitizeInline}. A secret input the engine already masked (`{ secret: true, ref }`)
  * is rendered as that masked object, never unwrapped.
  *
  * Outputs are the run's deliverable, not a diagnostic, so they do NOT get `sanitizeUntrusted`'s whole-text
@@ -198,10 +199,15 @@ function maskedAsMember(key: string, member: unknown, onMask: () => void): unkno
  * Whether `key` labels a credential: read as the one-member JSON text `{"<key>":"v"}`, the form the scrubber sees in
  * a serialized object, with a stand-in value, the scrubber masks that value. Only the name decides. The member's own
  * text never enters this view, so its JSON escapes (`\n` for a newline) cannot stretch a token the leaf pass already
- * masked at a line end into a whole-value mask, and a key that is itself a secret shape masks only itself (it is
- * shown masked), not its value.
+ * masked at a line end into a whole-value mask.
+ *
+ * A name the scrubber masks up to its end on its own (`Basic plan`, `Bearer token`, a URL ending in `?key=1`) is
+ * itself a secret shape, not a label: its token has nothing after it in the name, so in the serialized view the
+ * token runs on over the closing quote into the stand-in. It is shown masked and masks only itself, not its value.
  */
 function namesCredential(key: string): boolean {
+  const own = scrubSecrets(key);
+  if (own !== key && own.endsWith(MEMBER_MASK)) return false;
   const tail = `:${JSON.stringify(NAME_PROBE)}}`;
   return !scrubSecrets(JSON.stringify({ [key]: NAME_PROBE })).endsWith(tail);
 }
