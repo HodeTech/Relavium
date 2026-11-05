@@ -28,12 +28,7 @@ import {
   type McpClient,
   type McpConnection,
 } from '@relavium/mcp';
-import type {
-  AbortSignalLike,
-  Agent,
-  AgentSessionRecord,
-  SessionMessage,
-} from '@relavium/shared';
+import type { AbortSignalLike, Agent, AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
