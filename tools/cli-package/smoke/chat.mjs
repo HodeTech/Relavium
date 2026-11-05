@@ -127,8 +127,10 @@ export async function assertInstalledChat(context) {
       (message) => message.role === 'assistant' && message.content === replies[0],
     ),
   );
+  // Two keychain reads per process: the session pre-flight's yes/no `hasKey` (MVP-A4, before any spawn or
+  // egress) and the turn's `keyFor`. Both are the same denied account, so the env key is what serves the turn.
   const attempts = observed.filter((call) => call.operation === 'keyring.Entry');
-  assert.equal(attempts.length, 2);
+  assert.equal(attempts.length, 4);
   for (const attempt of attempts)
     assert.deepEqual(
       [attempt.service, attempt.account, attempt.denied],
@@ -153,7 +155,7 @@ export async function assertInstalledChat(context) {
     sessionId: id,
     runs,
     dispatches: 2,
-    keyringDeniedAttempts: 2,
+    keyringDeniedAttempts: 4,
     forbiddenNetworkOrProcessCalls: 0,
     transcript: final.messages,
     usage: session,
