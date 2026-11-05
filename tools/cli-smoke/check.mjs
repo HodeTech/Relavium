@@ -130,6 +130,15 @@ async function assertNoMcpOrphanOnSignal(home) {
       .filter((pid) => Number.isInteger(pid));
 
   const before = new Set(survivors());
+  // A synthetic key, so the session's key pre-flight (MVP-A4) passes and the run reaches the MCP consent gate
+  // and the connect this check is about. It never reaches a provider: the first call is refused at consent, and
+  // the second waits on a server that never completes `initialize` until it is signalled.
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    RELAVIUM_ANTHROPIC_API_KEY: 'sk-relavium-synthetic-orphan-probe',
+  };
   // The consent gate (ADR-0084) refuses a non-interactive spawn and PRINTS the declaration digest; feed it
   // back rather than hard-coding a hash that changes with this machine's node path.
   const refusal = spawnSync(process.execPath, [BUNDLE, 'agent', 'run', agentPath], {
@@ -137,7 +146,7 @@ async function assertNoMcpOrphanOnSignal(home) {
     encoding: 'utf8',
     input: 'hi\n',
     timeout: STEP_TIMEOUT_MS,
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env,
   });
   const digest = /\bv1:[0-9a-f]{64}\b/.exec(`${refusal.stdout}${refusal.stderr}`)?.[0];
   if (digest === undefined) {
@@ -152,7 +161,7 @@ async function assertNoMcpOrphanOnSignal(home) {
     {
       cwd: home,
       stdio: ['pipe', 'ignore', 'ignore'],
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env,
     },
   );
   host.stdin.end('hi\n');
