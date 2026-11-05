@@ -1474,9 +1474,9 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
 
 ## MVP-1 1b — recorded low findings (2026-11-05)
 
-D64 round 1 of MVP-1's security increment at `5f2a0eb8` found nine medium findings, all fixed before the next
-round, and the lows below that were not fixed with them. **Trigger for every entry:** the next change to the file it
-names.
+D64 rounds 1 (at `5f2a0eb8`) and 2 (at `60bc9727`) of MVP-1's security increment found nine and two medium findings,
+all fixed before the next round, and the lows below that were not fixed with them. **Trigger for every entry:** the
+next change to the file it names.
 
 - [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
   *(round 1, gate-2)* A direct engine caller (the coming desktop and VS Code `resume_run`, or any embedder of
@@ -1508,6 +1508,31 @@ names.
   other non-project directory under home. The reference now states this. **Re-check:** exclude the global
   configuration directory from project discovery for `/export` (writing `<cwd>/.relavium/workflows/` instead), or
   ask before writing there. *(low · apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
+
+- [ ] **A `/clear` after a `/models` rescue rebuilds on the agent the session left.** *Low.* *(round 2, keys-1)* A
+  `chat-resume` deferred for a missing key, rescued with `/models`, then `/clear`ed, rebuilds on the resumed
+  snapshot's agent: the `/clear` rebuild closure captures `built.agent` once, and a reseat does not update it. The new
+  pre-flight then ends the REPL with a refusal naming the abandoned provider. Nothing is lost; the printed
+  `chat-resume` reopens on the rescued provider. The root cause predates 1b: ADR-0059's ADR-0112 amendment rules that
+  an explicit model choice survives a rebuild, and that is not implemented yet. **Re-check:** with ADR-0112's rebuild
+  rule, have the `/clear` rebuild take the agent of the session being cleared. *(low · apps/cli/src/commands/chat.ts)*
+- [ ] **A direct engine caller can send a payload with `approved` or `rejected`.** *Low.* *(round 2, gate-1)* The fit
+  check reads the decision kind only, and the gate's output is `decision.payload ?? { decision }`, so an embedder that
+  approves an approval gate with `payload: { decision: 'rejected' }` routes downstream on the payload. The CLI cannot
+  send one (only `--input` carries a payload), and the spec now says the check reads the kind only. **Re-check:**
+  refuse a payload on an `approved`/`rejected` human-gate decision in `#assertDecisionFitsGate`, as budget gates
+  already do. *(low · packages/core/src/engine/engine.ts)*
+- [ ] **Run outputs no longer join a query name split by whitespace.** *Low.* *(round 2, outputs-3)* Dropping the CLI's
+  diagnostics-only residual (round 1, outputs-2) also dropped its split-query-name probe, so an output holding
+  `?access_ token=<value>` (a hard-wrapped URL, say) prints the value; round 1's head masked it. The shared scrubber
+  does not join query names by design, and its query rule is private, so a per-leaf probe would be a second copy of a
+  security rule. commands.md states the limit. **Re-check:** export a query-only probe from the shared scrubber and
+  apply it per leaf. *(low · apps/cli/src/render/run-outputs.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **On a resumed run the outputs note names `<runId>`.** *Low; cosmetic.* *(round 2, outputs-5)* The TUI final
+  summary passes `state.runId`, which only `run:started` sets, so after `relavium gate` or `budget resume` a shortened
+  or masked block says `relavium logs <runId> --json`; the plain renderer names the id. **Re-check:** fold the
+  terminal's `runId` into the view state (or carry it on the summary) and pass that. *(low ·
+  apps/cli/src/render/tui/final-summary.ts, apps/cli/src/render/tui/run-view-model.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

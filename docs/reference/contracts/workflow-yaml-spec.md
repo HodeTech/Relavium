@@ -327,7 +327,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 **Decisions by `gate_type`** (ruled 2026-11-05): an `approval` or `review` gate takes `approved` or `rejected`; an
 `input` gate takes `input_provided` (its payload) or `rejected`. Any other decision is refused before anything is
 written — by `relavium gate` as an invocation error and by the engine as `invalid_decision` — so a gate never
-records a decision shape its type does not define. There is nothing for a deadline to approve on an `input` gate, so
+records a decision kind its type does not define. (The check reads the decision kind only; a payload sent with
+`approved` or `rejected` by a direct engine caller is not refused.) There is nothing for a deadline to approve on an `input` gate, so
 `timeout_action: approve` on one is refused at admission; a run parked before that rule fails with `run_timeout`
 at its deadline, as a refused auto-approval does.
 
