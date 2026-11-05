@@ -110,19 +110,19 @@ describe('assertDecisionFitsGateType (2.6.K, ruled 2026-11-05)', () => {
         'ok',
         ['approved', 'rejected'],
         'input_provided',
-        'approval gate — use --approve or --reject',
+        'is an approval gate — use --approve or --reject',
       ],
       [
         'look',
         ['approved', 'rejected'],
         'input_provided',
-        'review gate — use --approve or --reject',
+        'is a review gate — use --approve or --reject',
       ],
       [
         'ask',
         ['input_provided', 'rejected'],
         'approved',
-        'input gate — use --input <json> or --reject',
+        'is an input gate — use --input <json> or --reject',
       ],
     ] as const) {
       for (const kind of fits) {

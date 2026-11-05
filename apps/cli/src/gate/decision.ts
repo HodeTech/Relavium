@@ -127,6 +127,6 @@ export function assertDecisionFitsGateType(
     .join(' or ');
   throw new CliError(
     'invalid_invocation',
-    `the gate at node ${sanitizeInline(node.id)} is an ${node.gate_type} gate — use ${flags}`,
+    `the gate at node ${sanitizeInline(node.id)} is ${node.gate_type === 'review' ? 'a' : 'an'} ${node.gate_type} gate — use ${flags}`,
   );
 }

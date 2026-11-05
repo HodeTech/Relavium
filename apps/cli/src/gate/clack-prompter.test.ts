@@ -176,6 +176,21 @@ describe('createClackGatePrompter', () => {
     expect(note.mock.calls[0]?.[0]).toContain('auto-reject');
   });
 
+  it('never promises an input gate it will be approved on timeout: the run fails instead', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note, text: () => Promise.resolve('value') })).prompt(
+      gate({
+        gateType: 'input',
+        expiresAt: '2026-06-24T11:00:00.000Z',
+        timeoutMs: 1000,
+        timeoutAction: 'approve',
+      }),
+    );
+    const [body] = note.mock.calls[0] ?? [];
+    expect(body).toContain('the run fails on timeout');
+    expect(body).not.toContain('auto-approve');
+  });
+
   it('shows the deadline in the card when the gate has one', async () => {
     const note = vi.fn<(message: string, title: string) => void>();
     await createClackGatePrompter(deps({ note })).prompt(

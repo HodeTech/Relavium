@@ -65,12 +65,20 @@ function cardBody(event: HumanGatePausedEvent): string {
   const message = stripTerminalControls(event.message);
   const lines = [message.trim() === '' ? '(no message)' : message];
   if (event.expiresAt !== undefined) {
-    lines.push(
-      '',
-      `Expires at ${sanitizeInline(event.expiresAt)} — auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`,
-    );
+    lines.push('', `Expires at ${sanitizeInline(event.expiresAt)} — ${onTimeout(event)}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * What the deadline does. An input gate cannot be approved, so a deadline that would approve one fails the run
+ * instead: admission refuses that pairing now, but a run parked before the rule still carries it.
+ */
+function onTimeout(event: HumanGatePausedEvent): string {
+  if (event.gateType === 'input' && event.timeoutAction === 'approve') {
+    return 'the run fails on timeout';
+  }
+  return `auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`;
 }
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
