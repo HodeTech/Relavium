@@ -725,7 +725,8 @@ export const WorkflowSchema = WorkflowDocumentFields.superRefine(validateWorkflo
 
 /**
  * Frozen workflow reader: preserve prior structural and whole-document invariants without
- * applying new author-only fallback, branch-match or orphan gate-action refusals to old runs.
+ * applying new author-only fallback, branch-match, orphan gate-action or input-gate approve-on-timeout
+ * refusals to old runs.
  * Never use this historical contract to admit a newly authored document.
  */
 export const WorkflowSnapshotSchema = WorkflowDocumentFields.extend({
