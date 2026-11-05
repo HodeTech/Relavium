@@ -1,12 +1,20 @@
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
-import { serializeWorkflow, sessionToWorkflow, type WorkflowDefinition } from '@relavium/core';
+import {
+  MAX_SOURCE_CHARS,
+  readSessionExportMarker,
+  serializeWorkflow,
+  sessionToWorkflow,
+  type WorkflowDefinition,
+} from '@relavium/core';
 import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 import {
   mkdirForStorage,
+  replaceFileForStorage,
   writeFileForStorage,
   storageBoundaryError,
 } from '../process/owned-storage.js';
@@ -87,12 +95,21 @@ export interface ExportToProjectOptions {
   readonly cwd: string;
   /** The discovered `.relavium/` directory; absent ⇒ `<cwd>/.relavium`, created by the write. */
   readonly projectConfigDir: string | undefined;
-  /**
-   * This session's own earlier export from the same REPL. When it names this session, the export rewrites that
-   * file in place and keeps its id, so a second `/export` updates the scaffold rather than adding `-2`.
-   */
-  readonly previous?: ExportResult;
 }
+
+/**
+ * The names Windows reserves for devices, with or without an extension. A file named `aux.relavium.yaml` cannot be
+ * added to git on Windows and may open the device instead, so the export treats these ids as taken everywhere —
+ * the repository is shared across platforms.
+ */
+const WINDOWS_DEVICE_NAMES: ReadonlySet<string> = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 9 }, (_, i) => `com${String(i + 1)}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${String(i + 1)}`),
+]);
 
 /** How many `-N` ids are tried before the export refuses rather than search on. */
 const MAX_EXPORT_ID_ATTEMPTS = 100;
@@ -111,32 +128,48 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * It never overwrites another workflow. The id is the first of `<slug>`, `<slug>-2`, … that no catalog entry or
  * file stem already holds ({@link takenWorkflowIds}), and the file is created with `wx`, so a file that appears
  * in between is skipped too. The chosen id is written INTO the file as `workflow.id`, keeping the file name and
- * the id one thing. The one overwrite is `previous`: this session's own export from this REPL.
+ * the id one thing.
+ *
+ * The one overwrite is this session's OWN earlier export, recognized from the file itself rather than from
+ * memory: a candidate file whose `metadata.relaviumExport` names this session ({@link isOwnExport}). So a second
+ * `/export` updates the scaffold in place across a `/models` reseat, a `chat-resume` or a Home reopen, and a file
+ * that merely sits at an old export's path — the scaffold renamed away and another workflow put there — is never
+ * mistaken for it. The rewrite is atomic.
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
   const loaded = loadSession(opts.store, opts.sessionId);
   const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
-  const previous = opts.previous?.record.id === opts.sessionId ? opts.previous : undefined;
-  if (previous !== undefined) {
-    const definition = withWorkflowId(scaffold, previous.workflowId);
-    const label = sourceLabel(opts.cwd, previous.path);
-    writeScaffold(previous.path, serializeWorkflow(definition), true, label);
-    return exportResult(previous.path, definition, loaded);
-  }
   const root = opts.projectConfigDir ?? join(opts.cwd, '.relavium');
   const dir = join(root, 'workflows');
+  const base = scaffold.workflow.id;
+  const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>
+    index === 0 ? base : `${base}-${String(index + 1)}`,
+  );
+  // The id becomes a file name: refuse anything that is not a kebab id, whatever the scaffold produced.
+  if (!WORKFLOW_ID_GRAMMAR.test(base)) {
+    throw new CliError('cli_internal', 'the export produced an unusable workflow id');
+  }
+  // The catalog scan comes first: it also refuses a workflows directory that resolves outside the project, which
+  // the own-export rewrite below must not write into either.
   const taken =
     opts.projectConfigDir === undefined
       ? new Set<string>()
       : takenWorkflowIds(opts.projectConfigDir, opts.cwd);
-  const base = scaffold.workflow.id;
-  for (let attempt = 1; attempt <= MAX_EXPORT_ID_ATTEMPTS; attempt += 1) {
-    const id = attempt === 1 ? base : `${base}-${String(attempt)}`;
-    if (taken.has(id)) continue;
-    // The id becomes a file name: refuse anything that is not a kebab id, whatever the scaffold produced.
-    if (!WORKFLOW_ID_GRAMMAR.test(id)) {
-      throw new CliError('cli_internal', 'the export produced an unusable workflow id');
+  const own = candidates.find((id) =>
+    isOwnExport(join(dir, `${id}.relavium.yaml`), opts.sessionId),
+  );
+  if (own !== undefined) {
+    const path = join(dir, `${own}.relavium.yaml`);
+    const definition = withWorkflowId(scaffold, own);
+    try {
+      replaceFileForStorage(path, serializeWorkflow(definition));
+    } catch (err) {
+      throw storageBoundaryError(err);
     }
+    return exportResult(path, definition, loaded);
+  }
+  for (const id of candidates) {
+    if (taken.has(id) || WINDOWS_DEVICE_NAMES.has(id)) continue;
     const path = join(dir, `${id}.relavium.yaml`);
     const definition = withWorkflowId(scaffold, id);
     const label = sourceLabel(opts.cwd, path);
@@ -148,6 +181,36 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     'invalid_invocation',
     `no free workflow id near '${base}' in the project's workflows/ — export with \`relavium chat-export <sessionId> --out <path>\``,
   );
+}
+
+/**
+ * Whether `path` holds this session's own earlier export: a regular file — never a link, so a link planted at an
+ * export's name is not followed or replaced as if it were ours — within the parser's size bound, whose
+ * `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between checks, oversized,
+ * undecodable) is `false`, which only ever means "do not overwrite".
+ */
+function isOwnExport(path: string, sessionId: string): boolean {
+  let fd: number | undefined;
+  try {
+    const linked = lstatSync(path, { bigint: true });
+    if (!linked.isFile() || linked.size > BigInt(MAX_SOURCE_CHARS * 4)) return false;
+    // `O_NOFOLLOW` is absent on Windows; the identity check below is its swap guard there.
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino) return false;
+    if (opened.size > BigInt(MAX_SOURCE_CHARS * 4)) return false;
+    return readSessionExportMarker(readFileSync(fd, 'utf8')) === sessionId;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // a close fault changes nothing about the answer
+      }
+    }
+  }
 }
 
 function loadSession(

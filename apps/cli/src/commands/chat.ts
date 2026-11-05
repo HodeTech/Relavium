@@ -29,11 +29,7 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import {
-  exportSessionToProject,
-  SESSION_EXPORT_REVIEW_NOTICE,
-  type ExportResult,
-} from '../chat/export.js';
+import { exportSessionToProject, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
 import { sourceLabel } from '../process/source-label.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
@@ -1398,7 +1394,6 @@ export function createChatLineHandler(
   let stop = false;
   let cancelled = false;
   // This session's last `/export` (MVP-A3): a second `/export` rewrites that file in place instead of adding `-2`.
-  let lastExport: ExportResult | undefined;
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
   // it so the surface (the standalone re-drive loop, or the Home) rebuilds a fresh session instead of exiting.
   let clearRequested = false;
@@ -1482,9 +1477,7 @@ export function createChatLineHandler(
           sessionId: built.sessionId,
           cwd: deps.global.cwd,
           projectConfigDir,
-          ...(lastExport === undefined ? {} : { previous: lastExport }),
         });
-        lastExport = result;
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;
         if (deps.global.json) {
@@ -1494,9 +1487,11 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          // The cwd-relative path and the command that runs it — the export offers the next step.
-          deps.io.writeErr(
-            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\`\n`,
+          // The cwd-relative path and the command that runs it — the export offers the next step. Through the
+          // notice channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
+          // the next frame and discarded with the alternate buffer.
+          emitOutput(
+            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\``,
           );
         }
       } catch (err) {
@@ -1508,7 +1503,7 @@ export function createChatLineHandler(
               ? err.message
               : String(err)
             : toUserFacing(err).message;
-        deps.io.writeErr(`export failed: ${message}\n`);
+        emitOutput(`export failed: ${message}`);
       }
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.

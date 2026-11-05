@@ -1219,15 +1219,27 @@ describe('chatCommand', () => {
             expect(frames).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
             const warning = notices.filter((text) => text.startsWith('note: exported workflow'));
             expect(warning, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toHaveLength(refuse ? 0 : 1);
+            // MVP-A3: the path, the run hint and a refusal ride the transcript too — a raw stderr line is
+            // overdrawn by the next full-screen frame and discarded with the alternate buffer.
             if (refuse) {
               expect(frames).not.toContain('exported workflow is a scaffold');
-              expect(err()).toContain('export failed:');
+              expect(notices.some((text) => text.startsWith('export failed:'))).toBe(true);
+              expect(frames).toContain('export failed:');
+              expect(err()).not.toContain('export failed:');
             } else {
               expect(frames, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toContain(
                 'exported workflow is a scaffold',
               );
               expect(warning[0]).not.toContain('PRIVATE_');
               expect(existsSync(exportedAt(cwd, 'private-user-sentinel'))).toBe(true);
+              // The notice wraps at the frame width, so the frame shows its start and the store holds it whole.
+              expect(frames).toContain('exported session to');
+              expect(
+                notices.some((text) =>
+                  text.includes('run it with `relavium run private-user-sentinel`'),
+                ),
+              ).toBe(true);
+              expect(err()).not.toContain('exported session to');
             }
             expect(err()).not.toContain('note: exported workflow');
             await ctx.processLine('/exit');

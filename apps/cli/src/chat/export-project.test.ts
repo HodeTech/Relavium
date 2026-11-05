@@ -1,4 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +20,7 @@ import {
   type DbClient,
   type SessionStore,
 } from '@relavium/db';
+import { readSessionExportMarker } from '@relavium/core';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -126,29 +138,114 @@ describe('exportSessionToProject (MVP-A3)', () => {
     ).toBe('my-session-4');
   });
 
-  it('rewrites this session’s own earlier export in place, and only this session’s', () => {
+  it('rewrites this session’s own earlier export in place — recognized from the file, not from memory', () => {
     const first = exportS1();
-    writeFileSync(first.path, 'edited by hand');
-    const again = exportSessionToProject({
-      store,
-      sessionId: 's1',
-      cwd,
-      projectConfigDir: join(cwd, '.relavium'),
-      previous: first,
-    });
+    // A new REPL (a `/models` reseat, a `chat-resume`) holds no record of the first export; the file names s1.
+    const again = exportS1();
     expect(again.path).toBe(first.path);
-    expect(idIn(again.path)?.[1]).toBe('my-session');
-    // Another session handed s1's result does not get to overwrite it.
+    expect(again.workflowId).toBe('my-session');
+    expect(readdirSync(workflows()).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    // Another session's export is not s1's: s2 takes the next id and s1's file is untouched.
     const other = exportSessionToProject({
       store,
       sessionId: 's2',
       cwd,
       projectConfigDir: join(cwd, '.relavium'),
-      previous: first,
     });
     expect(other.workflowId).toBe('my-session-2');
-    expect(idIn(first.path)?.[1]).toBe('my-session');
+    expect(readSessionExportMarker(readFileSync(first.path, 'utf8'))).toBe('s1');
   });
+
+  it('skips a file the catalog scan did not see, because the write refuses an existing target', () => {
+    // With no project config there is no catalog to consult; the `wx` create is what keeps the file.
+    mkdirSync(workflows(), { recursive: true });
+    writeFileSync(file('my-session'), workflowYaml('someone-else'));
+    const result = exportSessionToProject({
+      store,
+      sessionId: 's1',
+      cwd,
+      projectConfigDir: undefined,
+    });
+    expect(result.workflowId).toBe('my-session-2');
+    expect(readFileSync(file('my-session'), 'utf8')).toBe(workflowYaml('someone-else'));
+  });
+
+  it('treats an agent id, a differently-cased file name and a Windows device name as taken', () => {
+    mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'agents', 'my-session.agent.yaml'),
+      'id: my-session\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: x\n',
+    );
+    mkdirSync(workflows(), { recursive: true });
+    writeFileSync(join(workflows(), 'My-Session-2.yaml'), workflowYaml('deploy-prod'));
+    expect(exportS1().workflowId).toBe('my-session-3');
+
+    store.createSession({ ...record('s3'), title: 'aux' });
+    store.appendMessage(message('s3', 0, 'user'));
+    expect(
+      exportSessionToProject({
+        store,
+        sessionId: 's3',
+        cwd,
+        projectConfigDir: join(cwd, '.relavium'),
+      }).workflowId,
+    ).toBe('aux-2');
+  });
+
+  it('never overwrites a workflow that now sits where its earlier export was', () => {
+    const first = exportS1();
+    // The scaffold is renamed away and a hand-authored workflow takes the freed name.
+    rmSync(first.path);
+    writeFileSync(first.path, workflowYaml('my-session'));
+    const again = exportS1();
+    expect(again.workflowId).toBe('my-session-2');
+    expect(readFileSync(first.path, 'utf8')).toBe(workflowYaml('my-session'));
+  });
+
+  it('finds its own export at whatever id the search gave it, even once a lower id is free again', () => {
+    mkdirSync(workflows(), { recursive: true });
+    writeFileSync(file('my-session'), workflowYaml('my-session'));
+    expect(exportS1().workflowId).toBe('my-session-2');
+    rmSync(file('my-session'));
+    expect(exportS1().workflowId).toBe('my-session-2');
+    expect(existsSync(file('my-session'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a workflows directory that resolves outside the project, even for its own export',
+    () => {
+      const first = exportS1();
+      const outside = join(cwd, 'outside-workflows');
+      renameSync(workflows(), outside);
+      symlinkSync(outside, workflows());
+      const before = readFileSync(join(outside, 'my-session.relavium.yaml'), 'utf8');
+      store.appendMessage(message('s1', 2, 'user')); // a rewrite would now change the file
+      let caught: unknown;
+      try {
+        exportS1();
+      } catch (error) {
+        caught = error;
+      }
+      if (!isCliError(caught)) throw new Error('expected a CliError');
+      expect(caught.code).toBe('invalid_invocation');
+      expect(readFileSync(join(outside, 'my-session.relavium.yaml'), 'utf8')).toBe(before);
+      expect(first.workflowId).toBe('my-session');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'never follows or replaces a link planted at its export’s name',
+    () => {
+      const first = exportS1();
+      const outside = join(cwd, 'outside.relavium.yaml');
+      renameSync(first.path, outside);
+      symlinkSync(outside, first.path);
+      const again = exportS1();
+      expect(again.workflowId).toBe('my-session-2');
+      expect(lstatSync(first.path).isSymbolicLink()).toBe(true);
+      expect(readSessionExportMarker(readFileSync(outside, 'utf8'))).toBe('s1');
+    },
+  );
 
   it('a parent that is not a directory is one invocation refusal, not a walk through every id', () => {
     const refusal = (): string => {

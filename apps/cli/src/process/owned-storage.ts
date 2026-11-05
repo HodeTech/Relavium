@@ -1,5 +1,16 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import { CliError, toCliError } from './errors.js';
 
@@ -31,6 +42,39 @@ export function writeFileForStorage(path: string, content: string, force: boolea
   try {
     writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
   } catch (error) {
+    throwOwnedFilesystemFailure(error);
+  }
+}
+
+/**
+ * Replace the file at `path` with `content` atomically: write a fresh temp beside it (`wx`, so it never follows a
+ * link or reuses a file), `fsync` it, then rename it over `path`. A crash leaves either the old file or the new one,
+ * never a truncated mix, and the rename replaces the directory entry rather than writing through a link at `path`.
+ * The temp is removed when anything fails.
+ */
+export function replaceFileForStorage(path: string, content: string): void {
+  const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, 'wx');
+    writeFileSync(fd, content, 'utf8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+  } catch (error) {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // already failing — a secondary close error adds nothing
+      }
+    }
+    try {
+      unlinkSync(temp);
+    } catch {
+      // best-effort: the temp may never have been created
+    }
     throwOwnedFilesystemFailure(error);
   }
 }
