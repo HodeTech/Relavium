@@ -105,10 +105,9 @@ describe('statusCommand', () => {
 
   it('NAMES a run whose terminal is held in the outbox — the exit-5 state (ADR-0078 §4/§5)', async () => {
     // A run in this state is still `running` in the derived projection, so it listed here as an ordinary
-    // active run with nothing saying its outcome was already known. Exit 5 tells a script to "re-check
-    // `relavium status <runId>` after a subsequent invocation" — and only `run` and `gate` drain the outbox,
-    // because only they construct a `WorkflowEngine`. A user who does the natural thing and asks for status
-    // again saw the same stale truth forever. This is what makes the documented remedy discoverable.
+    // active run with nothing saying its outcome was already known. Exit 5 tells a script to read
+    // `relavium status <runId>` — and status itself never drains the outbox. A user who does the natural thing
+    // and asks for status again saw the same stale truth. This is what makes the documented remedy discoverable.
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
     await statusCommand({
@@ -130,6 +129,37 @@ describe('statusCommand', () => {
     expect(out()).toContain('this run has FINISHED');
     expect(out()).toContain('relavium run');
   });
+
+  it.each([false, true])(
+    'does not call a run already recorded failed "held" — the reconcile race leaves a stale entry (json=%s)',
+    async (json) => {
+      // Exit 5's race: the reconciler's run:failed is durable and the run's own refused terminal is in the
+      // outbox too. The next drain DROPS that entry; "finished, not durable yet" would send a script waiting.
+      const { io, out } = captureIo();
+      await seedRun(db, { slug: 'raced', runId: 'raced-1', state: 'failed' });
+      await statusCommand(
+        {
+          ...deps(io, json),
+          readTerminalOutbox: () =>
+            Promise.resolve([
+              {
+                type: 'run:completed',
+                runId: 'raced-1',
+                sequenceNumber: 9,
+                timestamp: '2026-01-01T00:00:00.000Z',
+                outputs: {},
+                totalTokensUsed: { input: 1, output: 1 },
+                totalCostMicrocents: 1,
+                durationMs: 1,
+              },
+            ]),
+        },
+        { runId: 'raced-1' },
+      );
+      if (json) expect(out()).toContain('"terminalHeld":false');
+      else expect(out()).not.toContain('FINISHED');
+    },
+  );
 
   it.each([false, true])(
     'warns without failing or leaking an unreadable outbox (json=%s)',

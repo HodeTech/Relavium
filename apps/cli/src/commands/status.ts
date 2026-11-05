@@ -1,6 +1,6 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
-import type { RunEvent } from '@relavium/shared';
+import type { RunEvent, RunStatus } from '@relavium/shared';
 
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
@@ -66,6 +66,13 @@ async function heldTerminalRunIds(
   }
 }
 
+/** A run in one of these already has its durable terminal; an outbox entry for it is stale, not held. */
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
 const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]> =>
   createFileTerminalOutbox(terminalOutboxPath(homeDir)).list();
 
@@ -106,11 +113,15 @@ export async function statusCommand(
   // Runs whose TERMINAL is held in the outbox (ADR-0078 §4/§5) — read, never drained.
   //
   // A run in that state is still `running` in the derived projection, so it appears here as an ordinary
-  // active run with nothing saying its outcome is already known. Exit code 5 tells a script to "re-check
-  // `relavium status <runId>` after a subsequent invocation", and a review found that instruction can never
-  // resolve on its own: only `run` and `gate` drain the outbox, because only they construct a
-  // `WorkflowEngine`. A user who does the natural thing — ask for status again — sees the same stale truth
-  // forever. Naming the state here is what makes the documented remedy actionable.
+  // active run with nothing saying its outcome is already known. Exit code 5 tells a script to read
+  // `relavium status <runId>`, and a review found that instruction could never resolve on its own: status
+  // itself never drains (only a later `run`, `gate`, `budget resume` or Home open does). A user who does the
+  // natural thing — ask for status again — would see the same stale truth. Naming the state here is what makes
+  // the documented remedy actionable.
+  //
+  // Only for a run that is still non-terminal. In the reconcile race (commands.md, exit 5) the reconciler's
+  // `run:failed` is durable and the run's own refused terminal is ALSO held; that entry is stale, and the next
+  // drain drops it rather than landing it. Calling such a run "finished, not durable yet" would be false.
   //
   // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
   // ownership of a run another process may be finishing right now.
@@ -139,7 +150,7 @@ export async function statusCommand(
         run,
         usage: usage.value,
         usageUnavailable: usage.degraded,
-        terminalHeld: held.has(run.id),
+        terminalHeld: held.has(run.id) && !TERMINAL_STATUSES.has(run.status),
         steps,
         // Native authority and companion crash prefixes can leave either active status with pending gates.
         // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
