@@ -147,8 +147,9 @@ describe('the per-attempt deadline is wired on every chain-building surface (ADR
       file: 'chat/session-host.ts',
       what: 'every session surface — `chat`, `chat-resume`, `agent run`, the Home',
       // `SessionDeps.newAbortController` is REQUIRED, so tsc catches its absence here; the timer is the
-      // half that can go missing silently.
-      needles: [/setTimer:\s*hostDeadlineTimer/],
+      // half that can go missing silently. A test may inject its own timer (`deadlineTimer`, the MVP-A7 seam
+      // that observes the chat's scaled deadline); production must still fall back to the host timer.
+      needles: [/setTimer:\s*(?:opts\.deadlineTimer\s*\?\?\s*)?hostDeadlineTimer\b/],
     },
     {
       file: 'history/reconcile.ts',
