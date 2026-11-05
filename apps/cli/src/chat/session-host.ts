@@ -58,7 +58,12 @@ import {
   type ConnectAgentMcpOptions,
   type StdioConsentGate,
 } from '../engine/mcp-servers.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import {
+  createProviderResolver,
+  missingKeyMessage,
+  providerHasKey,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import {
@@ -816,12 +821,17 @@ function buildSessionRuntime(
  * word the user typed instead of the path it resolved to answers a different question than the one asked. A
  * rebind has no file — the agent is already in memory — so it reports none rather than a stale one.
  */
-function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
+function bindChatAgent(
+  opts: BuildChatSessionOptions,
+  providers: ProviderResolver,
+): ResolvedChatAgent {
   if (opts.agent !== undefined) return { agent: opts.agent, artifact: undefined };
   return resolveChatAgentSource(opts.agentRef, {
     cwd: opts.cwd,
     projectConfigDir: opts.projectConfigDir,
     defaultModel: opts.chat.defaultModel,
+    // MVP-A4: with no configured default, the default agent's model comes from a provider that has a key.
+    hasKey: (id) => providerHasKey(providers, id),
     // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
     // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
     ...(opts.chat.defaultProvider === undefined
@@ -833,6 +843,20 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
       ? {}
       : { reasoningEffort: opts.chat.reasoningEffort }),
   });
+}
+
+/**
+ * Refuse a session whose model provider has no key, before anything is spawned or sent (MVP-A4).
+ *
+ * Without this the first turn fails inside the chain, which replaces the resolver's message with a fixed
+ * "credential resolution failed" — deliberately, since a host error could carry a secret — so the user saw an
+ * opaque failure instead of the remedy. This asks the boolean `hasKey`, never for the key, and throws the same
+ * actionable message `keyFor` would. Only the PRIMARY provider is checked: an `auth` failure is fatal to the whole
+ * chain, so a keyless primary can never work, while a keyless fallback entry fails only if it is reached.
+ */
+function assertProviderKey(agent: AgentDefinition, providers: ProviderResolver): void {
+  if (providerHasKey(providers, agent.provider)) return;
+  throw new CliError('invalid_invocation', missingKeyMessage(agent.provider));
 }
 
 /**
@@ -934,7 +958,10 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   opts.workOwner?.assertAdmitting();
   assertSessionFsPolicy(opts.fsPolicy, opts.cwd, opts.chat);
   const sessionId = opts.uuid();
-  const { agent, artifact } = bindChatAgent(opts);
+  // One resolver for the default-model choice, the key pre-flight and the session runtime.
+  const providers = opts.providers ?? createProviderResolver();
+  const { agent, artifact } = bindChatAgent(opts, providers);
+  assertProviderKey(agent, providers);
   const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.fsPolicy === undefined ? opts.cwd : fsPolicyWorkspace(opts.fsPolicy),
@@ -969,7 +996,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime(opts, sessionId, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -1209,6 +1236,8 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
+  const providers = opts.providers ?? createProviderResolver();
+  assertProviderKey(agent, providers);
   // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
   // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
@@ -1246,7 +1275,7 @@ export async function buildResumedChatSession(
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime(opts, record.id, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.

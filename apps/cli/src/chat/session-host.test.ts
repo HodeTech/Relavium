@@ -41,6 +41,7 @@ import type { ProviderResolver } from '../engine/providers.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
+import { isCliError } from '../process/errors.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession as buildFreshSession,
@@ -2249,5 +2250,70 @@ describe('the interactive output default (MVP-A7, ADR-0101 amendment of 2026-11-
       expect(requests[0]?.maxTokens).toBe(expected);
       expect(built.agent.max_tokens).toBeUndefined();
     }
+  });
+});
+
+describe('the default model follows the stored key (MVP-A4)', () => {
+  const keyedOnly = (keyed: readonly string[]): ProviderResolver => ({
+    ...scriptedResolver([textTurn('hi')]),
+    hasKey: (id) => keyed.includes(id),
+  });
+  /** The refusal's message, after proving it is the typed exit-2 error. */
+  const refusalOf = async (pending: Promise<unknown>): Promise<string> => {
+    const caught = await pending.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    if (!isCliError(caught)) throw new Error('expected a CliError refusal');
+    expect(caught.code).toBe('invalid_invocation');
+    return caught.message;
+  };
+
+  it('binds a keyed provider’s model when nothing is configured', async () => {
+    const built = await build({ providers: keyedOnly(['openai']) });
+    expect(built.agent).toMatchObject({ provider: 'openai', model: 'gpt-5.4-mini' });
+    built.session.cancel();
+    await built.whenHostSafeToClose();
+  });
+
+  it('refuses a session whose provider has no key, with the remedy instead of a credential failure', async () => {
+    expect(await refusalOf(build({ providers: keyedOnly([]) }))).toContain(
+      '`relavium provider set-key anthropic`',
+    );
+    // A configured model is checked the same way: configuring it does not skip the pre-flight.
+    expect(
+      await refusalOf(
+        build({
+          providers: keyedOnly(['anthropic']),
+          chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', defaultProvider: 'openai' },
+        }),
+      ),
+    ).toContain('set-key openai');
+  });
+
+  it('refuses a RESUMED session whose provider has lost its key', async () => {
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const agent = buildDefaultChatAgent('claude-sonnet-4-6');
+    const resumed = buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-k',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate: () => Promise.resolve(new Map()),
+    });
+    expect(await refusalOf(resumed)).toContain('set-key anthropic');
   });
 });

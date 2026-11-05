@@ -1,6 +1,7 @@
 import { parseAgent, type AgentDefinition } from '@relavium/core';
 import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 
+import { KNOWN_PROVIDER_IDS, KNOWN_PROVIDERS } from '../engine/providers.js';
 import { sourceLabel } from '../process/source-label.js';
 import { resolveYamlSource } from '../workflows/resolve.js';
 import { buildDefaultChatAgent, DEFAULT_CHAT_MODEL } from './default-agent.js';
@@ -16,6 +17,39 @@ export interface ResolveChatAgentOptions {
   /** The resolved `[chat].reasoning_effort` (ADR-0066) — baked onto the DEFAULT agent only (an authored `--agent`
    *  owns its own `reasoning_effort`, never overridden by config). Absent ⇒ no reasoning control. */
   readonly reasoningEffort?: ReasoningEffort;
+  /**
+   * Whether a provider has a resolvable key — a boolean, never the key (MVP-A4). Consulted only for the DEFAULT
+   * agent when neither `defaultModel` nor `defaultProvider` is configured, so the zero-config chat binds a model a
+   * keyed provider serves. Absent ⇒ the built-in default, as before.
+   */
+  readonly hasKey?: (id: LlmProviderId) => boolean;
+}
+
+/**
+ * The default agent's model and provider (MVP-A4).
+ *
+ * A configured `defaultModel` wins, with its persisted provider (ADR-0059). Otherwise the provider is the
+ * configured `defaultProvider`, else the first provider in {@link KNOWN_PROVIDER_IDS} order that has a key, else
+ * Anthropic. Anthropic keeps the long-standing zero-config {@link DEFAULT_CHAT_MODEL}; any other provider gets the
+ * onboarding wizard's starter model (`KNOWN_PROVIDERS[id].testModel`), so a user with only an OpenAI key reaches a
+ * working chat instead of an Anthropic credential failure.
+ */
+export function defaultChatModel(opts: ResolveChatAgentOptions): {
+  readonly model: string;
+  readonly provider: LlmProviderId | undefined;
+} {
+  if (opts.defaultModel !== undefined) {
+    return { model: opts.defaultModel, provider: opts.defaultProvider };
+  }
+  const hasKey = opts.hasKey;
+  const provider =
+    opts.defaultProvider ??
+    (hasKey === undefined ? undefined : KNOWN_PROVIDER_IDS.find((id) => hasKey(id))) ??
+    'anthropic';
+  return {
+    model: provider === 'anthropic' ? DEFAULT_CHAT_MODEL : KNOWN_PROVIDERS[provider].testModel,
+    provider,
+  };
 }
 
 /**
@@ -56,12 +90,9 @@ export function resolveChatAgentSource(
   opts: ResolveChatAgentOptions,
 ): ResolvedChatAgent {
   if (agentRef === undefined) {
+    const { model, provider } = defaultChatModel(opts);
     return {
-      agent: buildDefaultChatAgent(
-        opts.defaultModel ?? DEFAULT_CHAT_MODEL,
-        opts.reasoningEffort,
-        opts.defaultProvider,
-      ),
+      agent: buildDefaultChatAgent(model, opts.reasoningEffort, provider),
       artifact: undefined,
     };
   }

@@ -281,7 +281,10 @@ async function runSession() {
     uuid: () => ownerId,
     disableMcp: true,
     resolvePrice: prices,
-    providers: { resolveProvider: () => provider, keyFor },
+    // The key EXISTS when the session is built — the MVP-A4 pre-flight asks `hasKey` and passes — and its
+    // resolution is refused at the turn (a key deleted or a keychain locked in between). That turn-time refusal
+    // is the case this cut exercises; a key absent at build is now refused before the session starts.
+    providers: { resolveProvider: () => provider, keyFor, hasKey: () => true },
     onListenerError: (note) => {
       if (!expectedRefusal) throw new Error(note);
     },
