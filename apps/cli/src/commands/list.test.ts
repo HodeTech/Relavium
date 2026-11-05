@@ -297,4 +297,39 @@ describe('listCommand', () => {
       rmSync(outside, { recursive: true, force: true });
     }
   });
+
+  it('prints a directory name with control characters on one line, on stdout and under --json on stderr', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'relavium-noproj-'));
+    const hostile = join(outside, 'x\u001b]0;PWNED\u0007\u001b[2J');
+    mkdirSync(hostile);
+    try {
+      const human = captureIo();
+      listCommand({ agents: false }, deps(human.io, { catalog: [], cwd: hostile }));
+      expect(human.out()).toContain('No .relavium/ project found from ');
+      expect(human.out()).not.toContain('\u001b');
+      expect(human.out()).not.toContain('\u0007');
+      const machine = captureIo();
+      listCommand({ agents: false }, deps(machine.io, { catalog: [], cwd: hostile, json: true }));
+      expect(machine.err()).toContain('no .relavium/ project found from ');
+      expect(machine.err()).not.toContain('\u001b');
+      expect(machine.err()).not.toContain('\u0007');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('--runs prints history identifiers with control characters on one line', async () => {
+    await seedRun(db, {
+      slug: 'wf\u001b[2J‮',
+      runId: 'r\u001b]0;PWNED\u0007',
+      state: 'completed',
+    });
+    const { io, out } = captureIo();
+    listCommand({ agents: false, runs: true }, deps(io, { catalog: [] }));
+    const text = out();
+    expect(text).toMatch(/^r.*completed {2}wf/u);
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('\u0007');
+    expect(text).not.toContain('‮');
+  });
 });

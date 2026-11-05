@@ -143,6 +143,11 @@ export type SeedRunOptions = {
   readonly skipped?: { readonly nodeId: string; readonly reason: NodeSkippedReason };
   /** A `completed` run's `run:completed.outputs` — for the surfaces that print them (MVP-A1). Default `{}`. */
   readonly outputs?: Readonly<Record<string, unknown>>;
+  /**
+   * For a `paused` run: then end it with `run:cancelled`, as Esc at an inline gate prompt does, leaving its gate
+   * unresolved and its gate node's step row open — a FINISHED run whose log still holds an open gate.
+   */
+  readonly cancelAfterPause?: boolean;
 } & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
@@ -200,6 +205,7 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   }
   if (opts.state === 'paused') {
     await emitPausedState(emit, opts, ts, tsMs);
+    if (opts.cancelAfterPause === true) await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
       outputs: opts.outputs ?? {},

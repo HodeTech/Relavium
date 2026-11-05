@@ -156,7 +156,10 @@ export async function statusCommand(
         // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
         // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
         // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
-        ...gatesOf(reader, run),
+        // A FINISHED run (`status <runId>`) has nothing pending, whatever its log left open: a run cancelled or
+        // failed while a gate waited never resolves that gate, and `gate` / `budget resume` refuse it, as
+        // `gate list` does.
+        ...(TERMINAL_STATUSES.has(run.status) ? NOTHING_PENDING : gatesOf(reader, run)),
       };
     });
 
@@ -186,6 +189,13 @@ function requireRun(reader: RunHistoryReader, runId: string): RunRecord {
   }
   return run;
 }
+
+/** What a finished run has pending: nothing (see the call site). */
+const NOTHING_PENDING = {
+  pendingGates: [],
+  pendingBudgetGates: [],
+  gatesUnavailable: false,
+} as const;
 
 /** Reconstruct once per active run: a companion crash may leave a running projection with pending gates. */
 function gatesOf(
@@ -253,16 +263,25 @@ function toJson(status: ActiveRunStatus): unknown {
 
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
 function renderRun(io: CliIo, status: ActiveRunStatus): void {
-  io.writeOut(`run ${status.run.id} — ${status.run.status} (workflow ${status.run.workflowId})\n`);
+  // Every identifier here is read back from history.db, so each is printed one-line with controls stripped, as
+  // the gate message below is (the run path writes only validated ids, but the file is the trust boundary).
+  const finished = TERMINAL_STATUSES.has(status.run.status);
+  io.writeOut(
+    `run ${sanitizeInline(status.run.id)} — ${status.run.status} (workflow ${sanitizeInline(status.run.workflowId)})\n`,
+  );
   if (status.usageUnavailable) {
     io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
   }
   if (status.steps.length === 0) {
-    io.writeOut('  (no node activity recorded yet)\n');
+    io.writeOut(finished ? '  (no node ran)\n' : '  (no node activity recorded yet)\n');
   }
   for (const step of status.steps) {
     const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
-    io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
+    // A run terminal does not close a step row the node never finished, so under a finished run it says so.
+    const shown = finished && step.status === 'running' ? 'stopped' : step.status;
+    io.writeOut(
+      `  ${shown.padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
+    );
   }
   if (status.terminalHeld) {
     // The run reads `running` because its terminal never became durable; without this line the exit-5
@@ -294,6 +313,8 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // model-controlled string in the product. The TUI leaf was hardened; this command leaf was not, so a
     // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class).
     const message = gate.message === '' ? '' : ` — "${sanitizeInline(gate.message)}"`;
-    io.writeOut(`  ⏸ pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}${message}\n`);
+    io.writeOut(
+      `  ⏸ pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
+    );
   }
 }

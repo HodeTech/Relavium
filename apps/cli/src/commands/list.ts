@@ -8,7 +8,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
-import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import { openHistoryReader } from '../history/reader.js';
 
@@ -57,11 +57,13 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
   }
 
   if (projectConfigDir === undefined) {
-    // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json.
+    // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json. A
+    // directory name can hold control characters (a cloned repository's), so the path is printed one-line.
+    const cwd = sanitizeInline(deps.global.cwd);
     if (json) {
-      deps.io.writeErr(`no .relavium/ project found from ${deps.global.cwd}\n`);
+      deps.io.writeErr(`no .relavium/ project found from ${cwd}\n`);
     } else {
-      deps.io.writeOut(`No .relavium/ project found from ${deps.global.cwd}.\n`);
+      deps.io.writeOut(`No .relavium/ project found from ${cwd}.\n`);
     }
     return EXIT_CODES.success;
   }
@@ -151,7 +153,8 @@ function listRuns(deps: ListCommandDeps, homeDir: string): void {
     for (const run of runs) {
       const workflow = sanitizeUntrustedInline(slugById.get(run.workflowId) ?? run.workflowId);
       const started = run.startedAt ?? run.createdAt;
-      deps.io.writeOut(`${run.id}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`);
+      // The run id is read back from history.db: one line, controls stripped, never masked (it is copied).
+      deps.io.writeOut(`${sanitizeInline(run.id)}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`);
     }
   } finally {
     if (deps.commandLifetime === undefined) close();

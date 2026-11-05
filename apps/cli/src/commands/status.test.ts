@@ -52,6 +52,34 @@ describe('statusCommand', () => {
     ).rejects.toMatchObject({ code: 'invalid_invocation' });
   });
 
+  it('shows nothing pending for a run that ended while a gate waited, and marks its open step stopped (MVP-1)', async () => {
+    // Esc at an inline gate prompt cancels the run without resolving the gate, so its log still holds the open
+    // human and budget gates and the gate node's open step row. `gate` and `budget resume` refuse a finished run.
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'cancelled-1',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+      budgetGateId: 'budget-1',
+      cancelAfterPause: true,
+    });
+    const noOutbox = { readTerminalOutbox: () => Promise.resolve([]) };
+    const human = captureIo();
+    await statusCommand({ ...deps(human.io), ...noOutbox }, { runId: 'cancelled-1' });
+    const text = human.out();
+    expect(text).toContain('run cancelled-1 — cancelled');
+    expect(text).toContain('stopped   g [human_in_the_loop]');
+    expect(text).not.toContain('pending');
+    expect(text).not.toContain('budget resume');
+    const machine = captureIo();
+    await statusCommand({ ...deps(machine.io, true), ...noOutbox }, { runId: 'cancelled-1' });
+    expect(parseNdjson(machine.out())[0]).toMatchObject({
+      status: 'cancelled',
+      pendingGates: [],
+      pendingBudgetGates: [],
+    });
+  });
+
   it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {
     await seedRun(db, { slug: 'healthy', runId: 'healthy', state: 'running' });
     await seedRun(db, { slug: 'future', runId: 'future', state: 'running' });
