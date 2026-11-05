@@ -1464,7 +1464,9 @@ export function createChatLineHandler(
     if (interactive) {
       store.notice(text);
     } else {
-      deps.io.writeErr(`${text}\n`);
+      // The floor the store's notice applies: a refusal can carry text this process did not author (a config
+      // error names the project file's keys), and the plain and `--json` drivers write straight to the terminal.
+      deps.io.writeErr(`${stripTerminalControls(text)}\n`);
     }
   };
 
