@@ -1474,8 +1474,9 @@ MVP pulled without an annotation); both were fixed on 2026-11-04.
 
 ## MVP-1 1b — recorded low findings (2026-11-05)
 
-D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`) and 3 (at `224b8f69`) of MVP-1's security increment found nine, two
-and two medium findings, all fixed before the next round, and the lows below that were not fixed with them.
+D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) of MVP-1's security
+increment found nine, two, two and one medium findings, all fixed before the next round, and the lows below that
+were not fixed with them.
 **Trigger for every entry:** the next change to the file it names.
 
 - [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
@@ -1559,6 +1560,35 @@ and two medium findings, all fixed before the next round, and the lows below tha
   `/export` searches only the title's slug, so it writes a second file and the empty first one stays in the catalog.
   **Re-check:** also search the fallback id for the session's own export (renaming it on rewrite), or refuse
   `/export` while there is nothing to export. *(low · apps/cli/src/chat/export.ts)*
+
+- [ ] **A 0.1.x run still executing when a newer start reconciles is settled as crashed.** *Low.* *(round 4,
+  liveness-1)* `relavium@0.1.1` takes no run lease, so a run it is still executing has no lease row, and the first
+  `run`, `gate`, `budget resume` or Home open of a version with 2.6.G reconcile claims it at once and writes
+  `run:failed{internal}`. The 0.1.1 process then hits the sequence it expected, aborts, and its own `run:failed`
+  lands behind the first, because 0.1.1's store has no terminal refusal. It needs an older executable still
+  running on the upgraded `~/.relavium`, which [database-schema.md](../reference/shared-core/database-schema.md)
+  calls unsupported ("active downgrade execution"). **Re-check before the v0.2.0 release:** either tell users in the
+  release notes to finish or cancel 0.1.x runs first, or treat a run with no lease row whose last event is younger
+  than the lease TTL as live, as an ADR-0079 amendment. *(low · packages/core/src/engine/engine.ts)*
+- [ ] **A project config key with a line break can fake a line under an `/export` refusal.** *Low.* *(round 4,
+  export-1)* A config error names the keys it refused, and a REPL command's output keeps its line breaks (only
+  terminal controls are stripped), so a quoted `project.toml` key holding a newline and a made-up `exported session
+  to …` line prints that line under `export failed:`. It needs a hostile config swapped in after the chat started.
+  `doctor` and the top-level error renderer already print such a message on one line. **Re-check:** print the
+  refusal through `sanitizeInline`, or name a config error by its code only, and check the other REPL commands
+  that show config text. *(low · apps/cli/src/commands/chat.ts)*
+- [ ] **Two kinds of output name the name probe does not read as an API-key header.** *Low.* *(round 4,
+  outputs-2)* The probe reads a name as serialized JSON, where a tab or line break inside the key becomes `\t` or
+  `\n`: the escape's letter hides the header name's boundary, so an opaque value under `"\nx-api-key"` or
+  `"x-api-key\t"` is shown (it was before round 4 too). And a name the scrubber masks up to its end is not a label
+  by design, so an opaque value under `Bearer x-api-key` is shown, as it was before the member view. Both need a
+  key no real header block produces cleanly. **Re-check:** turn control characters in the key into spaces before
+  the probe, and pin both escapes. *(low · apps/cli/src/render/run-outputs.ts)*
+- [ ] **The VS Code gate event cannot tell an input gate from an approval gate.** *Low; reference only.* *(round 4,
+  gate-1)* `relavium.onHumanGatePending` carries `{ runId, nodeId, promptText, timeoutMs }`: no `gateType` to
+  choose between Approve and an input field, and no `gateId` to resume a run with more than one gate pending.
+  Nothing implements it yet. **Re-check:** add both when the VS Code surface is built. *(low ·
+  docs/reference/vscode/extension-api.md)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

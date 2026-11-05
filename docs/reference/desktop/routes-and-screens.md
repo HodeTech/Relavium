@@ -26,7 +26,7 @@ flowchart TD
   SET --> PROV["/settings/providers/:id  Provider keys"]
 ```
 
-A persistent app shell wraps every route: top bar (workspace switcher, global Run/Command-palette trigger), left nav (Dashboard / Chat / Workflows / Agents / Settings), and a root-level human-gate overlay that can surface over any screen when a run pauses for approval. **Chat and Canvas are co-equal top-level tabs** ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)); the neutral Dashboard remains the default landing screen — the app does **not** force-open to Chat.
+A persistent app shell wraps every route: top bar (workspace switcher, global Run/Command-palette trigger), left nav (Dashboard / Chat / Workflows / Agents / Settings), and a root-level human-gate overlay that can surface over any screen when a run pauses at a human gate. **Chat and Canvas are co-equal top-level tabs** ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)); the neutral Dashboard remains the default landing screen — the app does **not** force-open to Chat.
 
 ## Routes
 
