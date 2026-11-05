@@ -154,7 +154,9 @@ function listRuns(deps: ListCommandDeps, homeDir: string): void {
       const workflow = sanitizeUntrustedInline(slugById.get(run.workflowId) ?? run.workflowId);
       const started = run.startedAt ?? run.createdAt;
       // The run id is read back from history.db: one line, controls stripped, never masked (it is copied).
-      deps.io.writeOut(`${sanitizeInline(run.id)}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`);
+      deps.io.writeOut(
+        `${sanitizeInline(run.id)}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`,
+      );
     }
   } finally {
     if (deps.commandLifetime === undefined) close();

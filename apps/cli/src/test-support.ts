@@ -205,7 +205,8 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   }
   if (opts.state === 'paused') {
     await emitPausedState(emit, opts, ts, tsMs);
-    if (opts.cancelAfterPause === true) await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
+    if (opts.cancelAfterPause === true)
+      await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
       outputs: opts.outputs ?? {},
