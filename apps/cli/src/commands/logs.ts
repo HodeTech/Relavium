@@ -10,6 +10,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { formatRunOutputs } from '../render/run-outputs.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import { openHistoryReader } from '../history/reader.js';
 
 export interface LogsCommandArgs {
@@ -81,7 +82,9 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
       `run ${run.id} — ${run.status} (${events.length} event${events.length === 1 ? '' : 's'})\n`,
     );
     for (const event of events) {
-      deps.io.writeOut(`${formatLogLine(event)}\n`);
+      // One row per event: the line carries stored fields (a gate id, `decidedBy`, a node id), so it gets the
+      // one-line floor before it reaches the terminal, as the plain run renderer does.
+      deps.io.writeOut(`${sanitizeInline(formatLogLine(event))}\n`);
       // The workflow's outputs under the terminal row (MVP-A1), bounded and sanitized by the shared formatter.
       if (event.type === 'run:completed') {
         for (const line of formatRunOutputs(event.outputs, '    ', run.id)) {

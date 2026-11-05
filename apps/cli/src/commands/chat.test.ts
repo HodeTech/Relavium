@@ -1128,7 +1128,7 @@ describe('chatCommand', () => {
         ]);
       } else {
         expect(err()).toContain(
-          'exported session to .relavium/workflows/private-user-sentinel.relavium.yaml — run it with `relavium run private-user-sentinel`',
+          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
         );
       }
     },
@@ -1266,7 +1266,7 @@ describe('chatCommand', () => {
 
     expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
     expect(err()).toContain(
-      'exported session to .relavium/workflows/hello.relavium.yaml — run it with `relavium run hello`',
+      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')} — run it with \`relavium run hello\``,
     );
     expect(statusAfterExport).toBe('active'); // /export left the live row untouched (NOT 'exported')
     expect(store.loadFull(sessionId)?.messages).toHaveLength(4); // both turns persisted — REPL continued

@@ -142,6 +142,42 @@ describe('the outputs reach every human run surface (MVP-A1)', () => {
       client.sqlite.close();
     });
 
+    it('gives every replayed row the one-line floor — a stored field cannot forge a row or inject a control', async () => {
+      await seedRun(client.db, {
+        slug: 'demo',
+        runId: 'run-2',
+        state: 'paused',
+        gate: {
+          gateId: 'g1\u001b[2J\n[9] run:completed — completed',
+          gateType: 'approval',
+          message: 'ok?',
+        },
+      });
+      const human = captureIo();
+      logsCommand(
+        { runId: 'run-2' },
+        {
+          io: human.io,
+          global: {
+            json: false,
+            color: false,
+            cwd: '/',
+            configPath: undefined,
+            verbosity: 'normal',
+          },
+          openDb: () => ({ db: client.db, close: () => undefined }),
+        },
+      );
+      expect(human.out()).not.toContain('\u001b');
+      expect(human.out()).toContain('— gate g1 [9] run:completed — completed (approval)');
+      expect(
+        human
+          .out()
+          .split('\n')
+          .filter((line) => line.startsWith('[9] run:completed')),
+      ).toEqual([]);
+    });
+
     it('prints them under the run:completed row, and --json keeps the raw event', async () => {
       await seedRun(client.db, {
         slug: 'demo',
