@@ -178,11 +178,16 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     const persistedBefore = store.loadFull('id-0')?.messages.length;
     const { providers, requests } = keyedResolver(() => false);
 
-    const { code, notices } = await resumeInteractively(store, providers, ['hello again', '/exit']);
+    const { code, notices } = await resumeInteractively(store, providers, [
+      'hello again',
+      '/compact',
+      '/exit',
+    ]);
 
     expect(code).toBe(EXIT_CODES.chatEnded); // opened and ended normally — not refused with exit 2
     const missing = notices.filter((text) => text.includes("no API key for provider 'anthropic'"));
-    expect(missing).toHaveLength(2); // once on open, once for the refused message
+    expect(missing).toHaveLength(3); // on open, for the refused message, and for /compact's summary call
+    expect(notices.some((text) => /compaction failed/iu.test(text))).toBe(false);
     for (const text of missing) {
       expect(text).toContain('`relavium provider set-key anthropic`');
       expect(text).toContain('/models');

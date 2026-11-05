@@ -1216,8 +1216,8 @@ interface ReplWiring {
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
   /**
-   * Asked before a message is sent: a refusal text keeps the message from being sent, recorded or persisted, and
-   * is shown instead. Set only by an interactive resume whose provider has no key (MVP-A4); a reseat or `/clear`
+   * Asked before a message is sent and before `/compact` summarises: a refusal text keeps the message from being
+   * sent, recorded or persisted (and the summary from being asked for), and is shown instead. Set only by an interactive resume whose provider has no key (MVP-A4); a reseat or `/clear`
    * wiring never carries it, because those builds refuse a keyless provider outright.
    */
   readonly sendGuard?: () => string | undefined;
@@ -1430,7 +1430,6 @@ export function createChatLineHandler(
     store.setContextWindow?.(built.contextWindowTokens);
   let stop = false;
   let cancelled = false;
-  // This session's last `/export` (MVP-A3): a second `/export` rewrites that file in place instead of adding `-2`.
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
   // it so the surface (the standalone re-drive loop, or the Home) rebuilds a fresh session instead of exiting.
   let clearRequested = false;
@@ -1504,7 +1503,7 @@ export function createChatLineHandler(
       // standalone `chat-export` command marks it). A failure is reported, never crashing the REPL.
       try {
         // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
-        // re-export rewrites this session's own file (`previous`).
+        // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
         const { projectConfigDir } = loadResolvedConfig({
           cwd: deps.global.cwd,
           configPath: deps.global.configPath,
@@ -1723,6 +1722,13 @@ export function createChatLineHandler(
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
     compactHistory: async () => {
+      // A summary is a provider call too: while the session's provider has no key (MVP-A4), say so with the
+      // same remedy a refused message gets, not the fallback chain's opaque credential failure.
+      const keyRefusal = wiring.sendGuard?.();
+      if (keyRefusal !== undefined) {
+        emitOutput(keyRefusal);
+        return;
+      }
       const refusal = built.session.compactionRefusal;
       if (refusal !== undefined) {
         emitOutput(compactionNotice(refusal));
@@ -3077,13 +3083,14 @@ export async function runReplLoop(
                 // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
                 // error text; strip it exactly as the id + every other display string on this surface is stripped.
                 `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+                // One full stop: a message that already ends a sentence (the missing-key remedy does) keeps its own.
                 `${sanitizeInline(
                   deps.chatLifetime === undefined
                     ? err instanceof Error
                       ? err.message
                       : String(err)
                     : toUserFacing(err).message,
-                )}. ` +
+                ).replace(/\.$/u, '')}. ` +
                 `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
               return { summaryText, errorText };
             }

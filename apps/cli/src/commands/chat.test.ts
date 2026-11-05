@@ -1126,6 +1126,10 @@ describe('chatCommand', () => {
         expect(events.filter((event) => event.type === 'session:exported')).toEqual([
           expect.objectContaining({ workflowPath: exportedAt(cwd, 'private-user-sentinel') }),
         ]);
+        // The documented split: under --json the event carries the path, and no human path or run-hint line is
+        // printed on either stream.
+        expect(err()).not.toContain('exported session to');
+        expect(`${err()}${out()}`).not.toContain('run it with');
       } else {
         expect(err()).toContain(
           `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
@@ -1286,8 +1290,9 @@ describe('chatCommand', () => {
   });
 
   it('re-exports on a second /export (force overwrites the session OWN scaffold)', async () => {
-    // A 2nd /export rewrites this session's own file in place (MVP-A3's `previous`) — it must neither fail nor
-    // take the next id as if its own earlier export were another workflow.
+    // A 2nd /export rewrites this session's own file in place (MVP-A3, recognized from its
+    // `metadata.relaviumExport`) — it must neither fail nor take the next id as if its own earlier export were
+    // another workflow.
     const { d, err } = deps([], [textTurn('hi')]);
     const twiceDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
@@ -1706,7 +1711,8 @@ describe('chatCommand', () => {
     // The initial session builds fine; the /clear rebuild REJECTS (e.g. a transient key/MCP fault).
     const buildSession: typeof buildChatSession = (opts) => {
       if (builds++ === 0) return buildChatSession(opts);
-      return Promise.reject(new Error('no API key for the fresh session'));
+      // A message that already ends its sentence, as the key pre-flight's remedy does (MVP-A4).
+      return Promise.reject(new Error('no API key for the fresh session.'));
     };
     const driveClear: ChatDriver = (ctx) => {
       ctx.startSession();
@@ -1718,6 +1724,7 @@ describe('chatCommand', () => {
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after /clear'); // actionable, swap-kind-aware hint
     expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(err()).toContain('fresh session. Your previous conversation is saved'); // one full stop, not two
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
 
