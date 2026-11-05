@@ -1086,7 +1086,9 @@ class RunExecution {
       // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
       // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
       // our terminal takes the reconciler's sequence number: the store's terminal refusal stops it, with
-      // `UNIQUE(run_id, seq)` as the fallback behind that refusal. One terminal either way, never two.
+      // `UNIQUE(run_id, seq)` as the fallback behind that refusal. If our terminal commits before the
+      // reconciler's, the reconciler's guarded write is the one refused, and ours stands. One terminal either
+      // way, never two.
       if (!(await this.#acquireLease())) {
         // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
         // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
