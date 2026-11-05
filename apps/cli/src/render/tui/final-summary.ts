@@ -7,6 +7,7 @@ import {
 } from './format.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
+import { formatRunOutputs } from '../run-outputs.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 
 /**
@@ -91,6 +92,12 @@ export function renderFinalSummary(state: RunViewState): string {
         `    ${sanitizeInline(formatProducedMedia(media))} (${sanitizeInline(media.nodeId)})`,
       );
     }
+  }
+
+  // The workflow's outputs (MVP-A1) — bounded and sanitized by the shared formatter, last so they read as the
+  // run's result rather than as one more node row.
+  if (summary?.outcome === 'completed' && summary.outputs !== undefined) {
+    lines.push(...formatRunOutputs(summary.outputs, '  ', state.runId));
   }
 
   return `${lines.join('\n')}\n`;

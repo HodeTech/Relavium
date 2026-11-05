@@ -9,6 +9,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
+import { formatRunOutputs } from '../render/run-outputs.js';
 import { openHistoryReader } from '../history/reader.js';
 
 export interface LogsCommandArgs {
@@ -81,6 +82,12 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     );
     for (const event of events) {
       deps.io.writeOut(`${formatLogLine(event)}\n`);
+      // The workflow's outputs under the terminal row (MVP-A1), bounded and sanitized by the shared formatter.
+      if (event.type === 'run:completed') {
+        for (const line of formatRunOutputs(event.outputs, '    ', run.id)) {
+          deps.io.writeOut(`${line}\n`);
+        }
+      }
     }
     return EXIT_CODES.success;
   } finally {

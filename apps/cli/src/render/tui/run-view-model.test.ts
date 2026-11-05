@@ -312,6 +312,7 @@ describe('reduceRunEvent', () => {
       totalCostMicrocents: 3_000_000,
       totalTokens: { input: 20, output: 10 },
       durationMs: 1234,
+      outputs: {}, // carried for the final summary's outputs block (MVP-A1)
     });
   });
 

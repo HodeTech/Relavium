@@ -66,6 +66,8 @@ export interface RunSummary {
   readonly errorMessage?: string;
   /** Present on a paused run — the gate ids the run is parked on. */
   readonly pausedGateIds?: readonly string[];
+  /** Present on a completed run — the workflow's outputs, for the final summary (MVP-A1). Raw; render sanitizes. */
+  readonly outputs?: Readonly<Record<string, unknown>>;
 }
 
 export interface RunViewState {
@@ -584,6 +586,7 @@ function reduceTerminal(
           totalCostMicrocents: event.totalCostMicrocents,
           totalTokens: event.totalTokensUsed,
           durationMs: event.durationMs,
+          outputs: event.outputs,
         },
         cumulativeCostMicrocents: event.totalCostMicrocents,
       };

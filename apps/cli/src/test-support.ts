@@ -141,6 +141,8 @@ export type SeedRunOptions = {
   readonly budgetGateId?: string;
   /** Emit a `node:skipped` after the node lifecycle — for the surfaces that render a skip and its reason. */
   readonly skipped?: { readonly nodeId: string; readonly reason: NodeSkippedReason };
+  /** A `completed` run's `run:completed.outputs` — for the surfaces that print them (MVP-A1). Default `{}`. */
+  readonly outputs?: Readonly<Record<string, unknown>>;
 } & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
@@ -200,7 +202,7 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     await emitPausedState(emit, opts, ts, tsMs);
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
-      outputs: {},
+      outputs: opts.outputs ?? {},
       totalTokensUsed: { input: 1, output: 2 },
       totalCostMicrocents: 100,
       durationMs: 9,
