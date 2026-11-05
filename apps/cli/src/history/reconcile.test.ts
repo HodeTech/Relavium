@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -153,6 +153,35 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
     await reconcileInterruptedRuns(client.db, terminalOutboxPath(dir));
     expect(terminal(runId)?.type).toBe('run:completed');
     expect(await createFileTerminalOutbox(terminalOutboxPath(dir)).list()).toEqual([]);
+  });
+
+  it('repairs nothing while the outbox exists but cannot be read, then lands its held terminal', async () => {
+    const runId = await startedRun();
+    const path = terminalOutboxPath(dir);
+    await createFileTerminalOutbox(path).put(
+      RunEventSchema.parse({
+        type: 'run:completed',
+        runId,
+        timestamp: T0,
+        sequenceNumber: 3,
+        outputs: { answer: 42 },
+        totalTokensUsed: { input: 0, output: 0 },
+        totalCostMicrocents: 0,
+        durationMs: 0,
+      }),
+    );
+    // A directory where the file was is the portable unreadable outbox (chmod 000 is a no-op for root and on
+    // Windows). Read as empty, it let this pass write run:failed over a run that had completed.
+    const held = readFileSync(path, 'utf8');
+    rmSync(path);
+    mkdirSync(path);
+    await reconcileInterruptedRuns(client.db, path);
+    expect(terminal(runId)).toBeUndefined();
+
+    rmSync(path, { recursive: true, force: true });
+    writeFileSync(path, held);
+    await reconcileInterruptedRuns(client.db, path);
+    expect(terminal(runId)).toMatchObject({ type: 'run:completed', outputs: { answer: 42 } });
   });
 
   it('a reconcile inside a starting run’s lease window leaves exactly one durable terminal', async () => {
