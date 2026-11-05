@@ -121,6 +121,53 @@ describe('formatRunOutputs (MVP-A1)', () => {
     expect(formatRunOutputs({ v: { [KEY]: 1 } }, '').join('\n')).not.toContain(KEY);
   });
 
+  it('reads each field with its name, so a value named like an API-key header is masked wherever it sits', () => {
+    // Masked leaf by leaf, neither `x-api-key` nor the opaque value is a shape alone; the scrubber's header rule
+    // needs the name, the `:` and the value in one text, as a serialized object has them.
+    const OPAQUE = '9f8e7d6c5b4a39281706f5e4d3c2b1a0';
+    for (const name of ['x-api-key', 'X-Api-Key', 'api-key', 'x-goog-api-key']) {
+      for (const outputs of [
+        { v: { [name]: OPAQUE } },
+        { request: { url: 'https://svc.internal/v1', headers: { [name]: OPAQUE } } },
+        { v: [{ [name]: OPAQUE }] },
+        { v: { [name]: Number('1234567890123456') } },
+        { [name]: OPAQUE },
+        { [name]: Number('1234567890123456') },
+      ]) {
+        const text = formatRunOutputs(outputs, '', 'run-6').join('\n');
+        expect(text, `${name} in ${JSON.stringify(Object.keys(outputs))}`).not.toContain(
+          OPAQUE.slice(0, 12),
+        );
+        expect(text).not.toContain('1234567890');
+        expect(text).toContain('(outputs masked — the full record: `relavium logs run-6 --json`)');
+      }
+    }
+    // The boundary: a name decides only through a shape the scrubber knows. Another name masks nothing, and a
+    // value already masked leaf by leaf keeps its prose rather than being masked whole.
+    expect(formatRunOutputs({ v: { note: OPAQUE } }, '')).toEqual([
+      'outputs:',
+      `  v: {"note":"${OPAQUE}"}`,
+    ]);
+    expect(formatRunOutputs({ v: { note: `see ${KEY} now` } }, '')[1]).toBe(
+      '  v: {"note":"see [REDACTED] now"}',
+    );
+  });
+
+  it('keeps an own __proto__ member, as JSON.parse makes one, rather than dropping it unsaid', () => {
+    const parsed: unknown = JSON.parse('{"v":{"__proto__":{"x":"kept"},"y":1}}');
+    if (typeof parsed !== 'object' || parsed === null) throw new Error('fixture');
+    expect(formatRunOutputs(Object.fromEntries(Object.entries(parsed)), '')).toEqual([
+      'outputs:',
+      '  v: {"__proto__":{"x":"kept"},"y":1}',
+    ]);
+  });
+
+  it('trims a final newline run in linear time, whatever newline run sits inside the value', () => {
+    // `/\n+$/` retried from every newline of an interior run: 200,000 of them took about 13 s. A loop takes ms.
+    const lines = formatRunOutputs({ v: `${'\n'.repeat(200_000)}x` }, '');
+    expect(lines[1]).toBe('  v:');
+  }, 5_000);
+
   it('masks each field of a record on its own, so a URL in one and an @ in the next stay whole', () => {
     // Masked as one JSON text, the URL rule ran from `https://` across the field boundary to the next `@`,
     // swallowed the email field and showed a fake host.

@@ -12,8 +12,12 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
  * and only then are terminal controls stripped. A value that is not a string is masked **leaf by leaf, before it is
  * serialized**: `JSON.stringify` turns a newline into the two characters `\n`, and a key right after it would then
  * have no word boundary for the scrubber to see. Masking leaves also keeps one field's text from joining the next
- * field's into a false match. Keys are authored ids, so they get the one-line {@link sanitizeInline}. A secret
- * input the engine already masked (`{ secret: true, ref }`) is rendered as that masked object, never unwrapped.
+ * field's into a false match. A leaf alone cannot show a shape whose name is the member's KEY (`"x-api-key": "…"`),
+ * so each object member with a primitive value is also read as the one-member JSON text `{"<key>":<value>}`, the
+ * form the scrubber reads in a serialized object; when that text masks, the member's value is masked whole. One
+ * member never joins its neighbour. Top-level keys are authored ids, so they get the one-line {@link sanitizeInline}.
+ * A secret input the engine already masked (`{ secret: true, ref }`) is rendered as that masked object, never
+ * unwrapped.
  *
  * Outputs are the run's deliverable, not a diagnostic, so they do NOT get `sanitizeUntrusted`'s whole-text
  * fallback, which blanks a diagnostic outright when its fragments join into a shape once whitespace is removed: on
@@ -33,6 +37,9 @@ export const MAX_VALUE_LINES = 40;
 export const MAX_VALUE_CHARS = 4000;
 /** Code points shown across every output value of one run. */
 export const MAX_TOTAL_CHARS = 12_000;
+
+/** The text a member masked whole shows — the shared scrubber's own mask. */
+const MEMBER_MASK = '[REDACTED]';
 
 /**
  * The outputs block as lines, each already prefixed with `indent`. Empty when there are no outputs. `runId`
@@ -56,10 +63,10 @@ export function formatRunOutputs(
       truncated = true;
       continue;
     }
-    const value = displayValue(outputs[key]);
+    const value = displayValue(key, outputs[key]);
     masked ||= value.masked;
     // A final newline ends the value; it is not an empty last row, and it does not count toward the line bound.
-    const shown = clip(value.text.replace(/\n+$/u, ''), Math.min(MAX_VALUE_CHARS, budget));
+    const shown = clip(withoutFinalNewlines(value.text), Math.min(MAX_VALUE_CHARS, budget));
     budget -= shown.chars;
     truncated ||= shown.truncated;
     const rows = shown.text.split('\n');
@@ -80,6 +87,16 @@ export function formatRunOutputs(
   return lines;
 }
 
+/**
+ * `text` without its final run of newlines. A loop, not `/\n+$/`: that pattern retries from every newline of a long
+ * run that is NOT at the end, which is quadratic in the run's length.
+ */
+function withoutFinalNewlines(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0x0a) end -= 1;
+  return text.slice(0, end);
+}
+
 /** What the closing note says happened to the block. */
 function noteCause(truncated: boolean, masked: boolean): string {
   if (truncated && masked) return 'shortened and masked';
@@ -87,20 +104,27 @@ function noteCause(truncated: boolean, masked: boolean): string {
 }
 
 /**
- * One output value as display text: secret shapes masked on the original text, then terminal controls stripped. A
- * string is itself; anything else is compact JSON over a copy whose every string — keys included — was masked
- * first (see the module note). `masked` says whether the scrubber changed anything.
+ * Output `key`'s value as display text: secret shapes masked on the original text, then terminal controls stripped.
+ * A string is itself; anything else is compact JSON over a copy whose every string — keys included — was masked
+ * first (see the module note). A primitive value is also read with its output key, as a nested member is.
+ * `masked` says whether the scrubber changed anything.
  */
-function displayValue(value: unknown): { readonly text: string; readonly masked: boolean } {
+function displayValue(
+  key: string,
+  value: unknown,
+): { readonly text: string; readonly masked: boolean } {
   let masked = false;
   const scrub = (text: string): string => {
     const out = scrubSecrets(text);
     if (out !== text) masked = true;
     return out;
   };
-  if (typeof value === 'string') return { text: stripTerminalControls(scrub(value)), masked };
+  if (typeof value === 'string') {
+    const shown = maskedAsMember(key, scrub(value), scrub);
+    return { text: stripTerminalControls(typeof shown === 'string' ? shown : MEMBER_MASK), masked };
+  }
   try {
-    const json = JSON.stringify(scrubLeaves(value, scrub, new Set()));
+    const json = JSON.stringify(maskedAsMember(key, scrubLeaves(value, scrub, new Set()), scrub));
     return { text: stripTerminalControls(json ?? String(value)), masked };
   } catch {
     // A value JSON cannot represent (a cycle, a BigInt, nesting too deep) — said, not thrown: the summary must
@@ -110,7 +134,8 @@ function displayValue(value: unknown): { readonly text: string; readonly masked:
 }
 
 /**
- * A copy of `value` with every string, and every object key, passed through `scrub`. It follows `JSON.stringify`'s
+ * A copy of `value` with every string, and every object key, passed through `scrub`, and every object member with a
+ * primitive value read once more as its one-member JSON text (see the module note). It follows `JSON.stringify`'s
  * own reading of an object that defines `toJSON`, and throws on a cycle, as `JSON.stringify` would.
  */
 function scrubLeaves(
@@ -127,12 +152,33 @@ function scrubLeaves(
     if (Array.isArray(value)) return value.map((item) => scrubLeaves(item, scrub, ancestors));
     const copy: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      copy[scrub(key)] = scrubLeaves(item, scrub, ancestors);
+      const member = scrubLeaves(item, scrub, ancestors);
+      // `defineProperty`, not assignment: an own `__proto__` member (JSON.parse makes one) would otherwise hit the
+      // prototype setter and vanish from the display. Two keys masked to the same text keep the later one; the
+      // block's note then says it was masked.
+      Object.defineProperty(copy, scrub(key), {
+        value: maskedAsMember(key, member, scrub),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return copy;
   } finally {
     ancestors.delete(value);
   }
+}
+
+/**
+ * `member` (already masked leaf by leaf), or the scrubber's mask in its place when the one-member JSON text
+ * `{"<key>":<member>}` masks: the key names a credential the value alone does not show. Only a primitive value is
+ * read this way; an object or array value is read member by member by the walk itself.
+ */
+function maskedAsMember(key: string, member: unknown, scrub: (text: string) => string): unknown {
+  if (typeof member === 'object' && member !== null) return member;
+  const view = JSON.stringify({ [key]: member });
+  if (view === undefined || scrub(view) === view) return member;
+  return MEMBER_MASK;
 }
 
 function hasToJson(value: object): value is { toJSON: () => unknown } {
