@@ -1262,9 +1262,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     }
 
     // **Liveness (2.6.G, #229): settle what a dead process left `running` before the first read of the runs**,
-    // so the first frame never shows a crashed run as `running`. Here, after the signal and exit nets, for the
-    // same reason as the onboarding wizard above (#50): an await before mount must not open a listener-free
-    // window. Best-effort and never rejects. The opener supplies it, so the database and the outbox belong to
+    // so the first frame does not show a crashed run as `running` once its dead owner's lease has expired
+    // (until then the lease still claims it, and it reads `running` for up to a minute). Here, after the signal
+    // and exit nets, for the same reason as the onboarding wizard above (#50): an await before mount must not
+    // open a listener-free window. Best-effort and never rejects. The opener supplies it, so the database and the outbox belong to
     // one home; an injected test store has none and mounts without the extra turn.
     if (opened.reconcileInterruptedRuns !== undefined) await opened.reconcileInterruptedRuns();
 

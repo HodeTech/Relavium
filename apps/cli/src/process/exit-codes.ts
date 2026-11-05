@@ -26,7 +26,8 @@ export const EXIT_CODES = {
    * well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing.
    * Reporting it as a failure would be as wrong as reporting it as a success. The terminal is held in the
    * host's terminal outbox and retried on the next `relavium` start; a caller scripting against this should
-   * treat the run as done-but-unrecorded and re-check `relavium status` after a subsequent invocation.
+   * read the durable outcome with `relavium status <runId>` rather than assume one: in the reconcile race
+   * (commands.md, exit 5) the run never executed and is already recorded failed.
    *
    * **Scoped to ADR-0078's case: a terminal was PRODUCED and its write did not land.** A run fenced out
    * mid-flight (ADR-0079 §5) shares the `uncertain` disposition but produces no terminal at all and writes

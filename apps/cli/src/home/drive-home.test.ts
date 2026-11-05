@@ -578,6 +578,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             await reconcileInterruptedRuns(client.db, join(cwd, 'terminal-outbox.ndjson'));
           },
         }),
+        // The #50 rule for an await before mount: the signal and exit nets are already registered.
+        subscribeSignals: () => {
+          order.push('signals');
+          return () => undefined;
+        },
+        subscribeProcessExit: () => {
+          order.push('exit-net');
+          return () => undefined;
+        },
       },
     );
     const drivePromise = driveHome(deps);
@@ -585,7 +594,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
 
-    expect(order).toEqual(['reconcile', 'mount']);
+    expect(order).toEqual(['signals', 'exit-net', 'reconcile', 'mount']);
     // The first snapshot already shows the run as failed, in "attention" — never as a `running` row.
     const snap = props.controller.getSnapshot().snapshot;
     expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);

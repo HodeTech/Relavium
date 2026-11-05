@@ -28,7 +28,12 @@ import {
   type McpClient,
   type McpConnection,
 } from '@relavium/mcp';
-import type { AbortSignalLike, AgentSessionRecord, SessionMessage } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  Agent,
+  AgentSessionRecord,
+  SessionMessage,
+} from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -2306,6 +2311,40 @@ describe('the default model follows the stored key (MVP-A4)', () => {
         }),
       ),
     ).toContain('set-key openai');
+  });
+
+  it('refuses a RESUMED keyless session BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const agent: Agent = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      mcp_servers: [{ id: 'fs', transport: 'stdio', command: 'my-server' }],
+    };
+    const consentGate = vi.fn(() => Promise.resolve(new Map()));
+    const startMcpClient = vi.fn(() => Promise.reject(new Error('must not start')));
+    const resumed = buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-mcp',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate,
+      startMcpClient,
+    });
+    expect(await refusalOf(resumed)).toContain('set-key anthropic');
+    expect(consentGate).not.toHaveBeenCalled();
+    expect(startMcpClient).not.toHaveBeenCalled();
   });
 
   it('refuses a RESUMED session whose provider has lost its key', async () => {
