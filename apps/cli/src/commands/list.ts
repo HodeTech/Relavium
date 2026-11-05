@@ -221,7 +221,8 @@ function renderHuman(
     return byCodeUnit(a, b);
   });
   for (const tag of tags) {
-    const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;
+    // An authored tag is artifact text, sanitized at the sink like every catalog field this listing prints.
+    const header = tag === UNTAGGED ? UNTAGGED : `#${sanitizeUntrustedInline(tag)}`;
     io.writeOut(`  ${header}\n`);
     for (const entry of byTag.get(tag) ?? []) {
       // `?? null` so a valid never-run workflow (and any invalid entry, which never gets an overlay) shows
@@ -231,11 +232,18 @@ function renderHuman(
   }
 }
 
-/** A single catalog line: `slug — name  [last: status]  (invalid: reason)`. `last` is omitted for agents. */
+/**
+ * A single catalog line: `slug — name  [last: status]  (invalid: reason)`. `last` is omitted for agents.
+ *
+ * Every field read from a catalog file is **sanitized at the sink**, as `relavium list --runs` does for a workflow
+ * id. An invalid entry's slug is its file name, and a name is free authored text: `/export` writes a session's
+ * title there, and a cloned repository can commit any name, tag or file name. This line goes to
+ * `process.stdout.write` with no `renderError` boundary in front of it.
+ */
 function entryLine(entry: CatalogEntry, last: RunRecord | undefined | null): string {
-  const parts = [entry.slug];
+  const parts = [sanitizeUntrustedInline(entry.slug)];
   if (entry.name !== undefined && entry.name !== entry.slug) {
-    parts.push(`— ${entry.name}`);
+    parts.push(`— ${sanitizeUntrustedInline(entry.name)}`);
   }
   if (last !== undefined) {
     parts.push(`[last: ${last === null ? '—' : last.status}]`);

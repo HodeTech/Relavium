@@ -193,6 +193,61 @@ describe('listCommand', () => {
     expect(text).not.toContain('\u202e'); // nor a Trojan-Source bidi override
   });
 
+  it('SANITIZES every catalog name, tag and file-name slug before it reaches the terminal', () => {
+    // `/export` writes a session's title as `workflow.name`, and a cloned repository can commit any name, tag
+    // or file name: a window-title OSC, a screen clear or a bidi override must not reach the terminal through
+    // a workflow line, a tag header or an agent line.
+    const hostile = '\u001b]0;PWNED\u0007\u001b[2J‮';
+    const workflows: CatalogEntry[] = [
+      {
+        slug: 'fix-bug',
+        name: `fix ${hostile} bug`,
+        tags: [`ops${hostile}`],
+        path: '.relavium/workflows/fix-bug.relavium.yaml',
+        valid: true,
+      },
+      {
+        slug: `stem${hostile}`,
+        name: undefined,
+        tags: [],
+        path: `.relavium/workflows/stem${hostile}.relavium.yaml`,
+        valid: false,
+        error: 'invalid: workflow.id',
+      },
+    ];
+    const agents: CatalogEntry[] = [
+      {
+        slug: 'helper',
+        name: `Helper ${hostile}`,
+        tags: [],
+        path: '.relavium/agents/helper.agent.yaml',
+        valid: true,
+      },
+    ];
+    for (const [isAgents, catalog] of [
+      [false, workflows],
+      [true, agents],
+    ] as const) {
+      const { io, out } = captureIo();
+      listCommand({ agents: isAgents }, deps(io, { catalog }));
+      const text = out();
+      expect(text).toContain(isAgents ? 'helper' : 'fix-bug');
+      expect(text).not.toContain('\u001b');
+      expect(text).not.toContain('\u0007');
+      expect(text).not.toContain('‮');
+    }
+    const { io, out } = captureIo();
+    listCommand({ agents: false }, deps(io, { catalog: workflows }));
+    const lines = out().split('\n');
+    expect(lines.some((line) => line.startsWith('  #ops'))).toBe(true);
+    expect(lines.some((line) => line.includes('— fix ') && line.endsWith(' bug  [last: —]'))).toBe(
+      true,
+    );
+    expect(lines.some((line) => line.startsWith('    stem') && line.includes('(invalid'))).toBe(
+      true,
+    );
+  });
+
   it('does not borrow a real workflow last-run for an invalid entry sharing its slug', async () => {
     const { io, out } = captureIo();
     // Seed a completed run for the real 'code-review' workflow. The catalog has a VALID entry ('hello', so the
