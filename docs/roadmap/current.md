@@ -112,9 +112,11 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    accepted either: the round-1 run-id latch let a resumed run's summary point a gate restored from its checkpoint at
    `relavium gate`, and the summary now points such a gate at `relavium status`. Round 3 (at `32d1a8a7`) was not
    accepted either: `status` printed the command that continues a gate only for a budget gate, so that pointer
-   promised a command it did not print for a human one; `status` now prints one for every pending gate. The three
-   rounds' lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half
-   of budget-5 included. Still owed for MVP-1: a new milestone review round with no medium or higher finding.
+   promised a command it did not print for a human one; `status` now prints one for every pending gate. Round 4 (at
+   `8e7f41f2`) was not accepted either: `status <runId>` printed an approved gate's step as `stopped` under its
+   completed run, because no `node:completed` closes a gate's step row; it now prints `completed`. The four rounds'
+   lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half of
+   budget-5 included. Still owed for MVP-1: a new milestone review round with no medium or higher finding.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess

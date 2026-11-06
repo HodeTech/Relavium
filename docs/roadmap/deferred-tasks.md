@@ -1693,8 +1693,10 @@ checkpoint at `relavium gate`, although such a gate can be a budget gate `gate` 
 that the pending gate's node-id sanitizer stayed unpinned. Round 3 (at `32d1a8a7`) found one more medium, also fixed:
 round 2's fix sent such a gate to `relavium status` for the command that continues it, which `status` printed only for
 a budget gate; it now prints one for every pending human gate too, and the node-id sanitizer is pinned with it
-(history-14, docs-2, security-1). The lows below were not fixed. **Trigger for every entry:** the next change to the
-file it names.
+(history-14, docs-2, security-1). Round 4 (at `8e7f41f2`) found one more medium, also fixed: `status <runId>` printed
+an approved gate's step as `stopped` under its completed run, because no `node:completed` closes a gate's step row;
+it now reads the decision from the log and prints `completed`. The lows below were not fixed. **Trigger for every
+entry:** the next change to the file it names.
 
 - [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
   delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
@@ -1800,7 +1802,7 @@ file it names.
   docs-3)* A fan-out paused with no inline prompter (a piped stdin, `--secret-inputs-stdin`) announces both gates, and
   the summary prints one `relavium gate <runId>` with no `--gate`; copied as printed it exits `2` naming the pending
   gates. The same holds beside a gate restored from the checkpoint that is a human one. `relavium status <runId>`
-  prints a complete command per gate. **Re-check:** print one `relavium gate <runId> --gate <gateId>` per gate through
+  prints a command for each gate. **Re-check:** print one `relavium gate <runId> --gate <gateId>` per gate through
   `resumeCommandBase`, or point at `status` when more than one human gate may be pending. *(low ·
   apps/cli/src/render/tui/final-summary.ts)*
 - [ ] **`list --runs --json`'s record shape is only partly pinned.** *Low; test-side.* *(history-15)* Dropping
@@ -1813,6 +1815,35 @@ file it names.
   restore the 4,096-token default with every test green. **Re-check:** assert the cap by value, and a
   `buildChatSession` case with `maxCostMicrocents: 0` expecting the catalog ceiling on the wire. *(low ·
   apps/cli/src/chat/session-host.test.ts)*
+
+- [ ] **The summary's human-gate line has no decision flag.** *Low.* *(runid-10)* The human-gate twin of runid-6:
+  `relavium gate <runId>` copied as printed exits `2` asking for `--approve`, `--reject` or `--input`. `status` prints
+  the complete commands. **Re-check:** keep the gate type on the view's human-gate entry and print
+  `humanGateResumeHints`, together with runid-6 and runid-8. *(low · apps/cli/src/render/tui/final-summary.ts)*
+- [ ] **`status`'s gate commands omit `--secret-stdin` for a run with a `secret` input.** *Low.* *(history-16,
+  docs-1)* `gate` and `budget resume` refuse such a run without `--secret-stdin`, so the `approve:` and `reject:`
+  lines `status` prints exit `2` as printed; the refusal names the full remedy. **Re-check:** read the masked secret
+  names from `run:started` and print the piped `--secret-stdin` form `gate.ts`'s `secretPipeHint` builds, for human
+  and budget hints alike. *(low · apps/cli/src/commands/status.ts, apps/cli/src/gate/pending.ts)*
+- [ ] **A run id of `list` turns a printed `gate` command into `gate list`.** *Low.* *(security-1)* `list` passes
+  `resumeCommandBase`'s shell-inert check, so `status` prints `relavium gate list --gate <id> --approve`, which runs
+  the listing and exits `0` with nothing resolved. Engine run ids are UUIDs; only a crafted `history.db` holds this.
+  **Re-check:** refuse a run id that names a `gate` subcommand in `resumeCommandBase`, and make `gate list` reject
+  decision flags. *(low · apps/cli/src/gate/budget.ts, apps/cli/src/commands/descriptors.ts)*
+- [ ] **No test has a shell-inert run id beside a hostile gate id at the `status` call site.** *Low; test-side.*
+  *(docs-2)* The identifier test makes both ids hostile, so a call site that sanitized one of them before building
+  the command would keep every test green and print an invented gate id. **Re-check:** a case per id, each expecting
+  the flags-only sentence. *(low · apps/cli/src/commands/status.test.ts)*
+- [ ] **No pre-flight test has two inline agents.** *Low; test-side.* *(preflight-13)* A lookup that ignores
+  `agent_ref`, or reads the first agent's grant for every node, passes every test. **Re-check:** two agents, one
+  granting `web_search` and one `read_file`, a node bound to each, in both list orders; land it with preflight-11's
+  agent map. *(low · packages/core/src/validate-catalog.test.ts)*
+- [ ] **A reply that fills a 200k window fails where the 4,096 cap ended it as `length`.** *Low.* *(budget-13)* On a
+  64,000-ceiling model with a 200k window, a first message of about 180k tokens with nothing foldable skips
+  compaction, suppresses overflow recovery and is sent with the catalog ceiling; the provider stops with
+  `model_context_window_exceeded`, which fails and rolls back the exchange. **Re-check:** cap the default at the room
+  the window leaves, or map that stop with committed content to `length`; or record it in ADR-0101's note beside
+  budget-3 and budget-8. *(low · apps/cli/src/chat/session-host.ts, packages/llm/src/adapters/anthropic.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
