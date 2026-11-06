@@ -1087,22 +1087,31 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
-    // Best-effort: a teardown rejection must NOT mask the original construction error (preserve the primary).
-    opts.workOwner?.failure(err);
-    if (mcp !== undefined) {
-      try {
-        await closePreparedMcp(
-          mcp,
-          opts.workOwner === undefined
-            ? undefined
-            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
-          opts.workOwner?.invocation.registry.budget,
-        );
-      } catch (cause) {
-        opts.workOwner?.cleanupUncertain(cause);
-      }
-    }
+    await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
+  }
+}
+
+/**
+ * The cleanup after a session build fails: report the failure to the work owner, then close the MCP children the
+ * build already spawned. Best-effort: a teardown rejection is reported as uncertain cleanup and must NOT mask the
+ * build's own error, which the caller rethrows (preserve the primary).
+ */
+async function releaseFailedBuild(
+  workOwner: SessionWorkOwner | undefined,
+  mcp: McpClient | undefined,
+  err: unknown,
+): Promise<void> {
+  workOwner?.failure(err);
+  if (mcp === undefined) return;
+  try {
+    await closePreparedMcp(
+      mcp,
+      workOwner === undefined ? undefined : (_id, cause) => workOwner.cleanupUncertain(cause),
+      workOwner?.invocation.registry.budget,
+    );
+  } catch (cause) {
+    workOwner?.cleanupUncertain(cause);
   }
 }
 
@@ -1394,21 +1403,7 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
-    // Best-effort: a teardown rejection must NOT mask the original resume error (preserve the primary).
-    opts.workOwner?.failure(err);
-    if (mcp !== undefined) {
-      try {
-        await closePreparedMcp(
-          mcp,
-          opts.workOwner === undefined
-            ? undefined
-            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
-          opts.workOwner?.invocation.registry.budget,
-        );
-      } catch (cause) {
-        opts.workOwner?.cleanupUncertain(cause);
-      }
-    }
+    await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
   }
 }

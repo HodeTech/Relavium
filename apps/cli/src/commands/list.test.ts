@@ -197,7 +197,7 @@ describe('listCommand', () => {
     // `/export` writes a session's title as `workflow.name`, and a cloned repository can commit any name, tag
     // or file name: a window-title OSC, a screen clear or a bidi override must not reach the terminal through
     // a workflow line, a tag header or an agent line.
-    const hostile = '\u001b]0;PWNED\u0007\u001b[2J‮';
+    const hostile = '\u001b]0;PWNED\u0007\u001b[2J\u202e';
     const workflows: CatalogEntry[] = [
       {
         slug: 'fix-bug',
@@ -234,7 +234,7 @@ describe('listCommand', () => {
       expect(text).toContain(isAgents ? 'helper' : 'fix-bug');
       expect(text).not.toContain('\u001b');
       expect(text).not.toContain('\u0007');
-      expect(text).not.toContain('‮');
+      expect(text).not.toContain('\u202e');
     }
     const { io, out } = captureIo();
     listCommand({ agents: false }, deps(io, { catalog: workflows }));
@@ -320,7 +320,7 @@ describe('listCommand', () => {
 
   it('--runs prints history identifiers with control characters on one line', async () => {
     await seedRun(db, {
-      slug: 'wf\u001b[2J‮',
+      slug: 'wf\u001b[2J\u202e',
       runId: 'r\u001b]0;PWNED\u0007',
       state: 'completed',
     });
@@ -330,6 +330,6 @@ describe('listCommand', () => {
     expect(text).toMatch(/^r.*completed {2}wf/u);
     expect(text).not.toContain('\u001b');
     expect(text).not.toContain('\u0007');
-    expect(text).not.toContain('‮');
+    expect(text).not.toContain('\u202e');
   });
 });

@@ -215,13 +215,13 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     if (opts.cancelAfterPause === true)
       await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
     if (opts.decideAfterPause === true) {
-      for (const gate of opts.gates ?? (opts.gate === undefined ? [] : [opts.gate])) {
-        await emit('human_gate:resumed', {
+      await emitInOrder(opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]), (gate) =>
+        emit('human_gate:resumed', {
           nodeId: gate.nodeId ?? 'g',
           decision: 'approved',
           decidedBy: 'cli',
-        });
-      }
+        }),
+      );
       await emit('run:completed', {
         outputs: {},
         totalTokensUsed: { input: 1, output: 2 },
@@ -246,6 +246,17 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
 }
 
 /** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
+/** Emit one event per item, each after the last: an event's sequence number follows the one before it. */
+async function emitInOrder<T>(
+  items: readonly T[],
+  emitOne: (item: T) => Promise<void>,
+): Promise<void> {
+  await items.reduce<Promise<void>>(
+    (previous, item) => previous.then(() => emitOne(item)),
+    Promise.resolve(),
+  );
+}
+
 async function emitPausedState(
   emit: EmitFn,
   opts: SeedRunOptions,

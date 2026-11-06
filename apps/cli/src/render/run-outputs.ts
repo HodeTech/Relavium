@@ -97,7 +97,7 @@ export function formatRunOutputs(
  */
 function withoutFinalNewlines(text: string): string {
   let end = text.length;
-  while (end > 0 && text.charCodeAt(end - 1) === 0x0a) end -= 1;
+  while (end > 0 && text.codePointAt(end - 1) === 0x0a) end -= 1;
   return text.slice(0, end);
 }
 

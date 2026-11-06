@@ -301,16 +301,7 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
   if (status.usageUnavailable) {
     io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
   }
-  if (status.steps.length === 0) {
-    io.writeOut(finished ? '  (no node ran)\n' : '  (no node activity recorded yet)\n');
-  }
-  for (const step of status.steps) {
-    const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
-    const shown = shownStepStatus(step, finished, status.decidedGateNodes);
-    io.writeOut(
-      `  ${shown.padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
-    );
-  }
+  renderSteps(io, status, finished);
   if (status.terminalHeld) {
     // The run reads `running` because its terminal never became durable; without this line the exit-5
     // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
@@ -326,6 +317,25 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // they would come to find out which run is broken.
     io.writeOut("  ⚠ pending gates unavailable — this run's event log could not be read\n");
   }
+  renderPendingGates(io, status);
+}
+
+/** One row per recorded step, or a line saying no node ran (or none has yet, on an active run). */
+function renderSteps(io: CliIo, status: ActiveRunStatus, finished: boolean): void {
+  if (status.steps.length === 0) {
+    io.writeOut(finished ? '  (no node ran)\n' : '  (no node activity recorded yet)\n');
+  }
+  for (const step of status.steps) {
+    const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
+    const shown = shownStepStatus(step, finished, status.decidedGateNodes);
+    io.writeOut(
+      `  ${shown.padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
+    );
+  }
+}
+
+/** Each pending budget gate, then each pending human gate, with the commands that continue it. */
+function renderPendingGates(io: CliIo, status: ActiveRunStatus): void {
   for (const gate of status.pendingBudgetGates) {
     const gateId = budgetIdentifier(gate.gateId);
     io.writeOut(

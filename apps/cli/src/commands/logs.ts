@@ -1,6 +1,6 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
-import type { Db } from '@relavium/db';
+import type { Db, RunRecord, SkippedRunEvent } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -60,41 +60,50 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     // column would otherwise present a short log with a hole in its sequence as a complete one, and
     // `sse-event-schema.md` §Transport tells consumers to diagnose exactly that as data loss. It goes to
     // STDERR in both modes, so `--json`'s stdout stays a pure NDJSON `RunEvent` stream (the flag's contract).
-    if (skipped.length > 0) {
-      // BOUNDED, like the fixed native background-diagnostic bound: a run replayed under a much newer binary could
-      // skip thousands of rows, and one unbounded line of comma-separated integers is not a diagnostic. The count
-      // is the signal; the first few numbers are the lead.
-      const shown = skipped.slice(0, MAX_REPORTED_SKIPS).map((row) => row.sequenceNumber);
-      const seqs = skipped.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
-      const one = skipped.length === 1;
-      deps.io.writeErr(
-        `note: ${skipped.length} event${one ? '' : 's'} written by a newer version of Relavium ` +
-          `${one ? 'was' : 'were'} skipped (seq ${seqs}). Upgrade to read ${one ? 'it' : 'them'}.\n`,
-      );
-    }
+    writeSkippedNote(deps.io, skipped);
 
     if (deps.global.json) {
       writeRecordLines(deps.io, events); // raw RunEvent per line — identical to the `run --json` stream
       return EXIT_CODES.success;
     }
 
-    deps.io.writeOut(
-      `run ${run.id} — ${run.status} (${events.length} event${events.length === 1 ? '' : 's'})\n`,
-    );
-    for (const event of events) {
-      // One row per event: the line carries stored fields (a gate id, `decidedBy`, a node id), so it gets the
-      // one-line floor before it reaches the terminal, as the plain run renderer does.
-      deps.io.writeOut(`${sanitizeInline(formatLogLine(event))}\n`);
-      // The workflow's outputs under the terminal row (MVP-A1), bounded and sanitized by the shared formatter.
-      if (event.type === 'run:completed') {
-        for (const line of formatRunOutputs(event.outputs, '    ', run.id)) {
-          deps.io.writeOut(`${line}\n`);
-        }
-      }
-    }
+    writeHumanLog(deps.io, run, events);
     return EXIT_CODES.success;
   } finally {
     if (deps.commandLifetime === undefined) close();
+  }
+}
+
+/** The stderr note for rows a newer binary wrote (ADR-0074 §5); nothing when no row was skipped. */
+function writeSkippedNote(io: CliIo, skipped: readonly SkippedRunEvent[]): void {
+  if (skipped.length === 0) return;
+  // BOUNDED, like the fixed native background-diagnostic bound: a run replayed under a much newer binary could
+  // skip thousands of rows, and one unbounded line of comma-separated integers is not a diagnostic. The count
+  // is the signal; the first few numbers are the lead.
+  const shown = skipped.slice(0, MAX_REPORTED_SKIPS).map((row) => row.sequenceNumber);
+  const seqs = skipped.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+  const one = skipped.length === 1;
+  io.writeErr(
+    `note: ${skipped.length} event${one ? '' : 's'} written by a newer version of Relavium ` +
+      `${one ? 'was' : 'were'} skipped (seq ${seqs}). Upgrade to read ${one ? 'it' : 'them'}.\n`,
+  );
+}
+
+/** The human rendering: a header line, one row per event, and the workflow's outputs under the terminal row. */
+function writeHumanLog(io: CliIo, run: RunRecord, events: readonly RunEvent[]): void {
+  io.writeOut(
+    `run ${run.id} — ${run.status} (${events.length} event${events.length === 1 ? '' : 's'})\n`,
+  );
+  for (const event of events) {
+    // One row per event: the line carries stored fields (a gate id, `decidedBy`, a node id), so it gets the
+    // one-line floor before it reaches the terminal, as the plain run renderer does.
+    io.writeOut(`${sanitizeInline(formatLogLine(event))}\n`);
+    // The workflow's outputs under the terminal row (MVP-A1), bounded and sanitized by the shared formatter.
+    if (event.type === 'run:completed') {
+      for (const line of formatRunOutputs(event.outputs, '    ', run.id)) {
+        io.writeOut(`${line}\n`);
+      }
+    }
   }
 }
 
