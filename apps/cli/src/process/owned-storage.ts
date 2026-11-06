@@ -53,12 +53,17 @@ export function writeFileForStorage(path: string, content: string, force: boolea
 
 /**
  * A file's identity as `lstat` reports it: what {@link replaceFileForStorage} re-checks before it renames. A file
- * put in its place has another device and inode; one rewritten in place has a new `ctime`, which, unlike `mtime`,
- * no caller can set back.
+ * rewritten in place, or deleted and recreated, gets a new `ctime`, which, unlike `mtime`, no caller can set back;
+ * a recreated file usually gets a new inode too, though ext4 reuses a freed one. `ctime` is only as fine as the
+ * filesystem's clock: a few milliseconds on a Linux kernel before 6.13, a second on HFS+. So a change of a
+ * different length is caught by `size` whatever the clock, while a same-length change inside one clock tick of the
+ * caller's check is not detected.
  */
 export interface StorageFileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
   readonly ctimeNs: bigint;
 }
 
@@ -67,6 +72,8 @@ export function storageFileIdentity(stats: BigIntStats): StorageFileIdentity {
   return {
     dev: stats.dev,
     ino: stats.ino,
+    size: stats.size,
+    mtimeNs: stats.mtimeNs,
     ctimeNs: stats.ctimeNs,
   };
 }
@@ -93,8 +100,9 @@ export class StorageTargetChangedError extends Error {
  * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
  * or removed meanwhile —
  * which, for a transcript big enough to take tens of milliseconds to serialize and write, is a window another
- * writer can hit. A swap in the microseconds between that last check and the rename is not detected: Node has no
- * rename that compares first.
+ * writer can hit. Not detected: a swap in the microseconds between that last check and the rename (Node has no
+ * rename that compares first), and a same-length change within one tick of a coarse filesystem clock
+ * ({@link StorageFileIdentity}).
  */
 export function replaceFileForStorage(
   path: string,
@@ -143,7 +151,13 @@ export function replaceFileForStorage(
 }
 
 function sameFile(a: StorageFileIdentity, b: StorageFileIdentity): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.ctimeNs === b.ctimeNs;
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs
+  );
 }
 
 /** Concrete native acquisition for the editor's private transcript directory. */

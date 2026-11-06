@@ -159,6 +159,8 @@ describe('exportSessionToProject (MVP-A3)', () => {
     // long transcript in between takes long enough for an editor, a checkout or another process to put a
     // different workflow there. The rewrite re-checks the file first and leaves a changed one alone.
     const first = exportS1();
+    // Past one tick of a coarse filesystem clock, so the swapped-in file's times differ from the export's.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
     fsHooks.onOpen = (path) => {
       if (!path.endsWith('.tmp')) return;
       fsHooks.onOpen = undefined;

@@ -33,6 +33,13 @@ describe('replaceFileForStorage', () => {
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const identityOf = (path: string): StorageFileIdentity =>
     storageFileIdentity(lstatSync(path, { bigint: true }));
+  /**
+   * Let the filesystem clock tick between the check and the change. A Linux kernel before 6.13 stamps ctime from a
+   * coarse clock (a few ms), and ext4 reuses a freed inode, so a change inside one tick would look unchanged.
+   */
+  const pastOneClockTick = (): void => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+  };
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'relavium-replace-'));
@@ -95,7 +102,7 @@ describe('replaceFileForStorage', () => {
     [
       'rewritten in place to the same length',
       (path: string) => {
-        writeFileSync(path, 'new'); // as long as 'old': only its ctime tells
+        writeFileSync(path, 'new'); // as long as 'old': only its times tell
       },
     ],
     [
@@ -109,6 +116,7 @@ describe('replaceFileForStorage', () => {
       const path = join(dir, 'w.relavium.yaml');
       writeFileSync(path, 'old');
       const checked = identityOf(path);
+      pastOneClockTick();
       apply(path);
       const before = (() => {
         try {
