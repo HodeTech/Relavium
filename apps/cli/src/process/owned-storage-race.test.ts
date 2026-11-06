@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   linkSync,
   lstatSync,
@@ -28,6 +29,7 @@ import {
  */
 const fsHooks = vi.hoisted(() => ({
   afterLstat: undefined as ((path: string) => void) | undefined,
+  opened: [] as string[],
 }));
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
@@ -38,6 +40,11 @@ vi.mock('node:fs', async (original) => {
       const [path] = args;
       if (typeof path === 'string') fsHooks.afterLstat?.(path);
       return result;
+    },
+    openSync: (...args: Parameters<typeof native.openSync>) => {
+      const [path] = args;
+      if (typeof path === 'string') fsHooks.opened.push(path);
+      return native.openSync(...args);
     },
   };
 });
@@ -51,8 +58,36 @@ describe('replaceFileForStorage — a swap between its last lstat and its open',
   });
   afterEach(() => {
     fsHooks.afterLstat = undefined;
+    fsHooks.opened = [];
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Something already at the path when the replace starts is refused on its `lstat`, before anything opens it: on
+  // Windows, which has no `O_NOFOLLOW`, that is the only thing keeping a link from being followed by the open.
+  for (const [what, put] of [
+    ['a directory', (path: string) => mkdirSync(path)],
+    ...(process.platform === 'win32'
+      ? []
+      : ([
+          ['a link', (path: string) => symlinkSync(join(dir, 'elsewhere.yaml'), path)],
+          ['a FIFO', (path: string) => execFileSync('mkfifo', [path])],
+        ] as const)),
+  ] as const) {
+    it(`refuses ${what} already at the path without opening it`, () => {
+      const path = join(dir, 'w.relavium.yaml');
+      writeFileSync(join(dir, 'elsewhere.yaml'), 'old');
+      writeFileSync(path, 'old');
+      const checked = storageFileIdentity(lstatSync(path, { bigint: true }), readFileSync(path));
+      rmSync(path);
+      put(path);
+      fsHooks.opened = [];
+      expect(() => {
+        replaceFileForStorage(path, 'new', 0o644, checked);
+      }).toThrow(StorageTargetChangedError);
+      expect(fsHooks.opened.filter((opened) => opened === path)).toEqual([]);
+      expect(temps()).toEqual([]);
+    });
+  }
 
   /** Replace `path` after swapping `swap` in at its second lstat; return what the replace threw. */
   const replaceWithSwap = (path: string, swap: () => void): unknown => {

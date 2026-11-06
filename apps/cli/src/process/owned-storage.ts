@@ -163,7 +163,8 @@ function identityIfUnchanged(
   if (linked === undefined || !linked.isFile() || !sameStat(linked, expected)) return undefined;
   let fd: number;
   try {
-    // `O_NOFOLLOW` is absent on Windows; the `fstat` check below is its swap guard there.
+    // `O_NOFOLLOW` is absent on Windows, so a link swapped in after the `lstat` is followed there; the `fstat` check
+    // below then refuses its target.
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
   } catch {
     return undefined; // removed, turned into a link, or no longer readable since the `lstat`: changed
