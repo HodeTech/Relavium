@@ -49,6 +49,17 @@ describe('logsCommand', () => {
     }
   });
 
+  it('prints a forged run id on one line in its header', async () => {
+    // `logs` looks the run up by the id the user typed, so a stored id with an escape is reached only by typing it.
+    const forgedId = 'run\u001b[2J\nforged';
+    await seedRun(db, { slug: 'demo', runId: forgedId, state: 'completed' });
+    const { io, out } = captureIo();
+    logsCommand({ runId: forgedId }, deps(io));
+    const header = out().split('\n')[0] ?? '';
+    expect(header).toContain('forged');
+    expect(header).not.toContain('\u001b');
+  });
+
   it('prints a forged run status on one line in its header', async () => {
     await seedRun(db, { slug: 'demo', runId: 'run-forged', state: 'completed' });
     forgeRunStatus(client, 'run-forged', 'completed\u001b[2J\nforged row');

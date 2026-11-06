@@ -107,7 +107,8 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         return signal?.aborted || deps.isCancel(value) ? null : inputDecision(value);
       }
 
-      // A bare Enter rejects: approving takes a deliberate choice, as at the MCP consent prompt.
+      // A bare Enter rejects, as at the MCP consent prompt. Clack's y/n and h/j/k/l/space hotkeys still answer the
+      // card, so a stray paste can (recorded in deferred-tasks.md).
       const approved = await deps.confirm({
         message: 'Approve?',
         active: 'Approve',
@@ -127,7 +128,8 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         ...(signal === undefined ? {} : { signal }),
       });
       if (signal?.aborted) return null;
-      // The reason is optional, so Esc here skips it: the rejection already chosen stands.
+      // The reason is optional, so Esc or Ctrl-C here skips it (Clack reports both as a cancel): the rejection
+      // already chosen stands.
       return rejectionDecision(deps.isCancel(comment) ? undefined : comment);
     },
   };

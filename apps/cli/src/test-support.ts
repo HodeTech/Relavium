@@ -245,7 +245,6 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   return opts.runId;
 }
 
-/** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
 /**
  * Write a run's status, and its steps', past the schema's CHECK: what a crafted or damaged `history.db` can hold,
  * for the tests that pin the one-line floor on every status a command reads back.
@@ -273,6 +272,7 @@ async function emitInOrder<T>(
   );
 }
 
+/** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
 async function emitPausedState(
   emit: EmitFn,
   opts: SeedRunOptions,

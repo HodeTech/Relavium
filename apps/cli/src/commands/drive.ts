@@ -581,8 +581,9 @@ async function promptUntilStopped(
 
 /**
  * Resolve an interactive human gate without leaving the live run: hand the terminal to the `@clack/prompts`
- * card (suspend the TUI), collect a decision, then re-mount. A `null` decision (the user aborted the prompt
- * with Ctrl-C / ESC) cooperatively cancels the whole run; otherwise the decision is applied to the in-memory
+ * card (suspend the TUI), collect a decision, then re-mount. A `null` decision (the user aborted the card with
+ * Ctrl-C / ESC at its approve or input step; at the optional rejection reason either key keeps the rejection)
+ * cooperatively cancels the whole run; otherwise the decision is applied to the in-memory
  * run via `engine.resume`, which emits `human_gate:resumed` and continues — both flow back through the loop.
  */
 async function resolveGateInline(

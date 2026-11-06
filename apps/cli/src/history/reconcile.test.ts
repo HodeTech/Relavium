@@ -269,8 +269,8 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
   });
 
   it('…and a reconciler that claims the run anyway still leaves one terminal', async () => {
-    // A reconciler without the TTL grace (an older binary, or one whose clock runs a TTL ahead) can still claim
-    // the run inside that window. Its terminal is durable and its lease is still live when the run tries to
+    // A reconciler without the TTL grace (a development build without it, or one whose clock runs more than a TTL
+    // ahead) can still claim the run inside that window. Its terminal is durable and its lease is still live when the run tries to
     // acquire. The acquire is refused, and the run settles at once — so its terminal takes the reconciler's
     // sequence number. The store's terminal refusal stops it, and `UNIQUE(run_id, seq)` would stop it if that
     // refusal were gone, which is why removing the refusal alone does not fail this case. Pinned for the

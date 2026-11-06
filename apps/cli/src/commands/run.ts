@@ -474,9 +474,9 @@ async function runOwned(
     // **Reconcile before starting (ADR-0078 §4/§5, ADR-0079 §7; 2.6.G liveness).** This is "the next
     // `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for: `reconcile()`
     // first drains the terminal outbox (`~/.relavium/terminal-outbox.ndjson`), then settles every run a dead
-    // process left `running` as `run:failed` (`internal`, or `budget_exceeded` after a recorded budget
-    // rejection). It leaves alone a run parked at a gate and a run whose lease is live — another process is
-    // executing it. Best-effort — a run that cannot start because an unrelated run could not be repaired
+    // process left `running` as `run:failed` (`effect_needs_attention` for an unresolved external effect, else
+    // `budget_exceeded` after a recorded budget rejection, else `internal`). It leaves alone a run parked at a
+    // gate, a run younger than one lease TTL and a run whose lease is live — another process is executing it. Best-effort — a run that cannot start because an unrelated run could not be repaired
     // would be the wrong trade.
     await engine.reconcile().catch(() => undefined);
     // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
