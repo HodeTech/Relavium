@@ -31,15 +31,9 @@ describe('replaceFileForStorage', () => {
   let dir: string;
   const temps = (): string[] => readdirSync(dir).filter((name) => name.endsWith('.tmp'));
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  /** What `/export` captures when it recognizes its own file: the stat fields and the bytes' hash. */
   const identityOf = (path: string): StorageFileIdentity =>
-    storageFileIdentity(lstatSync(path, { bigint: true }));
-  /**
-   * Let the filesystem clock tick between the check and the change. A Linux kernel before 6.13 stamps ctime from a
-   * coarse clock (a few ms), and ext4 reuses a freed inode, so a change inside one tick would look unchanged.
-   */
-  const pastOneClockTick = (): void => {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
-  };
+    storageFileIdentity(lstatSync(path, { bigint: true }), readFileSync(path));
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'relavium-replace-'));
@@ -102,7 +96,7 @@ describe('replaceFileForStorage', () => {
     [
       'rewritten in place to the same length',
       (path: string) => {
-        writeFileSync(path, 'new'); // as long as 'old': only its times tell
+        writeFileSync(path, 'new'); // as long as 'old': on a coarse clock only the bytes' hash tells
       },
     ],
     [
@@ -116,7 +110,6 @@ describe('replaceFileForStorage', () => {
       const path = join(dir, 'w.relavium.yaml');
       writeFileSync(path, 'old');
       const checked = identityOf(path);
-      pastOneClockTick();
       apply(path);
       const before = (() => {
         try {
@@ -140,6 +133,19 @@ describe('replaceFileForStorage', () => {
       expect(temps()).toEqual([]);
     });
   }
+
+  it('refuses a file whose bytes differ from the check even when every stat field matches', () => {
+    // What a same-length rewrite inside one tick of a coarse filesystem clock looks like: the same device, inode,
+    // size and times, other bytes. Only the content hash can tell, so this pins it whatever the local clock.
+    const path = join(dir, 'w.relavium.yaml');
+    writeFileSync(path, 'old');
+    const checked = { ...identityOf(path), sha256: '0'.repeat(64) };
+    expect(() => {
+      replaceFileForStorage(path, 'new', 0o644, checked);
+    }).toThrow(StorageTargetChangedError);
+    expect(readFileSync(path, 'utf8')).toBe('old');
+    expect(temps()).toEqual([]);
+  });
 
   it.skipIf(process.platform === 'win32')(
     'gives the new file exactly the old permission bits, whatever the umask would make of them',

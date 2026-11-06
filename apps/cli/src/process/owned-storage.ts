@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   accessSync,
   type BigIntStats,
@@ -10,6 +10,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -52,12 +53,10 @@ export function writeFileForStorage(path: string, content: string, force: boolea
 }
 
 /**
- * A file's identity as `lstat` reports it: what {@link replaceFileForStorage} re-checks before it renames. A file
- * rewritten in place, or deleted and recreated, gets a new `ctime`, which, unlike `mtime`, no caller can set back;
- * a recreated file usually gets a new inode too, though ext4 reuses a freed one. `ctime` is only as fine as the
- * filesystem's clock: a few milliseconds on a Linux kernel before 6.13, a second on HFS+. So a change of a
- * different length is caught by `size` whatever the clock, while a same-length change inside one clock tick of the
- * caller's check is not detected.
+ * A file's identity: what {@link replaceFileForStorage} re-checks before it renames. The `lstat` fields catch a file
+ * put in its place (another device or inode) and most rewrites (a new size or `ctime`), but `ctime` is only as fine
+ * as the filesystem's clock — a few milliseconds on a Linux kernel before 6.13, a second on HFS+ — and ext4 reuses a
+ * freed inode. The SHA-256 of the bytes catches what those miss: a same-length change inside one clock tick.
  */
 export interface StorageFileIdentity {
   readonly dev: bigint;
@@ -65,16 +64,19 @@ export interface StorageFileIdentity {
   readonly size: bigint;
   readonly mtimeNs: bigint;
   readonly ctimeNs: bigint;
+  /** Hex SHA-256 of the file's bytes. */
+  readonly sha256: string;
 }
 
-/** The identity of the file `stats` describes (from a `bigint` stat). */
-export function storageFileIdentity(stats: BigIntStats): StorageFileIdentity {
+/** The identity of the file `stats` (a `bigint` stat) describes, whose bytes are `content`. */
+export function storageFileIdentity(stats: BigIntStats, content: Uint8Array): StorageFileIdentity {
   return {
     dev: stats.dev,
     ino: stats.ino,
     size: stats.size,
     mtimeNs: stats.mtimeNs,
     ctimeNs: stats.ctimeNs,
+    sha256: createHash('sha256').update(content).digest('hex'),
   };
 }
 
@@ -98,11 +100,9 @@ export class StorageTargetChangedError extends Error {
  *
  * It replaces only the file the caller checked. Before it starts, and again just before the rename, it compares
  * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
- * or removed meanwhile —
- * which, for a transcript big enough to take tens of milliseconds to serialize and write, is a window another
- * writer can hit. Not detected: a swap in the microseconds between that last check and the rename (Node has no
- * rename that compares first), and a same-length change within one tick of a coarse filesystem clock
- * ({@link StorageFileIdentity}).
+ * or removed meanwhile — which, for a transcript big enough to take tens of milliseconds to serialize and write, is a
+ * window another writer can hit. Not detected: a swap in the moment between that last check and the rename (Node has
+ * no rename that compares first).
  */
 export function replaceFileForStorage(
   path: string,
@@ -111,12 +111,13 @@ export function replaceFileForStorage(
   expected: StorageFileIdentity,
 ): void {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  /** Throw {@link StorageTargetChangedError} unless `path` is still the regular file the caller checked. */
   const ensureUnchanged = (): void => {
     const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
     if (
       current === undefined ||
       !current.isFile() ||
-      !sameFile(storageFileIdentity(current), expected)
+      !sameFile(storageFileIdentity(current, readFileSync(path)), expected)
     ) {
       throw new StorageTargetChangedError();
     }
@@ -150,13 +151,15 @@ export function replaceFileForStorage(
   }
 }
 
+/** Whether two identities name the same file with the same bytes: every field equal. */
 function sameFile(a: StorageFileIdentity, b: StorageFileIdentity): boolean {
   return (
     a.dev === b.dev &&
     a.ino === b.ino &&
     a.size === b.size &&
     a.mtimeNs === b.mtimeNs &&
-    a.ctimeNs === b.ctimeNs
+    a.ctimeNs === b.ctimeNs &&
+    a.sha256 === b.sha256
   );
 }
 

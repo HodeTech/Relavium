@@ -136,6 +136,11 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         decided?: string;
       }
     | undefined;
+  /**
+   * Close the open card when `decidedBy`, not this card, decided its gate: matched by gate id, or by node for a legacy
+   * resumed companion that names no gate. Records how it was decided for the stderr notice; our own decisions
+   * (`decidedBy` of `cli`) are left alone.
+   */
   const closeCardDecidedElsewhere = (
     gateId: string | undefined,
     nodeId: string,
