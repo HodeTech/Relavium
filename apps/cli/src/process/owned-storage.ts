@@ -6,11 +6,12 @@ import {
   closeSync,
   constants,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -101,8 +102,10 @@ export class StorageTargetChangedError extends Error {
  * It replaces only the file the caller checked. Before it starts, and again just before the rename, it compares
  * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
  * or removed meanwhile — which, for a transcript big enough to take tens of milliseconds to serialize and write, is a
- * window another writer can hit. Not detected: a swap in the moment between that last check and the rename (Node has
- * no rename that compares first).
+ * window another writer can hit. The stat fields are compared before anything is opened, and the bytes are read
+ * only from the same regular file, so a link, a FIFO, a directory or a larger file put there is refused without
+ * being followed, blocked on or read whole. Not detected: a swap in the moment between that last check and the
+ * rename (Node has no rename that compares first).
  */
 export function replaceFileForStorage(
   path: string,
@@ -113,14 +116,8 @@ export function replaceFileForStorage(
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   /** Throw {@link StorageTargetChangedError} unless `path` is still the regular file the caller checked. */
   const ensureUnchanged = (): void => {
-    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-    if (
-      current === undefined ||
-      !current.isFile() ||
-      !sameFile(storageFileIdentity(current, readFileSync(path)), expected)
-    ) {
-      throw new StorageTargetChangedError();
-    }
+    const current = identityIfUnchanged(path, expected);
+    if (current?.sha256 !== expected.sha256) throw new StorageTargetChangedError();
   };
   let fd: number | undefined;
   try {
@@ -151,15 +148,52 @@ export function replaceFileForStorage(
   }
 }
 
-/** Whether two identities name the same file with the same bytes: every field equal. */
-function sameFile(a: StorageFileIdentity, b: StorageFileIdentity): boolean {
+/**
+ * The identity of the regular file at `path`, read only when its `lstat` fields already equal `expected`'s, or
+ * `undefined` for anything else. The bytes come through a non-blocking, no-follow descriptor whose `fstat` must
+ * match too, and no more of them than `expected.size` plus one (to see growth), as `/export`'s own read does.
+ */
+function identityIfUnchanged(
+  path: string,
+  expected: StorageFileIdentity,
+): StorageFileIdentity | undefined {
+  const linked = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (linked === undefined || !linked.isFile() || !sameStat(linked, expected)) return undefined;
+  let fd: number;
+  try {
+    // `O_NOFOLLOW` is absent on Windows; the `fstat` check below is its swap guard there.
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
+  } catch {
+    return undefined; // removed, turned into a link, or no longer readable since the `lstat`: changed
+  }
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || !sameStat(opened, expected)) return undefined;
+    const bytes = Buffer.alloc(Number(expected.size) + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = readSync(fd, bytes, length, bytes.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    return storageFileIdentity(opened, bytes.subarray(0, length));
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // a close fault changes nothing about the answer
+    }
+  }
+}
+
+/** Whether `stats` has every stat field of `expected` (all but the hash). */
+function sameStat(stats: BigIntStats, expected: StorageFileIdentity): boolean {
   return (
-    a.dev === b.dev &&
-    a.ino === b.ino &&
-    a.size === b.size &&
-    a.mtimeNs === b.mtimeNs &&
-    a.ctimeNs === b.ctimeNs &&
-    a.sha256 === b.sha256
+    stats.dev === expected.dev &&
+    stats.ino === expected.ino &&
+    stats.size === expected.size &&
+    stats.mtimeNs === expected.mtimeNs &&
+    stats.ctimeNs === expected.ctimeNs
   );
 }
 

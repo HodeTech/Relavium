@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   lstatSync,
@@ -69,15 +70,55 @@ describe('replaceFileForStorage', () => {
     },
   );
 
-  it('refuses a directory at the path, removes its temp, and leaves what was there', () => {
+  it('refuses a directory put at the path after the check, removes its temp, and leaves what was there', () => {
     const path = join(dir, 'w.relavium.yaml');
+    writeFileSync(path, 'old');
+    const checked = identityOf(path);
+    rmSync(path);
     mkdirSync(path);
     expect(() => {
-      replaceFileForStorage(path, 'new', 0o644, identityOf(path));
-    }).toThrow();
+      replaceFileForStorage(path, 'new', 0o644, checked);
+    }).toThrow(StorageTargetChangedError);
     expect(statSync(path).isDirectory()).toBe(true);
     expect(temps()).toEqual([]);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO put at the path after the check without opening it, so it never blocks',
+    () => {
+      const path = join(dir, 'w.relavium.yaml');
+      writeFileSync(path, 'old');
+      const checked = identityOf(path);
+      rmSync(path);
+      execFileSync('mkfifo', [path]);
+      expect(() => {
+        replaceFileForStorage(path, 'new', 0o644, checked);
+      }).toThrow(StorageTargetChangedError);
+      expect(lstatSync(path).isFIFO()).toBe(true);
+      expect(temps()).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32' || isRoot)(
+    'refuses a file made unreadable after the check as changed, rather than failing the export',
+    () => {
+      // The stat fields are compared before the bytes are read, so the permission change (a new ctime) is seen as a
+      // change and the export moves on, instead of an EACCES from the read failing it.
+      const path = join(dir, 'w.relavium.yaml');
+      writeFileSync(path, 'old');
+      const checked = identityOf(path);
+      chmodSync(path, 0o000);
+      try {
+        expect(() => {
+          replaceFileForStorage(path, 'new', 0o644, checked);
+        }).toThrow(StorageTargetChangedError);
+        expect(temps()).toEqual([]);
+      } finally {
+        chmodSync(path, 0o644);
+      }
+      expect(readFileSync(path, 'utf8')).toBe('old');
+    },
+  );
 
   for (const [change, apply] of [
     [
@@ -139,7 +180,11 @@ describe('replaceFileForStorage', () => {
     // size and times, other bytes. Only the content hash can tell, so this pins it whatever the local clock.
     const path = join(dir, 'w.relavium.yaml');
     writeFileSync(path, 'old');
-    const checked = { ...identityOf(path), sha256: '0'.repeat(64) };
+    // The real stat fields with other bytes' hash: the check must hash the file's own bytes to tell them apart.
+    const checked = storageFileIdentity(
+      lstatSync(path, { bigint: true }),
+      Buffer.from('other bytes'),
+    );
     expect(() => {
       replaceFileForStorage(path, 'new', 0o644, checked);
     }).toThrow(StorageTargetChangedError);
