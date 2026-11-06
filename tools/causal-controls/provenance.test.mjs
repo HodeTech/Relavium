@@ -290,7 +290,7 @@ test('secrets workload corrections retain independent complete-count and reader-
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
-    ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 75],
+    ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
     ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
   ]) {
     const control = secretsControls.find((entry) => entry.id === id);
