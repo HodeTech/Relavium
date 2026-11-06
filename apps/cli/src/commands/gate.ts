@@ -623,7 +623,7 @@ async function resumeGateOwned(
       // is the worst available answer: this process cannot report settlement, even when its earlier gate
       // decision is already durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      const notice = `run ${args.runId} already settled; nothing to resume\n`;
+      const notice = `run ${sanitizeInline(args.runId)} already settled; nothing to resume\n`;
       if (deps.global.json) deps.io.writeErr(notice);
       else deps.io.writeOut(notice);
       return EXIT_CODES.success;
@@ -723,7 +723,7 @@ export function selectGate(
     if (resolved.has(requested)) {
       return {
         kind: 'idempotent',
-        message: `gate ${requested} already resolved`,
+        message: `gate ${sanitizeInline(requested)} already resolved`,
       };
     }
     return {

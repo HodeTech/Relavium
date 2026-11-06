@@ -145,7 +145,7 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
     io.writeOut(
       runId === undefined
         ? 'No pending human gates.\n'
-        : `Run ${runId} has no pending human gate.\n`,
+        : `Run ${sanitizeInline(runId)} has no pending human gate.\n`,
     );
     return;
   }

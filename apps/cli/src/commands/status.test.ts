@@ -41,6 +41,19 @@ describe('statusCommand', () => {
     expect(text).not.toContain('\nforged row');
   });
 
+  it('prints the attempt of a step that ran more than once', async () => {
+    await seedRun(db, { slug: 'wf', runId: 'retried-1', state: 'completed' });
+    client.sqlite
+      .prepare('UPDATE step_executions SET attempt_number = 3 WHERE run_id = ?')
+      .run('retried-1');
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'retried-1' },
+    );
+    expect(out()).toContain('(attempt 3)');
+  });
+
   it('prints no attempt for a forged attempt number that is not an integer', async () => {
     await seedRun(db, { slug: 'wf', runId: 'forged-2', state: 'completed' });
     // Text SQLite keeps as text in the integer column, which JavaScript still reads as 2.

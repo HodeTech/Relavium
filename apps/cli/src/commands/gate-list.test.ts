@@ -43,6 +43,16 @@ describe('gateListCommand', () => {
     for (const control of ['\u001b', '\u0007', '\u202e']) expect(out()).not.toContain(control);
   });
 
+  it('prints a forged run id on one line when that run has no pending gate', async () => {
+    // The id is typed by the user, but it names a history.db run, whose id has no CHECK behind it.
+    await seedRun(db, { slug: 'a', runId: 'r\u001b]0;PWNED\u0007', state: 'completed' });
+    const { io, out } = captureIo();
+    expect(gateListCommand({ runId: 'r\u001b]0;PWNED\u0007' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('has no pending human gate');
+    expect(out()).not.toContain('\u001b');
+    expect(out()).not.toContain('\u0007');
+  });
+
   it('lists pending human gates across every paused run', async () => {
     const { io, out } = captureIo();
     await seedRun(db, {

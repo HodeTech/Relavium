@@ -326,7 +326,8 @@ function renderSteps(io: CliIo, status: ActiveRunStatus, finished: boolean): voi
     io.writeOut(finished ? '  (no node ran)\n' : '  (no node activity recorded yet)\n');
   }
   for (const step of status.steps) {
-    // A history.db value: text that JavaScript reads as a number past 1 (' 2\r') must not reach the terminal raw.
+    // A history.db value: text SQLite keeps as text but JavaScript reads as a number past 1 ('\u30002\f') must not
+    // reach the terminal raw.
     const attempt =
       Number.isSafeInteger(step.attemptNumber) && step.attemptNumber > 1
         ? ` (attempt ${step.attemptNumber})`
