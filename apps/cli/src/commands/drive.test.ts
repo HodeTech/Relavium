@@ -30,7 +30,7 @@ workflow:
     - { from: g, to: out }
 `;
 
-// g has an approve deadline and g2 none, so the run continues after the deadline decides g.
+// g has an approve deadline and g2 none: the deadline decides g, and g2 waits for its own decision.
 const GATED_DEADLINE = `schema_version: '1.0'
 workflow:
   id: drive-gated-deadline
@@ -43,6 +43,22 @@ workflow:
     - { from: start, to: g }
     - { from: g, to: g2 }
     - { from: g2, to: out }
+`;
+
+// Two gates in parallel: a with no deadline, b with an approve deadline.
+const PARALLEL_DEADLINE = `schema_version: '1.0'
+workflow:
+  id: drive-parallel-deadline
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: human_gate, gate_type: approval }
+    - { id: b, type: human_gate, gate_type: approval, timeout_ms: 1000, timeout_action: approve }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: out }
+    - { from: b, to: out }
 `;
 
 async function startGatedRun(): Promise<{
@@ -106,9 +122,10 @@ describe('driveRun — interactive gate', () => {
     expect(types.at(-1)).toBe('run:completed'); // and continued past the (ignored) run:paused to the terminal
   });
 
-  it('closes an open card when its deadline decides the gate, and says no answer from the terminal was recorded', async () => {
+  it('closes an open card when its deadline decides the gate, says so, and prompts no later gate here', async () => {
     // Before, the card stayed open: the user's later Reject reached `engine.resume`, which ignores a gate already
-    // decided, and the run went on approved with nothing said.
+    // decided, and the run went on approved with nothing said. The next card is not opened either: keys the user
+    // was still typing for the closed card would answer it (Clack's `y` approves), so the run parks on g2.
     const host = createInMemoryHost();
     const engine = await buildEngine({ host });
     const handle = engine.start({
@@ -164,18 +181,161 @@ describe('driveRun — interactive gate', () => {
     });
     await lifetime.finish();
 
-    expect(outcome).toBe('completed');
+    expect(outcome).toBe('paused');
     expect(signals[0]?.aborted).toBe(true);
     expect(err()).toMatch(
-      /Gate \S+ was already decided \(approved by its deadline\); no answer from this terminal was recorded\./u,
+      /Gate \S+ was already decided \(approved by its deadline\); no answer from this terminal was recorded\. Later gates in this run are not prompted here\./u,
     );
-    // g2 was answered on its own card, which is not "decided elsewhere".
     expect(err().match(/was already decided/gu)).toHaveLength(1);
     expect(order.slice(0, 2)).toEqual(['err', 'resume']);
-    const decidedG = events.filter((e) => e.type === 'human_gate:resumed' && e.nodeId === 'g');
-    expect(decidedG).toEqual([
-      expect.objectContaining({ decision: 'approved', decidedBy: 'timeout' }),
+    // Only g's card was drawn; g2 waits for an out-of-band decision.
+    expect(prompter.prompt).toHaveBeenCalledTimes(1);
+    const decided = events.filter((e) => e.type === 'human_gate:resumed');
+    expect(decided).toEqual([
+      expect.objectContaining({ nodeId: 'g', decision: 'approved', decidedBy: 'timeout' }),
     ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'human_gate:paused', nodeId: 'g2' }),
+    );
+  });
+
+  it('closes the card when another terminal decides its gate as `cli`, before the card answered', async () => {
+    // `cli` is every terminal's `decidedBy`, so it cannot tell this card's decision from another's; what this card
+    // returned can.
+    const { engine, handle } = await startGatedRun();
+    const { renderer, events } = recordingRenderer();
+    const { io, err } = captureIo();
+    const signals: AbortSignal[] = [];
+    const prompter: GatePrompter = {
+      prompt: vi.fn(
+        (
+          event: { readonly runId: string; readonly gateId: string },
+          _budget: unknown,
+          signal?: AbortSignal,
+        ) => {
+          if (signal !== undefined) signals.push(signal);
+          return new Promise<GateDecision | null>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(null));
+            setTimeout(() => {
+              void engine.resume(event.runId, event.gateId, {
+                decision: 'approved',
+                decidedBy: 'cli',
+              });
+              setTimeout(() => resolve({ decision: 'rejected', decidedBy: 'cli' }), 20);
+            }, 0);
+          });
+        },
+      ),
+    };
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    const outcome = await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+    await lifetime.finish();
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(err()).toContain('was already decided (approved by cli)');
+    expect(outcome).toBe('completed');
+    const decided = events.filter((e) => e.type === 'human_gate:resumed');
+    expect(decided).toEqual([expect.objectContaining({ decision: 'approved', decidedBy: 'cli' })]);
+  });
+
+  it('says so when another terminal decides the gate otherwise after the card answered, before its resume', async () => {
+    // Both are `cli`; only the decision tells the other terminal's approval from this card's own rejection.
+    const { engine, handle } = await startGatedRun();
+    const resume = engine.resume.bind(engine);
+    vi.spyOn(engine, 'resume').mockImplementation(async (runId, gateId, decision) => {
+      if (decision.decision === 'rejected')
+        await resume(runId, gateId, { decision: 'approved', decidedBy: 'cli' });
+      return resume(runId, gateId, decision);
+    });
+    const { renderer, events } = recordingRenderer();
+    const { io, err } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    const outcome = await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompterReturning({ decision: 'rejected', decidedBy: 'cli' }),
+      io,
+    });
+    await lifetime.finish();
+
+    expect(outcome).toBe('completed');
+    expect(err()).toContain('was already decided (approved by cli)');
+    const decided = events.filter((e) => e.type === 'human_gate:resumed');
+    expect(decided).toEqual([expect.objectContaining({ decision: 'approved', decidedBy: 'cli' })]);
+  });
+
+  it('leaves the open card alone when a deadline decides another gate, and says nothing', async () => {
+    const host = createInMemoryHost();
+    const engine = await buildEngine({ host });
+    const handle = engine.start({
+      workflow: parseWorkflow(PARALLEL_DEADLINE, { source: 'drive.test' }),
+      inputs: {},
+    });
+    const { renderer, events } = recordingRenderer();
+    const { io, err } = captureIo();
+    const signals: AbortSignal[] = [];
+    const prompted: string[] = [];
+    const prompter: GatePrompter = {
+      prompt: vi.fn(
+        (event: { readonly nodeId: string }, _budget: unknown, signal?: AbortSignal) => {
+          prompted.push(event.nodeId);
+          if (signal !== undefined) signals.push(signal);
+          return new Promise<GateDecision | null>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(null));
+            // b's deadline fires while a's card is open; the user then approves a.
+            setTimeout(() => {
+              host.fireTimers();
+              setTimeout(() => resolve({ decision: 'approved', decidedBy: 'cli' }), 20);
+            }, 0);
+          });
+        },
+      ),
+    };
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    const outcome = await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+    await lifetime.finish();
+
+    expect(prompted).toEqual(['a']);
+    expect(signals[0]?.aborted).toBe(false);
+    expect(err()).not.toContain('was already decided');
+    expect(outcome).toBe('completed');
+    const decided = events
+      .filter((e) => e.type === 'human_gate:resumed')
+      .map((e) =>
+        e.type === 'human_gate:resumed' ? `${e.nodeId}:${e.decision}:${e.decidedBy}` : '',
+      );
+    expect(decided.sort()).toEqual(['a:approved:cli', 'b:approved:timeout']);
   });
 
   it('passes the built decision through to the engine (the resumed event carries it)', async () => {

@@ -12,6 +12,7 @@ import {
 } from '@relavium/core';
 import type {
   ErrorCode,
+  GateDecision,
   HumanGatePausedEvent,
   RunDurability,
   RunEvent,
@@ -20,7 +21,6 @@ import type {
 
 import type { GatePrompter } from '../gate/prompter.js';
 import { budgetIdentifier, budgetPromptContext, type BudgetPromptContext } from '../gate/budget.js';
-import { DECIDED_BY_CLI } from '../gate/decision.js';
 import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import { CliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -133,13 +133,17 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     | {
         readonly gate: HumanGatePausedEvent;
         readonly controller: AbortController;
+        /** The decision this card returned, once it has: the resumed event that carries it is the card's own. */
+        answered?: { readonly decision: string; readonly decidedBy: string };
         decided?: string;
       }
     | undefined;
   /**
-   * Close the open card when `decidedBy`, not this card, decided its gate: matched by gate id, or by node for a legacy
-   * resumed companion that names no gate. Records how it was decided for the stderr notice; our own decisions
-   * (`decidedBy` of `cli`) are left alone.
+   * Close the open card when `decidedBy`, not this card, decided its gate: matched by gate id when the resumed event
+   * names one (a budget companion), otherwise by node (every human-gate resume, and a legacy companion). Records how
+   * it was decided for the stderr notice. The card's own decision is the one it returned, matched by its decision and
+   * `decidedBy`: before the card answers, any decision for its gate came from elsewhere, even one by `cli` (another
+   * terminal's `relavium gate`).
    */
   const closeCardDecidedElsewhere = (
     gateId: string | undefined,
@@ -148,8 +152,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     decidedBy: string,
   ): void => {
     const card = openCard;
-    if (card === undefined || decidedBy === DECIDED_BY_CLI) return;
-    // A legacy resumed companion names the node, not the gate.
+    if (card === undefined) return;
+    if (card.answered?.decision === decision && card.answered.decidedBy === decidedBy) return;
+    // A human-gate resume (and a legacy companion) names the node, not the gate.
     if (gateId === undefined ? nodeId !== card.gate.nodeId : gateId !== card.gate.gateId) return;
     card.decided ??= `${decision}${decidedBy === 'timeout' ? ' by its deadline' : ` by ${decidedBy}`}`;
     card.controller.abort();
@@ -431,6 +436,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
                 signal: controller.signal,
                 runPrompt: (invoke) => terminal.runPrompt(invoke),
                 decidedElsewhere: () => card.decided,
+                answered: (decision) => {
+                  card.answered = { decision: decision.decision, decidedBy: decision.decidedBy };
+                },
                 runViewOperation: (invoke, mayAcquire) =>
                   terminal.runViewOperation(invoke, mayAcquire),
                 failed: recordFault,
@@ -446,6 +454,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             handledGates.add(gate.gateId);
             gates.delete(gate.gateId);
           } else inlineRefused = true;
+          // A card closed under the user can leave keys in flight that the next card would take as its answer
+          // (Clack's `y` approves outright), so this run's later gates are left for the command its summary names.
+          if (card.decided !== undefined) inlineRefused = true;
         } catch (error) {
           recordFault(error);
           requestCancellation();
@@ -568,6 +579,8 @@ interface InlineGateLifecycle {
   ) => ReturnType<GatePrompter['prompt']>;
   /** How the gate was decided while its card was open, when something other than the card decided it. */
   readonly decidedElsewhere: () => string | undefined;
+  /** Record the decision the card returned, so the resumed event that carries it is not taken for another's. */
+  readonly answered: (decision: GateDecision) => void;
   readonly failed: (cause: unknown) => void;
   readonly runViewOperation: (
     invoke: () => void | Promise<void>,
@@ -609,7 +622,7 @@ async function resolveGateInline(
     reported = true;
     io.writeErr(
       `Gate ${sanitizeInline(event.gateId)} was already decided (${sanitizeInline(decided)}); ` +
-        'no answer from this terminal was recorded.\n',
+        'no answer from this terminal was recorded. Later gates in this run are not prompted here.\n',
     );
   };
   try {
@@ -624,6 +637,7 @@ async function resolveGateInline(
       () => lifecycle.runPrompt(() => prompter.prompt(event, budget, lifecycle.signal)),
       lifecycle.signal,
     );
+    if (decision !== null) lifecycle.answered(decision);
     // Said while the terminal is still the prompt's, so it lands under the card rather than inside the live view.
     reportDecidedElsewhere();
   } catch (cause) {
