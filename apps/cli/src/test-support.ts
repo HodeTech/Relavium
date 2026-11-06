@@ -150,6 +150,11 @@ export type SeedRunOptions = {
    * unresolved and its gate node's step row open — a FINISHED run whose log still holds an open gate.
    */
   readonly cancelAfterPause?: boolean;
+  /**
+   * For a `paused` run: then approve each human gate and complete the run, as `relavium gate --approve` does. No
+   * `node:completed` follows a decision, so the gate node's step row stays open, as the projection leaves it.
+   */
+  readonly decideAfterPause?: boolean;
 } & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
@@ -209,6 +214,21 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     await emitPausedState(emit, opts, ts, tsMs);
     if (opts.cancelAfterPause === true)
       await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
+    if (opts.decideAfterPause === true) {
+      for (const gate of opts.gates ?? (opts.gate === undefined ? [] : [opts.gate])) {
+        await emit('human_gate:resumed', {
+          nodeId: gate.nodeId ?? 'g',
+          decision: 'approved',
+          decidedBy: 'cli',
+        });
+      }
+      await emit('run:completed', {
+        outputs: {},
+        totalTokensUsed: { input: 1, output: 2 },
+        totalCostMicrocents: 100,
+        durationMs: 9,
+      });
+    }
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
       outputs: opts.outputs ?? {},

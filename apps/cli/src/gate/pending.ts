@@ -58,6 +58,24 @@ export function humanGateResumeHints(
   );
 }
 
+/**
+ * The nodes whose latest gate event is a decision: a `human_gate:resumed` after the node last started or parked. The
+ * projection never closes a human gate's step row (no `node:completed` follows the decision, though the engine marks
+ * the gate vertex completed), so `status` reads the decision here. A node that starts or parks again, as a loop does,
+ * is undecided until its next decision. A budget gate's events name its agent node, which `status` does not relabel.
+ */
+export function decidedGateNodes(events: readonly RunEvent[]): ReadonlySet<string> {
+  const decided = new Set<string>();
+  for (const event of events) {
+    if (event.type === 'node:started' || event.type === 'human_gate:paused') {
+      decided.delete(event.nodeId);
+    } else if (event.type === 'human_gate:resumed') {
+      decided.add(event.nodeId);
+    }
+  }
+  return decided;
+}
+
 export interface PendingBudgetGate {
   readonly gateId: string;
   readonly nodeId: string;

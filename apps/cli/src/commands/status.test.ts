@@ -86,6 +86,81 @@ describe('statusCommand', () => {
     expect(record?.steps.find((step) => step.nodeId === 'g')?.status).toBe('running');
   });
 
+  it('shows a decided gate as completed, though no node:completed closes its step row (MVP-1)', async () => {
+    // `relavium gate --approve` resolves the gate and the run completes, but the projection leaves the gate node's
+    // step row `running`. The engine marks the vertex completed, so `status` does too.
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'decided-1',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+      decideAfterPause: true,
+    });
+    const noOutbox = { readTerminalOutbox: () => Promise.resolve([]) };
+    const human = captureIo();
+    await statusCommand({ ...deps(human.io), ...noOutbox }, { runId: 'decided-1' });
+    const text = human.out();
+    expect(text).toContain('run decided-1 — completed');
+    expect(text).toContain('  completed g [human_in_the_loop]\n');
+    expect(text).not.toContain('stopped');
+    const machine = captureIo();
+    await statusCommand({ ...deps(machine.io, true), ...noOutbox }, { runId: 'decided-1' });
+    const [record] = parseNdjson<{ steps: readonly { nodeId: string; status: string }[] }>(
+      machine.out(),
+    );
+    // The machine record keeps the status history.db recorded.
+    expect(record?.steps.find((step) => step.nodeId === 'g')?.status).toBe('running');
+  });
+
+  it('raises no gate warning for a finished run whose log is damaged: nothing was pending to lose (MVP-1)', async () => {
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'decided-3',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+      decideAfterPause: true,
+    });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-0000000000de',
+        runId: 'decided-3',
+        seq: 900,
+        eventType: 'node:started',
+        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
+        ts: 0,
+      })
+      .run();
+    const noOutbox = { readTerminalOutbox: () => Promise.resolve([]) };
+    const human = captureIo();
+    await statusCommand({ ...deps(human.io), ...noOutbox }, { runId: 'decided-3' });
+    expect(human.out()).toContain('usage coverage unavailable');
+    expect(human.out()).not.toContain('pending gates unavailable');
+    const machine = captureIo();
+    await statusCommand({ ...deps(machine.io, true), ...noOutbox }, { runId: 'decided-3' });
+    expect(parseNdjson(machine.out())[0]).not.toHaveProperty('gatesUnavailable');
+  });
+
+  it('relabels only a gate node: another open step under a finished run stays stopped (MVP-1)', async () => {
+    // A budget gate's decision names its agent node, which can still be open when the run ends.
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'decided-2',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+      decideAfterPause: true,
+    });
+    client.sqlite
+      .prepare("UPDATE step_executions SET node_type = 'agent' WHERE run_id = 'decided-2'")
+      .run();
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'decided-2' },
+    );
+    expect(out()).toContain('  stopped   g [agent]\n');
+  });
+
   it('says no node ran for a finished run with no step, rather than that none was recorded yet (MVP-1)', async () => {
     await seedRun(db, { slug: 'demo', runId: 'empty-1', state: 'failed' });
     client.sqlite.prepare("DELETE FROM step_executions WHERE run_id = 'empty-1'").run();

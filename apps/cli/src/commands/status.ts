@@ -6,6 +6,7 @@ import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
+  decidedGateNodes,
   humanGateResumeHints,
   pendingGateDisplays,
   type PendingGate,
@@ -90,6 +91,8 @@ interface ActiveRunStatus {
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
   readonly pendingBudgetGates: readonly PendingBudgetGate[];
+  /** The nodes whose human gate was decided, read from the log (empty when it could not be read). */
+  readonly decidedGateNodes: ReadonlySet<string>;
   /** `true` when this run's event log could not be read, so `pendingGates` is a stand-in (#W15-15). */
   readonly gatesUnavailable: boolean;
 }
@@ -164,7 +167,7 @@ export async function statusCommand(
         // A FINISHED run (`status <runId>`) has nothing pending, whatever its log left open: a run cancelled or
         // failed while a gate waited never resolves that gate: `gate` / `budget resume` answer it with an exit-0
         // `nothing to resume`, and `gate list` skips it.
-        ...(TERMINAL_STATUSES.has(run.status) ? NOTHING_PENDING : gatesOf(reader, run)),
+        ...gatesOf(reader, run, TERMINAL_STATUSES.has(run.status)),
       };
     });
 
@@ -195,27 +198,33 @@ function requireRun(reader: RunHistoryReader, runId: string): RunRecord {
   return run;
 }
 
-/** What a finished run has pending: nothing (see the call site). */
-const NOTHING_PENDING = {
-  pendingGates: [],
-  pendingBudgetGates: [],
-  gatesUnavailable: false,
-} as const;
+interface RunGates {
+  readonly pendingGates: readonly PendingGate[];
+  readonly pendingBudgetGates: readonly PendingBudgetGate[];
+  readonly decidedGateNodes: ReadonlySet<string>;
+}
 
-/** Reconstruct once per active run: a companion crash may leave a running projection with pending gates. */
+/**
+ * Read a run's log once for its gates: what is pending, and which gates were decided. An active run may hold pending
+ * gates even with a running projection (a companion crash). A finished run has nothing pending (see the call site),
+ * so an unreadable log costs it only the decided-gate labels and raises no `gatesUnavailable`.
+ */
 function gatesOf(
   reader: RunHistoryReader,
   run: RunRecord,
-): {
-  pendingGates: readonly PendingGate[];
-  pendingBudgetGates: readonly PendingBudgetGate[];
-  gatesUnavailable: boolean;
-} {
-  const read = readPerRunOrDegrade<ReturnType<typeof pendingGateDisplays>>(
-    { pendingGates: [], pendingBudgetGates: [] },
-    () => pendingGateDisplays(reader.loadRunEvents(run.id)),
+  finished: boolean,
+): RunGates & { gatesUnavailable: boolean } {
+  const read = readPerRunOrDegrade<RunGates>(
+    { pendingGates: [], pendingBudgetGates: [], decidedGateNodes: new Set() },
+    () => {
+      const events = reader.loadRunEvents(run.id);
+      const pending = finished
+        ? { pendingGates: [], pendingBudgetGates: [] }
+        : pendingGateDisplays(events);
+      return { ...pending, decidedGateNodes: decidedGateNodes(events) };
+    },
   );
-  return { ...read.value, gatesUnavailable: read.degraded };
+  return { ...read.value, gatesUnavailable: !finished && read.degraded };
 }
 
 /** One active run as a machine record: identity + status + per-node steps + any pending human gates. */
@@ -266,6 +275,21 @@ function toJson(status: ActiveRunStatus): unknown {
   };
 }
 
+/**
+ * A step's human label; `--json` keeps the recorded status. No `node:completed` closes a human gate's step row,
+ * though the engine marks the gate vertex completed when it is decided, so a decided gate prints `completed`. Any
+ * other step still `running` under a finished run never finished: a run terminal does not close its row.
+ */
+function shownStepStatus(
+  step: StepRecord,
+  finished: boolean,
+  decided: ReadonlySet<string>,
+): string {
+  if (step.status !== 'running') return step.status;
+  if (step.nodeType === 'human_in_the_loop' && decided.has(step.nodeId)) return 'completed';
+  return finished ? 'stopped' : step.status;
+}
+
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
 function renderRun(io: CliIo, status: ActiveRunStatus): void {
   // Every identifier here is read back from history.db, so each is printed one-line with controls stripped, as
@@ -282,8 +306,7 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
   }
   for (const step of status.steps) {
     const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
-    // A run terminal does not close a step row the node never finished, so under a finished run it says so.
-    const shown = finished && step.status === 'running' ? 'stopped' : step.status;
+    const shown = shownStepStatus(step, finished, status.decidedGateNodes);
     io.writeOut(
       `  ${shown.padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
     );
