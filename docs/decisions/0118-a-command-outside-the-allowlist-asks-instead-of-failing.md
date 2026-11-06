@@ -56,9 +56,10 @@ not pre-approved.**
 | Approved earlier in this session (§1, "Session") | Denied | Runs | Runs |
 | Anything else | Denied | **Card** | **Card** |
 
-**The card shows the command exactly.** It shows:
+**The card shows the command exactly, masked secret spans aside.** It shows:
 
-- the argv, one argument per element, so spaces and quotes are unambiguous;
+- the argv, one argument per element, each delimited so a leading or trailing
+  space in it stays visible, and spaces and quotes are unambiguous;
 - the working directory;
 - why the command is not pre-approved.
 
@@ -208,7 +209,8 @@ accepted.
 
 ### Positive
 
-- A command the user is willing to run can run, with the exact argv on screen.
+- A command the user is willing to run can run, with the exact argv on screen,
+  masked secret spans aside.
   The config edit and restart are no longer needed.
 - A remembered grant serves one operator on one tree and never travels with the
   repository, and it holds no command text beyond the name of an executable

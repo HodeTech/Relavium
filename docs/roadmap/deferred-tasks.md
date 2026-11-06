@@ -2069,6 +2069,22 @@ Positive consequence, and ADR-0120's plain drawing, against ADR-0114 §5. Record
   repository-declared server's argument can look like a comment. **Re-check:** apply ADR-0120's approval escape when
   it lands. *(low · apps/cli/src/engine/mcp-consent-gate.ts)*
 
+**D64 round 4 of the correction (2026-11-07, at `2d7f0714`)** found two mediums. Round 3's own fix left the pause
+that parked a gate in place after the gate resumed, so once a card closed under the user every later event attempted a
+departure and re-mounted the live view, which then stacked one frame per event and drew no streamed text; a resumed
+gate now clears it. ADR-0120's closed escape still drew a trailing ASCII space as nothing and dropped a line's
+ending from the comparison; whitespace at a line's end now shows a mark per character, and a changed or mixed line
+ending shows as `<CR LF>` or `<LF>`, so a whitespace-only or ending-only change never renders as an unchanged line.
+Fixed with them: a test that the TTL check runs before the claim, tests that something already at the own export's
+path is refused before it is opened, a test for a legitimate attempt number, `gate list`'s empty-result line and
+`gate`'s two idempotent notices on one line, ADR-0120's blank-drawing list (U+16FE4, U+1D159) and its plain drawing,
+ADR-0118's card and Positive wording, and three comments. Recorded:
+
+- [ ] **Keys typed into a card closed under the user reach the shell when the CLI exits.** *Low.* *(security-3)*
+  Nothing reads the input once the card closes, so the cooked line discipline keeps the rest of a typed reason, and
+  the shell reads it when the run parks and the CLI exits `3`. **Re-check:** keep a raw-mode reader that discards
+  input until the view re-mounts, or drain pending input before exit. *(low · apps/cli/src/commands/drive.ts)*
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows

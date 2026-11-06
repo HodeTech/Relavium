@@ -112,11 +112,19 @@ Exact arguments, bounds and texts live in
   - every default-ignorable code point (`\p{Default_Ignorable_Code_Point}`),
     which covers the joiners, variation selectors and fillers a transcript
     keeps, so an approval shows `<U+FE0F>` rather than hide a code point;
-  - U+2800, the braille blank, which draws as a space.
+  - the graphic code points known to draw as a blank or as nothing: U+2800 (the
+    braille blank), U+16FE4 (a filler mark) and U+1D159 (a null notehead). A
+    font can draw others blank; the mandatory security review owns this list.
 
   A TAB shows as a styled tab mark instead, so tab-indented code stays readable
-  and a tab is still told from spaces; the line diff splits on LF and CR LF, so
-  a CR LF ending is not escaped, while a CR anywhere else is. The properties are
+  and a tab is still told from spaces. Whitespace at the end of a line, the
+  ASCII space included, shows as a styled mark per character (`·` for a space),
+  as `git diff` marks whitespace errors, so a trailing space never draws as
+  nothing. The line diff compares each line with its ending: where a line's
+  ending differs between the two sides, or from the file's other lines, it shows
+  as a styled `<CR LF>` or `<LF>` mark, and a CR anywhere else is escaped. A
+  change to whitespace or to a line ending alone therefore never renders as an
+  unchanged line. The properties are
   ones the JavaScript regular-expression engine knows, so no table is kept by
   hand. The escape does not tell confusable letters apart (a Cyrillic `а` for a
   Latin `a`): they are visible, and they stay as they are. Transcript rows may
@@ -139,8 +147,9 @@ Exact arguments, bounds and texts live in
     each side passes the floor.
 - **Truncation is stated, never hidden.** A preview that does not fit shows the
   hidden line and byte counts, and the full view is one key away from the
-  card. The engine never renders; the CLI renders a `ToolPreview` through
-  ADR-0114's span pipeline, which writes no escape sequences.
+  card. The engine never renders; the CLI draws a `ToolPreview` as plain spans
+  through ADR-0114's sanitize and layout, with no markdown parse, and writes no
+  escape sequences.
 
 ### 3. Where previews appear
 
