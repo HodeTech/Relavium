@@ -1914,7 +1914,8 @@ the Windows readiness budget; the ADR-0119 and ADR-0120 drafts. **Resolved in th
 reversal against `main` is stated (the PR #96 review's A4, above); the ReDoS entry names the cloned-repository vector
 and stays open (M8). **Fixed (low):** the drain now reads the outbox before the open runs (A2); reconcile leaves a run
 younger than one lease TTL alone, which narrows 1b's liveness-1 (A1); a crashed run with an unresolved external effect
-is settled as `effect_needs_attention` (A4); Esc at the rejection reason cancelled the run; the card promised
+is settled as `effect_needs_attention` (A4); Esc at the rejection reason cancelled the run (Ctrl-C there still
+cancels it: the card watches its input for the key, since Clack reports both as one cancel); the card promised
 `auto-reject` where the run fails; `/export`'s own-export rewrite re-checks the file before it replaces it; the
 ADR-0118 draft (HMAC grants); history-12; the doc and comment items. The register's plan also listed B3's `?? []` and
 B2's missing-vertex fail-closed as one-line fixes; they were recorded below instead. The lows below were not fixed.
