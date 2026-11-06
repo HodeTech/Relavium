@@ -157,8 +157,8 @@ export async function statusCommand(
         // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
         // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
         // A FINISHED run (`status <runId>`) has nothing pending, whatever its log left open: a run cancelled or
-        // failed while a gate waited never resolves that gate, and `gate` / `budget resume` refuse it, as
-        // `gate list` does.
+        // failed while a gate waited never resolves that gate: `gate` / `budget resume` answer it with an exit-0
+        // `nothing to resume`, and `gate list` skips it.
         ...(TERMINAL_STATUSES.has(run.status) ? NOTHING_PENDING : gatesOf(reader, run)),
       };
     });

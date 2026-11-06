@@ -54,7 +54,8 @@ describe('statusCommand', () => {
 
   it('shows nothing pending for a run that ended while a gate waited, and marks its open step stopped (MVP-1)', async () => {
     // Esc at an inline gate prompt cancels the run without resolving the gate, so its log still holds the open
-    // human and budget gates and the gate node's open step row. `gate` and `budget resume` refuse a finished run.
+    // human and budget gates and the gate node's open step row. `gate` and `budget resume` answer a finished run
+    // with an exit-0 `nothing to resume`.
     await seedRun(db, {
       slug: 'demo',
       runId: 'cancelled-1',
@@ -73,11 +74,57 @@ describe('statusCommand', () => {
     expect(text).not.toContain('budget resume');
     const machine = captureIo();
     await statusCommand({ ...deps(machine.io, true), ...noOutbox }, { runId: 'cancelled-1' });
-    expect(parseNdjson(machine.out())[0]).toMatchObject({
+    const [record] = parseNdjson<{ steps: readonly { nodeId: string; status: string }[] }>(
+      machine.out(),
+    );
+    expect(record).toMatchObject({
       status: 'cancelled',
       pendingGates: [],
       pendingBudgetGates: [],
     });
+    // `stopped` is the human rendering only; the machine record keeps the status history.db recorded.
+    expect(record?.steps.find((step) => step.nodeId === 'g')?.status).toBe('running');
+  });
+
+  it('says no node ran for a finished run with no step, rather than that none was recorded yet (MVP-1)', async () => {
+    await seedRun(db, { slug: 'demo', runId: 'empty-1', state: 'failed' });
+    client.sqlite.prepare("DELETE FROM step_executions WHERE run_id = 'empty-1'").run();
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'empty-1' },
+    );
+    expect(out()).toContain('  (no node ran)');
+  });
+
+  it('prints every history identifier on one line, terminal controls stripped (MVP-1)', async () => {
+    // history.db is the trust boundary: a hand-edited or crafted file must not repaint the terminal through
+    // `status`. The run id, the workflow, a step's node id and type, and a pending gate's id all come from it.
+    const attack = '\u001b]0;PWNED\u0007\u202e';
+    await seedRun(db, {
+      slug: `wf${attack}`,
+      runId: `r${attack}`,
+      state: 'paused',
+      gate: { gateId: `gate${attack}`, gateType: 'approval', message: 'ship it?' },
+    });
+    client.sqlite
+      .prepare('UPDATE step_executions SET node_id = ?, node_type = ?')
+      .run(`n${attack}`, `t${attack}`);
+    // The workflow id the header names is the row's foreign key, so only a file written without the constraint
+    // carries a hostile one.
+    client.sqlite.pragma('foreign_keys = OFF');
+    client.sqlite.prepare('UPDATE runs SET workflow_id = ?').run(`w${attack}`);
+    client.sqlite.pragma('foreign_keys = ON');
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: `r${attack}` },
+    );
+    const text = out();
+    expect(text).toMatch(/^run r.* — paused \(workflow w/u);
+    expect(text).toContain('pending gate gate');
+    expect(text).toMatch(/\[t[^\]]*\]/u); // the step row printed, with its type
+    for (const control of ['\u001b', '\u0007', '\u202e']) expect(text).not.toContain(control);
   });
 
   it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {

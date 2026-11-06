@@ -133,8 +133,9 @@ function targetRunIds(reader: RunHistoryReader, runId: string | undefined): stri
   if (run === undefined) {
     throw new CliError('invalid_invocation', `no run found with id ${runId}`);
   }
-  // A non-paused run cannot hold a pending human gate — skip it (don't replay its whole event log only to
-  // find none), the same guard `statusCommand` applies. The empty result yields the clear "no pending" message.
+  // Only a `paused` run is read (don't replay a whole event log only to find no gate); the empty result yields the
+  // clear "no pending" message. `statusCommand` differs: it shows nothing for a finished run, but reads the gates of
+  // a `running` one too, which a crash between a gate's authority and its pause can leave holding one.
   return run.status === 'paused' ? [run.id] : [];
 }
 
