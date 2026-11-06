@@ -116,11 +116,13 @@ type EventBody<T extends RunEvent['type']> = Omit<
 /** The schema-validated event emitter `seedRun` threads through its state helpers. */
 type EmitFn = <T extends RunEvent['type']>(type: T, rest: EventBody<T>) => Promise<void>;
 
-/** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event at node `g`). */
+/** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event, at node `g` by default). */
 export interface SeedGate {
   readonly gateId: string;
   readonly gateType: 'approval' | 'input' | 'review';
   readonly message?: string;
+  /** The node the gate event names — only the event's; the seeded step rows stay at `g`. */
+  readonly nodeId?: string;
 }
 
 /**
@@ -278,7 +280,7 @@ async function emitPausedState(
   // Each human gate (distinct gateId) folds into a separate pending entry — exercises the multi-gate fan-out.
   for (const gate of gates) {
     await emit('human_gate:paused', {
-      nodeId: 'g',
+      nodeId: gate.nodeId ?? 'g',
       gateId: gate.gateId,
       gateType: gate.gateType,
       message: gate.message ?? 'ok?',

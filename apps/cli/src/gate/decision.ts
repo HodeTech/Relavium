@@ -103,8 +103,8 @@ export function decisionFromFlags(flags: GateFlags): GateFlagResult {
   return { ok: true, decision: rejectionDecision(flags.comment) };
 }
 
-/** The `relavium gate` flag that records each decision kind, for an actionable refusal. */
-const FLAG_FOR_DECISION: Readonly<Record<GateDecision['decision'], string>> = {
+/** The `relavium gate` flag that records each decision kind, for an actionable refusal and `status`'s resume hints. */
+export const FLAG_FOR_DECISION: Readonly<Record<GateDecision['decision'], string>> = {
   approved: '--approve',
   rejected: '--reject',
   input_provided: '--input <json>',

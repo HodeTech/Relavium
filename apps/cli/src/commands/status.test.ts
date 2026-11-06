@@ -99,19 +99,24 @@ describe('statusCommand', () => {
 
   it('prints every history identifier on one line, terminal controls stripped (MVP-1)', async () => {
     // history.db is the trust boundary: a hand-edited or crafted file must not repaint the terminal through
-    // `status`. The run id, the workflow, a step's node id and type, and a pending gate's id all come from it.
+    // `status`. The run id, the workflow, a step's node id and type, and a pending gate's id and node all come
+    // from it.
     const attack = '\u001b]0;PWNED\u0007\u202e';
     await seedRun(db, {
       slug: `wf${attack}`,
       runId: `r${attack}`,
       state: 'paused',
-      gate: { gateId: `gate${attack}`, gateType: 'approval', message: 'ship it?' },
+      gate: {
+        gateId: `gate${attack}`,
+        gateType: 'approval',
+        message: 'ship it?',
+        nodeId: `x${attack}`,
+      },
     });
     client.sqlite
       .prepare('UPDATE step_executions SET node_id = ?, node_type = ?')
       .run(`n${attack}`, `t${attack}`);
-    // The workflow id the header names is the row's foreign key, so only a file written without the constraint
-    // carries a hostile one.
+    // The workflow id the header names is the row's foreign key, so only a crafted file carries a hostile one.
     client.sqlite.pragma('foreign_keys = OFF');
     client.sqlite.prepare('UPDATE runs SET workflow_id = ?').run(`w${attack}`);
     client.sqlite.pragma('foreign_keys = ON');
@@ -122,8 +127,13 @@ describe('statusCommand', () => {
     );
     const text = out();
     expect(text).toMatch(/^run r.* — paused \(workflow w/u);
-    expect(text).toContain('pending gate gate');
+    expect(text).toMatch(/pending gate gate.* \(approval\) at x/u);
     expect(text).toMatch(/\[t[^\]]*\]/u); // the step row printed, with its type
+    // A recorded identifier that is not shell-inert never becomes a copyable command.
+    expect(text).toContain(
+      '    Use relavium gate with the recorded run and gate IDs and --approve or --reject.\n',
+    );
+    expect(text).not.toContain('relavium gate r');
     for (const control of ['\u001b', '\u0007', '\u202e']) expect(text).not.toContain(control);
   });
 
@@ -311,8 +321,43 @@ describe('statusCommand', () => {
     expect(text).toContain('run paused-1 — paused');
     expect(text).toContain('n1 [transform]'); // the completed node step
     expect(text).toContain('g [human_in_the_loop]'); // the gate node still 'running'
-    expect(text).toContain('pending gate gate-1 (approval) at g — "ship it?"'); // the gate message is shown
+    expect(text).toContain(
+      '  ⏸ pending gate gate-1 (approval) at g — "ship it?"\n' +
+        '    approve: relavium gate paused-1 --gate gate-1 --approve\n' +
+        '    reject: relavium gate paused-1 --gate gate-1 --reject\n',
+    ); // the gate message is shown, then the commands that continue it
     expect(text).not.toContain('run done'); // a terminal run is not active
+  });
+
+  it('prints the command that continues each pending human gate, by its type (MVP-1)', async () => {
+    // A resumed run's final summary cannot classify a gate its engine restored from the checkpoint and sends the
+    // user here for the command, so every pending human gate gets one — an input gate takes its value or a reject.
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'fan-1',
+      state: 'paused',
+      gates: [
+        { gateId: 'review-1', gateType: 'review', message: 'look' },
+        { gateId: 'input-1', gateType: 'input', message: 'name?' },
+      ],
+    });
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'fan-1' },
+    );
+    const text = out();
+    expect(text).toContain(
+      '  ⏸ pending gate review-1 (review) at g — "look"\n' +
+        '    approve: relavium gate fan-1 --gate review-1 --approve\n' +
+        '    reject: relavium gate fan-1 --gate review-1 --reject\n',
+    );
+    expect(text).toContain(
+      '  ⏸ pending gate input-1 (input) at g — "name?"\n' +
+        '    input: relavium gate fan-1 --gate input-1 --input <json>\n' +
+        '    reject: relavium gate fan-1 --gate input-1 --reject\n',
+    );
+    expect(text).not.toContain('--gate input-1 --approve');
   });
 
   it('keeps listing every HEALTHY run when one run`s event log is damaged (ADR-0074 §5 blast radius)', async () => {

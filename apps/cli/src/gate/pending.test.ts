@@ -2,7 +2,7 @@ import { createClient, createRunHistoryReader, runMigrations, type DbClient } fr
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { seedRun } from '../test-support.js';
-import { pendingHumanGates } from './pending.js';
+import { humanGateResumeHints, pendingHumanGates } from './pending.js';
 
 describe('pendingHumanGates', () => {
   let client: DbClient;
@@ -38,5 +38,33 @@ describe('pendingHumanGates', () => {
 
   it('returns [] for an empty event log (no reconstructable run)', () => {
     expect(pendingHumanGates([])).toEqual([]);
+  });
+});
+
+describe('humanGateResumeHints', () => {
+  it('names one copyable command per decision the gate type accepts', () => {
+    expect(humanGateResumeHints('run-1', 'g-1', 'approval')).toEqual([
+      'approve: relavium gate run-1 --gate g-1 --approve',
+      'reject: relavium gate run-1 --gate g-1 --reject',
+    ]);
+    expect(humanGateResumeHints('run-1', 'g-1', 'review')).toEqual([
+      'approve: relavium gate run-1 --gate g-1 --approve',
+      'reject: relavium gate run-1 --gate g-1 --reject',
+    ]);
+    expect(humanGateResumeHints('run-1', 'g-1', 'input')).toEqual([
+      'input: relavium gate run-1 --gate g-1 --input <json>',
+      'reject: relavium gate run-1 --gate g-1 --reject',
+    ]);
+  });
+
+  it.each([
+    ['a shell-active run id', 'run;rm -rf ~', 'g-1'],
+    ['an option-shaped gate id', 'run-1', '--approve'],
+    ['a gate id with a space', 'run-1', 'g 1'],
+    ['a terminal control', 'run-1', 'g\u001b]0;x\u0007'],
+  ])('builds no command from %s, only the flags', (_label, runId, gateId) => {
+    expect(humanGateResumeHints(runId, gateId, 'input')).toEqual([
+      'Use relavium gate with the recorded run and gate IDs and --input <json> or --reject.',
+    ]);
   });
 });

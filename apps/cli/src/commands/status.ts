@@ -5,7 +5,12 @@ import type { RunEvent, RunStatus } from '@relavium/shared';
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { pendingGateDisplays, type PendingGate, type PendingBudgetGate } from '../gate/pending.js';
+import {
+  humanGateResumeHints,
+  pendingGateDisplays,
+  type PendingGate,
+  type PendingBudgetGate,
+} from '../gate/pending.js';
 import {
   budgetIdentifier,
   budgetPromptDetails,
@@ -316,5 +321,8 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     io.writeOut(
       `  ⏸ pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
     );
+    // The command that continues it: a resumed run's final summary sends a gate it cannot classify here.
+    for (const hint of humanGateResumeHints(status.run.id, gate.gateId, gate.gateType))
+      io.writeOut(`    ${hint}\n`);
   }
 }
