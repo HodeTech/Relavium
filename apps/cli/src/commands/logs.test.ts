@@ -152,6 +152,29 @@ describe('logsCommand', () => {
     }
   });
 
+  it('prints a forged skipped-row seq on one line, without its controls', async () => {
+    // `run_events.seq` is an integer column with no CHECK, so SQLite stores text there as it is given.
+    await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
+    client.sqlite
+      .prepare(
+        'INSERT INTO run_events (id, run_id, seq, event_type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        '00000000-0000-4000-8000-0000000000fe',
+        'run-1',
+        '9\u001b]0;PWNED\u0007\u001b[2J\nFAKE: all clear',
+        'test:never_a_real_event',
+        JSON.stringify({ type: 'test:never_a_real_event' }),
+        0,
+      );
+    const { io, err } = captureIo();
+    expect(logsCommand({ runId: 'run-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(err()).toContain('was skipped (seq 9');
+    expect(err()).not.toContain('\u001b');
+    expect(err()).not.toContain('\u0007');
+    expect(err().trimEnd().split('\n')).toHaveLength(1);
+  });
+
   it('says nothing when the log is clean — no note on the happy path', async () => {
     await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
     const { io, err } = captureIo();

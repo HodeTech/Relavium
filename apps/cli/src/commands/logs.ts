@@ -79,8 +79,11 @@ function writeSkippedNote(io: CliIo, skipped: readonly SkippedRunEvent[]): void 
   if (skipped.length === 0) return;
   // BOUNDED, like the fixed native background-diagnostic bound: a run replayed under a much newer binary could
   // skip thousands of rows, and one unbounded line of comma-separated integers is not a diagnostic. The count
-  // is the signal; the first few numbers are the lead.
-  const shown = skipped.slice(0, MAX_REPORTED_SKIPS).map((row) => row.sequenceNumber);
+  // is the signal; the first few numbers are the lead. Each is read back from history.db, whose `seq` column takes
+  // any text, so it gets the one-line floor too.
+  const shown = skipped
+    .slice(0, MAX_REPORTED_SKIPS)
+    .map((row) => sanitizeInline(String(row.sequenceNumber)));
   const seqs = skipped.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
   const one = skipped.length === 1;
   io.writeErr(
