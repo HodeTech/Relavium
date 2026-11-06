@@ -15,6 +15,9 @@ import { CliError } from '../process/errors.js';
 import {
   mkdirForStorage,
   replaceFileForStorage,
+  StorageTargetChangedError,
+  storageFileIdentity,
+  type StorageFileIdentity,
   writeFileForStorage,
   storageBoundaryError,
 } from '../process/owned-storage.js';
@@ -131,10 +134,12 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * the id one thing.
  *
  * The one overwrite is this session's OWN earlier export, recognized from the file itself rather than from
- * memory: a candidate file whose `metadata.relaviumExport` names this session ({@link ownExportMode}). So a second
+ * memory: a candidate file whose `metadata.relaviumExport` names this session ({@link ownExport}). So a second
  * `/export` updates the scaffold in place across a `/models` reseat, a `chat-resume` or a Home reopen, and a file
  * that merely sits at an old export's path — the scaffold renamed away and another workflow put there — is never
- * mistaken for it. The rewrite is atomic.
+ * mistaken for it. The rewrite is atomic, and it replaces only the file it recognized: one changed or replaced
+ * after the check is left alone, and the export takes the next free id instead. A swap in the microseconds between
+ * the last check and the rename is not detected ({@link replaceFileForStorage}).
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
   const loaded = loadSession(opts.store, opts.sessionId);
@@ -157,12 +162,15 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
       : takenWorkflowIds(opts.projectConfigDir, opts.cwd);
   for (const id of candidates) {
     const path = join(dir, `${id}.relavium.yaml`);
-    const mode = ownExportMode(path, opts.sessionId);
-    if (mode === undefined) continue;
+    const own = ownExport(path, opts.sessionId);
+    if (own === undefined) continue;
     const definition = withWorkflowId(scaffold, id);
     try {
-      replaceFileForStorage(path, serializeWorkflow(definition), mode);
+      replaceFileForStorage(path, serializeWorkflow(definition), own.mode, own.identity);
     } catch (err) {
+      // Changed since it was recognized: no longer known to be ours, so it stays and the export moves on. Its id
+      // is in `taken`, so the next loop never writes there either.
+      if (err instanceof StorageTargetChangedError) continue;
       throw storageBoundaryError(err);
     }
     return exportResult(path, definition, loaded);
@@ -182,14 +190,20 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
   );
 }
 
+/** This session's own earlier export: its permission bits, and its identity for the replace to re-check. */
+interface OwnExport {
+  readonly mode: number;
+  readonly identity: StorageFileIdentity;
+}
+
 /**
- * The permission bits of `path` when it holds this session's own earlier export: a regular file — never a link, so
- * a link planted at an export's name is not followed or replaced as if it were ours — within the workflow parser's
- * size bound, whose `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between
- * checks, larger than the parser accepts, undecodable) is `undefined`, which only ever means "do not overwrite". The
- * workflow itself is not validated: an export whose stored agent no longer validates is still this session's own.
+ * `path` when it holds this session's own earlier export: a regular file — never a link, so a link planted at an
+ * export's name is not followed or replaced as if it were ours — within the workflow parser's size bound, whose
+ * `metadata.relaviumExport` names `sessionId`. Any doubt (missing, unreadable, swapped between checks, larger than
+ * the parser accepts, undecodable) is `undefined`, which only ever means "do not overwrite". The workflow itself is
+ * not validated: an export whose stored agent no longer validates is still this session's own.
  */
-function ownExportMode(path: string, sessionId: string): number | undefined {
+function ownExport(path: string, sessionId: string): OwnExport | undefined {
   let fd: number | undefined;
   try {
     const linked = lstatSync(path, { bigint: true });
@@ -203,7 +217,9 @@ function ownExportMode(path: string, sessionId: string): number | undefined {
     const text = readFileSync(fd, 'utf8');
     // The parser's own bound, in characters, before any YAML is decoded.
     if (text.length > MAX_SOURCE_CHARS) return undefined;
-    return readSessionExportMarker(text) === sessionId ? Number(opened.mode & 0o777n) : undefined;
+    return readSessionExportMarker(text) === sessionId
+      ? { mode: Number(opened.mode & 0o777n), identity: storageFileIdentity(opened) }
+      : undefined;
   } catch {
     return undefined;
   } finally {

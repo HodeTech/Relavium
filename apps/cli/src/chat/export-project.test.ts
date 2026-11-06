@@ -24,10 +24,24 @@ import {
 } from '@relavium/db';
 import { MAX_SOURCE_CHARS, readSessionExportMarker } from '@relavium/core';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { exportSessionToProject } from './export.js';
+
+/** A hook on the temp file's creation: the moment between recognizing the own export and replacing it. */
+const fsHooks = vi.hoisted(() => ({ onOpen: undefined as ((path: string) => void) | undefined }));
+vi.mock('node:fs', async (original) => {
+  const native = await original<typeof import('node:fs')>();
+  return {
+    ...native,
+    openSync: (...args: Parameters<typeof native.openSync>) => {
+      const [path] = args;
+      if (typeof path === 'string') fsHooks.onOpen?.(path);
+      return native.openSync(...args);
+    },
+  };
+});
 
 const ISO = '2026-11-05T00:00:00.000Z';
 const AGENT = AgentSchema.parse({
@@ -138,6 +152,28 @@ describe('exportSessionToProject (MVP-A3)', () => {
         projectConfigDir: join(cwd, '.relavium'),
       }).workflowId,
     ).toBe('my-session-4');
+  });
+
+  it('leaves a workflow put at its export’s name after the check, and takes the next free id', () => {
+    // Recognizing the file as this session's export and renaming over it are separate steps, and serializing a
+    // long transcript in between takes long enough for an editor, a checkout or another process to put a
+    // different workflow there. The rewrite re-checks the file first and leaves a changed one alone.
+    const first = exportS1();
+    fsHooks.onOpen = (path) => {
+      if (!path.endsWith('.tmp')) return;
+      fsHooks.onOpen = undefined;
+      rmSync(first.path);
+      writeFileSync(first.path, workflowYaml('hand-authored'));
+    };
+    try {
+      const second = exportS1();
+      expect(readFileSync(first.path, 'utf8')).toBe(workflowYaml('hand-authored'));
+      expect(second.path).toBe(file('my-session-2'));
+      expect(idIn(second.path)?.[1]).toBe('my-session-2');
+      expect(readdirSync(workflows()).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      fsHooks.onOpen = undefined;
+    }
   });
 
   it('rewrites this session’s own earlier export in place — recognized from the file, not from memory', () => {

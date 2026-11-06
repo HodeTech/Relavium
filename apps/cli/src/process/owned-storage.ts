@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import {
   accessSync,
+  type BigIntStats,
   chmodSync,
   closeSync,
   constants,
   fchmodSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   renameSync,
@@ -50,6 +52,34 @@ export function writeFileForStorage(path: string, content: string, force: boolea
 }
 
 /**
+ * A file's identity as `lstat` reports it: what {@link replaceFileForStorage} re-checks before it renames. A file
+ * put in its place has another device and inode; one rewritten in place has a new `ctime`, which, unlike `mtime`,
+ * no caller can set back.
+ */
+export interface StorageFileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly ctimeNs: bigint;
+}
+
+/** The identity of the file `stats` describes (from a `bigint` stat). */
+export function storageFileIdentity(stats: BigIntStats): StorageFileIdentity {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    ctimeNs: stats.ctimeNs,
+  };
+}
+
+/** The file to be replaced is no longer the one the caller checked; nothing was written. */
+export class StorageTargetChangedError extends Error {
+  constructor() {
+    super('the file changed after it was checked');
+    this.name = 'StorageTargetChangedError';
+  }
+}
+
+/**
  * Replace the file at `path` with `content` atomically: write a fresh temp beside it (`wx`, so it never follows a
  * link or reuses a file), `fsync` it, then rename it over `path`. A crash leaves either the old file or the new one,
  * never a truncated mix, and the rename replaces the directory entry rather than writing through a link at `path`.
@@ -58,11 +88,34 @@ export function writeFileForStorage(path: string, content: string, force: boolea
  * It keeps what a write in place would: a file the user made read-only is refused (`EACCES`), not replaced, and the
  * new file gets `mode`, the old file's permission bits, so a file narrowed to `0600` is not widened to the umask's
  * default by its own rewrite.
+ *
+ * It replaces only the file the caller checked. Before it starts, and again just before the rename, it compares
+ * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
+ * or removed meanwhile —
+ * which, for a transcript big enough to take tens of milliseconds to serialize and write, is a window another
+ * writer can hit. A swap in the microseconds between that last check and the rename is not detected: Node has no
+ * rename that compares first.
  */
-export function replaceFileForStorage(path: string, content: string, mode: number): void {
+export function replaceFileForStorage(
+  path: string,
+  content: string,
+  mode: number,
+  expected: StorageFileIdentity,
+): void {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  const ensureUnchanged = (): void => {
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (
+      current === undefined ||
+      !current.isFile() ||
+      !sameFile(storageFileIdentity(current), expected)
+    ) {
+      throw new StorageTargetChangedError();
+    }
+  };
   let fd: number | undefined;
   try {
+    ensureUnchanged();
     accessSync(path, constants.W_OK);
     fd = openSync(temp, 'wx', mode);
     fchmodSync(fd, mode); // `open`'s mode is narrowed by the umask; this sets exactly the old bits
@@ -70,6 +123,7 @@ export function replaceFileForStorage(path: string, content: string, mode: numbe
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
+    ensureUnchanged();
     renameSync(temp, path);
   } catch (error) {
     if (fd !== undefined) {
@@ -86,6 +140,10 @@ export function replaceFileForStorage(path: string, content: string, mode: numbe
     }
     throwOwnedFilesystemFailure(error);
   }
+}
+
+function sameFile(a: StorageFileIdentity, b: StorageFileIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.ctimeNs === b.ctimeNs;
 }
 
 /** Concrete native acquisition for the editor's private transcript directory. */
