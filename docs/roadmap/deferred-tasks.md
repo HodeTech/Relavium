@@ -997,15 +997,21 @@ names, unless the entry names another.
 
 **Redaction:**
 
-- [ ] **A URL password that holds a `,` or `/` keeps its tail after it public (the PR #96 review's A4).** *Medium as
-  reviewed; pre-existing, not a regression.* Core's authority scan ends at either, so `https://user:pa,ss@host` and
-  `https://user:pa/ss@host` keep `ss` visible in `toolInput`, summaries and the journal digest input; the LLM backstop
-  masks the comma spelling but stops at `/` too. A reading past the delimiter landed with the PR #96 correction and
-  was removed on 2026-11-05 (maintainer: one careful pass, then continue): the projection repeats until stable, so a
-  reading's mask can change the text other rules read in a later pass, and D64 rounds 1, 3 and 4 each found a
-  credential it newly showed. **Trigger:** a design that merges a new reading's ranges with the base rules' on the
-  original text, so it provably only adds masks, with a superset oracle validated on a known-bad version. *(medium as
-  reviewed · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
+- [ ] **A URL password that holds a `,` or `/` leaves the whole userinfo public (the PR #96 review's A4).** *Medium as
+  reviewed. Pre-existing against `64fb8772`, but a reversal against `main`, which masks it since `0826f30a`: merging
+  PR #97 returns the URL projection to `64fb8772` (maintainer ruling 2026-11-06).* Core's authority scan ends at
+  either, so `https://user:pa,ss@host` and `https://user:pa/ss@host` leave `user:pa,ss` and `user:pa/ss` visible in
+  `toolInput`, summaries and the journal digest input; the PR #97 review measured about thirty such shapes `main`
+  masks today, among them a comma in a `git clone` URL's password, `mysql://`, `postgres://`, `ftp://` and `redis://`
+  URLs with a `/` in the password, and `x-access-token` URLs. The LLM backstop masks the comma spelling but stops at
+  `/` too. A reading past the delimiter landed with the PR #96 correction and was removed on 2026-11-05 (maintainer:
+  one careful pass, then continue): the projection repeats until stable, so a reading's mask can change the text
+  other rules read in a later pass, and D64 rounds 1, 3 and 4 each found a credential it newly showed. A new reading
+  must keep a port and a path public (`host:8080/a@b`, pinned in `bounding.test.ts`). **Trigger:** before the v0.2.0
+  release, as its own increment (maintainer 2026-11-06): a design that computes the reading's ranges once on the
+  original text and merges them with the base rules' after the fixed point, so it provably only adds masks, with a
+  superset oracle validated against both `64fb8772` and `b3cf117e`. *(medium as reviewed ·
+  packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
 - [ ] **A glued `-pSECRET` (`mysql -uroot -pSecret`) is not masked.** *Low.* A glued `-p` is ambiguous with
   `cp -pR` and `tar -pxf`, so only the separate and `=` spellings are read. *(low · packages/core/src/tools/bounding.ts)*
 - [ ] **The object-key rule masks count keys such as `max_tokens`.** *Low.* Its plural folding reads `tokens` as
@@ -1577,9 +1583,11 @@ next group below, and the separate security sitting's two lows (at `ab5e46e1`) a
   `run:failed{internal}`. The 0.1.1 process then hits the sequence it expected, aborts, and its own `run:failed`
   lands behind the first, because 0.1.1's store has no terminal refusal. It needs an older executable still
   running on the upgraded `~/.relavium`, which [database-schema.md](../reference/shared-core/database-schema.md)
-  calls unsupported ("active downgrade execution"). **Re-check before the v0.2.0 release:** either tell users in the
-  release notes to finish or cancel 0.1.x runs first, or treat a run with no lease row whose last event is younger
-  than the lease TTL as live, as an ADR-0079 amendment. *(low · packages/core/src/engine/engine.ts)*
+  calls unsupported ("active downgrade execution"). **Narrowed 2026-11-06 (maintainer ruling, PR #97 review):**
+  reconcile now leaves a run younger than one lease TTL alone (ADR-0079 §3's 2026-11-06 note), so a 0.1.x run is
+  safe for its first minute; one still executing after that is settled as before. **Re-check before the v0.2.0
+  release:** the release notes tell users to finish or cancel 0.1.x runs before upgrading. *(low ·
+  packages/core/src/engine/engine.ts)*
 - [ ] **A project config key with a line break can fake a line under an `/export` refusal.** *Low.* *(round 4,
   export-1)* A config error names the keys it refused, and a REPL command's output keeps its line breaks (only
   terminal controls are stripped), so a quoted `project.toml` key holding a newline and a made-up `exported session
@@ -1755,10 +1763,12 @@ names.
   copyable `budget resume`, and `--json` pairs `terminalHeld: true` with non-empty gates. Acting on them answers
   `nothing to resume`. **Re-check:** treat `terminalHeld` as finished for the gate guard and the `stopped` mapping.
   *(low · apps/cli/src/commands/status.ts)*
-- [ ] **Run and step status strings print raw.** *Low.* *(history-12, security-1)* `status` and `list --runs`
+- [x] **Run and step status strings print raw.** *Low.* *(history-12, security-1)* `status` and `list --runs`
   sanitize every history identifier but not the status column; only the SQLite CHECK keeps it clean, and a file
-  written with `ignore_check_constraints` gets past it. **Re-check:** sanitize the status strings too, or validate
-  them in `fromRunRow` and the step reader. *(low · apps/cli/src/commands/status.ts, apps/cli/src/commands/list.ts)*
+  written with `ignore_check_constraints` gets past it. **Fixed in the PR #97 review correction (2026-11-06):** the
+  run and step status in `status`, the `--runs` row and the catalog line's `[last: …]` in `list`, and the run id and
+  status in `logs`'s header now get the one-line floor, each pinned by a forged-status test. *(low ·
+  apps/cli/src/commands/status.ts, apps/cli/src/commands/list.ts, apps/cli/src/commands/logs.ts)*
 - [ ] **`status`'s own `completed` terminal entry is unpinned.** *Low; test-side.* *(history-10, remainder)* Removing
   `'completed'` from `TERMINAL_STATUSES` in `status.ts` passes every test, while a completed run with a stale outbox
   entry would then read held. **Re-check:** a completed run with a stale outbox entry expecting `terminalHeld: false`.
@@ -1886,6 +1896,95 @@ names.
   class as round 1's outputs-5 in 1b's register. **Re-check:** bound the printed message's width, wrap it with an
   indented continuation, or put a fixed label row between it and the commands; land it with outputs-5. *(low ·
   apps/cli/src/commands/status.ts)*
+
+## PR #97 review — fixed findings and recorded lows (2026-11-06)
+
+Four reviews of the `development` → `main` checkpoint PR #97 (at `077650a8`) reported about sixty findings, several
+rated high. Six verification agents checked each against the code at that commit, with probes, and none held as
+high: the gate-type bypass is unreachable from the CLI, the live-run start race was recorded and fails closed, and
+the `/export` race needs a concurrent writer. Eight held as medium, and by the maintainer's rulings of 2026-11-06 the
+PR is fixed before it merges, so it owes a D64 rigor pass, a new complete round and a separate security sitting. The
+verified register is `docs/analysis/private/2026-11-06-pr97-review-triage.md` (not tracked).
+
+**Fixed (medium):** reconcile's repair could relabel a completed run failed when its owner held its terminal in
+the outbox meanwhile, and the drain read the open runs before the outbox (it now reads the outbox first and again
+under its claim); reconcile now leaves a run younger than one lease TTL alone, which also narrows 1b's liveness-1;
+a crashed run with an unresolved external effect is settled as `effect_needs_attention`; a bare Enter on an
+approval, review or budget-amount card rejected nothing and approved instead; a card whose gate a deadline decided
+stayed open and dropped the later answer silently; the Windows readiness budget; the URL-password reversal against
+`main` is recorded (A4 above); the ADR-0118, ADR-0119 and ADR-0120 drafts. **Fixed (low):** Esc at the rejection
+reason cancelled the run; the card promised `auto-reject` where the run fails; `/export`'s own-export rewrite now
+re-checks the file before it replaces it; history-12; the doc and comment items. The lows below were not fixed.
+**Trigger for every entry:** the next change to the file it names.
+
+- [ ] **A corrupt or schema-mismatched outbox line lets reconcile settle its run failed.** *Low.* *(A3)* The
+  outbox skips a line it cannot parse, so its run holds no terminal and the repair settles it. A truncated line
+  is ADR-0078's accepted floor; a complete line a newer binary wrote is not. **Re-check:** a JSON object with a
+  string `runId` that fails the schema holds its run; count unreadable lines and print one fixed diagnostic; never
+  hold every run on one bad line, since the file is never compacted. *(low · apps/cli/src/engine/terminal-outbox.ts,
+  packages/core/src/engine/engine.ts)*
+- [ ] **Isolating an unreadable run would drop its outbox entry.** *Low.* *(A5)* The round-1 liveness-2 fix must also
+  make the listing report the unreadable run and the drain hold its entry; a run simply left out of the list has its
+  entry dropped as already landed. *(low · packages/db/src/run-history-store.ts, packages/core/src/engine/engine.ts)*
+- [ ] **Reconcile's result is discarded.** *Low.* *(A6)* `reconcileInterruptedRuns` and the `run`/`gate` calls
+  swallow everything, which hides A3, A5 and a wiring regression. **Re-check:** return a structured outcome and print
+  one fixed, secret-free line. *(low · apps/cli/src/history/reconcile.ts)*
+- [ ] **The run-terminal type set is repeated across packages.** *Low; nit.* *(A8)* **Re-check:** one exported set in
+  `@relavium/shared`. *(low · packages/core, packages/db)*
+- [ ] **The gate-type fit checks skip a missing or non-gate node.** *Low.* *(B1, B2, B3)* Unreachable from the CLI
+  (the snapshot schema and the gate producers rule it out), but an embedder's executor can pause an `agent` vertex as
+  an approval gate and resume it with `input_provided`; a missing vertex may stall `#resume`; an unknown `gateType`
+  throws a `TypeError`. **Re-check:** carry `gateType` on the pending gate and check against it, throw
+  `invalid_decision` for a missing vertex, and treat an unknown type as accepting nothing. *(low ·
+  packages/core/src/engine/engine.ts, packages/core/src/engine/gate-decision-fit.ts, apps/cli/src/gate/decision.ts)*
+- [ ] **An input gate records an empty value on a bare Enter and offers no Reject.** *Low; product call.* *(B8)*
+  *(low · apps/cli/src/gate/clack-prompter.ts)*
+- [ ] **`gate list` hides the gates of a run a crash left `running`.** *Low.* *(B9)* `status` and `gate` still reach
+  them, against commands.md's "the listing and the resume can never disagree". **Re-check:** read every non-terminal
+  run. *(low · apps/cli/src/commands/gate-list.ts)*
+- [ ] **`chat-export --force` writes through a link at `--out`.** *Low; pre-existing.* *(C2)* **Re-check:** under
+  `--force`, write a temp and rename it over the target. *(low · apps/cli/src/process/owned-storage.ts)*
+- [ ] **The own-export rewrite does not fsync the directory.** *Low.* *(C3)* A power loss can bring the old version
+  back; the old-or-new promise holds. *(low · apps/cli/src/process/owned-storage.ts)*
+- [ ] **A locked keychain reads as "no API key".** *Low.* *(C6)* MVP-A4 shows it before the first turn now, with a
+  "store one" remedy. **Re-check:** a tri-state key status and an "unlock the keychain" wording. *(low ·
+  apps/cli/src/engine/providers.ts, apps/cli/src/chat/session-host.ts)*
+- [ ] **The chat output default looks the catalog up by model id alone.** *Low.* *(C7)* An Anthropic agent with an
+  OpenAI model id gets that model's ceiling; harmless, since Anthropic refuses the id. **Re-check:** require the
+  entry's provider to match. *(low · apps/cli/src/chat/session-host.ts)*
+- [ ] **The session builders fall back to an env-only key resolver.** *Low; latent.* *(C5)* Every production caller
+  passes a keychain-aware one. **Re-check:** make `providers` required. *(low · apps/cli/src/chat/session-host.ts)*
+- [ ] **Run outputs show a credential nested under a credential's name.** *Low.* *(D3)* An object or array under
+  `x-api-key`, `api-key`, `token` or `password` is shown, a `null` under such a name prints `[REDACTED]`, and a value
+  that cannot be represented prints no note. **Re-check:** mask any non-null value under a name the scrubber reads as
+  a credential, keep `null`, carry `masked` out of the catch. *(low · apps/cli/src/render/run-outputs.ts)*
+- [ ] **The secret walk and the media walk have no depth bound.** *Low; fails closed.* *(D5)* About 3,000 levels
+  make the summary `[unserializable]`. **Re-check:** a depth cap with a fixed marker. *(low ·
+  packages/core/src/tools/bounding.ts)*
+- [ ] **The `run_command` allowlist compares the space-joined argv.** *Low; pre-existing.* *(D11)* `["cat a b"]`
+  admits `["cat", "a b"]` and `["cat a", "b"]`. ADR-0118's remembered grants match element-wise; this must be fixed
+  before that ships. **Re-check:** compare tokenized entries element by element. *(low ·
+  packages/core/src/tools/registry.ts, packages/core/src/tools/builtins.ts)*
+- [ ] **The release tooling refuses semver build metadata and some legal package names.** *Low; fails closed.*
+  *(F3)* *(low · tools/cli-package/archive.mjs)*
+- [ ] **The MCP-orphan guarantee is not tested on Windows.** *Low.* *(F6)* `check.mjs` uses `/bin/ps` and the e2e
+  suite skips win32. *(low · tools/cli-smoke/check.mjs, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
+- [ ] **The "required checks cannot be skipped" test pins 7 of the `ci` job's 29 steps.** *Low.* *(F7)* A
+  `continue-on-error` on Format check passes it; `f213d2a8`'s subject overstates it. **Re-check:** assert no
+  `continue-on-error` on any `ci` step, with the two known `if`/`shell` exceptions. *(low ·
+  tools/ci/workspace-scheduling.test.mjs)*
+- [ ] **A workflow input's `min` or `max` of `.inf` makes its run unresumable.** *Low; pre-existing.* *(F8)* JSON
+  turns it into `null` in the snapshot, which the snapshot schema refuses. **Re-check:** `.finite()`, with a
+  round-trip test. `[chat].max_tokens` is unbounded too, though capped downstream. *(low ·
+  packages/shared/src/workflow.ts, packages/shared/src/config.ts)*
+- [ ] **Five more Windows tests sit on Vitest's 5 s default.** *Low.* *(F1)* `concurrency.e2e` (twice),
+  `fs-workspace-admission` (twice) and `session-effect-turns` timed out in the same slow-runner cohort over 58 runs.
+  **Re-check:** watch at least 20 Windows runs after the readiness budget, then give these their own budget if they
+  recur. *(low · packages/db, apps/cli)*
+- [ ] **The pre-flight's exit change needs a release note.** *Low.* *(E8)* `relavium run` now refuses (exit `2`) a
+  workflow granting `http_request`, `web_search`, `read_clipboard` or `notify`; before, it ran and failed (exit `1`)
+  at the first such call, or completed if none was made. **Trigger:** the v0.2.0 CHANGELOG (MVP-A23). *(low ·
+  CHANGELOG.md)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
@@ -2632,7 +2731,13 @@ so directly: these "should remain visible rather than disappear behind the green
 - [ ] **An authored `pattern` with no `max_length` can still stall the process ([ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4).**
   `max_length` bounds the input a catastrophic regex chews on, and it is checked first — but only when the
   author supplied it. ADR-0083 accepts this floor explicitly. A stronger contract would require `max_length`
-  whenever `pattern` is present, or admit only a demonstrably safe regex subset. *(packages/shared/src/workflow.ts; ADR-0083 §4)*
+  whenever `pattern` is present, or admit only a demonstrably safe regex subset. **Reframed by the PR #97 review
+  (2026-11-06): the author need not be the user.** An input's `default` is checked against its `pattern` when the
+  file is PARSED, and `relavium list` and `relavium chat` parse every workflow in the project's catalog. A workflow
+  in a cloned repository with `pattern: '(a+)+'`, a default of `'a'` × 28 + `'!'` and no `max_length` stalled
+  `parseWorkflow` for 7.6 s in that review, and the cost doubles with each character, so a repository can hang
+  those commands with no input from the user. *(medium for that vector ·
+  packages/shared/src/workflow.ts; ADR-0083 §4)*
 
 - [ ] **Two SonarCloud CRITICALs are declines, not debt — mark them Accepted in the UI.**
   `WorkflowEngine#emitDurable`'s closure (23) and `dispatch` (22) are both over the cognitive-complexity

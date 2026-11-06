@@ -1,7 +1,7 @@
 # ADR-0119: An interrupted turn stays in the session as a content-free marker
 
 - **Status**: Proposed
-- **Date**: 2026-11-05
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review)
 - **Related**: [ADR-0026](0026-session-export-to-workflow.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [D67](../roadmap/current.md#wave-gating-decisions), [the CR-71 residual](../roadmap/deferred-tasks.md)
 
 ## Context
@@ -86,6 +86,22 @@ On the next request, the interrupted turn appears as the user's message followed
 by the marker, rendered as a **fixed engine-authored note** from the marker's
 fields.
 
+**The memory policy still decides the request.** An interrupted turn is a turn
+for [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §4's
+selection, and its marker travels only with it:
+
+- with `memory` omitted or `summary`, it is in the transcript the request
+  carries;
+- under `window`, it takes one of the `window_size` slots, like a completed turn
+  with empty final text, and is sent while it is inside the window;
+- under `none`, the request carries only the system prompt and the current
+  message, so the marker is not sent. A completed turn's tools are equally
+  invisible there, and the effect-row disclosure at resume (ADR-0098) is the
+  only trace.
+
+ADR-0095 §4's `window` row gains a dated amendment note on acceptance: "the last
+`N` completed or interrupted turns". Its invariant 1 is unchanged.
+
 The note sits behind
 [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md)'s
 role boundary. It is user-role framing that the engine writes from a closed set
@@ -98,8 +114,10 @@ check an unknown outcome before acting.
 **What it does not do:** it carries no tool content, so CR-70 stays deferred,
 and a tool's arguments and results still never reach a later turn.
 
-Provider adapters may need consecutive user-role messages merged. That is
-`@relavium/llm`'s concern, behind the seam. The exact message shape lives in
+The note can put two user-role messages next to each other. The engine's
+request projection already folds adjacent same-role messages into one for every
+provider (ADR-0095's 2026-09-18 note), so no adapter needs a rule of its own.
+The exact message shape lives in
 [agent-session-spec.md](../reference/contracts/agent-session-spec.md).
 
 ### 3. Durability and the other consumers
@@ -155,6 +173,8 @@ Provider adapters may need consecutive user-role messages merged. That is
   repaint and the Home's session views.
 - A user who aborted *because* they regretted the request now has it in
   context. Removing a turn is `/rewind`'s job (2.6.E), not an abort's.
+- Under `memory: none` the marker never reaches the model, so a retry there
+  learns nothing from it; the effect-row disclosure at resume is the only trace.
 - The outcome-unknown status has to be derived faithfully from the dispatch and
   effect bookkeeping. A wrong status would mislead the model about a side
   effect, so it needs its own tests.

@@ -1,9 +1,8 @@
 # ADR-0118: A command outside the allowlist asks instead of failing
 
 - **Status**: Proposed
-- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review: a remembered grant is free-form text, so §2
-  no longer calls it secret-incapable and withholds Remember for a command the credential masking would mask)
-- **Related**: [ADR-0029](0029-tool-policy-hardening.md) (a), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [D63](../roadmap/current.md#wave-gating-decisions), [MVP-A15](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review)
+- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md) (a), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [D63](../roadmap/current.md#wave-gating-decisions), [MVP-A15](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
 
@@ -72,8 +71,8 @@ expanded before it can be approved.
 - **Once.** This invocation only.
 - **Session.** This exact command string for the rest of this session
   instance. It is held in memory and not persisted, like ADR-0057's `[a]`.
-- **Remember.** Persist an exact-string grant for this project root (§2). It is
-  not offered for a command that may carry a credential (§2).
+- **Remember.** Persist a grant for this exact argv and this project root (§2).
+  The configuration never holds the command itself.
 - **Deny**, with an optional typed reason. A denial returns to the model under
   [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md).
 - **Ctrl-C and Esc** reject the card, then interrupt the turn, as
@@ -103,21 +102,29 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
   set). It is keyed by the session's **canonical project root**: the resolved
   real path, so two paths to one tree share grants and a fresh clone elsewhere
   shares none.
+- **What a grant contains: never the command.** A command can carry a
+  password or a token, and the
+  [credential masking](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
+  recognizes only a finite set of shapes, so a masked copy could still hold a
+  credential in plaintext. A grant holds instead:
+  - an HMAC-SHA256 of the command's exact argv, each element length-prefixed so
+    `["cat a b"]` and `["cat", "a b"]` differ, under a per-installation key;
+  - a label that carries no argument: the program, the argument count and the
+    date it was remembered, for the revocation view.
+
+  Matching computes the HMAC of the candidate argv and compares it in constant
+  time. A grant matches one exact argv, never a glob: "Remember `npm test`"
+  never authorizes `npm test -- --exec=…`.
+- **The key.** 32 random bytes from `node:crypto`, generated on first use and
+  kept in the OS keychain beside the provider keys
+  ([ADR-0006](0006-os-keychain-for-api-keys.md)); it never enters a config
+  file, a log or an event. Without a reachable keychain, Remember is not
+  offered, and the card offers Once, Session and Deny.
 - **How they are written.** Through the
   [ADR-0063](0063-cli-config-write-contract.md) write primitive: parse, set,
   re-validate, write atomically. No project, workspace or agent file is ever
-  written. That primitive's secret-free guarantee covers its typed, non-secret
-  keys. A command string is free-form, so the guarantee does not cover a grant.
-- **What a grant contains.** Only an exact command string, never a glob. "Remember
-  `npm test`" never authorizes `npm test -- --exec=…`.
-- **What cannot be remembered.** Remember is not offered for a command in which
-  the [credential masking](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
-  that tool previews use finds anything to mask. The card then offers Once,
-  Session and Deny, and says why. When Remember is offered, the card shows the
-  exact string it would store. The masking recognizes a finite set of credential
-  shapes, so a credential it does not recognize can still be remembered, and it
-  is then stored in plaintext in operator configuration. That is a recorded
-  limit, not a guarantee; the approval-path security sitting examines it.
+  written. A grant holds only a digest and an argument-free label, so the
+  primitive's secret-free property covers it: no command text reaches the file.
 - **Bounds.** Grants are bounded per root and in total. Reading them is strict:
   a malformed grant file is a visible configuration error, never a silent
   allow.
@@ -134,10 +141,14 @@ contract lives with the approval-preview contract (phase 2.6 ADR row 9).
 - **ADR-0061.** The `!` escape's "allowlist before approval, refused otherwise"
   becomes §1's table. Hardened spawn (`shell: false`, literal argv), the
   command jail and the busy and abort affordances are unchanged.
-- **ADR-0029 (a).** Unchanged in substance. Allowlist entries and remembered
-  grants match exact strings, and globs stay opt-in and config-authored.
+- **ADR-0029 (a).** Unchanged in substance. Remembered grants match one exact
+  argv, element by element, and globs stay opt-in and config-authored. The
+  `[chat]` allowlist still compares the space-joined command, so `["cat a b"]`
+  matches `["cat", "a b"]`; that is recorded separately and fixed before this
+  ships.
 - **ADR-0063.** Gains a second operator-owned write target: remembered command
-  grants.
+  grants, as digests and argument-free labels.
+- **ADR-0006.** The keychain holds one more secret: the grant HMAC key.
 - **Workflow `run_command`.** Unchanged. A workflow's allowlist stays the only
   authority there, with no card and no remembered grants. A workflow runs
   unattended.
@@ -153,6 +164,12 @@ accepted.
 - **Store "remember" in the project's `[chat]` allowlist.** Rejected. Every clone
   would inherit the grant: one user's consent would become every visitor's
   authority.
+- **Store the command, masked, in operator config.** Rejected after the PR #97
+  review. The masking is finite (built-in-tools.md lists flags it does not
+  read), so a credential it does not recognize would be written in plaintext.
+- **Store a plain hash of the command.** Rejected. A short password is
+  recoverable from an unkeyed digest by trying candidates; the keychain key
+  makes that require the key.
 - **Let `auto` approve any command.** Rejected. `run_command` has no argument
   confidentiality floor, so an approval-free arbitrary command is an
   approval-free exfiltration path for a prompt-injected model.
@@ -166,7 +183,8 @@ accepted.
 - A command the user is willing to run can run, with the exact argv on screen.
   The config edit and restart are no longer needed.
 - A remembered grant serves one operator on one tree and never travels with the
-  repository.
+  repository, and it holds no command text, so no credential in a command
+  reaches the configuration.
 - `auto` keeps a hard edge: only pre-approved commands run without a prompt.
 - A headless path still never runs anything it was not configured to run.
 
@@ -180,9 +198,10 @@ accepted.
   decision.
 - Operator config gains a growing, per-root grant list. It needs bounds, strict
   parsing and a revocation view (2.6.G).
-- A remembered grant is a plaintext command string. Remember is withheld when
-  the credential masking finds anything, but a credential shape it does not
-  recognize can still be stored (§2).
+- Remember needs the OS keychain; without it the card offers Once, Session and
+  Deny only.
+- The revocation view cannot show a remembered command's arguments, only its
+  program, argument count and date.
 - The card is a new approval surface. It needs the approval-path security
   sitting D63 requires: exact rendering, no hidden affirmative key, and no
   truncated approval.

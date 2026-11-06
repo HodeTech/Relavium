@@ -40,7 +40,9 @@ A tool declaration in YAML has a `type` discriminator:
 > grant in the workflow file: a node's `tools:`, or its inline agent's. A `$ref`'d agent's own grant is not
 > resolvable from the file and is not checked. MCP tools reach through their own arm and pass, but `relavium run`
 > wires that arm only when an inline agent declares `mcp_servers`, so `mcp_call` without a declared server still
-> fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked.
+> fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked. `invoke_agent`
+> and `read_media` are outside this check: they need an engine delegate rather than a host arm, no path wires either
+> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing.
 
 > **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
@@ -144,9 +146,9 @@ otherwise differs from that backstop by design: its authority also ends at `"`, 
 `]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them — is
 left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
 userinfo with no password is kept as a vanity handle below 16 characters and masked from 16 on,
-under every scheme. A `,` or `/` in a password therefore ends the authority, and the text after it stays
-public unless another rule reads it (`https://user:pa,ss@host`; the backstop masks that comma spelling), a
-recorded limit (the PR #96 review's A4). A reading past the delimiter was tried and removed on 2026-11-05:
+under every scheme. A `,` or `/` in a password therefore ends the authority, and the whole userinfo stays
+public unless another rule reads it (`https://user:pa,ss@host` keeps `user:pa,ss`; the backstop masks that comma
+spelling), a recorded limit (the PR #96 review's A4). A reading past the delimiter was tried and removed on 2026-11-05:
 under the repeated projection its masks could change the text other rules read, so it could not be shown to
 only add masks.
 

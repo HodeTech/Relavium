@@ -1,7 +1,7 @@
 # ADR-0120: The toolbelt grows, and a tool call shows what it does
 
 - **Status**: Proposed
-- **Date**: 2026-11-05
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review)
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [phase 2.6 · 2.6.M](../roadmap/phases/phase-2.6-conversational-authoring.md#26m--the-first-class-toolbelt-breadth--rendering), [MVP-A8, MVP-A9](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
@@ -93,11 +93,22 @@ Exact arguments, bounds and texts live in
   `sanitizeUntrusted`: secret shapes masked on the original text, then terminal
   controls stripped. Each is bounded per field and per row. A target is one
   line (`sanitizeInline`).
+- **An approval preview never hides what it approves.** Stripping is right for a
+  transcript row and wrong for an approval: an edit that adds an escape or a
+  bidi override would render exactly like the original. So in an approval card
+  and its full view, a terminal control or bidi character in a target, field or
+  diff line renders as a visible, styled escape (for example `<U+202E>`), never
+  stripped; transcript rows may strip. A span the secret masking replaces shows
+  as a labelled mask, and the card states how many spans were masked; the full
+  view does not unmask. Approving approves the bytes the host will write,
+  masked spans included, and the card says so. Whether a write whose changed
+  lines are wholly masked may be approved at all is for the mandatory security
+  review.
 - **Diffs are in-house.** A diff is a line diff computed in-house, with no
   dependency.
   - It is computed over the **same bytes the host will write**. The write
     refuses if the file changed between the preview and the write, so what was
-    approved is what lands.
+    approved, with controls escaped and masks labelled, is what lands.
   - Its rendering adapts to the terminal width (stacked or side by side), and
     each side passes the floor.
 - **Truncation is stated, never hidden.** A preview that does not fit shows the

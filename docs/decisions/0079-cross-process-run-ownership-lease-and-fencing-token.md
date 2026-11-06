@@ -84,6 +84,21 @@ All contention is on the resume path, which is already async.
 > exits durability-uncertain. If the run's own terminal commits first, the reconciler's guarded write is refused
 > instead, and the run exits failed. `run:started` stays unfenced for the reason above.
 
+> **Amended 2026-11-06 (PR #97 review).** Three corrections to the two notes above.
+>
+> - **`reconcile()` now leaves a run younger than one lease TTL alone**, measured from its `run:started` timestamp
+>   by the reconciling host's clock. That closes the window the 2026-11-05 note describes: a reconcile inside it no
+>   longer settles the starting run, which takes its lease and runs. Past one TTL, a run with no live lease is still
+>   treated as crashed. The same rule covers a run started by a version that takes no lease at all (relavium 0.1.x):
+>   it is settled only once it is older than one TTL.
+> - **The foreign key does not rule out the same transaction.** The 2026-08-17 note says creating the lease inside
+>   the transaction that folds `run:started` "fails the foreign key". It does not, once the `runs` row is inserted
+>   first in that transaction; the key rules out only a lease acquired before the row exists. What shipped is still
+>   the separate acquire after the fold, and the TTL rule above is what bounds the window it leaves.
+> - **`run:started` is not §2's only unfenced write.** A run whose acquire is refused holds no lease, so its own
+>   terminal is written with no fence and, like every terminal, outside the append guard. Only the store's terminal
+>   refusal keeps it from landing beside the reconciler's.
+
 ### 4. A losing resume refuses before it reads anything
 
 `resumeFromCheckpoint` acquires the lease **first**. A failed acquire throws a new typed `EngineStateError` naming the current holder and the remedy — before the checkpoint is loaded and before any `RunExecution` exists, so a loser never becomes a second producer even briefly.

@@ -232,6 +232,10 @@ shapes were weighed and two rejected:
 - a **typed `ErrorCode` on the existing terminal** — chosen. It reuses the closed error taxonomy every surface
   already switches on, and `run:failed` is honest: the run did not complete.
 
+A run a crashed process left behind gets the same code when crash reconciliation settles it: `reconcile()` reads
+the journal's resume half for the run, and a row §4 says blocks (or a journal it cannot read) makes the terminal
+`effect_needs_attention` rather than `internal`, which a caller would read as an ordinary failure to run again.
+
 **It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
 section.** Terminal durability and final local effect health are independent. After all admitted
 work has joined, the CLI selects the final disposition and remedy according to
