@@ -28,6 +28,21 @@ describe('gateListCommand', () => {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
 
+  it('prints forged run, gate and node ids on one line, without their controls', async () => {
+    await seedRun(db, {
+      slug: 'a',
+      runId: 'r\u001b]0;PWNED\u0007',
+      state: 'paused',
+      gate: { gateId: 'g\u001b[2J\nFAKE', gateType: 'approval', message: 'A?', nodeId: 'n\u202e' },
+    });
+    const { io, out } = captureIo();
+    expect(gateListCommand({}, deps(io))).toBe(EXIT_CODES.success);
+    const rows = out().trimEnd().split('\n');
+    expect(rows).toHaveLength(2); // the heading and one row
+    expect(out()).toContain('FAKE');
+    for (const control of ['\u001b', '\u0007', '\u202e']) expect(out()).not.toContain(control);
+  });
+
   it('lists pending human gates across every paused run', async () => {
     const { io, out } = captureIo();
     await seedRun(db, {

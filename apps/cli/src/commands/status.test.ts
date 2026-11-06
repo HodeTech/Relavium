@@ -41,6 +41,22 @@ describe('statusCommand', () => {
     expect(text).not.toContain('\nforged row');
   });
 
+  it('prints no attempt for a forged attempt number that is not an integer', async () => {
+    await seedRun(db, { slug: 'wf', runId: 'forged-2', state: 'completed' });
+    // Text SQLite keeps as text in the integer column, which JavaScript still reads as 2.
+    client.sqlite
+      .prepare('UPDATE step_executions SET attempt_number = ? WHERE run_id = ?')
+      .run('\u30002\u000c', 'forged-2');
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'forged-2' },
+    );
+    expect(out()).toContain('n1');
+    expect(out()).not.toContain('attempt');
+    expect(out()).not.toContain('\u000c');
+  });
+
   it('shows one run by id, finished or active, and refuses an unknown id (MVP-1)', async () => {
     await seedRun(db, { slug: 'done', runId: 'done-1', state: 'completed' });
     await seedRun(db, { slug: 'live', runId: 'live-1', state: 'running' });

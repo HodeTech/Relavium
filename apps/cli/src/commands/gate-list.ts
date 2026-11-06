@@ -153,6 +153,10 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
   for (const row of rows) {
     // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there.
     const message = row.message === '' ? '' : `  "${sanitizeInline(row.message)}"`;
-    io.writeOut(`  ${row.runId}  ${row.gateId}  ${row.gateType}  node=${row.nodeId}${message}\n`);
+    // The ids are history.db values too, with no CHECK behind them, and this is a terminal write.
+    io.writeOut(
+      `  ${sanitizeInline(row.runId)}  ${sanitizeInline(row.gateId)}  ${row.gateType}  ` +
+        `node=${sanitizeInline(row.nodeId)}${message}\n`,
+    );
   }
 }
