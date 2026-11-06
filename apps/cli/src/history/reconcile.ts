@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
 import { type NodeExecutor, WorkflowEngine } from '@relavium/core';
-import { createRunHistoryStore, createRunLeasePort, type Db } from '@relavium/db';
+import {
+  createEffectJournalStore,
+  createEffectResumePort,
+  createRunHistoryStore,
+  createRunLeasePort,
+  type Db,
+} from '@relavium/db';
 
 import { createCliHost } from '../engine/host.js';
 
@@ -28,9 +34,11 @@ const RECONCILE_ONLY_EXECUTOR: NodeExecutor = {
  * call `engine.reconcile()` on the engine they already build.
  *
  * `reconcile()` first drains the terminal outbox (ADR-0078 §4), then writes `run:failed` for each interrupted
- * run: `internal`, or `budget_exceeded` after a recorded budget rejection. It leaves alone a run parked at a gate,
- * a run whose lease is live, which another process is executing (ADR-0079 §7), and a run whose held terminal it
- * could not write — every run, while the outbox exists but cannot be read. The store, the lease port and the
+ * run: `effect_needs_attention` when the run left an external effect unresolved (or its effect journal cannot be
+ * read), `budget_exceeded` after a recorded budget rejection, `internal` otherwise. It leaves alone a run parked at
+ * a gate, a run that started less than one lease TTL ago, a run whose lease is live, which another process is
+ * executing (ADR-0079 §7), and a run whose held terminal it could not write — every run, while the outbox exists
+ * but cannot be read. The store, the lease port and the
  * media-reference port are built over `db`, the same connection the caller reads from.
  *
  * `terminalOutboxPath` must belong to the same `~/.relavium` home as `db`: the drain DROPS an outbox entry
@@ -52,7 +60,12 @@ export async function reconcileInterruptedRuns(db: Db, terminalOutboxPath: strin
       terminalOutboxPath,
       runLeases: createRunLeasePort(store),
     });
-    await new WorkflowEngine({ host, executor: RECONCILE_ONLY_EXECUTOR }).reconcile();
+    // The journal's READ half, so a crashed run with an unresolved external effect is settled as
+    // `effect_needs_attention` rather than as an ordinary `internal` failure (effect-journal.md §8).
+    const effectResume = createEffectResumePort(
+      createEffectJournalStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
+    );
+    await new WorkflowEngine({ host, executor: RECONCILE_ONLY_EXECUTOR, effectResume }).reconcile();
   } catch {
     // Best-effort, as documented above.
   }

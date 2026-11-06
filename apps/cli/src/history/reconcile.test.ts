@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { parseWorkflow, WorkflowEngine, type RunStore } from '@relavium/core';
 import {
   createClient,
+  createEffectJournalPort,
+  createEffectJournalStore,
   createRunHistoryStore,
   createRunLeasePort,
   runMigrations,
@@ -97,6 +99,43 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
     });
   });
 
+  it('settles a run that left an external effect unresolved as effect_needs_attention', async () => {
+    // effect-journal.md §8: an unresolved effect is surfaced and never retried automatically, so the Home's
+    // reconcile reads the journal too; `internal` would read as an ordinary failure to run again.
+    const runId = await startedRun();
+    const journal = createEffectJournalPort(
+      createEffectJournalStore(client.db, { uuid: () => randomUUID(), now: () => Date.now() }),
+      { kind: 'run', runId, nodeId: 'a', attempt: 1 },
+      { providerAttempt: 1, toolCallId: 'run' },
+    );
+    await journal.prepare(0, 'run_command', 3, { command: 'deploy' });
+    await reconcileInterruptedRuns(client.db, terminalOutboxPath(dir));
+    expect(terminal(runId)).toMatchObject({
+      type: 'run:failed',
+      error: { code: 'effect_needs_attention' },
+    });
+  });
+
+  it('leaves a run that started less than one lease TTL ago alone', async () => {
+    // Its owner may not have taken its lease yet (it can only after `run:started` is durable), or may be a
+    // version that takes none. The store reports when the run started, and the reconcile reads it.
+    const s = store();
+    const runId = randomUUID();
+    await s.persistEvent(
+      RunEventSchema.parse({
+        type: 'run:started',
+        runId,
+        workflowId: await s.resolveWorkflowId('liveness'),
+        inputs: {},
+        executionMode: 'local',
+        timestamp: new Date().toISOString(),
+        sequenceNumber: 1,
+      }),
+    );
+    await reconcileInterruptedRuns(client.db, terminalOutboxPath(dir));
+    expect(terminal(runId)).toBeUndefined();
+  });
+
   it('leaves a run alone while another process holds a live lease on it', async () => {
     const runId = await startedRun();
     expect(store().leases.acquire(runId, 'another-process', 60_000)).toBeDefined();
@@ -184,11 +223,11 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
     expect(terminal(runId)).toMatchObject({ type: 'run:completed', outputs: { answer: 42 } });
   });
 
-  it('a reconcile inside a starting run’s lease window leaves exactly one durable terminal', async () => {
-    // `run:started` is durable a few microtask turns before the run acquires its lease. A reconcile in that
-    // window settles the run and releases its claim, so the run's own acquire then SUCCEEDS. Before the
-    // store refused a second terminal, the run's terminal — exempt from the append guard — landed behind the
-    // reconciler's: two terminals in one log. Driven here by running the reconcile inside that window.
+  it('a reconcile inside a starting run’s lease window leaves the run alone, and the run completes', async () => {
+    // `run:started` is durable a few microtask turns before the run acquires its lease (the lease row needs the
+    // run row). A reconcile in that window used to settle the run as `internal` before any node ran. It now
+    // leaves a run younger than one lease TTL alone, so the run takes its lease and finishes normally. Driven
+    // here by running the real reconcile inside that window.
     const s = store();
     let injected = false;
     const hooked: RunStore = {
@@ -220,26 +259,22 @@ describe('reconcileInterruptedRuns (2.6.G liveness, #229)', () => {
     for await (const event of handle.events) void event;
 
     expect(injected).toBe(true);
-    const terminals = () =>
-      events(handle.runId).filter(
-        (e) => e.type === 'run:completed' || e.type === 'run:failed' || e.type === 'run:cancelled',
-      );
-    expect(terminals()).toHaveLength(1);
-    expect(terminals()[0]).toMatchObject({ type: 'run:failed', error: { code: 'internal' } });
-    expect(executed).toEqual([]); // no node ran for a run the log already calls failed
-    // The refused terminal is held, so the run reports `uncertain` — and the next start drops it.
-    expect(handle.durability()).toBe('uncertain');
-    await reconcileInterruptedRuns(client.db, terminalOutboxPath(dir));
+    const terminals = events(handle.runId).filter(
+      (e) => e.type === 'run:completed' || e.type === 'run:failed' || e.type === 'run:cancelled',
+    );
+    expect(terminals.map((e) => e.type)).toEqual(['run:completed']);
+    expect(executed).toEqual(['a', 'b']);
+    expect(handle.durability()).toBe('durable');
     expect(await createFileTerminalOutbox(terminalOutboxPath(dir)).list()).toEqual([]);
-    expect(terminals()).toHaveLength(1);
   });
 
-  it('…and when the reconciler still holds its claim, the run is refused and still leaves one terminal', async () => {
-    // The other order inside the same window: the reconciler's terminal is durable and its lease is still
-    // live when the run tries to acquire. The acquire is refused, and the run settles at once — so its
-    // terminal takes the reconciler's sequence number. The store's terminal refusal stops it, and
-    // `UNIQUE(run_id, seq)` would stop it if that refusal were gone, which is why removing the refusal alone
-    // does not fail this case. Pinned for the outcome, which must not depend on the order.
+  it('…and a reconciler that claims the run anyway still leaves one terminal', async () => {
+    // A reconciler without the TTL grace (an older binary, or one whose clock runs a TTL ahead) can still claim
+    // the run inside that window. Its terminal is durable and its lease is still live when the run tries to
+    // acquire. The acquire is refused, and the run settles at once — so its terminal takes the reconciler's
+    // sequence number. The store's terminal refusal stops it, and `UNIQUE(run_id, seq)` would stop it if that
+    // refusal were gone, which is why removing the refusal alone does not fail this case. Pinned for the
+    // outcome, which must not depend on the order.
     const s = store();
     let injected = false;
     const hooked: RunStore = {
