@@ -93,7 +93,7 @@ Exact arguments, bounds and texts live in
   field passes `sanitizeUntrusted`: secret shapes masked on the original text,
   then terminal controls stripped. Each is bounded per field and per row. A
   target is one line (`sanitizeInline`).
-- **An approval preview never hides what it approves.** Stripping is right for a
+- **An approval preview is built not to hide what it approves.** Stripping is right for a
   transcript row and wrong for an approval: an edit that adds an escape or a
   bidi override would render exactly like the original. A code point a terminal
   draws as nothing, or as a blank, hides content the same way: a tag-character
@@ -152,6 +152,14 @@ Exact arguments, bounds and texts live in
   on that key. Approving approves the bytes the host will write, masked spans
   included, and the card says so. Whether a write whose changed lines are wholly
   masked may be approved at all is for the mandatory security review.
+- **These rules are a starting set, not a proof.** Each closes a way an approval
+  was shown to hide content while this draft was reviewed: zero-width and tag
+  runs, the line separators, line-end whitespace and endings, and code inside a
+  mask. This ADR claims only the rules it states. Whether they are complete
+  (other code points a font draws blank, a terminal's own rendering, anything
+  else that makes two different approvals look the same) is for the mandatory
+  security review before MVP-3 builds the card, which confirms or extends them;
+  until it has ruled, no wider guarantee is made.
 - **Diffs are in-house.** A diff is a line diff computed in-house, with no
   dependency.
   - It is computed over the **same bytes the host will write**. The write
@@ -209,9 +217,10 @@ Exact arguments, bounds and texts live in
 
 - The agent can make surgical edits, search and find in the tree, and read
   large files in ranges.
-- Every governed call the user approves is shown as what it will do. In
-  particular, every write shows its diff, and every `auto` write leaves a
-  trace.
+- Every governed call the user approves is shown through the rules above, which
+  are built so that what it will do is visible; their completeness is the
+  security review's to confirm. In particular, every write shows its diff, and
+  every `auto` write leaves a trace.
 - Tool rows tell the truth about outcomes, and the conversation's own text
   between tool calls survives.
 - The "what may be rendered" question has one typed answer per tool. A new tool

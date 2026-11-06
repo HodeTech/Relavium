@@ -2097,6 +2097,13 @@ resolved-id notice, `/export`'s "next free id" wording, and the card-ownership c
 - [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
   paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
   closed handle. *(low · apps/cli/src/commands/gate.ts)*
+- [ ] **ADR-0120's approval escape is a starting set; its completeness is for MVP-3's security review.**
+  *Maintainer ruling 2026-11-07.* Rounds 2 to 5 each found a further way an approval preview could hide content
+  (zero-width and tag runs, U+2028 and U+2029, line-end whitespace and endings, code inside a mask), each rated medium
+  against the draft's claim that a preview never hides what it approves. The draft now states its rules as a starting
+  set and claims only them; the mandatory security review confirms or extends them before the card is built, and the
+  correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
+  card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
