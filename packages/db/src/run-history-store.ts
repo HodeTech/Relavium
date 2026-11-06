@@ -110,6 +110,8 @@ export interface InterruptedRunInfo {
   readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run. */
   readonly lastSequenceNumber: number;
+  /** The run's `started_at` (its `run:started` timestamp, epoch ms); absent for a row that has none. */
+  readonly startedAtMs?: number;
 }
 
 /** A run summary for `relavium list` / `status` (2.I) — row-derived, with ISO timestamps. */
@@ -516,6 +518,7 @@ function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
     .select({
       id: runs.id,
       workflowId: runs.workflowId,
+      startedAt: runs.startedAt,
       seq: runEvents.seq,
       eventType: runEvents.eventType,
       payloadJson: runEvents.payloadJson,
@@ -534,6 +537,7 @@ function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
       workflowId: row.workflowId,
       resumable: false,
       lastSequenceNumber: Math.max(prior?.lastSequenceNumber ?? 0, row.seq ?? 0),
+      ...(row.startedAt === null ? {} : { startedAtMs: row.startedAt }),
     });
     if (row.seq === null || row.eventType === null || row.payloadJson === null) continue;
     const event = readStoredEventRow(row.id, {

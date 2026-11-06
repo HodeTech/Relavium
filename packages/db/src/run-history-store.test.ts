@@ -841,6 +841,8 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-p')?.resumable).toBe(true);
     expect(byId.get('run-p')?.lastSequenceNumber).toBe(1);
     expect(byId.get('run-m')?.resumable).toBe(false);
+    // When each run started, so reconcile can leave a run younger than one lease TTL alone.
+    expect(byId.get('run-m')?.startedAtMs).toBe(Date.parse(TS));
   });
 
   it.each(['gate_conflict', 'invalid_json'] as const)(
