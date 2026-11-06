@@ -128,10 +128,20 @@ describe('renderFinalSummary', () => {
     const paused = reduceAll([
       started,
       {
-        type: 'run:paused',
+        type: 'human_gate:paused',
         runId: RUN,
         timestamp: TS,
         sequenceNumber: 2,
+        nodeId: 'approve',
+        gateId: 'approve-1',
+        gateType: 'approval',
+        message: 'approve?',
+      },
+      {
+        type: 'run:paused',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 3,
         pendingGateCount: 1,
         gateIds: ['approve-1'],
       },
@@ -163,6 +173,16 @@ describe('renderFinalSummary', () => {
       limitMicrocents: 10,
       gateId: 'budget-1',
     };
+    const humanPause = (sequenceNumber: number, gateId: string, nodeId = 'approve'): RunEvent => ({
+      type: 'human_gate:paused',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber,
+      nodeId,
+      gateId,
+      gateType: 'approval',
+      message: 'approve?',
+    });
     const paused = (sequenceNumber: number, gateIds: string[]): RunEvent => ({
       type: 'run:paused',
       runId: RUN,
@@ -175,6 +195,7 @@ describe('renderFinalSummary', () => {
     const logs = `  run id ${RUN} — replay with \`relavium logs ${RUN}\``;
     const gate = `  run id ${RUN} — resume with \`relavium gate ${RUN}\``;
     const budget = `  run id ${RUN} — approve or abort the budget gate with \`relavium budget resume ${RUN} --gate budget-1\` (\`relavium status ${RUN}\` shows the amount)`;
+    const status = `  run id ${RUN} — \`relavium status ${RUN}\` shows each gate it is parked on and the command that continues it`;
     const linesOf = (events: readonly RunEvent[]): string[] =>
       renderFinalSummary(reduceAll(events))
         .split('\n')
@@ -200,10 +221,18 @@ describe('renderFinalSummary', () => {
     // A budget gate is resumed by `budget resume`, which `gate` refuses.
     expect(linesOf([started, budgetPause, paused(3, ['budget-1'])])).toEqual([budget]);
     // A human gate beside it still names `gate` first.
-    expect(linesOf([started, budgetPause, paused(3, ['approve-1', 'budget-1'])])).toEqual([
-      gate,
-      budget,
-    ]);
+    expect(
+      linesOf([
+        started,
+        budgetPause,
+        humanPause(3, 'approve-1'),
+        paused(4, ['approve-1', 'budget-1']),
+      ]),
+    ).toEqual([gate, budget]);
+    // A budget gate's own `human_gate:paused` companion is its prompt, not a human gate.
+    expect(
+      linesOf([started, budgetPause, humanPause(3, 'budget-1', 'writer'), paused(4, ['budget-1'])]),
+    ).toEqual([budget]);
     // A run parked on a media job only has no gate to resume.
     expect(linesOf([started, paused(2, [])])).toEqual([
       `  run id ${RUN} — check it with \`relavium status ${RUN}\``,
@@ -219,7 +248,23 @@ describe('renderFinalSummary', () => {
       decision: 'approved',
       decidedBy: 'cli',
     };
-    expect(linesOf([resumed, paused(8, ['approve-2'])])).toEqual([gate]);
+    // A gate the resumed stream announces is classified as on a fresh run…
+    expect(linesOf([resumed, humanPause(8, 'approve-2'), paused(9, ['approve-2'])])).toEqual([
+      gate,
+    ]);
+    // …but a resumed engine re-parks on the gates it restored from its checkpoint WITHOUT announcing them, and such a
+    // gate may be a budget gate, which `gate` declines: only `status`, which reads the whole log, can name its command.
+    expect(linesOf([resumed, paused(8, ['budget-1'])])).toEqual([status]);
+    expect(
+      linesOf([resumed, humanPause(8, 'approve-2'), paused(9, ['approve-2', 'budget-1'])]),
+    ).toEqual([gate, status]);
+    expect(
+      linesOf([
+        resumed,
+        { ...budgetPause, sequenceNumber: 8 },
+        paused(9, ['budget-1', 'approve-2']),
+      ]),
+    ).toEqual([budget, status]);
   });
 
   it('is plain text — no ANSI escape codes (scrollback-safe / --no-color)', () => {

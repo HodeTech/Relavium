@@ -84,6 +84,7 @@ describe('RunApp terminal projection', () => {
       gapDetected: false,
       warnings: [`warning visible${ATTACK}\nforged warning row`],
       pendingBudgetNotices: [],
+      pendingHumanGates: [],
       producedMedia: [
         {
           nodeId: `media node visible${ATTACK}\nforged media node`,

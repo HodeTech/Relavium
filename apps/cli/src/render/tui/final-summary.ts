@@ -102,7 +102,11 @@ export function renderFinalSummary(state: RunViewState): string {
 /**
  * The run id line, with the command that continues from the outcome: `relavium logs` for a run that ended, and for a
  * paused run the command for what it is parked on — `relavium gate` for a human gate, `relavium budget resume` for a
- * budget gate (which `gate` refuses), and `relavium status` for a run parked on a media job only.
+ * budget gate (which `gate` declines), and `relavium status` for a run parked on a media job only.
+ *
+ * A gate is classified only from what THIS stream announced. A resumed run (`relavium gate`, `budget resume`) re-parks
+ * on the gates its engine restored from the checkpoint without announcing them again, so such a gate could be either
+ * kind; `relavium status` reads the whole log and prints the command for each one.
  */
 function continuationLines(state: RunViewState, runId: string): string[] {
   const id = sanitizeInline(runId);
@@ -113,8 +117,11 @@ function continuationLines(state: RunViewState, runId: string): string[] {
   const budgetGates = new Set(
     state.pendingBudgetNotices.filter((gate) => gate.runId === runId).map((gate) => gate.gateId),
   );
+  const humanGates = new Set(
+    state.pendingHumanGates.filter((gate) => gate.runId === runId).map((gate) => gate.gateId),
+  );
   const lines: string[] = [];
-  if (parked.some((gateId) => !budgetGates.has(gateId))) {
+  if (parked.some((gateId) => humanGates.has(gateId))) {
     lines.push(`  run id ${id} — resume with \`relavium gate ${id}\``);
   }
   for (const gateId of parked.filter((parkedId) => budgetGates.has(parkedId))) {
@@ -126,7 +133,11 @@ function continuationLines(state: RunViewState, runId: string): string[] {
         : `  run id ${id} — approve or abort the budget gate with \`${command}\` (\`relavium status ${id}\` shows the amount)`,
     );
   }
-  if (lines.length === 0) {
+  if (parked.some((gateId) => !humanGates.has(gateId) && !budgetGates.has(gateId))) {
+    lines.push(
+      `  run id ${id} — \`relavium status ${id}\` shows each gate it is parked on and the command that continues it`,
+    );
+  } else if (lines.length === 0) {
     lines.push(`  run id ${id} — check it with \`relavium status ${id}\``);
   }
   return lines;
