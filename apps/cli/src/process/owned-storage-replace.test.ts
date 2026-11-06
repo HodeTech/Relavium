@@ -84,7 +84,7 @@ describe('replaceFileForStorage', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'refuses a FIFO put at the path after the check without opening it, so it never blocks',
+    'refuses a FIFO put at the path after the check, before its lstat lets anything open it',
     () => {
       const path = join(dir, 'w.relavium.yaml');
       writeFileSync(path, 'old');

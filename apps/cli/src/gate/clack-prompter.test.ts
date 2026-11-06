@@ -351,6 +351,8 @@ describe('budget confirmation from recorded scalar context', () => {
       expect.stringContaining('current budget checks still apply'),
       expect.anything(),
     );
+    // A bare Enter must not continue without an allowance: the confirm defaults to Reject, as the amount card's.
+    expect(d.confirm).toHaveBeenCalledWith(expect.objectContaining({ initialValue: false }));
   });
   it('amount rejection is binary and cancel never constructs approval', async () => {
     expect(

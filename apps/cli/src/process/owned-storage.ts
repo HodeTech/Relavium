@@ -151,7 +151,9 @@ export function replaceFileForStorage(
 /**
  * The identity of the regular file at `path`, read only when its `lstat` fields already equal `expected`'s, or
  * `undefined` for anything else. The bytes come through a non-blocking, no-follow descriptor whose `fstat` must
- * match too, and no more of them than `expected.size` plus one (to see growth), as `/export`'s own read does.
+ * match too (the open `/export`'s own read uses), and no more of them than `expected.size` plus one, to see growth.
+ * A FIFO swapped in between the `lstat` and the open is the case `O_NONBLOCK` is for; no test drives it, since a
+ * regression would hang the test worker rather than fail it.
  */
 function identityIfUnchanged(
   path: string,
