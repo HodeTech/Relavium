@@ -67,8 +67,11 @@ Everything is terminal-safe text, under the approval escape of
 [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md): a
 control, a line separator, or an invisible or blank code point in an argument
 shows as a visible escape, never hidden. The one thing the card does not show is
-a secret span, which ADR-0120 masks, labels and counts. Masked spans aside, the
-card never offers an approving answer for a command it does not show in full. A command too long for the screen must be
+a secret span, which ADR-0120 masks, labels and counts, and which the user must
+reveal before approving when it holds anything but credential characters.
+Masked spans aside, the card never offers an approving answer for a command it
+does not show in full. Each argument is drawn on its own line, so right-to-left
+text in one cannot be drawn past another. A command too long for the screen must be
 expanded before it can be approved.
 
 **The card's answers:**

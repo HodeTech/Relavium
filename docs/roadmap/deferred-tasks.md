@@ -2052,7 +2052,7 @@ entry's commands, the glossary's and the vision's auto-reject timeout). Recorded
 decided its gate opened the run's next card at once, so the keys the user was still typing for the closed card
 answered it (Clack's `y` approves); after such a close the run's later gates are now left for the command its
 summary names. The card also tells its own decision by what it returned, no longer by a `decidedBy` of `cli`, which
-another terminal's `relavium gate` shares. ADR-0120's escape still let U+2028 and U+2029 through, which JavaScript reads as line breaks and a
+every CLI decision shares. ADR-0120's escape still let U+2028 and U+2029 through, which JavaScript reads as line breaks and a
 terminal draws as nothing; the escape is now a closed set (every `\p{C}` code point, every separator but the ASCII
 space, every default-ignorable code point and U+2800, with TAB shown as a tab mark). Fixed with them: tests for the
 reconcile re-read's per-run check and its claim release, for a deadline deciding another gate while a card is open
@@ -2084,6 +2084,19 @@ ADR-0118's card and Positive wording, and three comments. Recorded:
   Nothing reads the input once the card closes, so the cooked line discipline keeps the rest of a typed reason, and
   the shell reads it when the run parks and the CLI exits `3`. **Re-check:** keep a raw-mode reader that discards
   input until the view re-mounts, or drain pending input before exit. *(low · apps/cli/src/commands/drive.ts)*
+
+**D64 round 5 of the correction (2026-11-07, at `882a2ff8`)** found no medium in the code; reconcile came back clean.
+It found two in ADR-0120. A new file written entirely in CR LF still looked like its LF twin, since only a differing
+or mixed ending was marked; the card now states each side's endings whenever they are not all LF. And secret masking
+could hide code a model chose: `Bearer $(curl …|sh)` is masked like `Bearer sk-…`. A masked span holding anything but
+credential characters is now flagged, and approving waits until the user reveals it with a deliberate key. Fixed with
+them: the escape notation escapes a literal `<U+`, visible right-to-left text and the hand-kept blank list are stated,
+ADR-0118 draws each argument on its own line, a test that a chmod after recognition is refused, a test for `gate`'s
+resolved-id notice, `/export`'s "next free id" wording, and the card-ownership comments and test names. Recorded:
+
+- [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
+  paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
+  closed handle. *(low · apps/cli/src/commands/gate.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

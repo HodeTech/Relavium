@@ -104,7 +104,9 @@ Exact arguments, bounds and texts live in
   approval card and its full view, every code point in a target, field or diff
   line that is not a printable graphic character renders as a visible, styled
   escape (for example `<U+202E>`, `<U+2028>` or `<U+E0049>`), never stripped and
-  never left invisible. The set is closed:
+  never left invisible. A literal `<U+` already in the text is escaped too (its
+  `<` shows as `<U+003C>`), so the notation stays unambiguous where styling is
+  off. The set is closed:
   - every `\p{C}` code point: controls, format characters, surrogates,
     private-use and unassigned code points;
   - every separator other than the ASCII space (`\p{Z}`): the other spaces and
@@ -120,24 +122,36 @@ Exact arguments, bounds and texts live in
   and a tab is still told from spaces. Whitespace at the end of a line, the
   ASCII space included, shows as a styled mark per character (`·` for a space),
   as `git diff` marks whitespace errors, so a trailing space never draws as
-  nothing. The line diff compares each line with its ending: where a line's
-  ending differs between the two sides, or from the file's other lines, it shows
-  as a styled `<CR LF>` or `<LF>` mark, and a CR anywhere else is escaped. A
-  change to whitespace or to a line ending alone therefore never renders as an
-  unchanged line. The properties are
-  ones the JavaScript regular-expression engine knows, so no table is kept by
-  hand. The escape does not tell confusable letters apart (a Cyrillic `а` for a
-  Latin `a`): they are visible, and they stay as they are. Transcript rows may
+  nothing. A CR before an LF is part of the line's ending, not trailing
+  whitespace. The line diff compares each line with its ending. The card states
+  each side's endings whenever they are not all LF (a styled `CR LF endings` or
+  `mixed endings` note beside the target, always shown for a new file whose
+  lines end in CR LF), and a line whose ending differs from its side's or from
+  the other side's shows a styled `<CR LF>` or `<LF>` mark. A CR anywhere else is
+  escaped. A change to whitespace or to a line ending alone therefore never
+  renders as an unchanged line, and a file written in CR LF never looks like its
+  LF twin. The property sets are ones the JavaScript regular-expression engine
+  knows, so only the short blank-drawing list above is kept by hand. The escape
+  does not tell confusable letters apart (a Cyrillic `а` for a Latin `a`), and it
+  does not stop visible right-to-left letters from being drawn right to left:
+  both are visible, and they stay as they are. Transcript rows may
   strip. The order is fixed: secret masking on the original text, then this
   escape, which turns every such code point into printable text, and only then
   the card's plain drawing: ADR-0114's sanitize step, whose strip then finds
   nothing to remove, with no markdown parse (ADR-0114 §5 keeps tool rows plain).
-  The diff's two sides go through the same escape. A span the secret masking replaces shows
-  as a labelled mask, and the card states how many spans were masked; the full
-  view does not unmask. Approving approves the bytes the host will write,
-  masked spans included, and the card says so. Whether a write whose changed
-  lines are wholly masked may be approved at all is for the mandatory security
-  review.
+  The diff's two sides go through the same escape.
+- **A mask hides a secret's value, never what the call does.** A span the secret
+  masking replaces shows as a labelled mask with its length, and the card states
+  how many spans were masked. The masker matches shapes, and a model chooses
+  what fills them: `Bearer $(curl …|sh)` is masked like `Bearer sk-…`. So a
+  masked span that holds anything other than credential characters (letters,
+  digits and `-_.+/=~:`), such as whitespace, `$`, a quote, a bracket, a
+  backquote, `;`, `|`, `&`, `<` or `>`, is flagged on the card, and while any
+  span is flagged the approving answers stay disabled until the user reveals the
+  masked spans in the full view with a deliberate key. The full view unmasks only
+  on that key. Approving approves the bytes the host will write, masked spans
+  included, and the card says so. Whether a write whose changed lines are wholly
+  masked may be approved at all is for the mandatory security review.
 - **Diffs are in-house.** A diff is a line diff computed in-house, with no
   dependency.
   - It is computed over the **same bytes the host will write**. The write
