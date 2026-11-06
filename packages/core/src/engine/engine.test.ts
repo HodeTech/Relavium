@@ -6304,6 +6304,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     const baseMs = Date.parse('2026-03-01T00:00:00.000Z');
     for (const [aheadMs, settles] of [
       [1_000, false],
+      [RUN_LEASE_TTL_MS - 1_000, false],
       [RUN_LEASE_TTL_MS + 1_000, true],
     ] as const) {
       const store = new InMemoryRunStore();
