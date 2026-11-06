@@ -6477,8 +6477,35 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     expect(await engine.reconcile()).toEqual([]);
     expect(store.eventsFor('owner-1').map((e) => e.type)).toEqual(['run:started']);
     expect(await host.terminalOutbox.list()).toEqual([held]);
+    // Skipping the run releases the claim it took (ADR-0079 §4): another process's drain must be able to land it.
+    expect(await base.runLeases.read('owner-1')).toBeUndefined();
     expect((await engine.reconcile()).map((e) => e.type)).toEqual(['run:completed']);
     expect(store.eventsFor('owner-1').map((e) => e.type)).toEqual(['run:started', 'run:completed']);
+  });
+
+  it('skips only the run whose terminal the outbox holds when it looks again under its claim', async () => {
+    // Another run's held entry, which this drain cannot land while its lease is live, must not keep a crashed run
+    // from being settled.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'crashed-x');
+    await seedStarted(store, 'held-y');
+    const host = createInMemoryHost({ store });
+    await host.terminalOutbox.put({
+      type: 'run:completed',
+      runId: 'held-y',
+      timestamp: host.clock.now(),
+      sequenceNumber: 1,
+      outputs: {},
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    });
+    await host.runLeases.acquire('held-y', 'another-process', RUN_LEASE_TTL_MS);
+    const engine = new WorkflowEngine({ host, executor: new StubExecutor() });
+
+    const settled = await engine.reconcile();
+    expect(settled.map((e) => [e.runId, e.type])).toEqual([['crashed-x', 'run:failed']]);
+    expect(store.eventsFor('held-y').map((e) => e.type)).toEqual(['run:started']);
   });
 
   it('repairs nothing when the outbox cannot be read again under its claim', async () => {
