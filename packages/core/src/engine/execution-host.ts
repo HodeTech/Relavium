@@ -125,6 +125,12 @@ export interface InterruptedRun {
   readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run — the reconcile event continues from it. */
   readonly lastSequenceNumber: number;
+  /**
+   * When the run started (its `run:started` timestamp, epoch ms). `reconcile()` leaves a run younger than one
+   * lease TTL alone: its owner may not have taken its lease yet (ADR-0079 §3) or may be a version that takes
+   * none. Absent ⇒ the store does not know, and the run gets no such grace.
+   */
+  readonly startedAtMs?: number;
 }
 
 /**
@@ -345,13 +351,6 @@ function counterUuid(n: number): string {
   return `00000000-0000-4000-8000-${hex}`;
 }
 
-/** The run terminals the reference store refuses to repeat, as the SQLite store does. */
-const IN_MEMORY_TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set<RunEvent['type']>([
-  'run:completed',
-  'run:failed',
-  'run:cancelled',
-]);
-
 /**
  * An in-memory {@link RunStore} — deterministic and dependency-free. Persists events per run so a *new*
  * engine constructed over the *same* store sees the prior "process'" runs, which is how the tests
@@ -440,10 +439,7 @@ export class InMemoryRunStore implements RunStore {
     }
     // …and the SAME exactly-one-terminal refusal (ADR-0036), mirrored for the reason above: neither check
     // stops an unguarded, unfenced terminal behind one already in the log.
-    if (
-      IN_MEMORY_TERMINAL_TYPES.has(event.type) &&
-      (bucket ?? []).some((e) => IN_MEMORY_TERMINAL_TYPES.has(e.type))
-    ) {
+    if (TERMINAL_TYPES.has(event.type) && (bucket ?? []).some((e) => TERMINAL_TYPES.has(e.type))) {
       return Promise.reject(new RunAlreadyTerminalError(event.runId));
     }
     if (bucket === undefined) {
@@ -500,6 +496,7 @@ export class InMemoryRunStore implements RunStore {
         resumable: suspension.isResumable(runId),
         ...(suspension.budgetRejections(runId).length === 0 ? {} : { budgetRejected: true }),
         lastSequenceNumber: events.reduce((max, e) => Math.max(max, e.sequenceNumber), -1),
+        startedAtMs: Date.parse(started.timestamp),
       });
     }
     return Promise.resolve(interrupted);

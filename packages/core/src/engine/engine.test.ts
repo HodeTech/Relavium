@@ -1,8 +1,14 @@
 import { prepareOutputCapPlan, type MediaJobStatus } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
-import { collectDurableMediaHandles } from '@relavium/shared';
-import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
+import { collectDurableMediaHandles, RUN_LEASE_TTL_MS } from '@relavium/shared';
+import type {
+  MediaReferencePort,
+  MediaStore,
+  MediaWritePort,
+  RunEvent,
+  UnresolvedEffect,
+} from '@relavium/shared';
 
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
@@ -155,7 +161,9 @@ function seedStarted(
    *  refused with `workflow_mismatch`. */
   workflowId = '00000000-0000-4000-8000-000000000099',
 ): Promise<void> {
-  const startedAt = '2026-06-13T00:00:00.000Z';
+  // Long before the in-memory host's clock (2026-01-01), as a crashed run is: reconcile leaves a run younger
+  // than one lease TTL alone.
+  const startedAt = '2025-12-01T00:00:00.000Z';
   const events: RunEvent[] = [
     {
       type: 'run:started',
@@ -6129,7 +6137,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
 
   it('reconcile() skips a run whose terminal write fails and still reconciles the others', async () => {
     const store = new InMemoryRunStore();
-    const startedAt = '2026-06-13T00:00:00.000Z';
+    const startedAt = '2025-12-01T00:00:00.000Z'; // older than one lease TTL by the host's clock
     for (const runId of ['crash-a', 'crash-b']) {
       await store.persistEvent({
         type: 'run:started',
@@ -6260,6 +6268,230 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
       [],
     );
     expect(store.eventsFor('unknown-1').map((e) => e.type)).toEqual(['run:started']);
+  });
+
+  it('leaves a run that started less than one lease TTL ago alone, and settles it once it is older', async () => {
+    // Its owner persists `run:started` before it can take its lease (the lease row needs the run row), so a run
+    // with no lease yet may have started a moment ago in another process (ADR-0079 §3).
+    const store = new InMemoryRunStore();
+    const startedMs = Date.parse('2026-03-01T00:00:00.000Z');
+    await store.persistEvent({
+      type: 'run:started',
+      runId: 'young-1',
+      timestamp: new Date(startedMs).toISOString(),
+      sequenceNumber: 0,
+      workflowId: '00000000-0000-4000-8000-000000000099',
+      inputs: {},
+      executionMode: 'local',
+    });
+    const young = createInMemoryHost({ store, baseEpochMs: startedMs + RUN_LEASE_TTL_MS - 1_000 });
+    expect(
+      await new WorkflowEngine({ host: young, executor: new StubExecutor() }).reconcile(),
+    ).toEqual([]);
+    expect(store.eventsFor('young-1').map((e) => e.type)).toEqual(['run:started']);
+
+    const old = createInMemoryHost({ store, baseEpochMs: startedMs + RUN_LEASE_TTL_MS + 1 });
+    const settled = await new WorkflowEngine({
+      host: old,
+      executor: new StubExecutor(),
+    }).reconcile();
+    expect(settled.map((e) => e.type)).toEqual(['run:failed']);
+  });
+
+  it('reads the outbox before listing the open runs, so a run that finishes in between keeps its held terminal', async () => {
+    // Listing first let another process start a run, finish it and have its terminal refused into the outbox
+    // between the two reads: the drain then found a held terminal for a run missing from its stale list and
+    // dropped it as already landed.
+    const store = new InMemoryRunStore();
+    const base = createInMemoryHost({ store });
+    const late: RunEvent = {
+      type: 'run:completed',
+      runId: 'late-1',
+      timestamp: base.clock.now(),
+      sequenceNumber: 1,
+      outputs: { answer: 42 },
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    };
+    let raced = false;
+    const host: ExecutionHost = {
+      ...base,
+      store: {
+        resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+        persistEvent: (event, options) => store.persistEvent(event, options),
+        listInterruptedRuns: async () => {
+          const listed = await store.listInterruptedRuns();
+          if (!raced) {
+            raced = true;
+            await store.persistEvent({
+              type: 'run:started',
+              runId: 'late-1',
+              timestamp: '2025-12-01T00:00:00.000Z',
+              sequenceNumber: 0,
+              workflowId: '00000000-0000-4000-8000-000000000099',
+              inputs: {},
+              executionMode: 'local',
+            });
+            await base.terminalOutbox.put(late);
+          }
+          return listed;
+        },
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+      },
+    };
+    const engine = new WorkflowEngine({ host, executor: new StubExecutor() });
+
+    expect(await engine.reconcile()).toEqual([]);
+    expect(await host.terminalOutbox.list()).toEqual([late]);
+    expect((await engine.reconcile()).map((e) => e.type)).toEqual(['run:completed']);
+    expect(store.eventsFor('late-1').map((e) => e.type)).toEqual(['run:started', 'run:completed']);
+  });
+
+  it('looks at the outbox again under its claim, so it never relabels a run whose owner just held its terminal', async () => {
+    // The owner was still holding its lease, writing a terminal the store then refused: it puts that terminal in
+    // the outbox and only then releases the lease. A reconcile that read the outbox before the put and claimed
+    // after the release wrote `run:failed` past it, and its next drain dropped the held outputs.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'owner-1');
+    const base = createInMemoryHost({ store });
+    const held: RunEvent = {
+      type: 'run:completed',
+      runId: 'owner-1',
+      timestamp: base.clock.now(),
+      sequenceNumber: 1,
+      outputs: { answer: 42 },
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    };
+    let ownerFinished = false;
+    const host: ExecutionHost = {
+      ...base,
+      runLeases: {
+        ...base.runLeases,
+        acquire: async (runId, ownerId, ttlMs) => {
+          if (runId === 'owner-1' && !ownerFinished) {
+            ownerFinished = true;
+            await base.terminalOutbox.put(held); // the owner's refused terminal, put before its release
+          }
+          return base.runLeases.acquire(runId, ownerId, ttlMs);
+        },
+      },
+    };
+    const engine = new WorkflowEngine({ host, executor: new StubExecutor() });
+
+    expect(await engine.reconcile()).toEqual([]);
+    expect(store.eventsFor('owner-1').map((e) => e.type)).toEqual(['run:started']);
+    expect(await host.terminalOutbox.list()).toEqual([held]);
+    expect((await engine.reconcile()).map((e) => e.type)).toEqual(['run:completed']);
+    expect(store.eventsFor('owner-1').map((e) => e.type)).toEqual(['run:started', 'run:completed']);
+  });
+
+  it('repairs nothing when the outbox cannot be read again under its claim', async () => {
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'reread-1');
+    const base = createInMemoryHost({ store });
+    let reads = 0;
+    const host: ExecutionHost = {
+      ...base,
+      terminalOutbox: {
+        ...base.terminalOutbox,
+        list: () => {
+          reads += 1;
+          return reads === 1 ? base.terminalOutbox.list() : Promise.reject(new Error('unreadable'));
+        },
+      },
+    };
+    expect(await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile()).toEqual(
+      [],
+    );
+    expect(reads).toBe(2);
+    expect(store.eventsFor('reread-1').map((e) => e.type)).toEqual(['run:started']);
+  });
+
+  it('drainTerminalOutbox also reads the outbox before listing the open runs', async () => {
+    const store = new InMemoryRunStore();
+    const base = createInMemoryHost({ store });
+    const late: RunEvent = {
+      type: 'run:completed',
+      runId: 'late-2',
+      timestamp: base.clock.now(),
+      sequenceNumber: 1,
+      outputs: {},
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    };
+    const host: ExecutionHost = {
+      ...base,
+      store: {
+        resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+        persistEvent: (event, options) => store.persistEvent(event, options),
+        listInterruptedRuns: async () => {
+          const listed = await store.listInterruptedRuns();
+          await store.persistEvent({
+            type: 'run:started',
+            runId: 'late-2',
+            timestamp: '2025-12-01T00:00:00.000Z',
+            sequenceNumber: 0,
+            workflowId: '00000000-0000-4000-8000-000000000099',
+            inputs: {},
+            executionMode: 'local',
+          });
+          await base.terminalOutbox.put(late);
+          return listed;
+        },
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+      },
+    };
+    expect(
+      await new WorkflowEngine({ host, executor: new StubExecutor() }).drainTerminalOutbox(),
+    ).toEqual([]);
+    expect(await host.terminalOutbox.list()).toEqual([late]);
+  });
+
+  it('settles a crashed run with unresolved external effects as effect_needs_attention, not internal', async () => {
+    // effect-journal.md §8: an unresolved effect is surfaced and never retried automatically. `internal` reads
+    // as an ordinary failure a caller may simply run again.
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'effects-1');
+    await seedStarted(store, 'clean-1');
+    const unresolved: UnresolvedEffect = {
+      identity: { scope: 'run:effects-1:a', slot: 0, toolId: 'run_command' },
+      state: 'prepared',
+      tier: 3,
+      nodeId: 'a',
+    };
+    const engine = engineWith(undefined, createInMemoryHost({ store }), {
+      effectResume: {
+        unresolvedForRun: (runId) => Promise.resolve(runId === 'effects-1' ? [unresolved] : []),
+      },
+    });
+    const settled = await engine.reconcile();
+    const codes = new Map<string | undefined, string>(
+      settled.map((e) => [e.runId, e.type === 'run:failed' ? e.error.code : e.type]),
+    );
+    expect(Object.fromEntries(codes)).toEqual({
+      'effects-1': 'effect_needs_attention',
+      'clean-1': 'internal',
+    });
+    const effects = settled.find((e) => e.runId === 'effects-1');
+    expect(effects?.type === 'run:failed' ? effects.error.message : '').toContain(
+      'a/run_command (prepared, tier 3)',
+    );
+  });
+
+  it('settles a crashed run as effect_needs_attention when its effect journal cannot be read', async () => {
+    const store = new InMemoryRunStore();
+    await seedStarted(store, 'unreadable-1');
+    const engine = engineWith(undefined, createInMemoryHost({ store }), {
+      effectResume: { unresolvedForRun: () => Promise.reject(new Error('journal locked')) },
+    });
+    const settled = await engine.reconcile();
+    expect(settled.map((e) => (e.type === 'run:failed' ? e.error.code : e.type))).toEqual([
+      'effect_needs_attention',
+    ]);
   });
 });
 

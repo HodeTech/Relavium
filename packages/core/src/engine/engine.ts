@@ -46,6 +46,7 @@ import {
   MediaAdmissionError,
   deInlineMedia,
   type DurableMediaMeta,
+  type ErrorCode,
   type ExecutionMode,
   type GateDecision,
   type LlmProviderId,
@@ -6357,8 +6358,15 @@ export class WorkflowEngine {
     // needs repair, and write `run:failed{internal}` for a run that actually COMPLETED — the exact
     // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
     // makes the two writers safe within one process; across processes only this order does.
+    //
+    // **The outbox is READ before the open runs are listed**, for the same reason. The drain drops an entry
+    // whose run is not in the list, which is right only if the list is no older than the entry: an owner puts
+    // its terminal only after its own `run:started` is durable, so an entry read first whose run is missing
+    // from a later list has a terminal in the log by then. Listing first let a run that started, finished and
+    // had its terminal refused between the two reads lose that terminal as "already landed".
+    const outbox = await this.#readOutbox();
     const interrupted = await this.#host.store.listInterruptedRuns();
-    const drained = await this.#drainTerminalOutbox(interrupted);
+    const drained = await this.#drainTerminalOutbox(interrupted, outbox);
     const reconciled: RunEvent[] = [...drained.written];
     for (const run of interrupted) {
       // **A run whose held terminal this pass could not write is left for the next start.** Draining first only
@@ -6375,6 +6383,11 @@ export class WorkflowEngine {
         // unknown_run by design — never silently, and never a corrupted half-run.
         continue;
       }
+      // **A run younger than one lease TTL is left alone.** Its owner persists `run:started` before it can take
+      // the lease (the lease row needs the run row, ADR-0079 §3), so a run with no lease yet may be one that
+      // started a moment ago in another process; and a run started by a version that takes no lease at all
+      // looks the same. Past one TTL, a run with no live lease is treated as crashed, as before.
+      if (this.#startedWithinLeaseTtl(run)) continue;
       // **Never terminate a run another process is working on (ADR-0079 §7).** `reconcile()` writes a
       // terminal for every non-resumable interrupted run, and it runs from a process that may not own any of
       // them. A run holding a LIVE lease is mid-execution somewhere else — leaving it interrupted is correct,
@@ -6385,23 +6398,24 @@ export class WorkflowEngine {
       // under the old generation would leave a zombie able to append past the terminal written here.
       const fence = await this.#claimForReconcile(run.runId);
       if (fence === undefined) continue;
-      const event = RunEventSchema.parse({
-        type: 'run:failed',
-        runId: run.runId,
-        timestamp: this.#host.clock.now(),
-        sequenceNumber: run.lastSequenceNumber + 1,
-        error: {
-          code: run.budgetRejected === true ? 'budget_exceeded' : 'internal',
-          message:
-            run.budgetRejected === true
-              ? 'the recorded budget rejection was reconciled before completion'
-              : 'the run was interrupted before completion and reconciled on restart',
-          retryable: false,
-          correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
-        },
-        partialOutputs: {},
-      });
       try {
+        // **Look at the outbox again, under the claim.** The read above may predate this run's owner putting
+        // its terminal there: the owner was still holding its lease, writing a terminal the store then refused.
+        // The owner puts before it releases its lease, so with the claim taken any such entry is visible now —
+        // and repairing past it would relabel a completed run failed and let the next drain drop its outputs.
+        if (await this.#outboxMayHold(run.runId)) continue;
+        const event = RunEventSchema.parse({
+          type: 'run:failed',
+          runId: run.runId,
+          timestamp: this.#host.clock.now(),
+          sequenceNumber: run.lastSequenceNumber + 1,
+          error: {
+            ...(await this.#reconciledFailure(run)),
+            retryable: false,
+            correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
+          },
+          partialOutputs: {},
+        });
         // **`reconcile()` is a SECOND durable write path** — it bypasses `#emitDurable` entirely, so every
         // property established at that choke point has to be re-established here or it holds for one of two
         // writers (ADR-0078 §3). It passes the guard with the belief it actually has: `listInterruptedRuns`
@@ -6562,26 +6576,96 @@ export class WorkflowEngine {
    * surface that wants the drain without the repair.
    */
   async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
+    // Outbox before list, as in `reconcile()`.
+    const outbox = await this.#readOutbox();
     const interrupted = await this.#host.store.listInterruptedRuns();
-    return (await this.#drainTerminalOutbox(interrupted)).written;
+    return (await this.#drainTerminalOutbox(interrupted, outbox)).written;
+  }
+
+  /** The outbox's entries, or `undefined` when it cannot be read. */
+  async #readOutbox(): Promise<readonly RunEvent[] | undefined> {
+    try {
+      return await this.#host.terminalOutbox.list();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Whether the outbox holds a terminal for `runId` now — `true` when it cannot be read, since nothing then proves it does not. */
+  async #outboxMayHold(runId: string): Promise<boolean> {
+    const held = await this.#readOutbox();
+    return held === undefined || held.some((event) => event.runId === runId);
+  }
+
+  /** Whether `run` started less than one lease TTL ago by this host's clock (a start in its future counts as recent). */
+  #startedWithinLeaseTtl(run: InterruptedRun): boolean {
+    if (run.startedAtMs === undefined) return false;
+    return this.#nowMs() - run.startedAtMs < RUN_LEASE_TTL_MS;
+  }
+
+  /**
+   * The error a reconciled run is settled with. An unresolved external effect comes first: such a run must not
+   * read as an ordinary `internal` failure, because a caller re-runs those, and §8 of effect-journal.md says an
+   * unresolved effect is surfaced and never retried automatically. A journal that cannot be read counts as
+   * unresolved, as it does at the resume gate.
+   */
+  async #reconciledFailure(
+    run: InterruptedRun,
+  ): Promise<{ readonly code: ErrorCode; readonly message: string }> {
+    if (this.#effectResume !== undefined) {
+      let unresolved: readonly UnresolvedEffect[] | undefined;
+      try {
+        unresolved = await this.#effectResume.unresolvedForRun(run.runId);
+      } catch {
+        unresolved = undefined;
+      }
+      if (unresolved === undefined) {
+        return {
+          code: 'effect_needs_attention',
+          message:
+            'the run was interrupted before completion and its effect journal could not be read; check its ' +
+            'external effects before running it again',
+        };
+      }
+      if (unresolved.length > 0) {
+        return {
+          code: 'effect_needs_attention',
+          message:
+            `the run was interrupted before completion with ${String(unresolved.length)} external effect(s) ` +
+            'unresolved: ' +
+            unresolved
+              .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
+              .join(', ') +
+            '. Check the target before running it again.',
+        };
+      }
+    }
+    return run.budgetRejected === true
+      ? {
+          code: 'budget_exceeded',
+          message: 'the recorded budget rejection was reconciled before completion',
+        }
+      : {
+          code: 'internal',
+          message: 'the run was interrupted before completion and reconciled on restart',
+        };
   }
 
   /**
    * Write every held terminal it can, and say which runs still hold one: `written` are the terminals that landed,
    * `holds(runId)` is true for a run whose held terminal stayed in the outbox this pass (its claim was declined or
-   * its write failed). An outbox that cannot be read holds every run, because nothing can then prove a run has no
-   * terminal waiting — {@link reconcile} repairs none of them rather than risk relabelling a completed run.
+   * its write failed). An outbox that could not be read (`held` is `undefined`) holds every run, because nothing
+   * can then prove a run has no terminal waiting — {@link reconcile} repairs none of them rather than risk
+   * relabelling a completed run. `held` must be read before `interrupted` is listed (see {@link reconcile}).
    */
-  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<{
+  async #drainTerminalOutbox(
+    interrupted: readonly InterruptedRun[],
+    held: readonly RunEvent[] | undefined,
+  ): Promise<{
     readonly written: readonly RunEvent[];
     readonly holds: (runId: string) => boolean;
   }> {
-    let held: readonly RunEvent[];
-    try {
-      held = await this.#host.terminalOutbox.list();
-    } catch {
-      return { written: [], holds: () => true };
-    }
+    if (held === undefined) return { written: [], holds: () => true };
     // `listInterruptedRuns` is the port's own answer to "does this run still lack a terminal" — a run that
     // has one is not in it. Using it rather than adding a read method keeps the drain inside the three
     // methods `RunStore` already declares, which is what lets a Phase-2 cloud store implement this at all.

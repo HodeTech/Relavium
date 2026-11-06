@@ -335,7 +335,7 @@ describe('ADR-0079 §7 — reconcile() never terminates a run somebody else is r
       type: 'run:started',
       runId,
       sequenceNumber: 0,
-      timestamp: '2026-01-01T00:00:00.000Z',
+      timestamp: '2025-12-01T00:00:00.000Z', // older than one lease TTL by the host's clock
       workflowId,
       inputs: {},
       executionMode: 'local',
