@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, parseNdjson, seedRun } from '../test-support.js';
+import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support.js';
 import { logsCommand, type LogsCommandDeps } from './logs.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -47,6 +47,16 @@ describe('logsCommand', () => {
         expect(err.exitCode).toBe(EXIT_CODES.invalidInvocation);
       }
     }
+  });
+
+  it('prints a forged run status on one line in its header', async () => {
+    await seedRun(db, { slug: 'demo', runId: 'run-forged', state: 'completed' });
+    forgeRunStatus(client, 'run-forged', 'completed\u001b[2J\nforged row');
+    const { io, out } = captureIo();
+    logsCommand({ runId: 'run-forged' }, deps(io));
+    const header = out().split('\n')[0] ?? '';
+    expect(header).toContain('forged row');
+    expect(header).not.toContain('\u001b');
   });
 
   it('prints a terse human line per persisted event in seq order', async () => {

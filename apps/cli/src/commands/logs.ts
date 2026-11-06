@@ -91,8 +91,9 @@ function writeSkippedNote(io: CliIo, skipped: readonly SkippedRunEvent[]): void 
 
 /** The human rendering: a header line, one row per event, and the workflow's outputs under the terminal row. */
 function writeHumanLog(io: CliIo, run: RunRecord, events: readonly RunEvent[]): void {
+  // Both are read back from history.db, the trust boundary, so each gets the one-line floor the rows below get.
   io.writeOut(
-    `run ${run.id} — ${run.status} (${events.length} event${events.length === 1 ? '' : 's'})\n`,
+    `run ${sanitizeInline(run.id)} — ${sanitizeInline(run.status)} (${events.length} event${events.length === 1 ? '' : 's'})\n`,
   );
   for (const event of events) {
     // One row per event: the line carries stored fields (a gate id, `decidedBy`, a node id), so it gets the

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, parseNdjson, seedRun } from '../test-support.js';
+import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { listCommand, type ListCommandDeps } from './list.js';
 
@@ -102,6 +102,19 @@ describe('listCommand', () => {
       EXIT_CODES.success,
     );
     expect(out()).toBe('No runs recorded.\n');
+  });
+
+  it('prints a forged run status on one line, in --runs and in the catalog line', async () => {
+    await seedRun(db, { slug: 'code-review', runId: 'r-forged', state: 'completed' });
+    forgeRunStatus(client, 'r-forged', 'completed\u001b[2J\nforged row');
+    for (const runs of [true, false]) {
+      const { io, out } = captureIo();
+      listCommand({ agents: false, runs }, deps(io, { catalog: runs ? [] : WORKFLOWS }));
+      const text = out();
+      expect(text).toContain('forged row');
+      expect(text).not.toContain('\u001b');
+      expect(text).not.toContain('\nforged row');
+    }
   });
 
   it('groups workflows by tag and overlays last-run status from durable history', async () => {

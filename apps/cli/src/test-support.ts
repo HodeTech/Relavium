@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 
-import { createRunHistoryStore, type Db } from '@relavium/db';
+import { createRunHistoryStore, type Db, type DbClient } from '@relavium/db';
 import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
 import { RunEventSchema, type NodeSkippedReason, type RunEvent } from '@relavium/shared';
 
@@ -246,6 +246,22 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
 }
 
 /** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
+/**
+ * Write a run's status, and its steps', past the schema's CHECK: what a crafted or damaged `history.db` can hold,
+ * for the tests that pin the one-line floor on every status a command reads back.
+ */
+export function forgeRunStatus(client: DbClient, runId: string, status: string): void {
+  client.sqlite.pragma('ignore_check_constraints = ON');
+  try {
+    client.sqlite.prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, runId);
+    client.sqlite
+      .prepare('UPDATE step_executions SET status = ? WHERE run_id = ?')
+      .run(status, runId);
+  } finally {
+    client.sqlite.pragma('ignore_check_constraints = OFF');
+  }
+}
+
 /** Emit one event per item, each after the last: an event's sequence number follows the one before it. */
 async function emitInOrder<T>(
   items: readonly T[],

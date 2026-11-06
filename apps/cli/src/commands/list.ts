@@ -155,7 +155,7 @@ function listRuns(deps: ListCommandDeps, homeDir: string): void {
       const started = run.startedAt ?? run.createdAt;
       // The run id is read back from history.db: one line, controls stripped, never masked (it is copied).
       deps.io.writeOut(
-        `${sanitizeInline(run.id)}  ${run.status.padEnd(9)}  ${workflow}  ${started}\n`,
+        `${sanitizeInline(run.id)}  ${sanitizeInline(run.status).padEnd(9)}  ${workflow}  ${started}\n`,
       );
     }
   } finally {
@@ -251,7 +251,7 @@ function entryLine(entry: CatalogEntry, last: RunRecord | undefined | null): str
     parts.push(`— ${sanitizeUntrustedInline(entry.name)}`);
   }
   if (last !== undefined) {
-    parts.push(`[last: ${last === null ? '—' : last.status}]`);
+    parts.push(`[last: ${last === null ? '—' : sanitizeInline(last.status)}]`);
   }
   if (!entry.valid) {
     // **Sanitized at the SINK.** A parse reason is artifact-derived by definition — it names fields an author

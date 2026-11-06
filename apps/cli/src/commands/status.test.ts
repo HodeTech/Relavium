@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, parseNdjson, seedRun } from '../test-support.js';
+import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support.js';
 import { statusCommand, type StatusCommandDeps } from './status.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -26,6 +26,20 @@ describe('statusCommand', () => {
   function deps(io: ReturnType<typeof captureIo>['io'], json = false): StatusCommandDeps {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
+
+  it('prints a forged run or step status on one line', async () => {
+    await seedRun(db, { slug: 'wf', runId: 'forged-1', state: 'completed' });
+    forgeRunStatus(client, 'forged-1', 'completed\u001b[2J\nforged row');
+    const { io, out } = captureIo();
+    await statusCommand(
+      { ...deps(io), readTerminalOutbox: () => Promise.resolve([]) },
+      { runId: 'forged-1' },
+    );
+    const text = out();
+    expect(text).toContain('forged row');
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('\nforged row');
+  });
 
   it('shows one run by id, finished or active, and refuses an unknown id (MVP-1)', async () => {
     await seedRun(db, { slug: 'done', runId: 'done-1', state: 'completed' });

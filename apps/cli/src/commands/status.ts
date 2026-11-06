@@ -296,7 +296,7 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
   // the gate message below is (the run path writes only validated ids, but the file is the trust boundary).
   const finished = TERMINAL_STATUSES.has(status.run.status);
   io.writeOut(
-    `run ${sanitizeInline(status.run.id)} — ${status.run.status} (workflow ${sanitizeInline(status.run.workflowId)})\n`,
+    `run ${sanitizeInline(status.run.id)} — ${sanitizeInline(status.run.status)} (workflow ${sanitizeInline(status.run.workflowId)})\n`,
   );
   if (status.usageUnavailable) {
     io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
@@ -329,7 +329,7 @@ function renderSteps(io: CliIo, status: ActiveRunStatus, finished: boolean): voi
     const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
     const shown = shownStepStatus(step, finished, status.decidedGateNodes);
     io.writeOut(
-      `  ${shown.padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
+      `  ${sanitizeInline(shown).padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
     );
   }
 }
