@@ -246,8 +246,9 @@ export const MAX_REPORTED_TOOL_ARM_NODES = 10;
 /**
  * The run-path tool pre-flight (2.6.A, MVP-1): refuse a workflow whose agent node grants a built-in that needs a
  * host arm this path does not wire. The CLI's `relavium run` wires neither egress nor os, so `web_search`,
- * `http_request`, `read_clipboard` or `notify` there is a certain `tool_unavailable` at its first call, partway
- * through a run that may already have spent money; refusing before the run starts is the louder signal. A `$ref`'d
+ * `http_request`, `read_clipboard` or `notify` there cannot succeed: each call fails, with `tool_unavailable` once it
+ * passes policy, partway through a run that may already have spent money; refusing before the run starts is the
+ * louder signal. A `$ref`'d
  * agent with no node `tools:` is deferred, as the catalog checks defer it. Throws a {@link WorkflowValidationError}
  * naming each offending node and its distinct offending tools, never a payload.
  *
