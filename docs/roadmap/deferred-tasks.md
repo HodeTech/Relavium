@@ -1686,8 +1686,11 @@ next group below, and the separate security sitting's two lows (at `ab5e46e1`) a
 The milestone review of MVP-1's UX increment 1a (at `624bb2e7`, the `relavium list` sink fix included) found four
 medium findings, all fixed: a budget pause's summary pointed at `relavium gate`, `status <runId>` showed a finished
 run's open gate as pending, the run-path tool pre-flight grew with nodes times grant length before the node ceiling,
-and the chat's catalog-ceiling output cap ran into ADR-0082's 120-second absolute deadline. The lows below were not
-fixed with them. **Trigger for every entry:** the next change to the file it names.
+and the chat's catalog-ceiling output cap ran into ADR-0082's 120-second absolute deadline. Round 2 (at `d8762a23`)
+found one more medium, also fixed: the round-1 run-id latch let a resumed run's summary point a gate restored from its
+checkpoint at `relavium gate`, although such a gate can be a budget gate `gate` declines. Round 2's wording and
+`status` test lows (history-9/docs-3, history-10 in part, history-11, security-2/docs-4) were fixed with it. The lows
+below were not fixed. **Trigger for every entry:** the next change to the file it names.
 
 - [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
   delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
@@ -1723,10 +1726,71 @@ fixed with them. **Trigger for every entry:** the next change to the file it nam
 - [ ] **The larger chat cap moves auto-compaction earlier and grows budget-shaped thinking.** *Low; recorded in
   ADR-0101's 2026-11-06 note.* *(budget-3, budget-4)* Pre-send compaction reserves the effective cap, so on a
   200k-window model with a 64,000-token ceiling it starts at about 68% of the window instead of 80%; and on a model
-  whose effort tiers are budget-shaped, the thinking budgets derive from the effective cap and grow about 8–12×.
+  whose effort tiers are budget-shaped, the thinking budgets derive from the effective cap and grow about 8–16× on the
+64,000-ceiling models from low to max (51,200 tokens at max), less on `claude-opus-4-1`.
   **Re-check:** reserve the configured estimate rather than the inserted default for the compaction decision, and
   derive budget-shaped tiers from a fixed reference cap. *(low · packages/core/src/engine/agent-session.ts,
   packages/llm/src/adapters/anthropic.ts)*
+
+- [ ] **The summary's budget command has no decision flag.** *Low.* *(runid-6)* The TUI summary prints
+  `relavium budget resume <runId> --gate <gateId>`, and copied as printed it exits `2` asking for `--approve-amount`
+  or `--abort`. The plain renderer and `status` print complete commands. **Re-check:** keep the allowance context on
+  the view's budget notice and print `budgetResumeHints`. *(low · apps/cli/src/render/tui/final-summary.ts)*
+- [ ] **The summary embeds a run id in a command without the shell-inert check.** *Low.* *(security-3)* Only the
+  budget command is checked; the `logs`, `gate` and `status` lines put the sanitized id in backticks, so a non-UUID id
+  from a tampered `history.db`, resumed by quoting it, prints a command that differs from the id or parses as a flag.
+  **Re-check:** apply `resumeCommandBase`'s test to the run id and fall back to display text. *(low ·
+  apps/cli/src/render/tui/final-summary.ts)*
+- [ ] **A run whose terminal is held still lists its open gates.** *Low.* *(history-8)* The finished-run guard reads
+  the projection, so a run held at exit `5` while paused shows the FINISHED banner beside a pending gate and a
+  copyable `budget resume`, and `--json` pairs `terminalHeld: true` with non-empty gates. Acting on them answers
+  `nothing to resume`. **Re-check:** treat `terminalHeld` as finished for the gate guard and the `stopped` mapping.
+  *(low · apps/cli/src/commands/status.ts)*
+- [ ] **Run and step status strings print raw.** *Low.* *(history-12, security-1)* `status` and `list --runs`
+  sanitize every history identifier but not the status column; only the SQLite CHECK keeps it clean, and a file
+  written with `ignore_check_constraints` gets past it. **Re-check:** sanitize the status strings too, or validate
+  them in `fromRunRow` and the step reader. *(low · apps/cli/src/commands/status.ts, apps/cli/src/commands/list.ts)*
+- [ ] **`status`'s own `completed` terminal entry is unpinned.** *Low; test-side.* *(history-10, remainder)* Removing
+  `'completed'` from `TERMINAL_STATUSES` in `status.ts` passes every test, while a completed run with a stale outbox
+  entry would then read held. **Re-check:** a completed run with a stale outbox entry expecting `terminalHeld: false`.
+  *(low · apps/cli/src/commands/status.test.ts)*
+- [ ] **The CLI's issue count stops at ten.** *Low.* *(preflight-10)* The pre-flight reports ten nodes and one summary
+  issue, and the CLI prints the first issue with `(and 10 more issues)`, so the summary holding the real count never
+  shows. **Re-check:** render the summary issue, or put the total in the first message. *(low ·
+  apps/cli/src/commands/drive.ts, packages/core/src/validate-catalog.ts)*
+- [ ] **The pre-flight still scans the agent list once per node.** *Low.* *(preflight-11)* The per-grant memo is
+  consulted after `inlineAgent`'s linear find, so an adversarial 2 MiB file with tens of thousands of agents and nodes
+  stalls about 2.3 s before the node ceiling, roughly doubling the time to its exit-`2` refusal. **Re-check:** build an
+  agent map once per call. *(low · packages/core/src/validate-catalog.ts)*
+- [ ] **The pre-flight's bounded test passes without the memo.** *Low; test-side.* *(preflight-12)* Dropping the
+  per-grant memo keeps every test green while round 1's 944 KB file then takes about 3 s in the pre-flight.
+  **Re-check:** count iterations of a grant across many nodes rather than measuring output. *(low ·
+  packages/core/src/validate-catalog.test.ts)*
+- [ ] **Nothing pins `agent run`'s `oneShot`.** *Low; test-side.* *(budget-6)* Deleting `oneShot: true` from
+  `agent-run.ts`, or the builder's guard on the deadline, keeps every test green, though a one-shot would then send
+  the catalog ceiling with a long deadline. **Re-check:** an `agent run` case asserting no cap on the wire and the
+  default deadline, and a builder case with `oneShot` and an authored `max_tokens`. *(low ·
+  apps/cli/src/commands/agent-run.test.ts, apps/cli/src/chat/session-host.test.ts)*
+- [ ] **`officialEndpointOf` is untested.** *Low; test-side.* *(budget-7, docs-2; round-1 budget-5's other half)*
+  Making it report a custom endpoint, or a throwing resolver, as official keeps every test green; unreachable for
+  Anthropic today, which refuses a custom base URL. **Re-check:** the two `buildChatSession` cases expecting no cap
+  on the wire. *(low · apps/cli/src/chat/session-host.test.ts)*
+- [ ] **A chat reply longer than 30 minutes still times out.** *Low.* *(budget-8)* The 30-minute cap is below 25
+  tokens per second for every ceiling above 45,000, so a healthy reply that streams past it fails as a billed,
+  rolled-back timeout; ADR-0101's 2026-11-06 note states both bounds without the trade. **Re-check:** state the
+  residual, or cap the chat's `max_tokens` at what the deadline can stream so the reply ends as `length`. *(low ·
+  apps/cli/src/chat/session-host.ts, docs/decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)*
+- [ ] **The scaled deadline also bounds a stall, and the stall is retried.** *Low.* *(budget-9, security-4)* A
+  pre-content timeout is retryable and the session primary gets two attempts, so a piped `chat --json` on an endpoint
+  that keeps the stream open without content waits about 60 minutes per call (each fallback entry adds its own), instead
+  of about 4. Each attempt stays bounded and SIGINT cancels it. **Re-check:** keep the default deadline until
+  the first content chunk, or for non-interactive drivers, and say so in the note. *(low ·
+  apps/cli/src/chat/session-host.ts, apps/cli/src/commands/chat.ts)*
+- [ ] **The deadline is sized from the requested cap, not the effective one.** *Low.* *(budget-11)*
+  `chatAttemptDeadline` reads `agent.max_tokens` before the wire clamp, so `claude-opus-4-1` with a configured
+  128,000 gets 30 minutes for a 32,000-token wire, and a cost-capped chat sending the implicit 4,096 keeps 120 s
+  although 4,096 at 25 tokens per second needs 164 s. The note says "effective cap". **Re-check:** size it from the
+  planned wire cap, or reword the note and config-spec. *(low · apps/cli/src/chat/session-host.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 

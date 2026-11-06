@@ -108,9 +108,11 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    `relavium list` sink fix for round 5's export-1) was not accepted: it found four medium findings, all fixed. They
    were a budget pause pointed at `relavium gate`, a finished run's open gate shown as pending, an unbounded tool
    pre-flight, and the chat's catalog-ceiling cap running into the 120-second attempt deadline. The maintainer chose
-   a chat deadline that scales with the cap, recorded as ADR-0101's 2026-11-06 note. Its lows are fixed or recorded
-   in [deferred-tasks.md](deferred-tasks.md). Still owed for MVP-1: a new milestone review round with no medium or
-   higher finding.
+   a chat deadline that scales with the cap, recorded as ADR-0101's 2026-11-06 note. Round 2 (at `d8762a23`) was not
+   accepted either: the round-1 run-id latch let a resumed run's summary point a gate restored from its checkpoint at
+   `relavium gate`, and the summary now points such a gate at `relavium status`. Both rounds' lows are fixed or
+   recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half of budget-5 included.
+   Still owed for MVP-1: a new milestone review round with no medium or higher finding.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess
