@@ -6285,9 +6285,22 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
       executionMode: 'local',
     });
     const young = createInMemoryHost({ store, baseEpochMs: startedMs + RUN_LEASE_TTL_MS - 1_000 });
+    // Left alone before any claim: a claim held even briefly could refuse the owner's own first acquire.
+    const claimed: string[] = [];
+    const watched: ExecutionHost = {
+      ...young,
+      runLeases: {
+        ...young.runLeases,
+        acquire: (runId, ownerId, ttlMs) => {
+          claimed.push(runId);
+          return young.runLeases.acquire(runId, ownerId, ttlMs);
+        },
+      },
+    };
     expect(
-      await new WorkflowEngine({ host: young, executor: new StubExecutor() }).reconcile(),
+      await new WorkflowEngine({ host: watched, executor: new StubExecutor() }).reconcile(),
     ).toEqual([]);
+    expect(claimed).toEqual([]);
     expect(store.eventsFor('young-1').map((e) => e.type)).toEqual(['run:started']);
 
     const old = createInMemoryHost({ store, baseEpochMs: startedMs + RUN_LEASE_TTL_MS + 1 });
