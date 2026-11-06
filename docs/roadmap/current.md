@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-05
+> Last updated: 2026-11-06
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -36,7 +36,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below); MVP-1 accepted 2026-11-06 |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
 | Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. `development` is ahead of `main` again with the D64 fixes to that correction (from `5a1006ea`); `main` keeps the redaction regressions they fix (a credential flag after a boolean flag, a credential key in a `,`/`/` URL password's userinfo or a nested URL after it, a masked name in a last-word `--flag=value` spelling) until the next checkpoint, MVP-10's unless the maintainer schedules one earlier |
@@ -114,9 +114,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    accepted either: `status` printed the command that continues a gate only for a budget gate, so that pointer
    promised a command it did not print for a human one; `status` now prints one for every pending gate. Round 4 (at
    `8e7f41f2`) was not accepted either: `status <runId>` printed an approved gate's step as `stopped` under its
-   completed run, because no `node:completed` closes a gate's step row; it now prints `completed`. The four rounds'
-   lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half of
-   budget-5 included. Still owed for MVP-1: a new milestone review round with no medium or higher finding.
+   completed run, because no `node:completed` closes a gate's step row; it now prints `completed`. **Round 5 (at
+   `3354dda1`) found no blocker, high or medium finding, so 1a is accepted and MVP-1 is done (2026-11-06).** Every
+   round's lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half
+   of budget-5 included.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess

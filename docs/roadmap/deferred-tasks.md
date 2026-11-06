@@ -1695,8 +1695,10 @@ round 2's fix sent such a gate to `relavium status` for the command that continu
 a budget gate; it now prints one for every pending human gate too, and the node-id sanitizer is pinned with it
 (history-14, docs-2, security-1). Round 4 (at `8e7f41f2`) found one more medium, also fixed: `status <runId>` printed
 an approved gate's step as `stopped` under its completed run, because no `node:completed` closes a gate's step row;
-it now reads the decision from the log and prints `completed`. The lows below were not fixed. **Trigger for every
-entry:** the next change to the file it names.
+it now reads the decision from the log and prints `completed`. Round 5 (at `3354dda1`) found no blocker, high or
+medium finding, so 1a is accepted; its docs-1 low, two entries below that still called `status`'s commands complete,
+is fixed in this register. The lows below were not fixed. **Trigger for every entry:** the next change to the file it
+names.
 
 - [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
   delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
@@ -1740,7 +1742,8 @@ entry:** the next change to the file it names.
 
 - [ ] **The summary's budget command has no decision flag.** *Low.* *(runid-6)* The TUI summary prints
   `relavium budget resume <runId> --gate <gateId>`, and copied as printed it exits `2` asking for `--approve-amount`
-  or `--abort`. The plain renderer and `status` print complete commands. **Re-check:** keep the allowance context on
+  or `--abort`. The plain renderer and `status` print a command for each decision (history-16 covers the `secret`
+  input case). **Re-check:** keep the allowance context on
   the view's budget notice and print `budgetResumeHints`. *(low · apps/cli/src/render/tui/final-summary.ts)*
 - [ ] **The summary embeds a run id in a command without the shell-inert check.** *Low.* *(security-3)* Only the
   budget command is checked; the `logs`, `gate` and `status` lines put the sanitized id in backticks, so a non-UUID id
@@ -1818,7 +1821,7 @@ entry:** the next change to the file it names.
 
 - [ ] **The summary's human-gate line has no decision flag.** *Low.* *(runid-10)* The human-gate twin of runid-6:
   `relavium gate <runId>` copied as printed exits `2` asking for `--approve`, `--reject` or `--input`. `status` prints
-  the complete commands. **Re-check:** keep the gate type on the view's human-gate entry and print
+  a command for each decision (history-16 covers the `secret` input case). **Re-check:** keep the gate type on the view's human-gate entry and print
   `humanGateResumeHints`, together with runid-6 and runid-8. *(low · apps/cli/src/render/tui/final-summary.ts)*
 - [ ] **`status`'s gate commands omit `--secret-stdin` for a run with a `secret` input.** *Low.* *(history-16,
   docs-1)* `gate` and `budget resume` refuse such a run without `--secret-stdin`, so the `approve:` and `reject:`
@@ -1844,6 +1847,45 @@ entry:** the next change to the file it names.
   `model_context_window_exceeded`, which fails and rolls back the exchange. **Re-check:** cap the default at the room
   the window leaves, or map that stop with committed content to `length`; or record it in ADR-0101's note beside
   budget-3 and budget-8. *(low · apps/cli/src/chat/session-host.ts, packages/llm/src/adapters/anthropic.ts)*
+
+- [ ] **The decided-gate relabel is tested only on a finished run with an approval.** *Low; test-side.* *(runid-11,
+  history-17, docs-2)* Every `status` test that decides a gate seeds `decideAfterPause`, which approves and then
+  completes the run, and the paused-run test checks the substring `g [human_in_the_loop]`, not its `running` label.
+  Limiting the relabel to finished runs, recording only approvals in `decidedGateNodes`, or relabelling a still-pending
+  gate's step under a paused run as `completed` each keeps every test that calls `statusCommand` green. The code at
+  `3354dda1` is correct; real-engine probes print `completed` for a decided gate and `running` for the waiting one
+  under a paused run, and `completed` after a rejection. **Re-check:** a paused two-gate case, one gate decided and one
+  pending, expecting `completed` and `running` plus the pending gate's hints; a rejected-decision case through a
+  decision option on `decideAfterPause`; and the paused-run test asserting `  running   g [human_in_the_loop]\n`.
+  *(low · apps/cli/src/commands/status.test.ts, apps/cli/src/test-support.ts)*
+- [ ] **An approved budget gate lists its agent node twice, each row with the node's full cost.** *Low;
+  pre-existing.* *(runid-12)* A budget approval re-dispatches the node at attempt 1, so a second `node:started`
+  inserts a second step row, and the one `node:completed` closes both, since `stepMatch` matches on run, node and
+  attempt 1, with the settled cost on each. `status <runId>` prints `completed agent [agent]` twice, and a `--json` consumer that sums
+  step costs gets twice the run's spend. The projection predates 1a; `status <runId>` now shows it for finished runs
+  too. **Re-check:** close the gated attempt's row when its budget gate resolves, or give the re-dispatch its own
+  attempt number. *(low · packages/db/src/run-history-store.ts)*
+- [ ] **An empty `fallback_chain: []` misses the chat's catalog-ceiling default.** *Low.* *(budget-14)*
+  `withChatOutputDefault` checks whether the key is present, not whether the chain has entries, and the schema
+  accepts an empty chain. An Anthropic chat agent that authors `fallback_chain: []` keeps the adapter's 4,096-token
+  cap and the 120-second deadline instead of the ceiling and the scaled deadline that config-spec.md and ADR-0101's
+  notes promise. No Relavium generator writes an empty chain; removing the key or setting `[chat].max_tokens` works
+  around it. **Re-check:** treat an empty chain as no chain, with a unit case expecting the ceiling; land it with
+  budget-6 and budget-7. *(low · apps/cli/src/chat/session-host.ts)*
+- [ ] **Two comments overstate since round 4.** *Low; comment-only.* *(docs-3)* `ActiveRunStatus.gatesUnavailable`'s
+  comment says it is `true` whenever the run's log could not be read, but a finished run's damaged log leaves it
+  unset. `decidedGateNodes`'s comment says the projection never closes a human gate's step row, but a gate that times
+  out without approval is settled with `node:failed`, which closes it. **Re-check:** say "an active run's" in the
+  first and "a decided human gate's step row" in the second. *(low · apps/cli/src/commands/status.ts,
+  apps/cli/src/gate/pending.ts)*
+- [ ] **A gate message can soft-wrap into a fake command row above `status`'s real ones.** *Low.* *(security-1)*
+  `sanitizeInline` collapses tabs and line feeds but keeps runs of spaces, and the gate message has no length bound.
+  A message padded to a guessed terminal width can place a row that looks like `    approve: relavium gate …` with an
+  attacker-chosen suffix directly above the real `approve:` and `reject:` lines round 3 added. It needs a guessed
+  width, leaves a stray `"` row visible, and a gate message can already carry a plain-prose instruction; the same
+  class as round 1's outputs-5 in 1b's register. **Re-check:** bound the printed message's width, wrap it with an
+  indented continuation, or put a fixed label row between it and the commands; land it with outputs-5. *(low ·
+  apps/cli/src/commands/status.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
