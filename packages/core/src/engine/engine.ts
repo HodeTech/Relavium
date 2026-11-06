@@ -1080,10 +1080,11 @@ class RunExecution {
       //
       // The window it opens is a run that is durable and momentarily unowned. The only process that can see
       // the run in it is one calling `reconcile()` (the CLI does at every `run`/`gate` start and Home open,
-      // 2.6.G), and it must list, drain and acquire inside the few microtask turns between the two commits —
-      // reachable only if this process is descheduled right there. The outcome is measured (the CLI's
-      // `history/reconcile.test.ts`): the reconciler writes `run:failed{internal}` and releases its claim, so
-      // the acquire below usually SUCCEEDS; our next guarded write then conflicts with that terminal, no node
+      // 2.6.G), and `reconcile()` leaves a run younger than one lease TTL alone, so a reconciler with that rule
+      // never settles it (the CLI's `history/reconcile.test.ts` drives one into this window and the run
+      // completes). A reconciler without it — a development build before the rule, or a clock more than a TTL
+      // ahead — can: it writes `run:failed{internal}` and releases its claim, so the acquire below usually
+      // SUCCEEDS; our next guarded write then conflicts with that terminal, no node
       // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
       // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
       // our terminal takes the reconciler's sequence number: the store's terminal refusal stops it, with
@@ -6345,12 +6346,14 @@ export class WorkflowEngine {
   /**
    * Crash reconciliation (startup). First drains the terminal outbox; then, for each run the store reports as
    * interrupted-and-not-resumable (started, no terminal event, not parked at a gate), persists a terminal
-   * `run:failed{internal}`, or `budget_exceeded` when ordered gate history already records a budget rejection,
-   * continuing that run's `sequenceNumber`. Returns the reconciled events. Resumable runs (parked at a gate)
-   * are left for `resume`. Also left alone, for a later reconcile: a run whose lease this pass could not take
-   * (another process holds a live one, or the lease port failed), a run whose held terminal this pass could not
-   * write, and every run while the outbox exists but cannot be read — so in those cases a crashed run can
-   * linger until a later start.
+   * `run:failed`, continuing that run's `sequenceNumber`: `effect_needs_attention` when the run left an external
+   * effect unresolved or its effect journal cannot be read, else `budget_exceeded` when ordered gate history
+   * records a budget rejection, else `internal`. Returns the reconciled events. Resumable runs (parked at a gate)
+   * are left for `resume`. Also left alone, for a later reconcile: a run that started within one lease TTL of now
+   * (its owner may not hold its lease yet), a run whose lease this pass could not take (another process holds a
+   * live one, or the lease port failed), a run whose held terminal this pass could not write or whose outbox
+   * entry appeared before the repair (or the outbox could not be read again), and every run while the outbox
+   * exists but cannot be read — so in those cases a crashed run can linger until a later start.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
     // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
@@ -6597,10 +6600,15 @@ export class WorkflowEngine {
     return held === undefined || held.some((event) => event.runId === runId);
   }
 
-  /** Whether `run` started less than one lease TTL ago by this host's clock (a start in its future counts as recent). */
+  /**
+   * Whether `run` started within one lease TTL of now by this host's clock, on either side: a start slightly in the
+   * future (skew between processes) counts as recent, but one more than a TTL ahead means the clock moved, and the
+   * run falls back to the lease rule rather than waiting for the clock to catch up.
+   */
   #startedWithinLeaseTtl(run: InterruptedRun): boolean {
     if (run.startedAtMs === undefined) return false;
-    return this.#nowMs() - run.startedAtMs < RUN_LEASE_TTL_MS;
+    const age = this.#nowMs() - run.startedAtMs;
+    return age > -RUN_LEASE_TTL_MS && age < RUN_LEASE_TTL_MS;
   }
 
   /**

@@ -6298,6 +6298,98 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     expect(settled.map((e) => e.type)).toEqual(['run:failed']);
   });
 
+  it('counts a start just ahead of the host clock as recent, but settles one more than a TTL ahead', async () => {
+    // A small skew between processes must not settle a run that just started; a clock moved back by more than a
+    // TTL must not keep a crashed run unsettled until the clock catches up.
+    const baseMs = Date.parse('2026-03-01T00:00:00.000Z');
+    for (const [aheadMs, settles] of [
+      [1_000, false],
+      [RUN_LEASE_TTL_MS + 1_000, true],
+    ] as const) {
+      const store = new InMemoryRunStore();
+      await store.persistEvent({
+        type: 'run:started',
+        runId: 'ahead-1',
+        timestamp: new Date(baseMs + aheadMs).toISOString(),
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000099',
+        inputs: {},
+        executionMode: 'local',
+      });
+      const host = createInMemoryHost({ store, baseEpochMs: baseMs });
+      const settled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();
+      expect(settled.map((e) => e.type)).toEqual(settles ? ['run:failed'] : []);
+    }
+  });
+
+  it('gives no TTL grace to a run whose store does not say when it started', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    await store.persistEvent({
+      type: 'run:started',
+      runId: 'unknown-start-1',
+      timestamp: host.clock.now(), // just started by the host's clock
+      sequenceNumber: 0,
+      workflowId: '00000000-0000-4000-8000-000000000099',
+      inputs: {},
+      executionMode: 'local',
+    });
+    const withoutStart: ExecutionHost = {
+      ...host,
+      store: {
+        resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+        persistEvent: (event, options) => store.persistEvent(event, options),
+        listInterruptedRuns: async () =>
+          (await store.listInterruptedRuns()).map((run) => ({
+            runId: run.runId,
+            workflowId: run.workflowId,
+            resumable: run.resumable,
+            lastSequenceNumber: run.lastSequenceNumber,
+          })),
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+      },
+    };
+    const settled = await new WorkflowEngine({
+      host: withoutStart,
+      executor: new StubExecutor(),
+    }).reconcile();
+    expect(settled.map((e) => e.type)).toEqual(['run:failed']);
+  });
+
+  it('settles a budget-rejected run with an unresolved effect as effect_needs_attention, else budget_exceeded', async () => {
+    for (const [rows, code] of [
+      [1, 'effect_needs_attention'],
+      [0, 'budget_exceeded'],
+    ] as const) {
+      const store = new InMemoryRunStore();
+      await seedStarted(store, 'rejected-1');
+      const host = createInMemoryHost({ store });
+      const rejected: ExecutionHost = {
+        ...host,
+        store: {
+          resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+          persistEvent: (event, options) => store.persistEvent(event, options),
+          listInterruptedRuns: async () =>
+            (await store.listInterruptedRuns()).map((run) => ({ ...run, budgetRejected: true })),
+          readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+        },
+      };
+      const unresolved: UnresolvedEffect = {
+        identity: { scope: 'run:rejected-1:a', slot: 0, toolId: 'run_command' },
+        state: 'prepared',
+        tier: 3,
+        nodeId: 'a',
+      };
+      const engine = engineWith(undefined, rejected, {
+        effectResume: {
+          unresolvedForRun: () => Promise.resolve(rows === 1 ? [unresolved] : []),
+        },
+      });
+      const settled = await engine.reconcile();
+      expect(settled.map((e) => (e.type === 'run:failed' ? e.error.code : e.type))).toEqual([code]);
+    }
+  });
+
   it('reads the outbox before listing the open runs, so a run that finishes in between keeps its held terminal', async () => {
     // Listing first let another process start a run, finish it and have its terminal refused into the outbox
     // between the two reads: the drain then found a held terminal for a run missing from its stale list and
