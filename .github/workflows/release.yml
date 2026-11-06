@@ -31,7 +31,9 @@
 # The `allow_off_main` dispatch input is the maintainer escape hatch for building and smoking an unmerged
 # BRANCH. It cannot reach a publish: `workflow_dispatch` accepts a tag ref as readily as a branch, so the
 # ancestry assertion ignores the override whenever the ref is a `v*` tag, and `publish` additionally requires
-# `github.event_name == 'push'` — a dispatched run never publishes, whatever ref or input it was given.
+# `github.event_name == 'push'` — a dispatched run of this workflow never publishes, whatever ref or input it
+# was given. A dispatch runs the workflow file found at its ref, so an edited copy on another ref is bounded only by
+# where `NPM_TOKEN` lives (MVP-A23).
 #
 # Third-party actions are pinned to a commit SHA (the `# vX.Y.Z` comment tracks the release), matching ci.yml.
 name: Release CLI
@@ -229,7 +231,8 @@ jobs:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     # The deployment environment meant to hold `NPM_TOKEN` and its required reviewer (repo settings, MVP-A23); a
-    # repository-level secret is readable by any workflow a writer pushes. It sets no job environment.
+    # repository-level secret is readable by any workflow a writer pushes. It does not exist yet: GitHub creates it
+    # unprotected on the first run that names it, so it gates nothing until MVP-A23 sets it up.
     environment: release
     timeout-minutes: 10
     permissions:
