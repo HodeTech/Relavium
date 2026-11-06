@@ -126,8 +126,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   let inlineTerminating = false;
   let activePrompt: AbortController | undefined;
   /**
-   * The gate card on screen. A decision for its gate that this card did not make — a deadline's — closes it, so
-   * the user's later answer is never silently dropped by the engine's idempotent resume.
+   * The gate card on screen. A decision for its gate that this card did not make — a deadline's — closes it and says
+   * so, so an answer typed after that is not silently dropped by the engine's idempotent resume. One that lands in
+   * the moment between the deadline's claim and its event still can be (recorded in deferred-tasks.md).
    */
   let openCard:
     | {
@@ -320,6 +321,10 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         } else if (event.type === 'human_gate:paused') {
           if (!handledGates.has(event.gateId)) gates.set(event.gateId, event);
         } else if (event.type === 'human_gate:resumed') {
+          // The pause that parked this gate is over. Kept, it would make every later event attempt a departure once
+          // inline prompting stops (a card closed under the user), re-mounting the live view each time; the engine
+          // announces a fresh `run:paused` for any gate still pending when it is next idle.
+          pause = undefined;
           // Legacy resumed companions identify the node, not a gate id.
           for (const [id, pending] of gates) {
             if (pending.nodeId === event.nodeId) {

@@ -188,6 +188,9 @@ describe('driveRun — interactive gate', () => {
     );
     expect(err().match(/was already decided/gu)).toHaveLength(1);
     expect(order.slice(0, 2)).toEqual(['err', 'resume']);
+    // The live view is re-mounted once after the card, not once per later event: the pause that parked g is stale
+    // once g resumes, and must not keep driving a departure attempt.
+    expect(renderer.resume).toHaveBeenCalledTimes(1);
     // Only g's card was drawn; g2 waits for an out-of-band decision.
     expect(prompter.prompt).toHaveBeenCalledTimes(1);
     const decided = events.filter((e) => e.type === 'human_gate:resumed');
@@ -246,6 +249,7 @@ describe('driveRun — interactive gate', () => {
     expect(signals[0]?.aborted).toBe(true);
     expect(err()).toContain('was already decided (approved by cli)');
     expect(outcome).toBe('completed');
+    expect(renderer.resume).toHaveBeenCalledTimes(1); // the run goes on with one live view
     const decided = events.filter((e) => e.type === 'human_gate:resumed');
     expect(decided).toEqual([expect.objectContaining({ decision: 'approved', decidedBy: 'cli' })]);
   });
