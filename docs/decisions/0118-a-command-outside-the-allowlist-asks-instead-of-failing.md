@@ -62,7 +62,10 @@ not pre-approved.**
 - the working directory;
 - why the command is not pre-approved.
 
-Everything is terminal-safe text. The card never offers an approving answer for
+Everything is terminal-safe text, under the approval escape of
+[ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md): a
+control or an invisible code point in an argument shows as a visible escape,
+never hidden. The card never offers an approving answer for
 a command it does not show in full. A command too long for the screen must be
 expanded before it can be approved.
 
@@ -111,11 +114,19 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
   - an HMAC-SHA256 of the command's exact argv, each element length-prefixed so
     `["cat a b"]` and `["cat", "a b"]` differ, under a per-installation key;
   - a label for the revocation view: the program, the argument count and the
-    date it was remembered. The program is `argv[0]`'s base name only when that
-    name matches a conservative grammar (`^[A-Za-z0-9._+-]{1,64}$`, so no `=`,
-    `:`, `/`, `@` or whitespace); otherwise the label says `(unnamed program)`.
-    `argv[0]` is free text — the model's `command` string, or the first token of
-    `!PGPASSWORD=… psql` — and can itself be a credential.
+    date it was remembered. The program is named only when `argv[0]`, taken
+    whole, is a bare name (`^[A-Za-z0-9._+-]{1,64}$`, so no `/`, `\`, `=`, `:`,
+    `@` or whitespace) that resolves through the `PATH`, as the spawn would
+    resolve it, to an existing executable file when the grant is written.
+    Anything else — a path, a whole command line, an assignment such as
+    `PGPASSWORD=…`, a name that resolves to nothing — is labelled
+    `(unnamed program)`. No part of `argv[0]` is taken before the check: a base
+    name or a last segment of free text is never kept. `argv[0]` is free text —
+    the model's `command` string, or the first token of `!PGPASSWORD=… psql` —
+    and can itself be a credential: a whole `curl … https://hooks.example/…/<secret>`
+    line, whose last segment is the secret, or a bare token. The one credential
+    the rule cannot tell apart is one that is also the name of an executable on
+    the `PATH`, which is then already on the disk.
 
   Matching computes the HMAC of the candidate argv and compares it in constant
   time. A grant matches one exact argv, never a glob: "Remember `npm test`"
@@ -128,9 +139,9 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
 - **How they are written.** Through the
   [ADR-0063](0063-cli-config-write-contract.md) write primitive: parse, set,
   re-validate, write atomically. No project, workspace or agent file is ever
-  written. A grant holds only a digest and a label limited to a program name
-  that cannot carry a credential, so the primitive's secret-free property
-  covers it: no command text beyond such a name reaches the file.
+  written. A grant holds only a digest and a label whose only text from the
+  command is the name of an executable found on the `PATH`, so the primitive's
+  secret-free property covers it: no other command text reaches the file.
 - **What a grant does not bind.** It binds the argv, not what the program reads.
   "Remember `npm test`" keeps approving `npm test` after a model edits
   `package.json`'s `test` script, and in `auto` such an edit is itself
@@ -199,8 +210,8 @@ accepted.
 - A command the user is willing to run can run, with the exact argv on screen.
   The config edit and restart are no longer needed.
 - A remembered grant serves one operator on one tree and never travels with the
-  repository, and it holds no command text beyond a program name the label
-  grammar admits, so no credential in a command reaches the configuration.
+  repository, and it holds no command text beyond the name of an executable
+  found on the `PATH`, so no credential in a command reaches the configuration.
 - `auto` keeps a hard edge: only pre-approved commands run without a prompt.
 - A headless path still never runs anything it was not configured to run.
 

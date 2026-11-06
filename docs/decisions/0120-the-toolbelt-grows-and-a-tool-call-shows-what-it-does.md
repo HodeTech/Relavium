@@ -95,13 +95,21 @@ Exact arguments, bounds and texts live in
   target is one line (`sanitizeInline`).
 - **An approval preview never hides what it approves.** Stripping is right for a
   transcript row and wrong for an approval: an edit that adds an escape or a
-  bidi override would render exactly like the original. So in an approval card
-  and its full view, a terminal control or bidi character in a target, field or
-  diff line renders as a visible, styled escape (for example `<U+202E>`), never
-  stripped; transcript rows may strip. The order is fixed: secret masking on the
-  original text, then this escape, which turns every control into printable
-  text, and only then ADR-0114's span pipeline, whose strip then finds nothing
-  to remove. The diff's two sides go through the same escape. A span the secret masking replaces shows
+  bidi override would render exactly like the original. An invisible code point
+  hides content the same way: a tag-character run (U+E0000–U+E007F) can spell a
+  whole instruction in zero columns, and a zero-width space inside a compared
+  literal stops it matching. So in an approval card and its full view, a terminal
+  control, a bidi character, and every default-ignorable (`\p{Default_Ignorable_Code_Point}`)
+  or format (`\p{Cf}`) code point in a target, field or diff line renders as a
+  visible, styled escape (for example `<U+202E>` or `<U+E0049>`), never stripped
+  and never left invisible. That covers zero-width spaces and joiners, the soft
+  hyphen, variation selectors and the tag block, including the joiners a
+  transcript keeps for emoji: an approval shows `<U+FE0F>` rather than hide a
+  code point. Both are Unicode properties the JavaScript regular-expression
+  engine knows, so no table is kept by hand. Transcript rows may strip. The order
+  is fixed: secret masking on the original text, then this escape, which turns
+  every control and every invisible code point into printable text, and only
+  then ADR-0114's span pipeline, whose strip then finds nothing to remove. The diff's two sides go through the same escape. A span the secret masking replaces shows
   as a labelled mask, and the card states how many spans were masked; the full
   view does not unmask. Approving approves the bytes the host will write,
   masked spans included, and the card says so. Whether a write whose changed

@@ -120,8 +120,8 @@ How a workflow run is initiated. Full spec in
   Behaviour: [reference/cli/chat-session.md](reference/cli/chat-session.md#model-reseat-models);
   decision: [ADR-0059](decisions/0059-cli-mid-session-model-reseat.md).
 - **Human gate** — a node that pauses a run and requires a real human decision
-  (approve / reject / provide input) before continuing. Supports a timeout with
-  an auto-approve or auto-reject fallback (an `escalate` action is **reserved** for a
+  (approve / reject / provide input) before continuing. Supports a timeout that
+  either auto-approves or fails the run (an `escalate` action is **reserved** for a
   future phase — see [reference/contracts/workflow-yaml-spec.md](reference/contracts/workflow-yaml-spec.md)).
   Enables compliance-sensitive workflows. The same gate seam also backs a workflow
   **budget** pause ([decisions/0028-workflow-resource-governance.md](decisions/0028-workflow-resource-governance.md)).

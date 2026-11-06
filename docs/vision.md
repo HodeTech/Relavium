@@ -162,7 +162,7 @@ The full positioning and competitor matrix lives in [uvp.md](uvp.md).
 - **Multi-model fallback chains per agent** — `[claude → gpt-4o → gemini]`; runs
   survive provider outages.
 - **Human gate with timeout policy** — pause any workflow for a real human decision,
-  with an auto-approve / auto-reject timeout fallback; makes Relavium viable for
+  with a timeout that either auto-approves or fails the run; makes Relavium viable for
   compliance-sensitive work.
 - **Per-node cost waterfall** — token and dollar attribution per node, per model.
 - **Zero-install VS Code right-click trigger** — install-to-value under 3 minutes.

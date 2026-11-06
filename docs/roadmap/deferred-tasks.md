@@ -1959,9 +1959,10 @@ B2's missing-vertex fail-closed as one-line fixes; they were recorded below inst
 - [ ] **The session builders fall back to an env-only key resolver.** *Low; latent.* *(C5)* Every production caller
   passes a keychain-aware one. **Re-check:** make `providers` required. *(low · apps/cli/src/chat/session-host.ts)*
 - [ ] **Run outputs show a credential nested under a credential's name.** *Low.* *(D3)* An object or array under
-  `x-api-key`, `api-key`, `token` or `password` is shown, a `null` under such a name prints `[REDACTED]`, and a value
-  that cannot be represented prints no note. **Re-check:** mask any non-null value under a name the scrubber reads as
-  a credential, keep `null`, carry `masked` out of the catch. *(low · apps/cli/src/render/run-outputs.ts)*
+  `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under such a name
+  prints `[REDACTED]`, and a value that cannot be represented prints no note. **Re-check:** mask any non-null value
+  under a name the scrubber reads as a credential, keep `null`, carry `masked` out of the catch. *(low ·
+  apps/cli/src/render/run-outputs.ts)*
 - [ ] **The secret walk and the media walk have no depth bound.** *Low; fails closed.* *(D5)* About 3,000 levels
   make the summary `[unserializable]`. **Re-check:** a depth cap with a fixed marker. *(low ·
   packages/core/src/tools/bounding.ts)*
@@ -2003,8 +2004,10 @@ tick of a coarse filesystem clock is caught and its tests no longer depend on th
   waits on a busy `history.db` — reaches `engine.resume`, which ignores a decided gate in silence. **Re-check:** keep
   the card registered until its gate's `human_gate:resumed` is seen, or have `resume` report whether it applied the
   decision. *(low · apps/cli/src/commands/drive.ts, packages/core/src/engine/engine.ts)*
-- [ ] **The notice says "your answer" when no card was drawn.** *Low; cosmetic.* *(gates-3)* A deadline that fires
-  while the view unmounts for the card prints it anyway. *(low · apps/cli/src/commands/drive.ts)*
+- [x] **The notice says "your answer" when no card was drawn.** *Low; cosmetic.* *(gates-3)* A deadline that fires
+  while the view unmounts for the card prints it anyway; so does an idle card a deadline closes (round 2's gates-3).
+  **Fixed 2026-11-06 (D64 round 2):** the notice now says no answer from this terminal was recorded, which holds in
+  every case. *(low · apps/cli/src/commands/drive.ts)*
 - [ ] **A paste or a hotkey can still answer a gate card.** *Low; pre-existing.* *(security-2)* Clack's confirm
   takes `y`/`n` and `h`/`j`/`k`/`l`/space as answers, so a stray paste such as "The deploy looks wrong" approves an
   approval or budget-amount card; only a bare Enter is now safe. The MCP consent prompt shares it. The chat
@@ -2026,6 +2029,24 @@ tick of a coarse filesystem clock is caught and its tests no longer depend on th
 - [ ] **The reconcile guard against an in-flight resume, and the drain's own-run guard, are unpinned.** *Low;
   test-side; pre-existing.* *(reconcile-1)* The own-run test now pins `#runs` again; the `#resumingRuns` half and the
   drain's claim never had a test. *(low · packages/core/src/engine/run-lease.test.ts)*
+
+**D64 round 2 of the correction (2026-11-06, at `82db354e`)** found two mediums, both in Proposed drafts. ADR-0118's
+label took `argv[0]`'s base name before the grammar check, so the secret last segment of a webhook URL passed whole
+as `command`, or the tail of an assigned secret, could become the label; the label now names only an `argv[0]` that
+is a bare name resolving on the `PATH`. ADR-0120's approval escape covered only controls and bidi characters, so a
+zero-width or tag-character run could hide content in an approved diff; it now covers every default-ignorable and
+format code point. Fixed with them: the stale gate contracts in `drive.ts` and `prompter.ts`, the decided-elsewhere
+notice (above), the hollow directory test and the forged-hash test, the own-export re-check reading the file before
+comparing its stat fields (it now reads only the same regular file, no-follow and non-blocking, as `/export`'s own
+read does, so a FIFO swapped in no longer blocks and a permission change moves the export on), the `logs`
+skipped-row note printing `history.db`'s `seq` raw, and three doc sentences (D3's credential names, the ReDoS
+entry's commands, the glossary's and the vision's auto-reject timeout). Recorded:
+
+- [ ] **A Reject chosen before an approve deadline still loses to it while the optional reason is typed.** *Low;
+  pre-existing.* *(gates-2)* The rejection reaches the engine only when the reason prompt settles, so an `approve`
+  deadline that elapses meanwhile approves the gate and the card closes with the notice. **Re-check:** on a card with
+  an approve deadline, submit the rejection as soon as Reject is chosen, or show the time left at the reason prompt.
+  *(low · apps/cli/src/gate/clack-prompter.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
@@ -2774,8 +2795,8 @@ so directly: these "should remain visible rather than disappear behind the green
   author supplied it. ADR-0083 accepts this floor explicitly. A stronger contract would require `max_length`
   whenever `pattern` is present, or admit only a demonstrably safe regex subset. **Reframed by the PR #97 review
   (2026-11-06): the author need not be the user.** An input's `default` is checked against its `pattern` when the
-  file is PARSED, and `relavium list` and `relavium chat` parse every workflow in the project's catalog. A workflow
-  in a cloned repository with `pattern: '(a+)+'`, a default of `'a'` × 28 + `'!'` and no `max_length` stalled
+  file is PARSED, and `relavium list`, chat's `/workflows` and `/export`, and `relavium create`/`import`/`export`
+  parse every workflow in the project's catalog. A workflow in a cloned repository with `pattern: '(a+)+'`, a default of `'a'` × 28 + `'!'` and no `max_length` stalled
   `parseWorkflow` for between about 1 s and 7.6 s in two measurements that day (machine and load differ), and the
   cost doubles with each character, so a repository can hang those commands with no input from the user. *(medium for that vector ·
   packages/shared/src/workflow.ts; ADR-0083 §4)*
@@ -3250,7 +3271,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
   already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
-  a CVE gap (those chars cannot reorder a command to masquerade). **Scheduled → 2.6.M** (with tool-render v2). **Not pulled into the CLI MVP (checked 2026-11-04):** MVP-3 takes only render v2's two named behaviours, so this lands with render v2's remainder. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+  a CVE gap (those chars cannot reorder a command to masquerade). **2026-11-06:** they can still hide content in an
+  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (Proposed) makes the
+  approval preview escape every default-ignorable and format code point, which covers this target when it lands.
+  **Scheduled → 2.6.M** (with tool-render v2). **Not pulled into the CLI MVP (checked 2026-11-04):** MVP-3 takes only render v2's two named behaviours, so this lands with render v2's remainder. *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
   primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
