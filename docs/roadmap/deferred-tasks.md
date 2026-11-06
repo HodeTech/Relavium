@@ -1992,7 +1992,8 @@ B2's missing-vertex fail-closed as one-line fixes; they were recorded below inst
 **D64 round 1 of the correction (2026-11-06, at `13979d60`)** found one medium, ADR-0118's grant label storing
 `argv[0]` verbatim, and fixed it with the lows below it in the correction's own records and tests (the own-run
 guard pinned again, the TTL rule bounded on both sides, the event contract's reconcile codes, a logs run-id test,
-coarse-clock-safe identity tests with `size` and `mtime` back in the identity, ADR-0118's Session answer and its
+an own-export identity that also compares `size`, `mtime` and the bytes' SHA-256, so a same-length rewrite inside one
+tick of a coarse filesystem clock is caught and its tests no longer depend on the clock, ADR-0118's Session answer and its
 "what a grant does not bind" limit, ADR-0120's escape order). These were recorded:
 
 - [ ] **A late answer can still be dropped without a notice.** *Low.* *(gates-2, security-7)* The card closes
