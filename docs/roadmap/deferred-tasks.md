@@ -2048,6 +2048,27 @@ entry's commands, the glossary's and the vision's auto-reject timeout). Recorded
   an approve deadline, submit the rejection as soon as Reject is chosen, or show the time left at the reason prompt.
   *(low · apps/cli/src/gate/clack-prompter.ts)*
 
+**D64 round 3 of the correction (2026-11-07, at `4f259890`)** found two mediums. Closing a card when a deadline
+decided its gate opened the run's next card at once, so the keys the user was still typing for the closed card
+answered it (Clack's `y` approves); after such a close the run's later gates are now left for the command its
+summary names. The card also tells its own decision by what it returned, no longer by a `decidedBy` of `cli`, which
+another terminal's `relavium gate` shares. ADR-0120's escape still let U+2028 and U+2029 through, which JavaScript reads as line breaks and a
+terminal draws as nothing; the escape is now a closed set (every `\p{C}` code point, every separator but the ASCII
+space, every default-ignorable code point and U+2800, with TAB shown as a tab mark). Fixed with them: tests for the
+reconcile re-read's per-run check and its claim release, for a deadline deciding another gate while a card is open
+and for the legacy budget card's Enter; tests for a swap between the own-export check's last `lstat` and its open;
+`gate list`'s ids and `status`'s attempt number on one line; the card-close comments; and ADR-0118's masked spans and
+Positive consequence, and ADR-0120's plain drawing, against ADR-0114 §5. Recorded:
+
+- [ ] **No test drives a FIFO swapped in between the own-export check's `lstat` and its open.** *Low; test gap.*
+  *(export-1)* `O_NONBLOCK` is what keeps that open from blocking; a test would hang its worker on a regression
+  rather than fail. **Re-check:** run the case in a child process with a `spawnSync` timeout. *(low ·
+  apps/cli/src/process/owned-storage.ts)*
+- [ ] **The MCP consent card's argument display passes U+2028 and U+2029.** *Low; pre-existing.* *(security-1's
+  sibling)* `safe()` in the consent gate strips controls and zero-width characters but not the line separators, so a
+  repository-declared server's argument can look like a comment. **Re-check:** apply ADR-0120's approval escape when
+  it lands. *(low · apps/cli/src/engine/mcp-consent-gate.ts)*
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows

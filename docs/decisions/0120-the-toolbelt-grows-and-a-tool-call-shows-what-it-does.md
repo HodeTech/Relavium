@@ -95,21 +95,36 @@ Exact arguments, bounds and texts live in
   target is one line (`sanitizeInline`).
 - **An approval preview never hides what it approves.** Stripping is right for a
   transcript row and wrong for an approval: an edit that adds an escape or a
-  bidi override would render exactly like the original. An invisible code point
-  hides content the same way: a tag-character run (U+E0000–U+E007F) can spell a
-  whole instruction in zero columns, and a zero-width space inside a compared
-  literal stops it matching. So in an approval card and its full view, a terminal
-  control, a bidi character, and every default-ignorable (`\p{Default_Ignorable_Code_Point}`)
-  or format (`\p{Cf}`) code point in a target, field or diff line renders as a
-  visible, styled escape (for example `<U+202E>` or `<U+E0049>`), never stripped
-  and never left invisible. That covers zero-width spaces and joiners, the soft
-  hyphen, variation selectors and the tag block, including the joiners a
-  transcript keeps for emoji: an approval shows `<U+FE0F>` rather than hide a
-  code point. Both are Unicode properties the JavaScript regular-expression
-  engine knows, so no table is kept by hand. Transcript rows may strip. The order
-  is fixed: secret masking on the original text, then this escape, which turns
-  every control and every invisible code point into printable text, and only
-  then ADR-0114's span pipeline, whose strip then finds nothing to remove. The diff's two sides go through the same escape. A span the secret masking replaces shows
+  bidi override would render exactly like the original. A code point a terminal
+  draws as nothing, or as a blank, hides content the same way: a tag-character
+  run (U+E0000–U+E007F) can spell a whole instruction in zero columns; a
+  zero-width or no-break space inside a compared literal stops it matching; and
+  U+2028 or U+2029, which JavaScript reads as a line break and a terminal draws
+  as nothing, ends a `//` comment without ending the line on screen. So in an
+  approval card and its full view, every code point in a target, field or diff
+  line that is not a printable graphic character renders as a visible, styled
+  escape (for example `<U+202E>`, `<U+2028>` or `<U+E0049>`), never stripped and
+  never left invisible. The set is closed:
+  - every `\p{C}` code point: controls, format characters, surrogates,
+    private-use and unassigned code points;
+  - every separator other than the ASCII space (`\p{Z}`): the other spaces and
+    the line and paragraph separators;
+  - every default-ignorable code point (`\p{Default_Ignorable_Code_Point}`),
+    which covers the joiners, variation selectors and fillers a transcript
+    keeps, so an approval shows `<U+FE0F>` rather than hide a code point;
+  - U+2800, the braille blank, which draws as a space.
+
+  A TAB shows as a styled tab mark instead, so tab-indented code stays readable
+  and a tab is still told from spaces; the line diff splits on LF and CR LF, so
+  a CR LF ending is not escaped, while a CR anywhere else is. The properties are
+  ones the JavaScript regular-expression engine knows, so no table is kept by
+  hand. The escape does not tell confusable letters apart (a Cyrillic `а` for a
+  Latin `a`): they are visible, and they stay as they are. Transcript rows may
+  strip. The order is fixed: secret masking on the original text, then this
+  escape, which turns every such code point into printable text, and only then
+  the card's plain drawing: ADR-0114's sanitize step, whose strip then finds
+  nothing to remove, with no markdown parse (ADR-0114 §5 keeps tool rows plain).
+  The diff's two sides go through the same escape. A span the secret masking replaces shows
   as a labelled mask, and the card states how many spans were masked; the full
   view does not unmask. Approving approves the bytes the host will write,
   masked spans included, and the card says so. Whether a write whose changed
