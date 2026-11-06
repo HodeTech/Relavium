@@ -1689,8 +1689,12 @@ run's open gate as pending, the run-path tool pre-flight grew with nodes times g
 and the chat's catalog-ceiling output cap ran into ADR-0082's 120-second absolute deadline. Round 2 (at `d8762a23`)
 found one more medium, also fixed: the round-1 run-id latch let a resumed run's summary point a gate restored from its
 checkpoint at `relavium gate`, although such a gate can be a budget gate `gate` declines. Round 2's wording and
-`status` test lows (history-9/docs-3, history-10 in part, history-11, security-2/docs-4) were fixed with it. The lows
-below were not fixed. **Trigger for every entry:** the next change to the file it names.
+`status` test lows (history-9/docs-3, history-10 in part, history-11, security-2/docs-4) were fixed with it, except
+that the pending gate's node-id sanitizer stayed unpinned. Round 3 (at `32d1a8a7`) found one more medium, also fixed:
+round 2's fix sent such a gate to `relavium status` for the command that continues it, which `status` printed only for
+a budget gate; it now prints one for every pending human gate too, and the node-id sanitizer is pinned with it
+(history-14, docs-2, security-1). The lows below were not fixed. **Trigger for every entry:** the next change to the
+file it names.
 
 - [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
   delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
@@ -1727,7 +1731,7 @@ below were not fixed. **Trigger for every entry:** the next change to the file i
   ADR-0101's 2026-11-06 note.* *(budget-3, budget-4)* Pre-send compaction reserves the effective cap, so on a
   200k-window model with a 64,000-token ceiling it starts at about 68% of the window instead of 80%; and on a model
   whose effort tiers are budget-shaped, the thinking budgets derive from the effective cap and grow about 8–16× on the
-64,000-ceiling models from low to max (51,200 tokens at max), less on `claude-opus-4-1`.
+  64,000-ceiling models from low to max (51,200 tokens at max), less on `claude-opus-4-1`.
   **Re-check:** reserve the configured estimate rather than the inserted default for the compaction decision, and
   derive budget-shaped tiers from a fixed reference cap. *(low · packages/core/src/engine/agent-session.ts,
   packages/llm/src/adapters/anthropic.ts)*
@@ -1791,6 +1795,24 @@ below were not fixed. **Trigger for every entry:** the next change to the file i
   128,000 gets 30 minutes for a 32,000-token wire, and a cost-capped chat sending the implicit 4,096 keeps 120 s
   although 4,096 at 25 tokens per second needs 164 s. The note says "effective cap". **Re-check:** size it from the
   planned wire cap, or reword the note and config-spec. *(low · apps/cli/src/chat/session-host.ts)*
+
+- [ ] **The summary's `relavium gate <runId>` asks for `--gate` when two human gates wait.** *Low.* *(runid-8,
+  docs-3)* A fan-out paused with no inline prompter (a piped stdin, `--secret-inputs-stdin`) announces both gates, and
+  the summary prints one `relavium gate <runId>` with no `--gate`; copied as printed it exits `2` naming the pending
+  gates. The same holds beside a gate restored from the checkpoint that is a human one. `relavium status <runId>`
+  prints a complete command per gate. **Re-check:** print one `relavium gate <runId> --gate <gateId>` per gate through
+  `resumeCommandBase`, or point at `status` when more than one human gate may be pending. *(low ·
+  apps/cli/src/render/tui/final-summary.ts)*
+- [ ] **`list --runs --json`'s record shape is only partly pinned.** *Low; test-side.* *(history-15)* Dropping
+  `workflowId`, or replacing the documented `null` for a deleted workflow's slug or a missing start time with a
+  fallback, keeps every test green. **Re-check:** assert one whole record with `toEqual`, plus a soft-deleted
+  workflow's run and a never-started run. *(low · apps/cli/src/commands/list.test.ts)*
+- [ ] **The 30-minute chat cap and the `max_cost_microcents = 0` mapping are unpinned.** *Low; test-side.*
+  *(budget-12)* The deadline tests read `MAX_CHAT_ATTEMPT_TIMEOUT_MS` rather than its value, so 10 or 60 minutes
+  passes; and treating any defined `max_cost_microcents` as a cap, the documented unbounded `0` included, would
+  restore the 4,096-token default with every test green. **Re-check:** assert the cap by value, and a
+  `buildChatSession` case with `maxCostMicrocents: 0` expecting the catalog ceiling on the wire. *(low ·
+  apps/cli/src/chat/session-host.test.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
