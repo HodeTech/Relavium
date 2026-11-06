@@ -125,11 +125,49 @@ describe('createClackGatePrompter', () => {
     expect(d).toBeNull();
   });
 
+  /** A watcher reporting whether the key that ended the prompt was Ctrl-C (Clack reports Esc and Ctrl-C alike). */
+  const pressed =
+    (interrupted: boolean): NonNullable<ClackPromptDeps['watchInterrupt']> =>
+    async (prompt) => ({ value: await prompt(), interrupted });
+
   it('Esc at the optional rejection reason keeps the rejection, without a reason', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve(CANCEL),
+        watchInterrupt: pressed(false),
+      }),
+    ).prompt(gate());
+    expect(d).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+  });
+
+  it('Ctrl-C at the optional rejection reason cancels the run, as at the card', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve(CANCEL),
+        watchInterrupt: pressed(true),
+      }),
+    ).prompt(gate());
+    expect(d).toBeNull();
+  });
+
+  it('a typed reason stands even when the watcher saw Ctrl-C earlier', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve('too risky'),
+        watchInterrupt: pressed(true),
+      }),
+    ).prompt(gate());
+    expect(d).toEqual({ decision: 'rejected', decidedBy: 'cli', comment: 'too risky' });
+  });
+
+  it('without a key watcher a cancel at the reason is taken as Ctrl-C and cancels the run', async () => {
     const d = await createClackGatePrompter(
       deps({ confirm: () => Promise.resolve(false), text: () => Promise.resolve(CANCEL) }),
     ).prompt(gate());
-    expect(d).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+    expect(d).toBeNull();
   });
 
   it('an abort during the rejection reason still returns null', async () => {

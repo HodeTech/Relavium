@@ -106,6 +106,52 @@ describe('captured native prompt ports', () => {
     },
   );
 
+  it.each([
+    [
+      'Esc',
+      '\u001b',
+      { name: 'escape', sequence: '\u001b' },
+      { decision: 'rejected', decidedBy: 'cli' },
+    ],
+    ['Ctrl-C', '\u0003', { name: 'c', ctrl: true, sequence: '\u0003' }, null],
+  ] as const)(
+    "%s at the bound card's optional rejection reason gives %j and releases the key watcher",
+    async (_key, char, key, expected) => {
+      // Clack reports both keys as one cancel; the bound prompter watches the owned input to tell them apart.
+      const f = fixture();
+      const before = f.input.listeners('keypress');
+      try {
+        const pending = createBoundClackGatePrompter(f.io).prompt({
+          type: 'human_gate:paused',
+          runId: 'offline',
+          timestamp: '2026-10-16T00:00:00Z',
+          sequenceNumber: 1,
+          nodeId: 'gate',
+          gateId: 'owned-gate',
+          gateType: 'approval',
+          message: 'OWNED_GATE_CARD',
+        });
+        await turn();
+        f.input.emit('keypress', '\r', { name: 'return', sequence: '\r' }); // a bare Enter rejects
+        for (
+          let spin = 0;
+          spin < 50 && !f.output.frames.join('').includes('Reason for rejection');
+          spin += 1
+        ) {
+          await turn();
+        }
+        expect(f.output.frames.join('')).toContain('Reason for rejection');
+        await turn();
+        f.input.emit('keypress', char, key);
+        expect(await pending).toEqual(expected);
+        expect(f.input.listeners('keypress')).toEqual(before);
+        expect(f.input.isRaw).toBe(false);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
   it('binds installed Clack consent log and confirm to the owned ports and acknowledges cancellation', async () => {
     const f = fixture();
     const controller = new AbortController();

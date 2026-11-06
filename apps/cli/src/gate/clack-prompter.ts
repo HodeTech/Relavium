@@ -1,3 +1,5 @@
+import type { Readable } from 'node:stream';
+
 import type { CliIo } from '../process/io.js';
 import { nativePromptIo } from '../process/native-prompt-io.js';
 import { confirm, isCancel, note, text } from '@clack/prompts';
@@ -34,6 +36,51 @@ export interface ClackPromptDeps {
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
+  /**
+   * Run one prompt and report whether Ctrl-C ended it. Clack answers Ctrl-C and Esc with the same cancel, but at the
+   * optional rejection reason they differ: Esc skips the reason and the rejection stands, while Ctrl-C cancels the
+   * run, as it does at the card. Without a watcher a cancel there is taken as Ctrl-C.
+   */
+  readonly watchInterrupt?: <T>(prompt: () => Promise<T>) => Promise<InterruptWatched<T>>;
+}
+
+/** A prompt's answer and whether Ctrl-C ended it. */
+export interface InterruptWatched<T> {
+  readonly value: T;
+  readonly interrupted: boolean;
+}
+
+/** Clack's `cancel` alias for Ctrl-C: the `\x03` byte as a key's character, name or sequence. */
+const CTRL_C = '\u0003';
+
+function isCtrlC(char: unknown, key: unknown): boolean {
+  if (char === CTRL_C) return true;
+  if (typeof key !== 'object' || key === null) return false;
+  return ('name' in key && key.name === CTRL_C) || ('sequence' in key && key.sequence === CTRL_C);
+}
+
+/** Watch `input`'s keypresses — the stream Clack reads — for Ctrl-C while one prompt runs. */
+export function watchInterruptOn(
+  input: Readable,
+): <T>(prompt: () => Promise<T>) => Promise<InterruptWatched<T>> {
+  return async (prompt) => {
+    let interrupted = false;
+    const onKeypress = (char: unknown, key: unknown): void => {
+      if (isCtrlC(char, key)) interrupted = true;
+    };
+    input.on('keypress', onKeypress);
+    try {
+      const value = await prompt();
+      return { value, interrupted };
+    } finally {
+      input.off('keypress', onKeypress);
+    }
+  };
+}
+
+/** The fallback when no watcher is wired: every cancel counts as Ctrl-C, which cancels the run. */
+async function assumeInterrupted<T>(prompt: () => Promise<T>): Promise<InterruptWatched<T>> {
+  return { value: await prompt(), interrupted: true };
 }
 
 const defaultDeps: ClackPromptDeps = {
@@ -53,6 +100,7 @@ export function createBoundClackGatePrompter(io: CliIo): GatePrompter {
     confirm: (options) => confirm({ ...options, ...streams }),
     text: (options) => text({ ...options, ...streams }),
     isCancel,
+    watchInterrupt: watchInterruptOn(streams.input),
   });
 }
 
@@ -122,15 +170,18 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       if (approved) {
         return approvalDecision();
       }
-      const comment = await deps.text({
-        message: 'Reason for rejection (optional)',
-        placeholder: '',
-        ...(signal === undefined ? {} : { signal }),
-      });
+      const reason = await (deps.watchInterrupt ?? assumeInterrupted)(() =>
+        deps.text({
+          message: 'Reason for rejection (optional)',
+          placeholder: '',
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      );
       if (signal?.aborted) return null;
-      // The reason is optional, so Esc or Ctrl-C here skips it (Clack reports both as a cancel): the rejection
-      // already chosen stands.
-      return rejectionDecision(deps.isCancel(comment) ? undefined : comment);
+      if (!deps.isCancel(reason.value)) return rejectionDecision(reason.value);
+      // The reason is optional, so Esc skips it and the rejection already chosen stands. Ctrl-C cancels the run, as
+      // it does at the card above and everywhere else on `relavium run`.
+      return reason.interrupted ? null : rejectionDecision();
     },
   };
 }
