@@ -1,7 +1,8 @@
 # ADR-0118: A command outside the allowlist asks instead of failing
 
 - **Status**: Proposed
-- **Date**: 2026-11-05
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review: a remembered grant is free-form text, so §2
+  no longer calls it secret-incapable and withholds Remember for a command the credential masking would mask)
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md) (a), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [D63](../roadmap/current.md#wave-gating-decisions), [MVP-A15](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
@@ -71,7 +72,8 @@ expanded before it can be approved.
 - **Once.** This invocation only.
 - **Session.** This exact command string for the rest of this session
   instance. It is held in memory and not persisted, like ADR-0057's `[a]`.
-- **Remember.** Persist an exact-string grant for this project root (§2).
+- **Remember.** Persist an exact-string grant for this project root (§2). It is
+  not offered for a command that may carry a credential (§2).
 - **Deny**, with an optional typed reason. A denial returns to the model under
   [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md).
 - **Ctrl-C and Esc** reject the card, then interrupt the turn, as
@@ -103,10 +105,19 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
   shares none.
 - **How they are written.** Through the
   [ADR-0063](0063-cli-config-write-contract.md) write primitive: parse, set,
-  re-validate, write atomically. It is secret-incapable by construction. No
-  project, workspace or agent file is ever written.
+  re-validate, write atomically. No project, workspace or agent file is ever
+  written. That primitive's secret-free guarantee covers its typed, non-secret
+  keys. A command string is free-form, so the guarantee does not cover a grant.
 - **What a grant contains.** Only an exact command string, never a glob. "Remember
   `npm test`" never authorizes `npm test -- --exec=…`.
+- **What cannot be remembered.** Remember is not offered for a command in which
+  the [credential masking](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
+  that tool previews use finds anything to mask. The card then offers Once,
+  Session and Deny, and says why. When Remember is offered, the card shows the
+  exact string it would store. The masking recognizes a finite set of credential
+  shapes, so a credential it does not recognize can still be remembered, and it
+  is then stored in plaintext in operator configuration. That is a recorded
+  limit, not a guarantee; the approval-path security sitting examines it.
 - **Bounds.** Grants are bounded per root and in total. Reading them is strict:
   a malformed grant file is a visible configuration error, never a silent
   allow.
@@ -169,6 +180,9 @@ accepted.
   decision.
 - Operator config gains a growing, per-root grant list. It needs bounds, strict
   parsing and a revocation view (2.6.G).
+- A remembered grant is a plaintext command string. Remember is withheld when
+  the credential masking finds anything, but a credential shape it does not
+  recognize can still be stored (§2).
 - The card is a new approval surface. It needs the approval-path security
   sitting D63 requires: exact rendering, no hidden affirmative key, and no
   truncated approval.
