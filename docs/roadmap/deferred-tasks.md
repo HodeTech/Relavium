@@ -1767,7 +1767,7 @@ names.
   sanitize every history identifier but not the status column; only the SQLite CHECK keeps it clean, and a file
   written with `ignore_check_constraints` gets past it. **Fixed in the PR #97 review correction (2026-11-06):** the
   run and step status in `status`, the `--runs` row and the catalog line's `[last: …]` in `list`, and the run id and
-  status in `logs`'s header now get the one-line floor, each pinned by a forged-status test. *(low ·
+  status in `logs`'s header now get the one-line floor, each pinned by a forged-status or forged-id test. *(low ·
   apps/cli/src/commands/status.ts, apps/cli/src/commands/list.ts, apps/cli/src/commands/logs.ts)*
 - [ ] **`status`'s own `completed` terminal entry is unpinned.** *Low; test-side.* *(history-10, remainder)* Removing
   `'completed'` from `TERMINAL_STATUSES` in `status.ts` passes every test, while a completed run with a stale outbox
@@ -1902,19 +1902,22 @@ names.
 Four reviews of the `development` → `main` checkpoint PR #97 (at `077650a8`) reported about sixty findings, several
 rated high. Six verification agents checked each against the code at that commit, with probes, and none held as
 high: the gate-type bypass is unreachable from the CLI, the live-run start race was recorded and fails closed, and
-the `/export` race needs a concurrent writer. Eight held as medium, and by the maintainer's rulings of 2026-11-06 the
-PR is fixed before it merges, so it owes a D64 rigor pass, a new complete round and a separate security sitting. The
-verified register is `docs/analysis/private/2026-11-06-pr97-review-triage.md` (not tracked).
+the `/export` race needs a concurrent writer. Eight held as medium. By the maintainer's rulings of 2026-11-06 six are
+fixed before the PR merges and two are resolved in the record, so the correction owes a D64 rigor pass, a new complete
+round and a separate security sitting. The verified register is `docs/analysis/private/2026-11-06-pr97-review-triage.md`
+(not tracked).
 
 **Fixed (medium):** reconcile's repair could relabel a completed run failed when its owner held its terminal in
-the outbox meanwhile, and the drain read the open runs before the outbox (it now reads the outbox first and again
-under its claim); reconcile now leaves a run younger than one lease TTL alone, which also narrows 1b's liveness-1;
-a crashed run with an unresolved external effect is settled as `effect_needs_attention`; a bare Enter on an
-approval, review or budget-amount card rejected nothing and approved instead; a card whose gate a deadline decided
-stayed open and dropped the later answer silently; the Windows readiness budget; the URL-password reversal against
-`main` is recorded (A4 above); the ADR-0118, ADR-0119 and ADR-0120 drafts. **Fixed (low):** Esc at the rejection
-reason cancelled the run; the card promised `auto-reject` where the run fails; `/export`'s own-export rewrite now
-re-checks the file before it replaces it; history-12; the doc and comment items. The lows below were not fixed.
+the outbox meanwhile (it now reads the outbox again under its claim); a bare Enter on an approval, review or
+budget-amount card approved; a card whose gate a deadline decided stayed open and dropped the later answer silently;
+the Windows readiness budget; the ADR-0119 and ADR-0120 drafts. **Resolved in the record (medium):** the URL-password
+reversal against `main` is stated (the PR #96 review's A4, above); the ReDoS entry names the cloned-repository vector
+and stays open (M8). **Fixed (low):** the drain now reads the outbox before the open runs (A2); reconcile leaves a run
+younger than one lease TTL alone, which narrows 1b's liveness-1 (A1); a crashed run with an unresolved external effect
+is settled as `effect_needs_attention` (A4); Esc at the rejection reason cancelled the run; the card promised
+`auto-reject` where the run fails; `/export`'s own-export rewrite re-checks the file before it replaces it; the
+ADR-0118 draft (HMAC grants); history-12; the doc and comment items. The register's plan also listed B3's `?? []` and
+B2's missing-vertex fail-closed as one-line fixes; they were recorded below instead. The lows below were not fixed.
 **Trigger for every entry:** the next change to the file it names.
 
 - [ ] **A corrupt or schema-mismatched outbox line lets reconcile settle its run failed.** *Low.* *(A3)* The
@@ -1985,6 +1988,42 @@ re-checks the file before it replaces it; history-12; the doc and comment items.
   workflow granting `http_request`, `web_search`, `read_clipboard` or `notify`; before, it ran and failed (exit `1`)
   at the first such call, or completed if none was made. **Trigger:** the v0.2.0 CHANGELOG (MVP-A23). *(low ·
   CHANGELOG.md)*
+
+**D64 round 1 of the correction (2026-11-06, at `13979d60`)** found one medium, ADR-0118's grant label storing
+`argv[0]` verbatim, and fixed it with the lows below it in the correction's own records and tests (the own-run
+guard pinned again, the TTL rule bounded on both sides, the event contract's reconcile codes, a logs run-id test,
+coarse-clock-safe identity tests with `size` and `mtime` back in the identity, ADR-0118's Session answer and its
+"what a grant does not bind" limit, ADR-0120's escape order). These were recorded:
+
+- [ ] **A late answer can still be dropped without a notice.** *Low.* *(gates-2, security-7)* The card closes
+  when the deadline's `human_gate:resumed` reaches the run view. An answer that lands after the deadline claimed
+  the gate but before that event arrives — the timer's few milliseconds, or seconds while the deadline's write
+  waits on a busy `history.db` — reaches `engine.resume`, which ignores a decided gate in silence. **Re-check:** keep
+  the card registered until its gate's `human_gate:resumed` is seen, or have `resume` report whether it applied the
+  decision. *(low · apps/cli/src/commands/drive.ts, packages/core/src/engine/engine.ts)*
+- [ ] **The notice says "your answer" when no card was drawn.** *Low; cosmetic.* *(gates-3)* A deadline that fires
+  while the view unmounts for the card prints it anyway. *(low · apps/cli/src/commands/drive.ts)*
+- [ ] **A paste or a hotkey can still answer a gate card.** *Low; pre-existing.* *(security-2)* Clack's confirm
+  takes `y`/`n` and `h`/`j`/`k`/`l`/space as answers, so a stray paste such as "The deploy looks wrong" approves an
+  approval or budget-amount card; only a bare Enter is now safe. The MCP consent prompt shares it. The chat
+  approvals have a paste floor (ADR-0057); the gate card has none. **Re-check:** filter the card's input to one
+  unmodified keypress and drop bracketed paste, with a real-Clack paste test. *(low ·
+  apps/cli/src/gate/clack-prompter.ts, apps/cli/src/mcp/consent-prompt.ts)*
+- [ ] **A raced own-export rewrite can leave two exports of one session.** *Low.* *(export-2)* When the file
+  changed but still names this session (a second terminal's `/export`, an editor's atomic save), the export
+  moves to the next id, and later `/export`s update the lower one. **Re-check:** on `StorageTargetChangedError`,
+  check the file once more and retry against its fresh identity when it is still this session's. *(low ·
+  apps/cli/src/chat/export.ts)*
+- [ ] **No Windows job runs the own-export identity tests.** *Low.* *(export-3)* **Re-check:** add
+  `owned-storage-replace.test.ts` and `export-project.test.ts` to the Windows filesystem step. *(low ·
+  .github/workflows/ci.yml)*
+- [ ] **The Home and `chat list` print `history.db` status and slugs raw.** *Low.* *(sinks-2)* history-12's class on
+  surfaces its fix did not cover. **Re-check:** `sanitizeInline` in `home-projection.ts`'s labels and
+  `chat-list.ts`'s rows, with forged-status tests. *(low · apps/cli/src/render/tui/home-projection.ts,
+  apps/cli/src/commands/chat-list.ts)*
+- [ ] **The reconcile guard against an in-flight resume, and the drain's own-run guard, are unpinned.** *Low;
+  test-side; pre-existing.* *(reconcile-1)* The own-run test now pins `#runs` again; the `#resumingRuns` half and the
+  drain's claim never had a test. *(low · packages/core/src/engine/run-lease.test.ts)*
 
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
@@ -2735,8 +2774,8 @@ so directly: these "should remain visible rather than disappear behind the green
   (2026-11-06): the author need not be the user.** An input's `default` is checked against its `pattern` when the
   file is PARSED, and `relavium list` and `relavium chat` parse every workflow in the project's catalog. A workflow
   in a cloned repository with `pattern: '(a+)+'`, a default of `'a'` × 28 + `'!'` and no `max_length` stalled
-  `parseWorkflow` for 7.6 s in that review, and the cost doubles with each character, so a repository can hang
-  those commands with no input from the user. *(medium for that vector ·
+  `parseWorkflow` for between about 1 s and 7.6 s in two measurements that day (machine and load differ), and the
+  cost doubles with each character, so a repository can hang those commands with no input from the user. *(medium for that vector ·
   packages/shared/src/workflow.ts; ADR-0083 §4)*
 
 - [ ] **Two SonarCloud CRITICALs are declines, not debt — mark them Accepted in the UI.**

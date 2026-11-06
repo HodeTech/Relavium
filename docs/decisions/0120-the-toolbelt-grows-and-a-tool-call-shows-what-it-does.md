@@ -89,16 +89,19 @@ Exact arguments, bounds and texts live in
   A tool that declares none shows its name only. A field marked secret, a
   `credentialRef` or a masked input is structurally absent from `ToolPreview`'s
   type. It cannot be declared previewable.
-- **Every string passes the floor.** Each target and field passes
-  `sanitizeUntrusted`: secret shapes masked on the original text, then terminal
-  controls stripped. Each is bounded per field and per row. A target is one
-  line (`sanitizeInline`).
+- **Every string passes the floor.** In a transcript row, each target and
+  field passes `sanitizeUntrusted`: secret shapes masked on the original text,
+  then terminal controls stripped. Each is bounded per field and per row. A
+  target is one line (`sanitizeInline`).
 - **An approval preview never hides what it approves.** Stripping is right for a
   transcript row and wrong for an approval: an edit that adds an escape or a
   bidi override would render exactly like the original. So in an approval card
   and its full view, a terminal control or bidi character in a target, field or
   diff line renders as a visible, styled escape (for example `<U+202E>`), never
-  stripped; transcript rows may strip. A span the secret masking replaces shows
+  stripped; transcript rows may strip. The order is fixed: secret masking on the
+  original text, then this escape, which turns every control into printable
+  text, and only then ADR-0114's span pipeline, whose strip then finds nothing
+  to remove. The diff's two sides go through the same escape. A span the secret masking replaces shows
   as a labelled mask, and the card states how many spans were masked; the full
   view does not unmask. Approving approves the bytes the host will write,
   masked spans included, and the card says so. Whether a write whose changed

@@ -229,9 +229,10 @@ is computed in `packages/llm`; see [multi-llm-providers.md](multi-llm-providers.
   optionally adjusting inputs). A required node is never silently skipped.
 - **Provider failure** — `packages/llm` walks the agent's fallback chain before
   the node is considered failed.
-- **Crash recovery** — the engine exposes reconciliation of interrupted, non-resumable runs;
-  this is an explicit host operation, not an automatic shipping CLI startup guarantee. Recorded
-  budget rejection retains `budget_exceeded`, while an ordinary interruption uses `internal`.
+- **Crash recovery** — the engine exposes reconciliation of interrupted, non-resumable runs; the
+  CLI runs it at `run`, `gate` and `budget resume` start and on Home open. A run that left an
+  external effect unresolved settles as `effect_needs_attention`, a recorded budget rejection as
+  `budget_exceeded`, any other interruption as `internal`, in that order of precedence.
   Interrupted-run discovery refuses corrupt suspension history as a whole. The derived metadata,
   corruption and durable terminal rules live in the
   [event contract](../reference/contracts/sse-event-schema.md#durable-budget-authorization).

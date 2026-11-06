@@ -523,7 +523,10 @@ The derived interrupted-run projection marks a recorded budget rejection separat
 any gate is still resumable. This is ephemeral store metadata, not a new durable event or status.
 If an eligible crash reconciliation sees that rejection without a run terminal, it appends the existing
 `run:failed` with `budget_exceeded` and no dispatch. An ordinary non-resumable interruption keeps
-`internal`; outstanding gates retain the existing resumable policy. A decided rejection may leave the
+`internal`; outstanding gates retain the existing resumable policy. Both give way to
+`effect_needs_attention` when the run left an external effect unresolved or its effect journal cannot be
+read ([effect-journal.md §8](../shared-core/effect-journal.md#8-needs_attention)): the precedence is
+`effect_needs_attention`, then `budget_exceeded`, then `internal`. A decided rejection may leave the
 materialized run status `running` until that terminal is durably appended. Neither discovery nor
 reconciliation fabricates a terminal or output during the ordered suspension fold.
 

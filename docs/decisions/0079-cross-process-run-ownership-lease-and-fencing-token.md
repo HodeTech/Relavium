@@ -87,9 +87,12 @@ All contention is on the resume path, which is already async.
 > **Amended 2026-11-06 (PR #97 review).** Three corrections to the two notes above.
 >
 > - **`reconcile()` now leaves a run younger than one lease TTL alone**, measured from its `run:started` timestamp
->   by the reconciling host's clock. That closes the window the 2026-11-05 note describes: a reconcile inside it no
->   longer settles the starting run, which takes its lease and runs. Past one TTL, a run with no live lease is still
->   treated as crashed. The same rule covers a run started by a version that takes no lease at all (relavium 0.1.x):
+>   by the reconciling host's clock, on either side. That closes the window the 2026-11-05 note describes for a
+>   reconciler with this rule: a reconcile inside it no longer settles the starting run, which takes its lease and
+>   runs. A development build without the rule, or a reconciler whose clock runs more than a TTL ahead, can still
+>   settle it, and the store's terminal refusal keeps that to one terminal. Past one TTL, a run with no live lease
+>   is still treated as crashed, and so is one whose start lies more than a TTL in the reconciler's future (a clock
+>   that moved back). The same rule covers a run started by a version that takes no lease at all (relavium 0.1.x):
 >   it is settled only once it is older than one TTL.
 > - **The foreign key does not rule out the same transaction.** The 2026-08-17 note says creating the lease inside
 >   the transaction that folds `run:started` "fails the foreign key". It does not, once the `runs` row is inserted

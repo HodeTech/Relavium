@@ -69,8 +69,9 @@ expanded before it can be approved.
 **The card's answers:**
 
 - **Once.** This invocation only.
-- **Session.** This exact command string for the rest of this session
-  instance. It is held in memory and not persisted, like ADR-0057's `[a]`.
+- **Session.** This exact argv, matched element by element as a remembered
+  grant is (§2), for the rest of this session instance. It is held in memory
+  and not persisted, like ADR-0057's `[a]`.
 - **Remember.** Persist a grant for this exact argv and this project root (§2).
   The configuration never holds the command itself.
 - **Deny**, with an optional typed reason. A denial returns to the model under
@@ -109,8 +110,12 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
   credential in plaintext. A grant holds instead:
   - an HMAC-SHA256 of the command's exact argv, each element length-prefixed so
     `["cat a b"]` and `["cat", "a b"]` differ, under a per-installation key;
-  - a label that carries no argument: the program, the argument count and the
-    date it was remembered, for the revocation view.
+  - a label for the revocation view: the program, the argument count and the
+    date it was remembered. The program is `argv[0]`'s base name only when that
+    name matches a conservative grammar (`^[A-Za-z0-9._+-]{1,64}$`, so no `=`,
+    `:`, `/`, `@` or whitespace); otherwise the label says `(unnamed program)`.
+    `argv[0]` is free text — the model's `command` string, or the first token of
+    `!PGPASSWORD=… psql` — and can itself be a credential.
 
   Matching computes the HMAC of the candidate argv and compares it in constant
   time. A grant matches one exact argv, never a glob: "Remember `npm test`"
@@ -123,8 +128,19 @@ pre-approved is denied. That denial returns to the model under ADR-0117.
 - **How they are written.** Through the
   [ADR-0063](0063-cli-config-write-contract.md) write primitive: parse, set,
   re-validate, write atomically. No project, workspace or agent file is ever
-  written. A grant holds only a digest and an argument-free label, so the
-  primitive's secret-free property covers it: no command text reaches the file.
+  written. A grant holds only a digest and a label limited to a program name
+  that cannot carry a credential, so the primitive's secret-free property
+  covers it: no command text beyond such a name reaches the file.
+- **What a grant does not bind.** It binds the argv, not what the program reads.
+  "Remember `npm test`" keeps approving `npm test` after a model edits
+  `package.json`'s `test` script, and in `auto` such an edit is itself
+  approved, since `package.json` is not a protected path
+  ([ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)).
+  A remembered grant therefore extends to whatever the files under the root
+  make that program do. That is the same exposure a repository allowlist entry
+  has today; the approval-path security sitting examines both, and whether a
+  remembered grant should still prompt once in `auto` after the session has
+  written under the root.
 - **Bounds.** Grants are bounded per root and in total. Reading them is strict:
   a malformed grant file is a visible configuration error, never a silent
   allow.
@@ -183,8 +199,8 @@ accepted.
 - A command the user is willing to run can run, with the exact argv on screen.
   The config edit and restart are no longer needed.
 - A remembered grant serves one operator on one tree and never travels with the
-  repository, and it holds no command text, so no credential in a command
-  reaches the configuration.
+  repository, and it holds no command text beyond a program name the label
+  grammar admits, so no credential in a command reaches the configuration.
 - `auto` keeps a hard edge: only pre-approved commands run without a prompt.
 - A headless path still never runs anything it was not configured to run.
 
@@ -201,7 +217,10 @@ accepted.
 - Remember needs the OS keychain; without it the card offers Once, Session and
   Deny only.
 - The revocation view cannot show a remembered command's arguments, only its
-  program, argument count and date.
+  program (or `(unnamed program)`), argument count and date.
+- A grant binds the argv, not the files the program interprets (§2), so in
+  `auto` a model that can edit those files can change what a remembered
+  command does.
 - The card is a new approval surface. It needs the approval-path security
   sitting D63 requires: exact rendering, no hidden affirmative key, and no
   truncated approval.
