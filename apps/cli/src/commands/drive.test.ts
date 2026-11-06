@@ -202,7 +202,7 @@ describe('driveRun — interactive gate', () => {
     );
   });
 
-  it('closes the card when another terminal decides its gate as `cli`, before the card answered', async () => {
+  it('closes the card when a `cli` decision it did not make arrives before the card answered', async () => {
     // `cli` is every terminal's `decidedBy`, so it cannot tell this card's decision from another's; what this card
     // returned can.
     const { engine, handle } = await startGatedRun();
@@ -254,7 +254,7 @@ describe('driveRun — interactive gate', () => {
     expect(decided).toEqual([expect.objectContaining({ decision: 'approved', decidedBy: 'cli' })]);
   });
 
-  it('says so when another terminal decides the gate otherwise after the card answered, before its resume', async () => {
+  it('says so when a differing `cli` decision lands after the card answered, before its resume', async () => {
     // Both are `cli`; only the decision tells the other terminal's approval from this card's own rejection.
     const { engine, handle } = await startGatedRun();
     const resume = engine.resume.bind(engine);

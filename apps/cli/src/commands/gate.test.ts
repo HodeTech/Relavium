@@ -1676,6 +1676,17 @@ describe('selectGate', () => {
     }
   });
 
+  it('prints an already-resolved gate id from the checkpoint on one line', () => {
+    const forged = 'g\u001b[2J\nFAKE';
+    const sel = selectGate(checkpoint({ resolvedGateIds: [forged] }), 'paused', forged);
+    expect(sel.kind).toBe('idempotent');
+    if (sel.kind === 'idempotent') {
+      expect(sel.message).toContain('FAKE');
+      expect(sel.message).not.toContain('\u001b');
+      expect(sel.message).not.toContain('\n');
+    }
+  });
+
   it('--gate naming an already-resolved id is idempotent; an unknown id is invalid', () => {
     expect(selectGate(checkpoint({ resolvedGateIds: ['g1'] }), 'paused', 'g1').kind).toBe(
       'idempotent',

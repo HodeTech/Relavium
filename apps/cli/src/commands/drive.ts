@@ -143,8 +143,8 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
    * Close the open card when `decidedBy`, not this card, decided its gate: matched by gate id when the resumed event
    * names one (a budget companion), otherwise by node (every human-gate resume, and a legacy companion). Records how
    * it was decided for the stderr notice. The card's own decision is the one it returned, matched by its decision and
-   * `decidedBy`: before the card answers, any decision for its gate came from elsewhere, even one by `cli` (another
-   * terminal's `relavium gate`).
+   * `decidedBy`: before the card answers, any decision for its gate came from elsewhere. `decidedBy` alone cannot
+   * tell, since every CLI decision is marked `cli` and a prompter may mark its own otherwise.
    */
   const closeCardDecidedElsewhere = (
     gateId: string | undefined,

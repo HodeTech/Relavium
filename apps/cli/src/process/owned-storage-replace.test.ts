@@ -99,6 +99,23 @@ describe('replaceFileForStorage', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32')(
+    'refuses a file whose permission bits changed after the check, so the rewrite never undoes them',
+    () => {
+      // Same bytes, same size and times: only the ctime a chmod moves tells, and the file stays readable.
+      const path = join(dir, 'w.relavium.yaml');
+      writeFileSync(path, 'old');
+      chmodSync(path, 0o644);
+      const checked = identityOf(path);
+      chmodSync(path, 0o600);
+      expect(() => {
+        replaceFileForStorage(path, 'new', 0o644, checked);
+      }).toThrow(StorageTargetChangedError);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readFileSync(path, 'utf8')).toBe('old');
+    },
+  );
+
   it.skipIf(process.platform === 'win32' || isRoot)(
     'refuses a file made unreadable after the check as changed, rather than failing the export',
     () => {

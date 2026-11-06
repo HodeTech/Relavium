@@ -103,9 +103,10 @@ export class StorageTargetChangedError extends Error {
  * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
  * or removed meanwhile — which, for a transcript big enough to take tens of milliseconds to serialize and write, is a
  * window another writer can hit. The stat fields are compared before anything is opened, and the bytes are read
- * only from the same regular file, so a link, a FIFO, a directory or a larger file put there is refused without
- * being followed, blocked on or read whole. Not detected: a swap in the moment between that last check and the
- * rename (Node has no rename that compares first).
+ * only from the same regular file, so a link, a FIFO, a directory or a larger file put there is refused rather than
+ * blocked on or read whole. A link is refused unfollowed when it is there at the `lstat`; on Windows, which has no
+ * `O_NOFOLLOW`, one swapped in between the `lstat` and the open is followed, and its target refused. Not detected: a
+ * swap in the moment between that last check and the rename (Node has no rename that compares first).
  */
 export function replaceFileForStorage(
   path: string,
