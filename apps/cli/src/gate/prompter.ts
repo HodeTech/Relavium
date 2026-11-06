@@ -10,8 +10,9 @@ import type { BudgetPromptContext } from './budget.js';
  * depend on the seam without pulling the prompt library — the clack impl lives in its own module, exactly as
  * the `ink` renderer is split from the `RunRenderer` seam.
  *
- * `prompt` returns the built {@link GateDecision}, or `null` when the user cancels the prompt itself
- * (Ctrl-C / ESC) — the run core then cooperatively cancels the whole run.
+ * `prompt` returns the built {@link GateDecision}, or `null` when the user cancels the card (Ctrl-C, or Esc
+ * before a rejection is chosen; Esc at the optional rejection reason keeps the rejection) — the run core then
+ * cooperatively cancels the whole run.
  * The optional signal invalidates an open card when the run cancels or terminates. Implementations
  * should release their input resources on abort and return null; the driver discards any late answer.
  */

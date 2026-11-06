@@ -587,8 +587,8 @@ async function promptUntilStopped(
 /**
  * Resolve an interactive human gate without leaving the live run: hand the terminal to the `@clack/prompts`
  * card (suspend the TUI), collect a decision, then re-mount. A `null` decision (the user aborted the card with
- * Ctrl-C / ESC at its approve or input step; at the optional rejection reason either key keeps the rejection)
- * cooperatively cancels the whole run; otherwise the decision is applied to the in-memory
+ * Ctrl-C / ESC at its approve or input step, or with Ctrl-C at the optional rejection reason, where Esc instead
+ * keeps the rejection) cooperatively cancels the whole run; otherwise the decision is applied to the in-memory
  * run via `engine.resume`, which emits `human_gate:resumed` and continues — both flow back through the loop.
  */
 async function resolveGateInline(
@@ -602,14 +602,14 @@ async function resolveGateInline(
 ): Promise<boolean> {
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
   let reported = false;
-  /** Say, once, that the card's answer was not recorded because something else decided the gate first. */
+  /** Say, once, that nothing from this terminal was recorded because something else decided the gate first. */
   const reportDecidedElsewhere = (): void => {
     const decided = lifecycle.decidedElsewhere();
     if (reported || decided === undefined) return;
     reported = true;
     io.writeErr(
       `Gate ${sanitizeInline(event.gateId)} was already decided (${sanitizeInline(decided)}); ` +
-        'your answer was not recorded.\n',
+        'no answer from this terminal was recorded.\n',
     );
   };
   try {

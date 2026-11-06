@@ -106,7 +106,7 @@ describe('driveRun — interactive gate', () => {
     expect(types.at(-1)).toBe('run:completed'); // and continued past the (ignored) run:paused to the terminal
   });
 
-  it('closes an open card when its deadline decides the gate, and says the late answer was not recorded', async () => {
+  it('closes an open card when its deadline decides the gate, and says no answer from the terminal was recorded', async () => {
     // Before, the card stayed open: the user's later Reject reached `engine.resume`, which ignores a gate already
     // decided, and the run went on approved with nothing said.
     const host = createInMemoryHost();
@@ -167,7 +167,7 @@ describe('driveRun — interactive gate', () => {
     expect(outcome).toBe('completed');
     expect(signals[0]?.aborted).toBe(true);
     expect(err()).toMatch(
-      /Gate \S+ was already decided \(approved by its deadline\); your answer was not recorded\./u,
+      /Gate \S+ was already decided \(approved by its deadline\); no answer from this terminal was recorded\./u,
     );
     // g2 was answered on its own card, which is not "decided elsewhere".
     expect(err().match(/was already decided/gu)).toHaveLength(1);
