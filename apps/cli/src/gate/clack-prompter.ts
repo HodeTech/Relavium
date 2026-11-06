@@ -23,6 +23,8 @@ export interface ClackPromptDeps {
     message: string;
     active: string;
     inactive: string;
+    /** The answer a bare Enter gives. Clack's default is `true`, so an approving card must pass `false`. */
+    initialValue?: boolean;
     signal?: AbortSignal;
   }) => Promise<boolean | symbol>;
   readonly text: (opts: {
@@ -71,14 +73,15 @@ function cardBody(event: HumanGatePausedEvent): string {
 }
 
 /**
- * What the deadline does. An input gate cannot be approved, so a deadline that would approve one fails the run
- * instead: admission refuses that pairing now, but a run parked before the rule still carries it.
+ * What the deadline does (execution-model.md, gate timeouts). A `reject` deadline — the default — does not record
+ * a rejection: it fails the run with `run_timeout`, so no rejection branch runs. An input gate cannot be
+ * approved, so a deadline that would approve one fails the run too: admission refuses that pairing now, but a
+ * run parked before the rule still carries it. Only an `approve` deadline on an approval or review gate decides.
  */
 function onTimeout(event: HumanGatePausedEvent): string {
-  if (event.gateType === 'input' && event.timeoutAction === 'approve') {
-    return 'the run fails on timeout';
-  }
-  return `auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`;
+  return event.gateType !== 'input' && event.timeoutAction === 'approve'
+    ? 'auto-approve on timeout'
+    : 'the run fails on timeout';
 }
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
@@ -104,10 +107,12 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         return signal?.aborted || deps.isCancel(value) ? null : inputDecision(value);
       }
 
+      // A bare Enter rejects: approving takes a deliberate choice, as at the MCP consent prompt.
       const approved = await deps.confirm({
         message: 'Approve?',
         active: 'Approve',
         inactive: 'Reject',
+        initialValue: false,
         ...(signal === undefined ? {} : { signal }),
       });
       if (signal?.aborted || deps.isCancel(approved)) {
@@ -121,7 +126,9 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         placeholder: '',
         ...(signal === undefined ? {} : { signal }),
       });
-      return signal?.aborted || deps.isCancel(comment) ? null : rejectionDecision(comment);
+      if (signal?.aborted) return null;
+      // The reason is optional, so Esc here skips it: the rejection already chosen stands.
+      return rejectionDecision(deps.isCancel(comment) ? undefined : comment);
     },
   };
 }
@@ -166,6 +173,7 @@ async function promptBudget(
         : 'Continue without a budget allowance?',
     active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
     inactive: 'Reject',
+    initialValue: false, // a bare Enter rejects the spend
     ...(signal === undefined ? {} : { signal }),
   });
   if (signal?.aborted || deps.isCancel(approved)) return null;

@@ -30,6 +30,21 @@ workflow:
     - { from: g, to: out }
 `;
 
+// g has an approve deadline and g2 none, so the run continues after the deadline decides g.
+const GATED_DEADLINE = `schema_version: '1.0'
+workflow:
+  id: drive-gated-deadline
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval, timeout_ms: 1000, timeout_action: approve }
+    - { id: g2, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: g2 }
+    - { from: g2, to: out }
+`;
+
 async function startGatedRun(): Promise<{
   engine: WorkflowEngine;
   handle: ReturnType<WorkflowEngine['start']>;
@@ -89,6 +104,78 @@ describe('driveRun — interactive gate', () => {
     const types = events.map((e) => e.type);
     expect(types).toContain('human_gate:resumed'); // the engine applied the decision
     expect(types.at(-1)).toBe('run:completed'); // and continued past the (ignored) run:paused to the terminal
+  });
+
+  it('closes an open card when its deadline decides the gate, and says the late answer was not recorded', async () => {
+    // Before, the card stayed open: the user's later Reject reached `engine.resume`, which ignores a gate already
+    // decided, and the run went on approved with nothing said.
+    const host = createInMemoryHost();
+    const engine = await buildEngine({ host });
+    const handle = engine.start({
+      workflow: parseWorkflow(GATED_DEADLINE, { source: 'drive.test' }),
+      inputs: {},
+    });
+    const { renderer, events } = recordingRenderer();
+    const captured = captureIo();
+    const { err } = captured;
+    // Order the notice against the live view's re-mount: it belongs under the card, before the view returns.
+    const order: string[] = [];
+    vi.mocked(renderer.resume)?.mockImplementation(() => {
+      order.push('resume');
+    });
+    const io = {
+      ...captured.io,
+      writeErr: (text: string) => {
+        order.push('err');
+        captured.io.writeErr(text);
+      },
+    };
+    const signals: AbortSignal[] = [];
+    const prompter: GatePrompter = {
+      prompt: vi.fn(
+        (event: { readonly nodeId: string }, _budget: unknown, signal?: AbortSignal) => {
+          if (event.nodeId !== 'g')
+            return Promise.resolve<GateDecision>({ decision: 'approved', decidedBy: 'cli' });
+          if (signal !== undefined) signals.push(signal);
+          return new Promise<GateDecision | null>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(null));
+            // The deadline fires while the card is open; the user's Reject comes a moment later.
+            setTimeout(() => {
+              host.fireTimers();
+              setTimeout(() => resolve({ decision: 'rejected', decidedBy: 'cli' }), 20);
+            }, 0);
+          });
+        },
+      ),
+    };
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    const outcome = await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+    await lifetime.finish();
+
+    expect(outcome).toBe('completed');
+    expect(signals[0]?.aborted).toBe(true);
+    expect(err()).toMatch(
+      /Gate \S+ was already decided \(approved by its deadline\); your answer was not recorded\./u,
+    );
+    // g2 was answered on its own card, which is not "decided elsewhere".
+    expect(err().match(/was already decided/gu)).toHaveLength(1);
+    expect(order.slice(0, 2)).toEqual(['err', 'resume']);
+    const decidedG = events.filter((e) => e.type === 'human_gate:resumed' && e.nodeId === 'g');
+    expect(decidedG).toEqual([
+      expect.objectContaining({ decision: 'approved', decidedBy: 'timeout' }),
+    ]);
   });
 
   it('passes the built decision through to the engine (the resumed event carries it)', async () => {

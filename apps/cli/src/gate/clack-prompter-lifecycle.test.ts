@@ -58,6 +58,47 @@ for (const gateType of ['approval', 'input'] as const) {
   });
 }
 
+for (const [label, budget] of [
+  ['approval card', undefined],
+  ['budget amount card', { kind: 'amount', microcents: 20 }],
+] as const) {
+  it(`a bare Enter on the actual Clack ${label} rejects`, async () => {
+    // Clack's confirm defaults to Yes; the card passes `initialValue: false` so Enter is the safe answer, as at
+    // the MCP consent prompt. Enter on the approval card then reaches the optional reason, where Enter again
+    // submits an empty one.
+    const input = new SyntheticInput();
+    const output = new PassThrough();
+    output.resume();
+    const prompter = createClackGatePrompter({
+      note: () => {},
+      confirm: (options) => confirm({ ...options, input, output }),
+      text: (options) => text({ ...options, input, output }),
+      isCancel,
+    });
+    const enter = (): void => {
+      input.emit('keypress', '\r', { name: 'return', sequence: '\r' });
+    };
+    const pending = prompter.prompt(gate, budget);
+    try {
+      enter();
+      if (budget === undefined) {
+        // Let the reason prompt mount before answering it.
+        for (let spin = 0; spin < 50 && input.listenerCount('keypress') === 0; spin += 1) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+        enter();
+      }
+      expect(await pending).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+    } finally {
+      input.emit('keypress', '\u0003', { name: 'c', ctrl: true, sequence: '\u0003' });
+      await pending;
+      input.destroy();
+      output.destroy();
+    }
+  });
+}
+
 type Route =
   | 'approval'
   | 'review'

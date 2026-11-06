@@ -20,7 +20,8 @@ import type {
 
 import type { GatePrompter } from '../gate/prompter.js';
 import { budgetIdentifier, budgetPromptContext, type BudgetPromptContext } from '../gate/budget.js';
-import { sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
+import { DECIDED_BY_CLI } from '../gate/decision.js';
+import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import { CliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
@@ -124,6 +125,30 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   let inlineRefused = false;
   let inlineTerminating = false;
   let activePrompt: AbortController | undefined;
+  /**
+   * The gate card on screen. A decision for its gate that this card did not make — a deadline's — closes it, so
+   * the user's later answer is never silently dropped by the engine's idempotent resume.
+   */
+  let openCard:
+    | {
+        readonly gate: HumanGatePausedEvent;
+        readonly controller: AbortController;
+        decided?: string;
+      }
+    | undefined;
+  const closeCardDecidedElsewhere = (
+    gateId: string | undefined,
+    nodeId: string,
+    decision: string,
+    decidedBy: string,
+  ): void => {
+    const card = openCard;
+    if (card === undefined || decidedBy === DECIDED_BY_CLI) return;
+    // A legacy resumed companion names the node, not the gate.
+    if (gateId === undefined ? nodeId !== card.gate.nodeId : gateId !== card.gate.gateId) return;
+    card.decided ??= `${decision}${decidedBy === 'timeout' ? ' by its deadline' : ` by ${decidedBy}`}`;
+    card.controller.abort();
+  };
   let renderer: RunRenderer | undefined;
   let driveError: { readonly cause: unknown } | undefined;
   const recordFault = (cause: unknown): void => {
@@ -292,6 +317,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
               budgetContexts.delete(id);
             }
           }
+          closeCardDecidedElsewhere(event.gateId, event.nodeId, event.decision, event.decidedBy);
         }
         if (isTerminalOutcome(outcome)) {
           inlineTerminating = true;
@@ -381,6 +407,8 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       ) {
         const controller = new AbortController();
         activePrompt = controller;
+        const card: NonNullable<typeof openCard> = { gate, controller };
+        openCard = card;
         const recorded = budgetContexts.get(gate.gateId);
         try {
           const handled = await joined(
@@ -397,6 +425,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
                 },
                 signal: controller.signal,
                 runPrompt: (invoke) => terminal.runPrompt(invoke),
+                decidedElsewhere: () => card.decided,
                 runViewOperation: (invoke, mayAcquire) =>
                   terminal.runViewOperation(invoke, mayAcquire),
                 failed: recordFault,
@@ -417,6 +446,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
           requestCancellation();
         } finally {
           if (activePrompt === controller) activePrompt = undefined;
+          if (openCard === card) openCard = undefined;
         }
         continue;
       }
@@ -531,6 +561,8 @@ interface InlineGateLifecycle {
   readonly runPrompt: (
     invoke: () => ReturnType<GatePrompter['prompt']>,
   ) => ReturnType<GatePrompter['prompt']>;
+  /** How the gate was decided while its card was open, when something other than the card decided it. */
+  readonly decidedElsewhere: () => string | undefined;
   readonly failed: (cause: unknown) => void;
   readonly runViewOperation: (
     invoke: () => void | Promise<void>,
@@ -563,6 +595,17 @@ async function resolveGateInline(
   budget?: BudgetPromptContext,
 ): Promise<boolean> {
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
+  let reported = false;
+  /** Say, once, that the card's answer was not recorded because something else decided the gate first. */
+  const reportDecidedElsewhere = (): void => {
+    const decided = lifecycle.decidedElsewhere();
+    if (reported || decided === undefined) return;
+    reported = true;
+    io.writeErr(
+      `Gate ${sanitizeInline(event.gateId)} was already decided (${sanitizeInline(decided)}); ` +
+        'your answer was not recorded.\n',
+    );
+  };
   try {
     await lifecycle.runViewOperation(() => renderer.suspend?.(), false);
   } catch (error) {
@@ -575,6 +618,8 @@ async function resolveGateInline(
       () => lifecycle.runPrompt(() => prompter.prompt(event, budget, lifecycle.signal)),
       lifecycle.signal,
     );
+    // Said while the terminal is still the prompt's, so it lands under the card rather than inside the live view.
+    reportDecidedElsewhere();
   } catch (cause) {
     // Preserve the prompt failure before a competing restoration failure enters its finally.
     lifecycle.failed(cause);
@@ -591,13 +636,19 @@ async function resolveGateInline(
       io.writeErr('The live view could not be restored after the gate prompt.\n');
     }
   }
-  if (lifecycle.signal.aborted) return true;
+  if (lifecycle.signal.aborted) {
+    // The deadline may have decided the gate after the prompt returned, aborting this card too.
+    reportDecidedElsewhere();
+    return true;
+  }
   if (decision === null) {
     lifecycle.requestCancellation();
     return true;
   }
   try {
     await engine.resume(event.runId, event.gateId, decision);
+    // A resume the engine ignores because the gate is already decided is silent; say so if that is why.
+    reportDecidedElsewhere();
     return true;
   } catch (err) {
     // A Ctrl-C during the prompt cooperatively cancels the run (the SIGINT handler calls handle.cancel());
