@@ -2013,9 +2013,9 @@ tick of a coarse filesystem clock is caught and its tests no longer depend on th
   apps/cli/src/gate/clack-prompter.ts, apps/cli/src/mcp/consent-prompt.ts)*
 - [ ] **A raced own-export rewrite can leave two exports of one session.** *Low.* *(export-2)* When the file
   changed but still names this session (a second terminal's `/export`, an editor's atomic save), the export
-  moves to the next id, and later `/export`s update the lower one. **Re-check:** on `StorageTargetChangedError`,
-  check the file once more and retry against its fresh identity when it is still this session's. *(low ·
-  apps/cli/src/chat/export.ts)*
+  moves to the next id, and later `/export`s update the lower one. **Re-check:** prevent the duplicate without
+  writing over the changed file: an editor's save keeps the session's marker, so a file that changed after it was
+  recognized stays as it is, as the changed-file contract says. *(low · apps/cli/src/chat/export.ts)*
 - [ ] **No Windows job runs the own-export identity tests.** *Low.* *(export-3)* **Re-check:** add
   `owned-storage-replace.test.ts` and `export-project.test.ts` to the Windows filesystem step. *(low ·
   .github/workflows/ci.yml)*
