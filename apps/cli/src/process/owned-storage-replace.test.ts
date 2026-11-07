@@ -70,7 +70,7 @@ describe('replaceFileForStorage', () => {
     },
   );
 
-  it('refuses a directory put at the path after the check, removes its temp, and leaves what was there', () => {
+  it('refuses a directory put at the path after the check, and leaves what was there', () => {
     const path = join(dir, 'w.relavium.yaml');
     writeFileSync(path, 'old');
     const checked = identityOf(path);

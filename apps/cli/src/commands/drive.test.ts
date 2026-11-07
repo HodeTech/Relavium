@@ -203,8 +203,8 @@ describe('driveRun — interactive gate', () => {
   });
 
   it('closes the card when a `cli` decision it did not make arrives before the card answered', async () => {
-    // `cli` is every terminal's `decidedBy`, so it cannot tell this card's decision from another's; what this card
-    // returned can.
+    // Every CLI decision is marked `cli`, so `decidedBy` cannot tell this card's decision from one made by other code
+    // in this process; what this card returned can. (Another process's decision never reaches this stream.)
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
     const { io, err } = captureIo();
@@ -255,7 +255,7 @@ describe('driveRun — interactive gate', () => {
   });
 
   it('says so when a differing `cli` decision lands after the card answered, before its resume', async () => {
-    // Both are `cli`; only the decision tells the other terminal's approval from this card's own rejection.
+    // Both are `cli`; only the decision tells the other approval from this card's own rejection.
     const { engine, handle } = await startGatedRun();
     const resume = engine.resume.bind(engine);
     vi.spyOn(engine, 'resume').mockImplementation(async (runId, gateId, decision) => {
