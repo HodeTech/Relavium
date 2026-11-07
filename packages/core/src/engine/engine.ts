@@ -6356,11 +6356,11 @@ export class WorkflowEngine {
    * exists but cannot be read — so in those cases a crashed run can linger until a later start.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
-    // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
-    // terminal here; if reconciliation ran first it would see a run with no durable terminal, conclude it
-    // needs repair, and write `run:failed{internal}` for a run that actually COMPLETED — the exact
-    // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
-    // makes the two writers safe within one process; across processes only this order does.
+    // **Drain the outbox FIRST (ADR-0078 §4).** A crashed process leaves its terminal here, and draining first
+    // lands it in this pass, before the repair loop looks at that run. What keeps the repair off a run whose
+    // terminal is held is the look at the outbox again under the repair's claim (below): without it a repair
+    // would write `run:failed{internal}` for a run that actually COMPLETED, the divergence the outbox exists to
+    // close.
     //
     // **The outbox is READ before the open runs are listed**, for the same reason. The drain drops an entry
     // whose run is not in the list, which is right only if the list is no older than the entry: an owner puts
