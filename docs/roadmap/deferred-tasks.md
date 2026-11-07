@@ -2105,6 +2105,27 @@ resolved-id notice, `/export`'s "next free id" wording, and the card-ownership c
   correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
   card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
 
+**D64 round 6 of the correction (2026-11-07, at `2cc865c7`)** found one medium in the correction: commands.md still
+said a losing rejection does not stop later gates, which cbe39064 changed; it now says the run parks on them. It also
+found a medium that predates the correction (`d5ed56f4`, already on `main`): the whole gate card ran under the 250 ms
+cleanup timer, so every card a person took longer than that to answer printed a false "Run cleanup is still pending"
+under it and threw off its redraws. By the maintainer's ruling it is fixed here: the card's timer starts only when the
+card is aborted. Fixed with them: the own export's stat fields pinned one at a time, independent of the filesystem
+clock (round 5's chmod test needed a fine-grained ctime), the export docblock's wording, the reconcile comment that
+called the drain order the protection, the race test's name, and ADR-0118's and ADR-0120's wording after the
+narrowing. Recorded:
+
+- [ ] **Two CR-92 "not relabelled failed" tests now pass because of the TTL rule.** *Low; test erosion.*
+  *(reconcile-1)* They reconcile a run younger than one lease TTL, so the repair never reaches it; the property stays
+  pinned by engine.test.ts and history/reconcile.test.ts. **Re-check:** reconcile on a host clock past start + TTL.
+  *(low · packages/core/src/engine/m2-e2e-harness.e2e.test.ts, apps/cli/src/harness/durability.e2e.test.ts)*
+- [ ] **A deadline that fires while the live view unmounts stops later inline prompts though no card was drawn.**
+  *Low.* *(gates-3)* The notice prints and the run parks on its next gate. **Re-check:** set the refusal only when a
+  card was drawn. *(low · apps/cli/src/commands/drive.ts)*
+- [ ] **No test pins that `/export` moves past a changed own export to another of the session's own exports.**
+  *Low; test gap.* *(export-2)* **Re-check:** two own exports, the first changed during the replace. *(low ·
+  apps/cli/src/chat/export.ts)*
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows

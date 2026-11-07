@@ -65,8 +65,9 @@ not pre-approved.**
 
 Everything is terminal-safe text, under the approval escape of
 [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md): a
-control, a line separator, or an invisible or blank code point in an argument
-shows as a visible escape, never hidden. The one thing the card does not show is
+control, a line separator, or an invisible or blank code point that escape
+covers shows in an argument as a visible escape. ADR-0120's rules are a starting
+set whose completeness its security review confirms. The one thing the card does not show is
 a secret span, which ADR-0120 masks, labels and counts, and which the user must
 reveal before approving when it holds anything but credential characters.
 Masked spans aside, the card never offers an approving answer for a command it

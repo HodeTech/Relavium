@@ -106,7 +106,7 @@ Exact arguments, bounds and texts live in
   escape (for example `<U+202E>`, `<U+2028>` or `<U+E0049>`), never stripped and
   never left invisible. A literal `<U+` already in the text is escaped too (its
   `<` shows as `<U+003C>`), so the notation stays unambiguous where styling is
-  off. The set is closed:
+  off. The set is defined by properties, with one short hand-kept list:
   - every `\p{C}` code point: controls, format characters, surrogates,
     private-use and unassigned code points;
   - every separator other than the ASCII space (`\p{Z}`): the other spaces and
