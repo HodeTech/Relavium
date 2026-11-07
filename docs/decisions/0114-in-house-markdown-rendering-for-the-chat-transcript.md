@@ -4,6 +4,10 @@
 - **Date**: 2026-11-05
 - **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md), [ADR-0069](0069-string-width-for-the-cli-renderer.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [phase 2.6 · 2.6.E](../roadmap/phases/phase-2.6-conversational-authoring.md#26e--chat--input-parity-polish), [phase 2.6 ADR row 11](../roadmap/phases/phase-2.6-conversational-authoring.md), [MVP-2](../roadmap/current.md#next-work--the-cli-mvp)
 
+> **Revised 2026-11-08, still Proposed.** The [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)
+> found that every major product renders markdown tables. §2 now renders GFM tables as an aligned grid when it fits,
+> and §4 holds a streaming table back until its block ends. The rest of the decision is unchanged.
+
 ## Context
 
 Assistant text reaches both chat renderers as plain text. Models answer in
@@ -85,12 +89,20 @@ The pipeline renders a documented subset suited to model output:
 - **Inline:** code spans; strong and emphasis, with CommonMark's intraword rule
   for `_`; strikethrough; links and autolinks; images; backslash escapes; hard
   line breaks.
+- **Tables (revised 2026-11-08):** GFM pipe tables render as an aligned grid
+  with a border, when the grid fits the available width.
+  - Cell text gets inline processing.
+  - Column widths are measured with `displayWidth`, so wide and combining
+    characters do not misalign the grid.
+  - A table whose grid does not fit renders verbatim, as the sanitized source,
+    with no inline processing. Removing markers there would misalign the
+    columns the model laid out.
+  - Rows past a fixed cap render verbatim too, so one table cannot cost
+    unbounded layout work.
 
 **Anything outside the subset renders literally, as sanitized text.** That
 covers setext headings, indented code blocks, HTML, link reference definitions,
-footnotes and lazy continuation. GFM pipe tables also render verbatim, with no
-inline processing inside them, because removing markers would misalign the
-columns the model laid out.
+footnotes and lazy continuation.
 
 The pipeline is not a CommonMark implementation. The goal is predictability:
 markdown it does not understand stays readable as the plain text it was written
@@ -127,6 +139,11 @@ constructs:
 - An open fence renders as a code block until its closer arrives.
 - An unclosed inline delimiter stays literal until it is closed. That is
   CommonMark's rule.
+- A table renders verbatim until its block ends, then as a grid (revised
+  2026-11-08). A grid's column widths depend on every row. Drawing it early
+  would re-layout the rows above it on every new row. Codex CLI and
+  Antigravity CLI hold tables back for the same reason
+  ([benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)).
 
 Because block parsing is line-oriented, the rendering of every completed block
 in the live answer is the same as its final rendering. Only the in-progress last
@@ -193,9 +210,9 @@ rather than terminal control, and their rendering is a separate decision.
 
 ### Negative
 
-- Some valid markdown renders literally: tables, setext headings, HTML and
-  reference links. Tables are the most visible gap. Aligning them is a candidate
-  for a follow-up.
+- Some valid markdown renders literally: setext headings, HTML, reference
+  links, and tables too wide or too long for the grid. Wrapping cell text inside
+  a narrow grid (Gemini CLI does it) is a candidate for a follow-up.
 - Relavium now owns a parser and its edge cases, and needs tests for every
   construct in the subset, including adversarial and pathological input.
 - The two renderers may break long lines at different points, as they already
