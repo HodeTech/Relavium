@@ -212,19 +212,30 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       lifetime.failure(new CliError('output_unavailable', ''));
     }
   };
-  const joined = async <T>(work: Promise<T>): Promise<T> => {
-    const timer = setTimeout(
-      () =>
-        diagnostic(
-          'cleanup_pending',
-          'Run cleanup is still pending; input and run resources remain owned.',
-        ),
-      250,
-    );
+  /**
+   * Await `work`, and say on stderr when it has not settled 250 ms after it was asked to stop. Without `stopped` the
+   * work is cleanup from the start. A gate card is not: a person answering it takes as long as they take, and a line
+   * written under an open card throws off its redraws, so its notice waits for the card's abort.
+   */
+  const joined = async <T>(work: Promise<T>, stopped?: AbortSignal): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (): void => {
+      timer ??= setTimeout(
+        () =>
+          diagnostic(
+            'cleanup_pending',
+            'Run cleanup is still pending; input and run resources remain owned.',
+          ),
+        250,
+      );
+    };
+    if (stopped === undefined || stopped.aborted) arm();
+    else stopped.addEventListener('abort', arm, { once: true });
     try {
       return await work;
     } finally {
-      clearTimeout(timer);
+      stopped?.removeEventListener('abort', arm);
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
   const retainUnacknowledged = async (): Promise<never> => {
@@ -454,6 +465,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
               io,
               recorded?.nodeId === gate.nodeId ? recorded.context : undefined,
             ),
+            controller.signal,
           );
           if (handled) {
             handledGates.add(gate.gateId);

@@ -342,6 +342,75 @@ describe('driveRun — interactive gate', () => {
     expect(decided.sort()).toEqual(['a:approved:cli', 'b:approved:timeout']);
   });
 
+  it('says nothing about cleanup while a person takes their time on a card', async () => {
+    // A line written under an open card throws off its redraws, and nothing is being cleaned up.
+    const { engine, handle } = await startGatedRun();
+    const { renderer } = recordingRenderer();
+    const { io, err } = captureIo();
+    const prompter: GatePrompter = {
+      prompt: () =>
+        new Promise<GateDecision | null>((resolve) =>
+          setTimeout(() => resolve({ decision: 'approved', decidedBy: 'cli' }), 300),
+        ),
+    };
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    const outcome = await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+    await lifetime.finish();
+
+    expect(outcome).toBe('completed');
+    expect(err()).not.toContain('cleanup is still pending');
+  });
+
+  it('says cleanup is pending when a closed card does not settle within 250 ms of its abort', async () => {
+    const host = createInMemoryHost();
+    const engine = await buildEngine({ host });
+    const handle = engine.start({
+      workflow: parseWorkflow(GATED_DEADLINE, { source: 'drive.test' }),
+      inputs: {},
+    });
+    const { renderer } = recordingRenderer();
+    const { io, err } = captureIo();
+    const prompter: GatePrompter = {
+      // Ignores its abort: the deadline closes the card, and the prompt still takes 400 ms to return.
+      prompt: () =>
+        new Promise<GateDecision | null>((resolve) => {
+          setTimeout(() => {
+            host.fireTimers();
+            setTimeout(() => resolve(null), 400);
+          }, 0);
+        }),
+    };
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+
+    await driveRun({
+      lifetime,
+      engine,
+      handle,
+      makeRenderer: () => renderer,
+      gatePrompter: prompter,
+      io,
+    });
+    await lifetime.finish();
+
+    expect(err()).toContain('Run cleanup is still pending');
+  });
+
   it('passes the built decision through to the engine (the resumed event carries it)', async () => {
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
