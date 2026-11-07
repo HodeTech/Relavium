@@ -2151,6 +2151,30 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
   between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
   `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*
 
+## MVP-2 planning — the global `~/.relavium` is found as a project folder (2026-11-08)
+
+> **Scheduled 2026-11-08:** fixed in MVP-2 slice 2b, together with `init`
+> ([MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08), decision 9).
+> Close this entry when that lands.
+
+Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
+directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
+directory is `~/.relavium/`, and it always exists after a first run. From any directory under the home folder that has
+no project `.relavium/` of its own, the search therefore returns the global folder.
+
+Verified on 2026-11-08 by calling the function with a fake home: from `<home>/projects/foo` with no project folder it
+returned `<home>/.relavium`.
+
+- `relavium create` and `import` (through `resolveProjectConfigDir`) and the chat's `/export` (through the loaded
+  `projectConfigDir`) write workflow and agent YAML into `~/.relavium/workflows/` and `~/.relavium/agents/`.
+- `relavium list` and `relavium run <id>` then find those files from every such directory, so authored workflows
+  leak across unrelated projects.
+- A `workspace.toml` or `project.toml` placed in `~/.relavium/` would load as project configuration for every
+  directory under the home folder. Relavium does not create those files.
+
+**Fix:** the search stops before the global configuration directory, which is never a project folder. Existing files
+already written into `~/.relavium/workflows/` are left in place; slice 2b decides how an affected user is told.
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows

@@ -36,7 +36,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below); MVP-1 accepted 2026-11-06 and on `main` with PR #97 (2026-11-07); **MVP-2 is next** |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below); MVP-1 accepted 2026-11-06 and on `main` with PR #97 (2026-11-07); **MVP-2 is next, re-planned around the Home on 2026-11-08** (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
 | Branches | `main` is at `c04e6c13`: the second `development`→`main` checkpoint, [PR #97](https://github.com/HodeTech/Relavium/pull/97), merged 2026-11-07 after MVP-1, and `development` was fast-forwarded to it. It brought MVP-1, the D64 fixes to PR #96's review correction, and PR #97's own review correction: four reviews found eight medium findings, six fixed and two resolved in the record by the maintainer's rulings, then D64 rounds 1–7 of the correction found one, two, two, two, two, one and one medium in it, and rounds 6 and 7 one more each that predates it (all fixed or recorded; [deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06)). **The maintainer merged at round 7, before a round came back clean and before the correction's separate security sitting was held**; round 7's medium and lows were fixed on `development` afterwards. By the maintainer's rulings it returned `main`'s URL-password projection to `64fb8772` ([A4](deferred-tasks.md), a superset-safe reading due before v0.2.0), fixed a pre-existing false "cleanup pending" line under every gate card, and recorded a pre-existing stale-card engine defect for its own increment before v0.2.0. The earlier checkpoint is [PR #96](https://github.com/HodeTech/Relavium/pull/96) (2026-11-04; [record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) |
@@ -47,7 +47,9 @@ The engine is not the bottleneck: workflows author, run, gate, resume and retry 
 layers are. The built-in chat agent can only read (`read_file`, `list_directory`, `git_status`) and starts in
 `ask`; there is no edit, search or find tool; `run_command` is refused before any approval unless pre-allowlisted;
 `relavium run` never prints the workflow's outputs or the run id; replies render as raw markdown; a resumed chat
-opens on an empty viewport; a non-Anthropic first key leads to an opaque credential error. The
+opens on an empty viewport; a non-Anthropic first key leads to an opaque credential error. A bare `relavium` opens
+the Home, but only 3 of the 25 leaf subcommands are fully reachable from it, so most tasks still need a
+subcommand. The
 [priority reset record](phases/phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04) cites the
 code for each.
 
@@ -118,13 +120,31 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    `3354dda1`) found no blocker, high or medium finding, so 1a is accepted and MVP-1 is done (2026-11-06).** Every
    round's lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half
    of budget-5 included. **On `main` since PR #97 (merged 2026-11-07).**
-2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
+2. **MVP-2 — First run, resume and a readable chat, in the Home.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess
    positional arguments refused (row 10b split); 2.6.E · **Markdown + code-block rendering** (in-house, part 1 —
    highlighting stays after the MVP); full-screen word-wrap (#61, moved from Wave 5a); tab expansion (#65, row 15a
    split); a failure mark for failed tool calls (MVP-A8); the persistent keyless nudge (#51, row 16b split); the
    `agent run` stdin hint (#24, row 17a split); a minimal `relavium init` (MVP-A18).
+   - **Re-planned 2026-11-08 under the Home-first direction (D73, D74).** Every item gets an in-TUI form, and
+     MVP-A24 to MVP-A30 are added:
+     - actionable Continue rows;
+     - the `/resume` picker;
+     - the `/providers` keys slice;
+     - typed key availability;
+     - a native in-TUI prompt host;
+     - in-TUI discoverability and remedies;
+     - the way back on exit.
+   - **Slices:**
+     - **2a**, a readable transcript: milestone review plus a scoped sitting on the markdown parser;
+     - **2b**, first run in the Home: security tier;
+     - **2c**, sessions in the Home: security tier.
+   - **A pre-existing defect is fixed in 2b:** the global `~/.relavium` is found as a project folder from any
+     directory under the home folder.
+   - The scope, decisions, acceptance and exclusions are in the
+     [MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08). The research
+     behind it is the [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md).
 3. **MVP-3 — The agent can edit.** ADR row 9 and its mandatory security review; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering
@@ -403,6 +423,9 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D70 | MVP | npm pre-release before v0.2.0 | ✅ **Ruled 2026-11-04 — none** |
 | D71 | MVP-5 | Parity items (caching, project instructions, type-ahead, `--model`, one-shot) | ✅ **Ruled 2026-11-04 — in the MVP** |
 | D72 | — | The published `0.1.1`'s unsanitized `relavium run` output (#56) | ✅ **Ruled 2026-11-04 — no action;** the product has no users yet |
+| D73 | MVP | The CLI's interaction model | ✅ **Ruled 2026-11-08 (maintainer):** the user types `relavium` and does everything in the full-screen Home through slash commands and in-TUI affordances; subcommands stay for scripting. Recorded as [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md), which replaces ADR-0056's shell-only clause and ADR-0054's read-only strip |
+| D74 | MVP-2 | MVP-2 under D73 | ✅ **Settled 2026-11-08 under the maintainer's delegation:** every MVP-2 item gets an in-TUI form; MVP-A24…A30 added; slices 2a, 2b and 2c; the decisions in the [MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08) |
+| D75 | MVP | When the rest of the Home hub lands (MVP-8: workflows, runs, gates, agents and status in the Home, with the run-hosting ADR) | **Proposed 2026-11-08, awaiting the maintainer:** move it from after authoring and web (D69) to right after MVP-4 |
 
 ### Departures from the phase files' own sequencing
 
@@ -458,7 +481,9 @@ Finished work is recorded in its register; this page no longer restates it.
   [workstream sections](phases/phase-2.6-conversational-authoring.md).
 - **The CLI MVP** — MVP-1's acceptance in [Next work](#next-work--the-cli-mvp) item 1, and the PR #97 checkpoint
   (merged 2026-11-07) with its review correction in
-  [deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06).
+  [deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06). On 2026-11-08
+  the maintainer set the Home-first direction (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)),
+  and MVP-2 was re-planned around it after the [UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md).
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and
   [phase 2.5](phases/phase-2.5-cli-consolidation.md).
 - **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):** the

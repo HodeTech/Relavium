@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-07): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-08): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -50,7 +50,9 @@ declined — and put the CLI MVP first:** `relavium` v0.2.0 on npm (milestone M3
 Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6.C and 2.6.F are done
 (2.6.F's v0.2.0 release clause closes with the MVP) and 2.6.Q P1–P5 landed; the MVP takes slices of the rest.
 **MVP-1 is accepted (2026-11-06) and on `main` with the second checkpoint (PR #97, merged 2026-11-07); MVP-2 is
-next.**
+next.** On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
+does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
+MVP-2 is re-planned around it.
 
 Two rules shape every MVP increment. Step 9a.1's interim release guard (on `main` since PR #96) refuses any npm
 publication until the superseding pre-1.0 release ADR (D59) is Accepted. The acceptance bar is tiered (D64):

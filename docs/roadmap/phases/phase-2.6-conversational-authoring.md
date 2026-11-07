@@ -1356,7 +1356,10 @@ The CLI MVP (decision D58, milestone M3.5, v0.2.0) is ordered in [current.md](..
 Most of its items already have a home in a workstream above. This section is the one home for the items that had
 none, found by the 2026-11-04 review of the code at `5a328bca` and ruled by the maintainer
 ([priority reset](phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04)). Each belongs to the
-workstream named in its row and follows that workstream's ADR and security gates.
+workstream named in its row and follows that workstream's ADR and security gates. MVP-A24 to MVP-A30 were added
+on 2026-11-08, when MVP-2 was re-planned around the Home
+([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md),
+[MVP-2 plan](#mvp-2-plan--home-first-2026-11-08)).
 
 | ID | Workstream | Item and acceptance |
 |---|---|---|
@@ -1364,10 +1367,10 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A2 | 2.6.G | **The run id is visible.** The TTY run view and its final summary show the run id that `logs`, `status` and `gate` accept. |
 | MVP-A3 | 2.6.B | **`/export` writes where workflows live.** It writes into `.relavium/workflows/` with a slug from the session title (no UUID file in the working directory) and offers to run the result. |
 | MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
-| MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
-| MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
+| MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). **Home-first (2026-11-08):** the offer is the Home's in-TUI setup (MVP-A28), and the keychain-unavailable case is handled by MVP-A27 in MVP-2 itself ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08)). |
+| MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. **Settled 2026-11-08:** a standard variable is never applied to a provider with a custom `base_url`; interactive surfaces ask once before using one, and non-interactive paths use it directly ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 2). |
 | MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling (not clamped: the chat's per-attempt deadline scales with it instead, ADR-0101 2026-11-06; chat surfaces only), with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
-| MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
+| MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. **Split 2026-11-08:** MVP-2 ships the mark; the text between tool calls lands with MVP-3's tool-call rendering v2. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
 | MVP-A11 | 2.6.M | **Configurable, finite ceilings.** Tool rounds, correction attempts and the session turn limit are configurable with conservative defaults and stay finite (ADR-0086). |
@@ -1377,15 +1380,342 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A15 | 2.6.G | **`run_command` approval card (D63).** A non-allowlisted command prompts once / for the session / to remember; remembered grants live outside the repository, in operator-owned configuration keyed by project root; accept-edits keeps prompting for allowlisted commands; headless paths stay fail-closed; `!` uses the same card. New ADR amending ADR-0029(a)/0061/0063, and a security sitting. |
 | MVP-A16 | 2.6.D | **Project instructions.** A project instructions file (`AGENTS.md`) and an environment block enter the system prompt under explicit provenance rules (new ADR; independent of ADR-0060's `{{ctx.*}}`). |
 | MVP-A17 | 2.6.E | **Session entry flags.** `relavium chat --model/--provider` and a one-shot prompt mode; headless stays fail-closed; both follow ADR-0110's compatibility rules. |
-| MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. |
+| MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. **Home-first (2026-11-08):** `/init` in the Home shares its core and shows what it will create before writing; the search for a project's `.relavium/` stops treating the global `~/.relavium` as a project folder ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 9). |
 | MVP-A19 | 2.6.B | **Starter content.** Two or three starter workflows and agents a new user can run unchanged. |
 | MVP-A20 | 2.6.I | **Masked `provider set-key` on a TTY** instead of refusing an interactive terminal. Secret-input sitting. |
 | MVP-A21 | 2.6.I | **Registered MCP servers reach the default agent**, under ADR-0084 spawn consent and ADR-0088's untrusted tool definitions. |
 | MVP-A22 | 2.6.F | **Upgrade from `0.1.1`.** A populated `0.1.1` home (history.db with migrations 0000–0004, config.toml, keychain entries) upgrades through v0.2.0, with a seeded-then-migrated test. |
 | MVP-A23 | 2.6.F | **Release prerequisites for v0.2.0.** The D59 release ADR and guard change; version and CHANGELOG including the Node ≥22 break; npm token, 2FA, provenance and the `v*` ruleset verified; the publish credential scoped to the release job, either npm trusted publishing (OIDC, no long-lived token) or the `release` deployment environment with a `v*`-tag deployment policy and a required reviewer holding `NPM_TOKEN`, with the repository-level secret deleted (PR #96 review, 2026-11-04; chosen in the D59 release ADR); the interactive Home and chat checked on a real Windows terminal; a manual three-provider end-to-end turn; first-read docs (README, npm README, tutorials, runbooks) describing what ships. |
+| MVP-A24 | 2.6.G | **Actionable Continue rows (first slice of the actionable strip).** At an empty Home prompt, Down moves focus into the recent sessions; Up and Down move, Enter resumes, Esc returns to the prompt. Run and gate rows stay display-only until the hub milestone. A row from another directory shows that directory and, on Enter, how to open it there. The focused row and the keyless row always stay on screen at 80×24, until MVP-3's row budget replaces this rule. Keyboard-first, inline parity ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §4). |
+| MVP-A25 | 2.6.G | **`/resume` session picker.** In the Home and the in-Home chat: this directory's sessions by default, one key for every directory, type to filter, rows show title and age (and directory when widened). `relavium chat resume` without an id on a TTY shows the same picker before the chat host mounts, then resumes the chosen session as `chat resume <id>` does; `relavium chat --continue` resumes this directory's latest session; non-TTY still requires an id. The standalone `relavium chat` palette does not list `/resume` ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 14). |
+| MVP-A26 | 2.6.I | **`/providers`, keys slice.** Lists the four providers with key status and key source (keychain, `RELAVIUM_*` variable or a standard variable, never the value), and connects or replaces a key through MVP-A28's masked field. Its description names connecting, logging in and API keys, so the palette (which matches descriptions) finds it by any of those words; the slash set stays alias-free (ADR-0056). Removing and testing keys, custom providers and MCP stay with MVP-9. Key-custody sitting. |
+| MVP-A27 | 2.6.J | **Typed key availability** (ADR-0112's approved observation, pulled out of row 16b). A provider's key is usable, missing, unavailable, or found only in a standard variable that the TUI has not been allowed to use (MVP-A6). A locked keychain therefore shows guidance once instead of re-running setup on every launch (#55). Availability is computed when the Home opens and after a key change, never on each strip read. |
+| MVP-A28 | 2.6.E | **A native in-TUI prompt host.** Select, confirm, text and masked fields inside the ink tree, abortable, with [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §7's overlay keys. It can also run on its own before a standalone host mounts. A secret never enters React state, input history, the transcript, the copy hatches or error text. The first-run setup moves onto it from clack-before-mount; its flow logic is unchanged. |
+| MVP-A29 | 2.6.E | **In-TUI discoverability and remedies.** Every command MVP-2 adds is in the Home palette with a description and an argument hint; a remedy shown inside the TUI names the in-TUI action, while plain, `--json` and shell output keep the subcommand ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §6, §9). |
+| MVP-A30 | 2.6.E | **The way back on exit.** When the process exits after a session with at least one turn, it prints that session's resume line. |
 
 **Done:** MVP-A1, MVP-A2, MVP-A3, MVP-A4 and MVP-A7 shipped with MVP-1, accepted 2026-11-06 and on `main` since
 PR #97 (merged 2026-11-07); the acceptance record is [current.md](../current.md#next-work--the-cli-mvp) item 1.
+
+## MVP-2 plan — Home-first (2026-11-08)
+
+On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
+Home and does everything there; subcommands stay for scripts.
+[ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) records it. This section is the one home
+for MVP-2's scope, slices, decisions and acceptance under that direction.
+
+The plan rests on three pieces of research:
+
+- the [terminal agent CLI UX benchmark](../../analysis/cli-ux-benchmark-2026-11-08.md) of eleven current products;
+- a map of what the Home can reach today: 3 of 25 leaf subcommands fully, 8 partly;
+- a technical read of every MVP-2 item against the code at `0ef53496`.
+
+The maintainer delegated the non-major decisions on 2026-11-08. Those taken are listed below with their evidence,
+and the major ones are D74 and D75 in [current.md](../current.md#wave-gating-decisions).
+
+### What a user gets
+
+1. **A first run that never ends in an error.**
+   - With no key, `relavium` opens setup inside the TUI.
+   - A provider key found in the environment is offered, not adopted silently.
+   - Skipping setup leaves a persistent line on the Home that opens setup again.
+   - A locked keychain gets one clear message, not a setup loop.
+2. **Keys managed inside the TUI.** `/providers` shows each provider's key status and where the key comes from, and
+   connects or replaces a key through a masked field.
+3. **Sessions resumed inside the TUI.**
+   - The Home's recent sessions can be opened with the keyboard.
+   - `/resume` opens a picker for this directory.
+   - A resumed session shows its conversation.
+   - Leaving prints the way back.
+4. **A project set up inside the TUI.** `/init` shows exactly what it will create and creates `.relavium/`.
+5. **A readable transcript.** Markdown with tables, word wrap, tabs that keep the layout, and tool rows that show
+   failure.
+6. **Shell hygiene.** Extra arguments are refused, and `agent run` says when it is waiting for stdin.
+
+### Scope
+
+| Item | In-TUI form | Shell form | Slice |
+|---|---|---|---|
+| Typed key availability (MVP-A27) | One-time guidance when the keychain is unavailable | Same | 2b |
+| Standard env-var keys (MVP-A6) | Ask-once card; source shown in `/providers` and `/doctor` | Used directly | 2b |
+| Native prompt host (MVP-A28) | Select, confirm, text and masked fields | — | 2b |
+| First-run setup (MVP-A5) | Setup on the prompt host, inside the Home | Interactive `relavium chat` with no key runs the same setup before the chat mounts | 2b |
+| `/providers` keys slice (MVP-A26) | `/providers`, found in the palette by "connect", "login" or "key" | `provider` unchanged | 2b |
+| Keyless nudge (#51, row 16b) | A row on the Home; Enter opens setup | — | 2b |
+| Project init (MVP-A18) | `/init` with a confirm card | `relavium init` | 2b |
+| Resume repaint (deferred `chat-resume` entry) | The resumed chat shows its conversation | `chat resume <id>` too | 2c |
+| Session picker and continue (MVP-A25) | `/resume` | `chat resume` without an id shows the same picker before the chat mounts; `chat --continue` | 2c |
+| Actionable Continue rows (MVP-A24) | Down, Enter on a recent session | — | 2c |
+| Way back on exit (MVP-A30) | — | One resume line on exit | 2c |
+| Markdown rendering (2.6.E, [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md)) | Transcript | — | 2a |
+| Full-screen word wrap (#61) | Transcript | — | 2a |
+| Tab expansion (#65, row 15a) | Transcript | — | 2a |
+| Failure mark (MVP-A8, the mark only) | Tool rows | — | 2a |
+| Excess positional arguments refused (row 10b) | — | Every non-variadic command | 2a |
+| `agent run` stdin hint (#24, row 17a) | — | One stderr line on a TTY | 2a |
+| Discoverability and remedies (MVP-A29) | Palette entries; messages name in-TUI actions | Unchanged | each slice |
+
+### Slices and order
+
+- **2a — A readable transcript.** The order is #65, then #61, then MVP-A8, then markdown, plus row 10b, #24 and
+  the copy toast (decision 13).
+  - #65 and #61 come first because ADR-0114's layout reuses their tab rule and word wrap.
+  - Markdown starts only after ADR-0114 is Accepted.
+  - **Tier:** D64's milestone review, plus a scoped security sitting on the markdown parser's bounds, link display
+    and sanitize order. That sitting is stricter than D64's letter, chosen because the parser handles untrusted
+    model text on every frame.
+- **2b — First run in the Home.** The order is MVP-A27, MVP-A28, setup moved onto MVP-A28, MVP-A6, MVP-A26, #51,
+  MVP-A5, then MVP-A18 with the project-folder fix (decision 9).
+  - MVP-A6 comes after the prompt host, so no state on `development` ever adopts a standard variable silently.
+  - **Tier:** D64's security tier (keys and secrets, filesystem writes), with one key-custody sitting covering
+    both.
+- **2c — Sessions in the Home.** The order is the transcript projection and repaint, MVP-A25, MVP-A24, then MVP-A30.
+  - **Tier:** D64's security tier (the resume path).
+
+2a has no dependency on 2b or 2c and goes first. 2b precedes 2c because a first run comes before a resume in the
+user's journey.
+
+### Decisions taken (2026-11-08)
+
+1. **Every MVP-2 item gets an in-TUI form, re-hosting the same core** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md)).
+   One-shot scripting commands (`agent run`) keep a shell-only fix.
+2. **Credentials.**
+   - **Order.** The resolution order stays as ruled: keychain, then `RELAVIUM_<PROVIDER>_API_KEY`, then the
+     standard variable.
+   - **Names.** Only the four names in MVP-A6 are read. `GOOGLE_API_KEY` is not read, because it commonly holds
+     non-Gemini Google keys.
+   - **Custom endpoints.** A standard variable is never applied to a provider configured with a custom
+     `base_url`. Otherwise an ambient key could be sent to an arbitrary gateway.
+   - **The TUI asks once** before using a standard variable. "The TUI" means the Home and an interactive chat
+     session.
+     - **The card.** It reads, for example: "Found ANTHROPIC_API_KEY in your environment. Use it for Anthropic?",
+       with the choices use it, enter a different key, or not now.
+     - **Where the rule is enforced.** In the key resolver, not only at the card. The TUI's resolver returns no key
+       for a provider whose standard variable has not been allowed; MVP-A27 reports that provider as "found in the
+       environment, not yet allowed". Every egress inside the TUI shares that resolver: chat, the `/models`
+       refresh and `/doctor --deep`.
+     - **The answer.** It is a global-only preference per provider, written through ADR-0063's config-write
+       contract. It is never read from project or workspace configuration, so a cloned repository cannot grant
+       it. It stores the variable's name, never its value. Extending ADR-0112's operator-owned onboarding state
+       this way gets a dated note on ADR-0112 in slice 2b.
+     - **Evidence.** Codex CLI and Gemini CLI pre-fill instead of authenticating silently, and Claude Code asks
+       once. Codex and Claude Code were re-checked against source and docs; Gemini comes from a source read. A community issue on Claude Code's tracker reports users surprised
+       by env-key billing (#9699).
+   - **Subcommands use a standard variable directly.** That covers `run`, `agent run`, `models refresh`,
+     `provider test`, and plain and `--json` chat: these are the scripting surface. `RELAVIUM_*` variables keep
+     their direct use everywhere.
+   - **Source shown.** `/providers` and `/doctor` show each key's source by name, never its value.
+3. **Setup lives inside the TUI.**
+   - The first-run wizard's flow logic stays as it is. It moves from clack-before-mount onto the native prompt host
+     (MVP-A28).
+   - That gives one look, works in the inline renderer, and lets `/providers` and the keyless row re-enter it.
+   - The alternative, running clack under a suspended screen, was rejected. It is unproven on Windows, and the
+     screen flips away and back.
+4. **Key management in MVP-2 is a slice of `/providers`:** status, source, connect and replace. Removing and
+   testing keys, custom providers and MCP stay in MVP-9; until then, `/doctor --deep` inside a chat tests keys.
+   - **Name.** The command is `/providers`, and the slash set stays alias-free (ADR-0056).
+   - **Discovery.** Its palette description names connecting, logging in and API keys. The palette filter already
+     matches descriptions, so a user typing "connect", "login" or "key" finds it.
+5. **Session scope.**
+   - **Scope.** The picker shows sessions whose working directory is this directory, the default in Claude Code,
+     Codex CLI, Kimi and Grok Build. One key widens to every directory. Typing filters titles.
+   - **Rows** show the title and age, plus the directory when widened.
+   - **`--continue`** resumes this directory's latest session. With none, it says so and exits 2.
+   - **Non-TTY.** `chat resume` without an id still exits 2.
+   - **Other directories.** Resuming another directory's session from inside the Home is not in MVP-2, because
+     the Home's filesystem authority is anchored at launch. Applies to the picker and to the Home's Continue rows
+     (MVP-A24), which list recent sessions from every directory.
+     - Such a row shows its directory. On Enter, it shows how to open the session there.
+     - `relavium chat resume` without an id is different: its picker runs before the standalone host mounts, and
+       that host re-derives the session's own workspace authority, as `chat resume <id>` does today. Every
+       directory's sessions can therefore be resumed from the shell.
+     - In-Home re-anchoring is a recorded follow-up.
+6. **Repaint.**
+   - **Both renderers repaint.** The inline renderer gets a first-mount restore, because its `<Static>` cannot take
+     the seed the full-screen renderer uses.
+   - **What is shown:**
+     - user prompts in their displayed form, where an attachment appears as its marker and never as the attached
+       content;
+     - assistant answers;
+     - a divider where the model's context starts. After `/compact` it says the earlier turns were compacted and
+       the model sees a summary of them; after `/trim` it says the earlier turns were trimmed and the model no
+       longer sees them. Earlier turns stay visible, so the user keeps their own history.
+   - **What is not shown:**
+     - restored turns carry no per-turn usage line, because none is stored;
+     - tool rows are not repainted until MVP-3 stores them.
+   - **Bounds.** A resume restores at most the last 500 entries into the full-screen renderer and at most the last
+     200 into the inline renderer. opencode's inline mode uses the same 200.
+     - The first restored line counts the entries left out. They stay in `history.db`, and the model's context
+       follows the existing restore rules, so nothing is lost.
+     - Paging older entries in on scroll, as Codex does, is a follow-up.
+     - The caps bound the working set: the store holds at most the cap, and the wrap cache holds at most the cap's
+       entries.
+   - **One projection.** It is display-only, built from the same stored turns as the model's restore
+     (`completedSessionTurns`). Two tests tie them together, because Gemini CLI shipped a resume that replayed tool
+     results twice when its two transcripts diverged:
+     - the projection equals every stored turn (`completedSessionTurns(messages, false)`), within the cap;
+     - its part after the divider equals the restored model context (`completedSessionTurns(messages, true)`).
+7. **Actionable rows (MVP-A24).**
+   - Down at an empty Home prompt focuses the recent sessions, Enter resumes, and Esc returns. The footer shows the
+     key.
+   - It is keyboard-first: mouse capture stays off on the landing, as [home.md](../../reference/cli/home.md) records.
+   - Only session rows are actionable in MVP-2. The rows carry the session's working directory, so a row from
+     another directory follows decision 5.
+   - **Small terminals.** MVP-3 owns the strip's row budget at 80×24. Until it lands, MVP-2's provisional rule
+     keeps the prompt, the keyless row (#51) and the focused row on screen: the Continue list trims and scrolls
+     first. It meets [home.md](../../reference/cli/home.md)'s known tall-landing limit head-on instead of adding to
+     it.
+8. **The way back (MVP-A30).** On exit after a session with at least one turn, one line names both ways back: run
+   `relavium` and use `/resume`, or `relavium chat resume <id>`. Crush and Gemini CLI print the same kind of line.
+9. **Project init.**
+   - **One core.** `/init` and `relavium init` share one core. It creates `.relavium/workflows/` and
+     `.relavium/agents/` in the working directory.
+   - **No files.** It writes no config file, because an empty `project.toml` has no effect.
+   - **Safety.** It never overwrites, refuses a symlinked `.relavium`, and reports "already initialised" when the
+     folder exists (exit 0).
+   - **Confirm card.** In the TUI a card lists exactly what will be created before anything is written. The shell
+     command is explicit, so it prints what it created.
+   - **Nested projects.** Inside an existing project, `init` names that project's folder instead of nesting
+     another.
+   - **Pre-existing defect fixed here.** The upward search for a project's `.relavium/` reaches the global
+     `~/.relavium` from any directory under the home folder that has no project folder of its own. It was
+     verified on 2026-11-08 against `findProjectConfigDir`. The effects:
+     - `/export`, `create` and `import` write workflows into the global folder;
+     - `relavium list` shows them from every such directory;
+     - a `workspace.toml` or `project.toml` there would load as project config everywhere.
+
+     **The fix: the global configuration folder is never a project folder.**
+     - The upward search stops before it.
+     - The fallback that names `<cwd>/.relavium` does not apply when the working directory is the home folder
+       itself. That fallback is used by `resolveProjectConfigDir` and the chat's `/export`.
+     - At the home folder, `init`, `create`, `import` and `/export` refuse with a remedy: run them in a project
+       directory.
+     - Workflows and agents already authored into `~/.relavium/workflows/` or `agents/` are left in place and are
+       no longer discovered from projects. `relavium list` and `/doctor` name the folder and say how to move its
+       files into a project with `relavium import`, while it holds any. The product has no users yet (D72's
+       reasoning), so no migration is built.
+
+     Recorded in [deferred-tasks.md](../deferred-tasks.md).
+   - **Not in MVP-2.** Writing an `AGENTS.md`, which most products' `/init` does with the model, belongs to MVP-5's
+     project instructions (MVP-A16), which can extend `/init`. No unsolicited "initialise this project?" prompt:
+     Relavium users often chat in directories that are not projects.
+10. **Tool rows.** A success shows `✓` and a failure `✗`, by glyph as well as colour. The `agent:tool_result` event
+    already carries `success`; the view ignores it today. An interrupted state needs persisted tool rows (MVP-3).
+11. **Markdown** follows [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md)
+    as revised on 2026-11-08. Tables render as a grid when they fit, and a streaming table is held back until it
+    ends.
+12. **Shell hygiene.**
+    - **Excess arguments.** Every non-variadic command refuses extra positional arguments, and Commander's message
+      names counts, not values. A mistyped subcommand keeps its error and never opens the Home.
+    - **`agent run`.** With a TTY on stdin it writes one stderr line: "reading the prompt from stdin — finish with
+      Ctrl-D (Ctrl-Z, Enter on Windows); for an interactive session run `relavium`".
+13. **The copy toast tells the truth** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md)
+    §8). Copying goes to the clipboard over OSC 52, which a terminal can drop without telling anyone. Today's
+    `✓ Copied` toast therefore claims more than Relavium knows.
+    - In 2a the toast wording says the copy was sent to the terminal's clipboard, not that it arrived.
+    - A local write failure is reported as a failure.
+    - Using a platform clipboard tool first, which can confirm the write (Kiro does this), is a follow-up.
+14. **Where the new commands live.**
+    - `/resume`, `/providers` and `/init` are Home-tree commands: they run in the Home and in a chat started from
+      it.
+    - The standalone `relavium chat` host does not list them. The registry gains a surface value that tells the
+      in-Home chat from the standalone host. The research flagged this two-host risk: building every overlay twice
+      is the cost the Home-first direction avoids.
+    - The two shell entries that need these screens run the shared components before the standalone host mounts:
+      setup for a keyless `relavium chat`, and the picker for `chat resume` without an id.
+    - Whether the standalone host should become an entry into the Home tree is ADR-0122 §5's open consolidation.
+      MVP-2 records the measured cost of keeping it: three commands missing from its palette.
+
+### Contract changes in MVP-2
+
+[ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §2 keeps every invocation a subcommand
+accepts today byte-identical on its machine surface (`--json` and plain stdout, non-TTY behaviour, exit codes). MVP-2
+changes the following, each under [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)'s
+compatibility rules. "TTY" means an interactive terminal on both stdin and stdout, without `--json` and outside CI:
+the same gate that opens the Home.
+
+| Change | Today | TTY | Non-TTY or CI | `--json` | Basis |
+|---|---|---|---|---|---|
+| `chat resume` without an id | Exit 2, missing argument | Shows the session picker, then resumes the chosen session as `chat resume <id>` does, with its exit codes | Unchanged: exit 2 | Unchanged: exit 2 | ADR-0122 §5 |
+| `chat --continue` (new flag) | Unknown option, exit 2 | Resumes this directory's latest session | Same as `chat resume <id>` with the resolved id; exit 2 when none exists | Same as `chat resume <id> --json`; exit 2 when none exists | Additive |
+| `relavium chat` with no usable key | Exit 2 with the MVP-A4 remedy | Runs setup before the chat mounts, then the chat; cancelling setup exits 2 with the same remedy | Unchanged | Unchanged | MVP-A5 |
+| Extra positional arguments on a non-variadic command | Silently ignored, except `run` and `media prune-temporaries` | Exit 2 invocation error naming counts, not values | Same | Same | ADR-0110, "invalid grammar refuses" (row 10b, D65). **The one deliberate break for invocations accepted today** |
+| `agent run` with a TTY on stdin | Waits silently | One stderr hint line, kept under `--quiet` (the Step 17 ruling) | No change: stdin is piped | Stdout unchanged; the hint is stderr | #24 |
+| `relavium init` | "Not available yet" | Creates `.relavium/` and prints what it created; refuses at the home folder | Same | Its result shape is defined in commands.md with the code | MVP-A18 |
+| `create`, `import`, `/export` with no project folder | Write into the global `~/.relavium/` when run under the home folder | Write into `<cwd>/.relavium/`; refuse at the home folder itself | Same | Same | Decision 9 (a defect fix) |
+| The way back on exit | Nothing | One line after an interactive session ends | Never printed | Never printed | MVP-A30 |
+| Remedies shown inside the TUI | Name subcommands | Name in-TUI actions | Unchanged | Unchanged | ADR-0122 §6 |
+
+### Acceptance
+
+**Every slice:**
+
+- [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §7: inline parity, colour off, 80×24,
+  the overlay keys (Ctrl-C and Esc close and never confirm), the sanitize floor, bounded work, and secret safety
+  for any screen that takes a secret. The full ADR-0115 keymap is MVP-4's, and MVP-2 does not depend on it.
+- `pnpm run ci` and `pnpm coverage:enforced` green.
+- The canonical docs updated in the same slice: [commands.md](../../reference/cli/commands.md),
+  [home.md](../../reference/cli/home.md), [chat-session.md](../../reference/cli/chat-session.md),
+  [config-spec.md](../../reference/contracts/config-spec.md), and a new `docs/reference/cli/markdown-rendering.md`
+  for 2a.
+- **Pinned test files.** Before adding a test to any file, run `grep -rln <file> tools/`. A `tools/` control that
+  pins a file's test count or a witness title breaks CI when the file changes.
+  - Pinned today, among others: `commands/chat.test.ts`, both `run.test.ts` files, `dispatch.test.ts`,
+    `specs-forwarding.test.ts`, `fs-invocation.test.ts`, `chat-export.test.ts`, `create.test.ts`, `import.test.ts`,
+    `gate.test.ts`, `format.test.ts` (by witness title) and `sanitize.test.ts`.
+  - New tests go in new files. Implementing `init` replaces the three `init`-stub tests in `apps/cli/src/run.test.ts`
+    one for one, keeping its count.
+- Plain, `--json` and non-TTY output stay byte-identical for every invocation accepted today, except the
+  [contract changes](#contract-changes-in-mvp-2) listed above, each tested in all three modes. The packaged chat
+  smoke and the Windows headless smoke drive these paths.
+
+**2a:**
+
+- Every construct in ADR-0114's subset is tested, including adversarial and pathological input.
+- Parsing stays linear.
+- The one-row invariant holds with tabs, wide characters and tables.
+- The cold-wrap performance guard still passes.
+- A failed tool call shows `✗` in both renderers.
+- The copy toast never claims a copy arrived.
+
+**2b:**
+
+- A key typed into the masked field never reaches React state, input history, the transcript, the hatches or any
+  error text.
+- A locked keychain never loops setup.
+- A standard variable is never sent to a custom `base_url`.
+- A standard variable the TUI has not been allowed to use reaches no egress inside the TUI: chat, the `/models`
+  refresh and `/doctor --deep`.
+- The ask-once answer survives a restart, stores no value, and is ignored in project and workspace configuration.
+- `init` refuses a symlinked folder and never overwrites.
+- The global folder is never treated as a project folder, including when the working directory is the home
+  folder.
+
+**2c:**
+
+- The repaint shows no attachment content.
+- The projection equals every stored turn within the cap, and its part after the divider equals the restored model
+  context.
+- A Continue row from another directory never resumes inside the Home.
+- At 80×24 the focused row and the keyless row stay on screen.
+- A 5,000-turn session resumes with at most 500 restored entries (full-screen) and 200 (inline), and the
+  left-out count is right.
+- The cold-wrap performance guard covers a 500-entry restore.
+- The picker pages instead of loading every session.
+- The picker's scope and widening work.
+- A picker that cannot read `history.db` shows the error and stays usable.
+
+### Not in MVP-2 (recorded)
+
+- **Resuming another directory's session inside the Home.** It needs in-Home re-anchoring.
+- **Running a workflow, answering a gate, and reading status or logs inside the Home.** These belong to the hub
+  milestone and its run-hosting ADR ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §10).
+- **Transcript search, and reprinting the transcript to the normal screen on exit.** Candidates under ADR-0122 §8.
+- **The rest of `/providers`:** removing and testing keys, custom providers, and `/mcp`. These stay in MVP-9.
+- **Picker extras:** preview, rename and delete.
+- **Writing an `AGENTS.md` from `/init`.** This is MVP-A16.
+- **Consolidating the standalone `relavium chat` host into the Home tree** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §5).
+- **An "interrupted" tool-row state.** This is MVP-3.
 
 ## Deferred-tasks pulled into this phase
 

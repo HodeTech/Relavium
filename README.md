@@ -164,7 +164,9 @@ the MVP plan on 2026-11-04 as PR #96, and the MVP's first milestone (run output,
 and liveness) on 2026-11-07 as PR #97. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
 is paused, not dropped, while the work a CLI user feels — visible run results, a chat agent
 that can edit and run commands, readable replies, conversational authoring, web, the Home
-hub and MCP management — leads to `relavium` v0.2.0.
+hub and MCP management — leads to `relavium` v0.2.0. Since 2026-11-08 the interactive product is the
+full-screen Home: you type `relavium` and do everything there, while subcommands stay for scripting
+([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is
