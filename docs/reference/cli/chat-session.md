@@ -102,7 +102,7 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
-A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. Heavy shell commands (`run`, `chat`, `provider`, …) stay shell-only — they are not in-REPL slashes.
+A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. A slash command never spawns a shell subcommand. Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) every routine task gets an in-TUI form that re-hosts the same core as its subcommand, milestone by milestone; until a task has one, it is reached through its subcommand.
 
 | Command | Effect |
 | --- | --- |

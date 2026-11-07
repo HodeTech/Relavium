@@ -3,9 +3,10 @@
  * 2.5.C — see the amendment). The `/` palette + slash commands inside the Home and chat surface only the commands
  * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`) and info/discovery (`/help`,
  * `/workflows`, `/cost`, `/doctor`). `/shortcuts` was dropped (S6) — the `/` palette
- * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. The heavy, session-starting
- * **shell** commands (`run`, `chat`, `provider`, …) stay shell-only ([manifest.ts](manifest.ts) /
- * [dispatch.ts](dispatch.ts)) — never run from inside a chat.
+ * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. A slash command never spawns
+ * a **shell** command ([manifest.ts](manifest.ts) / [dispatch.ts](dispatch.ts)); under
+ * [ADR-0122](../../../../docs/decisions/0122-the-home-is-the-interactive-product.md) a routine task gets an in-TUI
+ * form here that re-hosts the same core as its shell command.
  *
  * REPL commands have a different shape than shell commands: their handler runs over a {@link ReplCommandContext}
  * (the live session's lifecycle capabilities), not a `CommandInput` + the durable stores. So this is a separate,

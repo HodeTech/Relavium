@@ -55,7 +55,7 @@ both. The five properties that, taken together, no one else offers:
 
 | Property | What it means | Who lacks it |
 |----------|---------------|--------------|
-| **Chat-first** | Start in a conversational coding session on any surface (`relavium chat`, a desktop Chat tab, a VS Code panel) that is persistent and one-click exportable to a workflow | Claude Code/Cursor/Cline (chat is the *only* surface, no export path), CrewAI/AutoGen (no conversational entry) |
+| **Chat-first** | Start in a conversational coding session on any surface (the `relavium` Home, a desktop Chat tab, a VS Code panel) that is persistent and one-click exportable to a workflow | Claude Code/Cursor/Cline (chat is the *only* surface, no export path), CrewAI/AutoGen (no conversational entry) |
 | **Visual** | Drag-and-drop canvas with live execution on the node face | CrewAI/AutoGen (code only), Claude Code/Cursor/Cline (chat only) |
 | **Git-native** | Workflows are diffable, PR-able YAML files | n8n (proprietary JSON), Claude Code/Cursor (no persistence) |
 | **Multi-model** | Per-agent model choice + fallback chains across providers | Claude Code (Claude only), Copilot Agent (MS/OpenAI only) |
@@ -81,8 +81,8 @@ distilled were removed on 2026-06-10.)*
 
 Relavium sits at **both** ends of a developer's flow. **Chat is the hook**: a
 familiar, zero-setup conversational coding agent — the same surface developers
-already reach for — is how they arrive, and `relavium chat` is the fastest path to
-first value. **The workflow file is the wedge**: because a workflow is a portable,
+already reach for — is how they arrive, and typing `relavium` (the Home) is the fastest
+path to first value. **The workflow file is the wedge**: because a workflow is a portable,
 readable YAML file, the workflow file itself becomes the viral mechanic — a
 developer shares a `.relavium.yaml`, a teammate runs it unchanged in their own
 editor, terminal, or CI. The chat-to-workflow continuum is what connects them:

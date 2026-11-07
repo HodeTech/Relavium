@@ -89,3 +89,11 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Home replacement hosts share invocation-live HTTP authority with retained hosts; failed/overlapping builds cannot restore revoked grants. Explicit ephemeral selection is invocation-owned. ADR-0110 separately owns fatal/output classification without inventing run health for sessions. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+## Home-first direction — 2026-11-08
+
+> Amended 2026-11-08: [ADR-0122](0122-the-home-is-the-interactive-product.md) (Accepted) makes the Home the
+> interactive product. The strip's "read-only display" becomes a keyboard-first, actionable display. A row can be
+> focused and opened, and every effect still goes through the same consent and approval paths as its subcommand. The
+> TTY gate, the meta-operation contract and the ADR-0007 analogy are unchanged. This note does not claim
+> implementation landing.

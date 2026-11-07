@@ -165,6 +165,7 @@ flowchart TD
 | 0119 | [An interrupted turn stays in the session as a content-free marker](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) | Proposed | 2026-11-05 |
 | 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Proposed | 2026-11-05 |
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
+| 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
 
 ## Creating a new ADR
 

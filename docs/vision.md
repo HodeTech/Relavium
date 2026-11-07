@@ -58,7 +58,7 @@ flowchart TD
     Core["packages/core<br/>(pure-TS engine: WorkflowEngine + AgentSession)"]
     Desktop["Desktop app (Tauri v2)<br/>co-equal Chat + Canvas tabs, agent management"]
     VSCode["VS Code extension<br/>chat assistant + inline triggering, standalone"]
-    CLI["CLI (relavium)<br/>relavium chat + run, scripting + CI/CD"]
+    CLI["CLI (relavium)<br/>full-screen Home for interactive work, subcommands for scripting + CI/CD"]
     API["Cloud API + workers (Phase 2)<br/>run the engine server-side"]
     Portal["Web portal (Phase 2)<br/>usage, quota, governance — control plane"]
 
@@ -78,7 +78,7 @@ flowchart TD
 |---------|-----------|------------------|
 | **Desktop app** | **Agent-management center** with **co-equal Chat and Canvas tabs**: hold a coding session in Chat, visually design workflows on the Canvas, configure agents, monitor runs, track cost. The operational home stays the neutral/last-used landing; the canvas remains the signature surface. Built on Tauri v2. | NOT an IDE, NOT a code editor, NOT a terminal. |
 | **VS Code extension** | A coding-assistant chat panel plus inline workflow triggering inside the editor (right-click a file → run a workflow), status-bar run monitor, sidebar panels. Bundles the engine — works standalone with no desktop app required. | NOT a replacement for the desktop canvas; code-adjacent work lives here. |
-| **CLI** | `relavium run`, `relavium list`, and friends for scripting and CI/CD integration; `relavium chat` for an interactive coding session — a **Product-Phase-1** surface (built in build phase 2, after the engine), the first user-facing `AgentSession`. Fastest path to a first run and the engine's integration-test harness. | NOT a long-running daemon in Phase 1. |
+| **CLI** | A bare `relavium` opens the full-screen Home, where interactive work happens through slash commands and in-TUI actions ([ADR-0122](decisions/0122-the-home-is-the-interactive-product.md)); `relavium run`, `relavium list`, and friends stay the scripting and CI/CD surface — a **Product-Phase-1** surface (built in build phase 2, after the engine), the first user-facing `AgentSession`. Fastest path to a first run and the engine's integration-test harness. | NOT a long-running daemon in Phase 1. |
 | **Web portal** *(Phase 2)* | Usage metrics, quota, licensing, team governance, enterprise features. A control plane. | NOT where workflows execute — it is not an execution plane. |
 
 The desktop app's scope boundary (management center, not IDE) is a hard
