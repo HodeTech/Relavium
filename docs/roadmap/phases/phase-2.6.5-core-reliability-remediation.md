@@ -5827,6 +5827,11 @@ Two complete independent reviews of `c6c55b3b..bbe01091` verify one new MCP-cons
 
 [Round 1](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-08T18-21-45-w7-adr-0102-0103-maintainer-round-1-review.md) checks the eight maintainer items and verifies a reachable Gemini SDK prototype-key merge conflict. The corrected Proposed ADR-0102 explicitly narrows non-cap data to refuse own `__proto__` keys while retaining cap authority and the unchanged measurement subset. Proposed ADR-0103 specifies actual primary-delivery observation, gap/abandonment refusal and the local terminal-invariant qualification. [Two fresh complete round-2 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md) find no new material decision-level issue. **Both proposals still require maintainer approval before dependent implementation.** The review records the supplied Gemini Free Tier quota without claiming a new capture or authorising billing/spend. Runtime ownership/lifecycle acceptance, missing provider artifacts, Steps 7–8/12, Sonar and final W7/PR acceptance remain open.
 
+> current.md's version of this summary, moved here verbatim on 2026-11-04 because it holds facts the summary above
+> lacks (the D64 round 4 on the PR #96 correction found it dropped):
+>
+> [Round 1](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-08T18-21-45-w7-adr-0102-0103-maintainer-round-1-review.md) checks the eight maintainer items and verifies a reachable Gemini SDK prototype-key merge conflict. The corrected Proposed ADR-0102 explicitly narrows non-cap data to refuse own `__proto__` keys; it preserves the cap exception and unchanged measured subset. Proposed ADR-0103 now specifies real primary publication/delivery observation, gap/abandonment refusal and the terminal-free local-stream qualification. [Two fresh complete round-2 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md) find no further material decision-level issue. **Both ADRs remain Proposed; the additional compatibility narrowing and lifecycle/CLI decision require maintainer approval before dependent code.** No runtime acceptance or new provider result is claimed. The supplied Gemini 3.1 Flash Lite Free Tier quota is 250K input TPM, below its 1,048,576-token window; the capture access/authorization gate remains open. Ownership/lifecycle implementation Highs, Steps 7–8/12, Sonar and W7/PR acceptance remain open.
+
 
 ### W7 latest decisions approved and completion sequence — 2026-10-08
 
@@ -7096,7 +7101,7 @@ remains canonical for execution order. W8 implementation is not started by this 
 > [PR #96 review correction](phase-2.5.5-hardening-and-remediation.md#moved-by-the-pr-96-review-correction--2026-11-04):
 > the D66 reset had kept only current.md's live status and order and recorded its 2026-07-26 plan in the Phase 2.5.5
 > register, and these Phase 2.6.5 records had left the docs. Only relative links were rewritten for this directory
-> and heading levels lowered by one; a heading in brackets is added. The `W4` start-gate paragraph is kept in
+> and heading levels lowered by one; headings in brackets are added. The `W4` start-gate paragraph is kept in
 > [its earlier section](#w4-start-gate--maintainer-ruling-moved-from-currentmd-on-2026-11-04).
 
 ### [current.md's header notes, as of 2026-10-25]
@@ -7499,7 +7504,7 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md]() — **51 items** (`CR-01`…`CR-98`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews, `CR-98` on 2026-09-18) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+[phase-2.6.5-core-reliability-remediation.md](phase-2.6.5-core-reliability-remediation.md) — **51 items** (`CR-01`…`CR-98`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews, `CR-98` on 2026-09-18) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`

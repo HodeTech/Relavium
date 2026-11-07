@@ -1,6 +1,11 @@
-import { reconstructCheckpointState, type CheckpointState } from '@relavium/core';
-import type { HumanGatePausedEvent, RunEvent } from '@relavium/shared';
-import { budgetPromptContext, type BudgetPromptContext } from './budget.js';
+import {
+  decisionsForGateType,
+  reconstructCheckpointState,
+  type CheckpointState,
+} from '@relavium/core';
+import type { GateDecision, HumanGatePausedEvent, RunEvent } from '@relavium/shared';
+import { budgetPromptContext, resumeCommandBase, type BudgetPromptContext } from './budget.js';
+import { FLAG_FOR_DECISION } from './decision.js';
 
 /** A pending human gate on a paused run — the discovery row `relavium gate list` / `status` surface (2.I). */
 export interface PendingGate {
@@ -21,6 +26,54 @@ export interface PendingGate {
  */
 export function pendingHumanGates(events: readonly RunEvent[]): PendingGate[] {
   return pendingGateDisplays(events).pendingGates;
+}
+
+/** The label each decision's copyable command carries in `status`, beside the budget hints' `approve:` / `reject:`. */
+const HINT_LABEL: Readonly<Record<GateDecision['decision'], string>> = {
+  approved: 'approve',
+  rejected: 'reject',
+  input_provided: 'input',
+};
+
+/**
+ * The commands that continue a pending human gate, one per decision its type accepts (`decisionsForGateType`) —
+ * the human-gate counterpart of `budgetResumeHints`, under the same rule: a copyable command is built only from
+ * unchanged, shell-inert recorded identifiers (`resumeCommandBase`), and any other identifier gets a sentence
+ * naming the flags instead. An input gate's value is the operator's to supply, so its line keeps the `<json>`
+ * placeholder, which a shell refuses to run as pasted rather than resolving the gate with it.
+ */
+export function humanGateResumeHints(
+  runId: string,
+  gateId: string,
+  gateType: PendingGate['gateType'],
+): readonly string[] {
+  const decisions = decisionsForGateType(gateType);
+  const command = resumeCommandBase('human', runId, gateId);
+  if (command === undefined) {
+    const flags = decisions.map((decision) => FLAG_FOR_DECISION[decision]).join(' or ');
+    return [`Use relavium gate with the recorded run and gate IDs and ${flags}.`];
+  }
+  return decisions.map(
+    (decision) => `${HINT_LABEL[decision]}: ${command} ${FLAG_FOR_DECISION[decision]}`,
+  );
+}
+
+/**
+ * The nodes whose latest gate event is a decision: a `human_gate:resumed` after the node last started or parked. The
+ * projection never closes a human gate's step row (no `node:completed` follows the decision, though the engine marks
+ * the gate vertex completed), so `status` reads the decision here. A node that starts or parks again, as a loop does,
+ * is undecided until its next decision. A budget gate's events name its agent node, which `status` does not relabel.
+ */
+export function decidedGateNodes(events: readonly RunEvent[]): ReadonlySet<string> {
+  const decided = new Set<string>();
+  for (const event of events) {
+    if (event.type === 'node:started' || event.type === 'human_gate:paused') {
+      decided.delete(event.nodeId);
+    } else if (event.type === 'human_gate:resumed') {
+      decided.add(event.nodeId);
+    }
+  }
+  return decided;
 }
 
 export interface PendingBudgetGate {

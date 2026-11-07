@@ -6,7 +6,7 @@ import { createCliInvocation } from '../process/invocation.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
-import { prepareOutputCapPlan } from '@relavium/llm';
+import { catalogModel, DEFAULT_ATTEMPT_TIMEOUT_MS, prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,7 +28,7 @@ import {
   type McpClient,
   type McpConnection,
 } from '@relavium/mcp';
-import type { AbortSignalLike, AgentSessionRecord, SessionMessage } from '@relavium/shared';
+import type { AbortSignalLike, Agent, AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -41,12 +41,16 @@ import type { ProviderResolver } from '../engine/providers.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
+import { isCliError } from '../process/errors.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
   buildChatSession as buildFreshSession,
   buildGovernorWiring,
+  chatAttemptDeadline,
+  MAX_CHAT_ATTEMPT_TIMEOUT_MS,
   buildResumedChatSession as buildRestoredSession,
   swapAgentModel,
+  withChatOutputDefault,
   type ChatBudgetWarning,
 } from './session-host.js';
 import {
@@ -163,6 +167,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   autoCompact: undefined,
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
+  maxTokens: undefined,
   onExceed: undefined,
   strictCostCap: false,
   allowedCommands: undefined,
@@ -518,6 +523,23 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     );
     return path;
   }
+
+  it('refuses a keyless provider BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {
+    const consentGate = vi.fn(() => Promise.resolve(new Map()));
+    const startMcpClient = vi.fn(() => Promise.reject(new Error('must not start')));
+    const caught = await build({
+      agentRef: writeMcpAgent(),
+      providers: { ...scriptedResolver([textTurn('hi')]), hasKey: () => false },
+      consentGate,
+      startMcpClient,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(isCliError(caught) && caught.message).toContain('set-key anthropic');
+    expect(consentGate).not.toHaveBeenCalled();
+    expect(startMcpClient).not.toHaveBeenCalled();
+  });
 
   it('grants the discovered tool, routes a call to the connection by original name, and tears it down', async () => {
     const calls: { name: string; args: unknown }[] = [];
@@ -2191,4 +2213,293 @@ describe('session MCP native owner forwarding during pending startup', () => {
     },
     15_000,
   );
+});
+
+describe('the interactive output default (MVP-A7, ADR-0101 amendment of 2026-11-05)', () => {
+  const official = (): boolean => true;
+  const custom = (): boolean => false;
+  const ceiling = catalogModel('claude-sonnet-4-6')?.maxOutputTokens;
+  const uncapped = { maxTokens: undefined, costCapped: false };
+  const configured = { maxTokens: 2000, costCapped: true };
+  const anthropic = buildDefaultChatAgent('claude-sonnet-4-6');
+  const openai = { ...anthropic, provider: 'openai' as const, model: 'gpt-4o' };
+
+  it("gives an Anthropic chat on the official endpoint its model's catalog ceiling, not the implicit 4,096", () => {
+    expect(ceiling).toBeGreaterThan(4096);
+    expect(withChatOutputDefault(anthropic, uncapped, official).max_tokens).toBe(ceiling);
+  });
+
+  it('uses [chat].max_tokens for any provider and endpoint, even under a cost cap, never over an authored cap', () => {
+    expect(withChatOutputDefault(anthropic, configured, custom).max_tokens).toBe(2000);
+    expect(withChatOutputDefault(openai, configured, official).max_tokens).toBe(2000);
+    expect(
+      withChatOutputDefault({ ...anthropic, max_tokens: 777 }, configured, official).max_tokens,
+    ).toBe(777);
+  });
+
+  it("keeps today's behaviour on a custom endpoint, for another provider, for a chain and under a cost cap", () => {
+    expect(withChatOutputDefault(anthropic, uncapped, custom).max_tokens).toBeUndefined();
+    expect(withChatOutputDefault(openai, uncapped, official).max_tokens).toBeUndefined();
+    const chained = {
+      ...anthropic,
+      fallback_chain: [
+        { model: 'claude-haiku-4-5', provider: 'anthropic' as const, max_attempts: 1 },
+      ],
+    };
+    expect(withChatOutputDefault(chained, uncapped, official).max_tokens).toBeUndefined();
+    // The governor reserves the effective cap: a 128,000-token ceiling would refuse the first turn of a modest
+    // session cap (the configured-fallback tests above caught exactly that).
+    expect(
+      withChatOutputDefault(anthropic, { maxTokens: undefined, costCapped: true }, official)
+        .max_tokens,
+    ).toBeUndefined();
+  });
+
+  it('reaches the wire for the default chat and leaves the persisted agent unchanged', async () => {
+    for (const [maxTokens, expected] of [
+      [undefined, ceiling],
+      [2000, 2000],
+    ] as const) {
+      const { providers, requests } = capturingResolver([textTurn('hi')]);
+      const built = await build({ providers, chat: { ...EMPTY_CHAT, maxTokens } });
+      built.session.start();
+      await built.session.sendMessage('go');
+      built.session.cancel();
+      await built.recordedEvents;
+      expect(requests[0]?.maxTokens).toBe(expected);
+      expect(built.agent.max_tokens).toBeUndefined();
+    }
+  });
+
+  it('scales the per-attempt deadline to the output cap, never below the default nor above 30 minutes', () => {
+    expect(chatAttemptDeadline(anthropic)).toEqual({});
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 2000 })).toEqual({});
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 8192 })).toEqual({
+      attemptTimeoutMs: 328_000,
+    });
+    expect(chatAttemptDeadline({ ...anthropic, max_tokens: 128_000 })).toEqual({
+      attemptTimeoutMs: MAX_CHAT_ATTEMPT_TIMEOUT_MS,
+    });
+  });
+
+  it('arms the scaled deadline on a fresh and a resumed chat, and leaves a one-shot at the default cap and deadline', async () => {
+    if (ceiling === undefined) throw new Error('the catalog has no ceiling for claude-sonnet-4-6');
+    const scaled = Math.min(MAX_CHAT_ATTEMPT_TIMEOUT_MS, Math.ceil(ceiling / 25) * 1000);
+    expect(scaled).toBeGreaterThan(DEFAULT_ATTEMPT_TIMEOUT_MS);
+    const armed = (): { delays: number[]; deadlineTimer: (ms: number) => () => void } => {
+      const delays: number[] = [];
+      return {
+        delays,
+        deadlineTimer: (ms) => {
+          delays.push(ms);
+          return () => undefined;
+        },
+      };
+    };
+    const turn = async (
+      built: {
+        session: {
+          start: () => void;
+          sendMessage: (text: string) => Promise<unknown>;
+          cancel: () => void;
+        };
+        recordedEvents: Promise<unknown>;
+      },
+      start = true,
+    ): Promise<void> => {
+      if (start) built.session.start();
+      await built.session.sendMessage('go');
+      built.session.cancel();
+      await built.recordedEvents;
+    };
+
+    const fresh = armed();
+    const freshWire = capturingResolver([textTurn('hi')]);
+    await turn(await build({ providers: freshWire.providers, deadlineTimer: fresh.deadlineTimer }));
+    expect(freshWire.requests[0]?.maxTokens).toBe(ceiling);
+    expect(fresh.delays).toContain(scaled);
+
+    const oneShot = armed();
+    const oneShotWire = capturingResolver([textTurn('hi')]);
+    await turn(
+      await build({
+        providers: oneShotWire.providers,
+        oneShot: true,
+        deadlineTimer: oneShot.deadlineTimer,
+      }),
+    );
+    expect(oneShotWire.requests[0]?.maxTokens).toBeUndefined();
+    expect(oneShot.delays).toContain(DEFAULT_ATTEMPT_TIMEOUT_MS);
+    expect(oneShot.delays).not.toContain(scaled);
+
+    // A resumed (or `/models`-reseated) session recomputes the default and its deadline from the current config.
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const resumed = armed();
+    const resumedWire = capturingResolver([textTurn('hi')]);
+    const restored = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-cap',
+        agentSlug: anthropic.id,
+        agentSnapshot: anthropic,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: resumedWire.providers,
+      deadlineTimer: resumed.deadlineTimer,
+    });
+    await turn(restored, false);
+    expect(resumedWire.requests[0]?.maxTokens).toBe(ceiling);
+    expect(resumed.delays).toContain(scaled);
+  });
+});
+
+describe('the default model follows the stored key (MVP-A4)', () => {
+  const keyedOnly = (keyed: readonly string[]): ProviderResolver => ({
+    ...scriptedResolver([textTurn('hi')]),
+    hasKey: (id) => keyed.includes(id),
+  });
+  /** The refusal's message, after proving it is the typed exit-2 error. */
+  const refusalOf = async (pending: Promise<unknown>): Promise<string> => {
+    const caught = await pending.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    if (!isCliError(caught)) throw new Error('expected a CliError refusal');
+    expect(caught.code).toBe('invalid_invocation');
+    return caught.message;
+  };
+
+  it('binds a keyed provider’s model when nothing is configured', async () => {
+    const built = await build({ providers: keyedOnly(['openai']) });
+    expect(built.agent).toMatchObject({ provider: 'openai', model: 'gpt-5.4-mini' });
+    built.session.cancel();
+    await built.whenHostSafeToClose();
+  });
+
+  it('refuses a session whose provider has no key, with the remedy instead of a credential failure', async () => {
+    expect(await refusalOf(build({ providers: keyedOnly([]) }))).toContain(
+      '`relavium provider set-key anthropic`',
+    );
+    // A configured model is checked the same way: configuring it does not skip the pre-flight.
+    expect(
+      await refusalOf(
+        build({
+          providers: keyedOnly(['anthropic']),
+          chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', defaultProvider: 'openai' },
+        }),
+      ),
+    ).toContain('set-key openai');
+  });
+
+  it('refuses a RESUMED keyless session BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const agent: Agent = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      mcp_servers: [{ id: 'fs', transport: 'stdio', command: 'my-server' }],
+    };
+    const consentGate = vi.fn(() => Promise.resolve(new Map()));
+    const startMcpClient = vi.fn(() => Promise.reject(new Error('must not start')));
+    const resumed = buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-mcp',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate,
+      startMcpClient,
+    });
+    expect(await refusalOf(resumed)).toContain('set-key anthropic');
+    expect(consentGate).not.toHaveBeenCalled();
+    expect(startMcpClient).not.toHaveBeenCalled();
+  });
+
+  it('refuses a RESUMED session whose provider has lost its key', async () => {
+    const ISO = '2026-06-25T00:00:00.000Z';
+    const agent = buildDefaultChatAgent('claude-sonnet-4-6');
+    const resumed = buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-k',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate: () => Promise.resolve(new Map()),
+    });
+    expect(await refusalOf(resumed)).toContain('set-key anthropic');
+
+    // An interactive resume defers it: the session builds and names the provider, so `/models` can still rescue it.
+    const deferred = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: {
+        id: 'sess-k',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/workspace', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: ISO,
+        updatedAt: ISO,
+      },
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: keyedOnly(['openai']),
+      consentGate: () => Promise.resolve(new Map()),
+      deferMissingKey: true,
+    });
+    expect(deferred.missingKeyProvider).toBe('anthropic');
+    deferred.session.cancel();
+    await deferred.whenHostSafeToClose();
+  });
+
+  it('asks the key store once per provider per build, so the choice and the pre-flight cannot disagree', async () => {
+    const asked: string[] = [];
+    const built = await build({
+      providers: {
+        ...scriptedResolver([textTurn('hi')]),
+        hasKey: (id) => {
+          asked.push(id);
+          return id === 'anthropic';
+        },
+      },
+    });
+    expect(built.agent.provider).toBe('anthropic');
+    expect(asked).toEqual(['anthropic']); // the default-model choice asked; the pre-flight reused its answer
+    built.session.cancel();
+    await built.whenHostSafeToClose();
+  });
 });

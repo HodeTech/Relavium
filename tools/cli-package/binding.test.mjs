@@ -186,9 +186,15 @@ test('package metadata is public-only and keeps private packages out of runtime'
     { dependencies: { '@relavium/core': '0.0.0' } },
     { dependencies: { commander: 'workspace:*' } },
     { dependencies: { commander: 'catalog:' } },
-    ...['npm:evil@1.0.0', 'github:attacker/commander', 'https://example.invalid/c.tgz', '*'].map(
-      (requirement) => ({ dependencies: { commander: requirement } }),
-    ),
+    { dependencies: { _commander: '12.1.0' } },
+    ...[
+      'npm:evil@1.0.0',
+      'github:attacker/commander',
+      'https://example.invalid/c.tgz',
+      '*',
+      '1.2.3-a..b',
+      `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}`,
+    ].map((requirement) => ({ dependencies: { commander: requirement } })),
   ])
     refuses(() =>
       validatePackageReceipt({ ...pack, package: { ...pack.package, ...changed } }, expected),

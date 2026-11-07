@@ -18,6 +18,7 @@ const chat: ResolvedChatConfig = {
   autoCompact: true,
   compactThreshold: 0.7,
   maxCostMicrocents: undefined,
+  maxTokens: undefined,
   onExceed: undefined,
   strictCostCap: false,
   allowedCommands: undefined,

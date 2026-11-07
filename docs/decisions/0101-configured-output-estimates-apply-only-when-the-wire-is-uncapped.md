@@ -348,3 +348,31 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+## Interactive chat output default — 2026-11-05
+
+> Amended 2026-11-05 (MVP-A7, the maintainer's D68 ruling): a chat whose bound agent authors no `max_tokens`
+> now carries one on its effective agent — `[chat].max_tokens` when configured; otherwise, for an Anthropic agent
+> with no fallback chain on the official endpoint in a session without a cost cap, the model's catalog ceiling
+> instead of the adapter's implicit 4,096-token default. This decision's order is unchanged: the request now carries
+> an effective cap, so the governor reserves that cap. A session with a cost cap keeps the adapter default unless
+> `[chat].max_tokens` is set, because a catalog-ceiling reservation (128,000 tokens on `claude-sonnet-4-6`) would
+> refuse the first turn of a modest cap; another provider and a chain keep today's uncapped or adapter behaviour.
+> Workflow runs are unchanged. The key's canonical home is
+> [config-spec.md](../reference/contracts/config-spec.md); the code is `withChatOutputDefault` in
+> `apps/cli/src/chat/session-host.ts`.
+
+### Chat surfaces, and the deadline that scales with the cap — 2026-11-06
+
+> Amended 2026-11-06 (the MVP-1 1a milestone review, budget-1, budget-2; the maintainer chose the scaled
+> deadline): the output default applies to chat surfaces only (`relavium chat`, `chat-resume`, the Home chat, a
+> `/models` reseat or `/clear` rebuild); the non-interactive one-shot `relavium agent run` keeps the adapter's
+> implicit cap. [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)'s per-attempt
+> deadline is absolute and does not reset per chunk, so under the catalog ceiling a healthy reply streaming past
+> its 120-second default failed as a billed timeout and was rolled back, where the 4,096 cap had ended it cleanly as
+> truncated. As ADR-0082 §6 lets a host, the chat host now arms a deadline long enough to stream its effective cap
+> at 25 tokens per second, never below the default and never above 30 minutes (`chatAttemptDeadline`); the user can
+> still cancel a stalled turn. Two side effects of the larger cap are recorded, not changed: pre-send
+> auto-compaction reserves the effective cap, so on a 200k-window model with a 64,000-token ceiling it starts at
+> about 68% of the window instead of 80%; and on a model whose effort tiers are budget-shaped, the thinking budgets
+> derive from the effective cap and grow with it.

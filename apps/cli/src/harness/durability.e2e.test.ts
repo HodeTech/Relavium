@@ -232,10 +232,11 @@ describe('CR-10 / CR-92 against the real history.db', () => {
   });
 
   it('CR-92: `run` DRAINS at start — the retry path the exit code promises actually exists', async () => {
-    // The defect this closes was severe and was mine: `reconcile()` — the only thing that drained — has no
+    // The defect this closed was severe and was mine: `reconcile()` — the only thing that drained — had no
     // shipping caller anywhere in the monorepo, so the outbox, the drain and the certification above were
     // all unreachable from the real binary. A user who saw exit code 5 had no command that would ever move
-    // their run to durable, while that exit code's own documentation said one would.
+    // their run to durable, while that exit code's own documentation said one would. (`run` and `gate` now
+    // call `reconcile()` at start, which drains first — 2.6.G; this entry point stays public.)
     const inner = realStore();
     let refuse = true;
     const store = {

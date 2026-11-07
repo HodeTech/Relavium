@@ -8,13 +8,15 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
-import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import { openHistoryReader } from '../history/reader.js';
 
 export interface ListCommandArgs {
   /** `--agents`: list the agent catalog instead of the workflow catalog. */
   readonly agents: boolean;
+  /** `--runs`: list every recorded run, newest first, instead of a catalog (MVP-1). */
+  readonly runs?: boolean;
 }
 
 export interface ListCommandDeps {
@@ -48,12 +50,20 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
   });
   const json = deps.global.json;
 
+  // Run history lives in the home directory, not the project, so `--runs` needs no `.relavium/`.
+  if (args.runs === true) {
+    listRuns(deps, homeDir);
+    return EXIT_CODES.success;
+  }
+
   if (projectConfigDir === undefined) {
-    // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json.
+    // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json. A
+    // directory name can hold control characters (a cloned repository's), so the path is printed one-line.
+    const cwd = sanitizeInline(deps.global.cwd);
     if (json) {
-      deps.io.writeErr(`no .relavium/ project found from ${deps.global.cwd}\n`);
+      deps.io.writeErr(`no .relavium/ project found from ${cwd}\n`);
     } else {
-      deps.io.writeOut(`No .relavium/ project found from ${deps.global.cwd}.\n`);
+      deps.io.writeOut(`No .relavium/ project found from ${cwd}.\n`);
     }
     return EXIT_CODES.success;
   }
@@ -99,6 +109,58 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
 
   renderHuman(deps.io, entries, kind, lookupHistory);
   return EXIT_CODES.success;
+}
+
+/**
+ * `relavium list --runs` — every recorded run, newest first (`listRuns`), each with its workflow's slug where
+ * history knows it. No amounts: a total needs its usage coverage qualified (ADR-0104), which `status <runId>`
+ * reads per run; a listing replays no event log.
+ */
+function listRuns(deps: ListCommandDeps, homeDir: string): void {
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
+  try {
+    // Every workflow with a run appears once in the latest-run pick, which gives each run's slug.
+    const slugById = new Map(
+      reader
+        .loadLatestRunPerWorkflow()
+        .map((summary): [string, string] => [summary.lastRun.workflowId, summary.slug]),
+    );
+    const runs = reader.listRuns();
+    if (deps.global.json) {
+      writeRecordLines(
+        deps.io,
+        runs.map((run) => ({
+          kind: 'runs',
+          runId: run.id,
+          workflowId: run.workflowId,
+          workflow: slugById.get(run.workflowId) ?? null,
+          status: run.status,
+          startedAt: run.startedAt ?? null,
+          completedAt: run.completedAt ?? null,
+        })),
+      );
+      return;
+    }
+    if (runs.length === 0) {
+      deps.io.writeOut('No runs recorded.\n');
+      return;
+    }
+    for (const run of runs) {
+      const workflow = sanitizeUntrustedInline(slugById.get(run.workflowId) ?? run.workflowId);
+      const started = run.startedAt ?? run.createdAt;
+      // The run id is read back from history.db: one line, controls stripped, never masked (it is copied).
+      deps.io.writeOut(
+        `${sanitizeInline(run.id)}  ${sanitizeInline(run.status).padEnd(9)}  ${workflow}  ${started}\n`,
+      );
+    }
+  } finally {
+    if (deps.commandLifetime === undefined) close();
+  }
 }
 
 /** One catalog entry as a machine record: identity + path + validity, plus the last-run overlay for workflows. */
@@ -164,7 +226,8 @@ function renderHuman(
     return byCodeUnit(a, b);
   });
   for (const tag of tags) {
-    const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;
+    // An authored tag is artifact text, sanitized at the sink like every catalog field this listing prints.
+    const header = tag === UNTAGGED ? UNTAGGED : `#${sanitizeUntrustedInline(tag)}`;
     io.writeOut(`  ${header}\n`);
     for (const entry of byTag.get(tag) ?? []) {
       // `?? null` so a valid never-run workflow (and any invalid entry, which never gets an overlay) shows
@@ -174,14 +237,21 @@ function renderHuman(
   }
 }
 
-/** A single catalog line: `slug — name  [last: status]  (invalid: reason)`. `last` is omitted for agents. */
+/**
+ * A single catalog line: `slug — name  [last: status]  (invalid: reason)`. `last` is omitted for agents.
+ *
+ * Every field read from a catalog file is **sanitized at the sink**, as `relavium list --runs` does for a workflow
+ * id. An invalid entry's slug is its file name, and a name is free authored text: `/export` writes a session's
+ * title there, and a cloned repository can commit any name, tag or file name. This line goes to
+ * `process.stdout.write` with no `renderError` boundary in front of it.
+ */
 function entryLine(entry: CatalogEntry, last: RunRecord | undefined | null): string {
-  const parts = [entry.slug];
+  const parts = [sanitizeUntrustedInline(entry.slug)];
   if (entry.name !== undefined && entry.name !== entry.slug) {
-    parts.push(`— ${entry.name}`);
+    parts.push(`— ${sanitizeUntrustedInline(entry.name)}`);
   }
   if (last !== undefined) {
-    parts.push(`[last: ${last === null ? '—' : last.status}]`);
+    parts.push(`[last: ${last === null ? '—' : sanitizeInline(last.status)}]`);
   }
   if (!entry.valid) {
     // **Sanitized at the SINK.** A parse reason is artifact-derived by definition — it names fields an author

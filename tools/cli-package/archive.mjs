@@ -79,33 +79,44 @@ function unpack(bytes) {
   }
 }
 
-/** @param {string} path */
 /**
  * A runtime dependency requirement the public manifest may carry: an exact, caret or tilde registry
  * version, the form pnpm publishes for a `catalog:` entry. An allowlist rather than a list of refused
  * protocols, so `npm:` aliases, `github:`, git and tarball URLs, `file:`/`link:`/`workspace:`/`catalog:`
- * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding).
+ * specifiers, `*` and open ranges never reach a consumer's install (a PR #96 review finding). The
+ * prerelease takes semver's dot-separated identifiers, since npm reads an empty one (`1.2.3-.`,
+ * `1.2.3-a..b`) as a dist-tag; leading zeros are admitted, as npm's and pnpm's loose reading accepts them
+ * as versions.
  */
-const REGISTRY_REQUIREMENT = /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,64})?$/u;
+const REGISTRY_REQUIREMENT =
+  /^[~^]?\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z-]{1,64}(?:\.[0-9A-Za-z-]{1,64}){0,15})?$/u;
+
+/** A lowercase npm package name: no part begins with `.` or `_`, as npm requires. */
+const PACKAGE_NAME = /^(?:@[a-z0-9-][a-z0-9_.-]*\/)?[a-z0-9-][a-z0-9_.-]*$/u;
 
 /**
  * Whether one public runtime dependency entry is admitted: an npm package name outside the private
- * `@relavium/` scope, required at a registry version. Shared by the archive inspector and the package
- * receipt binding so the two cannot drift.
+ * `@relavium/` scope (and not npm's reserved `node_modules` or `favicon.ico`), required at a registry
+ * version of at most 100 characters, well under semver's 256, past which npm reads a version as a
+ * dist-tag. Shared by the archive inspector and the package receipt binding so the two cannot drift.
  * @param {string} name
  * @param {unknown} requirement
  * @returns {boolean}
  */
 export function isPublicRuntimeDependency(name, requirement) {
   return (
-    /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u.test(name) &&
+    PACKAGE_NAME.test(name) &&
     name.length <= 200 &&
+    name !== 'node_modules' &&
+    name !== 'favicon.ico' &&
     !name.startsWith('@relavium/') &&
     typeof requirement === 'string' &&
+    requirement.length <= 100 &&
     REGISTRY_REQUIREMENT.test(requirement)
   );
 }
 
+/** @param {string} path */
 export function assertPublicPackagePath(path) {
   if (
     !/^package\/(?:dist\/[A-Za-z0-9_-]+\.js|drizzle\/[0-9]{4}_[a-z0-9_]+\.sql|drizzle\/meta\/(?:[0-9]{4}_snapshot|_journal)\.json|package\.json|README\.md|CHANGELOG\.md|LICENSE)$/u.test(

@@ -147,8 +147,17 @@ describe('the per-attempt deadline is wired on every chain-building surface (ADR
       file: 'chat/session-host.ts',
       what: 'every session surface — `chat`, `chat-resume`, `agent run`, the Home',
       // `SessionDeps.newAbortController` is REQUIRED, so tsc catches its absence here; the timer is the
-      // half that can go missing silently.
-      needles: [/setTimer:\s*hostDeadlineTimer/],
+      // half that can go missing silently. A test may inject its own timer (`deadlineTimer`, the MVP-A7 seam
+      // that observes the chat's scaled deadline); production must still fall back to the host timer.
+      needles: [/setTimer:\s*(?:opts\.deadlineTimer\s*\?\?\s*)?hostDeadlineTimer\b/],
+    },
+    {
+      file: 'history/reconcile.ts',
+      what: 'the reconcile-only engine — the Home-open liveness pass (2.6.G); it runs no node, so no chain',
+      // Not a deadline: the PROOF that no chain exists. The engine is built with an executor that rejects
+      // every node, so no agent runner and no provider attempt can start. Swapping in a real executor would
+      // make this a chain host that owes the deadline, and these needles stop matching.
+      needles: [/executor:\s*RECONCILE_ONLY_EXECUTOR/, /execute:\s*\(\)\s*=>\s*Promise\.reject\(/],
     },
   ];
 

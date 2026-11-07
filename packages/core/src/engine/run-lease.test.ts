@@ -335,7 +335,7 @@ describe('ADR-0079 §7 — reconcile() never terminates a run somebody else is r
       type: 'run:started',
       runId,
       sequenceNumber: 0,
-      timestamp: '2026-01-01T00:00:00.000Z',
+      timestamp: '2025-12-01T00:00:00.000Z', // older than one lease TTL by the host's clock
       workflowId,
       inputs: {},
       executionMode: 'local',
@@ -543,13 +543,21 @@ describe('ADR-0079 §4/§7 — a claim that leads nowhere is never leaked', () =
     // generation — fencing the live execution out at its next write and then deleting its row in the
     // caller's `finally`. The lease cannot tell the two apart; the in-memory run table can.
     const store = new InMemoryRunStore();
-    const host = createInMemoryHost({ store });
+    const base = createInMemoryHost({ store });
+    // The run must look older than one lease TTL to reconcile, or the TTL rule would skip it before the own-run
+    // guard is reached, and this test would pass with the guard gone.
+    let skew = 0;
+    const host = {
+      ...base,
+      clock: { now: () => new Date(Date.parse(base.clock.now()) + skew).toISOString() },
+    };
     const engine = new WorkflowEngine({
       host,
       executor: new Stub({ a: inFlight }),
     });
     const handle = engine.start({ workflow: LINEAR });
     await until(() => store.eventsFor(handle.runId).length > 0, 'the run started');
+    skew = RUN_LEASE_TTL_MS + 1;
 
     const repaired = await engine.reconcile();
 

@@ -202,8 +202,11 @@ describe('exportSession (2.P)', () => {
     } catch (err) {
       thrown = err;
     }
-    expect(isCliError(thrown)).toBe(true); // the sibling ENOTDIR arm maps to exit 2, like EISDIR
-    expect(isCliError(thrown) && thrown.message).toMatch(/not a file/);
+    expect(isCliError(thrown)).toBe(true); // the mkdir's ENOTDIR maps to exit 2, like EISDIR
+    // Named for what is wrong: a PARENT is a file (the mkdir's own catch, MVP-A3), not the target.
+    expect(isCliError(thrown) && thrown.message).toMatch(
+      /a parent of the target path is not a directory/,
+    );
   });
 
   it('exports a session with no completed turns as a minimal input→output scaffold', () => {

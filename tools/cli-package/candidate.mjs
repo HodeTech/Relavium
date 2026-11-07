@@ -320,8 +320,8 @@ export async function dependencyStore({ repository, environment, home, pnpm = ru
  * line-ending conversion (`core.autocrlf`, the Git for Windows default) and Git's stat cache can report
  * converted working-tree bytes as unchanged, and the candidate is built from those bytes. Each copy,
  * an ordinary file, must have the commit tree's blob id for its path, as Git itself names its raw bytes
- * (`hash-object --no-filters`): Git's collision-detecting SHA-1 in the repository's object format, not a
- * plain hash of ours.
+ * (`hash-object --no-filters`): Git's collision-detecting SHA-1, not a plain hash of ours (`sourceIdentity`
+ * admits only a SHA-1 repository).
  * @param {{repository: string, candidate: string, source: string, files: readonly string[],
  *   run?: typeof runCommand}} options
  */
@@ -332,6 +332,8 @@ export async function copyMatchesCommit({
   files,
   run = runCommand,
 }) {
+  // Both roots are absolute: the ordinary-file proof reads against this process and Git against the checkout.
+  assert.ok(isAbsolute(repository) && isAbsolute(candidate), 'PACKED_CLI_CANDIDATE_ROOT');
   const git = async (args) =>
     (
       await run('git', ['--no-replace-objects', ...args], {
@@ -341,7 +343,7 @@ export async function copyMatchesCommit({
     ).stdout;
   const blobs = new Map();
   for (const entry of gitPaths(await git(['ls-tree', '-r', '-z', '--full-tree', source]))) {
-    const match = /^[0-7]{6} blob ([0-9a-f]{40,64})\t(.+)$/su.exec(entry);
+    const match = /^[0-7]{6} blob ([0-9a-f]{40})\t(.+)$/su.exec(entry);
     if (match !== null) blobs.set(match[2], match[1]);
   }
   const copies = files.map((path) => join(candidate, ...path.split('/')));

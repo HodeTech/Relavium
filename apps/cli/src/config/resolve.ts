@@ -47,6 +47,8 @@ export interface ResolvedChatConfig {
   readonly compactThreshold: ChatConfig['compact_threshold'];
   /** `[chat].max_cost_microcents` — per-session pre-egress cost cap (0/absent ⇒ unbounded; same ADR-0028 governor). */
   readonly maxCostMicrocents: ChatConfig['max_cost_microcents'];
+  /** `[chat].max_tokens` — the output cap for a chat agent that authors none (MVP-A7; ADR-0101 amendment). */
+  readonly maxTokens: ChatConfig['max_tokens'];
   /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
    *  degrades to a loud turn-end since the prompt itself is the approval gate). */
   readonly onExceed: ChatConfig['on_exceed'];
@@ -205,6 +207,7 @@ function resolveChat(
     autoCompact: p?.auto_compact ?? w?.auto_compact,
     compactThreshold: p?.compact_threshold ?? w?.compact_threshold,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
+    maxTokens: p?.max_tokens ?? w?.max_tokens,
     onExceed: p?.on_exceed ?? w?.on_exceed,
     strictCostCap: (p?.strict_cost_cap ?? w?.strict_cost_cap) === true,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,

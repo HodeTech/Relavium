@@ -300,6 +300,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 > **Node overrides narrow, they never escalate.** A node may override `model` / `temperature` /
 > `max_tokens` / `system_prompt_append`, and its `tools:` list may only **narrow** the agent's granted
 > tools — it can never add a tool the agent lacks (validator-enforced; [ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
+> A granted tool must also be one the running surface wires: `relavium run` refuses an egress or os tool before
+> the run starts ([where each tool runs](../shared-core/built-in-tools.md#the-built-in-tools)).
 > A `model` override is **resolved against the model catalog at parse time**; an unknown model id fails
 > parse with the list of valid options — never a silent fallback. The optional `output_schema` (also on
 > `transform`) validates the node's output and powers type-safe downstream interpolation
@@ -322,9 +324,17 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
   timeout_action: reject             # reject | approve  (escalate is reserved — see note)
 ```
 
+**Decisions by `gate_type`** (ruled 2026-11-05): an `approval` or `review` gate takes `approved` or `rejected`; an
+`input` gate takes `input_provided` (its payload) or `rejected`. Any other decision is refused before anything is
+written — by `relavium gate` as an invocation error and by the engine as `invalid_decision` — so a gate never
+records a decision kind its type does not define. (The check reads the decision kind only; a payload sent with
+`approved` or `rejected` by a direct engine caller is not refused.) There is nothing for a deadline to approve on an `input` gate, so
+`timeout_action: approve` on one is refused at admission; a run parked before that rule fails with `run_timeout`
+at its deadline, as a refused auto-approval does.
+
 `timeout_action` requires `timeout_ms` at both standalone node and complete workflow admission. A timeout without an action keeps the safe default `reject`; omitting both sets no timeout.
 
-`timeout_action: approve` auto-approves on timeout — dangerous; use sparingly. **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
+`timeout_action: approve` auto-approves an `approval` or `review` gate on timeout — dangerous; use sparingly. An `input` gate refuses it (above). **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
 
 ### `condition` node
 

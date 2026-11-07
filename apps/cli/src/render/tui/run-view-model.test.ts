@@ -312,6 +312,7 @@ describe('reduceRunEvent', () => {
       totalCostMicrocents: 3_000_000,
       totalTokens: { input: 20, output: 10 },
       durationMs: 1234,
+      outputs: {}, // carried for the final summary's outputs block (MVP-A1)
     });
   });
 
@@ -1087,3 +1088,79 @@ for (const kind of ['cost:updated', 'node:completed', 'node:failed'] as const) {
     expect(reduceRunEvent(state, duplicate).cumulativeCostMicrocents).toBe(150);
   });
 }
+
+describe('pending human gates are the ones this stream announced (MVP-A2)', () => {
+  const humanPause = (
+    nodeId: string,
+    gateId: string,
+    sequenceNumber: number,
+  ): Extract<RunEvent, { type: 'human_gate:paused' }> => ({
+    type: 'human_gate:paused',
+    runId: RUN,
+    timestamp: TS,
+    sequenceNumber,
+    nodeId,
+    gateId,
+    gateType: 'approval',
+    message: 'approve?',
+  });
+
+  it('records an announced human gate, one per run and node', () => {
+    const state = reduceAll([
+      humanPause('a', 'g1', 1),
+      humanPause('b', 'g2', 2),
+      humanPause('a', 'g3', 3),
+    ]);
+    expect(state.pendingHumanGates).toEqual([
+      { runId: RUN, nodeId: 'b', gateId: 'g2' },
+      { runId: RUN, nodeId: 'a', gateId: 'g3' },
+    ]);
+  });
+
+  it("does not record a budget gate's human companion", () => {
+    const state = reduceAll([
+      {
+        type: 'budget:paused',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        gateId: 'budget-1',
+        spentMicrocents: 11,
+        limitMicrocents: 10,
+      },
+      humanPause('a', 'budget-1', 2),
+    ]);
+    expect(state.pendingHumanGates).toEqual([]);
+    expect(state.pendingBudgetNotices).toEqual([{ runId: RUN, nodeId: 'a', gateId: 'budget-1' }]);
+  });
+
+  it.each([
+    ['current gate', RUN, 'a', 'g1', true],
+    ['old gate', RUN, 'a', 'old', false],
+    ['other run', 'other-run', 'a', 'g1', false],
+    ['other node', RUN, 'other-node', 'g1', false],
+    ['legacy resume', RUN, 'a', undefined, true],
+  ] as const)('%s removes only its matching gate', (_label, runId, nodeId, gateId, removes) => {
+    const before = reduceRunEvent(initialRunViewState(), humanPause('a', 'g1', 1));
+    const after = reduceRunEvent(before, {
+      type: 'human_gate:resumed',
+      runId,
+      timestamp: TS,
+      sequenceNumber: 2,
+      nodeId,
+      ...(gateId === undefined ? {} : { gateId }),
+      decision: 'approved',
+      decidedBy: 'cli',
+    });
+    expect(after.pendingHumanGates).toEqual(removes ? [] : before.pendingHumanGates);
+  });
+
+  it('a terminal clears them', () => {
+    const state = reduceAll([
+      humanPause('a', 'g1', 1),
+      { type: 'run:cancelled', runId: RUN, timestamp: TS, sequenceNumber: 2 },
+    ]);
+    expect(state.pendingHumanGates).toEqual([]);
+  });
+});

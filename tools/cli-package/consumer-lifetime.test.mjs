@@ -281,6 +281,19 @@ test('a consumer without an absolute support directory refuses before it exercis
   }
 });
 
+/**
+ * Kill a process that may already have exited. Checking `alive` first races its exit, and `kill` then
+ * throws ESRCH (seen once on the Linux CI, 2026-11-04); a process that is gone needs no cleanup.
+ * @param {number} pid
+ */
+function killIfAlive(pid) {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -403,7 +416,7 @@ await completeConsumer({
     };
   } finally {
     if (consumer.exitCode === null && consumer.signalCode === null) consumer.kill('SIGKILL');
-    for (const pid of children) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    for (const pid of children) killIfAlive(pid);
   }
 }
 
@@ -478,7 +491,7 @@ await completeConsumer({
       assert.equal(readFileSync(log, 'utf8'), 'cleanup\ncleanupFailed\n');
     } finally {
       if (consumer.exitCode === null && consumer.signalCode === null) consumer.kill('SIGKILL');
-      if (child !== undefined && alive(child)) process.kill(child, 'SIGKILL');
+      if (child !== undefined) killIfAlive(child);
     }
   },
 );

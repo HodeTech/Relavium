@@ -2605,7 +2605,8 @@ workflow:
     const engine = buildEngine(host, () => scriptedProvider([textTurn('x')]));
 
     const runId = 'r-interrupted';
-    const base = { runId, timestamp: '2026-01-01T00:00:00.000Z' } as const;
+    // Older than one lease TTL by the host's clock: reconcile leaves a younger run alone.
+    const base = { runId, timestamp: '2025-12-01T00:00:00.000Z' } as const;
     await store.persistEvent({
       type: 'run:started',
       ...base,

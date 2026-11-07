@@ -3,12 +3,22 @@ import { createSessionStore, type Db, type SessionStore } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
 import { storageBoundaryError } from '../process/owned-storage.js';
+import { terminalOutboxPath } from './open.js';
+import { reconcileInterruptedRuns } from './reconcile.js';
 
 /** An opened session store plus the handle to close its SQLite connection at REPL end. */
 export interface OpenedSessionStore {
   readonly store: SessionStore;
   /** The `~/.relavium/history.db` connection the store runs on (ADR-0050) — closed once by {@link close}. */
   readonly db: Db;
+  /**
+   * Settle the runs a dead process left behind in THIS home (2.6.G liveness): {@link db} with the terminal
+   * outbox beside it (ADR-0078 §4), paired here because the drain prunes an outbox entry whose run is not
+   * open in the database it reads. Set by {@link openSessionStore}; the Home awaits it before its first read
+   * of the runs. A test that injects an in-memory store leaves it unset, so it never reaches the real home's
+   * outbox.
+   */
+  readonly reconcileInterruptedRuns?: () => Promise<void>;
   readonly close: () => void;
 }
 
@@ -34,5 +44,11 @@ export function openSessionStore(
   } catch (err) {
     throw storageBoundaryError(err);
   }
-  return { store: createSessionStore(opened.db), db: opened.db, close: opened.close };
+  return {
+    store: createSessionStore(opened.db),
+    db: opened.db,
+    reconcileInterruptedRuns: () =>
+      reconcileInterruptedRuns(opened.db, terminalOutboxPath(homeDir)),
+    close: opened.close,
+  };
 }

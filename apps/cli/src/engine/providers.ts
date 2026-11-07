@@ -87,6 +87,15 @@ export function providerKeyEnvVar(id: ProviderId): string {
   return `RELAVIUM_${id.toUpperCase()}_API_KEY`;
 }
 
+/**
+ * The actionable "no key" message: names both ways to provide one, never a key. One source for
+ * {@link createProviderResolver}'s `keyFor` and the session pre-flight (MVP-A4), so the user reads the same
+ * remedy whichever caught it first.
+ */
+export function missingKeyMessage(id: ProviderId): string {
+  return `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
+}
+
 /** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
 export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
@@ -382,10 +391,7 @@ export function createProviderResolver(
       const key = resolveKey(id);
       if (key === undefined) {
         // A clean invocation error naming both ways to provide the key (never the key itself).
-        throw new CliError(
-          'invalid_invocation',
-          `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`,
-        );
+        throw new CliError('invalid_invocation', missingKeyMessage(id));
       }
       return key;
     },

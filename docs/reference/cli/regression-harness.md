@@ -132,9 +132,9 @@ the full `@relavium/db` test suite (the concurrency/retry white-box tests among 
 concurrency/perf/session-chain harness on `windows-latest`
 (the WAL locking, the retry's `Atomics.wait` sleep, the two-process child spawn + `file://` import, and the
 native `better-sqlite3` addon are the parts most likely to diverge), plus a headless no-TTY smoke. It is a
-**separate** job and, since 2026-11-04, a **required** check beside the ubuntu `ci` job, because it carries
-ADR-0106's Windows filesystem-policy scenarios ([ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md)
-names required CI for them). POSIX `0600`/`0700` permission
+**separate** job and, since the maintainer's 2026-11-04 ruling (PR #96 review), a **required** check beside
+the ubuntu `ci` job: it is the CI lane that validates
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md)'s Windows-scoped claims. POSIX `0600`/`0700` permission
 assertions are a documented Windows no-op ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md))
 and are not exercised there; `release.yml` separately smokes the built binary across ubuntu/macOS/Windows.
 

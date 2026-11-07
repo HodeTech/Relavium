@@ -226,15 +226,15 @@ describe('early workflow preparation ownership', () => {
       f.cleanup();
     }
   });
-  it.each(['build', 'outbox'] as const)(
+  it.each(['build', 'reconcile'] as const)(
     'does not start a run after cancellation during held %s preparation',
     async (stage) => {
       const f = fixture('plain');
       const entered = deferred<void>();
       const release = deferred<void>();
       const start = vi.spyOn(f.engine, 'start');
-      if (stage === 'outbox')
-        vi.spyOn(f.engine, 'drainTerminalOutbox').mockImplementation(async () => {
+      if (stage === 'reconcile')
+        vi.spyOn(f.engine, 'reconcile').mockImplementation(async () => {
           entered.resolve();
           await release.promise;
           return [];

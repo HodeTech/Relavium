@@ -69,7 +69,7 @@ describe('createClackGatePrompter', () => {
     expect(note.mock.calls[0]?.[0]).toBe('(no message)');
   });
 
-  it('sanitizes a forged runtime timeout action before it reaches the deadline card', async () => {
+  it('never prints a forged runtime timeout action on the deadline card', async () => {
     const note = vi.fn<(message: string, title: string) => void>();
     const event = gate({
       expiresAt: '2026-06-24T11:00:00.000Z',
@@ -91,8 +91,9 @@ describe('createClackGatePrompter', () => {
     for (const forbidden of ['\x1b', '\x9b', '\r', '\b', '\u202E']) {
       expect(body).not.toContain(forbidden);
     }
-    expect(body).toContain('auto-reject');
-    expect(body).toContain('forged timeout row');
+    // The action is only compared, never interpolated: anything but `approve` reads as the default.
+    expect(body).toContain('the run fails on timeout');
+    expect(body).not.toContain('forged timeout row');
     expect(body.split('\n')).toHaveLength(3); // message + blank separator + one deadline row
   });
 
@@ -124,11 +125,71 @@ describe('createClackGatePrompter', () => {
     expect(d).toBeNull();
   });
 
-  it('cancelling the rejection-comment prompt returns null (no half-built decision)', async () => {
+  /** A watcher reporting whether the key that ended the prompt was Ctrl-C (Clack reports Esc and Ctrl-C alike). */
+  const pressed =
+    (interrupted: boolean): NonNullable<ClackPromptDeps['watchInterrupt']> =>
+    async (prompt) => ({ value: await prompt(), interrupted });
+
+  it('Esc at the optional rejection reason keeps the rejection, without a reason', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve(CANCEL),
+        watchInterrupt: pressed(false),
+      }),
+    ).prompt(gate());
+    expect(d).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+  });
+
+  it('Ctrl-C at the optional rejection reason cancels the run, as at the card', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve(CANCEL),
+        watchInterrupt: pressed(true),
+      }),
+    ).prompt(gate());
+    expect(d).toBeNull();
+  });
+
+  it('a typed reason stands even when the watcher saw Ctrl-C earlier', async () => {
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => Promise.resolve('too risky'),
+        watchInterrupt: pressed(true),
+      }),
+    ).prompt(gate());
+    expect(d).toEqual({ decision: 'rejected', decidedBy: 'cli', comment: 'too risky' });
+  });
+
+  it('without a key watcher a cancel at the reason is taken as Ctrl-C and cancels the run', async () => {
     const d = await createClackGatePrompter(
       deps({ confirm: () => Promise.resolve(false), text: () => Promise.resolve(CANCEL) }),
     ).prompt(gate());
     expect(d).toBeNull();
+  });
+
+  it('an abort during the rejection reason still returns null', async () => {
+    const controller = new AbortController();
+    const d = await createClackGatePrompter(
+      deps({
+        confirm: () => Promise.resolve(false),
+        text: () => {
+          controller.abort();
+          return Promise.resolve(CANCEL);
+        },
+      }),
+    ).prompt(gate(), undefined, controller.signal);
+    expect(d).toBeNull();
+  });
+
+  it('a bare Enter on the approval card rejects: the confirm defaults to Reject', async () => {
+    const confirm = vi.fn<ClackPromptDeps['confirm']>(() => Promise.resolve(false));
+    await createClackGatePrompter(deps({ confirm, text: () => Promise.resolve('') })).prompt(
+      gate(),
+    );
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({ initialValue: false });
   });
 
   it('input gate → text value yields an input_provided decision (raw string)', async () => {
@@ -168,12 +229,45 @@ describe('createClackGatePrompter', () => {
     expect(cancelled).toBeNull();
   });
 
-  it('the card defaults to auto-reject when the gate has a deadline but no timeoutAction', async () => {
+  it('a deadline with no timeoutAction fails the run, and the card says so', async () => {
+    // The default action is `reject`, and the engine settles a reject deadline as `run_timeout` rather than
+    // recording a rejection, so no rejection branch runs.
     const note = vi.fn<(message: string, title: string) => void>();
     await createClackGatePrompter(deps({ note })).prompt(
-      gate({ expiresAt: '2026-06-24T11:00:00.000Z' }), // timeoutAction omitted → `?? 'reject'`
+      gate({ expiresAt: '2026-06-24T11:00:00.000Z' }),
     );
-    expect(note.mock.calls[0]?.[0]).toContain('auto-reject');
+    expect(note.mock.calls[0]?.[0]).toContain('the run fails on timeout');
+    expect(note.mock.calls[0]?.[0]).not.toContain('auto-reject');
+  });
+
+  it('an approve deadline on an approval or review gate says it approves', async () => {
+    for (const gateType of ['approval', 'review'] as const) {
+      const note = vi.fn<(message: string, title: string) => void>();
+      await createClackGatePrompter(deps({ note })).prompt(
+        gate({
+          gateType,
+          expiresAt: '2026-06-24T11:00:00.000Z',
+          timeoutMs: 1000,
+          timeoutAction: 'approve',
+        }),
+      );
+      expect(note.mock.calls[0]?.[0]).toContain('auto-approve on timeout');
+    }
+  });
+
+  it('never promises an input gate it will be approved on timeout: the run fails instead', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note, text: () => Promise.resolve('value') })).prompt(
+      gate({
+        gateType: 'input',
+        expiresAt: '2026-06-24T11:00:00.000Z',
+        timeoutMs: 1000,
+        timeoutAction: 'approve',
+      }),
+    );
+    const [body] = note.mock.calls[0] ?? [];
+    expect(body).toContain('the run fails on timeout');
+    expect(body).not.toContain('auto-approve');
   });
 
   it('shows the deadline in the card when the gate has one', async () => {
@@ -187,7 +281,7 @@ describe('createClackGatePrompter', () => {
     );
     const [body] = note.mock.calls[0] ?? [];
     expect(body).toContain('Expires at 2026-06-24T11:00:00.000Z');
-    expect(body).toContain('auto-reject');
+    expect(body).toContain('the run fails on timeout');
   });
 });
 
@@ -210,6 +304,7 @@ describe('budget confirmation from recorded scalar context', () => {
       expect(d.confirm).toHaveBeenCalledWith(
         expect.objectContaining({
           message: `Approve exactly ${amount} microcents?`,
+          initialValue: false, // a bare Enter rejects the spend
         }),
       );
       expect(d.note).toHaveBeenCalledWith(
@@ -256,6 +351,8 @@ describe('budget confirmation from recorded scalar context', () => {
       expect.stringContaining('current budget checks still apply'),
       expect.anything(),
     );
+    // A bare Enter must not continue without an allowance: the confirm defaults to Reject, as the amount card's.
+    expect(d.confirm).toHaveBeenCalledWith(expect.objectContaining({ initialValue: false }));
   });
   it('amount rejection is binary and cancel never constructs approval', async () => {
     expect(

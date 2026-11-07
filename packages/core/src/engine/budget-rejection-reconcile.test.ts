@@ -8,7 +8,7 @@ import type { NodeOutcome } from './node-executor.js';
 const event = (sequenceNumber: number, fields: Record<string, unknown>): RunEvent =>
   RunEventSchema.parse({
     runId: 'interrupted-budget',
-    timestamp: '2026-10-04T00:00:00.000Z',
+    timestamp: '2025-12-01T00:00:00.000Z', // older than one lease TTL by the in-memory host's clock
     sequenceNumber,
     ...fields,
   });

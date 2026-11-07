@@ -35,6 +35,13 @@ interface Worker {
   release: () => void;
   stop: () => Promise<void>;
 }
+/**
+ * A fresh fork boots Node and the TypeScript loader before it reports its first stage. On a loaded Windows runner
+ * that alone has taken over four seconds (CI, 2026-11-06: 3.3 s to the loader, 4.4 s to the worker), so each
+ * worker's first stage gets a cold-start budget, under the case's 15 s; the IPC barriers after it keep 5 s.
+ */
+const COLD_START_STAGE_MS = 12_000;
+const STAGE_MS = 5_000;
 let base: string;
 let root: string;
 const workers: Worker[] = [];
@@ -109,11 +116,14 @@ function worker(mode: string, stage?: string): Worker {
       resolve();
     });
   });
+  let firstStageAsked = false;
   const result: Worker = {
     child,
     closed,
     wait: (stage) =>
       new Promise((resolve, reject) => {
+        const budgetMs = firstStageAsked ? STAGE_MS : COLD_START_STAGE_MS;
+        firstStageAsked = true;
         const timer = setTimeout(() => {
           pending.delete(check);
           reject(
@@ -121,7 +131,7 @@ function worker(mode: string, stage?: string): Worker {
               `native fixture did not reach ${stage}: ${JSON.stringify({ phases, exitCode, exitSignal, closed: ended, faulted })}: ${diagnostic}`,
             ),
           );
-        }, 5000);
+        }, budgetMs);
         const check = (): void => {
           const match = messages.find((message) =>
             stage === 'done' ? message['done'] === true : message['stage'] === stage,

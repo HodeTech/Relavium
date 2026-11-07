@@ -243,11 +243,16 @@ for (const scenario of [
         observedPrompts = prompts;
         releaseSurplus.release(); // Bounded baseline cleanup after observing the stale-card bug.
       }
-      expect(await execution).toBe(scenario === 'budget-reject' ? 1 : 0);
+      // The competing decision closed the first card under the user, so the second gate is not prompted here (keys
+      // still being typed for the first card would answer it): the run parks on it.
+      const lost = scenario === 'losing-reject';
+      expect(await execution).toBe(scenario === 'budget-reject' ? 1 : lost ? 3 : 0);
       expect(closes).toBe(1);
       expect(writerErrors).toBe(0);
-      expect(calls).toBe(scenario === 'ordinary-reject' || scenario === 'budget-reject' ? 0 : 2);
-      expect(prompts).toBe(scenario === 'budget-reject' ? 1 : 2);
+      expect(calls).toBe(
+        scenario === 'ordinary-reject' || scenario === 'budget-reject' ? 0 : lost ? 1 : 2,
+      );
+      expect(prompts).toBe(scenario === 'budget-reject' || lost ? 1 : 2);
       const inspector = createClient(dbPath);
       try {
         const store = createRunHistoryStore(inspector.db, {
@@ -259,24 +264,25 @@ for (const scenario of [
         expect(events.at(-1)).toMatchObject(
           scenario === 'budget-reject'
             ? { type: 'run:failed', error: { code: 'budget_exceeded' } }
-            : { type: 'run:completed' },
+            : lost
+              ? { type: 'run:paused' }
+              : { type: 'run:completed' },
         );
         const authorizations = events.filter(
           (event) =>
             event.type === 'budget:authorization' && event.authorization.state === 'decided',
         );
         expect(authorizations).toHaveLength(
-          scenario === 'ordinary-reject' ? 0 : scenario === 'budget-reject' ? 1 : 2,
+          scenario === 'ordinary-reject' ? 0 : scenario === 'budget-reject' || lost ? 1 : 2,
         );
-        if (scenario === 'losing-reject')
+        if (lost)
           expect(authorizations).toMatchObject([
             { authorization: { decision: 'approved', decidedBy: 'competing-human' } },
-            { authorization: { decision: 'approved', decidedBy: 'test-human' } },
           ]);
         expect(await createRunLeasePort(store).read(runId)).toBeUndefined();
         expect(summaries).toHaveLength(1);
         expect(summaries[0]).toContain(
-          scenario === 'budget-reject' ? 'run failed' : 'run completed',
+          scenario === 'budget-reject' ? 'run failed' : lost ? 'run paused' : 'run completed',
         );
         expect(process.listenerCount('SIGINT')).toBe(initialSignals);
         if (scenario === 'budget-reject') expect(observedPrompts).toBe(1);

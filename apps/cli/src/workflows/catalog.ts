@@ -106,6 +106,28 @@ export function discoverCatalog(opts: {
   return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
 
+/**
+ * Every id a NEW workflow file must not take in `<projectConfigDir>/workflows/` (MVP-A3): each workflow entry's
+ * slug — a valid file's `workflow.id`, an invalid one's file stem — and each file's stem, and the same for the
+ * agents catalog, because an id must be unique across both. The stem counts on its own because `relavium run <id>`
+ * resolves a bare id by file name first, so a new `<id>.relavium.yaml` would shadow a file whose name is `<id>.yaml`
+ * but whose `workflow.id` differs. Every value is also added lower-cased: ids are lower-case, and on a
+ * case-insensitive filesystem `My-Id.yaml` is the same name as `my-id.yaml`. Throws the catalog's own error for an
+ * unreadable or out-of-project directory.
+ */
+export function takenWorkflowIds(projectConfigDir: string, cwd: string): ReadonlySet<string> {
+  const taken = new Set<string>();
+  for (const kind of ['workflows', 'agents'] as const) {
+    for (const entry of discoverCatalog({ projectConfigDir, cwd, kind })) {
+      for (const id of [entry.slug, fileStem(basename(entry.path))]) {
+        taken.add(id);
+        taken.add(id.toLowerCase());
+      }
+    }
+  }
+  return taken;
+}
+
 /** A `valid: false` catalog entry whose slug falls back to the filename stem — the secret-free, path-free shape. */
 function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
   return {

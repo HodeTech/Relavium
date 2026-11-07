@@ -155,7 +155,11 @@ const HumanGateNodeFields = z
   })
   .strict();
 
-/** Keep the cross-field rule identical on the exported leaf and the discriminated union. */
+/**
+ * Keep the cross-field rules identical on the exported leaf and the discriminated union. Authoring only: the
+ * frozen snapshot reader ({@link NodeSnapshotSchema}) applies neither, so a run parked before a rule existed still
+ * loads.
+ */
 function validateHumanGateTimeout(
   node: z.infer<typeof HumanGateNodeFields>,
   ctx: z.RefinementCtx,
@@ -165,6 +169,16 @@ function validateHumanGateTimeout(
       code: z.ZodIssueCode.custom,
       path: ['timeout_action'],
       message: 'timeout_action requires timeout_ms',
+    });
+  }
+  // An input gate takes its input or is rejected (2.6.K, ruled 2026-11-05); there is nothing for a deadline to
+  // approve, so the engine refuses the approval and the run fails with `run_timeout`. Say so at admission instead.
+  if (node.gate_type === 'input' && node.timeout_action === 'approve') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['timeout_action'],
+      message:
+        'an input gate cannot approve on timeout — it takes its input or is rejected; use timeout_action: reject',
     });
   }
 }

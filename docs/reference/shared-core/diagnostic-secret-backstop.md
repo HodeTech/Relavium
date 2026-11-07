@@ -5,8 +5,9 @@
 - **Related**: [error-handling.md](../../standards/error-handling.md#diagnostic-secret-backstop) (the rule: a defense-in-depth backstop behind an adapter's own redaction), [built-in-tools.md](built-in-tools.md#finite-diagnostic-credential-masking) (core's journal and display projection, which differs from this list by design), [llm-provider-seam.md](llm-provider-seam.md) (the error model `makeLlmError` belongs to), [../../standards/security-review.md](../../standards/security-review.md)
 
 Moved here from [error-handling.md](../../standards/error-handling.md#diagnostic-secret-backstop) on
-2026-11-04, unchanged: a PR #96 review found an exact specification in a standard, against the rule that one
-lives only in its `docs/reference/` home. The standard keeps the rule and links here.
+2026-11-04, unchanged except the dated LF/TAB `Bearer` limit in **Split and normalized forms**: a PR #96
+review found an exact specification in a standard, against the rule that one lives only in its
+`docs/reference/` home. The standard keeps the rule and links here.
 
 - **Shapes.** OpenAI/Anthropic `sk-…` and Google `AIza…` key prefixes; a finite list of literal
   secret query names, after `?`, `&` or `#` (an OAuth implicit-flow `#access_token=`); the exact

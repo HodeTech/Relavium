@@ -12,7 +12,7 @@ import {
   type DbClient,
   type RunHistoryStore,
 } from '@relavium/db';
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { RUN_LEASE_TTL_MS, RunEventSchema, type RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('native reconciliation refuses a corrupted known suspension discriminator', () => {
@@ -93,7 +93,9 @@ describe('native reconciliation refuses a corrupted known suspension discriminat
         host: createInMemoryHost({
           store,
           runLeases: createRunLeasePort(store),
-          baseEpochMs: epoch,
+          // A later start: reconcile leaves a run younger than one lease TTL alone, which would decide this
+          // test's outcome before the resumable skip it is about.
+          baseEpochMs: epoch + RUN_LEASE_TTL_MS + 1,
         }),
         executor: { execute },
       }),

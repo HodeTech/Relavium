@@ -203,6 +203,63 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(floorCommand['continue-on-error'], undefined);
 });
 
+test('required checks keep their branch-protection names and cannot be skipped', () => {
+  // A job-level `if`, or a `needs` whose dependency fails, skips the job, and GitHub counts a skipped required
+  // check as passing; a default or step shell can turn a step into a no-op. A rename leaves the required
+  // context unreported and blocks merges, so the name pin keeps the job and branch protection in step
+  // (D64 round-1 and round-3 findings on the PR #96 correction).
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  for (const [id, name] of [
+    ['coverage', 'engine coverage floor (llm, mcp)'],
+    ['windows-concurrency', 'windows · db concurrency + filesystem + headless smoke'],
+  ]) {
+    const job = workflow.jobs[id];
+    assert.equal(job.name, name, id);
+    assert.equal(job.if, undefined, id);
+    assert.equal(job['continue-on-error'], undefined, id);
+    assert.equal(job.needs, undefined, id);
+    assert.equal(job.defaults, undefined, id);
+  }
+  // The aggregate keeps its required context name (its `if: always()` is pinned with its needs).
+  assert.equal(workflow.jobs.ci.name, 'lint · typecheck · test');
+  // Its guard steps keep exactly their keys: no `if`, `continue-on-error` or `shell` can soften one.
+  assert.equal(workflow.jobs.ci.defaults, undefined);
+  const guards = workflow.jobs.ci.steps.filter((step) => step.name?.startsWith('Require '));
+  assert.ok(guards.length >= 6);
+  for (const guard of guards) {
+    const keys = guard.env === undefined ? ['name', 'run'] : ['env', 'name', 'run'];
+    assert.deepEqual(Object.keys(guard).sort(), keys, guard.name);
+  }
+  for (const step of workflow.jobs.coverage.steps) {
+    assert.equal(step.if, undefined, step.name ?? step.uses);
+    assert.equal(step['continue-on-error'], undefined, step.name ?? step.uses);
+    assert.equal(step.shell, undefined, step.name ?? step.uses);
+  }
+  const steps = workflow.jobs['windows-concurrency'].steps;
+  const build = steps.findIndex((step) => step.id === 'windows-build');
+  assert.ok(build > 0);
+  assert.ok(steps.length > build + 1);
+  for (const step of steps.slice(0, build + 1)) {
+    assert.equal(step.if, undefined, step.name ?? step.uses);
+    assert.equal(step['continue-on-error'], undefined, step.name ?? step.uses);
+  }
+  for (const step of steps) {
+    // Only the headless smoke names a shell, and only bash.
+    const smoke = step.name?.startsWith('Headless no-TTY smoke') === true;
+    assert.equal(step.shell, smoke ? 'bash' : undefined, step.name ?? step.uses);
+  }
+  for (const step of steps.slice(build + 1)) {
+    assert.equal(
+      step.if,
+      "${{ !cancelled() && steps.windows-build.outcome == 'success' }}",
+      step.name,
+    );
+    assert.equal(step['continue-on-error'], undefined, step.name);
+  }
+});
+
 test('Windows cohorts retain twelve serial filesystem files and media cases', () => {
   const require = createRequire(new URL('apps/cli/package.json', root));
   const { parse } = require('yaml');

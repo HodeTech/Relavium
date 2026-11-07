@@ -30,6 +30,8 @@ import {
   unwiredEffectJournal,
 } from '@relavium/core';
 import {
+  catalogModel,
+  DEFAULT_ATTEMPT_TIMEOUT_MS,
   effortTiersFor,
   type EndpointKind,
   type PricingOverlay,
@@ -57,7 +59,12 @@ import {
   type ConnectAgentMcpOptions,
   type StdioConsentGate,
 } from '../engine/mcp-servers.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import {
+  createProviderResolver,
+  missingKeyMessage,
+  providerHasKey,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import {
@@ -101,6 +108,13 @@ export interface BuildChatSessionOptions {
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
+  /**
+   * `relavium agent run`: a non-interactive one-shot. MVP-A7's chat output default and the deadline scaled to it
+   * apply to chat surfaces only, so a one-shot keeps the adapter's implicit cap and ADR-0082's default deadline.
+   */
+  readonly oneShot?: boolean;
+  /** Test seam: the timer ADR-0082 §6's per-attempt deadline arms. Default {@link hostDeadlineTimer}. */
+  readonly deadlineTimer?: typeof hostDeadlineTimer;
   /** Host-owned transient policy; never part of SessionContext or the durable snapshot. */
   readonly fsPolicy?: FsPathPolicy;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
@@ -327,6 +341,7 @@ type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'chat'
   | 'maxTokensEstimate'
+  | 'deadlineTimer'
   | 'now'
   | 'providers'
   | 'toolHost'
@@ -698,7 +713,7 @@ function buildSessionRuntime(
     sleep: hostSleep,
     // ADR-0082 §6's per-attempt deadline. The controller this host already supplies for the per-turn cancel
     // doubles as the deadline's merged signal; the TIMER is what arms it.
-    setTimer: hostDeadlineTimer,
+    setTimer: opts.deadlineTimer ?? hostDeadlineTimer,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
@@ -815,12 +830,17 @@ function buildSessionRuntime(
  * word the user typed instead of the path it resolved to answers a different question than the one asked. A
  * rebind has no file — the agent is already in memory — so it reports none rather than a stale one.
  */
-function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
+function bindChatAgent(
+  opts: BuildChatSessionOptions,
+  hasKey: (id: ProviderId) => boolean,
+): ResolvedChatAgent {
   if (opts.agent !== undefined) return { agent: opts.agent, artifact: undefined };
   return resolveChatAgentSource(opts.agentRef, {
     cwd: opts.cwd,
     projectConfigDir: opts.projectConfigDir,
     defaultModel: opts.chat.defaultModel,
+    // MVP-A4: with no configured default, the default agent's model comes from a provider that has a key.
+    hasKey,
     // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
     // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
     ...(opts.chat.defaultProvider === undefined
@@ -832,6 +852,34 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
       ? {}
       : { reasoningEffort: opts.chat.reasoningEffort }),
   });
+}
+
+/**
+ * Refuse a session whose model provider has no key, before anything is spawned or sent (MVP-A4).
+ *
+ * Without this the first turn fails inside the chain, which replaces the resolver's message with a fixed
+ * "credential resolution failed" — deliberately, since a host error could carry a secret — so the user saw an
+ * opaque failure instead of the remedy. This asks the boolean `hasKey`, never for the key, and throws the same
+ * actionable message `keyFor` would. Only the PRIMARY provider is checked: an `auth` failure is fatal to the whole
+ * chain, so a keyless primary cannot answer until a key is stored or the model changes, while a keyless fallback
+ * entry fails only if it is reached. An interactive resume defers this refusal to each send
+ * ({@link BuildResumedChatSessionOptions.deferMissingKey}), because there `/models` can still change the model.
+ */
+function assertProviderKey(agent: AgentDefinition, hasKey: (id: ProviderId) => boolean): void {
+  if (hasKey(agent.provider)) return;
+  throw new CliError('invalid_invocation', missingKeyMessage(agent.provider));
+}
+
+/** {@link providerHasKey}, asked at most once per provider for the life of the returned function. */
+function memoizedHasKey(providers: ProviderResolver): (id: ProviderId) => boolean {
+  const answers = new Map<ProviderId, boolean>();
+  return (id) => {
+    const known = answers.get(id);
+    if (known !== undefined) return known;
+    const answer = providerHasKey(providers, id);
+    answers.set(id, answer);
+    return answer;
+  };
 }
 
 /**
@@ -933,7 +981,13 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   opts.workOwner?.assertAdmitting();
   assertSessionFsPolicy(opts.fsPolicy, opts.cwd, opts.chat);
   const sessionId = opts.uuid();
-  const { agent, artifact } = bindChatAgent(opts);
+  // One resolver for the default-model choice, the key pre-flight and the session runtime.
+  const providers = opts.providers ?? createProviderResolver();
+  // The default-model choice and the pre-flight ask the same question of the same provider; one answer per
+  // provider per build keeps them agreeing by construction and keeps the build at one keychain read per provider.
+  const hasKey = memoizedHasKey(providers);
+  const { agent, artifact } = bindChatAgent(opts, hasKey);
+  assertProviderKey(agent, hasKey);
   const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.fsPolicy === undefined ? opts.cwd : fsPolicyWorkspace(opts.fsPolicy),
@@ -968,7 +1022,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime(opts, sessionId, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -980,12 +1034,21 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     const attached: { handle?: SessionHandle } = {};
     const whenReady = (): Promise<void> =>
       attached.handle?.whenConsumersReady() ?? Promise.resolve();
+    const wired = narrowToWired(withMcpGrant(agent, mcp), host, deps.tools);
+    const sessionAgent =
+      opts.oneShot === true
+        ? wired
+        : withChatOutputDefault(wired, chatOutputSettings(opts.chat), officialEndpointOf(deps));
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
-      agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      agent: sessionAgent,
       context,
-      deps: { ...deps, whenReady },
+      deps: {
+        ...deps,
+        ...(opts.oneShot === true ? {} : chatAttemptDeadline(sessionAgent)),
+        whenReady,
+      },
     });
     const handle = createSessionHandle(
       bus,
@@ -1024,22 +1087,31 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
-    // Best-effort: a teardown rejection must NOT mask the original construction error (preserve the primary).
-    opts.workOwner?.failure(err);
-    if (mcp !== undefined) {
-      try {
-        await closePreparedMcp(
-          mcp,
-          opts.workOwner === undefined
-            ? undefined
-            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
-          opts.workOwner?.invocation.registry.budget,
-        );
-      } catch (cause) {
-        opts.workOwner?.cleanupUncertain(cause);
-      }
-    }
+    await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
+  }
+}
+
+/**
+ * The cleanup after a session build fails: report the failure to the work owner, then close the MCP children the
+ * build already spawned. Best-effort: a teardown rejection is reported as uncertain cleanup and must NOT mask the
+ * build's own error, which the caller rethrows (preserve the primary).
+ */
+async function releaseFailedBuild(
+  workOwner: SessionWorkOwner | undefined,
+  mcp: McpClient | undefined,
+  err: unknown,
+): Promise<void> {
+  workOwner?.failure(err);
+  if (mcp === undefined) return;
+  try {
+    await closePreparedMcp(
+      mcp,
+      workOwner === undefined ? undefined : (_id, cause) => workOwner.cleanupUncertain(cause),
+      workOwner?.invocation.registry.budget,
+    );
+  } catch (cause) {
+    workOwner?.cleanupUncertain(cause);
   }
 }
 
@@ -1109,15 +1181,32 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
    * session does not collide on the `(session_id, sequence_number)` UNIQUE index.
    */
   readonly nextSequenceNumber: number;
+  /**
+   * The bound provider that has no key, when the caller asked to defer that refusal
+   * ({@link BuildResumedChatSessionOptions.deferMissingKey}). Absent ⇒ the provider has a key.
+   */
+  readonly missingKeyProvider?: ProviderId;
 }
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
-  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy' | 'nativeProcesses' | 'workOwner'
+  | 'afterTurnCompaction'
+  | 'onCompactionStart'
+  | 'fsPolicy'
+  | 'nativeProcesses'
+  | 'workOwner'
+  | 'deadlineTimer'
 > {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
+  /**
+   * Build even when the snapshot's provider has no key, and report it as
+   * {@link BuiltResumedChatSession.missingKeyProvider} instead of refusing (MVP-A4). Only an INTERACTIVE
+   * `chat-resume` sets it: there the user can still `/models` to a provider that has a key, which a refusal before
+   * the REPL would make impossible. Absent/`false` (every reseat, the Home, a non-interactive resume) ⇒ refuse.
+   */
+  readonly deferMissingKey?: boolean;
   /**
    * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
    * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
@@ -1204,6 +1293,11 @@ export async function buildResumedChatSession(
       `session ${record.id} has no stored agent snapshot and cannot be resumed`,
     );
   }
+  const providers = opts.providers ?? createProviderResolver();
+  const missingKeyProvider = providerHasKey(providers, agent.provider) ? undefined : agent.provider;
+  if (missingKeyProvider !== undefined && opts.deferMissingKey !== true) {
+    throw new CliError('invalid_invocation', missingKeyMessage(missingKeyProvider));
+  }
   // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
   // the host actually jails to, keeping the dispatch context, the host jail, and the persisted record consistent.
@@ -1241,19 +1335,25 @@ export async function buildResumedChatSession(
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime(opts, record.id, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
     const attached: { handle?: SessionHandle } = {};
+    const sessionAgent = withChatOutputDefault(
+      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      chatOutputSettings(opts.chat),
+      officialEndpointOf(deps),
+    );
     const session = AgentSession.resume(
       {
         sessionId: record.id,
         agentRef: agent.id,
-        agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+        agent: sessionAgent,
         context,
         deps: {
           ...deps,
+          ...chatAttemptDeadline(sessionAgent),
           whenReady: () => attached.handle?.whenConsumersReady() ?? Promise.resolve(),
         },
       },
@@ -1286,6 +1386,7 @@ export async function buildResumedChatSession(
       emitSessionEvent: emit,
       resumeState,
       nextSequenceNumber,
+      ...(missingKeyProvider === undefined ? {} : { missingKeyProvider }),
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined
         ? {}
@@ -1302,21 +1403,7 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
-    // Best-effort: a teardown rejection must NOT mask the original resume error (preserve the primary).
-    opts.workOwner?.failure(err);
-    if (mcp !== undefined) {
-      try {
-        await closePreparedMcp(
-          mcp,
-          opts.workOwner === undefined
-            ? undefined
-            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
-          opts.workOwner?.invocation.registry.budget,
-        );
-      } catch (cause) {
-        opts.workOwner?.cleanupUncertain(cause);
-      }
-    }
+    await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
   }
 }
@@ -1463,6 +1550,75 @@ export function buildGovernorWiring(
       microcents: governor.conservativeCostMicrocents,
       durabilityBroken: governor.conservativeDurabilityBroken,
     }),
+  };
+}
+
+/**
+ * The output cap for a chat agent that authors none (MVP-A7, ADR-0101's 2026-11-05 amendment): `[chat].max_tokens`
+ * when set; otherwise, for an Anthropic agent with no fallback chain on the official endpoint, the model's catalog
+ * ceiling — that wire would otherwise carry the adapter's implicit 4,096-token default. Another provider sends no
+ * cap unless one is configured, and a chain keeps today's behaviour, since an entry may not take that ceiling.
+ *
+ * A session with a cost cap keeps today's behaviour too: the governor reserves the effective cap before each turn
+ * (ADR-0101), and a catalog ceiling (128,000 tokens on `claude-sonnet-4-6`) would refuse the first turn of a modest
+ * cap outright. Applied to the EFFECTIVE agent only, so a resumed or rebound session recomputes it from the current
+ * config.
+ */
+export function withChatOutputDefault(
+  agent: AgentDefinition,
+  chat: { readonly maxTokens: number | undefined; readonly costCapped: boolean },
+  officialEndpoint: (provider: ProviderId) => boolean,
+): AgentDefinition {
+  if (agent.max_tokens !== undefined) return agent;
+  if (chat.maxTokens !== undefined) return { ...agent, max_tokens: chat.maxTokens };
+  if (chat.costCapped) return agent;
+  if (agent.provider !== 'anthropic' || agent.fallback_chain !== undefined) return agent;
+  if (!officialEndpoint(agent.provider)) return agent;
+  const ceiling = catalogModel(agent.model)?.maxOutputTokens;
+  return ceiling !== undefined && Number.isSafeInteger(ceiling) && ceiling > 0
+    ? { ...agent, max_tokens: ceiling }
+    : agent;
+}
+
+/** The `[chat]` settings the output default reads: the configured cap, and whether a cost cap is set. */
+function chatOutputSettings(chat: ResolvedChatConfig): {
+  readonly maxTokens: number | undefined;
+  readonly costCapped: boolean;
+} {
+  return { maxTokens: chat.maxTokens, costCapped: (chat.maxCostMicrocents ?? 0) > 0 };
+}
+
+/** The output throughput a chat attempt's deadline assumes, thinking included: deliberately slow, in tokens per second. */
+export const CHAT_STREAM_TOKENS_PER_SECOND = 25;
+/** The longest per-attempt deadline a chat gets, however large its output cap. */
+export const MAX_CHAT_ATTEMPT_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * The per-attempt deadline for a chat session whose effective agent carries `max_tokens` (MVP-A7 × ADR-0082 §6).
+ * ADR-0082's deadline is ABSOLUTE per attempt and does not reset per chunk, so with the catalog ceiling (128,000 on
+ * claude-sonnet-4-6) a healthy reply streaming past 120 s would fail as a billed timeout and be rolled back, where
+ * the old 4,096 cap ended it cleanly as truncated. The chat host overrides the default, as §6 lets a host, with a
+ * deadline long enough to stream the whole cap at {@link CHAT_STREAM_TOKENS_PER_SECOND}: never below the default,
+ * never above {@link MAX_CHAT_ATTEMPT_TIMEOUT_MS}. A stalled stream is still bounded, and the user can cancel it.
+ */
+export function chatAttemptDeadline(agent: AgentDefinition): {
+  readonly attemptTimeoutMs?: number;
+} {
+  if (agent.max_tokens === undefined) return {};
+  const streamMs = Math.ceil(agent.max_tokens / CHAT_STREAM_TOKENS_PER_SECOND) * 1000;
+  if (streamMs <= DEFAULT_ATTEMPT_TIMEOUT_MS) return {};
+  return { attemptTimeoutMs: Math.min(MAX_CHAT_ATTEMPT_TIMEOUT_MS, streamMs) };
+}
+
+/** Whether the session reaches a provider's official endpoint; unknown metadata counts as not official. */
+function officialEndpointOf(deps: SessionDeps): (provider: ProviderId) => boolean {
+  return (provider) => {
+    try {
+      const resolved = deps.resolveProvider(provider);
+      return resolved !== undefined && resolved.customEndpoint !== true;
+    } catch {
+      return false;
+    }
   };
 }
 

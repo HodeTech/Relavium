@@ -418,12 +418,8 @@ distinct from the *event* `outputSummary`, which the registry bounding stage pro
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
-The bound counts the inline media a result still holds — a base64 `data:` URI, a canonical base64
-source, a binary buffer — at its full size, although the summary, spill and preview show only a
-marker for it: a builtin's media rides the attachment rail ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1),
-so media left in a dispatch result is text to the model and is settled into the journal. Over the
-ceiling, the model gets the media-free preview and the marker reports the full byte count (2026-11-04;
-a 30 MiB data URI had been measured as its marker).
+The bound also counts the inline media a result still holds, although its summary, spill and preview show
+only a marker for it ([built-in-tools.md](built-in-tools.md#tool-result-bounding), 2026-11-04).
 
 Observability and journal-argument projections distinguish shared siblings from ancestor cycles.
 Each walk removes a visited object when its branch finishes, including native/binary/media early

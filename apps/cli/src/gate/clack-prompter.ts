@@ -1,3 +1,5 @@
+import type { Readable } from 'node:stream';
+
 import type { CliIo } from '../process/io.js';
 import { nativePromptIo } from '../process/native-prompt-io.js';
 import { confirm, isCancel, note, text } from '@clack/prompts';
@@ -23,6 +25,8 @@ export interface ClackPromptDeps {
     message: string;
     active: string;
     inactive: string;
+    /** The answer a bare Enter gives. Clack's default is `true`, so an approving card must pass `false`. */
+    initialValue?: boolean;
     signal?: AbortSignal;
   }) => Promise<boolean | symbol>;
   readonly text: (opts: {
@@ -32,6 +36,51 @@ export interface ClackPromptDeps {
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
+  /**
+   * Run one prompt and report whether Ctrl-C ended it. Clack answers Ctrl-C and Esc with the same cancel, but at the
+   * optional rejection reason they differ: Esc skips the reason and the rejection stands, while Ctrl-C cancels the
+   * run, as it does at the card. Without a watcher a cancel there is taken as Ctrl-C.
+   */
+  readonly watchInterrupt?: <T>(prompt: () => Promise<T>) => Promise<InterruptWatched<T>>;
+}
+
+/** A prompt's answer and whether Ctrl-C ended it. */
+export interface InterruptWatched<T> {
+  readonly value: T;
+  readonly interrupted: boolean;
+}
+
+/** Clack's `cancel` alias for Ctrl-C: the `\x03` byte as a key's character, name or sequence. */
+const CTRL_C = '\u0003';
+
+function isCtrlC(char: unknown, key: unknown): boolean {
+  if (char === CTRL_C) return true;
+  if (typeof key !== 'object' || key === null) return false;
+  return ('name' in key && key.name === CTRL_C) || ('sequence' in key && key.sequence === CTRL_C);
+}
+
+/** Watch `input`'s keypresses — the stream Clack reads — for Ctrl-C while one prompt runs. */
+export function watchInterruptOn(
+  input: Readable,
+): <T>(prompt: () => Promise<T>) => Promise<InterruptWatched<T>> {
+  return async (prompt) => {
+    let interrupted = false;
+    const onKeypress = (char: unknown, key: unknown): void => {
+      if (isCtrlC(char, key)) interrupted = true;
+    };
+    input.on('keypress', onKeypress);
+    try {
+      const value = await prompt();
+      return { value, interrupted };
+    } finally {
+      input.off('keypress', onKeypress);
+    }
+  };
+}
+
+/** The fallback when no watcher is wired: every cancel counts as Ctrl-C, which cancels the run. */
+async function assumeInterrupted<T>(prompt: () => Promise<T>): Promise<InterruptWatched<T>> {
+  return { value: await prompt(), interrupted: true };
 }
 
 const defaultDeps: ClackPromptDeps = {
@@ -51,6 +100,7 @@ export function createBoundClackGatePrompter(io: CliIo): GatePrompter {
     confirm: (options) => confirm({ ...options, ...streams }),
     text: (options) => text({ ...options, ...streams }),
     isCancel,
+    watchInterrupt: watchInterruptOn(streams.input),
   });
 }
 
@@ -65,12 +115,21 @@ function cardBody(event: HumanGatePausedEvent): string {
   const message = stripTerminalControls(event.message);
   const lines = [message.trim() === '' ? '(no message)' : message];
   if (event.expiresAt !== undefined) {
-    lines.push(
-      '',
-      `Expires at ${sanitizeInline(event.expiresAt)} — auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`,
-    );
+    lines.push('', `Expires at ${sanitizeInline(event.expiresAt)} — ${onTimeout(event)}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * What the deadline does (execution-model.md, gate timeouts). A `reject` deadline — the default — does not record
+ * a rejection: it fails the run with `run_timeout`, so no rejection branch runs. An input gate cannot be
+ * approved, so a deadline that would approve one fails the run too: admission refuses that pairing now, but a
+ * run parked before the rule still carries it. Only an `approve` deadline on an approval or review gate decides.
+ */
+function onTimeout(event: HumanGatePausedEvent): string {
+  return event.gateType !== 'input' && event.timeoutAction === 'approve'
+    ? 'auto-approve on timeout'
+    : 'the run fails on timeout';
 }
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
@@ -96,10 +155,13 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         return signal?.aborted || deps.isCancel(value) ? null : inputDecision(value);
       }
 
+      // A bare Enter rejects, as at the MCP consent prompt. Clack's y/n and h/j/k/l/space hotkeys still answer the
+      // card, so a stray paste can (recorded in deferred-tasks.md).
       const approved = await deps.confirm({
         message: 'Approve?',
         active: 'Approve',
         inactive: 'Reject',
+        initialValue: false,
         ...(signal === undefined ? {} : { signal }),
       });
       if (signal?.aborted || deps.isCancel(approved)) {
@@ -108,12 +170,18 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       if (approved) {
         return approvalDecision();
       }
-      const comment = await deps.text({
-        message: 'Reason for rejection (optional)',
-        placeholder: '',
-        ...(signal === undefined ? {} : { signal }),
-      });
-      return signal?.aborted || deps.isCancel(comment) ? null : rejectionDecision(comment);
+      const reason = await (deps.watchInterrupt ?? assumeInterrupted)(() =>
+        deps.text({
+          message: 'Reason for rejection (optional)',
+          placeholder: '',
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      );
+      if (signal?.aborted) return null;
+      if (!deps.isCancel(reason.value)) return rejectionDecision(reason.value);
+      // The reason is optional, so Esc skips it and the rejection already chosen stands. Ctrl-C cancels the run, as
+      // it does at the card above and everywhere else on `relavium run`.
+      return reason.interrupted ? null : rejectionDecision();
     },
   };
 }
@@ -158,6 +226,7 @@ async function promptBudget(
         : 'Continue without a budget allowance?',
     active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
     inactive: 'Reject',
+    initialValue: false, // a bare Enter rejects the spend
     ...(signal === undefined ? {} : { signal }),
   });
   if (signal?.aborted || deps.isCancel(approved)) return null;

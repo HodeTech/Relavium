@@ -4,8 +4,8 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci`, `coverage` and `windows-concurrency`
-# are the REQUIRED status checks to merge into `main` (the Windows job since 2026-11-04: ADR-0106's
-# acceptance names required CI for the platform-scoped claims it carries). Wire, usage, filesystem, secrets,
+# are the REQUIRED status checks to merge into `main` (the Windows job since the maintainer's 2026-11-04
+# ruling: it is the CI lane that validates ADR-0106's Windows-scoped claims). Wire, usage, filesystem, secrets,
 # packed CLI and product map control jobs feed `ci` through an explicit success-only aggregation; they cannot
 # silently skip or fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
 # `peer-dep-gate`.
@@ -226,7 +226,7 @@ jobs:
       # RUN the artifact this job just built, through the SAME `pnpm smoke:cli` script the root `ci` script
       # calls — a check that exists in only one of the two is exactly the #312 divergence this change closes.
       # Until now nothing in the required gate executed
-      # `apps/cli/dist/index.js` — only the advisory Windows leg and the tag-gated release smoke did (#294) —
+      # `apps/cli/dist/index.js` — only the then-advisory Windows leg and the tag-gated release smoke did (#294) —
       # so a bundle that builds but cannot boot merged green. The `run --json` leg additionally proves the
       # migrations resolve beside the bundle, which is the failure `apps/cli/drizzle/**` becoming a declared
       # turbo output (#315) exists to prevent: a cache-hit replay used to leave `dist/` fresh next to a
@@ -424,7 +424,8 @@ jobs:
   # Node-22 prebuild (ABI 127 — one binary for ALL of 22.x, so 22.13.0 loads the same artifact 22.0.0 would;
   # no node-gyp C++ source build). What it does NOT prove is that no RUNTIME dep requires >22.0.0 — that is
   # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
-  # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
+  # A SEPARATE, advisory job (the required checks are `ci`, `coverage` and `windows-concurrency`; see the header);
+  # promote once confirmed stable.
   floor-check:
     name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
@@ -537,8 +538,8 @@ jobs:
   # Runs the @relavium/db concurrency suite (the real Windows native-addon + WAL exercise) + the CLI
   # concurrency/perf harness there, the native Step 2 filesystem boundaries (ADR-0105), plus a headless
   # no-TTY smoke. Native links/containment complement portable Windows lexical vectors; these results are
-  # evidence only after this job actually runs. A SEPARATE, advisory job (the required check
-  # stays the ubuntu `ci` job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700
+  # evidence only after this job actually runs. A SEPARATE job and, since 2026-11-04, a REQUIRED check in
+  # branch protection beside `ci` and `coverage` (see the header). POSIX 0600/0700
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
@@ -603,8 +604,10 @@ jobs:
           # `chat` is TTY-gated on STDOUT (selectChatDriver / io.stdoutIsTty): with stdout captured (non-TTY)
           # here, the driver-selection gate picks the PLAIN driver (ink/setRawMode is never entered), and the
           # plain driver must exit cleanly on EOF — never crash. A regression routing to ink without a TTY would
-          # throw "Raw mode is not supported…", which this catches.
-          if out="$(printf '' | node apps/cli/dist/index.js chat 2>&1)"; then
+          # throw "Raw mode is not supported…", which this catches. The runner stores no provider key, and since
+          # MVP-A4 a keyless `chat` refuses with exit 2 before choosing a driver, so the chat gets a fake env key:
+          # an empty stdin sends nothing, so the key is never sent.
+          if out="$(printf '' | RELAVIUM_ANTHROPIC_API_KEY=relavium-headless-smoke-not-a-key node apps/cli/dist/index.js chat 2>&1)"; then
             chat_status=0
           else
             chat_status=$?

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   isAppendConflictError,
   isCorruptRunEventError,
+  RunAlreadyTerminalError,
   RunEventSchema,
   type RunEvent,
 } from '@relavium/shared';
@@ -528,5 +529,28 @@ describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2
     await expect(
       store.persistEvent(skipped(1), { expectedLastSequenceNumber: 0 }),
     ).resolves.toBeUndefined();
+  });
+
+  const failed = (seq: number): RunEvent => ({
+    type: 'run:failed',
+    runId: 'r1',
+    sequenceNumber: seq,
+    timestamp: TS,
+    error: { code: 'internal', message: 'reconciled', retryable: false },
+    partialOutputs: {},
+  });
+
+  it('mirrors the exactly-one-terminal refusal — guarded or not, and per run (ADR-0036)', async () => {
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent(failed(1), { expectedLastSequenceNumber: 0 });
+    await expect(store.persistEvent(failed(2))).rejects.toBeInstanceOf(RunAlreadyTerminalError);
+    await expect(
+      store.persistEvent(failed(2), { expectedLastSequenceNumber: 1 }),
+    ).rejects.toBeInstanceOf(RunAlreadyTerminalError);
+    expect(store.eventsFor('r1').map((e) => e.type)).toEqual(['run:started', 'run:failed']);
+    // Another run's terminal does not close this one.
+    await store.persistEvent({ ...started(0), runId: 'r2' });
+    await expect(store.persistEvent({ ...failed(1), runId: 'r2' })).resolves.toBeUndefined();
   });
 });

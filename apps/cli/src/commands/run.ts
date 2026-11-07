@@ -23,8 +23,10 @@ import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { loadResolvedConfig } from '../config/load.js';
 import {
   buildEngine as defaultBuildEngine,
+  RUN_TOOL_PROFILE,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import { unwiredToolArms } from '../engine/tool-host/assemble.js';
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import {
   createEffectJournalPort,
@@ -76,6 +78,7 @@ import {
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
+  assertWorkflowToolArmsWired,
   driveRun,
   isTerminalOutcome,
   outcomeToExitCode,
@@ -235,6 +238,8 @@ async function runOwned(
   }
   const inputs = admitted.inputs;
   warnSnapshotLiterals(def, deps.io);
+  // Before any key is resolved: a grant this path cannot serve is refused with nothing read (2.6.A, MVP-1).
+  assertWorkflowToolArmsWired(def, unwiredToolArms(RUN_TOOL_PROFILE));
   lifetime.checkpoint();
   const keys = deps.resolveKeys?.();
   lifetime.checkpoint();
@@ -466,13 +471,14 @@ async function runOwned(
     const engine = await build(engineOptions);
     lifetime.adoptEngine(engine);
     lifetime.checkpoint();
-    // **Drain the terminal outbox before starting (ADR-0078 §4/§5).** A prior process may have produced a
-    // terminal its store would not take; it is held in `~/.relavium/terminal-outbox.ndjson` and this is
-    // "the next `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for. Draining
-    // rather than `reconcile()`: this writes only terminals the engine itself already produced, for runs whose
-    // log still lacks one, and switches on nothing else. Best-effort — a run that cannot start because an
-    // unrelated run's terminal could not be retried would be the wrong trade.
-    await engine.drainTerminalOutbox().catch(() => undefined);
+    // **Reconcile before starting (ADR-0078 §4/§5, ADR-0079 §7; 2.6.G liveness).** This is "the next
+    // `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for: `reconcile()`
+    // first drains the terminal outbox (`~/.relavium/terminal-outbox.ndjson`), then settles every run a dead
+    // process left `running` as `run:failed` (`effect_needs_attention` for an unresolved external effect, else
+    // `budget_exceeded` after a recorded budget rejection, else `internal`). It leaves alone a run parked at a
+    // gate, a run younger than one lease TTL and a run whose lease is live — another process is executing it. Best-effort — a run that cannot start because an unrelated run could not be repaired
+    // would be the wrong trade.
+    await engine.reconcile().catch(() => undefined);
     // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
     // graph are one thing rather than two that happen to be close.
     // `toolGrantsFinal`: the MCP servers were connected and the workflow rewritten above, so every inline

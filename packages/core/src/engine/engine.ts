@@ -46,6 +46,7 @@ import {
   MediaAdmissionError,
   deInlineMedia,
   type DurableMediaMeta,
+  type ErrorCode,
   type ExecutionMode,
   type GateDecision,
   type LlmProviderId,
@@ -125,6 +126,7 @@ import type {
   BudgetDispatchPreparation,
   NodePreparationContext,
 } from './node-executor.js';
+import { decisionsForGateType, gateAcceptsDecision } from './gate-decision-fit.js';
 import { sameBudgetAllowanceQuote } from './budget-allowance.js';
 import type { DispatchAllowanceToken } from './dispatch-allowance.js';
 import { NodeMediaPinError } from './media-pin-error.js';
@@ -1076,21 +1078,30 @@ class RunExecution {
       // once `run:started` has folded, so an acquire before the first event fails the foreign key. Doing it
       // here keeps the store free of any lease coupling.
       //
-      // The window it opens is a run that is durable and momentarily unowned. It is not reachable in
-      // practice — the `runId` came from `ids.newId()` in the same tick and no other process has yet had a
-      // chance to see it — and it is not harmful even if it were: a racing process would acquire first, our
-      // acquire would be refused, and this run would fail before executing a single node. Refused, never
-      // duplicated.
+      // The window it opens is a run that is durable and momentarily unowned. The only process that can see
+      // the run in it is one calling `reconcile()` (the CLI does at every `run`/`gate` start and Home open,
+      // 2.6.G), and `reconcile()` leaves a run younger than one lease TTL alone, so a reconciler with that rule
+      // never settles it (the CLI's `history/reconcile.test.ts` drives one into this window and the run
+      // completes). A reconciler without it — a development build before the rule, or a clock more than a TTL
+      // ahead — can: it writes `run:failed{internal}` and releases its claim, so the acquire below usually
+      // SUCCEEDS; our next guarded write then conflicts with that terminal, no node
+      // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
+      // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
+      // our terminal takes the reconciler's sequence number: the store's terminal refusal stops it, with
+      // `UNIQUE(run_id, seq)` as the fallback behind that refusal. If our terminal commits before the
+      // reconciler's, the reconciler's guarded write is the one refused, and ours stands. One terminal either
+      // way, never two.
       if (!(await this.#acquireLease())) {
         // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
         // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
-        // message pointing at nothing. The docblock above already diagnoses this case; the event should say
-        // it too. Secret-free: no path, no store detail, just what could not be established.
+        // message pointing at nothing. The comment above names the other cause, a reconcile that claimed the
+        // run in the window; the event names both. Secret-free: no path, no store detail, just what could not
+        // be established.
         this.#failure = {
           error: {
             code: 'internal',
             message:
-              'the run could not take ownership of its own id — the host run-lease port refused a fresh run',
+              'the run could not take ownership of its own id — another relavium process claimed it first, or the host run-lease port refused it',
             retryable: false,
           },
         };
@@ -1714,7 +1725,10 @@ class RunExecution {
     decision: GateDecision,
     gateAlreadyResolved: boolean,
   ): Promise<void> {
-    if (!gateAlreadyResolved) this.#assertGatePending(gateId);
+    // Before any write of this resume: a decision the gate's type does not accept is refused here, and the
+    // caller's catch retires the execution and releases its fence (2.6.K).
+    if (!gateAlreadyResolved)
+      this.#assertDecisionFitsGate(this.#assertGatePending(gateId), gateId, decision);
     await this.#startUsageCoverage('legacy_unverified');
     if (!this.#resumeAdmitted && !(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
@@ -1868,6 +1882,24 @@ class RunExecution {
     return gate;
   }
 
+  /**
+   * A human gate's decision must fit its authored `gate_type` (2.6.K, ruled 2026-11-05): `relavium gate --input`
+   * against an approval gate used to write the wrong decision shape with no error. A budget gate keeps its own
+   * rules. Throws {@link EngineStateError} (`invalid_decision`) naming the type and the kinds it accepts.
+   */
+  #assertDecisionFitsGate(gate: PendingGate, gateId: string, decision: GateDecision): void {
+    if (gate.isBudgetGate) return;
+    const config = this.#plan.vertices.get(gate.vertexId)?.config;
+    if (config?.kind !== 'human_in_the_loop') return;
+    const gateType = config.node.gate_type;
+    if (gateAcceptsDecision(gateType, decision.decision)) return;
+    throw new EngineStateError(
+      'invalid_decision',
+      `this ${gateType} gate accepts ${decisionsForGateType(gateType).join(' or ')}, not ${decision.decision}`,
+      { runId: this.runId, gateId },
+    );
+  }
+
   resume(gateId: string, decision: GateDecision, alreadyGated = false): Promise<void> {
     return this.#hostWork.invoke(() => this.#resume(gateId, decision, alreadyGated));
   }
@@ -1902,6 +1934,8 @@ class RunExecution {
       await this.#resumeBudgetGate(gateId, gate, decision, alreadyGated);
       return;
     }
+    // Synchronous, before the claim: a decision the gate's type does not accept is refused with nothing claimed.
+    this.#assertDecisionFitsGate(gate, gateId, decision);
     this.#resolvedGates.add(gateId);
     // …and only now, holding the claim, the effect gate. **`#pendingGates.delete` stays BELOW this await**,
     // and that ordering is load-bearing in the other direction: with the gate already removed, the idle
@@ -4013,7 +4047,8 @@ class RunExecution {
   /**
    * A gate's timeout elapsed with no decision (1.Q). Idempotent: a no-op once the gate resolved (a human
    * beat the timer — resume disarmed it, but a fired-and-queued callback still guards here) or the run
-   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`); `reject` fails the run.
+   * settled. `approve` auto-resolves the gate as approved (`decidedBy: 'timeout'`) — on an `input` gate that
+   * decision does not fit, so the run fails with `run_timeout`; `reject` fails the run.
    */
   async #onGateTimeout(
     gateId: string,
@@ -4134,10 +4169,12 @@ class RunExecution {
   /**
    * Acquire this run's lease and start its heartbeat (ADR-0079 §3, §6).
    *
-   * For a FRESH run this is uncontended by construction — the `runId` came from `ids.newId()` moments ago —
-   * so a refusal here means the host's lease port is broken rather than that someone else owns the run. It
-   * still fails the run rather than proceeding unowned: an unfenced run is exactly what CR-11 exists to
-   * prevent, and silently continuing would make the guarantee optional in practice.
+   * For a FRESH run no other run can own the `runId` — it came from `ids.newId()` moments ago — so a refusal
+   * here means either that a reconcile in another process claimed the run between its `run:started` and this
+   * acquire (the window the caller's comment describes, reachable since the CLI reconciles at every start,
+   * 2.6.G), or that the host's lease port is broken. Either way it fails the run rather than proceeding
+   * unowned: an unfenced run is exactly what CR-11 exists to prevent, and silently continuing would make the
+   * guarantee optional in practice.
    *
    * A RESUMED run already holds a fence, acquired before the checkpoint was read, and passes it in.
    */
@@ -6307,21 +6344,40 @@ export class WorkflowEngine {
   }
 
   /**
-   * Crash reconciliation (startup). For every run the store reports as interrupted-and-not-resumable
-   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`,
-   * or `budget_exceeded` when ordered gate history already records a budget rejection,
-   * continuing that run's `sequenceNumber` — so a crashed run never lingers as a stuck `run:started`.
-   * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
+   * Crash reconciliation (startup). First drains the terminal outbox; then, for each run the store reports as
+   * interrupted-and-not-resumable (started, no terminal event, not parked at a gate), persists a terminal
+   * `run:failed`, continuing that run's `sequenceNumber`: `effect_needs_attention` when the run left an external
+   * effect unresolved or its effect journal cannot be read, else `budget_exceeded` when ordered gate history
+   * records a budget rejection, else `internal`. Returns the reconciled events. Resumable runs (parked at a gate)
+   * are left for `resume`. Also left alone, for a later reconcile: a run that started within one lease TTL of now
+   * (its owner may not hold its lease yet), a run whose lease this pass could not take (another process holds a
+   * live one, or the lease port failed), a run whose held terminal this pass could not write or whose outbox
+   * entry appeared before the repair (or the outbox could not be read again), and every run while the outbox
+   * exists but cannot be read — so in those cases a crashed run can linger until a later start.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
-    // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
-    // terminal here; if reconciliation ran first it would see a run with no durable terminal, conclude it
-    // needs repair, and write `run:failed{internal}` for a run that actually COMPLETED — the exact
-    // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
-    // makes the two writers safe within one process; across processes only this order does.
+    // **Drain the outbox FIRST (ADR-0078 §4).** A crashed process leaves its terminal here, and draining first
+    // lands it in this pass, before the repair loop looks at that run. What keeps the repair off a run whose
+    // terminal is held is the look at the outbox again under the repair's claim (below): without it a repair
+    // would write `run:failed{internal}` for a run that actually COMPLETED, the divergence the outbox exists to
+    // close.
+    //
+    // **The outbox is READ before the open runs are listed**, for the same reason. The drain drops an entry
+    // whose run is not in the list, which is right only if the list is no older than the entry: an owner puts
+    // its terminal only after its own `run:started` is durable, so an entry read first whose run is missing
+    // from a later list has a terminal in the log by then. Listing first let a run that started, finished and
+    // had its terminal refused between the two reads lose that terminal as "already landed".
+    const outbox = await this.#readOutbox();
     const interrupted = await this.#host.store.listInterruptedRuns();
-    const reconciled: RunEvent[] = [...(await this.#drainTerminalOutbox(interrupted))];
+    const drained = await this.#drainTerminalOutbox(interrupted, outbox);
+    const reconciled: RunEvent[] = [...drained.written];
     for (const run of interrupted) {
+      // **A run whose held terminal this pass could not write is left for the next start.** Draining first only
+      // protects a completed run if the repair below then stays away from it: repairing now would write
+      // `run:failed` past the held `run:completed`, and the next drain would drop that entry as already-terminal
+      // — the completed run relabelled failed and its outputs gone, which is exactly what the outbox exists to
+      // prevent (ADR-0078 §4). It keeps reporting `uncertain` until a drain can write what it holds.
+      if (drained.holds(run.runId)) continue;
       if (run.resumable) {
         // A run parked at a gate is intentionally left for the checkpoint/resume path (1.R):
         // rehydrating its full RunExecution from the persisted step_executions + run_events is the
@@ -6330,6 +6386,11 @@ export class WorkflowEngine {
         // unknown_run by design — never silently, and never a corrupted half-run.
         continue;
       }
+      // **A run younger than one lease TTL is left alone.** Its owner persists `run:started` before it can take
+      // the lease (the lease row needs the run row, ADR-0079 §3), so a run with no lease yet may be one that
+      // started a moment ago in another process; and a run started by a version that takes no lease at all
+      // looks the same. Past one TTL, a run with no live lease is treated as crashed, as before.
+      if (this.#startedWithinLeaseTtl(run)) continue;
       // **Never terminate a run another process is working on (ADR-0079 §7).** `reconcile()` writes a
       // terminal for every non-resumable interrupted run, and it runs from a process that may not own any of
       // them. A run holding a LIVE lease is mid-execution somewhere else — leaving it interrupted is correct,
@@ -6340,23 +6401,24 @@ export class WorkflowEngine {
       // under the old generation would leave a zombie able to append past the terminal written here.
       const fence = await this.#claimForReconcile(run.runId);
       if (fence === undefined) continue;
-      const event = RunEventSchema.parse({
-        type: 'run:failed',
-        runId: run.runId,
-        timestamp: this.#host.clock.now(),
-        sequenceNumber: run.lastSequenceNumber + 1,
-        error: {
-          code: run.budgetRejected === true ? 'budget_exceeded' : 'internal',
-          message:
-            run.budgetRejected === true
-              ? 'the recorded budget rejection was reconciled before completion'
-              : 'the run was interrupted before completion and reconciled on restart',
-          retryable: false,
-          correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
-        },
-        partialOutputs: {},
-      });
       try {
+        // **Look at the outbox again, under the claim.** The read above may predate this run's owner putting
+        // its terminal there: the owner was still holding its lease, writing a terminal the store then refused.
+        // The owner puts before it releases its lease, so with the claim taken any such entry is visible now —
+        // and repairing past it would relabel a completed run failed and let the next drain drop its outputs.
+        if (await this.#outboxMayHold(run.runId)) continue;
+        const event = RunEventSchema.parse({
+          type: 'run:failed',
+          runId: run.runId,
+          timestamp: this.#host.clock.now(),
+          sequenceNumber: run.lastSequenceNumber + 1,
+          error: {
+            ...(await this.#reconciledFailure(run)),
+            retryable: false,
+            correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
+          },
+          partialOutputs: {},
+        });
         // **`reconcile()` is a SECOND durable write path** — it bypasses `#emitDurable` entirely, so every
         // property established at that choke point has to be re-established here or it holds for one of two
         // writers (ADR-0078 §3). It passes the guard with the belief it actually has: `listInterruptedRuns`
@@ -6507,30 +6569,117 @@ export class WorkflowEngine {
    * Retry every terminal a prior process could not write — the PUBLIC entry point, and it exists because
    * without one the mechanism was unreachable.
    *
-   * `reconcile()` drains as its first step, but `reconcile()` has no shipping caller: it also REPAIRS every
-   * interrupted run, which is a much larger behaviour to switch on, so no surface has ever called it. That
-   * left `CR-92`'s outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had
-   * no command that would ever move their run to `durable`, while the exit code's own documentation said one
-   * would. Draining is the narrow half a surface can call at start with no other consequence: it writes only
-   * terminals the engine itself already produced, and only for runs whose log still lacks one.
+   * `reconcile()` drains as its first step, but when this was added `reconcile()` had no shipping caller: it
+   * also REPAIRS every interrupted run, which is a much larger behaviour to switch on. That left `CR-92`'s
+   * outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had no command
+   * that would ever move their run to `durable`, while the exit code's own documentation said one would.
+   * Draining is the narrow half a surface can call with no other consequence: it writes only terminals the
+   * engine itself already produced, and only for runs whose log still lacks one. The CLI now calls
+   * `reconcile()` itself (at `run`/`gate` start and on Home open, 2.6.G); this entry point stays for a
+   * surface that wants the drain without the repair.
    */
   async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
+    // Outbox before list, as in `reconcile()`.
+    const outbox = await this.#readOutbox();
     const interrupted = await this.#host.store.listInterruptedRuns();
-    return this.#drainTerminalOutbox(interrupted);
+    return (await this.#drainTerminalOutbox(interrupted, outbox)).written;
   }
 
-  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<readonly RunEvent[]> {
-    let held: readonly RunEvent[];
+  /** The outbox's entries, or `undefined` when it cannot be read. */
+  async #readOutbox(): Promise<readonly RunEvent[] | undefined> {
     try {
-      held = await this.#host.terminalOutbox.list();
+      return await this.#host.terminalOutbox.list();
     } catch {
-      return [];
+      return undefined;
     }
+  }
+
+  /** Whether the outbox holds a terminal for `runId` now — `true` when it cannot be read, since nothing then proves it does not. */
+  async #outboxMayHold(runId: string): Promise<boolean> {
+    const held = await this.#readOutbox();
+    return held === undefined || held.some((event) => event.runId === runId);
+  }
+
+  /**
+   * Whether `run` started within one lease TTL of now by this host's clock, on either side: a start slightly in the
+   * future (skew between processes) counts as recent, but one more than a TTL ahead means the clock moved, and the
+   * run falls back to the lease rule rather than waiting for the clock to catch up.
+   */
+  #startedWithinLeaseTtl(run: InterruptedRun): boolean {
+    if (run.startedAtMs === undefined) return false;
+    const age = this.#nowMs() - run.startedAtMs;
+    return age > -RUN_LEASE_TTL_MS && age < RUN_LEASE_TTL_MS;
+  }
+
+  /**
+   * The error a reconciled run is settled with. An unresolved external effect comes first: such a run must not
+   * read as an ordinary `internal` failure, because a caller re-runs those, and §8 of effect-journal.md says an
+   * unresolved effect is surfaced and never retried automatically. A journal that cannot be read counts as
+   * unresolved, as it does at the resume gate.
+   */
+  async #reconciledFailure(
+    run: InterruptedRun,
+  ): Promise<{ readonly code: ErrorCode; readonly message: string }> {
+    if (this.#effectResume !== undefined) {
+      let unresolved: readonly UnresolvedEffect[] | undefined;
+      try {
+        unresolved = await this.#effectResume.unresolvedForRun(run.runId);
+      } catch {
+        unresolved = undefined;
+      }
+      if (unresolved === undefined) {
+        return {
+          code: 'effect_needs_attention',
+          message:
+            'the run was interrupted before completion and its effect journal could not be read; check its ' +
+            'external effects before running it again',
+        };
+      }
+      if (unresolved.length > 0) {
+        return {
+          code: 'effect_needs_attention',
+          message:
+            `the run was interrupted before completion with ${String(unresolved.length)} external effect(s) ` +
+            'unresolved: ' +
+            unresolved
+              .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
+              .join(', ') +
+            '. Check the target before running it again.',
+        };
+      }
+    }
+    return run.budgetRejected === true
+      ? {
+          code: 'budget_exceeded',
+          message: 'the recorded budget rejection was reconciled before completion',
+        }
+      : {
+          code: 'internal',
+          message: 'the run was interrupted before completion and reconciled on restart',
+        };
+  }
+
+  /**
+   * Write every held terminal it can, and say which runs still hold one: `written` are the terminals that landed,
+   * `holds(runId)` is true for a run whose held terminal stayed in the outbox this pass (its claim was declined or
+   * its write failed). An outbox that could not be read (`held` is `undefined`) holds every run, because nothing
+   * can then prove a run has no terminal waiting — {@link reconcile} repairs none of them rather than risk
+   * relabelling a completed run. `held` must be read before `interrupted` is listed (see {@link reconcile}).
+   */
+  async #drainTerminalOutbox(
+    interrupted: readonly InterruptedRun[],
+    held: readonly RunEvent[] | undefined,
+  ): Promise<{
+    readonly written: readonly RunEvent[];
+    readonly holds: (runId: string) => boolean;
+  }> {
+    if (held === undefined) return { written: [], holds: () => true };
     // `listInterruptedRuns` is the port's own answer to "does this run still lack a terminal" — a run that
     // has one is not in it. Using it rather than adding a read method keeps the drain inside the three
     // methods `RunStore` already declares, which is what lets a Phase-2 cloud store implement this at all.
     const stillOpen = new Map(interrupted.map((r) => [r.runId, r]));
     const written: RunEvent[] = [];
+    const stillHeld = new Set<string>();
     for (const event of held) {
       const runId = event.runId;
       if (runId === undefined) continue;
@@ -6548,7 +6697,10 @@ export class WorkflowEngine {
       // writing this would durably contradict the run it is finishing right now. Left in the outbox and
       // re-evaluated on the next start, when it will almost always be dropped as already-terminal.
       const fence = await this.#claimForReconcile(runId);
-      if (fence === undefined) continue;
+      if (fence === undefined) {
+        stillHeld.add(runId);
+        continue;
+      }
       try {
         await this.#host.store.persistEvent(event, {
           expectedLastSequenceNumber: open.lastSequenceNumber,
@@ -6562,12 +6714,13 @@ export class WorkflowEngine {
         written.push(event);
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the
-        // run keeps reporting `uncertain`.
+        // run keeps reporting `uncertain`, and `reconcile()` leaves it unrepaired.
+        stillHeld.add(runId);
       } finally {
         await this.#releaseReconcileClaim(runId, fence);
       }
     }
-    return written;
+    return { written, holds: (runId) => stillHeld.has(runId) };
   }
 
   /** Drop an outbox entry, swallowing a failure — a stale entry costs one read next start, never a wrong terminal. */

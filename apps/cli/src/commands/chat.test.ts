@@ -81,6 +81,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   autoCompact: undefined,
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
+  maxTokens: undefined,
   onExceed: undefined,
   strictCostCap: false,
   allowedCommands: undefined,
@@ -97,6 +98,17 @@ function globalOptions(cwd: string): GlobalOptions {
 function writeOutputEstimate(cwd: string): void {
   mkdirSync(join(cwd, '.relavium'), { recursive: true });
   writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+}
+
+/** Where `/export` writes (MVP-A3): the project's workflows/ under the session title's slug. */
+function exportedAt(cwd: string, slug: string): string {
+  return join(cwd, '.relavium', 'workflows', `${slug}.relavium.yaml`);
+}
+
+/** Make `/export` refuse deterministically: `.relavium/workflows` is a FILE, so the catalog cannot be read. */
+function blockWorkflowsDir(cwd: string): void {
+  mkdirSync(join(cwd, '.relavium'), { recursive: true });
+  writeFileSync(join(cwd, '.relavium', 'workflows'), '');
 }
 
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
@@ -1107,14 +1119,21 @@ describe('chatCommand', () => {
       );
       expect(err()).not.toContain('PRIVATE_');
       expect(out()).not.toContain('note: exported workflow');
-      expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+      // The file name is the title's slug by design (MVP-A3) — the transcript text itself is not echoed.
+      expect(existsSync(exportedAt(cwd, 'private-user-sentinel'))).toBe(true);
       if (json) {
         const events = parseNdjson<{ type: string; workflowPath?: string }>(out());
         expect(events.filter((event) => event.type === 'session:exported')).toEqual([
-          expect.objectContaining({ workflowPath: join(cwd, 'id-0.relavium.yaml') }),
+          expect.objectContaining({ workflowPath: exportedAt(cwd, 'private-user-sentinel') }),
         ]);
+        // The documented split: under --json the event carries the path, and no human path or run-hint line is
+        // printed on either stream.
+        expect(err()).not.toContain('exported session to');
+        expect(`${err()}${out()}`).not.toContain('run it with');
       } else {
-        expect(err()).toContain(`exported session to ${join(cwd, 'id-0.relavium.yaml')}`);
+        expect(err()).toContain(
+          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
+        );
       }
     },
   );
@@ -1126,7 +1145,7 @@ describe('chatCommand', () => {
     'omits the live $mode continuity notice and exported event after a refused write',
     async ({ json }) => {
       const { d, out, err } = deps([], [textTurn('hi')]);
-      mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+      blockWorkflowsDir(cwd);
       await chatCommand(
         { agent: undefined },
         {
@@ -1155,7 +1174,7 @@ describe('chatCommand', () => {
     client = createClient(join(home, 'export-notice.db'));
     runMigrations(client.db);
     const { d, err } = deps([], [textTurn('PRIVATE_ASSISTANT_SENTINEL')]);
-    if (refuse) mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+    if (refuse) blockWorkflowsDir(cwd);
     const stdout = new OwnedTtyOutput();
     const stdin = new OwnedTtyInput();
     let app: ReturnType<typeof render> | undefined;
@@ -1204,15 +1223,27 @@ describe('chatCommand', () => {
             expect(frames).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
             const warning = notices.filter((text) => text.startsWith('note: exported workflow'));
             expect(warning, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toHaveLength(refuse ? 0 : 1);
+            // MVP-A3: the path, the run hint and a refusal ride the transcript too — a raw stderr line is
+            // overdrawn by the next full-screen frame and discarded with the alternate buffer.
             if (refuse) {
               expect(frames).not.toContain('exported workflow is a scaffold');
-              expect(err()).toContain('export failed:');
+              expect(notices.some((text) => text.startsWith('export failed:'))).toBe(true);
+              expect(frames).toContain('export failed:');
+              expect(err()).not.toContain('export failed:');
             } else {
               expect(frames, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toContain(
                 'exported workflow is a scaffold',
               );
               expect(warning[0]).not.toContain('PRIVATE_');
-              expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+              expect(existsSync(exportedAt(cwd, 'private-user-sentinel'))).toBe(true);
+              // The notice wraps at the frame width, so the frame shows its start and the store holds it whole.
+              expect(frames).toContain('exported session to');
+              expect(
+                notices.some((text) =>
+                  text.includes('run it with `relavium run private-user-sentinel`'),
+                ),
+              ).toBe(true);
+              expect(err()).not.toContain('exported session to');
             }
             expect(err()).not.toContain('note: exported workflow');
             await ctx.processLine('/exit');
@@ -1249,37 +1280,40 @@ describe('chatCommand', () => {
     };
     await chatCommand({ agent: undefined }, { ...d, drive: probingDrive });
 
-    const path = join(cwd, 'id-0.relavium.yaml');
-    expect(existsSync(path)).toBe(true);
-    expect(err()).toContain(`exported session to ${path}`);
+    expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
+    expect(err()).toContain(
+      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')} — run it with \`relavium run hello\``,
+    );
     expect(statusAfterExport).toBe('active'); // /export left the live row untouched (NOT 'exported')
     expect(store.loadFull(sessionId)?.messages).toHaveLength(4); // both turns persisted — REPL continued
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // /exit's terminal
   });
 
   it('re-exports on a second /export (force overwrites the session OWN scaffold)', async () => {
-    // The path is keyed on the session id, so a 2nd /export targets the same file — it must overwrite, not
-    // fail "already exists" (which a force:false regression would produce on the second pass).
+    // A 2nd /export rewrites this session's own file in place (MVP-A3, recognized from its
+    // `metadata.relaviumExport`) — it must neither fail nor take the next id as if its own earlier export were
+    // another workflow.
     const { d, err } = deps([], [textTurn('hi')]);
     const twiceDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
       void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello');
-      await ctx.processLine('/export'); // creates id-0.relavium.yaml
-      await ctx.processLine('/export'); // must overwrite it (force:true), not error
+      await ctx.processLine('/export'); // creates .relavium/workflows/hello.relavium.yaml
+      await ctx.processLine('/export'); // must rewrite it in place, not error and not add hello-2
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
     await chatCommand({ agent: undefined }, { ...d, drive: twiceDrive });
-    expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
-    expect(err()).not.toContain('export failed:'); // force:false would fail the 2nd pass
+    expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
+    expect(existsSync(exportedAt(cwd, 'hello-2'))).toBe(false);
+    expect(err()).not.toContain('export failed:');
   });
 
   it('reports a real /export failure on stderr without crashing the REPL', async () => {
-    // A DIRECTORY at the target path makes writeFileSync throw EISDIR — a deterministic /export failure that
-    // exercises the catch arm. The REPL must report it and still drive to /exit (status 'ended'), not crash.
+    // A FILE where `.relavium/workflows` should be makes the export refuse deterministically, exercising the
+    // catch arm. The REPL must report it and still drive to /exit (status 'ended'), not crash.
     const { d, err, store, sessionId } = deps(['hello', '/export', '/exit'], [textTurn('hi')]);
-    mkdirSync(join(cwd, 'id-0.relavium.yaml')); // occupy the scaffold path with a dir ⇒ write fails
+    blockWorkflowsDir(cwd);
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain('export failed:'); // the catch arm reported the fault
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // the REPL survived and ended cleanly
@@ -1677,7 +1711,8 @@ describe('chatCommand', () => {
     // The initial session builds fine; the /clear rebuild REJECTS (e.g. a transient key/MCP fault).
     const buildSession: typeof buildChatSession = (opts) => {
       if (builds++ === 0) return buildChatSession(opts);
-      return Promise.reject(new Error('no API key for the fresh session'));
+      // A message that already ends its sentence, as the key pre-flight's remedy does (MVP-A4).
+      return Promise.reject(new Error('no API key for the fresh session.'));
     };
     const driveClear: ChatDriver = (ctx) => {
       ctx.startSession();
@@ -1689,6 +1724,7 @@ describe('chatCommand', () => {
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after /clear'); // actionable, swap-kind-aware hint
     expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(err()).toContain('fresh session. Your previous conversation is saved'); // one full stop, not two
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
 
@@ -2035,7 +2071,7 @@ describe('chatCommand', () => {
       (e) => e.type === 'session:exported',
     );
     expect(exported).toBeDefined(); // /export emits the event on the --json stream, not just a stderr line
-    expect(exported?.workflowPath).toBe(join(cwd, 'id-0.relavium.yaml'));
+    expect(exported?.workflowPath).toBe(exportedAt(cwd, 'hello'));
   });
 
   it('strips control bytes from an unknown-slash echo (terminal-injection guard) and lists /export', async () => {

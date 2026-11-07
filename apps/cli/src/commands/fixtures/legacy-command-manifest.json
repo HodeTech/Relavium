@@ -273,12 +273,17 @@
   {
     "id": "list",
     "label": "List workflows",
-    "description": "List discovered workflows (or, with --agents, agents) in the current project.",
+    "description": "List discovered workflows (or, with --agents, agents) in the current project, or with --runs every recorded run.",
     "args": [
       {
         "name": "agents",
         "type": "boolean",
         "description": "list agents instead of workflows"
+      },
+      {
+        "name": "runs",
+        "type": "boolean",
+        "description": "list recorded runs, newest first, instead of workflows"
       }
     ],
     "effect": "read"
@@ -300,7 +305,14 @@
   {
     "id": "status",
     "label": "Show status",
-    "description": "Show active/paused runs and their per-node status.",
+    "description": "Show active/paused runs, or one run by id, and their per-node status.",
+    "args": [
+      {
+        "name": "runId",
+        "type": "string",
+        "description": "one run to show, active or finished (omit ⇒ every active run)"
+      }
+    ],
     "effect": "read"
   },
   {

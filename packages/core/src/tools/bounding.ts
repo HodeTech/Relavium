@@ -81,9 +81,10 @@ export function redactInlineMedia(value: unknown): unknown {
 
 /**
  * The size of the inline media a text projection replaced with a marker. The model-facing value still holds
- * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1), so media inside a dispatch
- * result is ordinary text to the model and to the effect journal. A PR #96 review found a 30 MiB data URI
- * measured as its 25-character marker, passed whole to the model and settled into `history.db`.
+ * those bytes — a builtin's media rides `attachMedia` instead (ADR-0089 §1). The seam refuses raw media bytes
+ * in `tool_result.result` (ADR-0031), while the effect journal settles the value as it is. A PR #96 review
+ * found a 30 MiB data URI measured as its 25-character marker and settled whole into `history.db`; counting
+ * the bytes turns such a result into a media-free preview.
  */
 interface OmittedMedia {
   bytes: number;
@@ -1140,12 +1141,11 @@ const HOST_SHAPED_MAX_LENGTH = 260;
  * its last `@`. This projection masks the userinfo and reads every key and parameter in it but its
  * username's; their values keep their own extent and the rules' ranges merge
  * (`https://gateway?password=P@ss.word1` projects to `https://[redacted]`).
- * The projection differs from that backstop by design: its authority also ends at `"`, `'`,
- * `}` and `]`, the delimiters of the JSON and quoted texts it reads, so userinfo containing one of
- * them (an already-masked `[REDACTED]` password among them) is left as it is; it recognizes any
- * scheme of up to 32 characters rather than a finite list; and a userinfo with no password is a
- * vanity handle below 16 characters and masked from 16 on, under every scheme. A `,` or `/` in a
- * password is read on to its `@` ({@link passwordPastDelimiter}).
+ * The projection differs from that backstop by design: its authority also ends at `"`, `'`, `,`,
+ * `}` and `]`, so userinfo containing one of them (an already-masked `[REDACTED]` password among
+ * them) is left as it is; it recognizes any scheme of up to 32 characters rather than a finite list;
+ * and a userinfo with no password is a vanity handle below 16 characters and masked from 16 on,
+ * under every scheme.
  */
 function isPublicQueryContact(userinfo: string, query: number): boolean {
   // A longer prefix cannot be a hostname, and an unbounded dotted run would exhaust V8's RegExp
@@ -1153,49 +1153,6 @@ function isPublicQueryContact(userinfo: string, query: number): boolean {
   if (query > HOST_SHAPED_MAX_LENGTH) return false;
   return HOST_SHAPED_AUTHORITY.test(userinfo.slice(0, query)) && userinfo.includes('=', query + 1);
 }
-
-/**
- * The `@` of a password that holds a `,` or `/`, or -1. The authority scan stops at either, so
- * `https://user:pa,ss@host` and `https://user:pa/ss@host` left the password's tail public (a PR #96
- * review finding; RFC 3986 admits a raw `,` in userinfo, and a raw `/` is a malformed URL a
- * credential can still sit in). Reads on past them only, to the first `@` within 512 characters. A
- * port (`host:8080/a@b`, `host:8080,bob@x.io`), a public query contact as the authority scan reads
- * one ({@link isPublicQueryContact}), another scheme, and the delimiters the authority keeps
- * (whitespace, quotes, `}`, `]`) keep the text public.
- */
-function passwordPastDelimiter(text: string, start: number, end: number): number {
-  if (text[end] !== ',' && text[end] !== '/') return -1;
-  const authority = text.slice(start, end);
-  const colon = authority.indexOf(':');
-  if (colon < 0 || /^\d*$/.test(authority.slice(colon + 1))) return -1;
-  const query = authority.search(/[?#]/);
-  if (query >= 0 && isPublicQueryContact(authority, query)) return -1;
-  PASSWORD_TAIL.lastIndex = end;
-  const tail = PASSWORD_TAIL.exec(text)?.[0];
-  if (tail === undefined || tail.includes('://')) return -1;
-  return end + tail.length - 1;
-}
-
-/**
- * Mask a userinfo whose password holds a `,` or `/` ({@link passwordPastDelimiter}); its username owns the
- * text before the first `:`, as in {@link visitUrlUserinfo}. Returns where the scheme scan resumes: after
- * the `@` it masked through, or at `start` when there is none.
- */
-function maskPasswordPastDelimiter(
-  text: string,
-  schemeStart: number,
-  start: number,
-  end: number,
-  mask: SecretSpanVisitor,
-): number {
-  const passwordAt = passwordPastDelimiter(text, start, end);
-  if (passwordAt < 0) return start;
-  mask(start, passwordAt, '[redacted]', { schemeStart, ownsUntil: text.indexOf(':', start) });
-  return passwordAt + 1;
-}
-
-/** A password's tail past a `,` or `/`, through its `@`; bounded so a long run is never rescanned. */
-const PASSWORD_TAIL = /[^\s"'}\]?#@]{0,512}@/y;
 
 function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
   if (!text.includes('://')) return;
@@ -1209,10 +1166,7 @@ function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
     const firstQuery = authority.search(/[?#]/);
     const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
     const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
-    if (at < 0) {
-      scheme.lastIndex = maskPasswordPastDelimiter(text, match.index, start, end, mask);
-      continue;
-    }
+    if (at < 0) continue;
     const userinfo = authority.slice(0, at);
     const colon = userinfo.indexOf(':');
     const query = userinfo.search(/[?#]/);
@@ -1453,18 +1407,26 @@ function redactArgVector(
   const out: unknown[] = [];
   let redactNext: string | undefined;
   for (const item of items) {
-    if (redactNext !== undefined) {
-      const masked = redactCredentialArgument(redactNext, item, whole);
-      out.push(masked ?? redactSecretShapedWalk(item, seen, project, collide, whole));
-      redactNext = undefined;
+    // A credential flag in value position may be the previous flag's value (`--password -MySecret`) or a flag
+    // of its own (`--ask-password --password <pw>`): it is masked as a value and still masks the element after
+    // it, so neither reading leaks. A `-u`/`--user` value that is no user:password pair is processed as any
+    // element (D64 round-1 to round-3 findings on the PR #96 correction).
+    const flag = typeof item === 'string' && isCredentialFlag(item);
+    const masked =
+      redactNext === undefined ? undefined : redactCredentialArgument(redactNext, item, whole);
+    redactNext = undefined;
+    if (masked !== undefined) {
+      out.push(masked);
+      if (flag) redactNext = item;
       continue;
     }
-    const inline = typeof item === 'string' ? redactInlineCredential(item, whole) : undefined;
+    const inline =
+      typeof item === 'string' ? redactInlineCredential(item, project, whole) : undefined;
     if (inline !== undefined) {
       out.push(inline);
       continue;
     }
-    if (typeof item === 'string' && isCredentialFlag(item)) redactNext = item;
+    if (flag) redactNext = item;
     out.push(redactSecretShapedWalk(item, seen, project, collide, whole));
   }
   return out;
@@ -1474,15 +1436,34 @@ function redactArgVector(
  * One argument that carries its own credential, masked: a credential flag's `--flag=value` spelling or curl's
  * glued `-ualice:secret`. `undefined` when the argument is neither, so the vector walks it as usual.
  */
-function redactInlineCredential(item: string, whole: WholeMask): string | undefined {
+function redactInlineCredential(
+  item: string,
+  project: TextProjection,
+  whole: WholeMask,
+): string | undefined {
   const separator = item.indexOf('=');
   const flag = separator > 0 ? item.slice(0, separator) : '';
   if (isCredentialFlag(flag)) {
     const masked = redactCredentialArgument(flag, item.slice(separator + 1), whole);
-    if (masked !== undefined) return `${flag}=${masked}`;
+    if (masked !== undefined) {
+      return keepsFlagName(item, flag, project) ? `${flag}=${masked}` : whole(item, '[redacted]');
+    }
   }
   const glued = gluedUserPassword(item);
-  return glued === undefined ? undefined : `-u${whole(glued, '[redacted]')}`;
+  if (glued === undefined) return undefined;
+  return project(item).startsWith('-u')
+    ? `-u${whole(glued, '[redacted]')}`
+    : whole(item, '[redacted]');
+}
+
+/**
+ * Whether a credential flag's `--flag=value` spelling keeps its name visible: an anchored name always has; a
+ * last-word name only where the text rules leave it in place, so this spelling never shows a name they mask
+ * (`--db-token=…` reads as a key/value pair, a secret shape may sit in the name). Otherwise the element is
+ * masked whole.
+ */
+function keepsFlagName(item: string, flag: string, project: TextProjection): boolean {
+  return SECRETISH_FLAG.test(flag) || project(item).startsWith(`${flag}=`);
 }
 
 /**

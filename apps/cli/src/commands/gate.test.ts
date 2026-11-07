@@ -66,14 +66,14 @@ vi.mock('../mcp/consent-prompt.js', () => ({
  * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
  * into deterministically (they need a concurrent-settle race).
  *
- * `drainTerminalOutbox` is stubbed too because `gateCommand` calls it at start (ADR-0078 §4/§5). A stub that
+ * `reconcile` is stubbed too because `gateCommand` calls it at start (ADR-0078 §4/§5, 2.6.G). A stub that
  * omits it throws a `TypeError` the command's own error mapping then reports as an invocation fault — which
  * is how these two tests found the wiring rather than the wiring finding them.
  */
 function stubEngine(resumeFromCheckpoint: WorkflowEngine['resumeFromCheckpoint']): WorkflowEngine {
   return {
     resumeFromCheckpoint,
-    drainTerminalOutbox: () => Promise.resolve([]),
+    reconcile: () => Promise.resolve([]),
   } as unknown as WorkflowEngine;
 }
 
@@ -528,6 +528,42 @@ describe('gateCommand', () => {
         ),
       ).toBe(false);
     }
+  });
+
+  it('resumes a historical input gate that approves on timeout — refused for new authoring, never for a parked run', async () => {
+    const base = parseWorkflow(GATED, { source: 'gate.test' });
+    const original: WorkflowDefinition = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        nodes: base.workflow.nodes.map((node) =>
+          node.id === 'g'
+            ? { ...node, gate_type: 'input', timeout_ms: 86_400_000, timeout_action: 'approve' }
+            : node,
+        ),
+      },
+    };
+    const freshError = /an input gate cannot approve on timeout/;
+    expect(() => WorkflowSchema.parse(original)).toThrow(freshError);
+    expect(() => parseWorkflow(JSON.stringify(original), { source: 'gate.test' })).toThrow(
+      freshError,
+    );
+    const definition = WorkflowSnapshotSchema.parse(original);
+    expect(definition).toEqual(original);
+
+    const { runId } = await setupPausedWorkflow(definition, { n: 7 });
+    expect(reader().loadRun(runId)?.status).toBe('paused');
+    const snapshot = loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot;
+
+    const { io } = captureIo();
+    expect(await gateCommand({ runId, input: '"us-east-1"' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(reader().loadRun(runId)?.status).toBe('completed');
+    expect(
+      reader()
+        .loadRunEvents(runId)
+        .filter((event) => event.type === 'human_gate:resumed'),
+    ).toEqual([expect.objectContaining({ runId, nodeId: 'g', decision: 'input_provided' })]);
+    expect(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot).toBe(snapshot);
   });
 
   describe('secret re-supply (ADR-0083 §6)', () => {
@@ -1360,6 +1396,44 @@ workflow:
     });
   });
 
+  it("refuses a decision the gate's type does not accept before the engine is built, and keeps the run parked (2.6.K)", async () => {
+    const approval = await setupPausedRun();
+    const input = await setupPausedRun(INPUT_GATED, {});
+    for (const [runId, flags, hint] of [
+      [approval.runId, { input: 'us-east-1' }, 'is an approval gate — use --approve or --reject'],
+      [input.runId, { approve: true }, 'is an input gate — use --input <json> or --reject'],
+    ] as const) {
+      const { io } = captureIo();
+      let built = false;
+      const caught: unknown = await gateCommand(
+        { runId, ...flags },
+        {
+          ...deps(io),
+          buildEngine: (options) => {
+            built = true;
+            return buildEngine(options);
+          },
+        },
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+      expect(isCliError(caught) && caught.message).toContain(hint);
+      expect(built).toBe(false);
+      expect(
+        reader()
+          .loadRunEvents(runId)
+          .some((e) => e.type === 'human_gate:resumed'),
+      ).toBe(false);
+    }
+    // A rejection fits every human gate type.
+    const { io } = captureIo();
+    expect(await gateCommand({ runId: input.runId, reject: true }, deps(io))).toBe(
+      EXIT_CODES.success,
+    );
+  });
+
   it.each([false, true])(
     'maps a closed-handle resume to an idempotent exit 0; json=%s',
     async (json) => {
@@ -1599,6 +1673,17 @@ describe('selectGate', () => {
     if (sel.kind === 'invalid') {
       expect(sel.message).toContain('g1');
       expect(sel.message).toContain('g2');
+    }
+  });
+
+  it('prints an already-resolved gate id from the checkpoint on one line', () => {
+    const forged = 'g\u001b[2J\nFAKE';
+    const sel = selectGate(checkpoint({ resolvedGateIds: [forged] }), 'paused', forged);
+    expect(sel.kind).toBe('idempotent');
+    if (sel.kind === 'idempotent') {
+      expect(sel.message).toContain('FAKE');
+      expect(sel.message).not.toContain('\u001b');
+      expect(sel.message).not.toContain('\n');
     }
   });
 

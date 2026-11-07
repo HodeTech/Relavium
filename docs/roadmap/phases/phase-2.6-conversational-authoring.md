@@ -194,7 +194,12 @@ the same core.
   [`built-in-tools.md`](../../reference/shared-core/built-in-tools.md) /
   [`workflow-yaml-spec.md`](../../reference/contracts/workflow-yaml-spec.md), which currently document
   these tools as unconditionally available. Does **not** wire the arms themselves — that stays out of
-  scope per the recorded 2.5.E design boundary (Phase 3+).
+  scope per the recorded 2.5.E design boundary (Phase 3+). **Ruled 2026-11-05 (maintainer, MVP-1):** the
+  pre-flight refuses such a workflow before the run starts (exit `2`), naming the tool; MCP-discovered tools are
+  exempt. Until MVP-6 back-ports `validateAuthoredWorkflow`, the check is `validateWorkflowToolArms`, beside
+  `validateWorkflowWithCatalog`, and `relavium run` calls it before any key is read. **Landed 2026-11-05 (MVP-1
+  1a)**; its limits ($ref grants, `mcp_call` without a server, resumes) are in
+  [built-in-tools.md](../../reference/shared-core/built-in-tools.md#the-built-in-tools).
   *(M · `apps/cli/src/engine/build-engine.ts`, `apps/cli/src/engine/tool-host/assemble.ts`; #37, G29)*
 - **Catalog-aware `max_tokens` pre-flight** *(manual-test finding 2026-07-11):* extend
   `validateWorkflowWithCatalog` so `create`/`import`/`export` reject-or-clamp a `max_tokens` that exceeds the
@@ -631,9 +636,16 @@ last drill-down position.
   settle per their timeout policy via 2.6.K's re-arm. Confirmed live by the review — `engine.reconcile()`
   is tested in `packages/core` but called from nowhere in `apps/cli` today, so a killed/crashed run stays
   `'running'` forever. *(S · `packages/core/src/engine/engine.ts` (`reconcile`), `apps/cli`; #229)*
+  **Wired 2026-11-05 (MVP-1 1b):** `run`, `gate` and `budget resume` call `engine.reconcile()` at start, and the
+  Home calls it on open, before its first read of the runs; `status` stays read-only, and the browser reads come
+  with the browsers. Wiring it exposed a second-terminal race (a reconcile between a run's `run:started` and its
+  lease acquire), so the store now refuses a second terminal
+  ([database-schema.md](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior)).
+  Expired gates settling through 2.6.K's re-arm remain open.
 - Non-interactive parity: extend the read *commands* minimally (`relavium list --runs`, `status <runId>`
   for finished runs, `logs --follow/--failed`) so scripting keeps pace with the TUI —
-  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant.
+  [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant. **`list --runs` and `status <runId>`
+  landed 2026-11-05 (MVP-1 1a)**; `logs --follow/--failed` remain open.
 - **Detached-run notification**: when a run is started as "Run detached" from the Home and completes
   (or fails), surface a notification on the Home's next idle tick — an `Attention required` row with
   the outcome, linked to the run detail. For a chat that remains open with a detached run in the
@@ -798,6 +810,9 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
   no error. Add `assertDecisionMatchesGateType` in `gate/decision.ts`, with `WorkflowEngine#resume` gaining
   the same check as defense-in-depth, as part of the shared resume core this task extracts.
   *(M · `apps/cli/src/gate/decision.ts`, `packages/core/src/engine/engine.ts` (`resume`); #0)*
+  **Ruled 2026-11-05 (maintainer, MVP-1):** an `approval` or `review` gate accepts `approved` or `rejected`; an
+  `input` gate accepts `input_provided` or `rejected`. The engine reads the gate type from the workflow
+  definition's `gate_type`, since the checkpoint does not carry it.
 - **`relavium budget resume`** — **MOVED to Phase 2.6.5 `W7` on 2026-09-18.**
   [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) makes an approval a
   shown, frozen allowance, and the inline `run` prompter is the only way to approve a budget gate today — so
@@ -1306,11 +1321,16 @@ models the four shipped adapters can **already** call and to ADR-0065 custom end
   untrusted-community-pricing-into-a-safety-control is a co-gate.
 - **Usage capture for streams that end without usage** *(added 2026-11-04, after the MVP; 2.6.C's open
   obligation, [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §3 exceptions
-  1–2).* An egress that streamed content but ended without a usage chunk, and a mid-stream failure, are
-  recorded as 0 on both sides of the reconciliation invariant, so reported spend under-estimates the
-  provider's invoice. Capture or estimate their usage at the seam and mark it as such, or show the
-  under-report on the money surfaces; ADR-0070 §3's exceptions narrow with it. A PR #96 review found 2.6.C's
-  "filed against 2.6.Q" with no item here; the maintainer ruled this phase owns it.
+  1–2).* Since W8, an egress that streamed content but ended without a usage chunk, and a mid-stream
+  failure, carry `missing` or `partial` usage evidence
+  ([ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)): their realized
+  money stays 0, and the money surfaces already qualify the total ("usage unknown for N calls") without
+  inventing a quantity. What remains is capture: where a provider does report usage that an adapter still
+  drops, if any, read it at the seam so the realized total stops under-reporting, and ADR-0070 §3's
+  exceptions narrow with it. An estimate is out of scope here: it would need an ADR amending ADR-0104's
+  rule that missing evidence contains no invented quantities. A PR #96 review found 2.6.C's "filed against
+  2.6.Q" with no item here; the maintainer ruled this phase owns it, and the D64 round-1 review narrowed it
+  to what W8 left (2026-11-04).
 - **Tests:** an over-ceiling `max_tokens` is clamped per model; an OpenAI reasoning id uses
   `max_completion_tokens`; an out-of-range effort never reaches the wire and the picker offers only accepted
   tiers; a reachable-but-unpriced id gets a models-dev price so the cap applies (or is refused under
@@ -1346,7 +1366,7 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
 | MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
 | MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
-| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling, clamped, with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. |
+| MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling (not clamped: the chat's per-attempt deadline scales with it instead, ADR-0101 2026-11-06; chat surfaces only), with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
 | MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
@@ -1689,7 +1709,7 @@ Part of [roadmap/](../README.md). Carry-over hardening lives in [../deferred-tas
 ### Not started yet
 
 The rest of **Phase 2.6 — Conversational Authoring and the First-Class CLI**
-([phase-2.6-conversational-authoring.md](), in progress —
+([phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), in progress —
 **2.6.F is done**,
 unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
 research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for

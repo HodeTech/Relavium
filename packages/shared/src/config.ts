@@ -266,6 +266,9 @@ export const ChatConfigSchema = z
     auto_compact: z.boolean().optional(),
     compact_threshold: z.number().gt(0).lte(1).optional(),
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
+    // The output cap for a chat whose bound agent authors no `max_tokens` (MVP-A7, ADR-0101 amendment of
+    // 2026-11-05). Absent ⇒ an Anthropic chat on the official endpoint uses the model's catalog ceiling.
+    max_tokens: positiveInt.optional(),
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
     // Refuse a turn on a model we cannot PRICE (ADR-0071 §K7). Default false. The chat counterpart of a workflow
     // `budget.strict_cost_cap`: an unpriced model is a hole in the cap, and a user who set `max_cost_microcents`

@@ -33,6 +33,17 @@ A tool declaration in YAML has a `type` discriminator:
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
 | `read_media` | Read a produced/received media asset by its durable `media://sha256-…` handle (**whole handle** — no byte range), so a media-capable model can look at it. | a short **text descriptor** (mime type, byte length, handle) as the `tool_result`; the media itself arrives as a top-level `media` part on a **marked, engine-synthesized `user` message** appended right after it ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1) | **Scope-set authz** — the requesting `session`/`workspace` must be in the handle's `allowedScopes` ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1); knowing a sha256 is **not** authorization; read-only (bypasses the action gate), secret-free `media_scope_denied`. The tool never touches bytes: it authorizes a handle and describes it, and the chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1), so a failover or a resume re-resolves from the canonical handle. The synthesized message carries a fixed engine-authored preamble naming the tool — it must never present as the user's own words. Because the media rides the ordinary media-INPUT rail it is bounded by it: `read_media` **refuses** a video, a PDF (never inline at any size) or an image/audio handle over `INLINE_MEDIA_CEILING`, with a correctable `invalid_args` naming the limit — so the model picks another handle instead of the next request dying on a schema error after the tool has already run. A response's tool calls may deliver at most `ADMISSION_CEILINGS.mediaAttachmentsPerResponse` attachments, refused by the engine before the seam's own per-message cap. All of a response's attachments arrive on **one** synthesized message appended after the FINAL tool result — after every one of them, never interleaved between two — a tool result must stay contiguous with its siblings or the providers reject the turn. And a model that does not accept image input refuses the turn rather than being handed a descriptor for something it never received. *(The delivery path ships as of `W5`/`CR-50`. The host `MediaReadAccess` delegate and the `session`/`workspace` scope population remain unwired in production — see [deferred-tasks.md](../../roadmap/deferred-tasks.md); absent the delegate the tool fails closed with `tool_unavailable`.)* |
 
+> **Where each tool runs.** `http_request` and `web_search` need the host's egress arm, `read_clipboard` and
+> `notify` its os arm. The CLI wires both only in the approval-gated chat host; `relavium run` (and `gate`) wire
+> neither, so a workflow whose agent node grants one of these four is refused before the run starts (exit `2`),
+> naming the tool, rather than failing with `tool_unavailable` partway through (2.6.A, MVP-1). The check reads the
+> grant in the workflow file: a node's `tools:`, or its inline agent's. A `$ref`'d agent's own grant is not
+> resolvable from the file and is not checked. MCP tools reach through their own arm and pass, but `relavium run`
+> wires that arm only when an inline agent declares `mcp_servers`, so `mcp_call` without a declared server still
+> fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked. `invoke_agent`
+> and `read_media` are outside this check: they need an engine delegate rather than a host arm, no path wires either
+> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing.
+
 > **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
@@ -77,8 +88,18 @@ The result a tool hands **back to the model** (which re-enters the next request)
 | --- | --- | --- |
 | Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
 | Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
-| Preview | head + tail slice within the ceiling | the marker names the omitted span |
+| Preview | head + tail slice within the ceiling | the marker names the omitted span; a result over the ceiling only by the inline media its text omits keeps that media-free text as its preview |
 | Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+
+**Inline media counts against the ceiling (2026-11-04).** The bound counts the inline media a result still
+holds — a base64 `data:` URI, a canonical base64 source, a binary buffer at its `byteLength` — at its full size,
+although the summary, spill and preview show only a marker for it. A builtin's media rides the attachment rail
+([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1). Media left in a dispatch result is
+settled into the effect journal as it is, and the seam refuses raw media bytes in `tool_result.result`
+([ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), so under the ceiling such a result fails the next request (a recorded
+low). Over the ceiling, the model gets the media-free preview, and the marker counts the text's bytes plus the
+omitted media's (a 30 MiB data URI had been measured as its 25-character marker); when the media-free text fits
+the ceiling, that text is the preview.
 
 The ceiling is a **byte/line** bound — no token count, which would need a provider-specific tokenizer and break engine purity. These defaults are tunable and revisited if real workflows hit them (the [deferred-tasks.md](../../roadmap/deferred-tasks.md) tool-output-gate framing). The dispatch lifecycle that applies them is in [tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file).
 
@@ -121,16 +142,15 @@ user, so its value does not run on through the public host and path
 (`https://x-access-token:<t>@github.com/o/r` → `https://[redacted]@github.com/o/r`), and a key on
 the line after a split URL masks its value to its own end
 (`see https://\nDB_PASSWORD=P@ssw0rd123 now` → `see https://\n[redacted] now`). The projection
-otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `}` and `]`,
-the delimiters of the JSON and quoted texts it reads, so userinfo that contains one of them — an
-already-masked `[REDACTED]` password among them — is left as it is; it recognizes any scheme of up to
-32 characters rather than a finite list; and a userinfo with no password is kept as a vanity handle
-below 16 characters and masked from 16 on, under every scheme. Since 2026-11-04 a `,` or `/` in a
-password no longer ends the authority: the userinfo is read on to the first `@` within 512 characters
-(`https://user:pa,ss@host` and `https://user:pa/ss@host` → `https://[redacted]@host`). A port
-(`https://host:8080/a@b`, `https://host:8080,bob@x.example`), a public query contact as above, another
-scheme, or a quote, `}`, `]` or whitespace first keeps the text public; the backstop still stops at a
-`/` (a recorded low).
+otherwise differs from that backstop by design: its authority also ends at `"`, `'`, `,`, `}` and
+`]`, so userinfo that contains one of them — an already-masked `[REDACTED]` password among them — is
+left as it is; it recognizes any scheme of up to 32 characters rather than a finite list; and a
+userinfo with no password is kept as a vanity handle below 16 characters and masked from 16 on,
+under every scheme. A `,` or `/` in a password therefore ends the authority, and the whole userinfo stays
+public unless another rule reads it (`https://user:pa,ss@host` keeps `user:pa,ss`; the backstop masks that comma
+spelling), a recorded limit (the PR #96 review's A4). A reading past the delimiter was tried and removed on 2026-11-05:
+under the repeated projection its masks could change the text other rules read, so it could not be shown to
+only add masks.
 
 In an argument vector, the element after a credential flag, or the value of its `--flag=value`
 spelling, is masked whole. A flag is a credential flag when it is one of the anchored names (`-p`,
@@ -138,8 +158,21 @@ spelling, is masked whole. A flag is a credential flag when it is one of the anc
 rule's words as written (`--auth-token`, `--access-token`, `--db-password`, `--pwd`, `--x-api-key`,
 `--credentials`). A flag that only mentions a credential (`--password-stdin`, `--token-file`,
 `--max-tokens`) or begins with `no-` does not count, so the argument after it keeps its own identity.
-Only `-p` keeps a port exception. curl's `-u`/`--user` value, glued (`-ualice:secret`) or not, is
-masked when it holds a `:`, unless it is a `uid[:gid]` or a URL.
+Only `-p`/`-P` keep a port exception. A `-u`/`--user` value (curl's `user:password` spelling, glued as
+`-ualice:secret` or not) is masked when it holds a `:`, unless it is a `uid[:gid]` or a URL. The rule does
+not know the program, so a `name:group` (`docker run -u app:app`) or another colon-bearing value after
+`-u` is masked too, and calls that differ only there share one journal identity. A credential flag in value position may be the
+previous flag's value (`--password -MySecret`) or a flag of its own (`--ask-password --password <password>`),
+so it is masked as a value and still masks the element after it: neither reading leaks, at the cost of the flag
+name there. After a `-u`/`--user` with no pair (`unzip -u -P <password>`) the element is read as any other. A
+`--flag=value` spelling keeps an anchored name (`--password=[redacted]`), and a last-word name only where the
+text rules keep it too; where they mask it with its value (`--db-token=<value>`), the whole element is masked,
+and a glued `-u` pair keeps its `-u` on the same terms. These rules only add masks to the anchored rule of
+before 2026-11-04: an element is masked whenever the element before it is any credential flag, and a
+`--flag=value` or glued spelling never shows text the text rules mask.
+Short-option clusters (`curl -su alice:secret`),
+`-U`/`--proxy-user` and flags whose last word is not a listed credential word (`--oauth2-bearer`,
+`--pass`, openssl's `-passin`, keytool's `-storepass`) are outside the rule, a recorded limit.
 
 LF/TAB inside a recognized token-shaped credential extends the masked original span. An ambiguous
 token-alphabet continuation after LF/TAB is conservatively masked with that credential; an
@@ -263,7 +296,8 @@ credential split by one, are masked as in raw text (`{"stdout":"keys:\nsk-…"}`
 `{"stdout":"keys:\n[redacted]"}`), while a header label split by one is not read; the journal
 projection reads no escape. Core does not read a credential or a scheme label glued to a terminal
 sequence's final byte (`ESC[1msk-…`), which leaves no word boundary there, a documented limit; the
-backstop's terminal handling is in [error handling](../../standards/error-handling.md). Supported
+backstop's terminal handling is in the
+[diagnostic secret backstop](diagnostic-secret-backstop.md). Supported
 split shapes are recognized **before** complete-text one-line normalization, by that projection's
 full fixed point, followed by ordinary recognition and length clipping. This preserves multiline
 quoted-value recognition without exposing a split token's suffix. Public argument bytes are not

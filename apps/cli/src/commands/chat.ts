@@ -29,7 +29,8 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
+import { exportSessionToProject, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
+import { sourceLabel } from '../process/source-label.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
@@ -92,7 +93,12 @@ import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-c
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import {
+  createProviderResolver,
+  missingKeyMessage,
+  providerHasKey,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toUserFacing } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
@@ -904,6 +910,9 @@ async function chatResumeCommandBody(
     let consentGate: NonNullable<BuildChatSessionOptions['consentGate']>;
 
     let built: BuiltChatSession;
+    // The snapshot's provider when it has no key and the REPL is interactive (MVP-A4, deferred): the session
+    // opens so `/models` can move it to a provider that has a key, and a message is refused until then.
+    let missingKey: ProviderId | undefined;
     let store: ChatStoreController;
     let persister: SessionPersister;
     let intro: string;
@@ -989,6 +998,8 @@ async function chatResumeCommandBody(
                 ),
           record: loaded.session,
           messages: loaded.messages,
+          // A keyless snapshot provider is refused before the REPL only where `/models` cannot rescue it.
+          deferMissingKey: chatIsInteractive(deps.io, deps.global),
           now,
           providers,
           mcpSecretResolver,
@@ -1007,6 +1018,7 @@ async function chatResumeCommandBody(
       closeMcp = resumed.closeMcp;
       surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
       built = resumed;
+      missingKey = resumed.missingKeyProvider;
       // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
       // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
       // from the first frame, and the persister continues past the last durable sequence number.
@@ -1126,8 +1138,10 @@ async function chatResumeCommandBody(
         persister,
         doctorProbes,
         startSession: () => undefined,
-        onActivated: (isActive, flushNotice) =>
-          reconcileResumedSessionEffects({
+        ...(missingKey === undefined ? {} : { sendGuard: missingKeyGuard(providers, missingKey) }),
+        onActivated: (isActive, flushNotice) => {
+          if (missingKey !== undefined) store.notice(resumeMissingKeyNotice(missingKey));
+          return reconcileResumedSessionEffects({
             io: deps.io,
             ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
             db: opened.db,
@@ -1139,7 +1153,8 @@ async function chatResumeCommandBody(
               if (chatIsInteractive(deps.io, deps.global)) return store.notice(text);
               else return deps.io.writeErrAcknowledged(`${text}\n`);
             },
-          }),
+          });
+        },
         intro,
         modelPicker: buildChatModelsPort(
           opened,
@@ -1173,6 +1188,23 @@ async function chatResumeCommandBody(
   );
 }
 
+/** The in-view notice a resumed session whose provider has no key opens with, and repeats at each refused send. */
+function resumeMissingKeyNotice(provider: ProviderId): string {
+  return `${missingKeyMessage(provider)} Or switch to a model whose provider has a key with /models.`;
+}
+
+/**
+ * Refuse a message while `provider` still has no key — asked at each send, so a key stored meanwhile (in another
+ * terminal) lets the next message through. Without it the turn would fail inside the chain with a fixed, opaque
+ * "credential resolution failed".
+ */
+function missingKeyGuard(
+  providers: ProviderResolver,
+  provider: ProviderId,
+): () => string | undefined {
+  return () => (providerHasKey(providers, provider) ? undefined : resumeMissingKeyNotice(provider));
+}
+
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
 interface ReplWiring {
   readonly built: BuiltChatSession;
@@ -1183,6 +1215,12 @@ interface ReplWiring {
   readonly doctorProbes: DoctorProbes;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
+  /**
+   * Asked before a message is sent and before `/compact` summarises: a refusal text keeps the message from being
+   * sent, recorded or persisted (and the summary from being asked for), and is shown instead. Set only by an interactive resume whose provider has no key (MVP-A4); a reseat or `/clear`
+   * wiring never carries it, because those builds refuse a keyless provider outright.
+   */
+  readonly sendGuard?: () => string | undefined;
   readonly onActivated?: (
     isActive: () => boolean,
     flushNotice?: NoticeFlush,
@@ -1381,7 +1419,7 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
 export function createChatLineHandler(
   wiring: Pick<
     ReplWiring,
-    'built' | 'opened' | 'store' | 'persister' | 'doctorProbes' | 'chatMaxMessages'
+    'built' | 'opened' | 'store' | 'persister' | 'doctorProbes' | 'chatMaxMessages' | 'sendGuard'
   >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
@@ -1426,7 +1464,9 @@ export function createChatLineHandler(
     if (interactive) {
       store.notice(text);
     } else {
-      deps.io.writeErr(`${text}\n`);
+      // The floor the store's notice applies: a refusal can carry text this process did not author (a config
+      // error names the project file's keys), and the plain and `--json` drivers write straight to the terminal.
+      deps.io.writeErr(`${stripTerminalControls(text)}\n`);
     }
   };
 
@@ -1464,13 +1504,17 @@ export function createChatLineHandler(
       // the file; it does NOT mark the row `exported` (a later turn's persist would clobber that — the
       // standalone `chat-export` command marks it). A failure is reported, never crashing the REPL.
       try {
-        const result = exportSession({
+        // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
+        // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
+        const { projectConfigDir } = loadResolvedConfig({
+          cwd: deps.global.cwd,
+          configPath: deps.global.configPath,
+        });
+        const result = exportSessionToProject({
           store: opened.store,
           sessionId: built.sessionId,
           cwd: deps.global.cwd,
-          // Re-export overwrites the session's OWN scaffold: the default path is keyed on the unique session
-          // id, so `force` here can only ever clobber this session's prior export, never another session's.
-          force: true,
+          projectConfigDir,
         });
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;
@@ -1481,7 +1525,12 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          deps.io.writeErr(`exported session to ${result.path}\n`);
+          // The cwd-relative path and the command that runs it — the export offers the next step. Through the
+          // notice channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
+          // the next frame and discarded with the alternate buffer.
+          emitOutput(
+            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\``,
+          );
         }
       } catch (err) {
         workOwner?.failure(err);
@@ -1492,7 +1541,7 @@ export function createChatLineHandler(
               ? err.message
               : String(err)
             : toUserFacing(err).message;
-        deps.io.writeErr(`export failed: ${message}\n`);
+        emitOutput(`export failed: ${message}`);
       }
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
@@ -1675,6 +1724,13 @@ export function createChatLineHandler(
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
     compactHistory: async () => {
+      // A summary is a provider call too: while the session's provider has no key (MVP-A4), say so with the
+      // same remedy a refused message gets, not the fallback chain's opaque credential failure.
+      const keyRefusal = wiring.sendGuard?.();
+      if (keyRefusal !== undefined) {
+        emitOutput(keyRefusal);
+        return;
+      }
       const refusal = built.session.compactionRefusal;
       if (refusal !== undefined) {
         emitOutput(compactionNotice(refusal));
@@ -1786,6 +1842,11 @@ export function createChatLineHandler(
     if (line.length === 0) return;
     if (line.startsWith('/')) {
       await handleSlashCommand(line);
+      return;
+    }
+    const refusal = wiring.sendGuard?.();
+    if (refusal !== undefined) {
+      emitOutput(refusal);
       return;
     }
     // `display` is the COMPACT transcript form (prose + chip note) when a message carried `@`/`!` attachments; the
@@ -3024,13 +3085,14 @@ export async function runReplLoop(
                 // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
                 // error text; strip it exactly as the id + every other display string on this surface is stripped.
                 `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+                // One full stop: a message that already ends a sentence (the missing-key remedy does) keeps its own.
                 `${sanitizeInline(
                   deps.chatLifetime === undefined
                     ? err instanceof Error
                       ? err.message
                       : String(err)
                     : toUserFacing(err).message,
-                )}. ` +
+                ).replace(/\.$/u, '')}. ` +
                 `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
               return { summaryText, errorText };
             }

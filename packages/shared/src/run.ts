@@ -260,6 +260,29 @@ export function isLeaseFencedError(value: unknown): value is LeaseFencedError {
 }
 
 /**
+ * A terminal refused because the run's log already ends in one (ADR-0036's exactly-one-terminal, held by
+ * the store for every writer).
+ *
+ * The engine exempts its terminal from the append guard (ADR-0078 §2), and a writer that never acquired a
+ * lease carries no fence, so neither check stops a second terminal. This one does. The reachable case is a
+ * run whose `run:started` is durable but whose lease is not yet acquired: a `reconcile()` in another process
+ * can settle it in that window and release its claim, after which the run's own acquire succeeds and its
+ * terminal would land behind the first.
+ */
+export class RunAlreadyTerminalError extends RelaviumError {
+  override readonly name = 'RunAlreadyTerminalError';
+  readonly runId: string;
+
+  constructor(runId: string) {
+    super(
+      `durable append refused for run ${runId}: the log already ends with a terminal event, and a run ` +
+        `has exactly one`,
+    );
+    this.runId = runId;
+  }
+}
+
+/**
  * A terminal the store would not accept, held OUTSIDE the store so it can be retried
  * ([ADR-0078](../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §4).
  *

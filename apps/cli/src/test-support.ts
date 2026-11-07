@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 
-import { createRunHistoryStore, type Db } from '@relavium/db';
+import { createRunHistoryStore, type Db, type DbClient } from '@relavium/db';
 import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
 import { RunEventSchema, type NodeSkippedReason, type RunEvent } from '@relavium/shared';
 
@@ -116,11 +116,13 @@ type EventBody<T extends RunEvent['type']> = Omit<
 /** The schema-validated event emitter `seedRun` threads through its state helpers. */
 type EmitFn = <T extends RunEvent['type']>(type: T, rest: EventBody<T>) => Promise<void>;
 
-/** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event at node `g`). */
+/** One pending human gate to seed on a `paused` run (each gets a `human_gate:paused` event, at node `g` by default). */
 export interface SeedGate {
   readonly gateId: string;
   readonly gateType: 'approval' | 'input' | 'review';
   readonly message?: string;
+  /** The node the gate event names — only the event's; the seeded step rows stay at `g`. */
+  readonly nodeId?: string;
 }
 
 /**
@@ -141,6 +143,18 @@ export type SeedRunOptions = {
   readonly budgetGateId?: string;
   /** Emit a `node:skipped` after the node lifecycle — for the surfaces that render a skip and its reason. */
   readonly skipped?: { readonly nodeId: string; readonly reason: NodeSkippedReason };
+  /** A `completed` run's `run:completed.outputs` — for the surfaces that print them (MVP-A1). Default `{}`. */
+  readonly outputs?: Readonly<Record<string, unknown>>;
+  /**
+   * For a `paused` run: then end it with `run:cancelled`, as Esc at an inline gate prompt does, leaving its gate
+   * unresolved and its gate node's step row open — a FINISHED run whose log still holds an open gate.
+   */
+  readonly cancelAfterPause?: boolean;
+  /**
+   * For a `paused` run: then approve each human gate and complete the run, as `relavium gate --approve` does. No
+   * `node:completed` follows a decision, so the gate node's step row stays open, as the projection leaves it.
+   */
+  readonly decideAfterPause?: boolean;
 } & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
@@ -198,9 +212,26 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
   }
   if (opts.state === 'paused') {
     await emitPausedState(emit, opts, ts, tsMs);
+    if (opts.cancelAfterPause === true)
+      await emit('run:cancelled', { cumulativeCostMicrocents: 100 });
+    if (opts.decideAfterPause === true) {
+      await emitInOrder(opts.gates ?? (opts.gate === undefined ? [] : [opts.gate]), (gate) =>
+        emit('human_gate:resumed', {
+          nodeId: gate.nodeId ?? 'g',
+          decision: 'approved',
+          decidedBy: 'cli',
+        }),
+      );
+      await emit('run:completed', {
+        outputs: {},
+        totalTokensUsed: { input: 1, output: 2 },
+        totalCostMicrocents: 100,
+        durationMs: 9,
+      });
+    }
   } else if (opts.state === 'completed') {
     await emit('run:completed', {
-      outputs: {},
+      outputs: opts.outputs ?? {},
       totalTokensUsed: { input: 1, output: 2 },
       totalCostMicrocents: 100,
       durationMs: 9,
@@ -212,6 +243,33 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     });
   }
   return opts.runId;
+}
+
+/**
+ * Write a run's status, and its steps', past the schema's CHECK: what a crafted or damaged `history.db` can hold,
+ * for the tests that pin the one-line floor on every status a command reads back.
+ */
+export function forgeRunStatus(client: DbClient, runId: string, status: string): void {
+  client.sqlite.pragma('ignore_check_constraints = ON');
+  try {
+    client.sqlite.prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, runId);
+    client.sqlite
+      .prepare('UPDATE step_executions SET status = ? WHERE run_id = ?')
+      .run(status, runId);
+  } finally {
+    client.sqlite.pragma('ignore_check_constraints = OFF');
+  }
+}
+
+/** Emit one event per item, each after the last: an event's sequence number follows the one before it. */
+async function emitInOrder<T>(
+  items: readonly T[],
+  emitOne: (item: T) => Promise<void>,
+): Promise<void> {
+  await items.reduce<Promise<void>>(
+    (previous, item) => previous.then(() => emitOne(item)),
+    Promise.resolve(),
+  );
 }
 
 /** Emit the `paused`-state events for {@link seedRun} — a human/budget gate park, or (no gate) a media-job park. */
@@ -269,7 +327,7 @@ async function emitPausedState(
   // Each human gate (distinct gateId) folds into a separate pending entry — exercises the multi-gate fan-out.
   for (const gate of gates) {
     await emit('human_gate:paused', {
-      nodeId: 'g',
+      nodeId: gate.nodeId ?? 'g',
       gateId: gate.gateId,
       gateType: gate.gateType,
       message: gate.message ?? 'ok?',

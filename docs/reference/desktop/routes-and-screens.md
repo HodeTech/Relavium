@@ -26,7 +26,7 @@ flowchart TD
   SET --> PROV["/settings/providers/:id  Provider keys"]
 ```
 
-A persistent app shell wraps every route: top bar (workspace switcher, global Run/Command-palette trigger), left nav (Dashboard / Chat / Workflows / Agents / Settings), and a root-level human-gate overlay that can surface over any screen when a run pauses for approval. **Chat and Canvas are co-equal top-level tabs** ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)); the neutral Dashboard remains the default landing screen — the app does **not** force-open to Chat.
+A persistent app shell wraps every route: top bar (workspace switcher, global Run/Command-palette trigger), left nav (Dashboard / Chat / Workflows / Agents / Settings), and a root-level human-gate overlay that can surface over any screen when a run pauses at a human gate. **Chat and Canvas are co-equal top-level tabs** ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)); the neutral Dashboard remains the default landing screen — the app does **not** force-open to Chat.
 
 ## Routes
 
@@ -87,7 +87,7 @@ Configure a single provider. Add or rotate its API key — stored in the OS keyc
 
 ## Cross-cutting UI
 
-- **Human-gate overlay.** Mounted at the root layout so a pending [`human_gate:paused`](../contracts/sse-event-schema.md) event can surface an approval prompt over any screen. The same gate is reachable from the system tray (attention state) — see [tauri-plugins.md](tauri-plugins.md).
+- **Human-gate overlay.** Mounted at the root layout so a pending [`human_gate:paused`](../contracts/sse-event-schema.md) event can surface its prompt over any screen: an approval, or an input field for an `input` gate ([decisions by `gate_type`](../contracts/workflow-yaml-spec.md#human_gate-node)). The same gate is reachable from the system tray (attention state) — see [tauri-plugins.md](tauri-plugins.md).
 - **Command palette.** Opened by the global hotkey; lists recent workflows for instant run without surfacing the main window.
 - **Cost is always visible.** Per-run and per-node cost is a persistent element of the run-related screens, not buried in a separate billing page.
 

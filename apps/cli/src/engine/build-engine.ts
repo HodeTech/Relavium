@@ -23,7 +23,7 @@ import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-no
 import { hostAbortController, hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
-import { assembleToolEnv } from './tool-host/assemble.js';
+import { assembleToolEnv, type ToolEnvProfile } from './tool-host/assemble.js';
 
 export interface BuildEngineOptions {
   /**
@@ -106,6 +106,9 @@ export interface BuildEngineOptions {
   readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
+/** The tool-host profile of `relavium run` and `gate` (the author-trusted run host; see {@link buildEngine}). */
+export const RUN_TOOL_PROFILE: ToolEnvProfile = 'workflow-read-write';
+
 /**
  * Assemble a {@link WorkflowEngine} for a CLI run: a node-backed host, the standard node executor
  * (the six non-agent handlers + the agent arm), the expression sandbox, and the `ToolHost`.
@@ -117,8 +120,8 @@ export interface BuildEngineOptions {
  * conditional spread — a true merge, never a replace. The `egress` / `os` arms are **intentionally never wired
  * on this run path** — they belong only to the ADR-0057 approval-gated `chat-read-write` profile (a permanent
  * scope boundary, not a 2.5.E deferral: workflow-run egress/os is a separate author-trusted concern) — so a
- * tool needing one is cleanly `tool_unavailable`. Absent `toolEnv` (the in-memory unit/harness path) ⇒ a
- * fail-closed `{}` base host.
+ * tool needing one is cleanly `tool_unavailable`, and `relavium run` refuses such a grant before the engine is
+ * built (2.6.A). Absent `toolEnv` (the in-memory unit/harness path) ⇒ a fail-closed `{}` base host.
  */
 export async function buildEngine(options: BuildEngineOptions = {}): Promise<WorkflowEngine> {
   const host = options.host ?? createCliHost();
@@ -137,7 +140,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     options.toolEnv === undefined
       ? {}
       : assembleToolEnv({
-          profile: 'workflow-read-write',
+          profile: RUN_TOOL_PROFILE,
           fsScopeTier: options.toolEnv.fsScopeTier,
           workspaceDir: options.toolEnv.workspaceDir,
           ...(options.toolEnv.nativeProcesses === undefined

@@ -3,7 +3,12 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { ARCHIVE_LIMITS, inspectPackageArchive, PackageArchiveError } from './archive.mjs';
+import {
+  ARCHIVE_LIMITS,
+  inspectPackageArchive,
+  isPublicRuntimeDependency,
+  PackageArchiveError,
+} from './archive.mjs';
 import { checksum, entry, ustar } from './ustar-fixture.mjs';
 
 const expectedPackage = {
@@ -304,8 +309,21 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     { commander: '*' },
     { commander: '>=12.0.0' },
     { commander: 'latest' },
+    // npm reads an empty prerelease identifier as a dist-tag; a version past the allowlist's 100-character
+    // bound is refused too.
+    { commander: '1.2.3-.' },
+    { commander: '1.2.3-a..b' },
+    { commander: `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}` },
     { commander: '' },
     { commander: 12 },
+    { commander: ['12.1.0'] },
+    // Names npm refuses, and the private scope.
+    { Commander: '12.1.0' },
+    { _commander: '12.1.0' },
+    { '.commander': '12.1.0' },
+    { '@scope/.x': '12.1.0' },
+    { node_modules: '12.1.0' },
+    { [`c${'o'.repeat(200)}`]: '12.1.0' },
   ]) {
     const badPackage = { ...expectedPackage, dependencies };
     const files = inventory();
@@ -318,6 +336,60 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
         }),
       (error) => error instanceof PackageArchiveError && error.code === 'MANIFEST_RUNTIME',
     );
+  }
+});
+
+test('the allowlist also guards optional and peer dependencies', () => {
+  for (const [field, requirement] of [
+    ['optionalDependencies', 'github:attacker/commander'],
+    ['peerDependencies', '*'],
+  ]) {
+    const badPackage = { ...expectedPackage, [field]: { commander: requirement } };
+    const files = inventory();
+    files.set('package/package.json', Buffer.from(JSON.stringify(badPackage)));
+    assert.throws(
+      () =>
+        inspectPackageArchive(gzipSync(tar(files)), {
+          expectedFiles: files,
+          expectedPackage: badPackage,
+        }),
+      (error) => error instanceof PackageArchiveError && error.code === 'MANIFEST_RUNTIME',
+      field,
+    );
+  }
+});
+
+test('a runtime dependency is admitted at an exact, caret, tilde or prerelease registry version', () => {
+  for (const requirement of ['12.1.0', '^14.0.0', '~12.1.0', '^1.0.0-rc.1', '1.2.3-alpha.01']) {
+    assert.equal(isPublicRuntimeDependency('commander', requirement), true, requirement);
+    const goodPackage = { ...expectedPackage, dependencies: { commander: requirement } };
+    const files = inventory();
+    files.set('package/package.json', Buffer.from(JSON.stringify(goodPackage)));
+    assert.doesNotThrow(
+      () =>
+        inspectPackageArchive(gzipSync(tar(files)), {
+          expectedFiles: files,
+          expectedPackage: goodPackage,
+        }),
+      requirement,
+    );
+  }
+  for (const requirement of ['1.2.3-.', '1.2.3-a.', '1.2.3-..', 'latest', '>=1.0.0', ['12.1.0']]) {
+    assert.equal(isPublicRuntimeDependency('commander', requirement), false, String(requirement));
+  }
+  assert.equal(
+    isPublicRuntimeDependency('commander', `1.2.3-${'a'.repeat(60)}.${'a'.repeat(33)}`),
+    true,
+  );
+  assert.equal(
+    isPublicRuntimeDependency('commander', `1.2.3-${'a'.repeat(60)}.${'a'.repeat(34)}`),
+    false,
+  );
+  for (const name of ['@scope/pkg', 'a-b.c_d', `c${'o'.repeat(199)}`]) {
+    assert.equal(isPublicRuntimeDependency(name, '1.0.0'), true, name);
+  }
+  for (const name of ['favicon.ico', '@relavium/core', '_x', '.x', '@_s/x']) {
+    assert.equal(isPublicRuntimeDependency(name, '1.0.0'), false, name);
   }
 });
 

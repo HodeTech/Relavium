@@ -33,6 +33,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
     autoCompact: undefined,
     compactThreshold: undefined,
     maxCostMicrocents: undefined,
+    maxTokens: undefined,
     onExceed: undefined,
     strictCostCap: false,
     allowedCommands: undefined,

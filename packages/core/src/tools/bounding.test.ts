@@ -885,25 +885,27 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
   });
 
+  // The `=` spelling keeps a name the text rules keep (`--pwd`, an anchored `--apiKey`) and hides one they
+  // mask as a key/value pair, as 64fb8772 did.
   it.each([
-    '--auth-token',
-    '--access-token',
-    '--pwd',
-    '--db-password',
-    '--x-api-key',
-    '--apiKey',
-    '--credentials',
-    '--refresh_token',
+    ['--auth-token', '[redacted]'],
+    ['--access-token', '[redacted]'],
+    ['--pwd', '--pwd=[redacted]'],
+    ['--db-password', '[redacted]'],
+    ['--x-api-key', '[redacted]'],
+    ['--apiKey', '--apiKey=[redacted]'],
+    ['--credentials', '--credentials=[redacted]'],
+    ['--refresh_token', '[redacted]'],
   ])(
     'STRUCTURAL_ARGV_WORDS masks the value after %s, whose last word names a credential',
-    (flag) => {
+    (flag, inline) => {
       // A PR #96 review: the object-key rule masked these names as keys while the anchored flag list passed
       // them verbatim into `agent:tool_call` and the journal projection.
       expect(redactSecretShapedValue({ args: [flag, 'Qz7flagValue', '--count=4'] })).toEqual({
         args: [flag, '[redacted]', '--count=4'],
       });
       expect(redactSecretShapedValue({ args: [`${flag}=Qz7flagValue`] })).toEqual({
-        args: [`${flag}=[redacted]`],
+        args: [inline],
       });
       expect(projectSecretShapedValue({ args: [flag, 'Qz7flagValue'] })).toEqual({
         value: { args: [flag, '[redacted]'] },
@@ -923,7 +925,7 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(redactSecretShapedValue(benign)).toEqual(benign);
   });
 
-  it('STRUCTURAL_ARGV_USERINFO masks a curl user:password in every spelling, and only that', () => {
+  it('STRUCTURAL_ARGV_USERINFO masks a curl user:password in its separate, `=` and glued spellings, and only that', () => {
     expect(
       redactSecretShapedValue({
         args: ['-u', 'alice:Qz7pw', '-ualice:Qz7pw', '--user=bob:Qz7pw', '--user', 'carol:Qz7pw'],
@@ -933,7 +935,18 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
     const benign = {
       args: [
-        ...['-u', 'alice', '--user', 'carol', '-u', '1000:1000', '--user=dave', '-uroot'],
+        ...[
+          '-u',
+          'alice',
+          '--user',
+          'carol',
+          '-u',
+          '1000:1000',
+          '--user=dave',
+          '-uroot',
+          '-u=1000:1000',
+          '-u-x:y',
+        ],
         ...['--user', 'git+https://example.invalid/r.git'],
       ],
     };
@@ -943,6 +956,100 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(
       JSON.stringify(redactSecretShapedValue({ args: ['--user', key, '-u', key] })),
     ).not.toContain(key);
+    // A credential flag in value position is masked as the previous flag's value AND masks the element
+    // after it: a boolean last-word flag before a credential flag, and a flag-shaped password, both stay
+    // masked, in both projections; a flag-shaped name keeps no secret shape in its `=` spelling.
+    const ghp = `ghp_${'Q'.repeat(36)}`;
+    for (const [args, expected] of [
+      [
+        [
+          'helm',
+          '--pass-credentials',
+          '--password',
+          'Qz7pw',
+          'r',
+          '--with-token',
+          '--token',
+          'Qz7pw',
+        ],
+        [
+          'helm',
+          '--pass-credentials',
+          '[redacted]',
+          '[redacted]',
+          'r',
+          '--with-token',
+          '[redacted]',
+          '[redacted]',
+        ],
+      ],
+      [
+        ['--ask-password', '--passphrase', '--secret', '-p', 'Qz7pw'],
+        ['--ask-password', '[redacted]', '[redacted]', '[redacted]', '[redacted]'],
+      ],
+      [
+        ['mysql', '--password', '-Qz7Secret', 'db', '--token', '--Qz7-password'],
+        ['mysql', '--password', '[redacted]', '[redacted]', '--token', '[redacted]'],
+      ],
+      // A last-word name the text rules mask in context hides the whole `=` spelling; an anchored one stays.
+      [[`--github-${ghp}-token=Qz7pw`], ['[redacted]']],
+    ] as const) {
+      expect(redactSecretShapedValue({ args })).toEqual({ args: expected });
+      expect(projectSecretShapedValue({ args }).value).toEqual({ args: expected });
+    }
+    // A last-word name stays where the text rules keep it (a value too short for their key rule) and is
+    // hidden where they mask it with its value; an anchored name always stays.
+    const deploy = [
+      'gh',
+      '--deploy-token=Qz7pw',
+      '--deploy-token=Qz7flagValue',
+      '--password=Qz7flagValue',
+    ];
+    for (const projected of [
+      redactSecretShapedValue({ args: deploy }),
+      projectSecretShapedValue({ args: deploy }).value,
+    ]) {
+      expect(projected).toEqual({
+        args: ['gh', '--deploy-token=[redacted]', '[redacted]', '--password=[redacted]'],
+      });
+    }
+    // A glued `-u` pair keeps its `-u` only where the text rules keep it (`-utoken:` reads as a key).
+    for (const projected of [
+      redactSecretShapedValue({ args: ['-utoken:Qz7flagValue', '-ualice:Qz7pw'] }),
+      projectSecretShapedValue({ args: ['-utoken:Qz7flagValue', '-ualice:Qz7pw'] }).value,
+    ]) {
+      expect(projected).toEqual({ args: ['[redacted]', '-u[redacted]'] });
+    }
+    // A boolean -u/--user (unzip's update flag) leaves the credential flag after it in force.
+    expect(
+      redactSecretShapedValue({
+        args: [
+          'unzip',
+          '-u',
+          '-P',
+          'Qz7pw',
+          'a.zip',
+          '--user',
+          '--api-key',
+          'Qz7pw',
+          '-u',
+          '--token=Qz7pw',
+        ],
+      }),
+    ).toEqual({
+      args: [
+        'unzip',
+        '-u',
+        '-P',
+        '[redacted]',
+        'a.zip',
+        '--user',
+        '--api-key',
+        '[redacted]',
+        '-u',
+        '--token=[redacted]',
+      ],
+    });
   });
 
   it('leaves ordinary structured args alone — the negative control', () => {
@@ -1351,23 +1458,28 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
     }
   });
 
-  it('reads a `,` or `/` in a password through its `@`, never past a port, query or other delimiter', () => {
-    // A PR #96 review found the authority scan leaving `ssword` and `ss` public here.
+  it('keeps the authority scan at a `,` or `/` in a password, as before PR #96 (a recorded limit)', () => {
+    // A PR #96 review found these tails public (its A4). A reading past the delimiter was tried and removed
+    // on 2026-11-05: under the repeated projection its masks could hide context other rules read, so it could
+    // not be shown to only add masks. Each input projects exactly as at 64fb8772.
     for (const [input, expected] of [
-      ['https://user:pa,ssword@host.example/', 'https://[redacted]@host.example/'],
-      ['https://user:pa/ss@host.example/x', 'https://[redacted]@host.example/x'],
-      ['{"u":"https://user:p,w/x@h.example/v1"}', '{"u":"https://[redacted]@h.example/v1"}'],
-      ['https://user:pa/ss@host.example/@scope/pkg', 'https://[redacted]@host.example/@scope/pkg'],
-      // A raw `?` that is not a host's public query stays userinfo, as the authority scan reads it.
-      ['https://u:p?x/y@h.example/', 'https://[redacted]@h.example/'],
-      // A key in the username names the user, so its value stops at the `@` and the host stays.
-      ['https://x-access-token:pa,ss@github.com/o/r', 'https://[redacted]@github.com/o/r'],
-      // With no `@` to read on to, the scan resumes inside the authority and finds the later scheme.
+      ['https://user:pa,ssword@host.example/', 'https://user:pa,ssword@host.example/'],
+      ['https://user:pa/ss@host.example/x', 'https://user:pa/ss@host.example/x'],
+      ['https://u:p?x/y@h.example/', 'https://u:p?x/y@h.example/'],
+      // Keys in the userinfo are still read by the key/value rules.
+      ['https://x-access-token:Ab/cd@Ef9Gh2Jk@github.com/o/r.git', 'https://[redacted]'],
+      ['http://svc;token=a:b/c@d', 'http://svc;[redacted]'],
+      ['http://svc?token=abc:de/fgh@ijk9', 'http://svc?[redacted]'],
+      // A later or nested scheme is read by the scheme scan on its own.
+      [
+        'curl https://proxy.example:https://user:p@ss@target.example/',
+        'curl https://proxy.example:https://[redacted]@target.example/',
+      ],
       ['https://xhttps://user:pw@h.example/', 'https://xhttps://[redacted]@h.example/'],
     ] as const) {
       expect(redactSecretShapedText(input), input).toBe(expected);
     }
-    // The backstop already reads a comma; both now mask it.
+    // The backstop reads a comma in a password; core does not (a recorded difference).
     expect(scrubSecrets('https://user:pa,ssword@host.example/')).toBe(
       'https://[REDACTED]@host.example/',
     );
@@ -1381,6 +1493,13 @@ describe('PR95 raw ?/# userinfo in the journal projection', () => {
       "'https://u:pw/x', 'a@b.example'",
       'https://a:b/https://c@d.example',
       `https://user:pa/${'s'.repeat(600)}@host.example/`,
+      'https://user:pa,ss?1@host.example/',
+      'https://user:pa/ss#1@host.example/',
+      '{"a":"https://h.example:x/p","b":"c@d.example"}',
+      "https://u:pw/x'@y.example",
+      'https://u:pw/x}@y.example',
+      'https://u:pw/x]@y.example',
+      'https://u:pw/x @y.example',
     ]) {
       expect(redactSecretShapedText(input), input).toBe(input);
     }
@@ -2907,6 +3026,17 @@ describe('PR95 review round 8, sixth pre-review: escapes under nested masks, PEM
         'bbbbbbbb',
       ],
       [{ stdout: 'AKIAABCDEFGH\nIJKLMNOP' }, '{"stdout":"[redacted]"}', 'IJKLMNOP'],
+      // A `,`/`/` URL password never reads across an escape the key rule needs to see.
+      [
+        { stdout: 'password="https://u:pw/x\nnext@h', stderr: 'Zq9SecondLine"' },
+        '{"stdout":"[redacted]"}',
+        'Zq9SecondLine',
+      ],
+      [
+        { stdout: 'password="https://u:p\nw/x@h', stderr: 'Zq9Second"' },
+        '{"stdout":"[redacted]"}',
+        'Zq9Second',
+      ],
       [
         { stdout: 'progress 50%\rsk-proj-abcdefghijklmnopqrstuvwxyz' },
         '{"stdout":"progress 50%\\r[redacted]"}',

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo, parseNdjson, seedRun } from '../test-support.js';
+import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support.js';
 import { logsCommand, type LogsCommandDeps } from './logs.js';
 
 function globalOptions(json = false): GlobalOptions {
@@ -47,6 +47,27 @@ describe('logsCommand', () => {
         expect(err.exitCode).toBe(EXIT_CODES.invalidInvocation);
       }
     }
+  });
+
+  it('prints a forged run id on one line in its header', async () => {
+    // `logs` looks the run up by the id the user typed, so a stored id with an escape is reached only by typing it.
+    const forgedId = 'run\u001b[2J\nforged';
+    await seedRun(db, { slug: 'demo', runId: forgedId, state: 'completed' });
+    const { io, out } = captureIo();
+    logsCommand({ runId: forgedId }, deps(io));
+    const header = out().split('\n')[0] ?? '';
+    expect(header).toContain('forged');
+    expect(header).not.toContain('\u001b');
+  });
+
+  it('prints a forged run status on one line in its header', async () => {
+    await seedRun(db, { slug: 'demo', runId: 'run-forged', state: 'completed' });
+    forgeRunStatus(client, 'run-forged', 'completed\u001b[2J\nforged row');
+    const { io, out } = captureIo();
+    logsCommand({ runId: 'run-forged' }, deps(io));
+    const header = out().split('\n')[0] ?? '';
+    expect(header).toContain('forged row');
+    expect(header).not.toContain('\u001b');
   });
 
   it('prints a terse human line per persisted event in seq order', async () => {
@@ -129,6 +150,29 @@ describe('logsCommand', () => {
       expect(record).toHaveProperty('type');
       expect(record).not.toHaveProperty('skipped');
     }
+  });
+
+  it('prints a forged skipped-row seq on one line, without its controls', async () => {
+    // `run_events.seq` is an integer column with no CHECK, so SQLite stores text there as it is given.
+    await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
+    client.sqlite
+      .prepare(
+        'INSERT INTO run_events (id, run_id, seq, event_type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        '00000000-0000-4000-8000-0000000000fe',
+        'run-1',
+        '9\u001b]0;PWNED\u0007\u001b[2J\nFAKE: all clear',
+        'test:never_a_real_event',
+        JSON.stringify({ type: 'test:never_a_real_event' }),
+        0,
+      );
+    const { io, err } = captureIo();
+    expect(logsCommand({ runId: 'run-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(err()).toContain('was skipped (seq 9');
+    expect(err()).not.toContain('\u001b');
+    expect(err()).not.toContain('\u0007');
+    expect(err().trimEnd().split('\n')).toHaveLength(1);
   });
 
   it('says nothing when the log is clean — no note on the happy path', async () => {

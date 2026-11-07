@@ -13,6 +13,7 @@ import {
   budgetPromptDetails,
   budgetResumeHints,
 } from '../gate/budget.js';
+import { formatRunOutputs } from './run-outputs.js';
 import { formatProducedMedia } from './tui/format.js';
 import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
 
@@ -172,7 +173,10 @@ function describe(event: RunEvent): string | undefined {
     case 'human_gate:paused':
       return `  paused at gate ${sanitizeInline(event.gateId)} (${sanitizeInline(event.gateType)})`;
     case 'run:completed':
-      return `done: run completed`;
+      // The outputs follow as indented rows this file lays out (MVP-A1); every value is sanitized there.
+      return ['done: run completed', ...formatRunOutputs(event.outputs, '  ', event.runId)].join(
+        '\n',
+      );
     case 'run:failed':
       return `done: run failed (${sanitizeInline(event.error.code)})`;
     case 'run:cancelled':

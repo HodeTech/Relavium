@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-04
+> Last updated: 2026-11-06
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -35,11 +35,11 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2 — CLI | Feature-complete; `relavium@0.1.1` published on npm 2026-06-28 (M3) |
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
-| Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted on `development`. **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below) |
+| Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed; the other fourteen workstreams have not started in their core. The MVP takes its first slices (below); MVP-1 accepted 2026-11-06 |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
-| Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard on `development` refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `development` is ahead of `main` (`6d2a7372`). `main` lacks the PR95 scrubber fixes, NI and the interim guard; a scoped `development`→`main` checkpoint follows this reset (D61) |
+| Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
+| Branches | `main` is at `b3cf117e`: the D61 `development`→`main` checkpoint ([PR #96](https://github.com/HodeTech/Relavium/pull/96), merged 2026-11-04; [checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) brought the PR95 scrubber fixes, NI, the interim guard, this reset and its review correction to `main`, and `development` was fast-forwarded to the merge commit. `development` is ahead of `main` again with the D64 fixes to that correction (from `5a1006ea`); `main` keeps the redaction regressions they fix (a credential flag after a boolean flag, a credential key in a `,`/`/` URL password's userinfo or a nested URL after it, a masked name in a last-word `--flag=value` spelling) until the next checkpoint, MVP-10's unless the maintainer schedules one earlier. **The maintainer scheduled it earlier: PR #97** (opened 2026-11-06, after MVP-1). Its SonarCloud fixes (`a417a57d`, behaviour-preserving) and CodeRabbit's doc fixes (`077650a8`) are on `development`. Four reviews of it found eight medium findings: by the maintainer's rulings six are fixed before it merges and two are resolved in the record (the URL-password reversal below, and the ReDoS vector, which stays open), so it owes a D64 rigor pass, a new complete round and a separate security sitting ([deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06)). By the maintainer's ruling it also returns `main`'s URL-password projection to `64fb8772`: a `,` or `/` in a URL password no longer masks the userinfo `main` masks today ([A4](deferred-tasks.md)), until a superset-safe reading lands before v0.2.0 |
 
 ### What a CLI user meets today
 
@@ -78,11 +78,15 @@ Each milestone ends green on `development` with its canonical docs updated. Item
 [CLI MVP additions](phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04), or a recorded
 Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
 
-0. **Gate 0 — decide and re-order (no product code).** This reset; the `development`→`main` checkpoint (D61);
+0. **Gate 0 — decide and re-order (no product code).** This reset and the `development`→`main` checkpoint (D61) —
+   **both done:** PR #96 merged on 2026-11-04 ([checkpoint record](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)); its review
+   correction's D64 rounds 1–4 found five, one, one and one medium findings, all fixed since; by the maintainer's
+   ruling of 2026-11-05 one careful pass closed it instead of a fifth round (the `,`/`/` URL reading removed, A4 a
+   recorded limit again);
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the
-   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). Maintainer
+   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). **Drafted 2026-11-05, all Proposed and awaiting the maintainer:** [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (markdown), [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (keymap), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (D62), [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (D67 denials), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (D63), [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (the CR-71 residual), [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (row 9, part 1) and [ADR-0121](../decisions/0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) (D59). Maintainer
    gates: CI provider keys for the live-nightly lane (D37), provider spend for a manual three-provider turn and a
    Windows machine for MVP-10. A stale-entry sweep of [deferred-tasks.md](deferred-tasks.md) and the phase 2.6
    bullets that 2.6.5 and Wave 2–3 work already satisfied.
@@ -91,7 +95,29 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    `run`/`gate` start; `status` stays read-only); 2.6.K · **Validate the gate decision shape against `gateType`
    before resume**; 2.6.A · **Run-path tool pre-flight for the unwired egress/os arms** (and no `web_search` in
    the `create` placeholder); `/export` into `.relavium/workflows/` (MVP-A3); the default model follows the stored
-   key (MVP-A4); the interactive output budget (MVP-A7).
+   key (MVP-A4); the interactive output budget (MVP-A7). **Sliced 2026-11-05 (maintainer):** **1a** (UX tier, reviewed
+   per milestone) — the run id, `list --runs` and `status <runId>`, the run-path pre-flight, the output budget; **1b**
+   (security tier under D64) — human run output, the gate decision check, `/export`, the default model and missing-key
+   error, and liveness. **Progress 2026-11-05:** 1a is on `development`. **1b is accepted** and on `development`.
+   Wiring liveness exposed a second-terminal race, so the run store now refuses a second terminal. After the rigor
+   pass, D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) were not accepted,
+   with nine, two, two and one medium findings, all fixed. Round 5 (at `df685a52`) found no blocker, high or medium
+   finding, and the separate security sitting (at `ab5e46e1`) passed. Every round's lows and the sitting's are fixed
+   or recorded in [deferred-tasks.md](deferred-tasks.md); one of them, a 0.1.x run settled by a newer reconcile,
+   needs a ruling before the v0.2.0 release. The MVP-1 milestone review of 1a (at `624bb2e7`, which includes a
+   `relavium list` sink fix for round 5's export-1) was not accepted: it found four medium findings, all fixed. They
+   were a budget pause pointed at `relavium gate`, a finished run's open gate shown as pending, an unbounded tool
+   pre-flight, and the chat's catalog-ceiling cap running into the 120-second attempt deadline. The maintainer chose
+   a chat deadline that scales with the cap, recorded as ADR-0101's 2026-11-06 note. Round 2 (at `d8762a23`) was not
+   accepted either: the round-1 run-id latch let a resumed run's summary point a gate restored from its checkpoint at
+   `relavium gate`, and the summary now points such a gate at `relavium status`. Round 3 (at `32d1a8a7`) was not
+   accepted either: `status` printed the command that continues a gate only for a budget gate, so that pointer
+   promised a command it did not print for a human one; `status` now prints one for every pending gate. Round 4 (at
+   `8e7f41f2`) was not accepted either: `status <runId>` printed an approved gate's step as `stopped` under its
+   completed run, because no `node:completed` closes a gate's step row; it now prints `completed`. **Round 5 (at
+   `3354dda1`) found no blocker, high or medium finding, so 1a is accepted and MVP-1 is done (2026-11-06).** Every
+   round's lows are fixed or recorded in [deferred-tasks.md](deferred-tasks.md), round 1's `officialEndpointOf` half
+   of budget-5 included.
 2. **MVP-2 — First run, resume and a readable chat.** Onboarding offered by `relavium chat` (MVP-A5); standard
    provider env-var fallback (MVP-A6); 2.6.G's resume-in-place **with the prior transcript repainted** (the
    [deferred `chat-resume` entry](deferred-tasks.md)); picker-on-omitted-id and `chat --continue`; excess
@@ -199,7 +225,8 @@ sub-stream D are satisfied on `main`; M2.5.5-2's I half stays open.
 
 **Paused on 2026-10-26 after Step 9b.2; 25 of 32 increments pending behind the MVP.** Steps 1–8 merged to `main`
 as [PR #95](https://github.com/HodeTech/Relavium/pull/95) on 2026-10-18 ([merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-18-merge-checkpoint--2026-10-18));
-PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are accepted on `development`, each with its acceptance record in the
+PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are accepted and on `main` since the D61 checkpoint (PR #96, 2026-11-04),
+each with its acceptance record in the
 [register](phases/phase-2.5.5-hardening-and-remediation.md). The
 [increment table](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns the
 remaining increments' scope and order. Whole-wave acceptance stays Step 19.
@@ -358,7 +385,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D58 | MVP | MVP scope | ✅ **Ruled 2026-11-04 — the larger MVP:** v0.2.0 on npm (milestone M3.5) after MVP-1…MVP-10, including conversational authoring, web, the Home hub and MCP/provider management; refines D7 |
 | D59 | MVP | Release path under the interim guard | ✅ **Ruled 2026-11-04 — option B:** a superseding pre-1.0 release ADR publishes the smoke-verified package-test tarball from a trusted `v*` tag on `main` with a green `ci` at that commit; no archived encrypted maps for those releases; custody becomes mandatory again at 1.0 or when 9c/9d land. The guard stays in force until that ADR is Accepted and its guard change passes a security sitting |
 | D60 | MVP | `LICENSE` §2 grants no usage right without a written agreement | ✅ **Ruled 2026-11-04 — unchanged.** Recorded risk for the published package |
-| D61 | Gate 0 | `development`→`main` checkpoint before the MVP | ✅ **Ruled 2026-11-04 — yes,** a scoped checkpoint PR right after this reset; merging is the maintainer's action |
+| D61 | Gate 0 | `development`→`main` checkpoint before the MVP | ✅ **Ruled 2026-11-04 — yes,** a scoped checkpoint PR right after this reset; merging is the maintainer's action · **Done 2026-11-04:** PR #96 merged as `b3cf117e` ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) |
 | D62 | MVP-3 | Default chat agent posture | ✅ **Ruled 2026-11-04:** read/search/find plus `write_file`/`edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) plus `run_command` under D63; egress stays opt-in; the default mode stays `ask` with a `[chat].default_mode` setting and a one-time hint. Needs an ADR-0057 amendment and a security review |
 | D63 | MVP-4 | `run_command` approval semantics | ✅ **Ruled 2026-11-04:** a typed card for any non-allowlisted command — once, session or remember; remembered grants live outside the repository in operator-owned config keyed by project root; accept-edits keeps prompting; headless stays fail-closed. New ADR (amends ADR-0029(a)/0061/0063) and a security sitting |
 | D64 | MVP | Acceptance bar for MVP increments | ✅ **Ruled 2026-11-04 — tiered** (see [Next work](#next-work--the-cli-mvp)) |
@@ -404,9 +431,11 @@ places, each deliberate:
   and its push CI is observed.
 - `main` carries branch protection (PR required; `lint · typecheck · test`, the coverage floor and, since
   2026-11-04, the Windows job required; no approval count, since GitHub refuses a self-approval — see
-  [code-review.md](../standards/code-review.md); force-push and deletion blocked) and a `v*` tag ruleset
-  limited to the maintain/admin roles; `release.yml` asserts its ref is reachable from `main` and publishes
-  from the `release` deployment environment.
+  [code-review.md](../standards/code-review.md); force-push and deletion blocked; administrators not enforced) and a `v*` tag ruleset
+  limited to the maintain/admin roles; `release.yml` asserts its ref is reachable from `main`, and its publish
+  job names the `release` deployment environment; MVP-A23 either gives it `NPM_TOKEN` under a protection policy or
+  replaces the token with npm trusted publishing, chosen in the D59 release ADR (until then the token is a
+  repository secret).
 
 ## History
 
@@ -417,7 +446,8 @@ Finished work is recorded in its register; this page no longer restates it.
 - **Phase 2.5.5** — the [phase register](phases/phase-2.5.5-hardening-and-remediation.md): the 2026-07-19 review
   triage under Positioning and the traceability appendix, Waves 0–1 and the PR #81 closing list in the
   [moved execution record](phases/phase-2.5.5-hardening-and-remediation.md#execution-record-moved-from-currentmd--2026-11-04),
-  the Wave 2 and Wave 3 Steps 1–8 merge checkpoints, and every Wave 3 increment's checkpoint and acceptance.
+  the Wave 2 and Wave 3 Steps 1–8 merge checkpoints, the [D61 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04) (PR #96), and every
+  Wave 3 increment's checkpoint and acceptance.
 - **Phase 2.6** — the 2.6.F and 2.6.C implementation records and open obligations, in their
   [workstream sections](phases/phase-2.6-conversational-authoring.md).
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and

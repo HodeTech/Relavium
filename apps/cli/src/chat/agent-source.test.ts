@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { AgentParseError, MAX_SOURCE_CHARS } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { KNOWN_PROVIDERS } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
 import { DEFAULT_CHAT_AGENT_ID, DEFAULT_CHAT_MODEL } from './default-agent.js';
 import { resolveChatAgent } from './agent-source.js';
@@ -70,6 +71,52 @@ describe('resolveChatAgent', () => {
       defaultModel: undefined,
     });
     expect(agent.model).toBe(DEFAULT_CHAT_MODEL);
+  });
+
+  it('MVP-A4: with no configured default, the model comes from the first provider that has a key', () => {
+    const resolve = (keyed: readonly string[]) =>
+      resolveChatAgent(undefined, {
+        cwd: dir,
+        projectConfigDir: undefined,
+        defaultModel: undefined,
+        hasKey: (id) => keyed.includes(id),
+      });
+    // Anthropic keeps the long-standing default; every other provider gets the wizard's starter model.
+    expect(resolve(['anthropic', 'openai'])).toMatchObject({
+      model: DEFAULT_CHAT_MODEL,
+      provider: 'anthropic',
+    });
+    for (const id of ['openai', 'gemini', 'deepseek'] as const) {
+      expect(resolve([id])).toMatchObject({ model: KNOWN_PROVIDERS[id].testModel, provider: id });
+    }
+    // In KNOWN_PROVIDER_IDS order when several are keyed.
+    expect(resolve(['deepseek', 'gemini'])).toMatchObject({ provider: 'gemini' });
+    // No key anywhere: the built-in default, so the session pre-flight names the remedy for it.
+    expect(resolve([])).toMatchObject({ model: DEFAULT_CHAT_MODEL, provider: 'anthropic' });
+  });
+
+  it('MVP-A4: a configured model, or a provider a caller supplies, wins over the keys', () => {
+    const keyedOpenAi = (id: string) => id === 'openai';
+    expect(
+      resolveChatAgent(undefined, {
+        cwd: dir,
+        projectConfigDir: undefined,
+        defaultModel: 'claude-haiku-4-5',
+        defaultProvider: 'anthropic',
+        hasKey: keyedOpenAi,
+      }),
+    ).toMatchObject({ model: 'claude-haiku-4-5', provider: 'anthropic' });
+    // A provider passed without a model gets that provider's starter, never the Anthropic default. Only a direct
+    // caller reaches this: config resolution drops a persisted provider that has no model.
+    expect(
+      resolveChatAgent(undefined, {
+        cwd: dir,
+        projectConfigDir: undefined,
+        defaultModel: undefined,
+        defaultProvider: 'gemini',
+        hasKey: keyedOpenAi,
+      }),
+    ).toMatchObject({ model: KNOWN_PROVIDERS.gemini.testModel, provider: 'gemini' });
   });
 
   it('bakes opts.reasoningEffort onto the DEFAULT agent (ADR-0066)', () => {

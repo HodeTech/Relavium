@@ -54,7 +54,7 @@ import {
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
-import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
+import { assertDecisionFitsGateType, decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import {
   assertBudgetDecision,
   budgetDecisionFromFlags,
@@ -388,6 +388,9 @@ async function resumeGateOwned(
     if (kind === 'budget') {
       const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
       assertBudgetDecision(gate?.allowance, decision);
+    } else {
+      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
+      assertDecisionFitsGateType(workflow, gate?.nodeId, decision);
     }
     // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
     // A match grants nothing; the later full preparation reads a fresh price snapshot again.
@@ -560,10 +563,11 @@ async function resumeGateOwned(
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
     lifetime.adoptEngine(engine, args.runId);
-    // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
-    // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
+    // Same reconcile as the `run` path (ADR-0078 §4/§5, ADR-0079 §7) — a gate resume is equally "the next
+    // `relavium` start", and it is the one a user reaches for after seeing the `durabilityUncertain` exit code
+    // on a gated run. The run this command resumes is parked at its gate, so `reconcile()` leaves it alone.
     lifetime.checkpoint();
-    await engine.drainTerminalOutbox().catch(() => undefined);
+    await engine.reconcile().catch(() => undefined);
     lifetime.checkpoint();
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
@@ -619,7 +623,7 @@ async function resumeGateOwned(
       // is the worst available answer: this process cannot report settlement, even when its earlier gate
       // decision is already durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      const notice = `run ${args.runId} already settled; nothing to resume\n`;
+      const notice = `run ${sanitizeInline(args.runId)} already settled; nothing to resume\n`;
       if (deps.global.json) deps.io.writeErr(notice);
       else deps.io.writeOut(notice);
       return EXIT_CODES.success;
@@ -719,7 +723,7 @@ export function selectGate(
     if (resolved.has(requested)) {
       return {
         kind: 'idempotent',
-        message: `gate ${requested} already resolved`,
+        message: `gate ${sanitizeInline(requested)} already resolved`,
       };
     }
     return {

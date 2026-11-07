@@ -50,6 +50,8 @@ The flow: **pick a provider → paste a hidden (masked) API key → store it in 
 
 The strip is a **read-only display** (the no-IDE-shell principle of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) applied to the CLI by analogy: management + chat only — no file tree, editor, or embedded terminal). It is a bounded, indexed aggregation over the durable `history.db` ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), re-read on every return-to-Home — never a live subscription.
 
+Before its first read the Home **reconciles** (2.6.G liveness): a run a dead process left `running` is settled and shows under *Attention required*, and a terminal held in the outbox is written. What is settled, how, and which runs are left alone are the rules `run` and `gate` follow, stated once with [exit code `5`](commands.md#exit-codes). The Home waits for this after the signal and exit nets are registered and before it mounts, so a crashed run whose lease has expired is settled before the first frame. A dead process's lease stays live for up to a minute after it died, and until it expires the run still shows as `running`; a later open settles it. Reconciling is best-effort and never keeps the Home from opening.
+
 ```text
 relavium                                          ← branded header (bold)
 

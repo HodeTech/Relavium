@@ -350,7 +350,11 @@ refuses every artifact (the [Interim release guard ruling](../../roadmap/phases/
 > tarball, with a sunset at 1.0 or when Steps 9c/9d land. That ADR must explicitly override
 > [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md)'s "missing custody cannot
 > downgrade to test mode". The guard stays in force until the ADR is Accepted and its guard change passes a
-> security sitting. The publish job runs in the `release` deployment environment, which holds the npm token.
+> security sitting. The publish job names the `release` deployment environment. That environment does not exist
+> yet: until MVP-A23 creates it with a `v*`-tag deployment policy and a required reviewer and moves `NPM_TOKEN` into it
+> (or adopts npm trusted publishing), the token is a repository secret, GitHub creates an unprotected `release`
+> environment on the first run that names it, and only the guard, the `v*` tag ruleset and branch protection stand
+> before a publish.
 
 ### Private manifest and symbolication implementation boundary — Step 9a.2a
 
@@ -477,7 +481,7 @@ package-test producer, adds the product map controls and only then flips the rec
   `pnpm run ci` right after `smoke:cli-package`, and as the required `map-controls` CI job: ubuntu, at
   most 20 minutes, read-only permissions, no remote cache credentials, no pnpm cache, no build step, no
   custom shell and no upload, inside `ci`'s needs with a guard that refuses every result except success
-  (the required contexts stay `ci` and `coverage`). That job's production is a second, independent
+  (the required contexts are `ci`, `coverage` and, since 2026-11-04, the Windows job). That job's production is a second, independent
   build that is never shipped, not a retry of the packed candidate, so ADR-0111's no-rebuild rule for a
   candidate is not touched.
 - **The `package_test` receipt.** The seal and the shared receipt validator (in its check and its

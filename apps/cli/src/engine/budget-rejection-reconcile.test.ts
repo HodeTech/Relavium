@@ -7,7 +7,7 @@ import {
   type DbClient,
   type RunHistoryStore,
 } from '@relavium/db';
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { RUN_LEASE_TTL_MS, RunEventSchema, type RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const epoch = Date.parse('2026-10-04T00:00:00.000Z');
@@ -107,7 +107,8 @@ describe('native budget rejection crash recovery', () => {
         host: createInMemoryHost({
           store,
           runLeases: createRunLeasePort(store),
-          baseEpochMs: epoch,
+          // A later start: reconcile leaves a run younger than one lease TTL alone.
+          baseEpochMs: epoch + RUN_LEASE_TTL_MS + 1,
         }),
         executor: { execute },
       });

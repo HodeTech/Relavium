@@ -133,8 +133,9 @@ function targetRunIds(reader: RunHistoryReader, runId: string | undefined): stri
   if (run === undefined) {
     throw new CliError('invalid_invocation', `no run found with id ${runId}`);
   }
-  // A non-paused run cannot hold a pending human gate — skip it (don't replay its whole event log only to
-  // find none), the same guard `statusCommand` applies. The empty result yields the clear "no pending" message.
+  // Only a `paused` run is read (don't replay a whole event log only to find no gate); the empty result yields the
+  // clear "no pending" message. `statusCommand` differs: it shows nothing for a finished run, but reads the gates of
+  // a `running` one too, which a crash between a gate's authority and its pause can leave holding one.
   return run.status === 'paused' ? [run.id] : [];
 }
 
@@ -144,7 +145,7 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
     io.writeOut(
       runId === undefined
         ? 'No pending human gates.\n'
-        : `Run ${runId} has no pending human gate.\n`,
+        : `Run ${sanitizeInline(runId)} has no pending human gate.\n`,
     );
     return;
   }
@@ -152,6 +153,10 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
   for (const row of rows) {
     // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there.
     const message = row.message === '' ? '' : `  "${sanitizeInline(row.message)}"`;
-    io.writeOut(`  ${row.runId}  ${row.gateId}  ${row.gateType}  node=${row.nodeId}${message}\n`);
+    // The ids are history.db values too, with no CHECK behind them, and this is a terminal write.
+    io.writeOut(
+      `  ${sanitizeInline(row.runId)}  ${sanitizeInline(row.gateId)}  ${row.gateType}  ` +
+        `node=${sanitizeInline(row.nodeId)}${message}\n`,
+    );
   }
 }

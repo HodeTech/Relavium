@@ -16,7 +16,12 @@ export type { AgentDefinition, ParseAgentOptions } from './agent-parser.js';
 
 // Catalog-aware load-check (1.AF/D15) — validates each agent node's `output_modalities` against its
 // resolved model's `media.outputCombinations`, using a host-provided model→capabilities catalog.
-export { validateWorkflowWithCatalog, type WorkflowModelCatalog } from './validate-catalog.js';
+export {
+  validateWorkflowToolArms,
+  validateWorkflowWithCatalog,
+  type ToolHostArm,
+  type WorkflowModelCatalog,
+} from './validate-catalog.js';
 
 // Typed, field-named, secret-free parse/validation errors — narrow on `code`, never on `message`.
 export {
@@ -200,6 +205,7 @@ export type {
   GateRequest,
   GateType,
 } from './engine/node-executor.js';
+export { decisionsForGateType, gateAcceptsDecision } from './engine/gate-decision-fit.js';
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
 export {
@@ -355,6 +361,7 @@ export type { SessionHandle, SessionStreamHandleEvent } from './engine/session-h
 // counterpart (the CLI authoring 2.J `create`/`import`/`export` path); `sessionToWorkflow` maps a persisted
 // session + transcript into a linear-chain scaffold (ADR-0026; agent-session-spec.md §"Export to workflow").
 export { serializeWorkflow, serializeAgent, sessionToWorkflow } from './export/serializer.js';
+export { readSessionExportMarker } from './export/session-marker.js';
 
 // Node-type handlers (1.P) — the six non-agent NodeExecutor arms (condition / transform / fan_out /
 // fan_in / input / output) plus the dispatcher that composes them (and the 1.O agent arm) into the one

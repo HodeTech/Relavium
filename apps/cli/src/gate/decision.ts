@@ -1,4 +1,8 @@
+import { decisionsForGateType, gateAcceptsDecision, type WorkflowDefinition } from '@relavium/core';
 import type { GateDecision } from '@relavium/shared';
+
+import { CliError } from '../process/errors.js';
+import { sanitizeInline } from '../render/sanitize.js';
 
 /**
  * Pure {@link GateDecision} builders + the `relavium gate` flag→decision mapping (2.G) — framework-free
@@ -97,4 +101,32 @@ export function decisionFromFlags(flags: GateFlags): GateFlagResult {
     return { ok: true, decision: approvalDecision(flags.comment) };
   }
   return { ok: true, decision: rejectionDecision(flags.comment) };
+}
+
+/** The `relavium gate` flag that records each decision kind, for an actionable refusal and `status`'s resume hints. */
+export const FLAG_FOR_DECISION: Readonly<Record<GateDecision['decision'], string>> = {
+  approved: '--approve',
+  rejected: '--reject',
+  input_provided: '--input <json>',
+};
+
+/**
+ * Refuse a decision the pending gate's authored type does not accept, before any engine work (2.6.K, ruled
+ * 2026-11-05): an `approval` or `review` gate takes `--approve` or `--reject`, an `input` gate `--input` or
+ * `--reject`. The type is the run's workflow snapshot's `gate_type`; the engine re-checks it as defense in depth.
+ */
+export function assertDecisionFitsGateType(
+  workflow: WorkflowDefinition,
+  nodeId: string | undefined,
+  decision: GateDecision,
+): void {
+  const node = workflow.workflow.nodes.find((candidate) => candidate.id === nodeId);
+  if (node?.type !== 'human_gate' || gateAcceptsDecision(node.gate_type, decision.decision)) return;
+  const flags = decisionsForGateType(node.gate_type)
+    .map((kind) => FLAG_FOR_DECISION[kind])
+    .join(' or ');
+  throw new CliError(
+    'invalid_invocation',
+    `the gate at node ${sanitizeInline(node.id)} is ${node.gate_type === 'review' ? 'a' : 'an'} ${node.gate_type} gate — use ${flags}`,
+  );
 }

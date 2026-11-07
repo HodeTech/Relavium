@@ -66,6 +66,15 @@ export interface RunSummary {
   readonly errorMessage?: string;
   /** Present on a paused run — the gate ids the run is parked on. */
   readonly pausedGateIds?: readonly string[];
+  /** Present on a completed run — the workflow's outputs, for the final summary (MVP-A1). Raw; render sanitizes. */
+  readonly outputs?: Readonly<Record<string, unknown>>;
+}
+
+/** A gate's raw identity — the triple `budgetGateIdentity` keys on. */
+export interface GateIdentity {
+  readonly runId: string;
+  readonly nodeId: string;
+  readonly gateId: string;
 }
 
 export interface RunViewState {
@@ -94,11 +103,14 @@ export interface RunViewState {
   /** Bounded, user-facing warnings (gap, budget, timeout, gate). */
   readonly warnings: readonly string[];
   /** Active budget identities outlive the bounded warning tail; at most one per paused run/node. */
-  readonly pendingBudgetNotices: readonly {
-    readonly runId: string;
-    readonly nodeId: string;
-    readonly gateId: string;
-  }[];
+  readonly pendingBudgetNotices: readonly GateIdentity[];
+  /**
+   * The human gates THIS stream announced (a `human_gate:paused` with no budget companion) and has not seen
+   * resolved; at most one per run/node. The final summary names `relavium gate` only for these: a resumed engine
+   * re-parks on the gates it restored from its checkpoint without announcing them again, and such a gate may be a
+   * budget gate, which `gate` declines.
+   */
+  readonly pendingHumanGates: readonly GateIdentity[];
   /** Produced media handles surfaced as nodes complete (2.S) — the run's media deliverables, bounded to the
    *  trailing {@link MAX_PRODUCED_MEDIA}. Handle-only by construction (the engine de-inlines bytes upstream). */
   readonly producedMedia: readonly ProducedMediaView[];
@@ -130,6 +142,7 @@ export function initialRunViewState(): RunViewState {
     gapDetected: false,
     warnings: [],
     pendingBudgetNotices: [],
+    pendingHumanGates: [],
     producedMedia: [],
   };
 }
@@ -330,6 +343,15 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     };
   }
 
+  // A resumed stream (`relavium gate`, `budget resume`) never re-emits `run:started`, so the view takes the run id
+  // from its first applied event: the footer, the summary and its outputs note all name it (MVP-A2). An event newer
+  // than this reducer leaves the state as it was (the `default` arm below).
+  const unlatched = base;
+  const eventRunId: string | undefined = event.runId;
+  if (base.runId === undefined && eventRunId !== undefined) {
+    base = { ...base, runId: eventRunId };
+  }
+
   switch (event.type) {
     case 'run:started':
       return { ...base, runId: event.runId };
@@ -441,6 +463,12 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         return base;
       return {
         ...base,
+        pendingHumanGates: [
+          ...base.pendingHumanGates.filter(
+            (gate) => gate.runId !== event.runId || gate.nodeId !== event.nodeId,
+          ),
+          { runId: event.runId, nodeId: event.nodeId, gateId: event.gateId },
+        ],
         warnings: pushBounded(
           base.warnings,
           `gate "${event.gateId}" (${event.gateType}) awaiting ${event.gateType === 'input' ? 'input' : 'decision'}`,
@@ -451,16 +479,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'human_gate:resumed':
       return {
         ...base,
-        pendingBudgetNotices: base.pendingBudgetNotices.filter((gate) =>
-          event.gateId === undefined
-            ? gate.runId !== event.runId || gate.nodeId !== event.nodeId
-            : budgetGateIdentity(gate) !==
-              budgetGateIdentity({
-                runId: event.runId,
-                nodeId: event.nodeId,
-                gateId: event.gateId,
-              }),
-        ),
+        pendingBudgetNotices: withoutResolvedGate(base.pendingBudgetNotices, event),
+        pendingHumanGates: withoutResolvedGate(base.pendingHumanGates, event),
         warnings: pushBounded(base.warnings, `gate resumed: ${event.decision}`, MAX_WARNINGS),
       };
 
@@ -508,7 +528,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'run:cancelled':
       // The three terminal arms live in `reduceTerminal` — each folds a durable cost snapshot onto BOTH the
       // summary and the running total, and keeping them here pushed this switch past its complexity budget.
-      return reduceTerminal({ ...base, pendingBudgetNotices: [] }, event);
+      return reduceTerminal({ ...base, pendingBudgetNotices: [], pendingHumanGates: [] }, event);
     case 'run:paused':
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
 
@@ -534,9 +554,22 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     default: {
       const exhaustive: never = event;
       void exhaustive; // Keep compile-time exhaustiveness and tolerate newer external runtime events.
-      return base;
+      return unlatched;
     }
   }
+}
+
+/** Drop the gate a `human_gate:resumed` resolved: by its id, or — a log that predates gate ids — by its run and node. */
+function withoutResolvedGate(
+  gates: readonly GateIdentity[],
+  event: Extract<RunEvent, { type: 'human_gate:resumed' }>,
+): readonly GateIdentity[] {
+  return gates.filter((gate) =>
+    event.gateId === undefined
+      ? gate.runId !== event.runId || gate.nodeId !== event.nodeId
+      : budgetGateIdentity(gate) !==
+        budgetGateIdentity({ runId: event.runId, nodeId: event.nodeId, gateId: event.gateId }),
+  );
 }
 
 function reduceBudgetNotice(
@@ -584,6 +617,7 @@ function reduceTerminal(
           totalCostMicrocents: event.totalCostMicrocents,
           totalTokens: event.totalTokensUsed,
           durationMs: event.durationMs,
+          outputs: event.outputs,
         },
         cumulativeCostMicrocents: event.totalCostMicrocents,
       };

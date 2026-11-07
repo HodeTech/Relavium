@@ -490,12 +490,20 @@ const executeGateList: CommandExecutor = (input, ctx) => {
 };
 
 const executeList: CommandExecutor = (input, ctx) =>
-  Promise.resolve(listCommand({ agents: boolFlag(input.options['agents']) }, ctx));
+  Promise.resolve(
+    listCommand(
+      { agents: boolFlag(input.options['agents']), runs: boolFlag(input.options['runs']) },
+      ctx,
+    ),
+  );
 
 const executeLogs: CommandExecutor = (input, ctx) =>
   Promise.resolve(logsCommand({ runId: reqPositional(input, 0, 'runId') }, ctx));
 
-const executeStatus: CommandExecutor = (_input, ctx) => statusCommand(ctx);
+const executeStatus: CommandExecutor = (input, ctx) => {
+  const runId = optPositional(input, 0);
+  return statusCommand(ctx, runId === undefined ? {} : { runId });
+};
 
 /**
  * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its

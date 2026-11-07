@@ -2,6 +2,7 @@ import {
   AllowanceQuoteResultSchema,
   isAppendConflictError,
   isLeaseFencedError,
+  RunAlreadyTerminalError,
   RunEventSchema,
   type RunEvent,
 } from '@relavium/shared';
@@ -286,6 +287,67 @@ describe('createRunHistoryStore', () => {
         { expectedLastSequenceNumber: -1 },
       ),
     ).resolves.toBeUndefined();
+  });
+
+  // --- exactly one terminal (ADR-0036), held by the store for every writer -------------------------------
+
+  const failed = (seq: number) =>
+    ev('run:failed', seq, {
+      error: { code: 'internal', message: 'reconciled', retryable: false },
+      partialOutputs: {},
+    });
+  const completed = (seq: number) =>
+    ev('run:completed', seq, {
+      outputs: {},
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 0,
+    });
+
+  it('REFUSES a second terminal, guarded or not, and writes nothing', async () => {
+    // The reachable case: a reconcile settles a run between its `run:started` and its lease acquire, and the
+    // run's own terminal follows. The engine's terminal is unguarded (ADR-0078 §2) and, for a writer that
+    // never acquired, unfenced — so this refusal is the only thing between that terminal and the log.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    await store.persistEvent(failed(1), { expectedLastSequenceNumber: 0 });
+
+    await expect(store.persistEvent(completed(2))).rejects.toBeInstanceOf(RunAlreadyTerminalError);
+    // A guarded terminal whose belief matches the log is still a SECOND terminal.
+    await expect(
+      store.persistEvent(ev('run:cancelled', 2, {}), {
+        expectedLastSequenceNumber: 1,
+      }),
+    ).rejects.toBeInstanceOf(RunAlreadyTerminalError);
+
+    expect(
+      store.loadRunEvents('run-1').map((e) => `${String(e.sequenceNumber)}:${e.type}`),
+    ).toEqual(['0:run:started', '1:run:failed']);
+    // The derived row was not relabelled by the refused write either.
+    expect(
+      client.db.select({ status: runs.status }).from(runs).where(eq(runs.id, 'run-1')).get(),
+    ).toEqual({ status: 'failed' });
+  });
+
+  it('scopes the terminal refusal PER RUN — another run`s terminal does not close this one', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+    );
+    await store.persistEvent(failed(1));
+    await store.persistEvent({
+      type: 'run:started',
+      runId: 'run-2',
+      timestamp: TS,
+      sequenceNumber: 0,
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+    await expect(store.persistEvent({ ...completed(1), runId: 'run-2' })).resolves.toBeUndefined();
   });
 
   // --- the fence on the durable write (CR-11, ADR-0079 §2) --------------------------------------------
@@ -779,6 +841,8 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-p')?.resumable).toBe(true);
     expect(byId.get('run-p')?.lastSequenceNumber).toBe(1);
     expect(byId.get('run-m')?.resumable).toBe(false);
+    // When each run started, so reconcile can leave a run younger than one lease TTL alone.
+    expect(byId.get('run-m')?.startedAtMs).toBe(Date.parse(TS));
   });
 
   it.each(['gate_conflict', 'invalid_json'] as const)(

@@ -163,15 +163,18 @@ describe('createFileTerminalOutbox', () => {
     await expect(outbox.remove('r1')).resolves.toBeUndefined();
   });
 
-  it('NEVER throws when the file is unreadable', async () => {
+  it('never throws when the file is unreadable, and its list says so rather than reading as empty', async () => {
     const outbox = createFileTerminalOutbox(path);
     await outbox.put(terminal('r1'));
     // A directory where a file is expected is the portable way to make a read fail (chmod 000 is a no-op
     // for root and on Windows).
     rmSync(path);
     mkdirSync(path);
-    await expect(outbox.list()).resolves.toEqual([]);
+    // "Nothing held" and "could not look" differ: a reconcile that read the second as the first would repair a
+    // run whose held terminal it could not see. The rejection is fixed text — the path stays out of it.
+    await expect(outbox.list()).rejects.toThrow(/^the terminal outbox could not be read$/u);
     await expect(outbox.put(terminal('r2'))).resolves.toBeUndefined();
+    await expect(outbox.remove('r1')).resolves.toBeUndefined();
   });
 
   it('refuses to write THROUGH a symlink — the guard added with the consent store (ADR-0084 §5)', async () => {

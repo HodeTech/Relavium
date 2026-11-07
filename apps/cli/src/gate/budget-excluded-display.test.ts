@@ -213,6 +213,7 @@ describe('excluded allowance candidates on human surfaces (ADR-0097)', () => {
       message: 'Approve exactly 20 microcents?',
       active: 'Approve exact amount',
       inactive: 'Reject',
+      initialValue: false, // a bare Enter rejects the spend
     });
     expect(result).toEqual({
       decision: 'approved',

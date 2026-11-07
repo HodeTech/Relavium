@@ -128,6 +128,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {/* Running cost footer (and total tokens once the run completes) */}
       <Box marginTop={1}>
         <Text {...colorProps(color, 'gray')}>
+          {state.runId === undefined ? '' : `run ${sanitizeInline(state.runId)}  ·  `}
           cost{' '}
           {formatReportedCost(
             state.cumulativeCostMicrocents,

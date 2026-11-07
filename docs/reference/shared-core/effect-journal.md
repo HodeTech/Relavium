@@ -232,6 +232,10 @@ shapes were weighed and two rejected:
 - a **typed `ErrorCode` on the existing terminal** — chosen. It reuses the closed error taxonomy every surface
   already switches on, and `run:failed` is honest: the run did not complete.
 
+A run a crashed process left behind gets the same code when crash reconciliation settles it: `reconcile()` reads
+the journal's resume half for the run, and a row §4 says blocks (or a journal it cannot read) makes the terminal
+`effect_needs_attention` rather than `internal`, which a caller would read as an ordinary failure to run again.
+
 **It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
 section.** Terminal durability and final local effect health are independent. After all admitted
 work has joined, the CLI selects the final disposition and remedy according to
@@ -420,13 +424,20 @@ A recognized structural credential key masks its entire value before traversal. 
 inner text match does not make the remaining value public. Only an anchored Bearer, Basic
 or Token scheme survives as its canonical label followed by `[redacted]`; no original
 credential remainder or casing is retained. Credential flags in an argument vector mask
-the whole following element or the complete value in `--token=value` form. Only the
+the following element or the complete value in `--token=value` form, with the exceptions the
+[argv rule](built-in-tools.md#finite-diagnostic-credential-masking) states (a `-u`/`--user` value only as a
+`user:password` pair; a credential flag in value position also masks the element after it). Only the
 ambiguous `-p` spelling retains the existing port-shaped exception; explicitly named
 credential flags have none. Since 2026-11-04 the credential flags include every flag whose last
-word names a credential and curl's `-u`/`--user` pair, and a URL password's `,` or `/` no longer
-ends its userinfo ([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
+word names a credential and curl's `-u`/`--user` pair
+([built-in tools](built-in-tools.md#finite-diagnostic-credential-masking)); as
 with the PR95 tightening above, a `v5:` row whose arguments these project differently now refuses
-matching prepare, and every other row keeps its digest. Unrecognized public fields and ordinary arguments still
+matching prepare, and every other row keeps its digest. Both rules are program-agnostic, so a value a
+boolean flag happens to precede is masked as well — a `name:group` after `-u` (`docker run -u app:app`), the
+argument after `--ask-vault-password` — and calls that differ only in that element share one projection; on a
+crash-resume where the model changes exactly that element, the slot replays the committed result instead of
+refusing. It is a recorded limit of the finite rules ([deferred tasks](../../roadmap/deferred-tasks.md)), the same
+cost recognized credentials always carry. Unrecognized public fields and ordinary arguments still
 contribute their complete surviving values to identity. These projections do not change
 the arguments dispatched to the host.
 

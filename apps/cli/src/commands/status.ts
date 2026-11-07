@@ -1,17 +1,24 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
-import type { RunEvent } from '@relavium/shared';
+import type { RunEvent, RunStatus } from '@relavium/shared';
 
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { pendingGateDisplays, type PendingGate, type PendingBudgetGate } from '../gate/pending.js';
+import {
+  decidedGateNodes,
+  humanGateResumeHints,
+  pendingGateDisplays,
+  type PendingGate,
+  type PendingBudgetGate,
+} from '../gate/pending.js';
 import {
   budgetIdentifier,
   budgetPromptDetails,
   budgetPromptLabel,
   budgetResumeHints,
 } from '../gate/budget.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -22,6 +29,11 @@ import { readPerRunOrDegrade } from '../history/per-run-read.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
+
+/** `relavium status [runId]` — one run, active or finished, instead of every active run (MVP-1). */
+export interface StatusCommandArgs {
+  readonly runId?: string;
+}
 
 export interface StatusCommandDeps {
   readonly commandLifetime?: CommandLifetime;
@@ -60,6 +72,13 @@ async function heldTerminalRunIds(
   }
 }
 
+/** A run in one of these already has its durable terminal; an outbox entry for it is stale, not held. */
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
 const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]> =>
   createFileTerminalOutbox(terminalOutboxPath(homeDir)).list();
 
@@ -72,6 +91,8 @@ interface ActiveRunStatus {
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
   readonly pendingBudgetGates: readonly PendingBudgetGate[];
+  /** The nodes whose human gate was decided, read from the log (empty when it could not be read). */
+  readonly decidedGateNodes: ReadonlySet<string>;
   /** `true` when this run's event log could not be read, so `pendingGates` is a stand-in (#W15-15). */
   readonly gatesUnavailable: boolean;
 }
@@ -81,9 +102,12 @@ interface ActiveRunStatus {
  * step status (`loadStepExecutions`). For a run paused at a human gate it also surfaces the pending `gateId`(s)
  * with gate type + node id, so an operator can pass the right one to `relavium gate <runId> --gate <gateId>`
  * (canonical: [commands.md](../../../docs/reference/cli/commands.md)). `--json` emits one record per run.
- * Framework-free; no `runId` argument (it lists every active run).
+ * Framework-free. With a `runId` it shows that one run, active or finished; without, every active run.
  */
-export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> {
+export async function statusCommand(
+  deps: StatusCommandDeps,
+  args: StatusCommandArgs = {},
+): Promise<ExitCode> {
   const { homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
@@ -97,17 +121,23 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   // Runs whose TERMINAL is held in the outbox (ADR-0078 §4/§5) — read, never drained.
   //
   // A run in that state is still `running` in the derived projection, so it appears here as an ordinary
-  // active run with nothing saying its outcome is already known. Exit code 5 tells a script to "re-check
-  // `relavium status <runId>` after a subsequent invocation", and a review found that instruction can never
-  // resolve on its own: only `run` and `gate` drain the outbox, because only they construct a
-  // `WorkflowEngine`. A user who does the natural thing — ask for status again — sees the same stale truth
-  // forever. Naming the state here is what makes the documented remedy actionable.
+  // active run with nothing saying its outcome is already known. Exit code 5 tells a script to read
+  // `relavium status <runId>`, and a review found that instruction could never resolve on its own: status
+  // itself never drains (only a later `run`, `gate`, `budget resume` or Home open does). A user who does the
+  // natural thing — ask for status again — would see the same stale truth. Naming the state here is what makes
+  // the documented remedy actionable.
+  //
+  // Only for a run that is still non-terminal. In the reconcile race (commands.md, exit 5) the reconciler's
+  // `run:failed` is durable and the run's own refused terminal is ALSO held; that entry is stale, and the next
+  // drain drops it rather than landing it. Calling such a run "finished, not durable yet" would be false.
   //
   // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
   // ownership of a run another process may be finishing right now.
   try {
     const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
-    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
+    const runs =
+      args.runId === undefined ? reader.listActiveRuns() : [requireRun(reader, args.runId)];
+    const statuses: ActiveRunStatus[] = runs.map((run) => {
       let steps: readonly StepRecord[] = [];
       const usage = readPerRunOrDegrade(
         {
@@ -128,13 +158,16 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
         run,
         usage: usage.value,
         usageUnavailable: usage.degraded,
-        terminalHeld: held.has(run.id),
+        terminalHeld: held.has(run.id) && !TERMINAL_STATUSES.has(run.status),
         steps,
         // Native authority and companion crash prefixes can leave either active status with pending gates.
         // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
         // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
         // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
-        ...gatesOf(reader, run),
+        // A FINISHED run (`status <runId>`) has nothing pending, whatever its log left open: a run cancelled or
+        // failed while a gate waited never resolves that gate: `gate` / `budget resume` answer it with an exit-0
+        // `nothing to resume`, and `gate list` skips it.
+        ...gatesOf(reader, run, TERMINAL_STATUSES.has(run.status)),
       };
     });
 
@@ -156,20 +189,42 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   }
 }
 
-/** Reconstruct once per active run: a companion crash may leave a running projection with pending gates. */
+/** The run `status <runId>` names, active or finished (soft-deleted excluded), as `logs` resolves it. */
+function requireRun(reader: RunHistoryReader, runId: string): RunRecord {
+  const run = reader.loadRun(runId);
+  if (run === undefined) {
+    throw new CliError('invalid_invocation', `no run found with id ${runId}`);
+  }
+  return run;
+}
+
+interface RunGates {
+  readonly pendingGates: readonly PendingGate[];
+  readonly pendingBudgetGates: readonly PendingBudgetGate[];
+  readonly decidedGateNodes: ReadonlySet<string>;
+}
+
+/**
+ * Read a run's log once for its gates: what is pending, and which gates were decided. An active run may hold pending
+ * gates even with a running projection (a companion crash). A finished run has nothing pending (see the call site),
+ * so an unreadable log costs it only the decided-gate labels and raises no `gatesUnavailable`.
+ */
 function gatesOf(
   reader: RunHistoryReader,
   run: RunRecord,
-): {
-  pendingGates: readonly PendingGate[];
-  pendingBudgetGates: readonly PendingBudgetGate[];
-  gatesUnavailable: boolean;
-} {
-  const read = readPerRunOrDegrade<ReturnType<typeof pendingGateDisplays>>(
-    { pendingGates: [], pendingBudgetGates: [] },
-    () => pendingGateDisplays(reader.loadRunEvents(run.id)),
+  finished: boolean,
+): RunGates & { gatesUnavailable: boolean } {
+  const read = readPerRunOrDegrade<RunGates>(
+    { pendingGates: [], pendingBudgetGates: [], decidedGateNodes: new Set() },
+    () => {
+      const events = reader.loadRunEvents(run.id);
+      const pending = finished
+        ? { pendingGates: [], pendingBudgetGates: [] }
+        : pendingGateDisplays(events);
+      return { ...pending, decidedGateNodes: decidedGateNodes(events) };
+    },
   );
-  return { ...read.value, gatesUnavailable: read.degraded };
+  return { ...read.value, gatesUnavailable: !finished && read.degraded };
 }
 
 /** One active run as a machine record: identity + status + per-node steps + any pending human gates. */
@@ -220,25 +275,40 @@ function toJson(status: ActiveRunStatus): unknown {
   };
 }
 
+/**
+ * A step's human label; `--json` keeps the recorded status. No `node:completed` closes a human gate's step row,
+ * though the engine marks the gate vertex completed when it is decided, so a decided gate prints `completed`. Any
+ * other step still `running` under a finished run never finished: a run terminal does not close its row.
+ */
+function shownStepStatus(
+  step: StepRecord,
+  finished: boolean,
+  decided: ReadonlySet<string>,
+): string {
+  if (step.status !== 'running') return step.status;
+  if (step.nodeType === 'human_in_the_loop' && decided.has(step.nodeId)) return 'completed';
+  return finished ? 'stopped' : step.status;
+}
+
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
 function renderRun(io: CliIo, status: ActiveRunStatus): void {
-  io.writeOut(`run ${status.run.id} — ${status.run.status} (workflow ${status.run.workflowId})\n`);
+  // Every identifier here is read back from history.db, so each is printed one-line with controls stripped, as
+  // the gate message below is (the run path writes only validated ids, but the file is the trust boundary).
+  const finished = TERMINAL_STATUSES.has(status.run.status);
+  io.writeOut(
+    `run ${sanitizeInline(status.run.id)} — ${sanitizeInline(status.run.status)} (workflow ${sanitizeInline(status.run.workflowId)})\n`,
+  );
   if (status.usageUnavailable) {
     io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
   }
-  if (status.steps.length === 0) {
-    io.writeOut('  (no node activity recorded yet)\n');
-  }
-  for (const step of status.steps) {
-    const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
-    io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
-  }
+  renderSteps(io, status, finished);
   if (status.terminalHeld) {
     // The run reads `running` because its terminal never became durable; without this line the exit-5
     // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
     io.writeOut(
       '  ⚠ this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n' +
-        '    Recovery is attempted by `relavium run`, `relavium gate` and `relavium budget resume`; the next one retries it.\n',
+        '    Recovery is attempted by `relavium run`, `relavium gate`, `relavium budget resume` and opening the\n' +
+        '    `relavium` Home; the next one retries it.\n',
     );
   }
   if (status.gatesUnavailable) {
@@ -247,6 +317,30 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // they would come to find out which run is broken.
     io.writeOut("  ⚠ pending gates unavailable — this run's event log could not be read\n");
   }
+  renderPendingGates(io, status);
+}
+
+/** One row per recorded step, or a line saying no node ran (or none has yet, on an active run). */
+function renderSteps(io: CliIo, status: ActiveRunStatus, finished: boolean): void {
+  if (status.steps.length === 0) {
+    io.writeOut(finished ? '  (no node ran)\n' : '  (no node activity recorded yet)\n');
+  }
+  for (const step of status.steps) {
+    // A history.db value: text SQLite keeps as text but JavaScript reads as a number past 1 ('\u30002\f') must not
+    // reach the terminal raw.
+    const attempt =
+      Number.isSafeInteger(step.attemptNumber) && step.attemptNumber > 1
+        ? ` (attempt ${step.attemptNumber})`
+        : '';
+    const shown = shownStepStatus(step, finished, status.decidedGateNodes);
+    io.writeOut(
+      `  ${sanitizeInline(shown).padEnd(9)} ${sanitizeInline(step.nodeId)} [${sanitizeInline(step.nodeType)}]${attempt}\n`,
+    );
+  }
+}
+
+/** Each pending budget gate, then each pending human gate, with the commands that continue it. */
+function renderPendingGates(io: CliIo, status: ActiveRunStatus): void {
   for (const gate of status.pendingBudgetGates) {
     const gateId = budgetIdentifier(gate.gateId);
     io.writeOut(
@@ -262,6 +356,11 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // model-controlled string in the product. The TUI leaf was hardened; this command leaf was not, so a
     // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class).
     const message = gate.message === '' ? '' : ` — "${sanitizeInline(gate.message)}"`;
-    io.writeOut(`  ⏸ pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}${message}\n`);
+    io.writeOut(
+      `  ⏸ pending gate ${sanitizeInline(gate.gateId)} (${gate.gateType}) at ${sanitizeInline(gate.nodeId)}${message}\n`,
+    );
+    // The command that continues it: a resumed run's final summary sends a gate it cannot classify here.
+    for (const hint of humanGateResumeHints(status.run.id, gate.gateId, gate.gateType))
+      io.writeOut(`    ${hint}\n`);
   }
 }

@@ -173,7 +173,7 @@ video = 10                         # assumed video-SECONDS per media-output turn
 focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
-default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063)
+default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063); absent there too ⇒ a model of the first provider with a key (MVP-A4, chat-session.md)
 default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
@@ -183,6 +183,7 @@ max_messages = 200                 # history-trim threshold — consumed by `/tr
 auto_compact = true                # ADR-0096: permit measured next-request compaction when memory is omitted (absent ⇒ true)
 compact_threshold = 0.8            # ADR-0062: the context-window fraction that triggers auto-compaction; a fraction in (0, 1] (absent ⇒ 0.8)
 max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
+max_tokens = 8192                  # MVP-A7 + ADR-0101's 2026-11-05 amendment: the output cap for a chat whose bound agent authors no max_tokens, any provider. Absent ⇒ an Anthropic chat with no fallback chain on the official endpoint and NO cost cap uses the model's catalog ceiling (claude-sonnet-4-6: 128,000) instead of the adapter's implicit 4,096; otherwise the adapter default. Chat surfaces only: `relavium agent run` keeps the adapter default. The governor reserves this cap before each turn, so set it below the ceiling when a cost cap is set; the chat's per-attempt deadline scales with it (cap at 25 tokens/s, 120 s to 30 min; ADR-0101 2026-11-06).
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
 strict_cost_cap = false            # ADR-0071 §K7 + ADR-0089 §4: refuse a turn we cannot PRICE. Two cases, one rule
                                    # — an unpriced MODEL, and a priced model whose requested media MODALITY carries

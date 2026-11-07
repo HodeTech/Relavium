@@ -22,7 +22,8 @@
  * **Nothing here throws for a caller that cannot recover.** The engine calls `put` from inside its terminal
  * path, having already failed one write; a throw would break exactly-one-terminal on the way out of the code
  * that exists to protect it. `put` reports failure by leaving the entry unwritten — the run already reports
- * `uncertain`, which is the honest floor ADR-0078 §4's Consequences records.
+ * `uncertain`, which is the honest floor ADR-0078 §4's Consequences records. `list` alone rejects, on a file it
+ * cannot read: its callers (the engine's drain, `status`) catch that, and an empty answer would be a lie.
  */
 
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync } from 'node:fs';
@@ -35,6 +36,15 @@ import { stringifyJsonLine } from '../render/sanitize.js';
 /** Owner-only, matching `history.db` (ADR-0050). A no-op on Windows, as the at-rest guard there is the ACL. */
 const FILE_MODE = 0o600;
 
+/** The `errno` code of a Node fs error (`ENOENT`, `EACCES`, …), or `undefined` if it is not one. */
+function errnoCode(err: unknown): string | undefined {
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code: unknown = err.code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
+}
+
 /** The tombstone marker key. Deliberately not a `RunEvent` field, so a tombstone can never parse as one. */
 const TOMBSTONE_KEY = '__relaviumOutboxRemoved';
 
@@ -45,15 +55,22 @@ function tombstoneRunId(raw: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-/** Read every line, keeping the LAST entry per run; unreadable lines are skipped, never fatal. */
+/**
+ * Read every line, keeping the LAST entry per run; unreadable LINES are skipped, never fatal.
+ *
+ * An absent file holds nothing. A file that exists but cannot be read is NOT empty: it throws a fixed error, so
+ * `list` rejects and a reader can tell "nothing held" from "could not look". That difference is what keeps a
+ * reconcile from repairing a run whose held terminal it could not see (ADR-0078 §4), and what lets `status` warn.
+ */
 function readEntries(path: string): Map<string, RunEvent> {
   const held = new Map<string, RunEvent>();
-  if (!existsSync(path)) return held;
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
-  } catch {
-    return held; // an unreadable outbox is a lost retry, not a crash — the run already reported uncertain
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return held;
+    // Fixed text: a filesystem error may carry a private path.
+    throw new Error('the terminal outbox could not be read');
   }
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
@@ -137,7 +154,13 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
       }
       return Promise.resolve();
     },
-    list: () => Promise.resolve([...readEntries(path).values()]),
+    list: () => {
+      try {
+        return Promise.resolve([...readEntries(path).values()]);
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
     remove: (runId) => {
       try {
         if (!existsSync(path)) return Promise.resolve();
