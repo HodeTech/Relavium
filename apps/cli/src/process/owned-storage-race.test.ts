@@ -136,7 +136,7 @@ describe('replaceFileForStorage — a swap between its last lstat and its open',
   });
 
   it.skipIf(process.platform === 'win32')(
-    'refuses a link put there without following it, rather than failing on the open',
+    'refuses a link put there, whether or not the open follows it, rather than failing on the open',
     () => {
       const path = join(dir, 'w.relavium.yaml');
       const target = join(dir, 'target.yaml');

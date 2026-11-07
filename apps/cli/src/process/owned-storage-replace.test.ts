@@ -99,22 +99,21 @@ describe('replaceFileForStorage', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32')(
-    'refuses a file whose permission bits changed after the check, so the rewrite never undoes them',
-    () => {
-      // Same bytes, same size and times: only the ctime a chmod moves tells, and the file stays readable.
+  for (const field of ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'] as const) {
+    it(`refuses a file whose ${field} differs from the check, whatever the filesystem clock`, () => {
+      // A chmod made after recognition moves only the ctime; on a coarse clock it may not move it within one tick,
+      // so the comparison itself is pinned with the one field forged, the bytes and every other field real.
       const path = join(dir, 'w.relavium.yaml');
       writeFileSync(path, 'old');
-      chmodSync(path, 0o644);
-      const checked = identityOf(path);
-      chmodSync(path, 0o600);
+      const real = identityOf(path);
+      const checked = { ...real, [field]: real[field] + 1n };
       expect(() => {
         replaceFileForStorage(path, 'new', 0o644, checked);
       }).toThrow(StorageTargetChangedError);
-      expect(statSync(path).mode & 0o777).toBe(0o600);
       expect(readFileSync(path, 'utf8')).toBe('old');
-    },
-  );
+      expect(temps()).toEqual([]);
+    });
+  }
 
   it.skipIf(process.platform === 'win32' || isRoot)(
     'refuses a file made unreadable after the check as changed, rather than failing the export',

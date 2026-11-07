@@ -138,8 +138,9 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * `/export` updates the scaffold in place across a `/models` reseat, a `chat-resume` or a Home reopen, and a file
  * that merely sits at an old export's path — the scaffold renamed away and another workflow put there — is never
  * mistaken for it. The rewrite is atomic, and it replaces only the file it recognized: one changed or replaced
- * after the check is left alone, and the export takes the next free id instead. A swap in the moment between the
- * last check and the rename is not detected ({@link replaceFileForStorage}).
+ * after the check is left alone, and the export moves on through the same names, rewriting another of this
+ * session's own exports there or else taking the next free id. A swap in the moment between the last check and the
+ * rename is not detected ({@link replaceFileForStorage}).
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
   const loaded = loadSession(opts.store, opts.sessionId);
