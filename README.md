@@ -160,7 +160,8 @@ are implemented. **Phase 2.6.5 — Core Reliability Remediation is complete with
 deferrals**, with W8 merged in PR #92. The joint Phase 2.5.5/2.6 security remediation
 Wave 2 merged to `main` on 2026-10-15 as PR #94. The first eight steps of Wave 3
 (“Clear the ground”) followed on 2026-10-18 as PR #95, and the hardened release tooling and
-the MVP plan on 2026-11-04 as PR #96. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
+the MVP plan on 2026-11-04 as PR #96, and the MVP's first milestone (run output, run history
+and liveness) on 2026-11-07 as PR #97. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
 is paused, not dropped, while the work a CLI user feels — visible run results, a chat agent
 that can edit and run commands, readable replies, conversational authoring, web, the Home
 hub and MCP management — leads to `relavium` v0.2.0.

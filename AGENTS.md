@@ -22,14 +22,14 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status (2026-11-04): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
+**Status (2026-11-07): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
 published); Phase 2.6.5 is complete with approved deferrals (49/51, PR #92). Phase 2.5.5's Waves 0–2 and Wave 3
 Steps 1–8 are merged (PR #94, PR #95), and Steps 9a.1–9b.2 and NI are accepted and on `main` since the
 `development`→`main` checkpoint (PR #96, 2026-11-04). On 2026-10-26
 the maintainer paused Wave 3 (Steps 9c–19 pending, not declined) and put the CLI MVP first: `relavium` v0.2.0
 (milestone M3.5), ordered as MVP-1…MVP-10 under decisions D58–D72 in
 [current.md](docs/roadmap/current.md#next-work--the-cli-mvp). Phase 2.6 is in progress (2.6.C and 2.6.F done,
-2.6.Q P1–P5 landed). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
+2.6.Q P1–P5 landed). MVP-1 is accepted and on `main` (PR #97, 2026-11-07); MVP-2 is next. The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.
 

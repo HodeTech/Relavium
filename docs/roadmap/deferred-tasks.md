@@ -2126,6 +2126,31 @@ narrowing. Recorded:
   *Low; test gap.* *(export-2)* **Re-check:** two own exports, the first changed during the replace. *(low ·
   apps/cli/src/chat/export.ts)*
 
+**D64 round 7 of the correction (2026-11-07, at `72dee66a`)** found one medium in the correction: round 6's
+commands.md sentence said a decision from another process closes an open card, but another process's decision never
+reaches the run view; it now says only a deadline does, and what happens otherwise. It found a second medium that
+predates the correction, recorded below by the maintainer's ruling. **The maintainer merged PR #97 at `72dee66a`
+(merge commit `c04e6c13`, 2026-11-07), before a round came back clean and before the correction's separate security
+sitting was held.** Round 7's medium and its lows (the reconcile comments, the TTL rule's either-way clock, two test
+comments and a test name) were fixed on `development` after the merge. Recorded:
+
+- [ ] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
+  pre-existing (on `main` before the correction); must be fixed before v0.2.0 (maintainer ruling 2026-11-07).*
+  *(security-2)* When terminal B decides gate g with `relavium gate` and releases its lease, terminal A's open card for
+  g still takes an answer. A's resume reclaims the lease under a fresh fence, its guarded append is refused on its
+  stale head, and since only a fence refusal counts as losing ownership, A writes `run:failed{internal}` at a sequence
+  B already used. SQLite refuses it, the outbox holds it for good (A exits `5`, and `relavium status` says the run
+  FINISHED while it is paused at its next gate), and the held entry keeps every later reconcile from repairing that
+  run if it crashes. The in-memory store, with no `(runId, seq)` uniqueness, lands the bogus terminal instead. Ctrl-C
+  at the stale card writes a held `run:cancelled` the same way. **Re-check:** treat a guarded-append refusal after a
+  reclaim as ownership loss (no terminal, no outbox entry, the re-acquired row released, exit `6`), or have
+  `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
+  `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
+  *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
+- [ ] **No test pins the own-export read's size-plus-one bound.** *Low; test gap.* *(export-1)* A file that grows
+  between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
+  `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
