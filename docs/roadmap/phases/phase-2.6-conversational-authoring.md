@@ -1411,7 +1411,8 @@ The plan rests on three pieces of research:
 - a technical read of every MVP-2 item against the code at `0ef53496`.
 
 The maintainer delegated the non-major decisions on 2026-11-08. Those taken are listed below with their evidence,
-and the major ones are D74 and D75 in [current.md](../current.md#wave-gating-decisions).
+and the maintainer ruled the major ones the same day: D75 (the hub milestone runs right after MVP-4) and D76
+(2a's tier), with ADR-0114 and ADR-0122 accepted. They are in [current.md](../current.md#wave-gating-decisions).
 
 ### What a user gets
 
@@ -1460,10 +1461,10 @@ and the major ones are D74 and D75 in [current.md](../current.md#wave-gating-dec
 - **2a — A readable transcript.** The order is #65, then #61, then MVP-A8, then markdown, plus row 10b, #24 and
   the copy toast (decision 13).
   - #65 and #61 come first because ADR-0114's layout reuses their tab rule and word wrap.
-  - Markdown starts only after ADR-0114 is Accepted.
-  - **Tier:** D64's milestone review, plus a scoped security sitting on the markdown parser's bounds, link display
-    and sanitize order. That sitting is stricter than D64's letter, chosen because the parser handles untrusted
-    model text on every frame.
+  - ADR-0114 was accepted on 2026-11-08, so markdown can start once #65 and #61 have landed.
+  - **Tier (D76, ruled by the maintainer 2026-11-08):** D64's milestone review, plus a scoped security sitting on
+    the markdown parser's bounds, link display and sanitize order. The parser handles untrusted model text on every
+    frame.
 - **2b — First run in the Home.** The order is MVP-A27, MVP-A28, setup moved onto MVP-A28, MVP-A6, MVP-A26, #51,
   MVP-A5, then MVP-A18 with the project-folder fix (decision 9).
   - MVP-A6 comes after the prompt host, so no state on `development` ever adopts a standard variable silently.

@@ -344,7 +344,7 @@ makes the binding ones part of every new screen's acceptance.
 
 - [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md) (Accepted, 2026-11-08) records the direction
   and the per-screen acceptance rules. It replaces ADR-0056's shell-only clause and ADR-0054's read-only strip.
-- [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (still Proposed) now renders
+- [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (accepted 2026-11-08) now renders
   GFM tables as an aligned grid when they fit, and holds a streaming table until it ends.
 - The [MVP-2 plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08)
   gives every MVP-2 item an in-TUI form and records the decisions taken from this study.

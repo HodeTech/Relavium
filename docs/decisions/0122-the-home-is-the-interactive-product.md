@@ -7,6 +7,8 @@
 > **Accepted 2026-11-08.** The direction is the maintainer's ruling of 2026-11-08 (D73). The rules in the Decision
 > section were settled the same day under the maintainer's delegation, from the
 > [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md) and a map of the Home's current reach.
+> Two independent reviews' findings were then corrected, and the maintainer confirmed the ADR as Accepted the same
+> day.
 
 ## Context
 
@@ -163,8 +165,8 @@ The benchmark records these as the most common failure of products that made ful
 - **Running a workflow and answering a gate inside the Home.** The Home process would host a run's lease, signals,
   consent prompts and exit dispositions. This gets its own ADR before the milestone that builds it. That ADR also
   amends ADR-0115, which today gives no Ctrl-C rule for a run hosted in the Home.
-- **The milestone order.** It lives in [current.md](../roadmap/current.md#next-work--the-cli-mvp) (D69, and D75 as
-  proposed on 2026-11-08).
+- **The milestone order.** It lives in [current.md](../roadmap/current.md#next-work--the-cli-mvp) (D69 as amended by
+  D75 on 2026-11-08: the hub milestone runs right after MVP-4).
 - **The standalone chat host's future** (§5). Until that is decided, new Home-tree commands are not listed in the
   standalone host's palette.
 

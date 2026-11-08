@@ -170,6 +170,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 8. **MVP-8 — The Home as hub.** Phase 2.6 ADR row 6; 2.6.H's history data layer as far as G needs it; 2.6.K's
    shared resume core; 2.6.G's `/agents`, the actionable strip's content (within MVP-3's row budget),
    `/workflows` (defined, history, run detail) and the bound-agent view; Home `/help`; `logs --follow/--failed`.
+   - **Runs right after MVP-4 (D75, 2026-11-08).** Under [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)
+     it also brings running a workflow and answering gates and budget gates inside the Home. Its run-hosting ADR
+     (ADR-0122 §10) is written and accepted before it starts.
+   - It also gives `import` and `models pricing` their in-TUI forms or a recorded milestone.
 9. **MVP-9 — MCP and provider management.** Phase 2.6 ADR row 7; MCP servers attached to the default agent under
    ADR-0084 consent (MVP-A21); 2.6.I · **`/providers`**, `/mcp`, **`relavium mcp list/add/remove/test`** and MCP
    header auth; the masked `provider set-key` prompt (MVP-A20).
@@ -177,9 +181,12 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
     `development`→`main` checkpoint; release prerequisites and checks (MVP-A22, MVP-A23); v0.2.0 closes 2.6.F's
     release clause and M2.6-1.
 
+**Execution order (D75, 2026-11-08):** MVP-1, MVP-2, MVP-3, MVP-4, **MVP-8**, MVP-5, MVP-6, MVP-7, MVP-9,
+MVP-10. The milestones keep their numbers, which are cited across the documents.
+
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and the Proposed ADRs 0114–0121, each
+the stale-card ownership defect (PR #97 round 7, a lease-path increment); and the Proposed ADRs 0115–0121, each
 accepted by the maintainer before the MVP item that implements it (ADR-0120's approval escape with its mandatory
 security review at MVP-3). All are in [deferred-tasks.md](deferred-tasks.md).
 
@@ -419,13 +426,14 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D66 | Gate 0 | `current.md`'s history | ✅ **Ruled 2026-11-04:** relocate the unique records, delete the duplicated history, keep every inbound anchor |
 | D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 |
 | D68 | MVP-1/2/4 | First-run defaults and the keymap | ✅ **Ruled 2026-11-04:** env-var key fallback, the interactive output budget, the default model following the stored key, a minimal `init`, and one keymap ADR (Ctrl+C interrupts the turn, a second press ends the session, Ctrl+C at a pending approval rejects it first) superseding the 2026-10-19 `/cancel` wording |
-| D69 | MVP | Order of the added lanes | ✅ **Ruled 2026-11-04:** authoring → web → Home → MCP |
+| D69 | MVP | Order of the added lanes | ✅ **Ruled 2026-11-04:** authoring → web → Home → MCP · **Amended 2026-11-08 by D75:** the Home (MVP-8) moves ahead of authoring, right after MVP-4 |
 | D70 | MVP | npm pre-release before v0.2.0 | ✅ **Ruled 2026-11-04 — none** |
 | D71 | MVP-5 | Parity items (caching, project instructions, type-ahead, `--model`, one-shot) | ✅ **Ruled 2026-11-04 — in the MVP** |
 | D72 | — | The published `0.1.1`'s unsanitized `relavium run` output (#56) | ✅ **Ruled 2026-11-04 — no action;** the product has no users yet |
 | D73 | MVP | The CLI's interaction model | ✅ **Ruled 2026-11-08 (maintainer):** the user types `relavium` and does everything in the full-screen Home through slash commands and in-TUI affordances; subcommands stay for scripting. Recorded as [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md), which replaces ADR-0056's shell-only clause and ADR-0054's read-only strip |
 | D74 | MVP-2 | MVP-2 under D73 | ✅ **Settled 2026-11-08 under the maintainer's delegation:** every MVP-2 item gets an in-TUI form; MVP-A24…A30 added; slices 2a, 2b and 2c; the decisions in the [MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08) |
-| D75 | MVP | When the rest of the Home hub lands (MVP-8: workflows, runs, gates, agents and status in the Home, with the run-hosting ADR) | **Proposed 2026-11-08, awaiting the maintainer:** move it from after authoring and web (D69) to right after MVP-4 |
+| D75 | MVP | When the rest of the Home hub lands (MVP-8: workflows, runs, gates, agents and status in the Home, with the run-hosting ADR) | ✅ **Ruled 2026-11-08 (maintainer):** right after MVP-4, ahead of MVP-5, authoring and web; the order is under [Next work](#next-work--the-cli-mvp) |
+| D76 | MVP-2 | Acceptance tier for MVP-2a's markdown renderer | ✅ **Ruled 2026-11-08 (maintainer):** D64's milestone review plus a scoped security sitting on the parser's bounds, link display and sanitize order; ADR-0114 accepted the same day |
 
 ### Departures from the phase files' own sequencing
 

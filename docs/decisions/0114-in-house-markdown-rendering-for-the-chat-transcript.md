@@ -1,12 +1,13 @@
 # ADR-0114: In-house markdown rendering for the chat transcript
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-05
 - **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md), [ADR-0069](0069-string-width-for-the-cli-renderer.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [phase 2.6 · 2.6.E](../roadmap/phases/phase-2.6-conversational-authoring.md#26e--chat--input-parity-polish), [phase 2.6 ADR row 11](../roadmap/phases/phase-2.6-conversational-authoring.md), [MVP-2](../roadmap/current.md#next-work--the-cli-mvp)
 
-> **Revised 2026-11-08, still Proposed.** The [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)
+> **Revised and accepted 2026-11-08.** The [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)
 > found that every major product renders markdown tables. §2 now renders GFM tables as an aligned grid when it fits,
-> and §4 holds a streaming table back until its block ends. The rest of the decision is unchanged.
+> and §4 holds a streaming table back until its block ends. The rest of the decision is unchanged. The maintainer
+> accepted the revised text on 2026-11-08 (D76 sets its acceptance tier).
 
 ## Context
 
