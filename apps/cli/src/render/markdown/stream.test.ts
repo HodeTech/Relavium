@@ -15,6 +15,339 @@ function oneByteAtATime(source: string): MarkdownStream {
 }
 
 describe('incremental markdown stream', () => {
+  it('retains tab columns from omitted prose and source prefixes', () => {
+    for (const prefix of [
+      'x'.repeat(4_001),
+      '**' + 'x'.repeat(4_001) + '**',
+      '\\*' + 'x'.repeat(4_001),
+      '[x](https://example.test)' + 'x'.repeat(4_001),
+      '界'.repeat(2_001),
+      'e\u0301'.repeat(4_001),
+      '🇺'.repeat(4_000),
+    ]) {
+      const source = prefix + '\tEND';
+      const stream = new MarkdownStream();
+      for (let at = 0; at < source.length; at += 13) {
+        stream.append(source.slice(at, at + 13));
+        if (at % 130 === 0) stream.tail(80, 7);
+      }
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000)
+        .map((line) => line.text)
+        .join('\n');
+      const actual = stream
+        .tail(100_000, 7)
+        .map((line) => line.text)
+        .join('\n');
+      expect(actual.match(/ +END$/)?.[0]).toBe(expected.match(/ +END$/)?.[0]);
+      const plain = stream
+        .plainTail(100_000, 7)
+        .map((line) => line.text)
+        .join('\n');
+      const raw = layoutMarkdown([{ kind: 'literal', source, text: source }], 100_000)
+        .map((line) => line.text)
+        .join('\n');
+      expect(plain.match(/ +END$/)?.[0]).toBe(raw.match(/ +END$/)?.[0]);
+    }
+  });
+
+  it('retains omitted code columns including its gutter', () => {
+    const stream = new MarkdownStream();
+    stream.append('```\n' + 'x'.repeat(4_001) + '\tEND');
+    expect(stream.tail(100_000, 5).at(-1)?.text).toMatch(/ {5}END$/);
+    expect(stream.plainTail(100_000, 5).at(-1)?.text).toMatch(/ {7}END$/);
+  });
+
+  it('does not interpret block-looking text exposed by a mid-line source cut', () => {
+    for (const marker of ['# hello', '- hello', ' ```\n']) {
+      const source = 'x'.repeat(10) + marker + 'x'.repeat(3_993);
+      const stream = new MarkdownStream();
+      stream.append(source);
+      const visible = stream.tail(100_000, 5);
+      expect(visible.map((line) => line.text).join('')).toContain(marker.trimEnd());
+      expect(visible.flatMap((line) => line.spans).some((span) => span.heading || span.code)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('keeps arbitrary distinct backtick candidates canonical with bounded column work', () => {
+    for (const depth of [16, 48, 96]) {
+      const runs = Array.from({ length: depth }, (_, index) => '`'.repeat(index + 1));
+      const stream = new MarkdownStream();
+      let source = 'prose ' + runs.join(' ') + ' 👩‍💻e\u0301\t' + 'x'.repeat(8_003) + 'e\u0301👩‍💻';
+      for (let at = 0; at < source.length; at += 79) stream.append(source.slice(at, at + 79));
+      stream.tail(80, 5);
+      for (const run of [...runs].reverse()) {
+        source += ' ' + run;
+        stream.append(' ' + run);
+        stream.tail(80, 5);
+      }
+      source += '\tEND';
+      stream.append('\tEND');
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+      const actual = stream.tail(100_000, 5).at(-1)?.text;
+      expect(actual?.match(/ +END$/)?.[0]).toBe(expected?.match(/ +END$/)?.[0]);
+      expect(actual).toBe(expected?.slice(-(actual?.length ?? 0)));
+      expect(stream.columnWork.units).toBeLessThan(source.length * 3);
+      expect(stream.columnWork.interpretation).toBeLessThan(source.length * 8 + depth * 512);
+      expect(stream.columnWork.width).toBeLessThan(source.length * 260 + depth * 512);
+    }
+  });
+
+  it('updates hidden columns once when an old delimiter finally closes', () => {
+    const stream = new MarkdownStream();
+    stream.append('**👩' + '\u200d💻x'.repeat(2_001));
+    stream.tail(80, 5);
+    stream.append('**\tEND');
+    const source = '**👩' + '\u200d💻x'.repeat(2_001) + '**\tEND';
+    const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+    expect(
+      stream
+        .tail(100_000, 5)
+        .at(-1)
+        ?.text.match(/ +END$/)?.[0],
+    ).toBe(expected?.match(/ +END$/)?.[0]);
+    expect(stream.columnWork.units).toBeLessThan(source.length * 3);
+  });
+
+  it('keeps soft paragraph newlines and hard/code line resets distinct for tabs', () => {
+    for (const separator of ['\n', '  \n', '\\\n']) {
+      const source = 'x'.repeat(4_001) + separator + 'yz\tEND';
+      const stream = new MarkdownStream();
+      stream.append(source);
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+      expect(
+        stream
+          .tail(100_000, 5)
+          .at(-1)
+          ?.text.match(/ +END$/)?.[0],
+      ).toBe(expected?.match(/ +END$/)?.[0]);
+    }
+    const source = '```\n' + 'x'.repeat(8_001) + '\tEND\n```\n# after';
+    const stream = new MarkdownStream();
+    stream.append(source);
+    const line = stream.tail(100_000, 5).find((line) => line.text.includes('END'));
+    expect(line?.text).toMatch(/ {5}END$/);
+  });
+
+  it('keeps added parentheses for links/images and omits autolink delimiters at the cut', () => {
+    for (const [before, after, ending] of [
+      ['[label](', ') end', ') end'],
+      ['![label](', ') end', ') end'],
+      ['<https://example.test/', '> end', ' end'],
+    ]) {
+      const stream = new MarkdownStream();
+      stream.append((before ?? '') + 'x'.repeat(4_100) + (after ?? ''));
+      const text = stream
+        .tail(100_000, 5)
+        .map((line) => line.text)
+        .join('');
+      expect(text.endsWith(ending ?? '')).toBe(true);
+      if ((before ?? '').startsWith('<')) expect(text).not.toContain('>');
+    }
+    const target = 'https://example.test/' + 'x'.repeat(4_100);
+    const stream = new MarkdownStream();
+    stream.append('[' + target + '](' + target + ') end');
+    expect(
+      stream
+        .tail(100_000, 5)
+        .map((line) => line.text)
+        .join(''),
+    ).toBe(' end');
+  });
+
+  it('preserves paragraph identity at exact and overflowing budgets across lexical split boundaries', () => {
+    for (const marker of ['# hello', '- hello', ' ```\n']) {
+      for (const size of [4_000, 4_001, 4_010]) {
+        const source =
+          'x'.repeat(10) + marker + 'x'.repeat(size - 10 - marker.length) + '\n# genuine';
+        const splits = new Set([
+          0,
+          1,
+          9,
+          10,
+          11,
+          12,
+          13,
+          10 + marker.length - 1,
+          10 + marker.length,
+          size - 1,
+          size,
+          source.length,
+        ]);
+        for (const split of splits) {
+          const stream = new MarkdownStream();
+          stream.append(source.slice(0, split));
+          stream.append(source.slice(split));
+          const lines = stream.tail(100_000, 5);
+          expect(lines.at(-1)?.text).toBe('genuine');
+          const content = lines.slice(0, -1).flatMap((line) => line.spans);
+          expect(content.some((span) => span.heading || span.code)).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('measures whole unbounded Unicode clusters once when a visible tab closes the segment', () => {
+    const cluster = '👩' + '\u0301'.repeat(12_000) + '\u200d💻';
+    for (const source of [
+      cluster + 'x'.repeat(4_001) + '\tEND',
+      'x'.repeat(4_001) + cluster + '\tEND',
+      '**' + cluster + '**' + 'x'.repeat(4_001) + '\tEND',
+    ]) {
+      const stream = new MarkdownStream();
+      for (let at = 0; at < source.length; at += 97) {
+        stream.append(source.slice(at, at + 97));
+        if (at % 970 === 0) stream.tail(80, 5);
+      }
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+      expect(
+        stream
+          .tail(100_000, 5)
+          .at(-1)
+          ?.text.match(/ +END$/)?.[0],
+      ).toBe(expected?.match(/ +END$/)?.[0]);
+      const before = stream.columnWork;
+      for (const character of ' extra') {
+        stream.append(character);
+        stream.tail(80, 5);
+      }
+      expect(stream.columnWork.width - before.width).toBeLessThan(100);
+      expect(stream.columnWork.width).toBeLessThan(source.length * 30);
+    }
+  });
+
+  it('settles provisional closing runs without mutating their future interpretation', () => {
+    for (const marker of ['**', '`', '``']) {
+      const stream = new MarkdownStream();
+      const prefix = marker + 'x'.repeat(8_001) + '\tEND';
+      stream.append(prefix);
+      stream.tail(80, 5);
+      stream.append(marker);
+      let expected = layoutMarkdown(parseMarkdown(prefix + marker), 100_000).at(-1)?.text;
+      expect(stream.tail(100_000, 5).at(-1)?.text.match(/ +END/)?.[0]).toBe(
+        expected?.match(/ +END/)?.[0],
+      );
+      stream.append(marker[0] ?? '');
+      expected = layoutMarkdown(parseMarkdown(prefix + marker + (marker[0] ?? '')), 100_000).at(
+        -1,
+      )?.text;
+      expect(stream.tail(100_000, 5).at(-1)?.text.match(/ +END/)?.[0]).toBe(
+        expected?.match(/ +END/)?.[0],
+      );
+    }
+  });
+
+  it('keeps code boundary probes exact for an unbounded Unicode grapheme', () => {
+    const runs = Array.from({ length: 48 }, (_, index) => '`'.repeat(index + 1));
+    const stream = new MarkdownStream();
+    let source = 'prose ' + runs.join(' ') + ' 👩' + '\u0301'.repeat(12_000) + '\u200d💻\tEND';
+    stream.append(source);
+    stream.tail(80, 5);
+    for (const run of [...runs].reverse()) {
+      source += ' ' + run;
+      stream.append(' ' + run);
+      stream.tail(80, 5);
+    }
+    const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+    const actual = stream.tail(100_000, 5).at(-1)?.text;
+    expect(actual?.match(/ +END/)?.[0]).toBe(expected?.match(/ +END/)?.[0]);
+    expect(stream.columnWork.interpretation).toBeLessThan(source.length * 20);
+    expect(stream.columnWork.width).toBeLessThan(source.length * 40);
+  });
+
+  it('keeps complete intraword underscore runs literal across every surrogate split', () => {
+    for (const source of [
+      '𝑥_𝑦_𝑧',
+      '𐐀_𐐀_𐐀',
+      '𝟙_𝟚_𝟛',
+      '𝑥__𝑦__𝑧',
+      '𐐀__a__𝟙',
+      'a__𝑦__𐐀',
+      '𝑥___𝑦___𝑧',
+    ]) {
+      for (let split = 0; split <= source.length; split++) {
+        const stream = new MarkdownStream();
+        stream.append(source.slice(0, split));
+        const provisional = stream.tail(80, 5);
+        expect(
+          provisional.flatMap((line) => line.spans).some((span) => span.strong || span.emphasis),
+        ).toBe(false);
+        stream.append(source.slice(split));
+        const lines = stream.tail(80, 5);
+        expect(lines.map((line) => line.text).join('')).toBe(source);
+        expect(
+          lines.flatMap((line) => line.spans).some((span) => span.strong || span.emphasis),
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('preserves a literal intraword run when the source cut hides its left code point', () => {
+    for (const [left, marker] of [
+      ['𝑥', '_'],
+      ['𐐀', '__'],
+      ['𝟙', '___'],
+    ]) {
+      const source =
+        (left ?? '') + marker + 'y'.repeat(4_000 - 2 * (marker?.length ?? 0) - 1) + marker + ' ';
+      for (const split of [0, 1, 2, 3, 4, 5, source.length - 2, source.length]) {
+        const stream = new MarkdownStream();
+        stream.append(source.slice(0, split));
+        stream.append(source.slice(split));
+        const lines = stream.tail(10_000, 5);
+        expect(lines.map((line) => line.text).join('')).toBe(stream.sourceTail());
+        expect(
+          lines.flatMap((line) => line.spans).some((span) => span.strong || span.emphasis),
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('defers a possible intraword closer until its supplementary neighbor is complete', () => {
+    for (const marker of ['_', '__']) {
+      const stream = new MarkdownStream();
+      const prefix = marker + 'x'.repeat(4_100) + marker;
+      stream.append(prefix + '𝑦'.slice(0, 1));
+      expect(
+        stream
+          .tail(10_000, 5)
+          .flatMap((line) => line.spans)
+          .some((span) => span.strong || span.emphasis),
+      ).toBe(false);
+      stream.append('𝑦'.slice(1));
+      const expected = layoutMarkdown(parseMarkdown(prefix + '𝑦'), 10_000).at(-1)?.text;
+      expect(stream.tail(10_000, 5).at(-1)?.text).toBe(
+        expected?.slice(-stream.sourceTail().length),
+      );
+      expect(
+        stream
+          .tail(10_000, 5)
+          .flatMap((line) => line.spans)
+          .some((span) => span.strong || span.emphasis),
+      ).toBe(false);
+    }
+    for (const neighbor of ['👩', '\ud835 ']) {
+      const stream = new MarkdownStream();
+      stream.append('_text_' + neighbor.slice(0, 1));
+      expect(
+        stream
+          .tail(80, 5)
+          .flatMap((line) => line.spans)
+          .some((span) => span.emphasis),
+      ).toBe(false);
+      stream.append(neighbor.slice(1));
+      expect(stream.tail(80, 5)).toEqual(layoutMarkdown(parseMarkdown('_text_' + neighbor), 80));
+    }
+    const source = '𝑥 _𝑦_ 𐐀 __𝟙__';
+    for (let split = 0; split <= source.length; split++) {
+      const stream = new MarkdownStream();
+      stream.append(source.slice(0, split));
+      stream.append(source.slice(split));
+      expect(stream.tail(80, 5)).toEqual(layoutMarkdown(parseMarkdown(source), 80));
+    }
+  });
+
   it('reports geometry elision independently of the source tail budget', () => {
     const stream = new MarkdownStream();
     stream.append('x'.repeat(2_000));
@@ -75,7 +408,7 @@ describe('incremental markdown stream', () => {
         .flatMap((line) => line.spans)
         .some((span) => span.linkURL?.startsWith('https://example.test/')),
     ).toBe(true);
-    expect(lines.map((line) => line.text).join('')).not.toContain(')');
+    expect(lines.map((line) => line.text).join('')).toContain(')');
   });
 
   it('retains container fences before the tail and deindents admitted body lines', () => {
@@ -232,7 +565,7 @@ describe('incremental markdown stream', () => {
       if (at % 31 === 0) stream.tail(80, 8);
     }
     expect(Math.max(...parse.mock.calls.map(([source]) => source.length))).toBeLessThanOrEqual(
-      4_000,
+      4_001,
     );
     expect(stream.work.lexical).toBeLessThan(source.length * 3);
     expect(stream.work.blocks).toBe(0);

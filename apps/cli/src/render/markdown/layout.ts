@@ -7,14 +7,44 @@ function appendRows(target: MarkdownDisplayLine[], rows: readonly MarkdownDispla
   for (const row of rows) target.push(row);
 }
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+function sameStyle(left: MarkdownSpan, right: MarkdownSpan): boolean {
+  return (
+    Boolean(left.strong) === Boolean(right.strong) &&
+    Boolean(left.emphasis) === Boolean(right.emphasis) &&
+    Boolean(left.code) === Boolean(right.code) &&
+    Boolean(left.strike) === Boolean(right.strike) &&
+    left.heading === right.heading &&
+    Boolean(left.quote) === Boolean(right.quote) &&
+    Boolean(left.dim) === Boolean(right.dim) &&
+    left.linkURL === right.linkURL
+  );
+}
+
+/** Merge only adjacent equal styles; text and grapheme ownership stay unchanged. */
 function line(spans: readonly MarkdownSpan[]): MarkdownDisplayLine {
-  return { text: spans.map((span) => span.text).join(''), spans };
+  const merged: MarkdownSpan[] = [];
+  let style: MarkdownSpan | undefined;
+  let pieces: string[] = [];
+  const flush = (): void => {
+    if (style) merged.push({ ...style, text: pieces.join('') });
+    style = undefined;
+    pieces = [];
+  };
+  for (const span of spans) {
+    if (!span.text) continue;
+    if (style && !sameStyle(style, span)) flush();
+    style ??= span;
+    pieces.push(span.text);
+  }
+  flush();
+  return { text: merged.map((span) => span.text).join(''), spans: merged };
 }
 function wrap(
   spans: readonly MarkdownSpan[],
   columns: number,
   firstPrefix = '',
   continuation = firstPrefix,
+  tabOffset = 0,
 ): MarkdownDisplayLine[] {
   if (columns < 1 || !Number.isFinite(columns)) return [];
   const limit = Math.trunc(columns);
@@ -26,7 +56,9 @@ function wrap(
     offsets.push(offset);
   }
   const logical: MarkdownSpan[][] = [[]];
-  let logicalColumn = displayWidth(firstPrefix);
+  let logicalColumn =
+    displayWidth(firstPrefix) +
+    (Number.isFinite(tabOffset) ? Math.max(0, Math.trunc(tabOffset)) : 0);
   let spanIndex = 0;
   for (const item of segmenter.segment(full)) {
     while ((offsets[spanIndex] ?? Infinity) <= item.index) spanIndex++;
@@ -181,12 +213,12 @@ export function layoutMarkdown(
           );
         continue;
       }
-      appendRows(result, wrap([{ text: block.source }], columns));
+      appendRows(result, wrap([{ text: block.source }], columns, '', '', block.tabOffset));
       continue;
     }
     if (block.kind === 'rule') {
       if (displayWidth(containerPrefix) >= columns)
-        appendRows(result, wrap([{ text: block.source }], columns));
+        appendRows(result, wrap([{ text: block.source }], columns, '', '', block.tabOffset));
       else
         result.push(
           line([
@@ -198,7 +230,7 @@ export function layoutMarkdown(
     }
     const prefix = block.kind === 'code' ? containerPrefix + '│ ' : containerPrefix;
     if (prefix && displayWidth(prefix) >= columns) {
-      appendRows(result, wrap([{ text: block.source }], columns));
+      appendRows(result, wrap([{ text: block.source }], columns, '', '', block.tabOffset));
       continue;
     }
     if (block.kind === 'code') {
@@ -214,6 +246,7 @@ export function layoutMarkdown(
           columns,
           block.info && block.continuation ? block.continuation + '│ ' : prefix,
           block.continuation ? block.continuation + '│ ' : prefix,
+          block.tabOffset,
         ),
       );
       continue;
@@ -232,7 +265,7 @@ export function layoutMarkdown(
         parseInline(block.text, baseStyle));
     const continuation =
       block.continuation ?? (block.kind === 'list' ? ' '.repeat(displayWidth(prefix)) : prefix);
-    appendRows(result, wrap(spans, columns, prefix, continuation));
+    appendRows(result, wrap(spans, columns, prefix, continuation, block.tabOffset));
   }
   return result;
 }

@@ -98,7 +98,7 @@ describe('markdown subset and geometry', () => {
   it('resolves markup inside a grapheme to one consistent style', () => {
     const line = layoutMarkdown(parseMarkdown('x**\u0301**y'), 10)[0];
     expect(line?.text).toBe('x\u0301y');
-    expect(line?.spans[0]).toEqual({ text: 'x\u0301' });
+    expect(line?.spans).toEqual([{ text: 'x\u0301y' }]);
   });
   it('keeps nested emphasis when the closer is a triple delimiter', () => {
     expect(parseInline('**bold *italic***')).toEqual([

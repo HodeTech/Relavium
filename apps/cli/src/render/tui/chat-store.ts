@@ -46,7 +46,7 @@ export interface PendingApproval {
 
 /** The immutable snapshot the ink component reads each frame (a stable reference between flushes). */
 export interface ChatStoreSnapshot {
-  readonly markdown: Pick<MarkdownStream, 'tail' | 'sourceTail' | 'elided'>;
+  readonly markdown: Pick<MarkdownStream, 'tail' | 'plainTail' | 'sourceTail' | 'elided'>;
   readonly displaySuspended: boolean;
   readonly state: SessionViewState;
   /** The active chat mode (ADR-0057) — REPL-set (Shift+Tab / `/mode`), shown in the footer. */

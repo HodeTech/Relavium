@@ -75,6 +75,47 @@ function closing(line: string, marker: string): boolean {
   while (trimmed[i] === marker[0]) i++;
   return i >= marker.length && /^ *$/.test(trimmed.slice(i));
 }
+/** Scan one ATX heading with a bounded number of passes over the source. */
+export function parseHeading(
+  line: string,
+  work?: { steps: number },
+): { level: number; text: string } | undefined {
+  let start = 0;
+  while (start < 3 && line[start] === ' ') {
+    start++;
+    if (work) work.steps++;
+  }
+  let markerEnd = start;
+  while (markerEnd - start < 7 && line[markerEnd] === '#') {
+    markerEnd++;
+    if (work) work.steps++;
+  }
+  const level = markerEnd - start;
+  if (level < 1 || level > 6 || line[markerEnd] !== ' ') return undefined;
+  let contentStart = markerEnd;
+  while (line[contentStart] === ' ') {
+    contentStart++;
+    if (work) work.steps++;
+  }
+  let end = line.length;
+  while (end > contentStart && line[end - 1] === ' ') {
+    end--;
+    if (work) work.steps++;
+  }
+  let hashStart = end;
+  while (hashStart > contentStart && line[hashStart - 1] === '#') {
+    hashStart--;
+    if (work) work.steps++;
+  }
+  if (hashStart < end && hashStart > contentStart && line[hashStart - 1] === ' ') {
+    end = hashStart;
+    while (end > contentStart && line[end - 1] === ' ') {
+      end--;
+      if (work) work.steps++;
+    }
+  }
+  return { level, text: line.slice(contentStart, end) };
+}
 function isRule(line: string): boolean {
   return /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);
 }
@@ -106,7 +147,11 @@ function stripIndent(line: string, required: number): string | undefined {
 }
 
 /** Parse sanitized source. Unsupported constructs remain visible as literal text. */
-export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownBlock[] {
+export function parseMarkdown(
+  source: string,
+  listDepth = 0,
+  quoteDepth = 0,
+): readonly MarkdownBlock[] {
   const lines = source.split('\n');
   const result: MarkdownBlock[] = [];
   let i = 0;
@@ -160,7 +205,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
         i++;
       }
       let sourceLine = 0;
-      for (const block of parseMarkdown(inner.join('\n'), listDepth + lists.length)) {
+      for (const block of parseMarkdown(inner.join('\n'), listDepth + lists.length, quoteDepth)) {
         const count = block.source.split('\n').length;
         const originalSource = original.slice(sourceLine, sourceLine + count).join('\n');
         sourceLine += count;
@@ -178,12 +223,18 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
       continue;
     }
     if (unsupported(line)) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       result.push({ kind: 'literal', source: line, text: line });
       i++;
       continue;
     }
     const open = fence(line);
     if (open) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       const body: string[] = [];
       const raw = [line];
       i++;
@@ -202,6 +253,9 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
     const header = cells(line);
     const alignment = delimiter(lines[i + 1] ?? '');
     if (header && alignment && header.length === alignment.length) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       const raw = [line, lines[i + 1] ?? ''];
       const rows: string[][] = [header];
       i += 2;
@@ -228,24 +282,33 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
       );
       continue;
     }
-    const heading = /^ {0,3}(#{1,6}) +(.*?) *$/.exec(line);
+    const heading = parseHeading(line);
     if (heading) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       result.push({
         kind: 'heading',
         source: line,
-        text: (heading[2] ?? '').replace(/ +#+ *$/, ''),
-        heading: (heading[1] ?? '').length,
+        text: heading.text,
+        heading: heading.level,
       });
       i++;
       continue;
     }
     if (/^ {0,3}(?:-{3,}|={3,}) *$/.test(lines[i + 1] ?? '') && !isStart(line)) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       const text = `${line}\n${lines[i + 1] ?? ''}`;
       result.push({ kind: 'literal', source: text, text });
       i += 2;
       continue;
     }
     if (isRule(line)) {
+      lists.length = 0;
+      overflowColumn = undefined;
+      lazyContinuation = false;
       result.push({ kind: 'rule', source: line, text: line });
       i++;
       continue;
@@ -315,7 +378,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
       const markerPrefix = ' '.repeat(column) + visibleMarker + padding;
       const itemNext = stripIndent(lines[i + 1] ?? '', content);
       const itemTable = cells(itemText) && itemNext !== undefined && delimiter(itemNext);
-      if ((isStart(itemText) || itemTable) && lists.length + listDepth < 8) {
+      if (isStart(itemText) || itemTable) {
         const original = [line];
         const inner = [itemText];
         let cursor = i + 1;
@@ -341,6 +404,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
         for (const [index, block] of parseMarkdown(
           inner.join('\n'),
           listDepth + lists.length,
+          quoteDepth,
         ).entries()) {
           const count = block.source.split('\n').length;
           const originalSource = original.slice(sourceLine, sourceLine + count).join('\n');
@@ -398,7 +462,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
     const quote = /^( {0,3})((?:> ?)+)(.*)$/.exec(line);
     if (quote) {
       const depth = (quote[2]?.match(/>/g) ?? []).length;
-      if (depth > 8) {
+      if (quoteDepth + depth > 8) {
         result.push({ kind: 'literal', source: line, text: line, raw: true });
         i++;
         continue;
@@ -414,7 +478,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
         i++;
       }
       let sourceLine = 0;
-      for (const block of parseMarkdown(inner.join('\n'), listDepth)) {
+      for (const block of parseMarkdown(inner.join('\n'), listDepth, quoteDepth + depth)) {
         const count = block.source.split('\n').length;
         const originalSource = original.slice(sourceLine, sourceLine + count).join('\n');
         sourceLine += count;
@@ -426,6 +490,7 @@ export function parseMarkdown(source: string, listDepth = 0): readonly MarkdownB
           ...block,
           source: originalSource,
           prefix: '│ '.repeat(depth) + (block.prefix ?? ''),
+          continuation: '│ '.repeat(depth) + (block.continuation ?? block.prefix ?? ''),
           quoted: true,
         });
       }

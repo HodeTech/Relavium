@@ -4,6 +4,7 @@ import { useStdout } from 'ink';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ClipboardOutcome } from '../clipboard.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
@@ -845,6 +846,70 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       h.stdin.write('\x1b[<0;3;1m');
       await settleFrames();
     };
+
+    it.each([false, true])(
+      'waits for local delivery and reports a fixed local failure (failed=%s)',
+      async (failed) => {
+        let deliver: (outcome: ClipboardOutcome) => void = () => {};
+        const pending = new Promise<ClipboardOutcome>((resolve) => {
+          deliver = resolve;
+        });
+        const h = render(
+          <ChatApp
+            store={seedThree()}
+            alternateScreen
+            onSubmit={async () => {}}
+            shouldStop={() => false}
+            onExit={() => {}}
+            onError={() => {}}
+            onModeChange={() => {}}
+            clipboard={() => pending}
+          />,
+        );
+        await copyOnce(h);
+        expect(h.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
+        deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
+        const wanted = failed ? 'Clipboard request failed locally' : 'Sent to terminal clipboard';
+        await waitFor(() => (h.lastFrame() ?? '').includes(wanted));
+        expect(h.lastFrame() ?? '').toContain(wanted);
+        if (failed) expect(h.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
+      },
+    );
+
+    it.each([false, true])(
+      'discards delayed clipboard feedback after unmount (failed=%s)',
+      async (failed) => {
+        let deliver: (outcome: ClipboardOutcome) => void = () => {};
+        const pending = new Promise<ClipboardOutcome>((resolve) => {
+          deliver = resolve;
+        });
+        const store = seedThree();
+        const note = vi.spyOn(store, 'note');
+        const h = render(
+          <ChatApp
+            store={store}
+            alternateScreen
+            onSubmit={async () => {}}
+            shouldStop={() => false}
+            onExit={() => {}}
+            onError={() => {}}
+            onModeChange={() => {}}
+            clipboard={() => pending}
+          />,
+        );
+        await copyOnce(h);
+        h.unmount();
+        const timer = vi.spyOn(globalThis, 'setTimeout');
+        try {
+          deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
+          await settleFrames();
+          expect(note).not.toHaveBeenCalled();
+          expect(timer.mock.calls.some((call) => call[1] === COPIED_TOAST_MS)).toBe(false);
+        } finally {
+          timer.mockRestore();
+        }
+      },
+    );
 
     it('appears after a copy, ABOVE the footer, and does not touch the transcript', async () => {
       const copied: string[] = [];

@@ -149,7 +149,7 @@ import {
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
-import { attemptClipboardWrite, type ClipboardOutcome } from '../clipboard.js';
+import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { MarkdownText } from './markdown-text.js';
 import type { MarkdownStream } from '../markdown/index.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
@@ -257,11 +257,13 @@ interface ChatAppProps {
   readonly onSuspend?: (() => void) | undefined;
   /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
    *  but copy-on-select is inert (a driver/test that wires no terminal). */
-  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  readonly clipboard?: ClipboardWriter | undefined;
 }
 
 interface ChatViewProps {
-  readonly markdown?: Pick<MarkdownStream, 'tail' | 'sourceTail' | 'elided'> | undefined;
+  readonly markdown?:
+    | Pick<MarkdownStream, 'tail' | 'plainTail' | 'sourceTail' | 'elided'>
+    | undefined;
   readonly displaySuspended?: boolean | undefined;
   readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
@@ -407,25 +409,21 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       const cols = props.viewport?.cols ?? props.columns ?? 80;
       const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
       const answerRows = Math.max(0, maxRows - 1);
-      const plainLines = color
-        ? []
-        : wrapTranscript([{ role: 'notice', text: props.markdown.sourceTail() }], cols, false);
-      const lines =
-        answerRows === 0
-          ? []
-          : color
-            ? props.markdown.tail(cols, answerRows)
-            : plainLines.slice(-answerRows);
+      const lines = color
+        ? props.markdown.tail(cols, answerRows)
+        : props.markdown.plainTail(cols, answerRows);
       return (
         <Box flexDirection="column">
           {lines.map((line, index) => (
             <Text key={index}>
-              <MarkdownText spans={line.spans ?? [{ text: line.text }]} color={color} />
+              <MarkdownText
+                spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
+                color={color}
+              />
             </Text>
           ))}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {spinnerFrame(tick)}{' '}
-            {props.markdown.elided || plainLines.length > answerRows ? '… ' : ''}Esc to stop
+            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}Esc to stop
           </Text>
         </Box>
       );
@@ -629,6 +627,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const clipboardFeedbackMounted = useRef(true);
+  useLayoutEffect(() => {
+    clipboardFeedbackMounted.current = true;
+    return () => {
+      clipboardFeedbackMounted.current = false;
+    };
+  }, []);
   const acceptsInput = (): boolean => props.inputEnabled?.() !== false;
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
@@ -1255,18 +1260,26 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       windowSize.columns,
       props.store.getSnapshot().color,
     ).map((line) => line.text);
-    const outcome = attemptClipboardWrite(
-      clipboard,
-      selectionText(rows, normalizeSelection(state)),
-    );
-    if (outcome.kind === 'written') flashCopied();
-    else if (outcome.kind === 'failed') {
-      props.store.note('Clipboard request failed locally — use /scrollback or /edit.');
-    } else if (outcome.kind === 'too-large') {
-      props.store.note(
-        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
-      );
-    }
+    const store = props.store;
+    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
+      .then((outcome) => {
+        if (
+          !clipboardFeedbackMounted.current ||
+          storeRef.current !== store ||
+          !acceptsInput() ||
+          props.shouldStop()
+        )
+          return;
+        if (outcome.kind === 'written') flashCopied();
+        else if (outcome.kind === 'failed') {
+          store.note('Clipboard request failed locally — use /scrollback or /edit.');
+        } else if (outcome.kind === 'too-large') {
+          store.note(
+            `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+          );
+        }
+      })
+      .catch(props.onError);
   };
 
   useInput((char, key) => {

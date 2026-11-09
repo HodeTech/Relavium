@@ -31,8 +31,8 @@ the copy goes to the system clipboard over **OSC 52**, which works over SSH and 
 Copy-on-select is on by default. Turn it off with **`[preferences].copy_on_select = false`** and the highlight
 stays while the clipboard is left alone. On a copy a brief **`Sent to terminal clipboard` toast** flashes above the status footer for
 ~2 s (a plain `[Sent to terminal clipboard]` under `NO_COLOR` / `--no-color`) — rendered outside the transcript so it never re-wraps the
-lines just selected. The toast fires when Relavium **emits** the OSC 52 write, which is *not* the same as the
-terminal accepting it (see below). A local write failure shows a fixed failure notice without the native error text; a selection too large for the OSC 52 payload shows a transcript note instead.
+lines just selected. The toast fires after the **local native write completes**; enqueueing alone is not
+delivery. This is *not* the same as the terminal accepting the clipboard request (see below). A local write failure shows a fixed failure notice without the native error text; a selection too large for the OSC 52 payload shows a transcript note instead.
 
 **OSC 52 has no acknowledgement**, so a copy can be *emitted* — and the `Sent to terminal clipboard` toast shown — but never
 independently *confirmed* to have reached the clipboard:

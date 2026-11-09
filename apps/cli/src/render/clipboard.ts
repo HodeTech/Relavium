@@ -80,7 +80,7 @@ export function encodeOsc52(base64: string, multiplexer?: Multiplexer): string {
 /** What a copy attempt did. Never `'copied'`: OSC 52 has no acknowledgement, so a terminal that drops the escape
  *  (VS Code Remote SSH) is indistinguishable from one that honoured it. We report what we WROTE. */
 export type ClipboardOutcome =
-  /** The escape was written to the terminal. Whether the emulator honoured it is unknowable from here. */
+  /** The local control delivery completed; the escape was written to the terminal. Whether the emulator honoured it is unknowable from here. */
   | { readonly kind: 'written'; readonly characters: number }
   /** Nothing was selected — no escape emitted. */
   | { readonly kind: 'empty' }
@@ -90,19 +90,23 @@ export type ClipboardOutcome =
   | { readonly kind: 'too-large'; readonly base64Length: number; readonly limit: number };
 
 export interface ClipboardDeps {
-  /** Write a raw control sequence to the TTY (the same sink the alt-buffer toggles use). */
-  readonly writeControl: (sequence: string) => void;
+  /** Deliver a raw control sequence to the TTY (the alt-buffer sink). Native ports retain their own
+   * infrastructure failure observation; awaiting here does not replace that ownership. */
+  readonly writeControl: (sequence: string) => Promise<void>;
   /** The process environment — read for the multiplexer detection only. */
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
+/** A synchronous adapter is allowed; native ports resolve only after local delivery. */
+export type ClipboardWriter = (text: string) => ClipboardOutcome | Promise<ClipboardOutcome>;
+
 /** Report a local clipboard write failure without throwing into a keyboard handler. */
-export function attemptClipboardWrite(
-  copy: (text: string) => ClipboardOutcome,
+export async function attemptClipboardWrite(
+  copy: ClipboardWriter,
   text: string,
-): ClipboardOutcome {
+): Promise<ClipboardOutcome> {
   try {
-    return copy(text);
+    return await copy(text);
   } catch {
     return { kind: 'failed' };
   }
@@ -111,10 +115,13 @@ export function attemptClipboardWrite(
 /**
  * Put `text` on the system clipboard. An empty selection (`'empty'`) and an over-long one (`'too-large'`) are REFUSED
  * as return values — no escape is written, so a caller can trust a refusal left nothing half-emitted. A THROW from
- * `deps.writeControl` (a closed stdout) propagates to the caller: this function never writes a truncated payload, but
+ * `deps.writeControl` (a closed stdout), including an asynchronous callback failure, rejects to the caller: this function never writes a truncated payload, but
  * the terminal write itself is the caller's to guard.
  */
-export function copyToClipboard(deps: ClipboardDeps, text: string): ClipboardOutcome {
+export async function copyToClipboard(
+  deps: ClipboardDeps,
+  text: string,
+): Promise<ClipboardOutcome> {
   if (text.length === 0) return { kind: 'empty' };
 
   const base64 = Buffer.from(text, 'utf8').toString('base64');
@@ -122,6 +129,6 @@ export function copyToClipboard(deps: ClipboardDeps, text: string): ClipboardOut
     return { kind: 'too-large', base64Length: base64.length, limit: OSC52_MAX_BASE64_LENGTH };
   }
 
-  deps.writeControl(encodeOsc52(base64, detectMultiplexer(deps.env)));
+  await deps.writeControl(encodeOsc52(base64, detectMultiplexer(deps.env)));
   return { kind: 'written', characters: text.length };
 }

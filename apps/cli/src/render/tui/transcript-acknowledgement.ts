@@ -70,7 +70,14 @@ export function createTranscriptAcknowledgement(
           return notices.every((entry) => {
             if (printed.has(entry)) return true;
             const rendered = frame;
-            if (rendered === undefined || rendered.measuredWidth < rendered.columns) return false;
+            if (
+              rendered === undefined ||
+              !Number.isFinite(rendered.columns) ||
+              rendered.columns < 1 ||
+              !Number.isFinite(rendered.measuredWidth) ||
+              rendered.measuredWidth < rendered.columns
+            )
+              return false;
             const index = rendered.transcript.indexOf(entry);
             if (index < 0) return false;
             // Only acknowledgement walks history; ordinary streaming frames just replace frame metadata.

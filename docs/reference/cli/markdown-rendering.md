@@ -205,7 +205,8 @@ and nesting/fallback units both complete and split at every streaming boundary,
 through both renderers and both color policies.
 
 Mounted Ink tests exercise both renderers, color on/off, resize and 80×24, source
-hatches, rendered selection, failure marks and local clipboard-write failure.
+hatches, rendered selection, failure marks and local clipboard-write failure, including a delayed native callback fault without
+premature success or feedback after unmount/reseat.
 Cold-wrap evidence uses actual assistant entries with markdown, wide/combining
 characters, tables and long tokens, including a 500-entry restore. Keep the
 existing cold-wrap guard and report measured results without claiming an

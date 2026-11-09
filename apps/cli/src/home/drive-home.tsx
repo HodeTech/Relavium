@@ -66,7 +66,7 @@ import {
   runOnboardingWizard,
   type ClackOnboardingDeps,
 } from '../onboarding/wizard.js';
-import type { CliIo } from '../process/io.js';
+import { acknowledgeWrite, type CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
@@ -465,11 +465,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let mouseCaptured = false;
   // ONE clipboard closure over the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). `/copy` (via
   // `hatchPorts`) and copy-on-select (via `RootApp`'s `clipboard` prop, when enabled) both use it.
-  const clipboard = (text: string): ClipboardOutcome =>
+  const clipboard = (text: string): Promise<ClipboardOutcome> =>
     copyToClipboard(
       {
         writeControl: (sequence) => {
-          void writeControl(sequence);
+          if (controls !== undefined) return controls.write(sequence);
+          if (deps.writeControl !== undefined) return Promise.resolve(deps.writeControl(sequence));
+          return acknowledgeWrite(process.stdout, sequence);
         },
         env: deps.io.env,
       },

@@ -19,7 +19,16 @@ const harness = (
   env: Record<string, string | undefined> = {},
 ): { deps: ClipboardDeps; writes: string[] } => {
   const writes: string[] = [];
-  return { deps: { writeControl: (s) => writes.push(s), env }, writes };
+  return {
+    deps: {
+      writeControl: (s) => {
+        writes.push(s);
+        return Promise.resolve();
+      },
+      env,
+    },
+    writes,
+  };
 };
 
 const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
@@ -83,15 +92,15 @@ describe('encodeOsc52', () => {
 });
 
 describe('copyToClipboard', () => {
-  it('base64-encodes the text and writes exactly one escape', () => {
+  it('base64-encodes the text and writes exactly one escape', async () => {
     const { deps, writes } = harness();
-    expect(copyToClipboard(deps, 'hello')).toEqual({ kind: 'written', characters: 5 });
+    expect(await copyToClipboard(deps, 'hello')).toEqual({ kind: 'written', characters: 5 });
     expect(writes).toEqual([`\x1b]52;c;${b64('hello')}\x07`]);
   });
 
-  it('SECURITY: an ESC or BEL inside the text cannot terminate the escape — base64 IS the boundary', () => {
+  it('SECURITY: an ESC or BEL inside the text cannot terminate the escape — base64 IS the boundary', async () => {
     const { deps, writes } = harness(); // no multiplexer: exactly one escape goes out, so the counts below are exact
-    copyToClipboard(deps, 'a\x1b]52;c;evil\x07b');
+    await copyToClipboard(deps, 'a\x1b]52;c;evil\x07b');
     const written = writes[0] ?? '';
     // Exactly one BEL (the real terminator) and one ESC (the introducer); the payload's own bytes are encoded away.
     expect([...written].filter((c) => c === '\x07')).toHaveLength(1);
@@ -99,37 +108,37 @@ describe('copyToClipboard', () => {
     expect(written).toContain(b64('a\x1b]52;c;evil\x07b'));
   });
 
-  it('preserves non-ASCII exactly (UTF-8 in, UTF-8 out)', () => {
+  it('preserves non-ASCII exactly (UTF-8 in, UTF-8 out)', async () => {
     const { deps, writes } = harness();
-    copyToClipboard(deps, 'merhaba 日本語 👋');
+    await copyToClipboard(deps, 'merhaba 日本語 👋');
     expect(writes[0]).toContain(b64('merhaba 日本語 👋'));
   });
 
-  it('EMPTY text writes nothing at all — a click that selected nothing must not touch the clipboard', () => {
+  it('EMPTY text writes nothing at all — a click that selected nothing must not touch the clipboard', async () => {
     const { deps, writes } = harness();
-    expect(copyToClipboard(deps, '')).toEqual({ kind: 'empty' });
+    expect(await copyToClipboard(deps, '')).toEqual({ kind: 'empty' });
     expect(writes).toEqual([]);
   });
 
-  it('REFUSES an over-long payload rather than truncating it, and writes nothing', () => {
+  it('REFUSES an over-long payload rather than truncating it, and writes nothing', async () => {
     const { deps, writes } = harness();
     // 3 bytes of input → 4 of base64, so this comfortably exceeds the floor.
     const huge = 'x'.repeat(OSC52_MAX_BASE64_LENGTH);
-    const outcome = copyToClipboard(deps, huge);
+    const outcome = await copyToClipboard(deps, huge);
     expect(outcome.kind).toBe('too-large');
     expect(outcome).toMatchObject({ limit: OSC52_MAX_BASE64_LENGTH });
     expect(writes).toEqual([]); // a half-copied selection is worse than a refusal
   });
 
-  it('the bound is INCLUSIVE, exercised on BOTH sides of it', () => {
+  it('the bound is INCLUSIVE, exercised on BOTH sides of it', async () => {
     // base64 length is always 4·ceil(n/3), so no payload lands exactly on 74 994: 56 244 chars encode to 74 992
     // (fits) and one more char pushes it to 74 996 (refused). Testing a rounder number would miss the boundary.
     const fits = harness();
-    expect(copyToClipboard(fits.deps, 'y'.repeat(56_244)).kind).toBe('written');
+    expect((await copyToClipboard(fits.deps, 'y'.repeat(56_244))).kind).toBe('written');
     expect(fits.writes).toHaveLength(1);
 
     const over = harness();
-    expect(copyToClipboard(over.deps, 'y'.repeat(56_245))).toMatchObject({
+    expect(await copyToClipboard(over.deps, 'y'.repeat(56_245))).toMatchObject({
       kind: 'too-large',
       base64Length: 74_996,
       limit: OSC52_MAX_BASE64_LENGTH,
@@ -137,15 +146,15 @@ describe('copyToClipboard', () => {
     expect(over.writes).toEqual([]);
   });
 
-  it('inside tmux, both forms go out in ONE write (never a half-sequence between them)', () => {
+  it('inside tmux, both forms go out in ONE write (never a half-sequence between them)', async () => {
     const { deps, writes } = harness({ TMUX: '/tmp/tmux-501/default,1,0' });
-    copyToClipboard(deps, 'hi');
+    await copyToClipboard(deps, 'hi');
     expect(writes).toEqual([
       `\x1b]52;c;${b64('hi')}\x07\x1bPtmux;\x1b\x1b]52;c;${b64('hi')}\x07\x1b\\`,
     ]);
   });
 
-  it('is TOTAL: a throwing writeControl is the caller’s to handle, and no partial escape is emitted before it', () => {
+  it('is TOTAL: a throwing writeControl is the caller’s to handle, and no partial escape is emitted before it', async () => {
     // The three refusal paths (`empty`, `too-large`) must write NOTHING, so a caller can trust that a failed copy
     // never left a half-sequence on the terminal. The success path writes exactly once — asserted above.
     const boom = new Error('stdout closed');
@@ -155,8 +164,8 @@ describe('copyToClipboard', () => {
       },
       env: {},
     };
-    expect(copyToClipboard(deps, '')).toEqual({ kind: 'empty' }); // never reaches writeControl
-    expect(copyToClipboard(deps, 'x'.repeat(56_245)).kind).toBe('too-large'); // …nor here
-    expect(() => copyToClipboard(deps, 'hi')).toThrow(boom); // …and the ONE write is not swallowed
+    expect(await copyToClipboard(deps, '')).toEqual({ kind: 'empty' }); // never reaches writeControl
+    expect((await copyToClipboard(deps, 'x'.repeat(56_245))).kind).toBe('too-large'); // …nor here
+    await expect(copyToClipboard(deps, 'hi')).rejects.toBe(boom); // …and the ONE write is not swallowed
   });
 });

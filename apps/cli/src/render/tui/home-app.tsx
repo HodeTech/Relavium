@@ -1,5 +1,13 @@
+import { CliError } from '../../process/cli-error.js';
 import { Box, Text, useApp, useInput, usePaste } from 'ink';
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
@@ -54,7 +62,7 @@ import {
 
 export type { HomeChatSession } from './home-controller.js';
 
-import { attemptClipboardWrite, type ClipboardOutcome } from '../clipboard.js';
+import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 
@@ -83,7 +91,7 @@ export interface RootAppProps {
   readonly onSuspend?: (() => void) | undefined;
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
-  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  readonly clipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
   /**
@@ -222,6 +230,13 @@ function ChatRegion(
 }
 
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
+  const clipboardFeedbackMounted = useRef(true);
+  useLayoutEffect(() => {
+    clipboardFeedbackMounted.current = true;
+    return () => {
+      clipboardFeedbackMounted.current = false;
+    };
+  }, []);
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [acknowledgement] = useState(() =>
@@ -376,25 +391,44 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
    *  just selected. Only a refusal (past the terminal's OSC 52 length floor) is worth telling them about. */
   const copySelection = (state_: SelectionState): void => {
     const clipboard = props.clipboard;
-    const store = state.session?.store;
-    if (clipboard === undefined || store === undefined) return;
+    const session = state.session;
+    const current = controller.getSnapshot();
+    const store = session?.store;
+    if (
+      clipboard === undefined ||
+      store === undefined ||
+      current.mode !== 'chat' ||
+      current.session !== session
+    )
+      return;
     const rows = wrapTranscript(
       store.getSnapshot().state.transcript,
       size.cols,
       store.getSnapshot().color,
     ).map((line) => line.text);
-    const outcome = attemptClipboardWrite(
-      clipboard,
-      selectionText(rows, normalizeSelection(state_)),
-    );
-    if (outcome.kind === 'written') flashCopied();
-    else if (outcome.kind === 'failed') {
-      store.note('Clipboard request failed locally — use /scrollback or /edit.');
-    } else if (outcome.kind === 'too-large') {
-      store.note(
-        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state_)))
+      .then((outcome) => {
+        const current = controller.getSnapshot();
+        if (
+          !clipboardFeedbackMounted.current ||
+          current.mode !== 'chat' ||
+          current.session !== session ||
+          session?.shouldStop() === true ||
+          props.inputEnabled?.() === false
+        )
+          return;
+        if (outcome.kind === 'written') flashCopied();
+        else if (outcome.kind === 'failed') {
+          store.note('Clipboard request failed locally — use /scrollback or /edit.');
+        } else if (outcome.kind === 'too-large') {
+          store.note(
+            `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+          );
+        }
+      })
+      .catch((cause: unknown) =>
+        props.onRendererError?.(new CliError('cli_internal', '', { cause })),
       );
-    }
   };
 
   // A resize re-wraps the transcript, and a session swap (`/clear`, a reseat) replaces it — either way every

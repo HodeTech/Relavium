@@ -53,8 +53,8 @@ describe('MVP-2 truthful feedback', () => {
     expect(formatToolCall({ ...call, resolved: false })).toBe('→ read_file …');
   });
 
-  it('turns a local clipboard failure into a content-free failed outcome', () => {
-    const result = attemptClipboardWrite(() => {
+  it('turns a local clipboard failure into a content-free failed outcome', async () => {
+    const result = await attemptClipboardWrite(() => {
       throw new Error('opaque-secret-in-native-error');
     }, 'text');
     expect(result).toEqual({ kind: 'failed' });
@@ -200,6 +200,46 @@ describe('MVP-2 truthful feedback', () => {
           .markdown.tail(80, 10)
           .map((line) => line.text),
       ).toEqual(['next']);
+    },
+  );
+
+  it.each([true, false])(
+    'keeps streamed blank paragraphs as real rows in both renderers (color %s)',
+    async (color) => {
+      for (const alternate of [false, true]) {
+        const store = createChatStore(color, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+        store.apply({
+          sessionId: 's',
+          timestamp: '2026-11-10T00:00:00Z',
+          nodeId: 'n',
+          model: 'm',
+          type: 'agent:token',
+          sequenceNumber: 1,
+          token: 'first\n\nsecond',
+        });
+        store.flush();
+        const capture = render(
+          <Box flexDirection="column" {...(alternate ? { height: 24 } : {})}>
+            <ChatView
+              {...store.getSnapshot()}
+              nowMs={0}
+              editor={emptyEditor()}
+              running
+              mode="ask"
+              reasoningVisible={false}
+              columns={80}
+              viewport={
+                alternate
+                  ? { rows: 24, cols: 80, scroll: INITIAL_SCROLL, onMeasure: () => {} }
+                  : undefined
+              }
+            />
+          </Box>,
+        );
+        await waitFor(() => (capture.lastFrame() ?? '').includes('second'));
+        expect(stripTerminalControls(capture.lastFrame() ?? '')).toMatch(/first\n *\nsecond/);
+        capture.unmount();
+      }
     },
   );
 });

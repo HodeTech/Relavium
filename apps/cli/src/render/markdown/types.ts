@@ -18,6 +18,8 @@ export interface MarkdownBlock {
   readonly spans?: readonly MarkdownSpan[];
   readonly prefix?: string;
   readonly continuation?: string;
+  /** Display columns omitted before the first logical line, for tab stops. */
+  readonly tabOffset?: number;
   readonly quoted?: boolean;
   readonly raw?: boolean;
   readonly heading?: number;

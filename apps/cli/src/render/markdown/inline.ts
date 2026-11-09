@@ -1,5 +1,6 @@
 import { sanitizeInline } from '../sanitize.js';
 import type { MarkdownSpan } from './types.js';
+import { isWordAt, isWordBefore } from './unicode-word.js';
 
 type Style = Omit<MarkdownSpan, 'text'>;
 
@@ -14,6 +15,17 @@ export function parseInline(source: string, style: Style = {}, depth = 0): Markd
       escaped[at + 1] = 1;
       at++;
     }
+  }
+  // A whole intraword underscore run is literal, including each half of `__`.
+  const intraword = new Uint8Array(source.length);
+  for (let at = 0; at < source.length; ) {
+    if (source[at] !== '_' || escaped[at]) {
+      at++;
+      continue;
+    }
+    const start = at;
+    while (source[at] === '_' && !escaped[at]) at++;
+    if (isWordBefore(source, start) && isWordAt(source, at)) intraword.fill(1, start, at);
   }
   const singleRuns = new Map<string, Int32Array>();
   for (const delimiter of ['*', '_']) {
@@ -35,11 +47,9 @@ export function parseInline(source: string, style: Style = {}, depth = 0): Markd
       table = new Int32Array(source.length + 1);
       let found = -1;
       for (let at = source.length; at >= 0; at--) {
-        const intraWord =
-          token.includes('_') &&
-          /[\p{L}\p{N}]/u.test(source[at - 1] ?? '') &&
-          /[\p{L}\p{N}]/u.test(source[at + token.length] ?? '');
-        if (!escaped[at] && !intraWord && source.startsWith(token, at)) found = at;
+        if (!escaped[at] && source.startsWith(token, at)) {
+          if (!token.includes('_') || !intraword[at]) found = at;
+        }
         table[at] = found;
       }
       nextTables.set(token, table);
@@ -121,9 +131,9 @@ export function parseInline(source: string, style: Style = {}, depth = 0): Markd
               linkURL: safeTarget,
             });
           else {
-            for (const span of parseInline(safeLabel, { ...style, linkURL: safeTarget }, depth + 1))
-              result.push(span);
-            if (safeLabel !== safeTarget)
+            const labelSpans = parseInline(safeLabel, { ...style, linkURL: safeTarget }, depth + 1);
+            for (const span of labelSpans) result.push(span);
+            if (labelSpans.map((span) => span.text).join('') !== safeTarget)
               result.push({ text: ` (${safeTarget})`, ...style, linkURL: safeTarget });
           }
           i = end + 1;
@@ -153,7 +163,11 @@ export function parseInline(source: string, style: Style = {}, depth = 0): Markd
         continue;
       }
     }
-    if (depth < 31 && (source.startsWith('***', i) || source.startsWith('___', i))) {
+    if (
+      depth < 31 &&
+      !intraword[i] &&
+      (source.startsWith('***', i) || source.startsWith('___', i))
+    ) {
       const triple = source.slice(i, i + 3);
       const end = next(triple, i + 3);
       if (end > i + 3) {
@@ -174,15 +188,12 @@ export function parseInline(source: string, style: Style = {}, depth = 0): Markd
         : ch === '*' || ch === '_'
           ? ch
           : '';
-    if (
-      marker &&
-      depth < 32 &&
-      !(
-        marker.includes('_') &&
-        /[\p{L}\p{N}]/u.test(source[i - 1] ?? '') &&
-        /[\p{L}\p{N}]/u.test(source[i + marker.length] ?? '')
-      )
-    ) {
+    if (marker && marker.includes('_') && intraword[i]) {
+      plain += marker;
+      i += marker.length;
+      continue;
+    }
+    if (marker && depth < 32) {
       let end = next(marker, i + marker.length);
       if (
         (marker === '*' || marker === '_') &&

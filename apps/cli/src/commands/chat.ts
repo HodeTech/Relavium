@@ -101,7 +101,7 @@ import {
 } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toUserFacing } from '../process/errors.js';
-import type { CliIo } from '../process/io.js';
+import { acknowledgeWrite, type CliIo } from '../process/io.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -123,7 +123,7 @@ import {
   type TranscriptEntry,
   type TranscriptBound,
 } from '../render/tui/session-view-model.js';
-import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
+import { copyToClipboard, type ClipboardWriter } from '../render/clipboard.js';
 import {
   createSuspendPort,
   defaultJobControlLifecycle,
@@ -348,7 +348,7 @@ export interface ChatDriveContext {
    * Write the mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Only an INK driver has a terminal
    * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
    */
-  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  readonly clipboard?: ClipboardWriter | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -2594,16 +2594,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(hatchPortsForClipboard === undefined || deps.copyOnSelect !== true
         ? {}
         : {
-            clipboard: (text: string): ClipboardOutcome =>
-              copyToClipboard(
-                {
-                  writeControl: (sequence) => {
-                    void hatchPortsForClipboard.writeControl(sequence);
-                  },
-                  env: deps.io.env,
-                },
-                text,
-              ),
+            clipboard: hatchPortsForClipboard.clipboard,
           }),
     });
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
@@ -2874,6 +2865,17 @@ export async function runReplLoop(
       }
     });
 
+  // Clipboard feedback needs delivery, while legacy mode-control adapters may be synchronous.
+  // Keep one bound clipboard port for both /copy and selection; never erase an owned native ACK.
+  const clipboardWriteControl =
+    terminalOwner?.writeControl ??
+    ((sequence: string): Promise<void> => {
+      if (deps.writeControl !== undefined) return Promise.resolve(deps.writeControl(sequence));
+      const output = deps.chatLifetime === undefined ? process.stdout : deps.io.nativeStdout;
+      if (output === undefined) throw new CliError('cli_internal', '');
+      return acknowledgeWrite(output, sequence);
+    });
+
   // ONE suspend port for the whole REPL: ink remounts per session (a `/clear` / reseat re-drive), and each mount
   // re-attaches. The hatch ports read the terminal facts at CALL time — `alt.isEntered()` rather than the resolved
   // `altActive`, because a hatch must reflect the buffer's LIVE state, not the mode we resolved at startup.
@@ -2913,7 +2915,8 @@ export async function runReplLoop(
                   },
           },
           // `/copy` writes OSC 52 through the SAME control sink the alt-buffer and mouse toggles use.
-          clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
+          clipboard: (text: string) =>
+            copyToClipboard({ writeControl: clipboardWriteControl, env: deps.io.env }, text),
           editor: {
             env: deps.io.env,
             spawnEditor: createNodeSpawnEditor(

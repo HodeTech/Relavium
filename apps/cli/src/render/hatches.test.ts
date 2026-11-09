@@ -423,9 +423,23 @@ describe('inertHatchPorts — a driver with no renderer (plain / --json, or a un
  * copies the VISUAL rows instead; they are different jobs.
  */
 describe('createHatches — /copy', () => {
-  it('copies the unwrapped transcript document and never suspends the renderer', () => {
+  it('waits for delayed clipboard failure without publishing a premature Sent notice', async () => {
+    let rejectDelivery: (cause: unknown) => void = () => {};
+    const pending = new Promise<never>((_resolve, reject) => {
+      rejectDelivery = reject;
+    });
+    const { deps, notes } = harness({ clipboard: () => pending });
+    const done = createHatches(deps).copyTranscript();
+    expect(notes).toEqual([]);
+    rejectDelivery(new Error('OPAQUE_LOCAL_WRITE_FAILURE'));
+    await done;
+    expect(notes).toEqual(['/copy: clipboard request failed locally — use /scrollback or /edit.']);
+    expect(notes.join('')).not.toContain('OPAQUE');
+  });
+
+  it('copies the unwrapped transcript document and never suspends the renderer', async () => {
     const { deps, trace, copied, notes } = harness({ columns: 20 });
-    createHatches(deps).copyTranscript();
+    await createHatches(deps).copyTranscript();
 
     expect(copied).toHaveLength(1);
     expect(copied[0]).toContain('hello');
@@ -435,32 +449,32 @@ describe('createHatches — /copy', () => {
     expect(notes[0]).toMatch(/^\/copy: sent \d+ characters to the terminal clipboard\.$/);
   });
 
-  it('an EMPTY transcript is a notice, and the clipboard is never touched', () => {
+  it('an EMPTY transcript is a notice, and the clipboard is never touched', async () => {
     const { deps, copied, notes } = harness({ transcriptEntries: [] });
-    createHatches(deps).copyTranscript();
+    await createHatches(deps).copyTranscript();
     expect(copied).toEqual([]);
     expect(notes).toEqual([`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`]);
   });
 
-  it('a transcript past the terminal’s OSC 52 floor is REFUSED, and points at the hatches that scale', () => {
+  it('a transcript past the terminal’s OSC 52 floor is REFUSED, and points at the hatches that scale', async () => {
     const { deps, notes } = harness({
       clipboard: () => ({ kind: 'too-large', base64Length: 120_000, limit: 74_994 }),
     });
-    createHatches(deps).copyTranscript();
+    await createHatches(deps).copyTranscript();
     expect(notes[0]).toContain('too large');
     expect(notes[0]).toContain('/scrollback or /edit');
   });
 
-  it('reports what it WROTE, never that it was copied — OSC 52 has no acknowledgement', () => {
+  it('reports what it WROTE, never that it was copied — OSC 52 has no acknowledgement', async () => {
     const { deps, notes } = harness();
-    createHatches(deps).copyTranscript();
+    await createHatches(deps).copyTranscript();
     expect(notes[0]).toContain('sent');
     expect(notes[0]).not.toContain('copied');
   });
 
-  it('works with NO full-screen renderer attached — unlike /scrollback and /edit, it needs no suspension', () => {
+  it('works with NO full-screen renderer attached — unlike /scrollback and /edit, it needs no suspension', async () => {
     const { deps, copied } = harness({ noSuspend: true });
-    createHatches(deps).copyTranscript();
+    await createHatches(deps).copyTranscript();
     expect(copied).toHaveLength(1); // a plain / `--json` chat can still `/copy`
   });
 });
