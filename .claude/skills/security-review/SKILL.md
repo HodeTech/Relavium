@@ -89,13 +89,16 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
    - Signal: `grep -rn "isPrivateOrLocalHost\|safe-egress" $changed_files` — a new URL path with
      no hit is either reusing nothing or re-deriving the check locally.
 
-5. **The `run_command` sandbox.** `run_command` spawns model-driven shell execution, so it
-   runs sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (never
-   an unlisted command), under the workflow's filesystem **scope tier** (restricted fs — no
-   reach outside the granted paths), with **no network** authority beyond what an allowed
-   command itself performs, and under a CPU/memory/time budget that terminates a runaway. It
-   never receives a provider key or any secret, and its output (stdout/stderr/exit code) is
-   untrusted input. See [built-in-tools.md](../../../docs/reference/shared-core/built-in-tools.md).
+5. **The `run_command` policy boundary.** Follow the binding
+   [tool-policy standard](../../../docs/standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs).
+   Only allowlisted commands execute under the current contract. File-tool root
+   grants do not provide OS filesystem isolation for subprocess arguments; an
+   allowed command can access ambient files or network resources using its own
+   process authority. Review its actual arguments, environment and implemented
+   resource/time controls; do not infer a subprocess sandbox from an fs scope.
+   It never receives a host-resolved provider key or declared workflow secret.
+   Its output is untrusted. This corrects the earlier skill's unsupported isolation
+   claim without changing the canonical policy or activating MVP-4 approvals.
 
 6. **Prompt-injection posture.** Model output and tool results are untrusted *data*, never
    trusted instructions. Confirm: requested tool calls are validated against the declared
@@ -125,7 +128,7 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 - [ ] No plaintext key at rest (config, committed `.env`, `.relavium.yaml`, log, unencrypted DB column).
 - [ ] No key in an error message, `node:failed`/`run:failed` event, or log line.
 - [ ] Custom base URLs: HTTPS-only, no creds-in-URL, private/loopback/metadata ranges blocked, TLS not disabled, AbortSignal + timeout present.
-- [ ] `run_command` sandbox: allowlist-gated, restricted fs (scope tier), no ambient network, a resource budget, and never gets a secret; its output treated as untrusted.
+- [ ] `run_command`: actual allowlist, arguments, environment and resource/time controls checked; no OS fs/network isolation inferred from file-tool roots; no host-resolved provider key or declared workflow secret; output untrusted.
 - [ ] Tool calls validated against schema + allowlist; high-impact effects gated; `system` set by Relavium, not tool output.
 - [ ] No new dependency without an ADR; lockfile committed; no known-CVE dependency added.
 - [ ] No hand-rolled crypto/TLS/keychain — vetted primitives, wrapped.
@@ -142,7 +145,7 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
 - [ ] Scoped the security surface(s) the diff touches and framed them with STRIDE-lite.
 - [ ] Verified keys-and-secrets handling (keychain-only, never frontend/log/at-rest/error).
 - [ ] Checked SSRF defenses on any custom base-URL path.
-- [ ] Confirmed the `run_command` sandbox is allowlist-gated with no ambient authority and no secret.
+- [ ] Checked the actual `run_command` authority against the canonical tool policy without claiming an unimplemented OS sandbox.
 - [ ] Confirmed prompt-injection posture (untrusted output, allowlist, gated effects, Relavium-owned system prompt).
 - [ ] Checked dependency provenance (ADR-gated) and that no crypto was hand-rolled.
 - [ ] Confirmed logging redaction.

@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-16
+> Last updated: 2026-11-09
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -851,6 +851,49 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 > column is **structurally incapable** of holding the truth for a turn whose tool loop billed **two models**. Money
 > attribution lives in [`session_costs`](#session_costs). `model_id` **stays**: it *is* written ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md))
 > and remains the per-message "which model wrote this reply" label.
+
+#### Proposed user display storage — MVP-2
+
+**Accepted design, unimplemented — 2026-11-09.**
+[ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
+requires an additive nullable `user_display_text TEXT` column on `session_messages`.
+Add optional `userDisplayText: string` to strict `SessionMessageMetaSchema` and
+the DB's `SessionMessageMeta`. It is permitted only with a `role: 'user'` row;
+non-string/unknown metadata refuses. Empty text is legal. NULL means no
+host-recorded display text, never an inferred empty prompt.
+
+The migration leaves every existing row NULL. Every host user-row insert with
+captured display metadata includes that field in the same transaction. MVP-2
+uses the existing completed-turn transaction; a future accepted ADR-0119
+interruption transaction inherits this rule without being implemented here.
+Updates/backfills of historical rows
+are not introduced. Metadata writes and the separate display read reject display
+metadata on non-user roles within their admitted rows.
+Expose a separate `loadUserDisplayTexts(sessionId, sequenceNumbers)` DB read for
+the UI. In order: validate a maximum of 500 distinct non-negative safe sequence
+numbers; select `sequence_number`, `role` and `user_display_text` for those rows
+within that session, with no SQL user-role filter; reject any selected non-user
+row carrying a non-NULL display value; then return only user sequence/text pairs.
+The DB read boundary performs role validation before projecting the role away.
+An empty selection performs no query. Absent values remain absent; malformed or
+wrong-role stored metadata refuses with the existing fixed boundary diagnostic.
+Do not attach presentation metadata to `loadMessages` or `SessionMessage`, or
+add a display-metadata validation failure to their canonical read path: model
+restore, export and completed-turn identity remain unchanged. The display reader
+owns validation of its selected rows; it does not claim to scan or certify all
+archive rows. Caller selection includes the completed user/terminal identities
+within the restored window. Malformed/unreadable metadata refuses interactive
+restore before host activation, with retry/return and no canonical-text fallback.
+The persister never substitutes submitted canonical content for absent display
+metadata; only an explicit pre-expansion host display value is written.
+
+Existing denormalized content equality, transcript mutation/coverage triggers and
+at-rest permissions remain in force. Verify the current transcript-trigger
+behavior for direct display-column changes as part of migration acceptance.
+Choose the next free migration number at implementation, without rewriting a
+published migration; mirror the generated migration into the CLI through its
+existing build path. Test an older writer omitting the new column followed by a
+new reader. This accepted design does not change the shipped table above before implementation.
 
 #### `session_costs`
 

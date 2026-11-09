@@ -1538,24 +1538,31 @@ user's journey.
      - user prompts in their displayed form, where an attachment appears as its marker and never as the attached
        content;
      - assistant answers;
-     - a divider where the model's context starts. After `/compact` it says the earlier turns were compacted and
-       the model sees a summary of them; after `/trim` it says the earlier turns were trimmed and the model no
-       longer sees them. Earlier turns stay visible, so the user keeps their own history.
+     - saved-context dividers following the [approved restore-display contract](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2)
+       (2026-11-09 qualification): archive, summary and later-trim regions are
+       distinguished, and memory policy determines the next request. A trim may
+       preserve an earlier summary; no blanket "earlier turns are unseen" claim.
    - **What is not shown:**
      - restored turns carry no per-turn usage line, because none is stored;
-     - tool rows are not repainted until MVP-3 stores them.
+     - tool rows are not repainted in MVP-2; existing content-free structure is
+       already stored. MVP-3 owns richer tool-row presentation.
    - **Bounds.** A resume restores at most the last 500 entries into the full-screen renderer and at most the last
      200 into the inline renderer. opencode's inline mode uses the same 200.
      - The first restored line counts the entries left out. They stay in `history.db`, and the model's context
        follows the existing restore rules, so nothing is lost.
      - Paging older entries in on scroll, as Codex does, is a follow-up.
-     - The caps bound the working set: the store holds at most the cap, and the wrap cache holds at most the cap's
-       entries.
-   - **One projection.** It is display-only, built from the same stored turns as the model's restore
-     (`completedSessionTurns`). Two tests tie them together, because Gemini CLI shipped a resume that replayed tool
-     results twice when its two transcripts diverged:
-     - the projection equals every stored turn (`completedSessionTurns(messages, false)`), within the cap;
-     - its part after the divider equals the restored model context (`completedSessionTurns(messages, true)`).
+     - **Qualified 2026-11-09:** the caps bound only the initial restored prefix,
+       including notices/dividers/placeholders. New live entries append under
+       existing behavior; caches track retained view entries. No permanent live
+       store ceiling or archive byte bound is claimed.
+   - **Shared rules, distinct projections (corrected 2026-11-09).** Archive
+     display ignores the drop boundary, while model restore honors it and omits
+     empty assistant terminal text. Both reuse shared turn rules and compatible
+     legacy context. Verify their defined identity/order relationship before
+     UI capping and request folding, then independently verify display substitution
+     and the authored memory projection. No raw equality between the capped
+     archive display and model context is required. Exact tests and dividers live
+     in [chat-session.md](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2).
 7. **Actionable rows (MVP-A24).**
    - Down at an empty Home prompt focuses the recent sessions, Enter resumes, and Esc returns. The footer shows the
      key.
@@ -1695,8 +1702,10 @@ the same gate that opens the Home.
 **2c:**
 
 - The repaint shows no attachment content.
-- The projection equals every stored turn within the cap, and its part after the divider equals the restored model
-  context.
+- The archive/retained projections satisfy the approved
+  [structural identity and empty-terminal relationship](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2),
+  with safe display substitution and separately tested memory-policy requests.
+  The earlier raw-equality acceptance wording is superseded by this 2026-11-09 correction.
 - A Continue row from another directory never resumes inside the Home.
 - At 80×24 the focused row and the keyless row stay on screen.
 - A 5,000-turn session resumes with at most 500 restored entries (full-screen) and 200 (inline), and the
@@ -1717,6 +1726,215 @@ the same gate that opens the Home.
 - **Writing an `AGENTS.md` from `/init`.** This is MVP-A16.
 - **Consolidating the standalone `relavium chat` host into the Home tree** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §5).
 - **An "interrupted" tool-row state.** This is MVP-3.
+
+### MVP-2 preflight and execution proposal — 2026-11-09
+
+**Accepted execution plan — maintainer approval 2026-11-09.** This
+preflight follows the maintainer's 2026-11-09 request to review existing documents,
+settle decisions upfront, and implement on `development` through committed steps
+with two fresh independent review rounds each. It refines the 2026-11-08 plan;
+the maintainer authorized correcting supplied review findings, accepting the
+corrected documents and continuing implementation. No product implementation or
+milestone acceptance follows from design approval alone.
+
+#### Document review and required actions
+
+Three independent reviewers read ADRs 0001–0122 across their assigned numerical
+ranges, the repository guide, relevant standards and the MVP-2 contracts. The
+contract and UX reviewers also read the full Home/chat/config/accessibility
+references and the benchmark; the security reviewer read the full security
+standard. Code checks covered persistence, restore, rendering, setup, provider
+resolution, config writing, project discovery and verification harnesses.
+
+| Verified issue | Accepted resolution before implementation |
+|---|---|
+| The markdown ADR promises newline-stable parsing while tables need header lookahead and block-end conversion | Dated qualification in [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md); the new [markdown reference](../../reference/cli/markdown-rendering.md) defines the exact subset, fixed limits, geometry and incremental-work evidence |
+| Stored user text contains expanded `@`/`!` context; the original compact view is not recorded | [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md), display-only metadata in the [DB contract](../../reference/shared-core/database-schema.md#proposed-user-display-storage--mvp-2), and its [session relationship](../../reference/contracts/agent-session-spec.md#proposed-user-display-text--mvp-2) |
+| The display/model string-equality test conflicts with hidden attachments, legacy prefixes and memory selection | Compare selected structural identities/order against real reconstruction, then test the separate safe display mapping; never claim display text equals model input |
+| A later trim can retain an earlier compact summary | Policy-aware saved-context dividers distinguish summarized history, subsequently trimmed history and retained text; no blanket claim that all earlier text is unseen |
+| The restore cap is described both as an initial limit and a permanent store ceiling | Bound only the initial restored prefix, including notices; select whole exchanges. New live entries append, full-screen reseat carries the current view, inline reseat does not reprint it, and clear starts empty |
+| The plan says MVP-3 will store tool rows although content-free structure already persists | MVP-2 omits restored tool rows; MVP-3 owns richer/interrupted tool-row presentation. The durable content-free interruption marker remains MVP-4 under the separately Proposed ADR-0119 |
+| New consent writes depend on shared-writer protections still assigned to paused row 16a | Pull only final-symlink refusal, safe typed recovery, existing-file comment-loss disclosure and truthful onboarding outcomes into step 2; row 16a's other obligations remain with their owner |
+| Consent cancellation/write failure and old-binary recovery need exact semantics | Accepted, unimplemented [config contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2) and dated ADR-0063/0112 refinements, including pre-publication failure versus published-but-unconfirmed directory sync |
+| The compaction overview repeats superseded triggers/fallbacks; the security skill claims an OS subprocess jail | Correct the existing chat reference and security skill to their accepted canonical contracts; no runtime policy change |
+| The roadmap still lists MVP-1's repaired behavior as broken | Correct current status and qualify the historical Proposed-ADR list |
+
+The supplied document reviews were independently checked against the implementation
+before acceptance. Archive display uses all completed turns without the drop boundary;
+model reconstruction still honors compact/trim boundaries and omits empty assistant
+terminal text. Both contracts now state their selection relationship explicitly.
+Markdown precedence distinguishes literal Setext pairs, rules and pipe tables and
+specifies container indentation. The config contract distinguishes pre-rename failure
+from published writes with unconfirmed directory sync, and separates the closed
+operator-state writers from the three model-preference setters. Neighboring key-source
+references qualify the accepted, unimplemented step-2 extension; ADR-0119 remains
+Proposed with forward-compatible atomic display metadata requirements.
+
+Two suggested mechanical corrections were rejected after verification: GitHub heading
+anchors retain doubled hyphens around the removed em dash, and ADR-0112's authored
+date differs legitimately from its later acceptance date. Approval marks the design
+Accepted; it does not label unimplemented runtime behavior shipped.
+
+The approved legacy display choice is explicit: an older
+user row without recorded compact display becomes a neutral placeholder, including
+an ordinary prompt without attachments. Assistant answers remain visible. Explain
+once that original user text stays stored and may enter model context. No pattern
+match, nonce or guessed frame parser establishes missing historical provenance;
+there is no backfill. New user prompts restore their exact recorded display form.
+
+#### Approved decisions and scope qualifications
+
+- ADR-0123 and the linked metadata contract are accepted. Canonical
+  `SessionMessage`, model restore, export and the LLM seam stay unchanged. A new
+  nullable migration and bounded DB metadata read are needed; this is a public
+  shared-metadata/DB API change, covered by this approval.
+- The ADR-0114 clarification and markdown reference are accepted, including
+  table/nesting bounds and literal fallbacks. The accepted in-house/no-dependency
+  direction, source hatches and color-off source rendering remain.
+- The ADR-0112/config refinement is accepted: only affirmative named-source consent
+  persists after atomic publication; defer/cancel before publication grants nothing,
+  and pre-publication failure requires a second explicit choice before ephemeral
+  use. Directory-sync failure after rename is published with a truthful qualified
+  durability notice, not an unsaved grant. The necessary row-16a writer floor moves
+  into 2b before any new preference is written; unrelated HTTP activation stays
+  with its recorded milestone.
+- `chat --continue` rejects `--agent` and combinations with `resume`, `list` or
+  `export` before history/key/provider/MCP work. Resume retains its saved bound
+  agent; the new flag never silently overrides it. An omitted-id picker cancel
+  exits 0 without starting a host; an empty picker offers cancel, with no automatic
+  new session. Explicit resume IDs keep their current behavior.
+- The initial restore budgets are entry-count limits, not a total archive byte
+  bound or a permanent live-store ceiling. No silent truncation of a large
+  restored message or live conversation is added. Measure representative and
+  large-message workloads, and resolve a demonstrated unacceptable result before
+  accepting the affected step rather than claiming performance from entry count.
+- New Home-tree commands show disabled reasons when they cannot run, argument
+  hints where needed, nearest-match typo guidance without auto-execution, and
+  remedies suitable for the actual host. Standalone chat keeps its recorded
+  three-command exclusion and names reachable alternatives.
+
+These qualifications introduce no new runtime dependency or provider call.
+The full ADR-0115 interrupt map remains MVP-4; Esc/Ctrl-C cancellation for the new
+screens already binds under ADR-0122. The existing scope exclusions above remain,
+including in-Home cross-directory re-anchoring and MVP-9's broader provider work.
+Missing legacy display provenance is an explicitly disclosed historical limit,
+not unfinished reconstruction work.
+
+#### Implementation steps
+
+**Revised and approved — 2026-11-09.** After the maintainer asked to reconsider review
+and execution cost, the eleven implementation checklist items are consolidated
+into **four steps**. The earlier list separated internal prerequisites into
+review checkpoints even where they share one user journey, code path and
+acceptance evidence. The four steps below replace that execution breakdown;
+scope, accepted contracts, dependency order and security obligations are unchanged.
+
+Each row delivers a complete behavior that can be exercised end to end. Internal
+implementation order is a checklist, not another commit/review/acceptance loop.
+Package-scope commits can still separate changes where appropriate; independent
+reviews cover the entire step, including all its internal commits, once its
+complete implementation is ready. Canonical contracts land with their behavior.
+
+| Step | Slice | Complete deliverable | Internal implementation order | Required evidence beyond ordinary gates |
+|---|---|---|---|---|
+| 1 | 2a | Readable chat and truthful CLI feedback | Tab expansion and word wrap → tool failure glyphs/copy feedback → pure markdown parser/layout → streaming/render integration and source hatches; excess-argument refusal and the `agent run` stdin hint join this slice | Every markdown construct/fallback and exact/+1 limit; linear incremental-work evidence before live tailing; Unicode/tab/selection and one-row invariants including prefix exhaustion at widths 1/2; rich assistant cold-wrap; both renderers/color modes/80×24; local clipboard failure versus sent OSC52; grammar diagnostics without reflected values; machine snapshots; scoped parser security sitting; cumulative 2a acceptance |
+| 2 | 2b, credentials | First run and provider keys managed inside the Home | Typed key availability and shared writer floor → native select/confirm/text/masked prompt host → rehosted setup → standard-env consent → `/providers`, persistent keyless row and keyless `chat` setup | Typed usable/missing/unavailable/pending/ineligible observations without per-frame key probes; symlink/dangling-link preservation before read/chmod; atomic publication with qualified crash durability, separately fault-injected file/directory sync and truthful failure/ephemeral outcomes; secret-free UI state/history/hatches/errors; bounded paste/input and cancellation/cleanup; actual resolver egress tests for chat/refresh/deep doctor; custom-endpoint and cross-layer refusals; restart/revocation behavior; palette discovery; separate credential/config security sitting |
+| 3 | 2b, projects | Safe project initialization and discovery | Shared `init` core → `/init` confirmation and shell result → global-versus-project discovery fix across all consumers → existing-global-artifact remedies | All authoring/discovery consumers, home-folder refusal, no overwrite, symlink refusal, nested projects and existing global artifacts; shell/JSON contracts; inline/full-screen/color-off confirmation/cancel; separate filesystem security sitting and cumulative 2b acceptance, including interaction with step 2's config/setup paths |
+| 4 | 2c | Find and resume a session with its safe visible history | Shared display metadata and additive migration → safe projection/repaint → indexed paged picker and `/resume`/omitted-id/`--continue` → actionable Continue rows/landing geometry → exit resume line | Metadata boundary/upgrade tests and every submit path; legacy placeholders, empty finals/prefixes, compact→trim and memory policies; unchanged model/export bytes and disclosure activation; 5,000-turn archive, restore budgets and rich cold-wrap; indexed SQL-side scope/filter/cursor tests; empty/error/retry and stale-result handling; shell grammar; original-workspace authority and no cross-directory Home resume; focused/keyless/prompt visibility at 80×24 in both renderers/color modes; separate resume security sitting and complete MVP-2 acceptance |
+
+Step 1 combines the former items 1–4; step 2 combines 5–7; step 3 is the former
+item 8; step 4 combines 9–11. No deliverable is dropped or moved past MVP-2.
+Geometry/parser/draw and metadata/projection/picker are reviewed together, so
+their integration is not repeatedly rediscovered in separate rounds.
+
+Keep project initialization separate from credential setup: it changes project
+discovery and authoring destinations across commands, has its own filesystem
+failure cases, and can be validated without the setup UI. Combining them would
+make the largest step cover two distinct behaviors and security scopes. Conversely,
+separating a parser from its renderer or a session picker from safe resume would
+add review overhead before the intended behavior can be exercised completely.
+
+The baseline is therefore **eight independent review rounds instead of twenty-two**,
+plus the required separate security sittings and any clean re-review D64 requires
+after substantive fixes. This reduces repeated setup and context loading; it is
+not a prediction that total implementation time or tokens falls by the same ratio.
+Additional steps require a demonstrated independent risk/dependency or a review
+scope that cannot be covered reliably; file count or an internal helper alone is
+not a reason to split. Record the concrete reason before adding a checkpoint.
+
+Core execution stays platform-pure. Only existing shared history selection is
+reused; display metadata and picker/storage additions belong to shared validation,
+DB and CLI, with no new model/runtime branch in the engine. Inspect exact export
+surfaces before touching public APIs; the approval covers the narrowly described
+metadata, paging and CLI additions, not unrelated API changes.
+
+#### Commit, review and acceptance loop
+
+For each of the four steps (not each internal checklist item or commit):
+
+1. Implement and self-review against `/implement-task`; add meaningful regression
+   and journey tests. Check `tools/` pinning before touching an existing suite;
+   prefer new test files. Replace the three `init` stubs one for one as already
+   required. Update canonical docs with that step.
+2. Use targeted checks while implementing internal items. Before the implementation
+   commit and step acceptance, run `pnpm ci:workspaces`, build/format, isolation,
+   coverage and the applicable smoke/causal checks. Preserve the skill's
+   lint/typecheck/test/build obligations; a failing applicable gate is not waived
+   by review. Run the complete CI family on the final combined MVP-2 revision
+   before merge, using the repository's declared shards for the large filesystem
+   and secrets cohorts. Required remote CI remains mandatory. Commit the green
+   implementation on `development` with truthful Codex trailers.
+3. Run a fresh independent comprehensive round over that committed step and its
+   affected existing paths: correctness/contracts, UX/accessibility/performance,
+   and security/lifecycle where relevant. Validate every finding before fixing;
+   commit fixes with appropriate regression evidence.
+4. Run a second round with new reviewer agents over the entire cumulative step,
+   including the fixes. Validate, fix, test and commit any confirmed findings.
+   The second round is independent of the first, not its authors rechecking only
+   their own comments.
+5. Apply D64 as well as this two-round minimum. Security-tier steps need a new
+   complete cumulative round with no blocker/high/medium after the last fixes,
+   plus the separate applicable security sitting. If round 2 needs substantive
+   fixes, obtain the necessary new clean round; do not mark an unreviewed fix
+   accepted. Resolve in-scope lows rather than creating avoidable deferrals.
+6. Record reviewed revisions, verified findings/resolutions, checks and remaining
+   gates concisely in this register; detailed timestamped records stay local in
+   `docs/reviews/`. Proceed to the next step automatically. Push the combined
+   `development` revision for the final PR and observe all required CI; do not
+   restart unrelated long native matrices for each intermediate review fix.
+
+**Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
+invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
+tools, wire and all 23 usage mutation controls. Its 115-control filesystem family
+stopped at `media-temp-claim-identity/restored` without a completed report. The
+isolated unchanged fixed/removal/restored retry passed all 23/22/23 cases with
+source invariance verified; this does not make the interrupted family complete.
+The repository's required CI already runs filesystem and secrets as two shards
+with unchanged phase/case/evidence bounds and 60/75-minute job allowances.
+Use scoped checks during the steps and complete those full declared families on
+the final combined revision. No required merge gate, test inventory, deadline or
+review round is removed; retain the incomplete-run record and do not call the
+single interrupted `pnpm run ci` invocation green.
+
+Use current available Sol/Terra models with high effort for parser, security,
+storage and lifecycle review; Luna may cover a narrower low-complexity UX/docs
+pass. Use no Astra unless the maintainer later explicitly requests it. Each round
+uses fresh agents; no implementation author reviews its own work as independent.
+
+Every new screen is checked in inline/full-screen, color on/off and 80×24, with
+paste, Esc/Ctrl-C, resize, cancellation and recoverable failures. Package/Windows
+headless smokes establish machine-contract compatibility only. Mounted Ink and
+native-input tests establish the exercised interactive paths; a real Windows
+terminal remains MVP-10's separately recorded acceptance check, never inferred
+from headless success. Do not make paid provider calls or claim live validation
+from offline fixtures.
+
+The new markdown reference, accessibility/copy wording, command/Home/chat/config
+references, metadata/DB contracts and their indexes are updated in their owning
+steps. A final consistency pass updates current status, the phase acceptance and
+deferred-task closures without prematurely claiming unrelated MVPs complete.
+Then prepare the `development`→`main` PR for the maintainer's detailed review;
+merge and publication are not part of this implementation instruction.
 
 ## Deferred-tasks pulled into this phase
 

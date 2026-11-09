@@ -36,6 +36,16 @@ classified failed chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 
+> **MVP-2 accepted, unimplemented — 2026-11-09.** The clack/two-source
+> description below is the current pre-MVP-2 behavior. Step 2 rehosts setup on
+> native in-tree prompts and uses the canonical
+> [typed credential-source states](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2):
+> eligible standard variables awaiting consent open the consent card; variables
+> excluded for custom endpoints receive key-entry guidance, not implied authority.
+> Missing and genuinely unavailable backends remain distinct; a usable key
+> suppresses automatic setup. The new behavior remains unimplemented until that
+> step lands, and must not be inferred from the historical keyless definition.
+
 When a bare `relavium` opens the Home on a **truly key-less** run — **no** known provider has a resolvable key (the resolver finds neither an OS-keychain key **nor** a `RELAVIUM_<PROVIDER>_API_KEY` env var) — a `@clack/prompts` **onboarding wizard** runs **before** the ink Home mounts (clack + ink both take the terminal's raw mode, so the wizard fully settles first). It is already behind the TTY gate above, so it never runs piped / `--json` / in CI. A run with **either** a keychain key or an env key is not key-less — no wizard, so a working user (including an env-key user) is never prompted.
 
 The flow: **pick a provider → paste a hidden (masked) API key → store it in the OS keychain** — riding the same tested `provider set-key` path (keychain write + the provider row + the keychain-ref, secret-free by construction; the key is captured via clack's masked `password`, whitespace-trimmed, never echoed, never written to disk, never logged beyond its last-4 hint). On a successful store the wizard also sets **`[preferences].default_model` to the chosen provider's cheap/fast starter model** (`KNOWN_PROVIDERS[provider].testModel`, via the same global config-write target as `/models` — `[chat].default_model` is only the read-time fallback that resolves down to it, ADR-0063 §1) — so the very next chat binds a model **whose key was just stored**, not the built-in `claude-sonnet-4-6` (which would error for a user who picked a non-Anthropic provider). Richer **model selection** is not part of the wizard — the user upgrades via the `/models` picker. Three fallbacks keep a first run unblocked:

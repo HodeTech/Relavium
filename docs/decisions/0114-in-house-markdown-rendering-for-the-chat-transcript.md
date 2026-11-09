@@ -11,6 +11,23 @@
 
 ## Context
 
+> **Amended 2026-11-09 — maintainer-approved clarification.** The table
+> rendering decision accepted on 2026-11-08 is unchanged. Its implementation
+> invalidates the stronger prefix/finality claims in §1 and §4: a completed line
+> can still belong to an open paragraph, fence or table. A potential table header
+> needs the next delimiter row, and an open table stays verbatim until the block
+> closes. Cache completed **stable blocks** plus open-block state, including the
+> possible header and bounded table. Consume appended sanitized input before the
+> live display tail is clipped; do not reparse only that tail. At a blank line,
+> an unambiguous new block or end-of-turn, finalize the pending table once.
+> Stable blocks never change; the pending block may change as described above.
+> Streaming parsing is amortized linear over appended input, including a single
+> long unfinished line; layout of the bounded visible tail and a bounded pending
+> table is measured separately. A resize invalidates layout, not parse state.
+> The accepted, unimplemented [markdown reference](../reference/cli/markdown-rendering.md)
+> defines exact limits, fallbacks and acceptance. The historical algorithm claims
+> below remain visible; this approved qualification governs implementation.
+
 Assistant text reaches both chat renderers as plain text. Models answer in
 markdown, so the user reads `**`, backticks, `#` and fence lines instead of
 emphasis, code and structure. MVP-2 ("a readable chat") needs this fixed.

@@ -22,6 +22,10 @@ npm install -g relavium
 relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts
 ```
 
+Every non-variadic command refuses excess positional arguments with exit `2`
+before dispatch. Diagnostics use fixed hints and argument counts; they do not
+reflect the supplied extra values. Declared variadic commands retain their grammar.
+
 ## Output modes
 
 The CLI auto-detects its environment and switches presentation accordingly:
@@ -476,7 +480,7 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 ```
 
 - The `<agent>` argument is required — a `.agent.yaml` path or a `.relavium/`-discoverable agent id (resolved by the same strict parser `relavium chat --agent` uses). An unknown agent is an invalid invocation (exit `2`).
-- **The prompt is read from stdin** (the `echo … | relavium agent run` idiom); an empty stdin is an invalid invocation (exit `2`).
+- **The prompt is read from stdin** (the `echo … | relavium agent run` idiom); an empty stdin is an invalid invocation (exit `2`). On a TTY stdin, one stderr line explains how to finish input and names `relavium` for an interactive session, including under `--quiet` or `--json`. Piped input remains silent.
 - `--input k=v` is **reserved** — currently **rejected** (exit `2`): a session does not yet interpolate `{{ctx.*}}` into the agent's prompt (the engine passes `system_prompt` verbatim), so the flag is failed loud rather than exposed as an inert no-op. It re-opens when session prompt interpolation lands (a tracked engine follow-up, [deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
@@ -521,6 +525,13 @@ relavium provider list --verify                         # + a live key-verificat
   ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Keychain writes and deletion surface a
   fixed operation-specific error when unavailable (locked / no Linux Secret Service). Runtime resolution
   may still use the documented environment source; it never creates a plaintext fallback file.
+  **MVP-2 accepted, unimplemented:** this pre-MVP-2 chain gains the eligible
+  standard-variable fallback described in the
+  [credential-source contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2).
+  Scripting calls use an eligible standard variable directly; interactive
+  Home/TTY chat require explicit source consent. Custom endpoints cannot use
+  a standard variable. This note also qualifies keyless `--verify`/test and
+  plain/JSON chat guidance until step 2 lands; it does not claim shipped behavior.
 
 ### Secret stdin limits
 

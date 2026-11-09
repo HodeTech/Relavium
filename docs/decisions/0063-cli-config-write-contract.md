@@ -10,6 +10,19 @@
 
 ## Context
 
+> **Amended 2026-11-09 — approved MVP-2 review correction.** The writer's
+> atomic-publication decision remains. Historical unconditional crash-durability
+> and "any failure leaves the old file untouched" claims below are qualified:
+> file fsync is required before rename, but parent-directory fsync is best effort
+> on supported platforms. Rename publishes the new value; a later sync fault
+> cannot truthfully be reported as an unsaved/rolled-back edit. The
+> [canonical write/consent contract](../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+> specifies observable outcomes, diagnostics and fault-injection evidence.
+> [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+> extends the closed typed writer set for approved operator-only state; it never
+> introduces a generic key/value writer. Design approval does not certify the
+> unimplemented MVP-2 mechanisms or promise power-loss durability.
+
 The CLI config layer is **read-only**. [load.ts](../../apps/cli/src/config/load.ts) imports `smol-toml`
 for `parse` only ([ADR-0048](0048-toml-config-parser.md) scoped it to "string → plain data"); no code
 anywhere writes `config.toml` / `project.toml` / `workspace.toml`. Phase 2.5.G introduces the first need

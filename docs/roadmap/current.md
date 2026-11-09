@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-06
+> Last updated: 2026-11-09
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -45,9 +45,10 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 
 The engine is not the bottleneck: workflows author, run, gate, resume and retry well. The agent and presentation
 layers are. The built-in chat agent can only read (`read_file`, `list_directory`, `git_status`) and starts in
-`ask`; there is no edit, search or find tool; `run_command` is refused before any approval unless pre-allowlisted;
-`relavium run` never prints the workflow's outputs or the run id; replies render as raw markdown; a resumed chat
-opens on an empty viewport; a non-Anthropic first key leads to an opaque credential error. A bare `relavium` opens
+`ask`; there is no edit, search or find tool; `run_command` is refused before any approval unless pre-allowlisted.
+MVP-1 now prints workflow outputs and the run id, chooses an unconfigured chat's
+default from providers with keys, and catches a missing primary key before egress.
+Replies still render as raw markdown and a resumed chat opens on an empty viewport. A bare `relavium` opens
 the Home, but only 3 of the 25 leaf subcommands are fully reachable from it, so most tasks still need a
 subcommand. The
 [priority reset record](phases/phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04) cites the
@@ -88,7 +89,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the
-   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). **Drafted 2026-11-05, all Proposed and awaiting the maintainer:** [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (markdown), [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (keymap), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (D62), [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (D67 denials), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (D63), [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (the CR-71 residual), [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (row 9, part 1) and [ADR-0121](../decisions/0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) (D59). Maintainer
+   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). **Drafted 2026-11-05, initially all Proposed; ADR-0114 accepted 2026-11-08 and ADRs 0115–0121 still awaiting the maintainer:** [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (markdown), [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (keymap), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (D62), [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (D67 denials), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (D63), [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (the CR-71 residual), [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (row 9, part 1) and [ADR-0121](../decisions/0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) (D59). Maintainer
    gates: CI provider keys for the live-nightly lane (D37), provider spend for a manual three-provider turn and a
    Windows machine for MVP-10. A stale-entry sweep of [deferred-tasks.md](deferred-tasks.md) and the phase 2.6
    bullets that 2.6.5 and Wave 2–3 work already satisfied.
@@ -145,6 +146,14 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    - The scope, decisions, acceptance and exclusions are in the
      [MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08). The research
      behind it is the [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md).
+   - **Preflight accepted 2026-11-09:** independent document reviews and the
+     maintainer-supplied findings resolved display selection/provenance,
+     markdown precedence/streaming and config publication/durability gaps. The
+     [four-step execution and review plan](phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09)
+     (consolidated from eleven implementation items after the maintainer's review-cost feedback),
+     [ADR-0123](../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
+     and dated ADR-0063/0112/0114 refinements are approved. Implementation proceeds
+     in four steps; design approval does not claim shipping or milestone acceptance.
 3. **MVP-3 — The agent can edit.** ADR row 9 and its mandatory security review; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering

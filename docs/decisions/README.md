@@ -166,6 +166,7 @@ flowchart TD
 | 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Proposed | 2026-11-05 |
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
 | 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
+| 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
 
 ## Creating a new ADR
 

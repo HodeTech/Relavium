@@ -29,12 +29,12 @@ what will be copied, the selection extends past a screenful by auto-scrolling at
 the copy goes to the system clipboard over **OSC 52**, which works over SSH and inside a container.
 
 Copy-on-select is on by default. Turn it off with **`[preferences].copy_on_select = false`** and the highlight
-stays while the clipboard is left alone. On a copy a brief **`✓ Copied` toast** flashes above the status footer for
-~2 s (a plain `[Copied]` under `NO_COLOR` / `--no-color`) — rendered outside the transcript so it never re-wraps the
+stays while the clipboard is left alone. On a copy a brief **`Sent to terminal clipboard` toast** flashes above the status footer for
+~2 s (a plain `[Sent to terminal clipboard]` under `NO_COLOR` / `--no-color`) — rendered outside the transcript so it never re-wraps the
 lines just selected. The toast fires when Relavium **emits** the OSC 52 write, which is *not* the same as the
-terminal accepting it (see below); a selection too large for the OSC 52 payload shows a transcript note instead.
+terminal accepting it (see below). A local write failure shows a fixed failure notice without the native error text; a selection too large for the OSC 52 payload shows a transcript note instead.
 
-**OSC 52 has no acknowledgement**, so a copy can be *emitted* — and the `✓ Copied` toast shown — but never
+**OSC 52 has no acknowledgement**, so a copy can be *emitted* — and the `Sent to terminal clipboard` toast shown — but never
 independently *confirmed* to have reached the clipboard:
 
 - **tmux** honours an application's OSC 52 only under `set-clipboard on`, and the DCS passthrough only under
@@ -60,8 +60,8 @@ the way back.
 
 ## The escape hatch — the inline renderer
 
-The **inline renderer** is retained, first-class, and **byte-identical** to the pre-full-screen
-output. It prints to the primary buffer as ordinary lines, so the terminal emulator's **native
+The **inline renderer** is retained, first-class, and keeps the pre-full-screen
+output mode. Interactive Markdown now uses the [shared semantic projection](markdown-rendering.md); color-disabled output retains its source markers. It prints to the primary buffer as ordinary lines, so the terminal emulator's **native
 scrollback and screen-reader support apply**. Choose it in either of two ways:
 
 - **`--no-alt-screen`** — a per-invocation flag ([commands.md](commands.md#global-options)): `relavium --no-alt-screen`, `relavium chat --no-alt-screen`.
