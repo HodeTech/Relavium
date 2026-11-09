@@ -1,9 +1,9 @@
-import type { ClipboardOutcome } from './clipboard.js';
+import { attemptClipboardWrite, type ClipboardOutcome } from './clipboard.js';
 import { toUserFacing } from '../process/errors.js';
 import { openInEditor, type EditorOutcome, type OpenInEditorDeps } from './editor.js';
 import { dumpToScrollback, type DumpToScrollbackDeps } from './scrollback.js';
 import { createSuspendPort, suspendFullScreen, type SuspendPort } from './suspend.js';
-import { transcriptDocument, wrapTranscript } from './tui/chat-projection.js';
+import { transcriptDocument } from './tui/chat-projection.js';
 import type { TranscriptEntry } from './tui/session-view-model.js';
 
 /**
@@ -222,7 +222,9 @@ export function createHatches(deps: HatchDeps): Hatches {
         return;
       }
       // Wrapped to the LIVE width, because it is printed to that terminal (unlike `/edit`, which the editor re-flows).
-      const lines = wrapTranscript(transcript, deps.terminal().columns).map((line) => line.text);
+      // The primary terminal owns wrapping. Hatches receive faithful sanitized
+      // source (including tabs), never styled grids or inserted display indents.
+      const lines = transcriptDocument(transcript).split('\n');
       await withSuspension('/scrollback', () => dumpToScrollback(deps.dump, lines));
     },
 
@@ -240,12 +242,17 @@ export function createHatches(deps: HatchDeps): Hatches {
         deps.note(`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`);
         return;
       }
-      const outcome = deps.clipboard(transcriptDocument(transcript));
+      const outcome = attemptClipboardWrite(deps.clipboard, transcriptDocument(transcript));
       switch (outcome.kind) {
         case 'written':
           // `'written'`, never `'copied'`: OSC 52 has no acknowledgement, so a terminal that drops it (VS Code Remote
           // SSH) is indistinguishable from one that honoured it. Say what we did, not what we cannot know.
-          deps.note(`/copy: sent ${String(outcome.characters)} characters to the clipboard.`);
+          deps.note(
+            `/copy: sent ${String(outcome.characters)} characters to the terminal clipboard.`,
+          );
+          return;
+        case 'failed':
+          deps.note('/copy: clipboard request failed locally — use /scrollback or /edit.');
           return;
         case 'too-large':
           deps.note(

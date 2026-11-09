@@ -408,6 +408,11 @@ async function resolveOneShotInput(
     );
   }
   // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
+  if (deps.io.stdinIsTty) {
+    deps.io.writeErr(
+      'reading the prompt from stdin — finish with Ctrl-D (Ctrl-Z, Enter on Windows); for an interactive session run `relavium`\n',
+    );
+  }
   const message = (
     await readAllStdin(deps.io.stdin, {
       signal: lifetime.work.signal,

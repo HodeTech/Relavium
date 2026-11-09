@@ -84,6 +84,8 @@ export type ClipboardOutcome =
   | { readonly kind: 'written'; readonly characters: number }
   /** Nothing was selected — no escape emitted. */
   | { readonly kind: 'empty' }
+  /** A local write failed; never include the native error's potentially sensitive text. */
+  | { readonly kind: 'failed' }
   /** Past the terminal's escape-length floor. Refused rather than truncated. */
   | { readonly kind: 'too-large'; readonly base64Length: number; readonly limit: number };
 
@@ -92,6 +94,18 @@ export interface ClipboardDeps {
   readonly writeControl: (sequence: string) => void;
   /** The process environment — read for the multiplexer detection only. */
   readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+/** Report a local clipboard write failure without throwing into a keyboard handler. */
+export function attemptClipboardWrite(
+  copy: (text: string) => ClipboardOutcome,
+  text: string,
+): ClipboardOutcome {
+  try {
+    return copy(text);
+  } catch {
+    return { kind: 'failed' };
+  }
 }
 
 /**

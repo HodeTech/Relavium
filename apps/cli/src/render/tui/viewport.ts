@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import type { MarkdownSpan } from '../markdown/types.js';
 
 /**
  * Pure line-wrapping + windowing math for the full-screen alt-screen transcript **viewport** (2.6.F Step 4b,
@@ -31,6 +32,7 @@ export type LineStyle = 'user' | 'assistant' | 'notice' | 'summary' | 'hint';
 export interface DisplayLine {
   readonly text: string;
   readonly style: LineStyle;
+  readonly spans?: readonly MarkdownSpan[];
 }
 
 /**
@@ -208,6 +210,81 @@ export function wrapLogicalLine(line: string, cols: number): string[] {
   return rows;
 }
 
+/** Expand display tabs to eight-cell stops, after sanitization and before width math. */
+export function expandTabs(text: string, startColumn = 0): string {
+  if (!text.includes('\t')) return text;
+  const parts: string[] = [];
+  let column = Math.max(0, Math.trunc(startColumn));
+  for (const { segment } of graphemeSegmenter.segment(text)) {
+    if (segment === '\n') {
+      column = 0;
+      parts.push(segment);
+    } else if (segment === '\t') {
+      const cells = 8 - (column % 8);
+      parts.push(' '.repeat(cells));
+      column += cells;
+    } else {
+      parts.push(segment);
+      column += graphemeWidth(segment);
+    }
+  }
+  return parts.join('');
+}
+
+/**
+ * Word-wrap display text while retaining whitespace and graphemes. A token wider
+ * than a row falls back to character wrapping. Zero/invalid widths suspend paint;
+ * a glyph wider than the positive row becomes `?` in this display projection only.
+ */
+export function wrapWords(line: string, cols: number): string[] {
+  if (!Number.isFinite(cols) || cols < 1) return [];
+  const width = Math.trunc(cols);
+  const expanded = expandTabs(line);
+  if (expanded === '') return [''];
+  const rows: string[] = [];
+  if (ASCII_ONLY.test(expanded)) {
+    for (let start = 0; start < expanded.length; ) {
+      let end = Math.min(start + width, expanded.length);
+      if (end < expanded.length && expanded.charAt(end) !== ' ') {
+        // Search only this row, never an ever-growing prefix of a long URL.
+        const boundary = expanded.slice(start, end).lastIndexOf(' ');
+        if (boundary >= 0) end = start + boundary + 1;
+      }
+      rows.push(expanded.slice(start, end));
+      start = end;
+    }
+    return rows;
+  }
+  const clusters = Array.from(graphemeSegmenter.segment(expanded), ({ segment }) => {
+    const cells = graphemeWidth(segment);
+    return cells > width ? { text: '?', cells: 1 } : { text: segment, cells };
+  });
+  for (let start = 0; start < clusters.length; ) {
+    let end = start;
+    let cells = 0;
+    let boundary = start;
+    while (end < clusters.length) {
+      const cluster = clusters[end];
+      if (cluster === undefined || cells + cluster.cells > width) break;
+      cells += cluster.cells;
+      end += 1;
+      if (/^\s+$/u.test(cluster.text)) boundary = end;
+    }
+    if (end < clusters.length && !/^\s+$/u.test(clusters[end]?.text ?? '') && boundary > start)
+      end = boundary;
+    // Every cluster fits alone; even a zero-width-only string advances.
+    if (end === start) end += 1;
+    rows.push(
+      clusters
+        .slice(start, end)
+        .map((cluster) => cluster.text)
+        .join(''),
+    );
+    start = end;
+  }
+  return rows;
+}
+
 /**
  * Wrap a multi-line block: split on `\n` (each logical line is a rendered row group) then width-wrap each. Preserves
  * empty lines as blank rows. This is the row count the viewport scroll math is defined over. PURE — the transcript
@@ -216,7 +293,7 @@ export function wrapLogicalLine(line: string, cols: number): string[] {
  * rate once a session exceeded the cache size, the exact case it was introduced for).
  */
 export function wrapText(text: string, cols: number): string[] {
-  return text.split('\n').flatMap((line) => wrapLogicalLine(line, cols));
+  return text.split('\n').flatMap((line) => wrapWords(line, cols));
 }
 
 /** The maximum scroll offset — the top-line index at which the LAST full screen is shown (0 when it all fits). */

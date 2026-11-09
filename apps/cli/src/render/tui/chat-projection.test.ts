@@ -778,11 +778,11 @@ describe('chat-projection', () => {
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
       const lines = wrapTranscript(entries, 80);
       expect(lines).toEqual([{ text: '> hello world', style: 'user' }]);
-      // Wrapped at a narrow width, the `> ` counts toward the first line's 6 cells; continuations carry no prefix.
+      // Full-screen wraps at words, falling back to characters for long tokens.
       expect(wrapTranscript(entries, 6)).toEqual([
-        { text: '> hell', style: 'user' },
-        { text: 'o worl', style: 'user' },
-        { text: 'd', style: 'user' },
+        { text: '> ', style: 'user' },
+        { text: 'hello ', style: 'user' },
+        { text: 'world', style: 'user' },
       ]);
     });
 

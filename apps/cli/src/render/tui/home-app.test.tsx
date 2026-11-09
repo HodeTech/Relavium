@@ -753,9 +753,9 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
  * `useCopiedToast` through `ChatRegion` (a separate mount from `relavium chat`'s `ChatApp`), so `chat-app.test.tsx`'s
  * toast tests prove nothing here — a `copied` prop dropped between `RootApp` and `ChatRegion`, or a `flashCopied()`
  * left off the Home's `copySelection`, would ship green there and dark here. Colour is off by default (`mountHome`),
- * so the toast renders as the plain `[Copied]` pill — `.toContain('Copied')` matches either rendering.
+ * so the toast renders as the plain `[Sent to terminal clipboard]` pill — `.toContain('Sent to terminal clipboard')` matches either rendering.
  */
-describe('RootApp — the copy-on-select "Copied" toast', () => {
+describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', () => {
   const seedThree = (): ChatStoreController => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('AAAA');
@@ -788,7 +788,7 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
     await copyOnce(m);
     expect(copied).toEqual(['AAA']); // the write happened
     const rows = (m.harness.lastFrame() ?? '').split('\n');
-    const toastRow = rows.findIndex((r) => r.includes('Copied'));
+    const toastRow = rows.findIndex((r) => r.includes('Sent to terminal clipboard'));
     const footerRow = rows.findIndex((r) => r.includes('turns'));
     expect(toastRow).toBeGreaterThanOrEqual(0);
     expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
@@ -807,10 +807,10 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
         },
       });
       await copyOnce(m);
-      expect(m.harness.lastFrame() ?? '').toContain('Copied');
+      expect(m.harness.lastFrame() ?? '').toContain('Sent to terminal clipboard');
       await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
       await settleFrames();
-      expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+      expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
     } finally {
       vi.useRealTimers();
     }
@@ -819,7 +819,7 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
   it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
     const m = mountHome(seedThree(), { alternateScreen: true }); // no `clipboard` ⇒ copy is inert
     await copyOnce(m);
-    expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+    expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
   });
 });
 

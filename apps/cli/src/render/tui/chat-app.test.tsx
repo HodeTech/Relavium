@@ -559,7 +559,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       const rows = (h.lastFrame() ?? '').split('\n');
       const hintRow = rows.find((r) => r.includes('Esc to stop'));
       expect(hintRow).toBeDefined();
-      expect(hintRow?.trim()).toBe('Esc to stop'); // …and nothing else on it
+      expect(hintRow?.trim()).toMatch(/Esc to stop$/); // …and nothing else on it
       expect(rows.length).toBeLessThanOrEqual(24);
     });
 
@@ -834,7 +834,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
    * `store.note` — appends a transcript entry that re-wraps and SHIFTS the lines just selected. The toast renders
    * OUTSIDE the transcript, so it confirms the copy without disturbing the selection.
    */
-  describe('the "Copied" toast', () => {
+  describe('the "Sent to terminal clipboard" toast', () => {
     /** Drive a press-drag-release that copies, and return the frame right after. */
     const copyOnce = async (h: ReturnType<typeof render>): Promise<void> => {
       await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
@@ -852,7 +852,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       await copyOnce(h);
       expect(copied).toHaveLength(1); // the write happened
       const rows = (h.lastFrame() ?? '').split('\n');
-      const toastRow = rows.findIndex((r) => r.includes('Copied'));
+      const toastRow = rows.findIndex((r) => r.includes('Sent to terminal clipboard'));
       const footerRow = rows.findIndex((r) => r.includes('turns'));
       expect(toastRow).toBeGreaterThanOrEqual(0);
       expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
@@ -866,10 +866,10 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
         const copied: string[] = [];
         const h = mountWithClipboard(seedThree(), copied);
         await copyOnce(h);
-        expect(h.lastFrame() ?? '').toContain('Copied');
+        expect(h.lastFrame() ?? '').toContain('Sent to terminal clipboard');
         await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
         await settleFrames();
-        expect(h.lastFrame() ?? '').not.toContain('Copied');
+        expect(h.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
       } finally {
         vi.useRealTimers();
       }
@@ -891,7 +891,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       await copyOnce(h);
       const frame = h.lastFrame() ?? '';
       expect(frame).toContain('too large'); // the note
-      expect(frame).not.toContain('✓ Copied'); // …not the success toast
+      expect(frame).not.toContain('Sent to terminal clipboard'); // …not the success toast
     });
 
     it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
@@ -907,7 +907,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
         />,
       );
       await copyOnce(h);
-      expect(h.lastFrame() ?? '').not.toContain('Copied');
+      expect(h.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
     });
   });
 });

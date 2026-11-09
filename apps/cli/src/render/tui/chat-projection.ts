@@ -4,6 +4,7 @@ import type { Memory, ReasoningEffort } from '@relavium/shared';
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
 import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type {
   SessionViewState,
@@ -282,9 +283,24 @@ export function entryLines(entry: TranscriptEntry): DisplayLine[] {
 }
 
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
-function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
+const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>();
+
+function wrapEntry(entry: TranscriptEntry, cols: number, color: boolean): DisplayLine[] {
   const wrapped: DisplayLine[] = [];
-  for (const line of entryLines(entry)) {
+  const source = entryLines(entry);
+  let offset = 0;
+  if (color && entry.role === 'assistant') {
+    let blocks = entryParseCache.get(entry);
+    if (blocks === undefined) {
+      blocks = parseMarkdown(source[0]?.text ?? '');
+      entryParseCache.set(entry, blocks);
+    }
+    for (const line of layoutMarkdown(blocks, cols)) {
+      wrapped.push({ ...line, style: 'assistant' });
+    }
+    offset = 1;
+  }
+  for (const line of source.slice(offset)) {
     for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
   }
   return wrapped;
@@ -313,7 +329,7 @@ export function transcriptDocument(transcript: readonly TranscriptEntry[]): stri
  */
 const entryWrapCache = new WeakMap<
   TranscriptEntry,
-  { cols: number; lines: readonly DisplayLine[] }
+  { cols: number; color: boolean; lines: readonly DisplayLine[] }
 >();
 
 /**
@@ -324,24 +340,24 @@ const entryWrapCache = new WeakMap<
  * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
  * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
  * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
- * math is defined over the returned line count). NOTE: this CHAR-wraps at `cols` where inline `TranscriptLine` lets
- * ink WORD-wrap, so a line longer than `cols` breaks at different points (and can differ in row count) between the
- * two renderers — the modes are mutually exclusive (inline OR alt), so this is a cosmetic Step-4b tradeoff, not a
- * correctness gap.
+ * math is defined over the returned line count). Inline and full-screen share these word-wrapped rows and semantic
+ * spans; color-disabled output wraps the sanitized source, preserving its markers.
  */
 export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
+  color = false,
 ): DisplayLine[] {
+  if (!Number.isFinite(cols) || cols < 1) return [];
   const out: DisplayLine[] = [];
   for (const entry of transcript) {
     const cached = entryWrapCache.get(entry);
     let lines: readonly DisplayLine[];
-    if (cached?.cols === cols) {
+    if (cached?.cols === cols && cached.color === color) {
       lines = cached.lines;
     } else {
-      lines = wrapEntry(entry, cols);
-      entryWrapCache.set(entry, { cols, lines });
+      lines = wrapEntry(entry, cols, color);
+      entryWrapCache.set(entry, { cols, color, lines });
     }
     for (const line of lines) out.push(line);
   }
@@ -363,8 +379,9 @@ export function liveScrollGeometry(
   transcript: readonly TranscriptEntry[],
   cols: number,
   measuredHeight: number,
+  color = false,
 ): ScrollGeometry {
-  return { totalLines: wrapTranscript(transcript, cols).length, height: measuredHeight };
+  return { totalLines: wrapTranscript(transcript, cols, color).length, height: measuredHeight };
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
@@ -590,7 +607,7 @@ export function formatReasoningPanel(input: {
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
 export function formatToolCall(call: ToolCallView): string {
-  return `→ ${sanitizeInline(call.toolId)} ${call.resolved ? '✓' : '…'}`;
+  return `→ ${sanitizeInline(call.toolId)} ${call.resolved ? (call.success === false ? '✗' : '✓') : '…'}`;
 }
 
 /**

@@ -1,3 +1,6 @@
+import type { Text } from 'ink';
+import type { ComponentProps } from 'react';
+import type { DisplayLine } from './viewport.js';
 import { formatDuration, type StatusColor } from './format.js';
 import type { NodeView } from './run-view-model.js';
 
@@ -37,4 +40,23 @@ export function nodeSuffix(node: NodeView): string {
     return ` (retry ${node.attempt})`;
   }
   return '';
+}
+
+/** Shared style mapping for the same wrapped row in inline and full-screen chat. */
+export function transcriptStyleProps(
+  style: DisplayLine['style'],
+  color: boolean,
+): Partial<ComponentProps<typeof Text>> {
+  switch (style) {
+    case 'user':
+      return colorProps(color, 'cyan');
+    case 'notice':
+      return dimProps(color);
+    case 'summary':
+      return colorProps(color, 'gray');
+    case 'hint':
+      return colorProps(color, 'yellow');
+    case 'assistant':
+      return {};
+  }
 }

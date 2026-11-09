@@ -35,6 +35,7 @@ export function createTranscriptAcknowledgement(
         readonly firstRow: number;
         readonly endRow: number;
         readonly measuredWidth: number;
+        readonly color: boolean;
       }
     | undefined;
   return {
@@ -43,7 +44,14 @@ export function createTranscriptAcknowledgement(
     },
     inlineNotice: (entry) => printed.add(entry),
     viewport: (transcript, columns, firstRow, endRow, measuredWidth) => {
-      frame = { transcript, columns, firstRow, endRow, measuredWidth };
+      frame = {
+        transcript,
+        columns,
+        firstRow,
+        endRow,
+        measuredWidth,
+        color: currentStore()?.getSnapshot().color ?? false,
+      };
     },
     capture: () => {
       const store = currentStore();
@@ -69,8 +77,9 @@ export function createTranscriptAcknowledgement(
             const start = wrapTranscript(
               rendered.transcript.slice(0, index),
               rendered.columns,
+              rendered.color,
             ).length;
-            const end = start + wrapTranscript([entry], rendered.columns).length;
+            const end = start + wrapTranscript([entry], rendered.columns, rendered.color).length;
             return start >= rendered.firstRow && end <= rendered.endRow;
           });
         },

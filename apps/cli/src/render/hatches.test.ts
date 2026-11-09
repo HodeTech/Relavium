@@ -169,15 +169,14 @@ describe('/scrollback', () => {
     expect(notes).toEqual([]); // a clean run says nothing
   });
 
-  it('wraps to the LIVE terminal width (it is printed to THAT terminal)', async () => {
+  it('prints faithful source for native terminal wrapping instead of viewport rows', async () => {
     const { deps, trace } = harness({
       transcriptEntries: [userEntry('x'.repeat(50))],
       columns: 20,
     });
     await createHatches(deps).dumpScrollback();
-    // 52 chars (`> ` + 50) char-wrap to 3 rows at width 20. The single write is header + 3 rows + footer + prompt,
-    // each newline-terminated ⇒ `split('\n')` yields 7 (the trailing newline leaves an empty last element).
-    expect(trace).toContain('OUT:7L');
+    // Source is one logical line; the primary terminal performs its own wrapping.
+    expect(trace).toContain('OUT:5L');
   });
 
   it('an EMPTY transcript notices instead of flipping the screen for nothing', async () => {
@@ -433,7 +432,7 @@ describe('createHatches — /copy', () => {
     // The clipboard write happens, then the notice — and no `ink:begin` / `ink:end` between them.
     expect(trace[0]).toBe('clipboard');
     expect(trace.filter((t) => t.startsWith('ink:'))).toEqual([]);
-    expect(notes[0]).toMatch(/^\/copy: sent \d+ characters to the clipboard\.$/);
+    expect(notes[0]).toMatch(/^\/copy: sent \d+ characters to the terminal clipboard\.$/);
   });
 
   it('an EMPTY transcript is a notice, and the clipboard is never touched', () => {

@@ -584,6 +584,42 @@ describe('agentRunCommand (2.Q)', () => {
 
   const agentPath = (): string => join(cwd, 'coder.agent.yaml');
 
+  it.each([false, true])(
+    'explains a TTY stdin read before waiting, including JSON mode (%s)',
+    async (json) => {
+      const f = deps('prompt', { json, providers: scriptedResolver([textTurn('done')]) });
+      const result = await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        {
+          ...f.d,
+          global: { ...f.d.global, verbosity: 'quiet' },
+          io: { ...f.d.io, stdinIsTty: true },
+        },
+      );
+      expect(result).toBe(0);
+      expect(f.err()).toContain('finish with Ctrl-D');
+      expect(f.err()).toContain('for an interactive session run `relavium`');
+      expect(f.out()).not.toContain('finish with Ctrl-D');
+      if (json) expect(() => parseNdjson(f.out())).not.toThrow();
+    },
+  );
+
+  it('keeps piped stdin silent and rejects reserved input before emitting the TTY hint', async () => {
+    const piped = deps('prompt', { providers: scriptedResolver([textTurn('done')]) });
+    expect(
+      await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, piped.d),
+    ).toBe(0);
+    expect(piped.err()).not.toContain('finish with Ctrl-D');
+    const tty = deps('prompt');
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: ['x=y'], allowMcpStdio: [] },
+        { ...tty.d, io: { ...tty.d.io, stdinIsTty: true } },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    expect(tty.err()).not.toContain('finish with Ctrl-D');
+  });
+
   it.each([
     ['direct', false, false],
     ['direct', true, false],

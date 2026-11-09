@@ -1,6 +1,8 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 
 import type { Memory, ReasoningEffort } from '@relavium/shared';
+import { MarkdownStream } from '../markdown/index.js';
+import { TerminalStream } from '../terminal-stream.js';
 
 import {
   DEFAULT_CHAT_MODE,
@@ -44,6 +46,8 @@ export interface PendingApproval {
 
 /** The immutable snapshot the ink component reads each frame (a stable reference between flushes). */
 export interface ChatStoreSnapshot {
+  readonly markdown: Pick<MarkdownStream, 'tail' | 'sourceTail' | 'elided'>;
+  readonly displaySuspended: boolean;
   readonly state: SessionViewState;
   /** The active chat mode (ADR-0057) — REPL-set (Shift+Tab / `/mode`), shown in the footer. */
   readonly mode: ChatMode;
@@ -141,6 +145,8 @@ export function createChatStore(
   transcriptBound: TranscriptBound,
 ): ChatStoreController {
   const listeners = new Set<() => void>();
+  const markdown = new MarkdownStream();
+  const terminal = new TerminalStream();
   let state = initialSessionViewState(seed, transcriptBound);
   let mode: ChatMode = DEFAULT_CHAT_MODE;
   let reasoningEffort: ReasoningEffort | undefined;
@@ -151,6 +157,8 @@ export function createChatStore(
   let tickCount = 0;
   let dirty = false;
   let snapshot: ChatStoreSnapshot = {
+    markdown,
+    displaySuspended: false,
     state,
     mode,
     reasoningEffort,
@@ -161,7 +169,17 @@ export function createChatStore(
   };
 
   const flush = (): void => {
-    snapshot = { state, mode, reasoningEffort, reasoningVisible, approval, tick: tickCount, color };
+    snapshot = {
+      state,
+      mode,
+      reasoningEffort,
+      reasoningVisible,
+      approval,
+      tick: tickCount,
+      color,
+      markdown,
+      displaySuspended: terminal.overflowed,
+    };
     for (const listener of listeners) {
       listener();
     }
@@ -196,6 +214,18 @@ export function createChatStore(
       const next = reduceSessionEvent(state, event);
       const fresh =
         state.lastSequenceNumber === undefined || event.sequenceNumber > state.lastSequenceNumber;
+      if (fresh) {
+        if (event.type === 'agent:token') markdown.append(terminal.append(event.token));
+        else if (
+          event.type === 'agent:tool_call' ||
+          event.type === 'session:turn_started' ||
+          event.type === 'session:turn_completed' ||
+          event.type === 'session:cancelled'
+        ) {
+          markdown.reset();
+          terminal.reset();
+        }
+      }
       state = fresh
         ? {
             ...next,

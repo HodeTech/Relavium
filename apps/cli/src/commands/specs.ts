@@ -61,8 +61,9 @@ export function registerCommands(
       });
     }
     command.description(descriptor.description);
-    if (descriptor.allowExcessArguments !== undefined)
-      command.allowExcessArguments(descriptor.allowExcessArguments);
+    // Invalid grammar refuses before dispatch. Commander names counts, never the
+    // rejected values; the existing opaque-parser commands keep their fixed hint.
+    command.allowExcessArguments(descriptor.allowExcessArguments ?? false);
     for (const positional of descriptor.positionals) {
       const name = `${positional.name}${positional.variadic ? '...' : ''}`;
       // Existing human argument-help layout is preserved; discovery separately carries descriptions.

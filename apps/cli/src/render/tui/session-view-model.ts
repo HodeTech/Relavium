@@ -32,6 +32,8 @@ export interface ToolCallView {
   readonly id: string;
   readonly toolId: string;
   readonly resolved: boolean;
+  /** Actual result outcome; absent only on older view seeds without that fact. */
+  readonly success?: boolean;
 }
 
 /** The per-turn summary shown after a completed assistant turn. */
@@ -507,7 +509,10 @@ export function reduceSessionEvent(
       };
 
     case 'agent:tool_result':
-      return { ...base, liveToolCalls: markResolved(base.liveToolCalls, event.toolId) };
+      return {
+        ...base,
+        liveToolCalls: markResolved(base.liveToolCalls, event.toolId, event.success),
+      };
 
     case 'cost:updated':
       // Capture the accurate per-attempt model (EA2). The completed-turn summary attributes to this ONLY when it
@@ -608,12 +613,16 @@ function grouped(n: number): string {
 }
 
 /** Mark the first unresolved tool call with `toolId` as resolved (a tool_result closes its annotation). */
-function markResolved(calls: readonly ToolCallView[], toolId: string): readonly ToolCallView[] {
+function markResolved(
+  calls: readonly ToolCallView[],
+  toolId: string,
+  success: boolean,
+): readonly ToolCallView[] {
   let done = false;
   return calls.map((call) => {
     if (!done && call.toolId === toolId && !call.resolved) {
       done = true;
-      return { ...call, resolved: true };
+      return { ...call, resolved: true, success };
     }
     return call;
   });

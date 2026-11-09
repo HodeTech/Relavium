@@ -54,7 +54,7 @@ import {
 
 export type { HomeChatSession } from './home-controller.js';
 
-import type { ClipboardOutcome } from '../clipboard.js';
+import { attemptClipboardWrite, type ClipboardOutcome } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 
@@ -147,8 +147,17 @@ function ChatRegion(
   if (transcriptOwner.store !== props.store) {
     setTranscriptOwner({ store: props.store, generation: transcriptOwner.generation + 1 });
   }
-  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
-    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const {
+    state,
+    tick,
+    color,
+    mode,
+    reasoningEffort,
+    reasoningVisible,
+    approval,
+    markdown,
+    displaySuspended,
+  } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   const viewport = props.viewport;
@@ -157,6 +166,8 @@ function ChatRegion(
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
     <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
+        markdown={markdown}
+        displaySuspended={displaySuspended}
         acknowledgement={props.acknowledgement}
         key={transcriptOwner.generation}
         state={state}
@@ -320,6 +331,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           store.getSnapshot().state.transcript,
           size.cols,
           scrollGeomRef.current.height,
+          store.getSnapshot().color,
         );
   };
 
@@ -366,12 +378,19 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const clipboard = props.clipboard;
     const store = state.session?.store;
     if (clipboard === undefined || store === undefined) return;
-    const rows = wrapTranscript(store.getSnapshot().state.transcript, size.cols).map(
-      (line) => line.text,
+    const rows = wrapTranscript(
+      store.getSnapshot().state.transcript,
+      size.cols,
+      store.getSnapshot().color,
+    ).map((line) => line.text);
+    const outcome = attemptClipboardWrite(
+      clipboard,
+      selectionText(rows, normalizeSelection(state_)),
     );
-    const outcome = clipboard(selectionText(rows, normalizeSelection(state_)));
     if (outcome.kind === 'written') flashCopied();
-    else if (outcome.kind === 'too-large') {
+    else if (outcome.kind === 'failed') {
+      store.note('Clipboard request failed locally — use /scrollback or /edit.');
+    } else if (outcome.kind === 'too-large') {
       store.note(
         `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
       );
