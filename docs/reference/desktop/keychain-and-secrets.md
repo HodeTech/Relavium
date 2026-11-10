@@ -81,7 +81,7 @@ current context qualification does not scrub or certify those records.
 
 ## Operational notes
 
-> **CLI MVP-2 implemented on development, step 2 review pending — 2026-11-10:**
+> **CLI MVP-2 step 2 accepted on development — 2026-11-10:**
 > runtime resolution uses the
 > [eligible standard-variable fallback](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2),
 > with explicit Home/TTY-chat source consent and custom-endpoint exclusion.

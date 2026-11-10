@@ -1950,31 +1950,57 @@ CI families below and required remote checks remain due on the final MVP-2
 revision. Native/headless fixtures do not replace the real Windows terminal
 acceptance assigned to MVP-10.
 
-#### Step 2 implementation (2026-11-10)
+#### Step 2 acceptance (2026-11-10)
 
-The credential step is implemented on `development`; independent step reviews
-and its separate credential/config security sitting remain pending. The native
-setup host, shared per-lookup policy and typed availability, prepared config
-publication, Home provider action/keyless row and standalone setup are exercised
-together. [Home](../../reference/cli/home.md#first-run-onboarding-wizard-25g-s8)
+The credential step is accepted on `development` at `85f0e691`. Round 4's fresh
+independent correctness and native UX/lifecycle reviews and separate
+credential/config security sitting are clean over the cumulative diff from
+`5861f805`. Project initialization and safe history/resume remain steps 3 and 4;
+this is not whole-MVP-2 or release acceptance.
+
+| Round | Reviewed revision | Verified corrections / result |
+|---|---|---|
+| 1 | `60e6ecfc` | `0b60ee00`: saved-default recovery, fixed operator diagnostics, fresh catalog credential observations, exact visible native admission and Home remedy |
+| 2 | `0b60ee00` | `280be241`: preserve model preferences during additional key maintenance, name usable sources, keep rejected-paste recovery visible |
+| 3 | `280be241` | `85f0e691`: retain existing interactive keyless-resume recovery and native provider/context-specific action copy |
+| 4 | `85f0e691` | Clean cumulative reviews and separate security sitting |
+
+The native host shares one input owner with Home, retains its chat subtree and
+checks the complete current card, raw geometry, actual flush and custody at
+admission and again before config rename. Per-lookup credential authority, global
+operator state, saved/unconfirmed/explicitly ephemeral outcomes and project
+precedence remain distinct. [Home](../../reference/cli/home.md#first-run-onboarding-wizard-25g-s8)
 and the [credential-source contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
-own the behavior. Project initialization and safe history/resume remain steps 3
-and 4; neither is claimed implemented by this step.
+own the behavior; detailed timestamped evidence stays local in `docs/reviews/`.
 
-Self-verification fixed two late-cancellation publication paths and preserved
-their committed outcomes. The first workspace run found an existing causal
-guard failing because fresh setup opened session history before credential
-construction could refuse. The implementation restored that order and passes
-the live DB to setup afterward, without weakening the guard or rebuilding the
-resolver/policy. Three old Home assertions now wait for the asynchronous write
-to settle before making the same owner-fault/post-seal/default checks.
+Round 4 independently passed 112 correctness tests; 194 native tests across 26
+files plus four mounted Home recovery controls; and 467 security tests across 40
+disjoint files plus 11 offline probes. The native run deliberately filtered two
+broad Home suites (123 other cases were not run in that sitting); the author ran
+the full workspace separately. Actual-command security probes retain resumed
+workspace/MCP consent, refuse keyless sends and compaction without recording a
+prompt, permit an explicitly granted source, block again after its removal and
+close injected owners once. These finite offline checks do not certify physical
+terminal/keychain behavior or real Windows-terminal acceptance.
 
-The exact combined source passes workspace lint/typecheck/tests (CLI 427 files,
-6,948 passing, 11 existing skips), build, format, isolation (815 files), finite
-bundle closure, compiled bootstrap/CLI smoke, seam/engine fences and DB sync.
-Enforced coverage passes 815 files and 17,400 tests, with 22 existing skips and
-the required package floors. These checks precede the implementation commit;
-they do not replace either fresh review round or the final combined CI families.
+Self-verification and review failures remain recorded. Fresh credential refusal
+again precedes session-history acquisition, preserving the existing causal guard.
+Existing Home write assertions await asynchronous settlement before the same
+checks. The later-manual-save regression now removes the prior usable source
+first; additional-key maintenance has its own unchanged-preference regression.
+New native harness preconditions and one test mock's contextual type were fixed
+without removing or weakening assertions, deadlines or causal controls. Baseline
+in-memory old-module probes fail the new regression cases; no branch or worktree
+switch, source restoration or paid provider call was used.
+
+The accepted source passes full workspace lint/typecheck/tests (CLI 436 files,
+7,036 passing, 11 existing skips), build, format, isolation, finite bundle closure,
+compiled bootstrap/CLI smoke, seam/engine fences and DB sync. Initial enforced
+coverage passed 815 files and 17,400 tests, with 22 existing skips and required
+package floors. Later corrections changed CLI production sources only; those
+required package sources are unchanged. Final combined coverage, complete declared
+CI families below and mandatory remote checks remain due on the final MVP-2
+revision. Steps 3 and 4 proceed automatically in their approved order.
 
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance

@@ -525,7 +525,7 @@ relavium provider list --verify                         # + a live key-verificat
   ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Keychain writes and deletion surface a
   fixed operation-specific error when unavailable (locked / no Linux Secret Service). Runtime resolution
   may still use the documented environment source; it never creates a plaintext fallback file.
-  **Implemented on development, step 2 review pending:** the eligible
+  **Accepted on development, MVP-2 step 2:** the eligible
   standard-variable fallback is described in the
   [credential-source contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2).
   Scripting calls use an eligible standard variable directly; interactive

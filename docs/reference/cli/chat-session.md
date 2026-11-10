@@ -181,7 +181,7 @@ The [tool filesystem contract](../shared-core/built-in-tools.md#filesystem-permi
 
 ## Agent and model selection
 
-> **MVP-2 step 2 implemented on development, review pending:** the keychain/`RELAVIUM_*` descriptions
+> **MVP-2 step 2 accepted on development:** the keychain/`RELAVIUM_*` descriptions
 > below state current MVP-A4 behavior. Step 2 extends usable-source/default-model
 > selection with the
 > [eligible standard-variable contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2).

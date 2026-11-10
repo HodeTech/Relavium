@@ -36,7 +36,7 @@ classified failed chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 
-**Implemented on development — MVP-2 step 2 review pending (2026-11-10).**
+**Accepted on development — MVP-2 step 2 (2026-11-10).**
 The Home mounts one Ink tree, then offers setup when no provider has a usable
 source. Select, confirm, text and masked fields use the same native input owner;
 existing chat history stays mounted while a setup card owns input. Native cards
