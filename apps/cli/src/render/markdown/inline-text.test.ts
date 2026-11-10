@@ -121,8 +121,9 @@ describe('immutable inline text aggregation', () => {
         ]);
       }
   });
-  it('reuses anchored raw interiors beyond bounded interner capacity', () => {
-    for (const n of [128, 256, 512, 1_024]) {
+  it.each([128, 256, 512, 1_024])(
+    'reuses anchored raw interiors beyond bounded interner capacity at %i repetitions',
+    (n) => {
       const source = '👩' + '``🇺'.repeat(n) + 'e' + '\u0301'.repeat(n * 16) + '\t';
       const end = source.length - 1;
       const { factory, work } = setup(() => source);
@@ -141,8 +142,8 @@ describe('immutable inline text aggregation', () => {
       expect(work.measuredUnits).toBeLessThan(source.length * 2);
       expect(work.sourceUnits).toBeLessThan(source.length * 8);
       expect(work.visits).toBeLessThan(source.length * 12);
-    }
-  });
+    },
+  );
   it('trims prior raw and replacement units without losing source mapping', () => {
     const source = 'a\t\tb';
     const { factory } = setup(() => source);

@@ -2702,6 +2702,7 @@ export class MarkdownStream {
     if (
       (this.pendingFence?.containers?.length || this.pendingFence?.classified) &&
       this.lineLength > 0 &&
+      !this.blockClassifier.pendingTableHeader &&
       (/\S/.test(fencePreview?.block.text ?? '') || fencePreview?.fenceBoundary === 'open') &&
       (this.pendingFence.classified
         ? fencePreview?.block.kind !== 'code' || fencePreview?.fenceBoundary === 'open'
@@ -3071,6 +3072,10 @@ export class MarkdownStream {
   }
 
   private completeLine(line: string, offset: number): void {
+    // Raw parent lookahead supersedes the previous line's tentative child
+    // fence. Keep that physical header available for the table handoff below.
+    if (this.pendingFence && this.columns.blockAt(offset)?.tableBoundary)
+      this.pendingFence = undefined;
     if (this.pendingFence) {
       const content = this.pendingFence.classified
         ? this.columns.blockAt(offset)?.block.text
@@ -3319,6 +3324,16 @@ export class MarkdownStream {
       ? this.sourceTail().slice(-Math.min(this.pendingSize, LIVE_SOURCE_LIMIT))
       : '';
     const cutOffset = this.sourceLength - pending.length;
+    const current =
+      this.pendingFence && this.lineLength
+        ? this.columns.blockAt(this.sourceLength - this.lineLength)
+        : undefined;
+    // A possible raw parent header delays stabilization until the next line
+    // commits. Its current canonical owner still controls the live projection.
+    const pendingFence =
+      current && (current.block.kind !== 'code' || current.fenceBoundary === 'open')
+        ? undefined
+        : this.pendingFence;
     const semanticTabs = new Map(
       this.inline.tabEntries(cutOffset, this.sourceLength).map((tab) => [tab.position, tab.spaces]),
     );
@@ -3449,7 +3464,7 @@ export class MarkdownStream {
     selected.reverse();
     if (pending) {
       if (
-        !this.pendingFence &&
+        !pendingFence &&
         !this.pendingTable &&
         this.ordinalWidth !== undefined &&
         this.ordinalWidth >= columns &&
@@ -3457,9 +3472,9 @@ export class MarkdownStream {
       )
         blocks.push(literal(pending));
       else if (this.pendingTable) blocks.push(literal(pending));
-      else if (this.pendingFence) {
+      else if (pendingFence) {
         const cut = this.pendingSize > LIVE_SOURCE_LIMIT;
-        const opening = this.pendingFence;
+        const opening = pendingFence;
         if (opening.classified) {
           let position = cutOffset;
           const body: string[] = [];
@@ -3582,7 +3597,7 @@ export class MarkdownStream {
             if (semantic && trailing) length = trailing.index;
             const fragment = pending.slice(0, length);
             first =
-              template.kind === 'code' && !this.pendingFence
+              template.kind === 'code' && !pendingFence
                 ? {
                     kind: 'paragraph',
                     source: fragment,

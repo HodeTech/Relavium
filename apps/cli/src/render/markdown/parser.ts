@@ -389,6 +389,7 @@ interface ParserState {
         eligible: boolean;
         paragraph: boolean;
         tableColumns: number | undefined;
+        tableCandidate: boolean;
         childProjection: SourceProjection | undefined;
       }
     | undefined;
@@ -448,6 +449,15 @@ function cloneParserState(state: ParserState): ParserState {
   };
 }
 
+function retireChildren(state: ParserState): void {
+  state.quote = undefined;
+  state.list = undefined;
+  state.listPreviousWasMarker = false;
+  state.listPendingTable = false;
+  state.listGatherFence = undefined;
+  state.listGatherHtml = undefined;
+}
+
 /** Parse sanitized source. Unsupported constructs remain visible as literal text. */
 export function parseMarkdown(
   source: string,
@@ -487,6 +497,10 @@ function parseWithState(
   // A continued container already owns this line and its next-line lookahead;
   // the parent must not pair the same physical bytes a second time.
   let delegatedLine = false;
+  // The first physical container line can still be adopted by this scope's
+  // earlier raw table lookahead, even if its tentative child is code or HTML.
+  let tentativeContainer = false;
+  let activeChild: ParserState | undefined;
   let childProjection: SourceProjection | undefined;
   while (i < lines.length) {
     const line = lines[i] ?? '';
@@ -532,6 +546,7 @@ function parseWithState(
         };
         state.revisionProjection = { sourcePrefixLength: 0, textPrefix: '' };
         state.inTable = true;
+        retireChildren(state);
         lists.length = 0;
         overflowColumn = undefined;
         lazyContinuation = false;
@@ -542,6 +557,7 @@ function parseWithState(
     }
     if (state.streaming && state.previous?.eligible && isSetextPair('header', line)) {
       consumedPair = true;
+      retireChildren(state);
       state.revision = {
         kind: 'literal',
         source: state.previous.source,
@@ -668,6 +684,7 @@ function parseWithState(
       }
       let sourceLine = 0;
       const childState = state.streaming ? (state.list ??= streamingParserState()) : undefined;
+      activeChild = childState;
       for (const block of parseWithState(
         inner.join('\n'),
         listDepth + lists.length,
@@ -885,6 +902,7 @@ function parseWithState(
         continue;
       }
       const markerPrefix = ' '.repeat(column) + visibleMarker + padding;
+      tentativeContainer = state.streaming;
       const itemNext = stripIndent(lines[i + 1] ?? '', content, displayOffset);
       const itemTable = cells(itemText) && itemNext !== undefined && delimiter(itemNext);
       if (isBlockStart(itemText) || itemTable) {
@@ -944,6 +962,7 @@ function parseWithState(
           });
         }
         if (state.streaming) state.fenceBoundary = state.list?.fenceBoundary;
+        activeChild = state.list;
         if (state.streaming) {
           state.tableBoundary = state.list?.tableBoundary ?? false;
           state.tableRow = state.list?.tableRow ?? false;
@@ -966,6 +985,7 @@ function parseWithState(
         );
         state.listPreviousWasMarker = true;
         state.listPendingTable = true;
+        activeChild = state.list;
       }
       result.push({
         kind: 'list',
@@ -1027,8 +1047,13 @@ function parseWithState(
       }
       let sourceLine = 0;
       if (state.streaming && state.quoteDepth !== depth) state.quote = undefined;
+      if (state.streaming) {
+        if (state.quote) delegatedLine = true;
+        else tentativeContainer = true;
+      }
       state.quoteDepth = depth;
       const childState = state.streaming ? (state.quote ??= streamingParserState()) : undefined;
+      activeChild = childState;
       for (const block of parseWithState(
         inner.join('\n'),
         listDepth,
@@ -1100,17 +1125,18 @@ function parseWithState(
     const tableOwned = state.tableBoundary || state.tableRow;
     const header =
       !tableOwned &&
-      !state.htmlLine &&
+      (!state.htmlLine || tentativeContainer) &&
       !delegatedLine &&
       !unsupported(source) &&
       !fence(source) &&
-      last?.kind !== 'code'
+      (last?.kind !== 'code' || tentativeContainer)
         ? cells(source)
         : undefined;
     state.previous = {
       source: source.slice(0, 256),
       paragraph: last?.kind === 'paragraph' && !last.prefix,
       tableColumns: header?.length,
+      tableCandidate: header !== undefined || activeChild?.previous?.tableCandidate === true,
       childProjection,
       eligible:
         !tableOwned &&
@@ -1179,6 +1205,11 @@ function matchesPrefix(runs: readonly PrefixRun[], prefix: string): boolean {
 export class BlockLineClassifier {
   private state = streamingParserState();
   private previousParagraph: { continuation: PrefixRun[]; quoted: boolean } | undefined;
+
+  /** An actual scope on the last physical line can still adopt its raw header. */
+  get pendingTableHeader(): boolean {
+    return this.state.previous?.tableCandidate === true;
+  }
 
   preview(line: string): BlockLineResult {
     return this.classify(line, cloneParserState(this.state));
