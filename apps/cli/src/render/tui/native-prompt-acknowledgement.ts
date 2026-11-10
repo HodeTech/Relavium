@@ -1,6 +1,7 @@
 import type { DOMElement } from 'ink';
 import { measureElement } from 'ink';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
+import { reduceEditorMotion, type ChatKey } from './chat-input.js';
 
 type Size = { readonly cols: number; readonly rows: number };
 export function nativePromptFits(size: Size): boolean {
@@ -70,16 +71,21 @@ export function createNativePromptAcknowledgement(
       }
     | undefined;
   let disposed = false;
+  // A visible picker editor keeps accepting edits while its read-only results repaint.
+  // Choosing/navigating results still requires the current card's exact acknowledgement.
+  let pickerEditor: typeof observed;
   let previous = ui.getSnapshot();
   const listeners = new Set<() => void>();
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
-  const invalidate = (): void => {
+  const invalidateCard = (preservePickerEditor: boolean): void => {
     epoch++;
     observed = undefined;
+    if (!preservePickerEditor) pickerEditor = undefined;
     notify();
   };
+  const invalidate = (): void => invalidateCard(false);
   const sameCard = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
     a.active === b.active &&
     a.kind === b.kind &&
@@ -88,9 +94,16 @@ export function createNativePromptAcknowledgement(
     a.options === b.options &&
     a.selected === b.selected &&
     a.error === b.error;
+  const samePickerPrompt = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
+    a.active &&
+    b.active &&
+    a.kind === 'picker' &&
+    b.kind === 'picker' &&
+    a.message === b.message &&
+    a.note === b.note;
   const unsubscribe = ui.subscribe(() => {
     const current = ui.getSnapshot();
-    if (!sameCard(previous, current)) invalidate();
+    if (!sameCard(previous, current)) invalidateCard(samePickerPrompt(previous, current));
     previous = current;
   });
   const sameSize = (a: Size, b: Size): boolean => a.cols === b.cols && a.rows === b.rows;
@@ -108,26 +121,56 @@ export function createNativePromptAcknowledgement(
       fitsBounds(observed.node, size)
     );
   };
+  const pickerEditorVisible = (): boolean => {
+    const snapshot = ui.getSnapshot();
+    const size = getSize();
+    return (
+      !disposed &&
+      hasCustody() &&
+      nativePromptFits(size) &&
+      pickerEditor !== undefined &&
+      samePickerPrompt(pickerEditor.snapshot, snapshot) &&
+      sameSize(pickerEditor.size, size) &&
+      fitsBounds(pickerEditor.node, size)
+    );
+  };
+  const editsPicker = (input: string | undefined, key: ChatKey | undefined): boolean =>
+    input !== undefined &&
+    key !== undefined &&
+    !key.return &&
+    !key.tab &&
+    !key.pageUp &&
+    !key.pageDown &&
+    !key.upArrow &&
+    !key.downArrow &&
+    !key.escape &&
+    !key.meta &&
+    // eslint-disable-next-line no-control-regex -- Raw submission/cancellation bytes never use editing-only custody.
+    !/[\r\n\x1b\x03]/u.test(input) &&
+    reduceEditorMotion(input, key) !== undefined;
+  const inputCardVisible = (): boolean => {
+    const snapshot = ui.getSnapshot();
+    const size = getSize();
+    return (
+      !disposed &&
+      hasCustody() &&
+      snapshot.active &&
+      nativePromptFits(size) &&
+      observed !== undefined &&
+      sameCard(observed.snapshot, snapshot) &&
+      observed.epoch === epoch &&
+      sameSize(observed.size, size) &&
+      fitsBounds(observed.node, size)
+    );
+  };
   ui.bindVisibility(visible);
   return {
     invalidate,
     visible,
     current: () => ui.getSnapshot(),
-    inputVisible: (): boolean => {
-      const snapshot = ui.getSnapshot();
-      const size = getSize();
-      return (
-        !disposed &&
-        hasCustody() &&
-        snapshot.active &&
-        nativePromptFits(size) &&
-        observed !== undefined &&
-        sameCard(observed.snapshot, snapshot) &&
-        observed.epoch === epoch &&
-        sameSize(observed.size, size) &&
-        fitsBounds(observed.node, size)
-      );
-    },
+    inputVisible: (input?: string, key?: ChatKey): boolean =>
+      (editsPicker(input, key) && pickerEditorVisible()) || inputCardVisible(),
+    pasteVisible: (): boolean => pickerEditorVisible() || inputCardVisible(),
     commit: (
       snapshot: NativePromptSnapshot,
       node: DOMElement | null,
@@ -148,6 +191,7 @@ export function createNativePromptAcknowledgement(
           )
             return;
           observed = { snapshot, size, epoch: currentEpoch, node };
+          pickerEditor = snapshot.kind === 'picker' ? observed : undefined;
           notify();
         },
         () => {

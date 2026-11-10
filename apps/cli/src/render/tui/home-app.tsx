@@ -601,7 +601,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (props.nativePrompt?.getSnapshot().active === true) {
       if (consumeMouseReport(input)) return;
-      if (nativeAcknowledgement?.inputVisible() !== true) {
+      if (nativeAcknowledgement?.inputVisible(input, key) !== true) {
         if (
           key.escape ||
           key.meta ||
@@ -641,7 +641,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   usePaste((text) => {
     if (props.inputEnabled?.() === false) return;
     if (props.nativePrompt?.getSnapshot().active === true) {
-      if (nativeAcknowledgement?.inputVisible() === true) props.nativePrompt.paste(text);
+      if (nativeAcknowledgement?.pasteVisible() === true) props.nativePrompt.paste(text);
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;

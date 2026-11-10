@@ -48,6 +48,12 @@ rendering or focus movement.
 A saved session in another directory has a fixed open-Home-there/shell-picker
 remedy; Home never reanchors its workspace. Safe restored history is prepared
 before model/MCP build and activation, and a failed read offers retry/return.
+Once a picker editor has been visibly mounted, filter typing, editing and paste
+continue while its read-only results repaint under output backpressure. Enter,
+result navigation, paging and scope changes still require the current result
+card to be measured and flushed. A resize or new prompt invalidates editing
+evidence too; suspension or loss of input custody blocks edits, and unseen input
+is never buffered.
 After selection the existing render-acknowledged effect disclosure remains the
 activation boundary. The detailed projection, memory and hatch rules live in the
 [chat reference](chat-session.md#proposed-restored-transcript-display--mvp-2).

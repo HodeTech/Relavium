@@ -67,7 +67,7 @@ export function NativePromptHost({
       onSuspend?.();
       return;
     }
-    if (!acknowledgement.inputVisible()) {
+    if (!acknowledgement.inputVisible(input, key)) {
       if (
         key.escape ||
         key.meta ||
@@ -81,7 +81,7 @@ export function NativePromptHost({
     ui.input(input, key);
   });
   usePaste((text) => {
-    if (inputEnabled?.() !== false && acknowledgement.inputVisible()) ui.paste(text);
+    if (inputEnabled?.() !== false && acknowledgement.pasteVisible()) ui.paste(text);
   });
   const flushVisible = useVisibleRenderFlush(
     onRendererError,

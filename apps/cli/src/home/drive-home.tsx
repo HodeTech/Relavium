@@ -863,6 +863,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       store: ChatStoreController,
       opts: { readonly open: boolean; readonly initialSequenceNumber?: number },
     ): Promise<HomeChatSession> => {
+      built.workOwner?.assertAdmitting();
+      ownership?.surface.work.assertAdmitting();
       // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
       // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
       for (const tool of built.mcpSkipped) {
@@ -884,10 +886,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
-      const sendGuard = (): string | undefined =>
-        providerHasKey(providers, built.agent.provider)
+      const sendGuard = (): string | undefined => {
+        built.workOwner?.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
+        return providerHasKey(providers, built.agent.provider)
           ? undefined
           : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+      };
       const initialKeyRefusal = sendGuard();
       if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
       const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
@@ -1172,6 +1177,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             onUnpriced: (note) => store.notice(note),
           });
         const built = host === undefined ? await build() : await host.build(build);
+        host?.work.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
         return wireHomeChatSession(built, store, { open: true });
       });
 
@@ -1271,6 +1278,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             onUnpriced: noteToStore,
           });
         const built = host === undefined ? await build() : await host.build(build);
+        host?.work.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
         // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
         // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
         const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
