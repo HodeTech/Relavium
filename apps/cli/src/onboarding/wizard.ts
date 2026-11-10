@@ -187,6 +187,7 @@ export interface OnboardingDeps {
     readonly endpointContext: (id: ProviderId) => string;
     /** Only a first usable-source setup chooses a starter; key maintenance preserves model preferences. */
     readonly selectStarterDefault?: boolean;
+    readonly surface?: 'home' | 'standalone-chat';
   };
   /** The clack slice — omit for the real prompts; a test injects a scripted one. */
   readonly prompter?: ClackOnboardingDeps;
@@ -268,10 +269,10 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
         hint: deps.native?.endpointContext(id) ?? KNOWN_PROVIDERS[id].baseUrl,
       })),
     }));
-  if (p.isCancel(providerValue)) return skip(p);
+  if (p.isCancel(providerValue)) return skip(p, deps);
   // `select` only ever yields a listed option, so narrow to the closed set WITHOUT a cast (mirrors create-prompter).
   const provider = KNOWN_PROVIDER_IDS.find((id) => id === providerValue);
-  if (provider === undefined) return skip(p);
+  if (provider === undefined) return skip(p, deps);
 
   if (deps.native !== undefined)
     p.note(deps.native.endpointContext(provider), 'Provider destination');
@@ -279,7 +280,7 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
     message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
     validate: requireKey,
   });
-  if (p.isCancel(rawKey)) return skip(p);
+  if (p.isCancel(rawKey)) return skip(p, deps);
   // Trim incidental paste whitespace (a stray space from a dashboard copy) before storing — matching
   // `readSecretFromStdin`'s `.trim()` so `provider set-key` and the wizard persist byte-identical credentials.
   // `requireKey` already rejected a whitespace-only value, so the trimmed key is non-empty.
@@ -409,7 +410,9 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
       // An unexpected fault (e.g. a broken db) — do NOT claim a keychain failure. A generic pointer; the underlying
       // issue resurfaces at the Home, which reads the same store.
       p.note(
-        'Setup could not be completed. Add a provider anytime with `relavium provider add`.',
+        deps.native === undefined
+          ? 'Setup could not be completed. Add a provider anytime with `relavium provider add`.'
+          : `Setup could not be completed. ${nativeSetupRemedy(deps.native.surface)}`,
         'Setup failed',
       );
     }
@@ -569,7 +572,7 @@ async function validateWithRetry(
       ),
     );
     if (p.isCancel(choice) || choice === 'skip') {
-      skip(p);
+      skip(p, deps);
       return null;
     }
     if (choice === 'continue') return { keyToStore, verified: false };
@@ -582,7 +585,7 @@ async function validateWithRetry(
       validate: requireKey,
     });
     if (p.isCancel(again)) {
-      skip(p);
+      skip(p, deps);
       return null;
     }
     keyToStore = again.trim();
@@ -622,9 +625,17 @@ function buildRetryPrompt(
 }
 
 /** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */
-function skip(p: ClackOnboardingDeps): void {
+function nativeSetupRemedy(surface: 'home' | 'standalone-chat' | undefined): string {
+  return surface === 'standalone-chat'
+    ? 'Restart `relavium chat` to open provider setup, or run `/doctor` to check your setup.'
+    : 'Open `/providers` to connect a key, or run `/doctor` to check your setup.';
+}
+
+function skip(p: ClackOnboardingDeps, deps: OnboardingDeps): void {
   p.note(
-    'Skipped. Add a provider anytime with `relavium provider add`, or run `/doctor` to check your setup.',
+    deps.native === undefined
+      ? 'Skipped. Add a provider anytime with `relavium provider add`, or run `/doctor` to check your setup.'
+      : `Skipped. ${nativeSetupRemedy(deps.native.surface)}`,
     'Setup skipped',
   );
   p.outro('Starting Relavium.');

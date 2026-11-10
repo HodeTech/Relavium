@@ -109,6 +109,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           assertAdmitting,
           endpointContext: deps.endpointContext,
           selectStarterDefault: firstUsable,
+          surface: deps.credentialSurface ?? 'home',
         },
       });
       if (committedNotice !== undefined)
@@ -352,7 +353,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       }
       if (availability.status === 'usable') {
         deps.flow.note(
-          `${providerKeyAvailabilityMessage(id, availability, deps.credentialSurface ?? 'home')} ${deps.endpointContext(id)}`,
+          `${KNOWN_PROVIDERS[id].displayName}: ${providerKeyAvailabilityMessage(id, availability, deps.credentialSurface ?? 'home')} ${deps.endpointContext(id)}`,
         );
         const answer = await deps.flow.select({
           message: 'Provider action',

@@ -47,6 +47,8 @@ Esc/Ctrl-C closes the flow without leaving Home. Skipping leaves a persistent se
 Enter on an empty prompt or `/providers` opens it again. `/providers` is also
 available in the in-Home chat, with connect/login/key discovery terms. Standalone
 chat keeps its own palette and runs the shared setup before its normal host.
+Native recovery messages name `/providers` in Home; standalone setup names
+restarting `relavium chat`, where that shared setup is available.
 
 The [credential-source contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
 owns exact names, precedence, consent, backend-health distinctions and recovery.

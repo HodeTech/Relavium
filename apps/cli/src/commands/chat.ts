@@ -1015,7 +1015,7 @@ async function chatResumeCommandBody(
       mcpSecretResolver =
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
       if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
-        const setup = await keys.prepareInteractiveSetup(ownership, opened.db);
+        await keys.prepareInteractiveSetup(ownership, opened.db);
         // Resume keeps the saved agent/model. Only current runtime settings are reloaded.
         loadedConfig = loadResolvedConfig({
           cwd: originalCwd,
@@ -1024,14 +1024,8 @@ async function chatResumeCommandBody(
         });
         ({ config, projectConfigDir } = loadedConfig);
         fsPolicy = admitChatFsPolicy(grants, originalCwd, loadedConfig.config.chat.extraRoots);
-        if (
-          (setup.status === 'cancelled' || setup.status === 'deferred') &&
-          !providerHasKey(providers, loaded.session.agentSnapshot.provider)
-        )
-          throw new CliError(
-            'invalid_invocation',
-            missingKeyMessage(loaded.session.agentSnapshot.provider),
-          );
+        // Interactive resume retains its existing missing-key host: setup can
+        // be skipped, then /models or a later external key can unblock it.
       }
 
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed

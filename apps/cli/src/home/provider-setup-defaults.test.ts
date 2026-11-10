@@ -171,6 +171,7 @@ describe('provider maintenance preserves model preference', () => {
           message.includes(`available from ${name}`),
         );
         expect(sourceMessages).toHaveLength(2); // list hint and the selected provider's source card
+        expect(sourceMessages[1]).toContain('OpenAI:');
         expect(f.messages.join('\n')).not.toContain('7361');
         expect(f.writeDefaultModel).not.toHaveBeenCalled();
         expect(readFileSync(f.path, 'utf8')).toBe(original);
