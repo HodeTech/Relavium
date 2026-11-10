@@ -62,7 +62,7 @@ function delimiter(line: string): Alignment[] | undefined {
 }
 
 function fence(line: string): { marker: string; indent: number; info: string } | undefined {
-  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+  const match = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(line);
   if (!match) return undefined;
   const marker = match[2] ?? '';
   const info = (match[3] ?? '').trim();
@@ -73,7 +73,7 @@ function closingFence(line: string, marker: string, length: number): boolean {
   const trimmed = line.replace(/^ {0,3}/, '');
   let i = 0;
   while (trimmed[i] === marker) i++;
-  return i >= length && /^\s*$/.test(trimmed.slice(i));
+  return i >= length && !/[^ \t]/.test(trimmed.slice(i));
 }
 export function closesMarkdownFence(line: string, marker: string): boolean {
   return closingFence(line, marker[0] ?? '', marker.length);
@@ -147,7 +147,24 @@ function isTablePair(header: string, under: string): boolean {
   return columns !== undefined && alignment !== undefined && columns.length === alignment.length;
 }
 
-function stripIndent(line: string, required: number, offset: number): string | undefined {
+/** These block starts cannot become ordinary table text by appending more units. */
+function persistentTableBoundary(line: string): boolean {
+  if (!isBlockStart(line) || isRule(line)) return false;
+  if (fence(line)?.marker.startsWith('`')) return false;
+  // Empty list padding can still grow beyond four cells or acquire a TAB.
+  return !/^ {0,3}(?:[-+*]|\d+[.)]) {1,4}$/.test(line);
+}
+
+interface SourceProjection {
+  readonly sourcePrefixLength: number;
+  readonly textPrefix: string;
+}
+
+function indentProjection(
+  line: string,
+  required: number,
+  offset: number,
+): SourceProjection | undefined {
   let width = 0;
   let index = 0;
   while (index < line.length && width < required) {
@@ -157,7 +174,25 @@ function stripIndent(line: string, required: number, offset: number): string | u
     index++;
   }
   if (width < required) return undefined;
-  return ' '.repeat(width - required) + line.slice(index);
+  return { sourcePrefixLength: index, textPrefix: ' '.repeat(width - required) };
+}
+
+function stripIndent(line: string, required: number, offset: number): string | undefined {
+  const projection = indentProjection(line, required, offset);
+  return projection && projection.textPrefix + line.slice(projection.sourcePrefixLength);
+}
+
+function composeProjection(
+  outer: SourceProjection | undefined,
+  inner: SourceProjection | undefined,
+): SourceProjection {
+  const parent = outer ?? { sourcePrefixLength: 0, textPrefix: '' };
+  const child = inner ?? { sourcePrefixLength: 0, textPrefix: '' };
+  return {
+    sourcePrefixLength:
+      parent.sourcePrefixLength + Math.max(0, child.sourcePrefixLength - parent.textPrefix.length),
+    textPrefix: child.textPrefix + parent.textPrefix.slice(child.sourcePrefixLength),
+  };
 }
 
 /** Expand tabs for container indentation while retaining the source mapping. */
@@ -213,13 +248,17 @@ interface ParserState {
         eligible: boolean;
         paragraph: boolean;
         tableColumns: number | undefined;
+        childProjection: SourceProjection | undefined;
       }
     | undefined;
   inTable: boolean;
   revision: MarkdownBlock | undefined;
+  revisionProjection: SourceProjection | undefined;
   preserveRevisionPrefix: boolean;
   fenceBoundary: 'open' | 'close' | undefined;
   tableBoundary: boolean;
+  tableRow: boolean;
+  tableContext: boolean;
 }
 
 function newParserState(): ParserState {
@@ -238,9 +277,12 @@ function newParserState(): ParserState {
     previous: undefined,
     inTable: false,
     revision: undefined,
+    revisionProjection: undefined,
     preserveRevisionPrefix: false,
     fenceBoundary: undefined,
     tableBoundary: false,
+    tableRow: false,
+    tableContext: false,
   };
 }
 
@@ -270,13 +312,25 @@ function parseWithState(
   const lines = source.split('\n');
   const result: MarkdownBlock[] = [];
   state.revision = undefined;
+  state.revisionProjection = undefined;
   state.preserveRevisionPrefix = false;
   state.fenceBoundary = undefined;
   state.tableBoundary = false;
+  state.tableRow = false;
+  state.tableContext = false;
   let i = 0;
   const lists = state.lists;
   let overflowColumn = state.overflowColumn;
   let lazyContinuation = state.lazyContinuation;
+  // Lookahead belongs to a physical line, not merely its eventual block kind.
+  // A consumed underline and an already-owned lazy line cannot be reused as
+  // the header of another Setext pair. The first dedent remains provisional.
+  let consumedPair = false;
+  let ownedLazyLine = false;
+  // A continued container already owns this line and its next-line lookahead;
+  // the parent must not pair the same physical bytes a second time.
+  let delegatedLine = false;
+  let childProjection: SourceProjection | undefined;
   while (i < lines.length) {
     const line = lines[i] ?? '';
     if (state.streaming && state.openFence) {
@@ -294,7 +348,9 @@ function parseWithState(
       continue;
     }
     if (state.streaming && state.inTable) {
+      state.tableContext = !persistentTableBoundary(line);
       if (line.trim() && !isBlockStart(line) && cells(line)) {
+        state.tableRow = true;
         result.push({ kind: 'literal', source: line, text: line });
         i++;
         continue;
@@ -310,6 +366,7 @@ function parseWithState(
           source: state.previous.source,
           text: state.previous.source,
         };
+        state.revisionProjection = { sourcePrefixLength: 0, textPrefix: '' };
         state.inTable = true;
         lists.length = 0;
         overflowColumn = undefined;
@@ -320,11 +377,13 @@ function parseWithState(
       }
     }
     if (state.streaming && state.previous?.eligible && isSetextPair('header', line)) {
+      consumedPair = true;
       state.revision = {
         kind: 'literal',
         source: state.previous.source,
         text: state.previous.source,
       };
+      state.revisionProjection = { sourcePrefixLength: 0, textPrefix: '' };
       lists.length = 0;
       overflowColumn = undefined;
       lazyContinuation = false;
@@ -379,8 +438,9 @@ function parseWithState(
       continue;
     }
     if (lazyContinuation) {
-      if (isBlockStart(line) || delimiter(lines[i + 1] ?? '')) lazyContinuation = false;
+      if (isBlockStart(line) || isTablePair(line, lines[i + 1] ?? '')) lazyContinuation = false;
       else {
+        ownedLazyLine = true;
         result.push({ kind: 'literal', source: line, text: line, raw: true });
         i++;
         continue;
@@ -406,6 +466,8 @@ function parseWithState(
       (isBlockStart(relative) || (state.streaming && state.list !== undefined)) &&
       overflowColumn === undefined
     ) {
+      delegatedLine = true;
+      childProjection = indentProjection(line, currentList.content, displayOffset);
       const original: string[] = [];
       const inner: string[] = [];
       let openFence = state.streaming ? state.listGatherFence : undefined;
@@ -452,11 +514,17 @@ function parseWithState(
       }
       state.fenceBoundary = childState?.fenceBoundary;
       state.tableBoundary = childState?.tableBoundary ?? false;
+      state.tableRow = childState?.tableRow ?? false;
+      state.tableContext = childState?.tableContext ?? false;
       if (state.streaming) state.listGatherFence = openFence;
       state.preserveRevisionPrefix =
         childState?.preserveRevisionPrefix === true ||
         (childState?.revision !== undefined && state.listPreviousWasMarker);
       if (childState?.revision) {
+        state.revisionProjection = composeProjection(
+          state.previous?.childProjection,
+          childState.revisionProjection,
+        );
         const block = childState.revision;
         const prefix = state.preserveRevisionPrefix ? '' : ' '.repeat(currentList.displayContent);
         state.revision = {
@@ -572,7 +640,7 @@ function parseWithState(
       continue;
     }
     const { structural, sourceIndex } = structuralLine(line, displayOffset);
-    const list = /^( *)([-+*]|\d+[.)])( {1,4})(\S.*|$)$/.exec(structural);
+    const list = /^( *)([-+*]|\d+[.)])( {1,4})(\S[^\n]*|$)$/.exec(structural);
     if (list) {
       const column = (list[1] ?? '').length;
       while (lists.length && column < (lists[lists.length - 1]?.column ?? 0)) lists.pop();
@@ -604,6 +672,7 @@ function parseWithState(
       if (sibling) lists[lists.length - 1] = frame;
       else lists.push(frame);
       const itemText = line.slice(sourceIndex[content] ?? line.length);
+      childProjection = { sourcePrefixLength: sourceIndex[content] ?? line.length, textPrefix: '' };
       let remainder = itemText;
       let projectedDepth = lists.length + listDepth;
       let projectedColumn = content;
@@ -678,6 +747,8 @@ function parseWithState(
         if (state.streaming) state.fenceBoundary = state.list?.fenceBoundary;
         if (state.streaming) {
           state.tableBoundary = state.list?.tableBoundary ?? false;
+          state.tableRow = state.list?.tableRow ?? false;
+          state.tableContext = state.list?.tableContext ?? false;
           state.listGatherFence = openFence;
         }
         i = cursor;
@@ -725,8 +796,12 @@ function parseWithState(
       continue;
     }
     lists.length = 0;
-    const quote = /^( {0,3})((?:> ?)+)(.*)$/.exec(line);
+    const quote = /^( {0,3})((?:> ?)+)([^\n]*)$/.exec(line);
     if (quote) {
+      childProjection = {
+        sourcePrefixLength: (quote[1]?.length ?? 0) + (quote[2]?.length ?? 0),
+        textPrefix: '',
+      };
       const depth = (quote[2]?.match(/>/g) ?? []).length;
       if (quoteDepth + depth > 8) {
         result.push({ kind: 'literal', source: line, text: line, raw: true });
@@ -737,7 +812,7 @@ function parseWithState(
       const original: string[] = [];
       while (i < lines.length) {
         const originalLine = lines[i] ?? '';
-        const match = /^( {0,3})((?:> ?)+)(.*)$/.exec(originalLine);
+        const match = /^( {0,3})((?:> ?)+)([^\n]*)$/.exec(originalLine);
         if (!match || (match[2]?.match(/>/g) ?? []).length !== depth) break;
         original.push(originalLine);
         inner.push(match[3] ?? '');
@@ -771,7 +846,13 @@ function parseWithState(
       }
       state.fenceBoundary = childState?.fenceBoundary;
       state.tableBoundary = childState?.tableBoundary ?? false;
+      state.tableRow = childState?.tableRow ?? false;
+      state.tableContext = childState?.tableContext ?? false;
       if (childState?.revision) {
+        state.revisionProjection = composeProjection(
+          state.previous?.childProjection,
+          childState.revisionProjection,
+        );
         const block = childState.revision;
         state.preserveRevisionPrefix = childState.preserveRevisionPrefix;
         state.revision = {
@@ -807,12 +888,21 @@ function parseWithState(
   if (state.streaming) {
     const last = result[result.length - 1];
     const header =
-      !unsupported(source) && !fence(source) && last?.kind !== 'code' ? cells(source) : undefined;
+      !delegatedLine && !unsupported(source) && !fence(source) && last?.kind !== 'code'
+        ? cells(source)
+        : undefined;
     state.previous = {
       source: source.slice(0, 256),
       paragraph: last?.kind === 'paragraph' && !last.prefix,
       tableColumns: header?.length,
-      eligible: !!source.trim() && !isBlockStart(source) && last?.kind !== 'code',
+      childProjection,
+      eligible:
+        !consumedPair &&
+        !ownedLazyLine &&
+        !delegatedLine &&
+        !!source.trim() &&
+        !isBlockStart(source) &&
+        last?.kind !== 'code',
     };
   }
   state.overflowColumn = overflowColumn;
@@ -825,9 +915,15 @@ export interface BlockLineResult {
   readonly continuesParagraph: boolean;
   readonly fenceBoundary?: 'open' | 'close';
   readonly tableBoundary?: true;
+  /** This physical line is a row of an already recognized table. */
+  readonly tableRow?: true;
+  /** The existing table's container was reached and this line may still become a row. */
+  readonly tableContext?: true;
   /** Source prefix replaced before rendering list/container content. */
   readonly listProjection?: { readonly sourcePrefixLength: number; readonly textPrefix: string };
   readonly revision?: MarkdownBlock;
+  /** Exact physical-source replacement for the preceding revised line's text. */
+  readonly revisionProjection?: SourceProjection;
   readonly preserveRevisionPrefix?: boolean;
 }
 
@@ -921,10 +1017,16 @@ export class BlockLineClassifier {
       block,
       continuesParagraph,
       ...(state.tableBoundary ? { tableBoundary: true } : {}),
+      ...(state.tableRow ? { tableRow: true } : {}),
+      ...(state.tableContext ? { tableContext: true } : {}),
       ...(state.fenceBoundary ? { fenceBoundary: state.fenceBoundary } : {}),
       ...(listProjection ? { listProjection } : {}),
       ...(state.revision
-        ? { revision: state.revision, preserveRevisionPrefix: state.preserveRevisionPrefix }
+        ? {
+            revision: state.revision,
+            preserveRevisionPrefix: state.preserveRevisionPrefix,
+            ...(state.revisionProjection ? { revisionProjection: state.revisionProjection } : {}),
+          }
         : {}),
     };
   }

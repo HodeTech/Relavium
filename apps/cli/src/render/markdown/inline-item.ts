@@ -73,6 +73,14 @@ export function interpretInlineItem<T>(
     trimPlain: 0 | 1 | 2 = 0,
   ): InlineItem<T> => ({ end: finish, plain, trimPlain, parts, edits });
   const ch = char(start);
+  // A code span may end inside a recognized link or autolink. Once parsing
+  // resumes there, its remaining syntax initiators belong to the opaque
+  // source construct and must stay literal. The construct opener itself is
+  // still interpreted normally, including recursively parsed link labels.
+  // Backticks retain their existing code precedence: their branch preserves
+  // opaque delimiter bytes while consuming the literal code body.
+  if ('\\\n[!<*_~'.includes(ch) && index.opaqueInterior(start))
+    return item(start + 1, true, [raw(start, start + 1)]);
   if (ch === '\\' && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(char(start + 1)))
     return item(
       start + 2,

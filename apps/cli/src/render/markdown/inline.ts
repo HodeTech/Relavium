@@ -83,6 +83,7 @@ function parseInlineInternal(
     escaped: (at) => base.escaped(at),
     intraword: (at) => base.intraword(at),
     opaque: (at) => base.opaque(at),
+    opaqueInterior: (at) => base.opaqueInterior(at),
     runEnd: (start, character, end) => base.runEnd(start, character, end),
     plainEnd: (start, end) => base.plainEnd(start, end),
     singleCount: (marker, start, end) => base.singleCount(marker, start, end),

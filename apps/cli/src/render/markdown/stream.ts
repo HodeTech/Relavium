@@ -70,7 +70,7 @@ interface Preview {
 }
 
 function fence(line: string): Fence | undefined {
-  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+  const match = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(line);
   if (!match) return undefined;
   const marker = match[2] ?? '';
   const info = (match[3] ?? '').trim();
@@ -260,6 +260,8 @@ interface SourceLine {
   readonly continuesParagraph: boolean;
   readonly fenceBoundary?: 'open' | 'close';
   readonly tableBoundary?: true;
+  readonly tableRow?: true;
+  readonly tableContext?: true;
 }
 interface RegionalSummary {
   readonly all: boolean;
@@ -525,6 +527,8 @@ class ColumnCheckpoint {
         continuesParagraph: classification?.continuesParagraph ?? false,
         ...(classification?.fenceBoundary ? { fenceBoundary: classification.fenceBoundary } : {}),
         ...(classification?.tableBoundary ? { tableBoundary: true } : {}),
+        ...(classification?.tableRow ? { tableRow: true } : {}),
+        ...(classification?.tableContext ? { tableContext: true } : {}),
       };
       this.lines.set(start, line);
       if (this.blockLine?.start === start) this.blockLine = line;
@@ -1249,6 +1253,19 @@ class LiveInlineIndex implements InlineSourceIndex {
     const range = this.opaqueRanges.floor(index);
     return (
       range !== undefined &&
+      index < range.end &&
+      range.start >= this.scopeStart &&
+      range.end <= this.scopeEnd
+    );
+  }
+
+  opaqueInterior(index: number): boolean {
+    this.work++;
+    this.watch(this.answers, index);
+    const range = this.opaqueRanges.floor(index);
+    return (
+      range !== undefined &&
+      range.start < index &&
       index < range.end &&
       range.start >= this.scopeStart &&
       range.end <= this.scopeEnd
@@ -2627,7 +2644,14 @@ export class MarkdownStream {
       this.replayInline(this.fragments.join(''), this.sourceLength - this.lineLength, false);
     }
     const tableLine = stripContainers(this.linePrefix, this.pendingTableContainers);
-    if (this.pendingTable && tableLine !== undefined && /^ {0,3}#{1,6} +/.test(tableLine)) {
+    const tablePreview = this.columns.blockAt(this.sourceLength - this.lineLength);
+    if (
+      this.pendingTable &&
+      this.lineLength > 0 &&
+      ((tableLine !== undefined && /^ {0,3}#{1,6} +/.test(tableLine)) ||
+        ((/\S/.test(tablePreview?.block.text ?? '') || tablePreview?.fenceBoundary === 'open') &&
+          !tablePreview?.tableContext))
+    ) {
       this.pendingSize -= this.lineLength;
       this.finalize();
       this.pendingSize = this.lineLength;
@@ -2849,8 +2873,10 @@ export class MarkdownStream {
       const revision = {
         ...classified.revision,
         source: previous.source,
-        text:
-          classified.preserveRevisionPrefix || classified.revision.prefix
+        text: classified.revisionProjection
+          ? classified.revisionProjection.textPrefix +
+            previous.source.slice(classified.revisionProjection.sourcePrefixLength)
+          : classified.preserveRevisionPrefix || classified.revision.prefix
             ? previous.block.text
             : previous.source,
         ...(classified.preserveRevisionPrefix && previous.block.prefix !== undefined
@@ -2888,9 +2914,7 @@ export class MarkdownStream {
             source: prefix,
             text: body,
           } satisfies MarkdownBlock)
-        : this.pendingTable
-          ? literal(prefix)
-          : classified.block;
+        : classified.block;
     this.columns.line(
       offset,
       complete ? source : prefix,
@@ -2939,13 +2963,7 @@ export class MarkdownStream {
       this.replayInline(line + '\n', offset, true);
     }
     if (this.pendingTable) {
-      const content = stripContainers(line, this.pendingTableContainers);
-      if (
-        content === undefined ||
-        !content.trim() ||
-        isBlockStart(content) ||
-        !content.includes('|')
-      ) {
+      if (!this.columns.blockAt(offset)?.tableRow) {
         // The current line has not been attached to the table yet.
         this.pendingSize -= line.length + 1;
         this.finalize();
@@ -3082,7 +3100,21 @@ export class MarkdownStream {
     if (this.completed.length) {
       const source = this.completed.join('\n');
       if (this.pendingTable) {
-        for (const block of this.parse(source)) this.addStable(block);
+        const header = this.columns.blockAt(this.completedStart)?.block;
+        let offset = this.completedStart;
+        const projected = this.completed.map((line) => {
+          const text = this.columns.blockAt(offset)?.block.text ?? line;
+          offset += line.length + 1;
+          return text;
+        });
+        for (const block of this.parse(projected.join('\n')))
+          this.addStable({
+            ...block,
+            source,
+            ...(header?.prefix !== undefined ? { prefix: header.prefix } : {}),
+            ...(header?.continuation !== undefined ? { continuation: header.continuation } : {}),
+            ...(header?.quoted !== undefined ? { quoted: header.quoted } : {}),
+          });
       } else {
         this.blockWork += source.length;
         let offset = this.completedStart;

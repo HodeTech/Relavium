@@ -10,6 +10,7 @@ export interface InlineSourceIndex {
   escaped(index: number): boolean;
   intraword(index: number): boolean;
   opaque(index: number): boolean;
+  opaqueInterior(index: number): boolean;
   next(token: string, start: number, end: number): number;
   tickClose(start: number, end: number): number;
   parenClose(open: number, end: number): number;
@@ -71,7 +72,10 @@ export class StaticInlineIndex implements InlineSourceIndex {
       if (isWordBefore(source, start) && isWordAt(source, at)) this.words.fill(1, start, at);
     }
     this.opaqueMask = new Uint8Array(source.length);
-    for (const range of findOpaqueTargets(source)) this.opaqueMask.fill(1, range.start, range.end);
+    for (const range of findOpaqueTargets(source)) {
+      this.opaqueMask.fill(1, range.start, range.end);
+      this.opaqueMask[range.start] = 2;
+    }
     for (const marker of ['*', '_']) {
       const counts = new Int32Array(source.length + 1);
       for (let at = 0; at < source.length; at++) {
@@ -114,6 +118,9 @@ export class StaticInlineIndex implements InlineSourceIndex {
   }
   opaque(index: number): boolean {
     return Boolean(this.opaqueMask[index]);
+  }
+  opaqueInterior(index: number): boolean {
+    return this.opaqueMask[index] === 1;
   }
   intraword(index: number): boolean {
     return Boolean(this.words[index]);

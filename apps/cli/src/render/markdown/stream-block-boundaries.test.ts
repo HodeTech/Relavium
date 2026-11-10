@@ -25,6 +25,87 @@ function streamed(source: string, chunk: number, draw: boolean): MarkdownStream 
 }
 
 describe('canonical block boundary ownership', () => {
+  it.each(['# heading', '> q', '- nested\n    # heading'])(
+    'ends a child table at a canonical scope boundary after %j',
+    (before) => {
+      for (const prefix of ['', '> '])
+        for (const after of [
+          'out | text',
+          '# out | text',
+          '> out | text',
+          '- out | text',
+          '```\nout | text',
+        ]) {
+          const lines = [
+            '- a',
+            ...before.split('\n').map((line) => '  ' + line),
+            '  h | b',
+            '  --- | ---',
+            '  x | y',
+            after,
+            '',
+            'END',
+          ];
+          const source = lines.map((line) => prefix + line).join('\n');
+          for (const chunk of [source.length, 1, 3]) {
+            const stream = streamed(source, chunk, true);
+            expect(stream.tail(80, 100), JSON.stringify({ source, chunk })).toEqual(
+              layoutMarkdown(parseMarkdown(source), 80),
+            );
+            expect(stream.sourceTail()).toBe(source);
+            expect(stream.finish()).toEqual(parseMarkdown(source));
+          }
+        }
+    },
+  );
+
+  it.each(['# ', '- item ', '> ', '```\n'])(
+    'keeps an unterminated following block beyond the source budget after %j',
+    (following) => {
+      const source =
+        '- a\n  # heading\n  h | b\n  --- | ---\n  x | y\n' +
+        following +
+        'x'.repeat(4500) +
+        '\tEND';
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000);
+      for (const chunk of [source.length, 17]) {
+        const stream = streamed(source, chunk, true);
+        // The source budget intentionally removes part of the logical line;
+        // compare the retained suffix at one row, independently of rewrapping.
+        const rows = stream.tail(100_000, 8);
+        const final = rows.at(-1);
+        const canonical = expected.at(-1);
+        const content = final?.spans
+          .filter((span) => !span.dim)
+          .map((span) => span.text)
+          .join('');
+        expect(canonical?.text.endsWith(content ?? '')).toBe(true);
+        expect(final?.spans.some((span) => span.heading)).toBe(following === '# ');
+        expect(final?.spans.some((span) => span.code)).toBe(following === '```\n');
+        expect(final?.text).toContain('END');
+        expect(final?.text).toMatch(/ +END$/);
+        expect(final?.text.match(/ +END$/)?.[0]).toBe(canonical?.text.match(/ +END$/)?.[0]);
+        expect(stream.sourceTail()).toBe(source.slice(-4000));
+        expect(stream.finish()).toEqual(parseMarkdown(source));
+      }
+    },
+  );
+
+  it.each([
+    ['---', ' | ---'],
+    ['```', 'a` | b'],
+    ['- ', '\tx | y'],
+    ['ordinary', ' | text'],
+  ])('keeps a provisional table row reversible from %j', (begin, rest) => {
+    const stream = new MarkdownStream();
+    let source = 'h | b\n--- | ---\n' + begin;
+    stream.append(source);
+    stream.tail(80, 100);
+    stream.append(rest + '\n\nEND');
+    source += rest + '\n\nEND';
+    expect(stream.tail(80, 100)).toEqual(layoutMarkdown(parseMarkdown(source), 80));
+    expect(stream.finish()).toEqual(parseMarkdown(source));
+  });
   it.each(['- a\n  ', '> ', '> - ', '- ```\n  '])(
     'applies raw pair lookahead before container interpretation after %j',
     (prefix) => {
