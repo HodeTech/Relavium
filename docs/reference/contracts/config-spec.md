@@ -48,7 +48,7 @@ Committed to git (minus secrets) so a team shares the same workflows and agents.
 
 Opening a workspace loads every `*.relavium.yaml` and `*.agent.yaml` under `<projectRoot>/.relavium/`. An optional `workspace.toml` can declare shared variables (default model, shared tool configs) inherited by all workflows in that workspace.
 
-**MVP-2 step 3 implemented on development, review pending (2026-11-10):** CLI
+**MVP-2 step 3 accepted on development (2026-11-10):** CLI
 project discovery walks upward from cwd but stops at home. The global
 `~/.relavium` subtree and canonical aliases are never project configuration or
 catalogs. Global `config.toml` still loads as operator configuration; a

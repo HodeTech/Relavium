@@ -231,7 +231,7 @@ its usage coverage ([ADR-0104](../../decisions/0104-unknown-provider-usage-is-du
 
 ### `relavium init`
 
-**Implemented on development, MVP-2 step 3 review pending (2026-11-10).**
+**Accepted on development, MVP-2 step 3 (2026-11-10).**
 The explicit command creates only `.relavium/`, `.relavium/workflows/` and
 `.relavium/agents/` in the working directory and prints each created directory.
 It writes no config or instruction file and requires no model, provider key or
@@ -266,6 +266,13 @@ bounded and discloses incomplete/unavailable inspection instead of asserting
 that no artifact exists. Explicit file references and `relavium import <path>`
 remain available; no migration or automatic move occurs. `list --runs` continues
 to read global run history under its existing contract.
+
+The exclusion checks actual automatic targets, including project/workspace
+config-file aliases, catalog directories/files, bare-id reads and default export
+destinations. A default session export from home/global state also refuses.
+Unresolved targets fail safely. Explicit `--config` and `--out` paths retain
+their selected-file contracts; this automatic boundary does not revoke those
+deliberate selections.
 
 ### `relavium create`
 

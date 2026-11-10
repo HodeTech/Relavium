@@ -86,7 +86,7 @@ native host. Other shell scaffolding/gate prompts retain their existing contract
 
 ## Project initialization
 
-**Implemented on development, MVP-2 step 3 review pending (2026-11-10).**
+**Accepted on development, MVP-2 step 3 (2026-11-10).**
 `/init` is available in the landing and Home-chat palettes. Its card lists the
 exact three directories before writing and defaults to **No**. Only an explicit
 Yes creates them; Esc/Ctrl-C closes the card and keeps Home/chat. The existing

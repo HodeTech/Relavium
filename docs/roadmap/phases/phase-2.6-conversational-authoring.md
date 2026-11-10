@@ -2002,11 +2002,11 @@ required package sources are unchanged. Final combined coverage, complete declar
 CI families below and mandatory remote checks remain due on the final MVP-2
 revision. Steps 3 and 4 proceed automatically in their approved order.
 
-#### Step 3 implementation (2026-11-10)
+#### Step 3 acceptance (2026-11-10)
 
-Project initialization and global-state exclusion are implemented on
-`development`; the two fresh cumulative reviews and separate filesystem sitting
-remain pending. The [init contract](../../reference/cli/commands.md#relavium-init)
+Project initialization and global-state exclusion are accepted on
+`development` at `ee49871d`. Three fresh cumulative rounds and a separate
+filesystem sitting satisfy the required review gates. The [init contract](../../reference/cli/commands.md#relavium-init)
 owns shell results, Home confirmation, existing/nested projects, final-marker
 link refusal, partial cleanup and global-artifact remedies. Existing global
 files are left in place. Safe display metadata and history/resume remain step 4.
@@ -2038,7 +2038,7 @@ native harness failures are retained: text-plus-CR was separated into the parser
 submit gesture, and half-column resize checks observe actual pending admission
 rather than claiming a complete instruction can be painted there.
 
-The final implementation passes full workspace lint/typecheck/tests (CLI 440
+The initial implementation passed full workspace lint/typecheck/tests (CLI 440
 files, 7,088 passing, 11 existing skips), build, format, isolation, finite bundle
 closure, compiled CLI/bootstrap smoke, seam/engine fences, DB sync and tooling
 typecheck. Native coverage includes
@@ -2048,6 +2048,26 @@ and config/create/import/export/list/doctor journeys pass offline. This entry
 does not replace the required independent reviews or final combined gates.
 Required production package sources remain unchanged by this CLI-only step;
 final combined coverage remains due under the scheduling rule below.
+
+R1 verified actual catalog-directory/file aliases that could admit global reads
+or forced writes, plus missing local `/init` typo guidance. `5d4af759` fixed them.
+R2 verified automatic project/workspace config-file aliases, including the
+invocation-default reread, and default portable/session export targets that could
+write global files. `ee49871d` applies the shared actual-target boundary there,
+including default session export from home/global directories. Explicit selected
+config, input files and output paths retain their existing contracts. Baseline
+module controls fail the new regressions before each fix. Only the earlier safe
+export-refusal message expectations changed in two existing tests; their error
+codes, test counts and preservation assertions remain.
+
+Fresh R3 reviews at `ee49871d` found no verified findings across the whole step:
+correctness/contracts (78 independent tests), native UI/lifecycle/performance
+(246 tests), and the separate filesystem security sitting (97 tests plus 12
+compiled disposable-home probes). The final source passes workspace
+lint/typecheck/tests (CLI 443 files, 7,116 passing, 11 existing skips), build,
+format, isolation, seam/engine fences, tooling typecheck, finite bundle closure
+and compiled CLI/bootstrap smoke. Whole-MVP-2 gates remain due; step 4 proceeds
+with safe display metadata, history projection and session discovery/resume.
 
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance

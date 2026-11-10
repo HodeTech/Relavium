@@ -2153,11 +2153,13 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
 
 ## MVP-2 planning — the global `~/.relavium` is found as a project folder (2026-11-08)
 
-> **Implemented on development, MVP-2 step 3 review pending (2026-11-10):** the
+> **Closed on development by MVP-2 step 3 (2026-11-10, `ee49871d`):** the
 > shared discovery/authoring guard and `init` now exclude global state and its
 > aliases. Existing artifacts stay in place; catalog `list` and `/doctor` name the
-> [move/import remedy](../reference/cli/commands.md#relavium-init). Close this entry
-> only after the step's independent reviews and filesystem sitting pass.
+> [move/import remedy](../reference/cli/commands.md#relavium-init). Three cumulative
+> reviews and the separate filesystem sitting passed; the
+> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
+> records the actual-target corrections and verification.
 
 Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
 directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
