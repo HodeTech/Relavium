@@ -40,6 +40,8 @@ classified failed chat turn into a fatal CLI failure.
 [native session picker](chat-session.md#finding-a-saved-session) while retaining
 the current chat view. An empty landing prompt accepts Down to focus Continue's
 recent sessions; Up/Down move, Enter resumes, and Esc returns to the prompt.
+Typing or pasting into the prompt clears Continue focus before editing, so Enter
+submits that draft rather than opening a previously focused session.
 Only sessions are actionable in this increment. Session rows include a separate
 sanitized directory line; management lists trim/scroll before the focused row,
 keyless action and prompt can leave an 80×24 screen. No key/DB reads happen during
@@ -48,6 +50,10 @@ rendering or focus movement.
 A saved session in another directory has a fixed open-Home-there/shell-picker
 remedy; Home never reanchors its workspace. Safe restored history is prepared
 before model/MCP build and activation, and a failed read offers retry/return.
+Esc during restoration cancels the pending replacement host and its MCP startup,
+preventing new credential/connection work. The existing Home or chat stays in place;
+already-entered work and actual cleanup still join before the action returns.
+An independent failure retains its original classification during cancellation.
 Once a picker editor has been visibly mounted, filter typing, editing and paste
 continue while its read-only results repaint under output backpressure. Enter,
 result navigation, paging and scope changes still require the current result

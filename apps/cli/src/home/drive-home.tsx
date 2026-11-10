@@ -1186,14 +1186,46 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
     // the original fallback_chain), carrying the text-only transcript + cumulative cost/turns; a NEW instance,
     // honoring ADR-0024's one-model-per-lifetime rule. The controller drives the tear-down / swap (mirroring clearChat).
+    const resumeCancelled = new CliError('invalid_invocation', 'Session restoration cancelled.');
+    const constructRestoredChat = async (
+      signal: AbortSignal | undefined,
+      factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
+    ): Promise<HomeChatSession> => {
+      if (signal === undefined) return constructChat(factory);
+      let pendingWork: SessionWorkOwner | undefined;
+      try {
+        return await constructChat(async (host) => {
+          pendingWork = host?.work;
+          const cancelPending = (): void => host?.cancel();
+          signal.addEventListener('abort', cancelPending, { once: true });
+          try {
+            if (signal.aborted) {
+              cancelPending();
+              throw resumeCancelled;
+            }
+            return await factory(host);
+          } finally {
+            signal.removeEventListener('abort', cancelPending);
+          }
+        });
+      } catch (cause) {
+        // Only this replacement owner's stop is benign; unrelated faults keep their original disposition.
+        if (signal.aborted && pendingWork?.isStoppedFailure(cause)) {
+          assertHomeAdmitting();
+          throw resumeCancelled;
+        }
+        throw cause;
+      }
+    };
     const restoreChat = async (
       sessionId: string,
       target: ReseatTarget | undefined,
       carriedTranscript: readonly TranscriptEntry[],
       initialRestore = false,
       preloaded?: ReturnType<OpenedSessionStore['store']['loadFull']>,
+      restoreSignal?: AbortSignal,
     ): Promise<HomeChatSession> =>
-      constructChat(async (host) => {
+      constructRestoredChat(restoreSignal, async (host) => {
         const loaded = preloaded ?? opened.store.loadFull(sessionId);
         if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
           throw new CliError(
@@ -1250,6 +1282,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   ),
             record,
             deferMissingKey: initialRestore,
+            ...(restoreSignal === undefined ? {} : { mcpConnectSignal: restoreSignal }),
             messages: loaded.messages,
             now,
             providers,
@@ -1280,6 +1313,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const built = host === undefined ? await build() : await host.build(build);
         host?.work.assertAdmitting();
         ownership?.surface.work.assertAdmitting();
+        if (restoreSignal?.aborted) {
+          // Legacy unowned callers still owe the actual returned builder's resources.
+          if (host === undefined) {
+            built.session.cancel();
+            await built.whenHostSafeToClose();
+            await built.closeMcp?.();
+          }
+          throw resumeCancelled;
+        }
         // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
         // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
         const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
@@ -1346,13 +1388,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const signal = promptFlow.begin();
       promptFlow.note('Restoring session… Esc to return.');
       try {
-        const built = await restoreChat(sessionId, undefined, transcript, true, loaded);
+        const built = await restoreChat(sessionId, undefined, transcript, true, loaded, signal);
         if (signal.aborted) {
           await built.teardown();
           return undefined;
         }
         assertHomeAdmitting();
         return built;
+      } catch (cause) {
+        if (signal.aborted && cause === resumeCancelled) {
+          assertHomeAdmitting();
+          return undefined;
+        }
+        throw cause;
       } finally {
         await promptFlow.end();
       }
