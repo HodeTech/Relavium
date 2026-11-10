@@ -277,10 +277,10 @@ The workflow and agent files inside `.relavium/` carry their own `schema_version
 
 ## Proposed standard environment key consent — MVP-2
 
-**Accepted design, unimplemented — 2026-11-09.** The maintainer approved the corrected dated
+**Implemented on development, step 2 review pending — 2026-11-10.** The maintainer approved the corrected dated
 [ADR-0112 refinement](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
 and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
-The historical heading is retained for stable inbound links; approval is not a shipping claim.
+The historical heading is retained for stable inbound links. Milestone and release acceptance remain pending.
 
 Add global-only `[preferences].standard_env_key_consent`, a strict optional table
 whose only optional entries are:
@@ -403,8 +403,8 @@ implementation landing.
   actual connection authority. Do not introduce another ad-hoc URL parser. Workflow
   allowedDomains retains its separate existing policy; this grammar does not
   silently change stored workflow grants.
-- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, optional,
-  absent=false. It is reminder state, not credential state. Only a typed backend
+- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, implemented
+  on development in MVP-2 step 2 (review pending), optional, absent=false. It is reminder state, not credential state. Only a typed backend
   unavailable result plus explicit user choice may set it; no startup auto-write.
 
 Project/workspace/agent/session/environment layers cannot supply or override either

@@ -36,25 +36,46 @@ classified failed chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 
-> **MVP-2 accepted, unimplemented — 2026-11-09.** The clack/two-source
-> description below is the current pre-MVP-2 behavior. Step 2 rehosts setup on
-> native in-tree prompts and uses the canonical
-> [typed credential-source states](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2):
-> eligible standard variables awaiting consent open the consent card; variables
-> excluded for custom endpoints receive key-entry guidance, not implied authority.
-> Missing and genuinely unavailable backends remain distinct; a usable key
-> suppresses automatic setup. The new behavior remains unimplemented until that
-> step lands, and must not be inferred from the historical keyless definition.
+**Implemented on development — MVP-2 step 2 review pending (2026-11-10).**
+The Home mounts one Ink tree, then offers setup when no provider has a usable
+source. Select, confirm, text and masked fields use the same native input owner;
+existing chat history stays mounted while a setup card owns input. Esc/Ctrl-C
+closes the flow without leaving Home. Skipping leaves a persistent setup row;
+Enter on an empty prompt or `/providers` opens it again. `/providers` is also
+available in the in-Home chat, with connect/login/key discovery terms. Standalone
+chat keeps its own palette and runs the shared setup before its normal host.
 
-When a bare `relavium` opens the Home on a **truly key-less** run — **no** known provider has a resolvable key (the resolver finds neither an OS-keychain key **nor** a `RELAVIUM_<PROVIDER>_API_KEY` env var) — a `@clack/prompts` **onboarding wizard** runs **before** the ink Home mounts (clack + ink both take the terminal's raw mode, so the wizard fully settles first). It is already behind the TTY gate above, so it never runs piped / `--json` / in CI. A run with **either** a keychain key or an env key is not key-less — no wizard, so a working user (including an env-key user) is never prompted.
+The [credential-source contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+owns exact names, precedence, consent, backend-health distinctions and recovery.
+Home samples availability on opening, after setup changes and on return from a
+chat; rendering never probes the keychain. A usable source suppresses automatic
+setup. An eligible standard source awaiting consent opens its named-source card;
+a custom endpoint gets manual-key guidance instead. A genuinely unavailable
+keychain gets explicit acknowledgement/retry guidance, independent of whether an
+environment source is usable; reminder state never grants credential authority.
 
-The flow: **pick a provider → paste a hidden (masked) API key → store it in the OS keychain** — riding the same tested `provider set-key` path (keychain write + the provider row + the keychain-ref, secret-free by construction; the key is captured via clack's masked `password`, whitespace-trimmed, never echoed, never written to disk, never logged beyond its last-4 hint). On a successful store the wizard also sets **`[preferences].default_model` to the chosen provider's cheap/fast starter model** (`KNOWN_PROVIDERS[provider].testModel`, via the same global config-write target as `/models` — `[chat].default_model` is only the read-time fallback that resolves down to it, ADR-0063 §1) — so the very next chat binds a model **whose key was just stored**, not the built-in `claude-sonnet-4-6` (which would error for a user who picked a non-Anthropic provider). Richer **model selection** is not part of the wizard — the user upgrades via the `/models` picker. Three fallbacks keep a first run unblocked:
+Manual setup keeps the existing provider → masked key → validation/retry or
+explicit save-anyway → OS-keychain flow. Native cards contain neither the key nor
+its suffix, and validation copy comes from typed reasons. The destination is
+shown safely before validation. Private input is bounded, oversized paste is
+rejected without truncation, and input after submit/cancel in the same dispatch
+cannot become chat text or answer the next card. Actual validation work remains
+owned until settlement even if its observation is cancelled.
 
-- **Keychain-write failure** (a locked keychain / no Secret Service / a headless box) → the wizard **never** persists the key to disk; it prints the `RELAVIUM_<PROVIDER>_API_KEY` env-var to set instead (the resolver imports an env key at call time), then hands off to the Home.
-- **Any other store fault** (e.g. a db write failure *after* the keychain write succeeded) → a **generic** "setup could not be completed" note (never mislabeled a keychain failure, and the raw error is never rendered — the key may well be in the keychain, so the copy must not claim otherwise); the underlying issue resurfaces at the Home, which reads the same store.
-- **Cancel** (Ctrl-C / Esc at any step) → a friendly pointer to `relavium provider add` / `/doctor`, then the Home mounts key-less (retry next launch, or add a key manually).
+First usable-source setup selects the provider's existing starter model through
+the shared typed global writer. Existing-file rewrites display their comment/order
+loss notice before publication. A saved preference with unconfirmed directory
+sync says so; failure offers safe recovery, with a separately selected invocation
+model where applicable. Explicit invocation defaults remain below project/workspace
+model preferences. Adding consent for another provider when one is already usable
+does not itself switch the default. Resume keeps its saved agent/model.
 
-`@clack/prompts` is confined to one module behind an injectable seam (mirroring the `create` wizard + the gate prompter — [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md)), so the flow unit-tests without a TTY. No new ADR: the wizard composes the config-write ([ADR-0063](../../decisions/0063-cli-config-write-contract.md)), keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)/[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)), and clack ([ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md)) decisions already accepted.
+Keys are never written to a config, transcript or plaintext fallback. A keychain
+failure names the environment remedy; a later store failure does not falsely claim
+that an already saved key vanished. Likewise, cancellation after a completed
+key/default publication preserves its fixed committed outcome. The legacy injected
+prompter remains a test/embedding seam; production Home and TTY chat setup use the
+native host. Other shell scaffolding/gate prompts retain their existing contracts.
 
 ## The management strip
 

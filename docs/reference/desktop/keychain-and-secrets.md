@@ -81,12 +81,11 @@ current context qualification does not scrub or certify those records.
 
 ## Operational notes
 
-> **CLI MVP-2 accepted, unimplemented — 2026-11-09:** existing operational
-> references to the keychain/`RELAVIUM_*` chain describe pre-MVP-2 behavior.
-> Step 2 adds the
+> **CLI MVP-2 implemented on development, step 2 review pending — 2026-11-10:**
+> runtime resolution uses the
 > [eligible standard-variable fallback](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2),
 > with explicit Home/TTY-chat source consent and custom-endpoint exclusion.
-> This changes no desktop key custody rule and claims no shipped fallback yet.
+> This qualifies older two-source shorthand below and changes no desktop key custody rule.
 
 - **SQLCipher passphrase must be set before plugin init.** Derive it from a stable machine secret (not hardcoded) so restarts do not require a user prompt.
 - **Capability gating.** Every keychain plugin call the frontend can trigger must be declared in the Tauri v2 capabilities manifest (`src-tauri/capabilities/`); a missing capability surfaces as a silent "not allowed" runtime error.

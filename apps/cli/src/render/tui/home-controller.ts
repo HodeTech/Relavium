@@ -3,11 +3,12 @@ import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import {
-  CHAT_PALETTE_COMMANDS,
+  HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
+import { ConfigWriteRefusedError } from '../../config/write.js';
 import {
   canControlEffort,
   foldEffortPickerKey,
@@ -142,6 +143,8 @@ export type HomeMode = 'home' | 'loading' | 'chat';
 /** The immutable view state the {@link HomeController} publishes to `RootApp` (a new object per change). */
 export interface HomeControllerState {
   readonly mode: HomeMode;
+  readonly keyless: boolean;
+  readonly providerSetupBusy: boolean;
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
@@ -219,7 +222,10 @@ export interface HomeModelsPort {
     modelId: string,
     provider: ReseatTarget['provider'],
     reasoningEffort?: ReasoningEffort,
-  ) => void;
+  ) =>
+    | void
+    | { readonly durability: 'confirmed' | 'unconfirmed' }
+    | Promise<void | { readonly durability: 'confirmed' | 'unconfirmed' }>;
 }
 
 export interface HomeControllerDeps {
@@ -256,6 +262,12 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
+  readonly providerSetup?: {
+    readonly initialKeyless: boolean;
+    readonly open: () => Promise<void>;
+    /** Sample once when returning to Home after a chat, never during rendering. */
+    readonly readKeyless?: () => boolean;
+  };
 }
 
 export interface HomeController {
@@ -263,6 +275,7 @@ export interface HomeController {
   // unbound reference is sound (no `this`) — matching the chat store's read surface.
   readonly subscribe: (listener: () => void) => () => void;
   readonly getSnapshot: () => HomeControllerState;
+  readonly setProviderState: (keyless: boolean, notice?: string) => void;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
   readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
   /** Handle a bracketed paste as ONE native event (ink 7 `usePaste`, a channel separate from `useInput`):
@@ -277,6 +290,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const listeners = new Set<() => void>();
   let state: HomeControllerState = {
     mode: 'home',
+    keyless: deps.providerSetup?.initialKeyless ?? false,
+    providerSetupBusy: false,
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
@@ -438,6 +453,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
+          keyless: deps.providerSetup?.readKeyless?.() ?? state.keyless,
           mode: 'home',
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
@@ -639,13 +655,63 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  const openProviderSetup = (): void => {
+    if (exiting || state.providerSetupBusy) return;
+    if (deps.providerSetup === undefined) {
+      set({ notice: 'Provider setup is unavailable in this session.' });
+      state.session?.store.note('Provider setup is unavailable in this session.');
+      return;
+    }
+    const port = deps.providerSetup;
+    set({ providerSetupBusy: true, palette: undefined });
+    const operation = (): Promise<void> => port.open();
+    let work: Promise<void>;
+    try {
+      work = deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
+    } catch (err) {
+      deps.workOwner?.failure(err);
+      if (!exiting)
+        set({ providerSetupBusy: false, notice: 'Provider setup could not be opened.' });
+      return;
+    }
+    void work.then(
+      () => {
+        if (!exiting) set({ providerSetupBusy: false });
+      },
+      (err: unknown) => {
+        deps.workOwner?.failure(err);
+        if (!exiting)
+          set({ providerSetupBusy: false, notice: 'Provider setup could not be completed.' });
+      },
+    );
+  };
+
+  const providerCommand = (text: string): boolean => {
+    if (/^\/providers(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/providers') {
+        set({ notice: '/providers accepts no arguments.' });
+        state.session?.store.note('/providers accepts no arguments.');
+      } else openProviderSetup();
+      return true;
+    }
+    if (/^\/provider(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor(), notice: 'Use /providers to connect or manage provider keys.' });
+      state.session?.store.note('Use /providers to connect or manage provider keys.');
+      return true;
+    }
+    return false;
+  };
+
   const submit = (): void => {
     if (exiting) return;
     const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
-      set({ input: emptyEditor() }); // an empty prompt stays on the Home (no chat)
+      set({ input: emptyEditor() });
+      if (state.keyless) openProviderSetup();
       return;
     }
+    if (providerCommand(trimmed)) return;
     history = recordHistory(history, trimmed); // the message that starts the chat is recallable via Up in it
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
@@ -827,28 +893,55 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): void => {
     const port = deps.models;
     if (port === undefined) return;
-    try {
-      port.writeDefault(modelId, provider, reasoningEffort);
-    } catch {
-      // An owned unexpected writer fault may have synchronously sealed Home before rethrowing.
+    type Result = void | { readonly durability: 'confirmed' | 'unconfirmed' };
+    const success = (result: Result): void => {
       if (exiting) return;
-      // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
-      // `~/.relavium/config.toml`, so don't name a path the user may not be using.
+      const suffix =
+        result?.durability === 'unconfirmed' ? ' Crash persistence is unconfirmed.' : '';
+      set({
+        modelPicker: undefined,
+        submitBusy: false,
+        notice:
+          defaultWriteNotice(port.currentDefault(), modelId, displayName, reasoningEffort) + suffix,
+      });
+    };
+    const failure = (err: unknown): void => {
+      if (exiting) return;
+      const hint =
+        err instanceof ConfigWriteRefusedError
+          ? 'config is a symbolic link — edit it manually or replace it with a regular file.'
+          : 'could not save the default model — check your config file.';
       const open = state.modelPicker;
-      if (open !== undefined) {
-        set({
-          modelPicker: {
-            ...open,
-            hint: 'could not save the default model — check your config file.',
-          },
-        });
-      }
+      set({
+        submitBusy: false,
+        ...(open === undefined ? { notice: hint } : { modelPicker: { ...open, hint } }),
+      });
+    };
+    let result: Result | Promise<Result>;
+    try {
+      result = port.writeDefault(modelId, provider, reasoningEffort);
+    } catch (err) {
+      failure(err);
       return;
     }
-    if (exiting) return;
-    set({
-      modelPicker: undefined,
-      notice: defaultWriteNotice(port.currentDefault(), modelId, displayName, reasoningEffort),
+    if (!(result instanceof Promise)) {
+      success(result);
+      return;
+    }
+    set({ submitBusy: true });
+    const pending = result;
+    let work: Promise<Result>;
+    try {
+      work = deps.workOwner === undefined ? pending : deps.workOwner.enter(() => pending);
+    } catch (err) {
+      void pending.catch(() => undefined);
+      deps.workOwner?.failure(err);
+      failure(err);
+      return;
+    }
+    void work.then(success, (err: unknown) => {
+      deps.workOwner?.failure(err);
+      failure(err);
     });
   };
 
@@ -1096,7 +1189,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
     // the bare Home (no session ⇒ run the command over the Home's own context). The command set is the surface's.
     const active = state.session;
-    const commands = active === undefined ? HOME_PALETTE_COMMANDS : CHAT_PALETTE_COMMANDS;
+    const commands = active === undefined ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS;
     const step = foldPaletteKey(input, key, palette, commands);
     if (step.kind === 'close') {
       set({ palette: undefined });
@@ -1105,7 +1198,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (step.kind === 'run') {
       set({ palette: undefined });
       if (step.command !== undefined) {
-        if (active === undefined) {
+        if (step.command.name === 'providers') {
+          openProviderSetup();
+        } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
           void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
@@ -1355,6 +1450,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
     submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
     const trimmed = line.trim();
+    if (providerCommand(trimmed)) return;
     const parsed =
       active.runShellCommand !== undefined && isShellLine(trimmed)
         ? tokenizeCommand(trimmed.slice(1))
@@ -1561,6 +1657,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // The `/models` picker (2.5.G S7) — opened from the bare-Home palette (next-session default, ADR-0063) OR a live
     // in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches.
     if (state.modelPicker !== undefined) {
+      if (state.submitBusy) return;
       routeModelPickerKey(input, key);
       return;
     }
@@ -1585,14 +1682,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     getSnapshot() {
       return state;
     },
+    setProviderState(keyless, notice) {
+      if (!exiting) {
+        set({ keyless, ...(notice === undefined ? {} : { notice }) });
+        if (notice !== undefined) state.session?.store.note(notice);
+      }
+    },
     handleKey(input, key) {
       // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from
       // `useInput`), so a pasted multi-line block never arrives here char-by-char and a pasted approval token can
       // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
-      if (!exiting) dispatchKey(input, key);
+      if (!exiting && !state.providerSetupBusy) dispatchKey(input, key);
     },
     handlePaste(text) {
-      if (exiting) return;
+      if (exiting || state.providerSetupBusy) return;
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)

@@ -1,3 +1,7 @@
+import {
+  NATIVE_PROMPT_CANCEL,
+  type NativePromptFlow,
+} from '../render/tui/native-prompt-channel.js';
 import { intro, isCancel, note, outro, password, select, spinner } from '@clack/prompts';
 import type { ProviderStore } from '@relavium/db';
 import type { ProviderId } from '@relavium/llm';
@@ -110,6 +114,21 @@ export function createBoundOnboardingPrompter(io: CliIo): ClackOnboardingDeps {
 }
 
 function ownedPrompter(deps: OnboardingDeps): ClackOnboardingDeps {
+  if (deps.native !== undefined) {
+    const flow = deps.native.flow;
+    return {
+      intro: () => {},
+      outro: () => {},
+      note: (message, title) => flow.note(message, title),
+      select: (options) => flow.select(options),
+      password: (options) =>
+        flow.password({
+          message: options.message,
+          ...(options.validate === undefined ? {} : { validate: options.validate }),
+        }),
+      isCancel: (value: unknown): value is symbol => value === NATIVE_PROMPT_CANCEL,
+    };
+  }
   const owner = deps.workOwner;
   const native =
     deps.prompter ??
@@ -152,8 +171,21 @@ function ownedPrompter(deps: OnboardingDeps): ClackOnboardingDeps {
 }
 
 /** The non-clack ports the wizard needs — the keychain-write path + the resolver (injected for tests). */
+export type OnboardingDefaultResult =
+  | { readonly kind: 'saved'; readonly durability: 'confirmed' | 'unconfirmed' }
+  | { readonly kind: 'ephemeral' }
+  | { readonly kind: 'cancelled' };
+
 export interface OnboardingDeps {
   readonly workOwner?: SessionWorkOwner;
+  readonly initialProvider?: ProviderId;
+  /** In-tree custody is owned by the caller, not the Clack terminal lease. */
+  readonly native?: {
+    readonly flow: NativePromptFlow;
+    readonly signal: AbortSignal;
+    readonly assertAdmitting: () => void;
+    readonly endpointContext: (id: ProviderId) => string;
+  };
   /** The clack slice — omit for the real prompts; a test injects a scripted one. */
   readonly prompter?: ClackOnboardingDeps;
   readonly store: ProviderStore;
@@ -164,7 +196,11 @@ export interface OnboardingDeps {
    *  Home's config target. The wizard sets a starter model of the CHOSEN provider so the first chat binds a model
    *  whose key was just stored — the built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a
    *  user who picked another provider — and persisting the provider means that first chat skips id inference. */
-  readonly writeDefaultModel: (modelId: string, provider: ProviderId) => void;
+  readonly writeDefaultModel: (
+    modelId: string,
+    provider: ProviderId,
+    assertAdmitting?: () => void,
+  ) => unknown;
   /**
    * LIVE-validate a just-entered key (2.5.G S8) — injected for tests (no network). Absent ⇒ the real bounded,
    * key-redacted {@link validateProviderKey} probe against the provider's cheap `testModel`. The wizard uses the
@@ -195,6 +231,24 @@ const requireKey = (value: string | undefined): string | undefined =>
  * (`select`/`password`/`note`/`outro`) propagates, and that is caught by the Home's cleanup `finally`.
  */
 export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
+  try {
+    await runWizard(deps);
+  } catch (cause) {
+    if (nativeCancelled(deps) && cause === deps.native?.signal.reason) return;
+    if (deps.native !== undefined) throw new Error('Provider setup failed.');
+    throw cause;
+  }
+}
+function nativeCancelled(deps: OnboardingDeps): boolean {
+  return deps.native?.signal.aborted === true;
+}
+function assertAdmitting(deps: OnboardingDeps): void {
+  deps.workOwner?.assertAdmitting();
+  deps.native?.assertAdmitting();
+  deps.native?.signal.throwIfAborted();
+}
+async function runWizard(deps: OnboardingDeps): Promise<void> {
+  assertAdmitting(deps);
   const p = ownedPrompter(deps);
   p.intro('Welcome to Relavium');
   p.note(
@@ -202,19 +256,23 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     'First-run setup',
   );
 
-  const providerValue = await p.select({
-    message: 'Which provider?',
-    options: KNOWN_PROVIDER_IDS.map((id) => ({
-      value: id,
-      label: KNOWN_PROVIDERS[id].displayName,
-      hint: KNOWN_PROVIDERS[id].baseUrl,
-    })),
-  });
+  const providerValue =
+    deps.initialProvider ??
+    (await p.select({
+      message: 'Which provider?',
+      options: KNOWN_PROVIDER_IDS.map((id) => ({
+        value: id,
+        label: KNOWN_PROVIDERS[id].displayName,
+        hint: deps.native?.endpointContext(id) ?? KNOWN_PROVIDERS[id].baseUrl,
+      })),
+    }));
   if (p.isCancel(providerValue)) return skip(p);
   // `select` only ever yields a listed option, so narrow to the closed set WITHOUT a cast (mirrors create-prompter).
   const provider = KNOWN_PROVIDER_IDS.find((id) => id === providerValue);
   if (provider === undefined) return skip(p);
 
+  if (deps.native !== undefined)
+    p.note(deps.native.endpointContext(provider), 'Provider destination');
   const rawKey = await p.password({
     message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
     validate: requireKey,
@@ -230,7 +288,7 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   // "connected" copy stays honest on the continue-anyway path. `keyToStore` is what we finally persist (the
   // originally-typed or a re-entered key). A `null` return ⇒ the user skipped mid-retry.
   const outcome = await validateWithRetry(p, deps, provider, key);
-  deps.workOwner?.assertAdmitting();
+  assertAdmitting(deps);
   if (outcome === null) return; // skip already surfaced its note/outro
   const { keyToStore, verified } = outcome;
 
@@ -247,18 +305,55 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     writeOutAcknowledged: () => Promise.resolve(),
     writeErrAcknowledged: () => Promise.resolve(),
   };
+  let keyStored = false;
+  const keychain: KeychainStore =
+    deps.native === undefined
+      ? deps.keychain
+      : {
+          get: (account) => deps.keychain.get(account),
+          set: (account, value) => {
+            deps.keychain.set(account, value);
+            keyStored = true;
+          },
+          delete: (account) => deps.keychain.delete(account),
+        };
+  const reportCommitted = (message: string): void => {
+    const flow = deps.native?.flow;
+    if (flow === undefined) return;
+    if (flow.committedNote !== undefined) flow.committedNote(message, 'Connected');
+    else flow.note(message, 'Connected');
+  };
+  const store: ProviderStore =
+    deps.native === undefined
+      ? deps.store
+      : {
+          list: () => deps.store.list(),
+          get: (name) => deps.store.get(name),
+          upsert: (input) => {
+            assertAdmitting(deps);
+            return deps.store.upsert(input);
+          },
+          setKeychainRef: (name, ref) => {
+            assertAdmitting(deps);
+            deps.store.setKeychainRef(name, ref);
+          },
+          clearKeychainRef: (name) => {
+            assertAdmitting(deps);
+            deps.store.clearKeychainRef(name);
+          },
+        };
   try {
     await runProviderCommand(
       { action: 'set-key', name: provider },
       {
         io: silentIo,
-        store: deps.store,
-        keychain: deps.keychain,
+        store,
+        keychain,
         resolver: deps.resolver,
         readSecret: () => Promise.resolve(keyToStore),
-        ...(deps.workOwner === undefined
+        ...(deps.workOwner === undefined && deps.native === undefined
           ? {}
-          : { assertAdmitting: deps.workOwner.assertAdmitting }),
+          : { assertAdmitting: () => assertAdmitting(deps) }),
         // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
         // always interactive, never `--json`).
         global: {
@@ -270,8 +365,22 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         },
       },
     );
-    deps.workOwner?.assertAdmitting();
+    if (deps.native?.signal.aborted === true) {
+      reportCommitted(
+        `Your ${provider} key was stored in the OS keychain. The default model was not saved.`,
+      );
+      return;
+    }
+    assertAdmitting(deps);
   } catch (err) {
+    if (deps.native?.signal.aborted === true && err === deps.native.signal.reason) {
+      if (keyStored)
+        reportCommitted(
+          `Your ${provider} key was stored in the OS keychain, but setup was interrupted. The default model was not saved.`,
+        );
+      return;
+    }
+    if (deps.native?.signal.aborted === true) throw err;
     if (deps.workOwner !== undefined) {
       deps.workOwner.failure(err);
       deps.workOwner.assertAdmitting();
@@ -314,24 +423,65 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   const starterModel = KNOWN_PROVIDERS[provider].testModel;
   // Honest copy: a verified key is "Verified and stored"; a consciously-accepted (network/continue-anyway) key is
   // "Saved … couldn't be verified" so the user knows to re-check — never claim verification we didn't do.
-  const storedLine = verified
-    ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
-    : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
+  const storedLine =
+    deps.native !== undefined
+      ? verified
+        ? `Verified and stored your ${provider} key in the OS keychain.`
+        : `Saved your ${provider} key — it couldn't be verified now. Run /doctor to re-check.`
+      : verified
+        ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
+        : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
   try {
-    deps.workOwner?.assertAdmitting();
-    deps.writeDefaultModel(starterModel, provider);
+    assertAdmitting(deps);
+    const written =
+      deps.native === undefined
+        ? await deps.writeDefaultModel(starterModel, provider)
+        : await deps.writeDefaultModel(starterModel, provider, () => assertAdmitting(deps));
+    if (deps.native !== undefined) {
+      const result = nativeDefaultResult(written);
+      const detail =
+        result?.kind === 'saved'
+          ? result.durability === 'confirmed'
+            ? `Your default model is ${starterModel}.`
+            : `Your default model is ${starterModel}; crash durability could not be confirmed.`
+          : result?.kind === 'ephemeral'
+            ? `${starterModel} is selected for this invocation only; the default was not saved.`
+            : 'The default was not saved. Choose a model with /models.';
+      reportCommitted(`${storedLine}\n${detail}`);
+      return;
+    }
+    assertAdmitting(deps);
     p.note(
       `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
       'Connected',
     );
   } catch (cause) {
+    if (nativeCancelled(deps) && cause === deps.native?.signal.reason) {
+      reportCommitted(`${storedLine}\nThe default model was not saved.`);
+      return;
+    }
+    if (nativeCancelled(deps)) throw cause;
     if (deps.workOwner !== undefined) {
       deps.workOwner.failure(cause);
       deps.workOwner.assertAdmitting();
     }
-    p.note(`${storedLine}\nPick a ${provider} model with /models to start chatting.`, 'Connected');
+    p.note(
+      deps.native === undefined
+        ? `${storedLine}\nPick a ${provider} model with /models to start chatting.`
+        : `${storedLine}\nThe default was not saved. Pick a ${provider} model with /models.`,
+      'Connected',
+    );
+    if (deps.native !== undefined) return;
   }
   p.outro("You're all set — starting Relavium.");
+}
+
+function nativeDefaultResult(value: unknown): OnboardingDefaultResult | undefined {
+  if (typeof value !== 'object' || value === null || !('kind' in value)) return undefined;
+  if (value.kind === 'ephemeral' || value.kind === 'cancelled') return { kind: value.kind };
+  if (value.kind !== 'saved' || !('durability' in value)) return undefined;
+  if (value.durability !== 'confirmed' && value.durability !== 'unconfirmed') return undefined;
+  return { kind: 'saved', durability: value.durability };
 }
 
 /**
@@ -370,17 +520,26 @@ async function validateWithRetry(
 
   let keyToStore = key;
   for (;;) {
-    deps.workOwner?.assertAdmitting();
+    assertAdmitting(deps);
     if (deps.workOwner !== undefined)
       p.note(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`, 'Verification');
+    deps.native?.flow.busy(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
     const sp = p.spinner?.();
     sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
     // Always stop the spinner before a probe, lifecycle or injected-validator fault propagates
     // through Home cleanup; an unresolved presentation interval does not own the real probe.
     let res: ProviderKeyValidation;
     try {
-      res = await validate(provider, keyToStore);
-      deps.workOwner?.assertAdmitting();
+      const operation = () => validate(provider, keyToStore);
+      const pending =
+        deps.native !== undefined && deps.workOwner !== undefined
+          ? deps.workOwner.work.retainWork(operation)
+          : operation();
+      res =
+        deps.native === undefined
+          ? await pending
+          : await observeValidation(pending, deps.native.signal);
+      assertAdmitting(deps);
     } finally {
       sp?.stop('Key check finished.');
     }
@@ -388,7 +547,19 @@ async function validateWithRetry(
 
     const isTransient = res.reason === 'network';
     const displayName = KNOWN_PROVIDERS[provider].displayName;
-    const choice = await p.select(buildRetryPrompt(isTransient, displayName, res.detail));
+    const choice = await p.select(
+      buildRetryPrompt(
+        isTransient,
+        displayName,
+        deps.native === undefined
+          ? res.detail
+          : res.reason === 'auth'
+            ? 'authentication failed'
+            : res.reason === 'network'
+              ? 'network unavailable'
+              : 'verification failed',
+      ),
+    );
     if (p.isCancel(choice) || choice === 'skip') {
       skip(p);
       return null;
@@ -449,4 +620,26 @@ function skip(p: ClackOnboardingDeps): void {
     'Setup skipped',
   );
   p.outro('Starting Relavium.');
+}
+
+/** Cancel observation without mistaking it for settlement of the retained producer. */
+async function observeValidation(
+  pending: Promise<ProviderKeyValidation>,
+  signal: AbortSignal,
+): Promise<ProviderKeyValidation> {
+  signal.throwIfAborted();
+  let onAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () =>
+      reject(
+        signal.reason instanceof Error ? signal.reason : new Error('Provider setup cancelled.'),
+      );
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([pending, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }

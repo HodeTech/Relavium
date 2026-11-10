@@ -1950,6 +1950,32 @@ CI families below and required remote checks remain due on the final MVP-2
 revision. Native/headless fixtures do not replace the real Windows terminal
 acceptance assigned to MVP-10.
 
+#### Step 2 implementation (2026-11-10)
+
+The credential step is implemented on `development`; independent step reviews
+and its separate credential/config security sitting remain pending. The native
+setup host, shared per-lookup policy and typed availability, prepared config
+publication, Home provider action/keyless row and standalone setup are exercised
+together. [Home](../../reference/cli/home.md#first-run-onboarding-wizard-25g-s8)
+and the [credential-source contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+own the behavior. Project initialization and safe history/resume remain steps 3
+and 4; neither is claimed implemented by this step.
+
+Self-verification fixed two late-cancellation publication paths and preserved
+their committed outcomes. The first workspace run found an existing causal
+guard failing because fresh setup opened session history before credential
+construction could refuse. The implementation restored that order and passes
+the live DB to setup afterward, without weakening the guard or rebuilding the
+resolver/policy. Three old Home assertions now wait for the asynchronous write
+to settle before making the same owner-fault/post-seal/default checks.
+
+The exact combined source passes workspace lint/typecheck/tests (CLI 427 files,
+6,948 passing, 11 existing skips), build, format, isolation (815 files), finite
+bundle closure, compiled bootstrap/CLI smoke, seam/engine fences and DB sync.
+Enforced coverage passes 815 files and 17,400 tests, with 22 existing skips and
+the required package floors. These checks precede the implementation commit;
+they do not replace either fresh review round or the final combined CI families.
+
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
 tools, wire and all 23 usage mutation controls. Its 115-control filesystem family

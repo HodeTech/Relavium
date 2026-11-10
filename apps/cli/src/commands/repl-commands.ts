@@ -360,11 +360,28 @@ export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
   PALETTE_COMMANDS.filter((command) => command.availableIn.includes('chat')),
 );
 
+/** Home owns this action; standalone chat must not advertise or dispatch it. */
+const HOME_PROVIDERS_COMMAND = freezeReplCommand({
+  name: 'providers',
+  label: 'Providers',
+  description: 'Connect, login, or manage provider API keys.',
+  effect: 'read',
+  availableIn: ['home'],
+  // Both Home surfaces intercept this command and open their shared setup port.
+  run: () => undefined,
+});
+
+export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
+  ...CHAT_PALETTE_COMMANDS,
+  HOME_PROVIDERS_COMMAND,
+]);
+
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
  *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
-export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
-);
+export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
+  ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
+  HOME_PROVIDERS_COMMAND,
+]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */
 export function replCommandList(): string {

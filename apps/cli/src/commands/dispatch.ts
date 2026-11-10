@@ -18,6 +18,7 @@ import {
   KNOWN_PROVIDER_IDS,
   createProviderResolver,
   type ProviderResolver,
+  type ProviderResolverOptions,
 } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
@@ -35,7 +36,16 @@ import { Readable } from 'node:stream';
 import { acquireCommandResource, withCommandLifetime } from '../process/command-lifetime.js';
 import { withSynchronousResource } from '../process/synchronous-resource.js';
 import { agentRunCommand, type AgentRunCommandArgs } from './agent-run.js';
-import { chatCommand, chatResumeCommand, type ChatCommandArgs } from './chat.js';
+import {
+  chatCommand,
+  chatResumeCommand,
+  chatIsInteractive,
+  type ChatCommandArgs,
+  type ChatResolvedKeys,
+} from './chat.js';
+import { runStandaloneProviderSetup } from './standalone-provider-setup.js';
+import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
+import type { LoadedConfig } from '../config/load.js';
 import { chatExportCommand, type ChatExportCommandArgs } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
 import { createCommand } from './create.js';
@@ -371,13 +381,14 @@ function storeAwareResolver(
   ctx: DispatchContext,
   keychain: KeychainStore,
   openedDb?: Db,
+  options: Pick<ProviderResolverOptions, 'standardEnvPolicy' | 'credentialSurface'> = {},
 ): ReturnType<typeof createProviderResolver> {
   const fromDb = (db: Db): ReturnType<typeof createProviderResolver> => {
     const providerStore = createProviderStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
     });
-    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore, ...options });
   };
   if (openedDb !== undefined) return fromDb(openedDb);
   const { homeDir } = loadResolvedConfig({
@@ -417,12 +428,45 @@ const executeRun: CommandExecutor = (input, ctx) =>
     resolveKeys: () => keyResolvers(ctx),
   });
 
+/** One named-source policy for standalone TTY setup, chat, replacement hosts and live diagnostics. */
+function chatKeyResolvers(ctx: DispatchContext, db?: Db, loaded?: LoadedConfig): ChatResolvedKeys {
+  if (!chatIsInteractive(ctx.io, ctx.global)) return keyResolvers(ctx, db);
+  if (loaded === undefined) throw new CliError('cli_internal', '');
+  const keychain = createOsKeychainStore();
+  const policy = createStandardEnvKeyPolicy(loaded.globalConfig?.preferences);
+  const providers = storeAwareResolver(ctx, keychain, db, {
+    standardEnvPolicy: policy,
+    credentialSurface: 'standalone-chat',
+  });
+  return {
+    providers,
+    mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
+    prepareInteractiveSetup: (lifetime, liveDb) => {
+      if (lifetime === undefined || liveDb === undefined) throw new CliError('cli_internal', '');
+      const store = createProviderStore(liveDb, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+      });
+      return runStandaloneProviderSetup({
+        lifetime,
+        loaded,
+        global: ctx.global,
+        io: ctx.io,
+        resolver: providers,
+        policy,
+        store,
+        keychain,
+      });
+    },
+  };
+}
+
 const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
     ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
-    resolveKeys: (db) => keyResolvers(ctx, db),
+    resolveKeys: (db, loaded) => chatKeyResolvers(ctx, db, loaded),
     openSessionStore,
     drive: selectChatDriver,
   });
@@ -434,7 +478,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
       io: ctx.io,
       global: ctx.global,
       ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
-      resolveKeys: (db) => keyResolvers(ctx, db),
+      resolveKeys: (db, loaded) => chatKeyResolvers(ctx, db, loaded),
       openSessionStore,
       drive: selectChatDriver,
     },

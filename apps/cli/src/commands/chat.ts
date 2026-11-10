@@ -14,6 +14,10 @@ import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
+import {
+  applyStandaloneDefault,
+  type PrepareStandaloneProviders,
+} from './standalone-provider-setup.js';
 
 import {
   DEFAULT_SESSION_MAX_TURNS,
@@ -367,6 +371,12 @@ export interface ChatDriveOutcome {
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
+export interface ChatResolvedKeys {
+  readonly providers?: ProviderResolver;
+  readonly mcpSecretResolver?: McpSecretResolver;
+  readonly prepareInteractiveSetup?: PrepareStandaloneProviders;
+}
+
 export interface ChatCommandDeps {
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
@@ -386,9 +396,7 @@ export interface ChatCommandDeps {
   ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
-  readonly resolveKeys?: (
-    db?: OpenedSessionStore['db'],
-  ) => Pick<ChatCommandDeps, 'providers' | 'mcpSecretResolver'>;
+  readonly resolveKeys?: (db?: OpenedSessionStore['db'], loaded?: LoadedConfig) => ChatResolvedKeys;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real keychain/config/tool/provider/MCP probes;
    *  a test injects a fake so it exercises `/doctor` without a real keychain or a live provider/MCP server. */
   readonly doctorProbes?: DoctorProbes;
@@ -429,9 +437,7 @@ export interface ChatResumeCommandDeps {
   ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
-  readonly resolveKeys?: (
-    db?: OpenedSessionStore['db'],
-  ) => Pick<ChatCommandDeps, 'providers' | 'mcpSecretResolver'>;
+  readonly resolveKeys?: (db?: OpenedSessionStore['db'], loaded?: LoadedConfig) => ChatResolvedKeys;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
@@ -612,253 +618,295 @@ async function chatCommandBody(
 
   // Config (2.B): a malformed layer is exit 2; the project dir powers bare-id --agent discovery, homeDir
   // locates ~/.relavium/history.db (2.H/ADR-0050).
-  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
+  let loadedConfig = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
+  const { projectConfigDir, homeDir } = loadedConfig;
+  let { config } = loadedConfig;
   const consentGate = createConsentGate({
     io: deps.io,
     global: deps.global,
     homeDir,
     prompt: createConsentPrompter(),
   });
-  const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
-  const keys = deps.resolveKeys?.();
-  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
-  const mcpSecretResolver =
-    deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
-  // The full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
-  // Decision (c)). Resolved from `chatAltActive` — the SAME function `runReplLoop` uses for the hoist.
-  const transcriptBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
-  const store = createChatStore(deps.global.color, undefined, transcriptBound);
-  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
-  // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
-  // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
-  const resolvePrice = loadUserPricingOverlay(homeDir, deps.io, deps.invocation);
+  let fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+  // Credential construction/admission precedes session history, including native binding refusals.
+  const keys = deps.resolveKeys?.(undefined, loadedConfig);
+  // Setup receives a fresh live store; the resolver's earlier bounded adapter snapshot owns no setup writes.
+  const earlyOpened =
+    chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined
+      ? ownership === undefined
+        ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+            io: deps.io,
+            invocation: deps.invocation,
+          })
+        : ownership.acquireStore((captureClose) =>
+            (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+              io: deps.io,
+              invocation: deps.invocation,
+            }),
+          )
+      : undefined;
+  let earlyTransferred = false;
+  try {
+    const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+    const mcpSecretResolver =
+      deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+    if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
+      const setup = await keys.prepareInteractiveSetup(ownership, earlyOpened?.db);
+      loadedConfig = applyStandaloneDefault(
+        loadResolvedConfig({
+          cwd: deps.global.cwd,
+          configPath: loadedConfig.globalConfigPath,
+          home: homeDir,
+        }),
+        setup.ephemeralDefault,
+      );
+      config = loadedConfig.config;
+    }
+    fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+    // The full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+    // Decision (c)). Resolved from `chatAltActive` — the SAME function `runReplLoop` uses for the hoist.
+    const transcriptBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
+    const store = createChatStore(deps.global.color, undefined, transcriptBound);
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
+    // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
+    // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
+    const resolvePrice =
+      earlyOpened === undefined
+        ? loadUserPricingOverlay(homeDir, deps.io, deps.invocation)
+        : readUserPricingOverlay(earlyOpened.db);
 
-  // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
-  // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
-  // fail-loud exit-2 CliError, cause stripped) before the session is live.
-  const prepare = async (host?: SessionHostOwner) => {
-    const build = (workOwner?: SessionWorkOwner) =>
-      (deps.buildSession ?? buildChatSession)({
-        ...(workOwner === undefined ? {} : { workOwner }),
+    // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
+    // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
+    // fail-loud exit-2 CliError, cause stripped) before the session is live.
+    const prepare = async (host?: SessionHostOwner) => {
+      const build = (workOwner?: SessionWorkOwner) =>
+        (deps.buildSession ?? buildChatSession)({
+          ...(workOwner === undefined ? {} : { workOwner }),
+          chat: config.chat,
+          fsPolicy,
+          ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+          ...(config.maxTokensEstimate === undefined
+            ? {}
+            : { maxTokensEstimate: config.maxTokensEstimate }),
+          // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
+          // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
+          // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
+          // the refusal directs a scripted caller at `agent run`, which has the flag.
+          consentGate:
+            workOwner === undefined
+              ? consentGate
+              : createOwnedSessionConsentGate(
+                  {
+                    io: deps.io,
+                    global: deps.global,
+                    homeDir,
+                  },
+                  workOwner,
+                ),
+          agentRef: args.agent,
+          cwd: deps.global.cwd,
+          projectConfigDir,
+          now,
+          uuid,
+          providers,
+          mcpSecretResolver,
+          mcpRegistrations: config.mcpServers,
+          ...(resolvePrice === undefined ? {} : { resolvePrice }),
+          onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+          onCompactionStart: compactionStartNotice(deps.io),
+          // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+          // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+          // why the knob they set did nothing.
+          onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          onListenerError: (note: string) => emitLiveNotice(deps.io, note),
+          onUnpriced: (note) => emitLiveNotice(deps.io, note),
+        });
+      const built = host === undefined ? await build() : await host.build(build);
+      // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
+      // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
+      // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
+      surfaceMcpSkipped(deps.io, built.mcpSkipped);
+      // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
+      let opened: OpenedSessionStore;
+      try {
+        opened =
+          earlyOpened ??
+          (ownership === undefined
+            ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+                io: deps.io,
+                invocation: deps.invocation,
+              })
+            : ownership.acquireStore((captureClose) =>
+                (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+                  io: deps.io,
+                  invocation: deps.invocation,
+                }),
+              ));
+      } catch (err) {
+        if (host !== undefined) {
+          host.work.failure(err);
+          throw err;
+        }
+        await built.closeMcp?.().catch(() => undefined);
+        throw err;
+      }
+      // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
+      let persister: SessionPersister;
+      try {
+        persister = createSessionPersister(
+          {
+            usageStore: createSessionUsageStore(opened.db),
+            mode: 'fresh',
+            attachUsageWriter: built.attachUsageWriter,
+            governor: built.governor,
+            attachDurabilityProbe: built.attachDurabilityProbe,
+            attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+
+            store: opened.store,
+            handle: built.handle,
+            sessionId: built.sessionId,
+            agent: built.agent,
+            context: built.context,
+            now,
+            uuid,
+            // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
+            // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
+            resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+          },
+          built.hostOwner,
+        );
+
+        // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+        // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+        // `unwiredEffectJournal()` rejects instead of no-opping.
+        built.attachEffectJournal((correlation) =>
+          createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+            providerAttempt: 1,
+            toolCallId: 'session',
+          }),
+        );
+      } catch (err) {
+        if (host !== undefined) {
+          host.work.failure(err);
+          throw err;
+        }
+        if (opened !== earlyOpened) closeQuietly(deps.io, 'session store', () => opened.close());
+        await built.closeMcp?.().catch(() => undefined);
+        throw err;
+      }
+
+      const doctorProbes =
+        deps.doctorProbes ??
+        assembleDoctorProbes({
+          ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+          cwd: deps.global.cwd,
+          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+          resolver: providers,
+          // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+          // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+          agentMcpServers: built.agent.mcp_servers ?? [],
+          mcpSkipped: built.mcpSkipped,
+        });
+
+      // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
+      // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
+      // shared with `chat-resume` via createClearRebuild so it cannot drift.
+      const rebuild = createClearRebuild({
+        homeDir,
+        ...(ownership === undefined ? {} : { ownership }),
         chat: config.chat,
         fsPolicy,
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        consentGate,
         ...(config.maxTokensEstimate === undefined
           ? {}
           : { maxTokensEstimate: config.maxTokensEstimate }),
-        // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
-        // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
-        // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
-        // the refusal directs a scripted caller at `agent run`, which has the flag.
-        consentGate:
-          workOwner === undefined
-            ? consentGate
-            : createOwnedSessionConsentGate(
-                {
-                  io: deps.io,
-                  global: deps.global,
-                  homeDir,
-                },
-                workOwner,
-              ),
-        agentRef: args.agent,
-        cwd: deps.global.cwd,
+        agent: built.agent,
         projectConfigDir,
         now,
         uuid,
         providers,
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
-        ...(resolvePrice === undefined ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
-        onCompactionStart: compactionStartNotice(deps.io),
-        // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
-        // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
-        // why the knob they set did nothing.
-        onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-        onListenerError: (note: string) => emitLiveNotice(deps.io, note),
-        onUnpriced: (note) => emitLiveNotice(deps.io, note),
-      });
-    const built = host === undefined ? await build() : await host.build(build);
-    // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
-    // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
-    // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
-    surfaceMcpSkipped(deps.io, built.mcpSkipped);
-    // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
-    let opened: OpenedSessionStore;
-    try {
-      opened =
-        ownership === undefined
-          ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
-              io: deps.io,
-              invocation: deps.invocation,
-            })
-          : ownership.acquireStore((captureClose) =>
-              (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
-                io: deps.io,
-                invocation: deps.invocation,
-              }),
-            );
-    } catch (err) {
-      if (host !== undefined) {
-        host.work.failure(err);
-        throw err;
-      }
-      await built.closeMcp?.().catch(() => undefined);
-      throw err;
-    }
-    // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
-    let persister: SessionPersister;
-    try {
-      persister = createSessionPersister(
-        {
-          usageStore: createSessionUsageStore(opened.db),
-          mode: 'fresh',
-          attachUsageWriter: built.attachUsageWriter,
-          governor: built.governor,
-          attachDurabilityProbe: built.attachDurabilityProbe,
-          attachEffectTurnAllocator: built.attachEffectTurnAllocator,
-
-          store: opened.store,
-          handle: built.handle,
-          sessionId: built.sessionId,
-          agent: built.agent,
-          context: built.context,
-          now,
-          uuid,
-          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
-          // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
-          resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
-        },
-        built.hostOwner,
-      );
-
-      // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
-      // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
-      // `unwiredEffectJournal()` rejects instead of no-opping.
-      built.attachEffectJournal((correlation) =>
-        createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
-          providerAttempt: 1,
-          toolCallId: 'session',
-        }),
-      );
-    } catch (err) {
-      if (host !== undefined) {
-        host.work.failure(err);
-        throw err;
-      }
-      closeQuietly(deps.io, 'session store', () => opened.close());
-      await built.closeMcp?.().catch(() => undefined);
-      throw err;
-    }
-
-    const doctorProbes =
-      deps.doctorProbes ??
-      assembleDoctorProbes({
-        ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
-        cwd: deps.global.cwd,
-        ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-        resolver: providers,
-        // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
-        // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
-        agentMcpServers: built.agent.mcp_servers ?? [],
-        mcpSkipped: built.mcpSkipped,
-      });
-
-    // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
-    // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
-    // shared with `chat-resume` via createClearRebuild so it cannot drift.
-    const rebuild = createClearRebuild({
-      homeDir,
-      ...(ownership === undefined ? {} : { ownership }),
-      chat: config.chat,
-      fsPolicy,
-      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-      consentGate,
-      ...(config.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: config.maxTokensEstimate }),
-      agent: built.agent,
-      projectConfigDir,
-      now,
-      uuid,
-      providers,
-      mcpSecretResolver,
-      mcpRegistrations: config.mcpServers,
-      opened,
-      buildSession: deps.buildSession ?? buildChatSession,
-      io: deps.io,
-      global: deps.global,
-      altScreen: config.altScreen,
-      // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
-      // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
-    });
-
-    // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
-    // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
-    const reseatRebuild = createReseatRebuild({
-      homeDir,
-      ...(ownership === undefined ? {} : { ownership }),
-      chat: config.chat,
-      fsPolicy,
-      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-      consentGate,
-      ...(config.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: config.maxTokensEstimate }),
-      now,
-      uuid,
-      providers,
-      mcpSecretResolver,
-      mcpRegistrations: config.mcpServers,
-      opened,
-      buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
-      io: deps.io,
-      global: deps.global,
-      altScreen: config.altScreen,
-    });
-
-    return {
-      wiring: {
-        built,
         opened,
-        store,
-        persister,
-        doctorProbes,
-        startSession: () => built.session.start(),
-        modelPicker: buildChatModelsPort(
-          opened,
-          providers,
-          built.agent.model,
-          now,
-          uuid,
-          built.workOwner,
-        ),
+        buildSession: deps.buildSession ?? buildChatSession,
+        io: deps.io,
+        global: deps.global,
         altScreen: config.altScreen,
-        mouse: config.mouse,
-        copyOnSelect: config.copyOnSelect,
-        ...(config.chat.maxMessages === undefined
+        // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
+        // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
+      });
+
+      // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
+      // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
+      const reseatRebuild = createReseatRebuild({
+        homeDir,
+        ...(ownership === undefined ? {} : { ownership }),
+        chat: config.chat,
+        fsPolicy,
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        consentGate,
+        ...(config.maxTokensEstimate === undefined
           ? {}
-          : { chatMaxMessages: config.chat.maxMessages }),
-      } satisfies ReplWiring,
-      rebuild,
-      reseatRebuild,
+          : { maxTokensEstimate: config.maxTokensEstimate }),
+        now,
+        uuid,
+        providers,
+        mcpSecretResolver,
+        mcpRegistrations: config.mcpServers,
+        opened,
+        buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
+        io: deps.io,
+        global: deps.global,
+        altScreen: config.altScreen,
+      });
+
+      return {
+        wiring: {
+          built,
+          opened,
+          store,
+          persister,
+          doctorProbes,
+          startSession: () => built.session.start(),
+          modelPicker: buildChatModelsPort(
+            opened,
+            providers,
+            built.agent.model,
+            now,
+            uuid,
+            built.workOwner,
+          ),
+          altScreen: config.altScreen,
+          mouse: config.mouse,
+          copyOnSelect: config.copyOnSelect,
+          ...(config.chat.maxMessages === undefined
+            ? {}
+            : { chatMaxMessages: config.chat.maxMessages }),
+        } satisfies ReplWiring,
+        rebuild,
+        reseatRebuild,
+      };
     };
-  };
-  const prepared =
-    ownership === undefined ? await prepare() : await ownership.hosts.construct(prepare);
-  return await runReplLoop(
-    prepared.wiring,
-    {
-      ...deps,
-      ...(ownership === undefined ? {} : { chatLifetime: ownership }),
-    },
-    prepared.rebuild,
-    prepared.reseatRebuild,
-  );
+    const prepared =
+      ownership === undefined ? await prepare() : await ownership.hosts.construct(prepare);
+    earlyTransferred = true;
+    return await runReplLoop(
+      prepared.wiring,
+      {
+        ...deps,
+        ...(ownership === undefined ? {} : { chatLifetime: ownership }),
+      },
+      prepared.rebuild,
+      prepared.reseatRebuild,
+    );
+  } finally {
+    if (ownership === undefined && earlyOpened !== undefined && !earlyTransferred)
+      closeQuietly(deps.io, 'session store', earlyOpened.close);
+  }
 }
 
 /**
@@ -955,16 +1003,37 @@ async function chatResumeCommandBody(
           'This legacy session has an ambiguous workspace alias and cannot be safely resumed.',
         );
       }
-      ({ config, projectConfigDir } = loadResolvedConfig({
+      let loadedConfig = loadResolvedConfig({
         cwd: originalCwd,
         configPath: deps.global.configPath,
-      }));
+      });
+      ({ config, projectConfigDir } = loadedConfig);
       fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
       deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
-      const keys = deps.resolveKeys?.(opened.db);
+      const keys = deps.resolveKeys?.(opened.db, loadedConfig);
       providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
       mcpSecretResolver =
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+      if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
+        const setup = await keys.prepareInteractiveSetup(ownership, opened.db);
+        // Resume keeps the saved agent/model. Only current runtime settings are reloaded.
+        loadedConfig = loadResolvedConfig({
+          cwd: originalCwd,
+          configPath: loadedConfig.globalConfigPath,
+          home: homeDir,
+        });
+        ({ config, projectConfigDir } = loadedConfig);
+        fsPolicy = admitChatFsPolicy(grants, originalCwd, loadedConfig.config.chat.extraRoots);
+        if (
+          (setup.status === 'cancelled' || setup.status === 'deferred') &&
+          !providerHasKey(providers, loaded.session.agentSnapshot.provider)
+        )
+          throw new CliError(
+            'invalid_invocation',
+            missingKeyMessage(loaded.session.agentSnapshot.provider),
+          );
+      }
+
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
       // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
       // read fault): a corrupt pricing row must not fail an otherwise-valid resume.

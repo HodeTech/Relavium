@@ -1,4 +1,7 @@
 import { CliError } from '../../process/cli-error.js';
+import { NativePromptView } from './native-prompt-view.js';
+import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
+import { displayWidth } from './viewport.js';
 import { Box, Text, useApp, useInput, usePaste } from 'ink';
 import {
   useEffect,
@@ -9,7 +12,7 @@ import {
   type ReactElement,
 } from 'react';
 
-import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { HOME_CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
 import { ChatView, useCopiedToast } from './chat-ink.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
@@ -68,6 +71,7 @@ import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 
 export interface RootAppProps {
+  readonly nativePrompt?: NativePromptUi;
   /** Synchronous native teardown seal, including mouse and paste routes before controller dispatch. */
   readonly inputEnabled?: () => boolean;
   /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
@@ -208,7 +212,7 @@ function ChatRegion(
         }
       />
       {props.palette !== undefined && (
-        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
+        <PaletteView commands={HOME_CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
       )}
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
@@ -244,6 +248,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   }, []);
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const prompt = useSyncExternalStore(
+    props.nativePrompt?.subscribe ?? emptyPromptSubscribe,
+    props.nativePrompt?.getSnapshot ?? emptyPromptSnapshot,
+  );
   const [acknowledgement] = useState(() =>
     createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
   );
@@ -328,11 +336,17 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.reasonDraft === undefined;
+    state.reasonDraft === undefined &&
+    !prompt.active &&
+    !state.providerSetupBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   // Capture the mouse exactly while the CHAT owns the screen — not while an overlay is open over it (a transient
   // state; toggling DECSET per overlay would be churn, and a report there is consumed and ignored anyway).
-  const mouseCaptured = props.alternateScreen === true && state.mode === 'chat';
+  const mouseCaptured =
+    props.alternateScreen === true &&
+    state.mode === 'chat' &&
+    !prompt.active &&
+    !state.providerSetupBusy;
   const setMouseCapture = props.setMouseCapture;
   useEffect(() => {
     setMouseCapture?.(mouseCaptured);
@@ -401,6 +415,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const store = session?.store;
     if (
       clipboard === undefined ||
+      props.nativePrompt?.getSnapshot().active === true ||
+      current.providerSetupBusy ||
       store === undefined ||
       current.mode !== 'chat' ||
       current.session !== session
@@ -419,7 +435,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           current.mode !== 'chat' ||
           current.session !== session ||
           session?.shouldStop() === true ||
-          props.inputEnabled?.() === false
+          props.inputEnabled?.() === false ||
+          props.nativePrompt?.getSnapshot().active === true ||
+          current.providerSetupBusy
         )
           return;
         if (outcome.kind === 'written') flashCopied();
@@ -461,7 +479,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const read = mouseReaderRef.current.read(input);
     if (read.kind === 'none') return false;
     const mouse = read.kind === 'event' ? read.event : undefined;
-    if (mouse !== undefined && altChat) {
+    if (mouse !== undefined && altChat && props.nativePrompt?.getSnapshot().active !== true) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
     }
@@ -479,6 +497,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       props.onSuspend?.();
       return;
     }
+    if (props.nativePrompt?.getSnapshot().active === true) {
+      if (consumeMouseReport(input)) return;
+      props.nativePrompt.input(input, key);
+      return;
+    }
+    if (controller.getSnapshot().providerSetupBusy) return;
     if (consumeMouseReport(input)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
@@ -501,7 +525,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => {
-    if (props.inputEnabled?.() !== false) controller.handlePaste(text);
+    if (props.inputEnabled?.() === false) return;
+    if (props.nativePrompt?.paste(text)) return;
+    if (controller.getSnapshot().providerSetupBusy) return;
+    controller.handlePaste(text);
   });
   const flushVisible = useVisibleRenderFlush(
     props.onRendererError,
@@ -514,41 +541,46 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
-      <ChatRegion
-        acknowledgement={acknowledgement}
-        store={state.session.store}
-        editor={state.input}
-        palette={state.palette}
-        search={state.search}
-        mention={state.mention}
-        modelPicker={state.modelPicker}
-        effortPicker={state.effortPicker}
-        now={props.nowMs}
-        cols={size.cols}
-        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
-        // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
-        viewport={
-          props.alternateScreen === true
-            ? {
-                rows: size.rows,
-                cols: size.cols,
-                scroll,
-                // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
-                ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
-                onMeasure: (g: ViewportGeometry): void => {
-                  scrollGeomRef.current = g;
-                },
-              }
-            : undefined
-        }
-        reasonDraft={state.reasonDraft}
-        shellBusy={state.shellBusy}
-        submitBusy={state.submitBusy}
-        shellCommand={state.shellCommand}
-        historyEntries={state.historyEntries}
-        attachments={state.attachments}
-        copied={copied}
-      />
+      <>
+        <ChatRegion
+          acknowledgement={acknowledgement}
+          store={state.session.store}
+          editor={state.input}
+          palette={state.palette}
+          search={state.search}
+          mention={state.mention}
+          modelPicker={state.modelPicker}
+          effortPicker={state.effortPicker}
+          now={props.nowMs}
+          cols={size.cols}
+          // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
+          // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
+          viewport={
+            props.alternateScreen === true
+              ? {
+                  rows: prompt.active
+                    ? Math.max(1, size.rows - promptRows(prompt, size.cols))
+                    : size.rows,
+                  cols: size.cols,
+                  scroll,
+                  // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
+                  ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
+                  onMeasure: (g: ViewportGeometry): void => {
+                    scrollGeomRef.current = g;
+                  },
+                }
+              : undefined
+          }
+          reasonDraft={state.reasonDraft}
+          shellBusy={state.shellBusy}
+          submitBusy={state.submitBusy}
+          shellCommand={state.shellCommand}
+          historyEntries={state.historyEntries}
+          attachments={state.attachments}
+          copied={copied}
+        />
+        <NativePromptView snapshot={prompt} color={color} />
+      </>
     );
   }
   if (state.mode === 'loading') {
@@ -561,11 +593,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         <Text {...dimProps(color)} wrap="truncate-end">
           Starting chat… · Ctrl-C to cancel
         </Text>
+        <NativePromptView snapshot={prompt} color={color} />
       </Box>
     );
   }
   return (
     <Box flexDirection="column" width={layoutColumns(size.cols)}>
+      <NativePromptView snapshot={prompt} color={color} />
       <HomeView
         snapshot={state.snapshot}
         editor={state.input}
@@ -577,6 +611,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         color={color}
         paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
         showBanner={props.showBanner}
+        keyless={state.keyless}
       />
       {state.palette !== undefined && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
@@ -585,5 +620,33 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
     </Box>
+  );
+}
+
+const emptyPromptSnapshot = (): import('./native-prompt-channel.js').NativePromptSnapshot =>
+  emptyPrompt;
+const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
+  active: false,
+  kind: 'idle',
+  message: '',
+  note: '',
+  options: [],
+  selected: 0,
+  display: '',
+  error: '',
+};
+const emptyPromptSubscribe = (): (() => void) => () => {};
+
+function promptRows(prompt: NativePromptSnapshot, columns: number): number {
+  const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
+  const lines = [
+    prompt.note,
+    prompt.message,
+    ...prompt.options.map((option) => `  ${option.label}${option.hint ? ` — ${option.hint}` : ''}`),
+    prompt.display,
+    prompt.error,
+  ].filter(Boolean);
+  return (
+    1 + lines.reduce((sum, value) => sum + Math.max(1, Math.ceil(displayWidth(value) / width)), 0)
   );
 }

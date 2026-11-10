@@ -802,6 +802,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', ENTER);
         if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
           props.controller.handleKey('', ENTER);
+        // Native preference publication now awaits visible rewrite acknowledgement.
+        // Observe the settled write before checking owner disposition and inline recovery.
+        await flush();
         if (mode === 'unexpected') {
           expect(randomUUID).toHaveBeenCalledOnce();
           expect(
@@ -879,6 +882,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       writtenEffort = REASONING_EFFORTS[effortStep.effortSelected]; // the tier the opening highlight accepts
       props.controller.handleKey('', ENTER); // accept the default effort ⇒ writeGlobalPreferences(chosen, effort)
     }
+    await flush(); // the actual preference port acknowledges its visible notice before publication
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // picker closed on accept
     expect(props.controller.getSnapshot().notice).toContain('next chat session'); // honest success (write took effect)
 

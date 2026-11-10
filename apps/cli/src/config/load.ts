@@ -1,6 +1,6 @@
 import { chmodSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { GlobalConfigSchema, ProjectConfigSchema } from '@relavium/shared';
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
@@ -24,7 +24,7 @@ const MAX_CONFIG_BYTES = 256 * 1024;
 export function loadConfigFile<T>(
   filePath: string,
   schema: ZodType<T>,
-  opts?: { readonly selfHealMode?: boolean },
+  opts?: { readonly selfHealMode?: boolean; readonly projectLayer?: boolean },
 ): T | undefined {
   let stats: Stats;
   try {
@@ -61,6 +61,9 @@ export function loadConfigFile<T>(
     throw new ConfigError(filePath, `is not valid TOML${tomlPosition(err)}.`, { cause: err });
   }
 
+  if (opts?.projectLayer === true && hasOperatorPreferences(data)) {
+    throw new ConfigError(filePath, 'operator preferences are only allowed in global config.');
+  }
   const result = schema.safeParse(data);
   if (!result.success) {
     throw new ConfigError(filePath, `is invalid — ${formatZodError(result.error)}.`, {
@@ -81,6 +84,10 @@ export interface LoadConfigOptions {
 
 export interface LoadedConfig {
   readonly config: ResolvedConfig;
+  /** Validated operator-owned state, before project/workspace resolution. */
+  readonly globalConfig: GlobalConfig | undefined;
+  /** Lexically pinned selected global file for this invocation. */
+  readonly globalConfigPath: string;
   /** The discovered project `.relavium/` directory, or `undefined` when outside a project. */
   readonly projectConfigDir: string | undefined;
   /** The resolved home directory — the root of `~/.relavium/` (where `history.db` lives, 2.H/ADR-0050). */
@@ -106,7 +113,7 @@ export function resolveHomeDir(options: Pick<LoadConfigOptions, 'home'>): string
  */
 export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   const home = resolveHomeDir(options);
-  const globalFile = options.configPath ?? join(globalConfigDir(home), 'config.toml');
+  const globalFile = resolve(options.configPath ?? join(globalConfigDir(home), 'config.toml'));
   // #33's `0600` self-heal applies to the CANONICAL global config and nothing else (#W15-13). It used to run
   // on every layer, including `workspace.toml` / `project.toml` — which `config-spec.md` describes as
   // committed and shared, so merely READING a project's config rewrote a file's mode in the user's repo and
@@ -124,14 +131,32 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
     workspace = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'workspace.toml'),
       ProjectConfigSchema,
+      { projectLayer: true },
     );
     project = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'project.toml'),
       ProjectConfigSchema,
+      { projectLayer: true },
     );
   }
 
-  return { config: resolveConfig({ global, workspace, project }), projectConfigDir, homeDir: home };
+  return {
+    config: resolveConfig({ global, workspace, project }),
+    globalConfig: global,
+    globalConfigPath: globalFile,
+    projectConfigDir,
+    homeDir: home,
+  };
+}
+
+function hasOperatorPreferences(data: unknown): boolean {
+  if (typeof data !== 'object' || data === null || !('preferences' in data)) return false;
+  const preferences: unknown = data.preferences;
+  if (typeof preferences !== 'object' || preferences === null) return false;
+  return (
+    Object.hasOwn(preferences, 'standard_env_key_consent') ||
+    Object.hasOwn(preferences, 'keychain_unavailable_acknowledged')
+  );
 }
 
 /**

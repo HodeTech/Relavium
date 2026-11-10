@@ -52,6 +52,8 @@ interface HomeViewProps {
   readonly paletteOpen?: boolean;
   /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
   readonly showBanner?: boolean | undefined;
+  /** Cached key availability, sampled by the host on opening and changes. */
+  readonly keyless?: boolean;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -107,25 +109,32 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
   // Keyed by each row's durable id (gate: run+gate; run: runId; session: sessionId; agent: slug) — never the
   // array index, so React reconciliation is stable as the strip's contents change between reads.
-  const unreadable = snapshot.unreadableRunIds;
-  const gateRows = snapshot.attention.gates.map((g) => ({
+  // Reserve terminal space for the keyless action and prompt; trim management rows first.
+  let remaining = props.keyless === true ? Math.max(0, rows - 18) : Number.POSITIVE_INFINITY;
+  const takeRows = <T,>(items: readonly T[]): readonly T[] => {
+    const selected = items.slice(0, remaining);
+    remaining -= selected.length;
+    return selected;
+  };
+  const unreadable = takeRows(snapshot.unreadableRunIds);
+  const gateRows = takeRows(snapshot.attention.gates).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
-  const failed: StripRow[] = snapshot.attention.failedRuns.map((r) => ({
+  const failed: StripRow[] = takeRows(snapshot.attention.failedRuns).map((r) => ({
     key: r.runId,
     line: `✗ ${runLabel(r, nowMs)}`,
   }));
-  const sessions: StripRow[] = snapshot.recentSessions.map((s) => ({
+  const sessions: StripRow[] = takeRows(snapshot.recentSessions).map((s) => ({
     key: s.sessionId,
     line: sessionLabel(s, nowMs),
   }));
-  const runs: StripRow[] = snapshot.recentRuns.map((r) => ({
+  const runs: StripRow[] = takeRows(snapshot.recentRuns).map((r) => ({
     key: r.runId,
     line: runLabel(r, nowMs),
   }));
-  const agents: StripRow[] = snapshot.recentAgents.map((a) => ({
+  const agents: StripRow[] = takeRows(snapshot.recentAgents).map((a) => ({
     key: a.agentSlug,
     line: agentLabel(a, nowMs),
   }));
@@ -235,12 +244,19 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
         // multi-line string. Already sanitized at the source (formatDoctorReport).
         <Box marginTop={1}>
-          <Text {...dimProps(color)}>{notice}</Text>
+          <Text {...dimProps(color)}>
+            {props.keyless === true ? notice.split('\n').slice(0, 2).join('\n') : notice}
+          </Text>
         </Box>
       )}
 
       {paletteOpen !== true && (
         <Box marginTop={1} flexDirection="column">
+          {props.keyless === true && (
+            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+              Connect a provider to start chatting — Enter to set up or /providers.
+            </Text>
+          )}
           <PromptEditor editor={editor} color={color} />
           {/* The context-aware Home hint bar (2.5.C S6): at an empty prompt, surface the `/` palette (it only opens
               from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
