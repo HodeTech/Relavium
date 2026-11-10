@@ -1,4 +1,4 @@
-import { findOpaqueTargets } from './opaque-targets.js';
+import { findOpaqueTargets, isInvalidLinkTargetCharacter } from './opaque-targets.js';
 import { isWordAt, isWordBefore } from './unicode-word.js';
 
 /** UTF-16 indexed queries used by the canonical inline interpreter. */
@@ -13,6 +13,7 @@ export interface InlineSourceIndex {
   next(token: string, start: number, end: number): number;
   tickClose(start: number, end: number): number;
   parenClose(open: number, end: number): number;
+  validLinkTarget(start: number, end: number): boolean;
   runEnd(start: number, character: string, end: number): number;
   plainEnd(start: number, end: number): number;
   singleCount(marker: string, start: number, end: number): number;
@@ -28,6 +29,7 @@ export class StaticInlineIndex implements InlineSourceIndex {
   private readonly nextTables = new Map<string, Int32Array>();
   private readonly ticks = new Map<number, number>();
   private readonly parens: Int32Array;
+  private readonly invalidTargetCounts: Uint32Array;
   private readonly runEnds = new Map<string, Int32Array>();
   private readonly source: string;
   private plainEnds: Int32Array | undefined;
@@ -35,6 +37,11 @@ export class StaticInlineIndex implements InlineSourceIndex {
   constructor(source: string) {
     this.source = source;
     this.length = source.length;
+    this.invalidTargetCounts = new Uint32Array(source.length + 1);
+    for (let at = 0; at < source.length; at++)
+      this.invalidTargetCounts[at + 1] =
+        (this.invalidTargetCounts[at] ?? 0) +
+        (isInvalidLinkTargetCharacter(source[at] ?? '') ? 1 : 0);
     this.escapes = new Uint8Array(source.length);
     for (let at = 0; at < source.length; at++) {
       if (source[at] === '\\' && at + 1 < source.length) {
@@ -114,6 +121,9 @@ export class StaticInlineIndex implements InlineSourceIndex {
   parenClose(open: number, end: number): number {
     const close = this.parens[open] ?? -1;
     return close >= 0 && close < end ? close : -1;
+  }
+  validLinkTarget(start: number, end: number): boolean {
+    return start < end && this.invalidTargetCounts[start] === this.invalidTargetCounts[end];
   }
   tickClose(start: number, end: number): number {
     const close = this.ticks.get(start) ?? -1;

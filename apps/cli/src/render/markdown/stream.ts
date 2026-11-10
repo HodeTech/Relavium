@@ -6,7 +6,7 @@ import { interpretInlineItem } from './inline-item.js';
 import type { InlineItem, InlineItemStyle } from './inline-item.js';
 import { InlineTextFactory } from './inline-text.js';
 import type { InlineTextNode, InlineTextWork } from './inline-text.js';
-import { isAutolinkTarget } from './opaque-targets.js';
+import { isAutolinkTarget, isInvalidLinkTargetCharacter } from './opaque-targets.js';
 import { PositionIndex } from './position-index.js';
 import { layoutMarkdown } from './layout.js';
 import { BlockLineClassifier, isBlockStart, isSetextPair, parseMarkdown } from './parser.js';
@@ -363,7 +363,8 @@ class ColumnCheckpoint {
   renderSource(start: number, end: number): string {
     const parts: string[] = [];
     for (let position = start; position < end; position++) {
-      parts.push(this.structure.get(position) === '' ? '\0' : (this.source[position] ?? ''));
+      const replacement = this.structure.get(position);
+      parts.push(replacement === '' ? '\0' : (replacement ?? this.source[position] ?? ''));
     }
     return parts.join('');
   }
@@ -376,6 +377,14 @@ class ColumnCheckpoint {
     let position = start;
     while (position < end && this.structure.get(position) === '') position++;
     return position;
+  }
+
+  containerPrefix(position: number): string {
+    const line = this.lines.floor(position);
+    const annotation = line && this.annotations.get(line.start);
+    if (!line || !annotation || annotation.consumed > LIVE_SOURCE_LIMIT) return '';
+    this.contextWork += annotation.consumed;
+    return this.originalSource(line.start, line.start + annotation.consumed);
   }
 
   append(source: string): void {
@@ -435,6 +444,7 @@ class ColumnCheckpoint {
     body: string | undefined,
     complete: boolean,
     extent = source.length,
+    projection?: { readonly sourcePrefixLength: number; readonly textPrefix: string },
   ): void {
     const previous = this.annotations.get(start);
     const width = displayWidth(block.prefix ?? '') + (block.kind === 'code' ? 2 : 0);
@@ -444,9 +454,14 @@ class ColumnCheckpoint {
       !previous ||
       previous.source !== source ||
       previous.body !== body ||
-      previous.block.kind !== block.kind
+      previous.block.kind !== block.kind ||
+      (projection !== undefined &&
+        (projection.sourcePrefixLength !== consumed || projection.textPrefix !== replacement))
     ) {
-      if (body !== undefined) {
+      if (projection) {
+        consumed = projection.sourcePrefixLength;
+        replacement = projection.textPrefix;
+      } else if (body !== undefined) {
         let shared = 0;
         while (
           shared < body.length &&
@@ -671,6 +686,8 @@ class LiveInlineIndex implements InlineSourceIndex {
   private allPositions = new Map<string, PositionIndex<number>>();
   private opaqueRanges = new PositionIndex<{ start: number; end: number }>();
   private radixWork = { visits: 0 };
+  private opaqueCoverage = new PositionIndex<{ start: number; end: number }>(this.radixWork);
+  private invalidTargetCounts: number[] = [0];
   private specialPositions = new PositionIndex<number>(this.radixWork);
   private tickPositions = new Map<number, PositionIndex<number>>();
   private runs: IndexedRun[] = [];
@@ -704,6 +721,11 @@ class LiveInlineIndex implements InlineSourceIndex {
 
   get length(): number {
     return this.units.length;
+  }
+
+  /** Numeric target-validity prefix entries plus disjoint opacity coverage entries. */
+  get retained(): number {
+    return this.invalidTargetCounts.length + this.opaqueCoverage.size;
   }
 
   hasContentAfter(position: number): boolean {
@@ -816,21 +838,41 @@ class LiveInlineIndex implements InlineSourceIndex {
   }
 
   private markOpaque(start: number, end: number): void {
+    // Coverage can merge adjacent intervals; owner ranges below must retain
+    // their enclosing scope boundaries for bounded inline queries.
+    const gaps: { start: number; end: number }[] = [];
+    let cursor = start;
+    let first = start;
+    let last = end;
+    let range = this.opaqueCoverage.floor(start);
+    if (!range || range.end < start) range = this.opaqueCoverage.ceiling(start);
+    while (range && range.start <= last) {
+      this.work++;
+      if (cursor < end && range.start > cursor)
+        gaps.push({ start: cursor, end: Math.min(range.start, end) });
+      cursor = Math.max(cursor, range.end);
+      first = Math.min(first, range.start);
+      last = Math.max(last, range.end);
+      this.opaqueCoverage.delete(range.start);
+      range = this.opaqueCoverage.ceiling(first);
+    }
+    if (cursor < end) gaps.push({ start: cursor, end });
+    this.opaqueCoverage.set(first, { start: first, end: last });
     let covered = this.opaqueRanges.ceiling(start);
     while (covered && covered.start < end) {
       this.opaqueRanges.delete(covered.start);
       covered = this.opaqueRanges.ceiling(start);
     }
     this.opaqueRanges.set(start, { start, end });
-    for (let at = start; at < end; at++) {
-      this.work++;
-      if (this.opaqueUnits[at]) continue;
-      this.opaqueUnits[at] = true;
-      this.updateDelimiter(at);
-      this.updateSingle(at);
-      this.wake(this.answers, at);
-      this.wake(this.singleObservers, at);
-    }
+    for (const gap of gaps)
+      for (let at = gap.start; at < gap.end; at++) {
+        this.work++;
+        this.opaqueUnits[at] = true;
+        this.updateDelimiter(at);
+        this.updateSingle(at);
+        this.wake(this.answers, at);
+        this.wake(this.singleObservers, at);
+      }
   }
 
   private updateDelimiter(position: number): void {
@@ -931,6 +973,10 @@ class LiveInlineIndex implements InlineSourceIndex {
       const position = this.length;
       const character = source[at] ?? '';
       this.work++;
+      this.invalidTargetCounts.push(
+        (this.invalidTargetCounts[position] ?? 0) +
+          (isInvalidLinkTargetCharacter(character) ? 1 : 0),
+      );
       const escaped = this.units[position - 1] === '\\' && !this.escapes[position - 1];
       this.units.push(character);
       if (/\S/.test(character)) this.lastContent = position;
@@ -1228,6 +1274,11 @@ class LiveInlineIndex implements InlineSourceIndex {
     if (close !== undefined && close < end) return close;
     this.missing(`paren:${open}`, open + 1, end, 1);
     return -1;
+  }
+
+  validLinkTarget(start: number, end: number): boolean {
+    this.work++;
+    return start < end && this.invalidTargetCounts[start] === this.invalidTargetCounts[end];
   }
 
   singleCount(marker: string, start: number, end: number): number {
@@ -1951,11 +2002,12 @@ class CanonicalInlineCheckpoint {
         this.scopeBlock = block;
         this.desiredStart = Math.max(this.desiredStart, body);
       }
-      if (this.sequence && this.offset >= start && body > this.offset) {
-        const retained = this.index.slice(
-          Math.min(this.index.length, body - this.offset),
-          this.index.length,
-        );
+      if (this.sequence && this.offset >= start && body !== this.offset) {
+        const retained =
+          body < this.offset
+            ? this.columns.originalSource(body, this.offset + this.index.length)
+            : this.index.slice(Math.min(this.index.length, body - this.offset), this.index.length);
+        if (body < this.offset) this.retiredCopied += retained.length;
         this.retiredIndexed += this.index.work + this.index.indexedWork;
         this.retiredCopied += this.index.slices;
         this.index = new LiveInlineIndex();
@@ -2036,15 +2088,18 @@ class CanonicalInlineCheckpoint {
     decisions: number;
     cache: number;
     retained: number;
+    indexRetained: number;
   }> {
     let indexed = this.retiredIndexed + this.index.work + this.index.indexedWork;
     let copied = this.retiredCopied + this.index.slices;
     let retained = this.sequence?.retained ?? 0;
+    let indexRetained = this.index.retained;
     let queues = this.sequence?.queueWork ?? 0;
     for (const scope of this.archived) {
       indexed += scope.index.work + scope.index.indexedWork;
       copied += scope.index.slices;
       retained += scope.sequence.retained;
+      indexRetained += scope.index.retained;
       queues += scope.sequence.queueWork;
       for (const view of this.bounded.get(scope.index)?.values() ?? []) retained += view.retained;
     }
@@ -2055,6 +2110,7 @@ class CanonicalInlineCheckpoint {
       decisions: this.accounting.decisions,
       cache: this.accounting.visits + queues,
       retained,
+      indexRetained,
     };
   }
 
@@ -2118,6 +2174,11 @@ class CanonicalInlineCheckpoint {
     }
     if (node.end <= end) this.regional.set(node, summary);
     return summary;
+  }
+
+  scopeEnd(offset: number): number {
+    const scope = this.archived.find((entry) => entry.offset <= offset && entry.end >= offset);
+    return scope?.end ?? this.offset + this.index.length;
   }
 
   project(source: string, offset: number, end = offset + source.length): MarkdownSpan[] {
@@ -2275,6 +2336,7 @@ export class MarkdownStream {
     decisions: number;
     cache: number;
     retained: number;
+    indexRetained: number;
   }> {
     return this.inline.checkpointWork;
   }
@@ -2352,7 +2414,7 @@ export class MarkdownStream {
       // A nonblank dedent has already left the container, even before this
       // line's newline arrives. Keep that new block outside the old fence.
       this.pendingSize -= this.lineLength;
-      this.finalize();
+      this.finalize(true);
       this.pendingSize = this.lineLength;
       this.replayInline(this.fragments.join(''), this.sourceLength - this.lineLength, false);
     }
@@ -2446,7 +2508,7 @@ export class MarkdownStream {
     }
   }
 
-  private columnLine(source: string, offset: number, complete: boolean): void {
+  private columnLine(source: string, offset: number, complete: boolean, replay = false): void {
     const prefix = source.slice(0, 256);
     let body = this.pendingFence
       ? fenceContent(complete ? source : prefix, this.pendingFence)
@@ -2458,7 +2520,7 @@ export class MarkdownStream {
     }
     let classified: BlockLineResult;
     if (
-      !complete &&
+      (!complete || replay) &&
       this.classifiedPreview?.offset === offset &&
       this.classifiedPreview.source === prefix
     )
@@ -2485,6 +2547,7 @@ export class MarkdownStream {
       };
       this.columns.line(previous.offset, previous.source, revision, undefined, true);
     }
+    if (this.pendingFence?.containers?.length && classified.block.kind !== 'code') body = undefined;
     const block =
       body !== undefined
         ? ({
@@ -2503,13 +2566,14 @@ export class MarkdownStream {
       body,
       complete,
       complete ? source.length : this.lineLength,
+      body === undefined ? classified.listProjection : undefined,
     );
     if (complete || source.trim()) this.inline.line(offset, block, classified.continuesParagraph);
     if (complete) this.classifierPrevious = { source, offset, block };
   }
 
   private replayInline(source: string, offset: number, complete: boolean): void {
-    this.columnLine(complete ? source.slice(0, -1) : source, offset, complete);
+    this.columnLine(complete ? source.slice(0, -1) : source, offset, complete, true);
     this.inline.append(source, offset);
   }
 
@@ -2521,13 +2585,13 @@ export class MarkdownStream {
   private completeLine(line: string, offset: number): void {
     if (this.pendingFence) {
       const content = fenceContent(line, this.pendingFence);
-      if (content !== undefined) {
+      if (content !== undefined && this.columns.blockAt(offset)?.block.kind === 'code') {
         this.completed.push(line);
         if (closesFence(content, this.pendingFence.marker)) this.finalize();
         return;
       }
       this.pendingSize -= line.length + 1;
-      this.finalize();
+      this.finalize(true);
       this.pendingSize = line.length + 1;
       this.replayInline(line + '\n', offset, true);
     }
@@ -2658,7 +2722,7 @@ export class MarkdownStream {
     }
   }
 
-  private finalize(): void {
+  private finalize(preserveBlockContext = false): void {
     if (this.completed.length) {
       const source = this.completed.join('\n');
       for (const block of this.parse(source)) this.addStable(block);
@@ -2670,9 +2734,11 @@ export class MarkdownStream {
     this.pendingTableContainers = [];
     this.pendingList = false;
     this.inline.reset();
-    this.blockClassifier.reset();
-    this.classifierPrevious = undefined;
-    this.classifiedPreview = undefined;
+    if (!preserveBlockContext) {
+      this.blockClassifier.reset();
+      this.classifierPrevious = undefined;
+      this.classifiedPreview = undefined;
+    }
   }
 
   tail(columns: number, maxRows: number): readonly MarkdownDisplayLine[] {
@@ -2694,6 +2760,26 @@ export class MarkdownStream {
         ? this.columns.tabSpaces(cutOffset, this.sourceLength, this.pendingTable)
         : this.inline.tabSpaces(cutOffset, this.sourceLength);
     const blocks: MarkdownBlock[] = [];
+    const parsePending = (source: string, offset: number): MarkdownBlock[] => {
+      const parsed = [...parseMarkdown(source)];
+      const first = parsed[0];
+      const original = this.columns.blockAt(offset);
+      const template = original?.block;
+      if (
+        original?.start === offset &&
+        template?.prefix &&
+        first &&
+        !first.source.includes('\n') &&
+        (template.kind === 'paragraph' || template.kind === 'list' || template.kind === 'literal')
+      ) {
+        parsed[0] = {
+          ...template,
+          source: first.source,
+          text: this.columns.renderSource(offset, offset + first.source.length).replace(/\0/g, ''),
+        };
+      }
+      return parsed;
+    };
     const projectFirst = (block: MarkdownBlock): MarkdownSpan[] => {
       const body = this.columns.bodyStart(cutOffset, cutOffset + block.source.length);
       const end =
@@ -2748,18 +2834,44 @@ export class MarkdownStream {
             ]
           : parseMarkdown(pending);
         blocks.push(...parsed);
+      } else if (this.columns.blockAt(cutOffset)?.block.kind === 'literal') {
+        // A container's lazy fallback remains literal after its fence/body has
+        // been finalized. Parsing the detached suffix would invent a fresh
+        // paragraph and merge independently literal physical rows.
+        let position = cutOffset;
+        let remainder = pending;
+        while (remainder) {
+          const metadata = this.columns.blockAt(position);
+          if (metadata?.block.kind !== 'literal') break;
+          const newline = remainder.indexOf('\n');
+          const length = newline < 0 ? remainder.length : newline;
+          const source = remainder.slice(0, length);
+          blocks.push({
+            ...metadata.block,
+            source,
+            text: this.columns.renderSource(position, position + length).replace(/\0/g, ''),
+          });
+          const consumed = length + (newline < 0 ? 0 : 1);
+          position += consumed;
+          remainder = remainder.slice(consumed);
+        }
+        if (remainder) blocks.push(...parsePending(remainder, position));
+        else if (pending.endsWith('\n')) blocks.push(literal(''));
       } else {
         const original = this.columns.blockAt(cutOffset);
         const midLine = original !== undefined && original.start < cutOffset;
         const template = original?.block;
-        const forceParagraph = midLine && template?.kind === 'paragraph';
+        const forceHeading = midLine && template?.kind === 'heading';
         const sentinel = 'x';
-        const parsed = [...parseMarkdown(forceParagraph ? sentinel + pending : pending)];
-        if (forceParagraph && parsed[0]) {
+        const context = forceHeading ? this.columns.containerPrefix(cutOffset) : '';
+        const parsed = forceHeading
+          ? [...parseMarkdown(context + sentinel + pending)]
+          : parsePending(pending, cutOffset);
+        if (forceHeading && parsed[0]) {
           const first = parsed[0];
           parsed[0] = {
             ...first,
-            source: first.source.slice(sentinel.length),
+            source: first.source.slice(context.length + sentinel.length),
             text: first.text.slice(sentinel.length),
             ...(template?.prefix ? { prefix: template.prefix } : {}),
             ...(template?.quoted ? { quoted: true } : {}),
@@ -2767,9 +2879,20 @@ export class MarkdownStream {
         }
         if (this.pendingSize > LIVE_SOURCE_LIMIT) {
           let first = parsed[0];
-          if (midLine && template && template.kind !== 'paragraph') {
+          if (midLine && template && !forceHeading) {
             const newline = pending.indexOf('\n');
-            const fragment = newline < 0 ? pending : pending.slice(0, newline);
+            const semantic = template.kind === 'paragraph' || template.kind === 'list';
+            // Use the original scope's actual boundary, rather than treating
+            // the first clipped physical newline as a new paragraph boundary.
+            // This also retains list continuation and quoted soft-line state.
+            let length = semantic
+              ? Math.min(pending.length, this.inline.scopeEnd(cutOffset) - cutOffset)
+              : newline < 0
+                ? pending.length
+                : newline;
+            const trailing = /\n[ \t]*$/.exec(pending.slice(0, length));
+            if (semantic && trailing) length = trailing.index;
+            const fragment = pending.slice(0, length);
             first =
               template.kind === 'code' && !this.pendingFence
                 ? {
@@ -2780,7 +2903,13 @@ export class MarkdownStream {
                     ...(template.prefix ? { prefix: template.prefix } : {}),
                   }
                 : { ...template, source: fragment, text: fragment };
-            const remainder = newline < 0 ? [] : parseMarkdown(pending.slice(newline + 1));
+            const remainderStart = length + (pending[length] === '\n' ? 1 : 0);
+            const remainder =
+              remainderStart < pending.length
+                ? parsePending(pending.slice(remainderStart), cutOffset + remainderStart)
+                : pending.endsWith('\n')
+                  ? [literal('')]
+                  : [];
             parsed.splice(0, parsed.length, first, ...remainder);
           }
           if (

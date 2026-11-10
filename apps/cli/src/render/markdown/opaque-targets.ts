@@ -4,14 +4,16 @@ export interface OpaqueTarget {
   readonly end: number;
 }
 
+const invalidLinkTargetCharacter = /[\s()]/u;
+
 /** Characters excluded by the supported inline link-target grammar. */
 export function isInvalidLinkTargetCharacter(character: string): boolean {
-  return /[\s()]/u.test(character);
+  return invalidLinkTargetCharacter.test(character);
 }
 
 /** Whole-target equivalent used when a complete candidate is already buffered. */
 export function isValidLinkTarget(target: string): boolean {
-  return target.length > 0 && !/[\s()]/u.test(target);
+  return target.length > 0 && !invalidLinkTargetCharacter.test(target);
 }
 
 /** Autolinks are deliberately restricted to the documented HTTP(S) and email forms. */

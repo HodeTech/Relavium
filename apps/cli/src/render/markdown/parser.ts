@@ -792,6 +792,8 @@ function parseWithState(
 export interface BlockLineResult {
   readonly block: MarkdownBlock;
   readonly continuesParagraph: boolean;
+  /** Source prefix replaced before rendering list/container content. */
+  readonly listProjection?: { readonly sourcePrefixLength: number; readonly textPrefix: string };
   readonly revision?: MarkdownBlock;
   readonly preserveRevisionPrefix?: boolean;
 }
@@ -864,13 +866,31 @@ export class BlockLineClassifier {
       previous !== undefined &&
       matchesPrefix(previous.continuation, block.prefix ?? '') &&
       previous.quoted === Boolean(block.quoted);
-    return state.revision
-      ? {
-          block,
-          revision: state.revision,
-          continuesParagraph,
-          preserveRevisionPrefix: state.preserveRevisionPrefix,
-        }
-      : { block, continuesParagraph };
+    let listProjection: BlockLineResult['listProjection'];
+    if (
+      block.kind === 'list' ||
+      ((block.kind === 'paragraph' || block.kind === 'literal') && !!block.prefix && !block.raw)
+    ) {
+      let shared = 0;
+      while (
+        shared < block.source.length &&
+        shared < block.text.length &&
+        block.source[block.source.length - shared - 1] ===
+          block.text[block.text.length - shared - 1]
+      )
+        shared++;
+      listProjection = {
+        sourcePrefixLength: block.source.length - shared,
+        textPrefix: block.text.slice(0, block.text.length - shared),
+      };
+    }
+    return {
+      block,
+      continuesParagraph,
+      ...(listProjection ? { listProjection } : {}),
+      ...(state.revision
+        ? { revision: state.revision, preserveRevisionPrefix: state.preserveRevisionPrefix }
+        : {}),
+    };
   }
 }

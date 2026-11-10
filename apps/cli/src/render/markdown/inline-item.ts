@@ -1,6 +1,6 @@
 import { sanitizeInline } from '../sanitize.js';
 import type { InlineSourceIndex } from './inline-index.js';
-import { isAutolinkTarget, isValidLinkTarget } from './opaque-targets.js';
+import { isAutolinkTarget } from './opaque-targets.js';
 import type { MarkdownSpan } from './types.js';
 
 export type InlineItemStyle = Omit<MarkdownSpan, 'text'>;
@@ -119,9 +119,16 @@ export function interpretInlineItem<T>(
     const finish = close < 0 ? -1 : index.parenClose(close + 1, end);
     const nested = next('[', labelStart);
     if (close >= 0 && finish >= 0 && (nested < 0 || nested > close)) {
-      const label = index.slice(labelStart, close);
-      const target = index.slice(close + 2, finish);
-      if (isValidLinkTarget(target) && !label.includes('\n')) {
+      if (index.validLinkTarget(close + 2, finish)) {
+        const label = index.slice(labelStart, close);
+        if (label.includes('\n'))
+          return item(
+            finish + 1,
+            true,
+            [raw(start, finish + 1)],
+            [{ start, end: finish + 1, text: '', raw: true }],
+          );
+        const target = index.slice(close + 2, finish);
         const safeTarget = sanitizeInline(target);
         if (image)
           return item(

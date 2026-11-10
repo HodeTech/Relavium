@@ -1,5 +1,15 @@
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
-import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
+import {
+  Box,
+  Static,
+  Text,
+  render,
+  useApp,
+  useInput,
+  usePaste,
+  useStdout,
+  useWindowSize,
+} from 'ink';
 import {
   createElement,
   useCallback,
@@ -637,6 +647,22 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       </Text>
     </Box>
   );
+}
+
+/** Preserve explicit native widths that Ink's fallback would normalize to 80. */
+function useRawTerminalColumns(): number | undefined {
+  const { stdout } = useStdout();
+  const subscribe = useCallback(
+    (listener: () => void): (() => void) => {
+      stdout.on('resize', listener);
+      return () => {
+        stdout.off('resize', listener);
+      };
+    },
+    [stdout],
+  );
+  const read = useCallback((): number | undefined => stdout.columns, [stdout]);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
@@ -1633,12 +1659,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
-  // The live terminal size via ink 7's `useWindowSize` (2.6.F Step 4b): unlike a raw `process.stdout.columns` read,
-  // this RE-RENDERS the component on a SIGWINCH resize (ink's own resize handler only re-lays-out yoga width; it does
-  // not re-execute React, and the idle frame loop does not repaint), so the alt-screen container height, the wrap
-  // width, and the viewport's re-measure all track a resize — parity with the Home's `subscribeResize`. It falls
-  // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
-  const windowSize = useWindowSize();
+  // Observe the captured output stream on resize, as the Home does. Ink's
+  // useWindowSize supplies defaults when dimensions are unavailable, but also
+  // normalizes explicit 0/NaN widths to 80. Preserve those raw widths so a
+  // suspended transcript cannot admit invisible entries or acknowledge them.
+  const measuredSize = useWindowSize();
+  const rawColumns = useRawTerminalColumns();
+  const windowSize = {
+    columns: rawColumns === undefined ? measuredSize.columns : rawColumns,
+    rows: measuredSize.rows,
+  };
 
   const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort, acknowledgement);
   useEffect(() => {

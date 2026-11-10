@@ -86,6 +86,7 @@ function parseInlineInternal(
     runEnd: (start, character, end) => base.runEnd(start, character, end),
     plainEnd: (start, end) => base.plainEnd(start, end),
     singleCount: (marker, start, end) => base.singleCount(marker, start, end),
+    validLinkTarget: (start, end) => base.validLinkTarget(start, end),
     next: (token, start, end) => {
       const found = base.next(token, start, end);
       if (found < 0 && unresolved) unresolved.push({ at: position(decisionAt), token });

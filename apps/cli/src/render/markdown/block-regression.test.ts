@@ -182,6 +182,48 @@ describe('block parser regressions', () => {
     }
   });
 
+  it('maps structural source tabs to residual list indentation', () => {
+    const classifier = new BlockLineClassifier();
+    classifier.commit('1. a');
+    const result = classifier.commit('\tb\t');
+    expect(result.block).toMatchObject({ kind: 'list', text: '     b\t', prefix: '   ' });
+    expect(result.listProjection).toEqual({ sourcePrefixLength: 1, textPrefix: '     ' });
+    const quote = new BlockLineClassifier();
+    quote.commit('> - a');
+    expect(quote.commit('> \tb\t').listProjection).toEqual({
+      sourcePrefixLength: 3,
+      textPrefix: '    ',
+    });
+    const nested = new BlockLineClassifier();
+    nested.commit('12345. # h');
+    expect(nested.commit('\t tail\t')).toMatchObject({
+      block: { kind: 'paragraph', text: '  tail\t', prefix: '       ' },
+      listProjection: { sourcePrefixLength: 1, textPrefix: ' ' },
+    });
+    const literal = new BlockLineClassifier();
+    literal.commit('- > a');
+    expect(literal.commit('\t> b\t')).toMatchObject({
+      block: { kind: 'literal', text: '      > b\t', prefix: '  ' },
+      listProjection: { sourcePrefixLength: 1, textPrefix: '      ' },
+    });
+    const partial = new BlockLineClassifier();
+    expect(partial.preview('1. ').block.kind).toBe('list');
+    expect(partial.preview('1. \t').block.kind).toBe('paragraph');
+    expect(partial.preview('1. \t').listProjection).toBeUndefined();
+  });
+
+  it('keeps the active list when a contained fence ends by dedenting', () => {
+    for (const lines of [
+      ['- ```', '*x*'],
+      ['- ```', 'a', '`x`'],
+      ['> - ```', '> x'],
+    ]) {
+      const classifier = new BlockLineClassifier();
+      const actual = lines.map((line) => classifier.commit(line).block);
+      expect(actual).toEqual(parseMarkdown(lines.join('\n')));
+    }
+  });
+
   it('retains quoted list state over physical lines', () => {
     const classifier = new BlockLineClassifier();
     const lines = ['> - x', '> \tcontinued'];
@@ -233,6 +275,17 @@ describe('block parser regressions', () => {
     const final = classifier.commit('after').block;
     const canonical = parseMarkdown('- ```\n  a\n\n  b\n  ```\nafter');
     expect(final.kind).toBe(canonical.at(-1)?.kind);
+  });
+
+  it('ends a nested list fence group on an outer unindented blank', () => {
+    for (const fence of ['```', '~~~']) {
+      const lines = [`- 1. ${fence}`, '', '\tb\t'];
+      const classifier = new BlockLineClassifier();
+      const actual = lines.map((line) => classifier.commit(line).block);
+      expect(actual).toEqual(parseMarkdown(lines.join('\n')));
+      expect(actual[1]).toMatchObject({ kind: 'literal', source: '' });
+      expect(actual[2]).toMatchObject({ kind: 'paragraph', source: '\tb\t', text: '\tb\t' });
+    }
   });
 
   it('retains literal depth overflow with incremental container state', () => {
