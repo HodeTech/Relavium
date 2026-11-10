@@ -3155,13 +3155,16 @@ export class MarkdownStream {
         }
       : undefined;
     // Keep a list group together: its indentation stack is block-parser state.
-    const list = /^( *)(?:[-+*]|\d+[.)]) {1,4}(?:\S|$)/.test(line);
+    // HTML owns its raw markers and retires any earlier raw list hint. The
+    // canonical classifier retains the actual surrounding container state.
+    if (classified?.htmlLine) this.pendingList = false;
+    const list = !classified?.htmlLine && /^( *)(?:[-+*]|\d+[.)]) {1,4}(?:\S|$)/.test(line);
     const sameList = this.pendingList && (list || /^[ \t]/.test(line));
     const quote = /^ {0,3}>/.test(line);
     const previousQuote = previous !== undefined && /^ {0,3}>/.test(previous);
     const setext = previous !== undefined && isSetextPair(previous, line);
     if (
-      (opening || isBlockStart(line)) &&
+      (opening || (!classified?.htmlLine && isBlockStart(line))) &&
       !setext &&
       (!sameList || opening?.classified) &&
       !(quote && previousQuote && !opening) &&
