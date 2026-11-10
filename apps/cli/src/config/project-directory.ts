@@ -25,7 +25,7 @@ export function assertProjectArtifactPath(path: string, home: string = homedir()
   if (!projectPathIsAllowed(path, home))
     throw new CliError(
       'invalid_invocation',
-      'The project artifact resolves into global configuration. Remove the global catalog link and import into a project-owned catalog.',
+      'The project artifact resolves into home or global configuration. Use a project-owned path and remove links into global state.',
     );
 }
 

@@ -1,5 +1,7 @@
 import {
   mkdirSync,
+  existsSync,
+  lstatSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -15,10 +17,11 @@ import { createClient, createSessionStore, runMigrations } from '@relavium/db';
 import { buildAuthored, serializeAuthored } from './authoring.js';
 import { createCommand } from '../commands/create.js';
 import { importCommand } from '../commands/import.js';
+import { exportCommand } from '../commands/export.js';
 import { discoverCatalog } from '../workflows/catalog.js';
 import { resolveWorkflowSource, resolveYamlSource } from '../workflows/resolve.js';
 import { resolveChatAgentSource } from '../chat/agent-source.js';
-import { exportSessionToProject } from '../chat/export.js';
+import { exportSession, exportSessionToProject } from '../chat/export.js';
 import { captureIo } from '../test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 
@@ -65,6 +68,47 @@ describe('actual project catalog targets exclude global state', () => {
     const nested = join(marker, 'device-state');
     for (const kind of ['agents', 'workflows']) mkdirSync(join(nested, kind), { recursive: true });
     symlinkSync(nested, globalDir, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+
+  function withSession(run: (store: ReturnType<typeof createSessionStore>) => void): void {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      const store = createSessionStore(client.db);
+      const timestamp = '2026-11-10T00:00:00.000Z';
+      store.createSession({
+        id: 's1',
+        agentSlug: 'sample',
+        title: 'Local session',
+        context: { workingDir: cwd, fsScopeTier: 'project' },
+        status: 'active',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      store.appendMessage({
+        id: 'user',
+        sessionId: 's1',
+        sequenceNumber: 0,
+        role: 'user',
+        content: [{ type: 'text', text: 'private transcript' }],
+        timestamp,
+      });
+      store.appendMessage({
+        id: 'answer',
+        sessionId: 's1',
+        sequenceNumber: 1,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'local answer' }],
+        timestamp,
+      });
+      run(store);
+    } finally {
+      client.sqlite.close();
+    }
   }
 
   it.each(['agents', 'workflows'] as const)(
@@ -229,4 +273,55 @@ describe('actual project catalog targets exclude global state', () => {
     expect(readFileSync(join(marker, 'agents', 'sample.agent.yaml'), 'utf8')).toBe(yaml());
     expect(readFileSync(source, 'utf8')).toBe(yaml());
   });
+
+  it.each(['artifact', 'session'] as const)(
+    'refuses a default %s export through a global file alias, preserving explicit output selection',
+    (kind) => {
+      writeFileSync(join(marker, 'agents', 'sample.agent.yaml'), yaml());
+      const name = kind === 'artifact' ? 'sample.agent.yaml' : 's1.relavium.yaml';
+      const target = join(globalDir, name);
+      const output = join(cwd, name);
+      writeFileSync(target, 'preserve-global-output\n');
+      symlinkSync(target, output);
+      const { io } = captureIo();
+      withSession((store) => {
+        const write = (explicit: boolean) =>
+          kind === 'artifact'
+            ? exportCommand(
+                { id: 'sample', force: true, ...(explicit ? { out: target } : {}) },
+                { io, global: options() },
+              )
+            : exportSession({
+                store,
+                sessionId: 's1',
+                cwd,
+                homeDir: home,
+                force: true,
+                ...(explicit ? { outPath: target } : {}),
+              });
+        expect(() => write(false)).toThrow('global configuration');
+        expect(readFileSync(target, 'utf8')).toBe('preserve-global-output\n');
+        expect(lstatSync(output).isSymbolicLink()).toBe(true);
+        write(true);
+        expect(readFileSync(target, 'utf8')).toContain(
+          kind === 'artifact' ? 'id: sample' : 'private transcript',
+        );
+      });
+    },
+  );
+
+  it.each(['home', 'global'] as const)(
+    'refuses default session export from %s before reading history',
+    (location) => {
+      withSession((store) => {
+        const read = vi.spyOn(store, 'loadFull');
+        const directory = location === 'home' ? home : globalDir;
+        expect(() =>
+          exportSession({ store, sessionId: 's1', cwd: directory, homeDir: home, force: true }),
+        ).toThrow('global configuration');
+        expect(read).not.toHaveBeenCalled();
+        expect(existsSync(join(directory, 's1.relavium.yaml'))).toBe(false);
+      });
+    },
+  );
 });

@@ -49,6 +49,7 @@ export interface ExportSessionOptions {
   readonly sessionId: string;
   /** The base dir a relative `outPath` (or the default `<sessionId>.relavium.yaml`) resolves against — the launch cwd. */
   readonly cwd: string;
+  readonly homeDir?: string;
   /**
    * `--out <path>` override (absolute, or relative to {@link cwd}); the default is `<sessionId>.relavium.yaml`
    * in cwd — keyed on the UNIQUE session id, not the (possibly shared/absent) title, so two sessions never
@@ -76,15 +77,18 @@ export interface ExportResult {
  * written path + the loaded record (for an optional row-marking by the caller).
  */
 export function exportSession(opts: ExportSessionOptions): ExportResult {
-  const loaded = loadSession(opts.store, opts.sessionId);
-  const definition = sessionToWorkflow(loaded.session, loaded.messages);
-
   // Default the filename to the UNIQUE session id (collision-free), not `workflow.id` (the title-slug, which
   // two untitled sessions share) — the in-file `workflow.id` stays the human-renameable title-slug.
   const path =
     opts.outPath === undefined
       ? join(opts.cwd, `${opts.sessionId}.relavium.yaml`)
       : resolve(opts.cwd, opts.outPath);
+  if (opts.outPath === undefined) {
+    assertProjectArtifactPath(opts.cwd, opts.homeDir);
+    assertProjectArtifactPath(path, opts.homeDir);
+  }
+  const loaded = loadSession(opts.store, opts.sessionId);
+  const definition = sessionToWorkflow(loaded.session, loaded.messages);
   const label = sourceLabel(opts.cwd, path);
   if (writeScaffold(path, serializeWorkflow(definition), opts.force, label) === 'exists') {
     throw new CliError('invalid_invocation', `${label} already exists — pass --force to overwrite`);

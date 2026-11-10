@@ -10,6 +10,7 @@ import type { ZodError, ZodIssue, ZodType } from 'zod';
 import { ConfigError, OperatorConfigError } from './errors.js';
 import { findProjectConfigDir, globalConfigDir } from './paths.js';
 import { resolveConfig, type ResolvedConfig } from './resolve.js';
+import { assertProjectArtifactPath } from './project-directory.js';
 
 /** Pre-parse source cap (ADR-0048 hardened loader) — a committed config file is small. */
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -24,8 +25,15 @@ const MAX_CONFIG_BYTES = 256 * 1024;
 export function loadConfigFile<T>(
   filePath: string,
   schema: ZodType<T>,
-  opts?: { readonly selfHealMode?: boolean; readonly projectLayer?: boolean },
+  opts?: {
+    readonly selfHealMode?: boolean;
+    readonly projectLayer?: boolean;
+    readonly home?: string;
+  },
 ): T | undefined {
+  // Automatic project layers must not read global state through child aliases.
+  // Explicit operator config reads retain their selected-file contract.
+  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home);
   let stats: Stats;
   try {
     stats = statSync(filePath);
@@ -134,12 +142,12 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
     workspace = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'workspace.toml'),
       ProjectConfigSchema,
-      { projectLayer: true },
+      { projectLayer: true, home },
     );
     project = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'project.toml'),
       ProjectConfigSchema,
-      { projectLayer: true },
+      { projectLayer: true, home },
     );
   }
 

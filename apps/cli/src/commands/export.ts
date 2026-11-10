@@ -1,4 +1,5 @@
 import { basename, join, relative, resolve } from 'node:path';
+import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   authoredFileName,
@@ -56,6 +57,7 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
       ? join(cwd, authoredFileName(parsed.kind, parsed.slug))
       : resolve(cwd, args.out);
   const targetDisplay = relative(cwd, target);
+  if (args.out === undefined) assertProjectArtifactPath(target);
   writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
 
   // Emit the cwd-relative path in both modes — the same contract `import` uses, so a script consuming either

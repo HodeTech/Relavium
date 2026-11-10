@@ -18,6 +18,7 @@ export function applyInvocationDefault(
     for (const name of ['project.toml', 'workspace.toml']) {
       const layer = loadConfigFile(join(loaded.projectConfigDir, name), ProjectConfigSchema, {
         projectLayer: true,
+        home: loaded.homeDir,
       });
       if (layer?.chat?.default_model !== undefined) return loaded;
     }
