@@ -288,7 +288,10 @@ The workflow and agent files inside `.relavium/` carry their own `schema_version
 **Accepted on development, MVP-2 step 2 — 2026-11-10.** The maintainer approved the corrected dated
 [ADR-0112 refinement](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
 and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
-The historical heading is retained for stable inbound links. Milestone and release acceptance remain pending.
+The historical heading is retained for stable inbound links. All four MVP-2 steps
+are implemented and step-reviewed; the
+[checkpoint record](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+owns combined validation and maintainer review. Release acceptance remains separate.
 
 Add global-only `[preferences].standard_env_key_consent`, a strict optional table
 whose only optional entries are:

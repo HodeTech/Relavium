@@ -591,7 +591,9 @@ relavium provider list --verify                         # + a live key-verificat
   Scripting calls use an eligible standard variable directly; interactive
   Home/TTY chat require explicit source consent. Custom endpoints cannot use
   a standard variable. This note also qualifies keyless `--verify`/test and
-  plain/JSON chat guidance. Milestone and release acceptance remain pending.
+  plain/JSON chat guidance. All four MVP-2 steps are implemented and step-reviewed;
+  the [checkpoint record](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+  owns combined validation and maintainer review. Release acceptance remains separate.
 
 ### Secret stdin limits
 

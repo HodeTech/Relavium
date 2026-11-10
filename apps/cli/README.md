@@ -24,15 +24,18 @@ prebuilt native binaries — no C/C++ toolchain, no Python sidecar.
 
 ## Quick start
 
-```bash
-# 1 · Point Relavium at a provider — your key goes to the OS keychain, never a file or argv
-relavium provider add anthropic
-echo "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic
+The Home-first MVP-2 features below are implemented and reviewed on `development`
+for the upcoming v0.2.0 milestone. The current npm release is `0.1.1`; checkpoint
+and release status live in the [roadmap](../../docs/roadmap/current.md).
 
-# 2 · Start as an agent — a streaming, multi-turn session in your terminal
-relavium chat
-#     …converse until a flow proves itself, then run /export inside the REPL
-#     to ship the session to a git-committable .relavium.yaml
+```bash
+# 1 · Open Home and connect a provider through its native masked setup
+relavium
+#     /providers manages keys; eligible standard environment keys ask for consent.
+
+# 2 · Initialize this project, then start talking in the same Home
+#     /init previews its directories before creation; /resume finds saved conversations.
+#     /export ships a proven conversation into .relavium/workflows/.
 
 # 3 · Own every run — execute the workflow, streaming live (or --json for CI)
 relavium run ./my-workflow.relavium.yaml --input file=./src/index.ts
@@ -41,6 +44,12 @@ relavium run ./my-workflow.relavium.yaml --json
 
 Prefer authoring directly? `relavium create` scaffolds an agent or a minimal single-agent workflow from
 an interactive wizard.
+
+`relavium chat` opens the standalone chat. For scripting, provider keys resolve
+from the OS keychain, `RELAVIUM_*`, then an eligible standard environment variable.
+Standard variables are excluded for custom provider endpoints. The
+[credential-source contract](../../docs/reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+defines the four supported names and interactive consent.
 
 ## Why relavium
 
@@ -65,10 +74,16 @@ an interactive wizard.
 | Command                                       | Purpose                                                     |
 | --------------------------------------------- | ----------------------------------------------------------- |
 | `relavium chat [--agent <ref>]`               | Start an interactive multi-turn agent session (the REPL).   |
-| `relavium chat-resume <sessionId>`            | Reload and continue a persisted session.                    |
-| `relavium chat-list`                          | List past sessions (id, agent, last activity).              |
-| `relavium chat-export <sessionId>`            | Export a session to a `.relavium.yaml` workflow scaffold.   |
+| `relavium chat resume [sessionId]`            | Restore a saved conversation; omit the id on a TTY for the searchable picker. |
+| `relavium chat --continue`                   | Continue this directory's latest session. |
+| `relavium chat list`                          | List past sessions (id, agent, last activity).              |
+| `relavium chat export <sessionId>`            | Export a session to a `.relavium.yaml` workflow scaffold.   |
 | `relavium agent run <agent> [--fixture <p>]`  | Run a single agent one-shot (prompt on **stdin**); `--fixture` replays a cassette (offline, CI-ready). |
+
+The existing `chat-resume`, `chat-list` and `chat-export` shell aliases remain
+available. Inside Home, `/resume` and Down/Enter on Continue use the same safe
+restoration. Historical user prompts without display provenance show an explicit
+placeholder; archived model context and exports retain their canonical content.
 
 ### Workflows & authoring
 
@@ -76,6 +91,7 @@ an interactive wizard.
 | ------------------------------------ | ----------------------------------------------------------------- |
 | `relavium run <workflow> [--input k=v]` | Execute a workflow — live TUI, or `--json` NDJSON for CI.       |
 | `relavium create`                    | Scaffold a new agent or a minimal workflow from a wizard.         |
+| `relavium init`                      | Create this project's `.relavium/workflows/` and `.relavium/agents/`. |
 | `relavium import <path>`             | Import an external `.relavium.yaml` / `.agent.yaml` into the project. |
 | `relavium export <id>`               | Write a portable, share-safe copy (no secret material).           |
 

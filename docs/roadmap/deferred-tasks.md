@@ -3152,6 +3152,12 @@ so directly: these "should remain visible rather than disappear behind the green
 
 ## `chat-resume` opens on an empty viewport (2.6.C spin-off, 2026-07-12)
 
+> **Closed on development — MVP-2 step 4, 2026-11-10 (`cecb6191`).**
+> Both renderers restore safe visible history, with explicit legacy placeholders,
+> archive/memory notices and initial entry budgets. The
+> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+> owns the evidence. The description and scheduling discussion below are historical.
+
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
 >
@@ -3176,7 +3182,8 @@ is a long-standing UX gap that would have added a DB read path and an inline beh
 The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
 so the remaining work is the projection and the inline decision.
 
-**Scheduled → 2.6.G** (the `/agents > Sessions` browser owns resume-in-place). The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
+**Original schedule → 2.6.G** (the `/agents > Sessions` browser owned resume-in-place).
+MVP-2's closure above supersedes that schedule. The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
@@ -4088,7 +4095,11 @@ future test cannot silently re-acquire it.
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
+- [x] **Closed on development — MVP-2 step 1: alt-screen word wrapping (#61).**
+  Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
+  tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
+  see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+  **Historical scheduling:** the maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur
   once. Wave 3 still owns grapheme/tab/resize/cache/editor bounds; this disposition

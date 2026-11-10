@@ -1,10 +1,39 @@
 # Changelog
 
 All notable changes to the `relavium` CLI are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project is pre-1.0, so
-minor and patch bumps both land additively under a `0.1.x` line. The publish flow is
-[release-a-surface.md](../../docs/runbooks/release-a-surface.md) (tag `v<version>` →
-the `Release CLI` workflow: pack → cross-OS smoke → publish).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release procedures and the
+publication guard are documented in
+[release-a-surface.md](../../docs/runbooks/release-a-surface.md).
+
+## [Unreleased]
+
+MVP-2 is implemented and independently reviewed on `development`; the published
+version is still `0.1.1`. Publication remains guarded until the accepted D59
+release path replaces the interim guard. Checkpoint evidence is recorded in the
+[MVP-2 acceptance register](../../docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10).
+
+### Added
+
+- In-house assistant markdown rendering, Unicode/tab-aware word wrapping and
+  source-preserving copy/edit/scrollback hatches in both interactive renderers.
+- Native in-Home and standalone provider setup with masked input, typed key
+  availability, eligible standard-environment source consent, `/providers` and a
+  persistent keyless action.
+- Shared `/init` and shell `init`, with directory preview/confirmation in Home,
+  safe no-overwrite behavior and global/project artifact separation.
+- Safe restored conversation display, additive optional user display metadata,
+  indexed paged session discovery, Home `/resume`, actionable Continue,
+  `chat resume/list/export`, `chat --continue` and durable-session exit hints.
+
+### Fixed
+
+- Failed-tool feedback and copy-request feedback report their actual result.
+- Extra arguments on non-variadic commands refuse without reflecting values;
+  a one-shot agent on TTY stdin explains how to provide its prompt.
+- Global `~/.relavium` no longer acts as a project folder or authoring target.
+- Native picker input survives output backpressure, pasted drafts leave Continue
+  focus, diagnostics remain readable, and cancelled restoration stops new work
+  while retaining actual cleanup and the existing conversation.
 
 ## [0.1.1] — 2026-06-28
 

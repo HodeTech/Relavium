@@ -237,3 +237,14 @@ rather than terminal control, and their rendering is a separate decision.
   do.
 - With color disabled, the user sees raw markdown rather than a degraded
   rendering.
+
+## Implementation and review receipt — 2026-11-10
+
+The approved in-house renderer is implemented and independently accepted on
+`development` at `b636be5f` after complete cumulative review and the separate D76
+parser security sitting. Its canonical behavior is in the
+[markdown reference](../reference/cli/markdown-rendering.md); the
+[step acceptance record](../roadmap/phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10)
+records corrections and evidence. Earlier unimplemented wording is historical.
+The complete four-step MVP-2 checkpoint retains its combined CI and maintainer
+review gates; no dependency, highlighting scope or release decision changes here.

@@ -360,8 +360,11 @@ nontrailing, preserving the old archive's ambiguity rather than permanently dele
 
 ## Proposed user display text — MVP-2
 
-**Implemented on development; step-4 acceptance pending — 2026-11-10.** The maintainer approved
+**Implemented and independently accepted on development — 2026-11-10.** The maintainer approved
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md).
+The historical heading remains for stable inbound links; the
+[step-4 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+records the reviewed source and checkpoint gates.
 The existing `SessionMessage` interface above remains the shipped contract.
 
 Keep `SessionMessage` and its canonical `content` unchanged. The host separately

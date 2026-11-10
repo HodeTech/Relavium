@@ -1404,6 +1404,12 @@ Home and does everything there; subcommands stay for scripts.
 [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) records it. This section is the one home
 for MVP-2's scope, slices, decisions and acceptance under that direction.
 
+**Implementation receipt — 2026-11-10:** all four approved steps are implemented
+and independently accepted on `development`; see the
+[final step acceptance and checkpoint gates](#step-4-acceptance-2026-11-10).
+The dated research, preflight and initial verification notes retain their
+historical baseline; the acceptance records establish the delivered state.
+
 The plan rests on three pieces of research:
 
 - the [terminal agent CLI UX benchmark](../../analysis/cli-ux-benchmark-2026-11-08.md) of eleven current products;
@@ -1569,10 +1575,11 @@ user's journey.
    - It is keyboard-first: mouse capture stays off on the landing, as [home.md](../../reference/cli/home.md) records.
    - Only session rows are actionable in MVP-2. The rows carry the session's working directory, so a row from
      another directory follows decision 5.
-   - **Small terminals.** MVP-3 owns the strip's row budget at 80×24. Until it lands, MVP-2's provisional rule
-     keeps the prompt, the keyless row (#51) and the focused row on screen: the Continue list trims and scrolls
-     first. It meets [home.md](../../reference/cli/home.md)'s known tall-landing limit head-on instead of adding to
-     it.
+   - **Small terminals.** MVP-2's provisional Home budget keeps the prompt, the
+     keyless row (#51) and the focused row visible at 80×24: management lists trim
+     and scroll first, and long diagnostics page without source loss. The
+     [Home reference](../../reference/cli/home.md#minimum-terminal-size) owns the
+     delivered behavior. MVP-3 retains the wider strip/browser geometry work.
 8. **The way back (MVP-A30).** On exit after a session with at least one turn, one line names both ways back: run
    `relavium` and use `/resume`, or `relavium chat resume <id>`. Crush and Gemini CLI print the same kind of line.
 9. **Project init.**
@@ -1907,8 +1914,8 @@ For each of the four steps (not each internal checklist item or commit):
 
 The readable-chat step is accepted on `development` at `b636be5f`. Round 12's
 fresh independent parser and integration reviews and separate D76 security
-sitting are clean over the cumulative diff from `6d1e7c40`. Steps 2–4 remain
-unimplemented and proceed in their approved order; this is not whole-MVP-2 or
+sitting are clean over the cumulative diff from `6d1e7c40`. At that checkpoint,
+steps 2–4 were unimplemented and proceeded in their approved order; this is not whole-MVP-2 or
 release acceptance.
 
 | Round | Reviewed revision | Verified corrections / result |
@@ -2073,10 +2080,10 @@ with safe display metadata, history projection and session discovery/resume.
 
 The approved metadata/migration, safe archive projection, shared native picker,
 Home `/resume` and Continue navigation, canonical chat shell entries and exit
-resume hint are implemented on `development`. Cumulative independent reviews,
-the separate resume security sitting and final combined CI/coverage remain due;
-this entry records implementation, not acceptance. No new design or dependency
-was introduced beyond ADR-0123 and the approved four-step plan.
+resume hint were implemented on `development` at `22994112`. This subsection
+records the initial author evidence; the final cumulative review and acceptance
+follow below. No new design or dependency was introduced beyond ADR-0123 and the
+approved four-step plan.
 
 Author verification passes all workspace lint/typecheck/tests (CLI: 451 files,
 7,182 passing, 11 existing skips), build/format, isolation and required coverage
@@ -2103,6 +2110,51 @@ profile with all 200 pairs/assertions retained. Windows media runs the same eigh
 files serially; media case/hook, causal-phase/evidence and job bounds remain unchanged.
 The exact workflow invocation is checked by the existing scheduling guard.
 Required Windows verification on the final combined revision remains due.
+
+#### Step 4 acceptance (2026-11-10)
+
+The complete session-discovery and safe-restoration step is accepted on
+`development` at `cecb6191`. Round 4's fresh complete correctness/contracts and
+native/UX reviews and its **separate D64 security sitting** are clean over
+`528eae0f..cecb6191`. They cover the entire step and its affected existing callers,
+including all preceding corrections, rather than only the last patch.
+
+| Round | Reviewed revision | Verified findings and resolution |
+|---|---|---|
+| 1 | `22994112` | Four medium findings: truncated Home diagnostics/remedies, hidden Home activation below minimum geometry, standalone post-await credential admission, and unsafe saved-ID recovery commands. Fixed in `60bfadbb`. |
+| 2 | `60bfadbb` | Two medium findings: picker typing lost under native output backpressure and a Home post-build credential admission gap. Fixed in `14399d21`. |
+| 3 | `14399d21` | Two distinct medium findings: pasted drafts retained Continue focus and were lost on Enter; local restoration cancellation failed to stop new MCP/key admissions. Native/security cancellation reports describe the same finding. Fixed in `cecb6191`. |
+| 4 | `cecb6191` | Complete cumulative correctness, native/UX and separate security reviews: no actionable blocker, high, medium or low finding. |
+
+The corrections preserve exact current-card acknowledgement for picker selection,
+paging and scope changes while a previously visible editor retains filter input
+during result repaint. Home restoration cancels only its pending replacement
+owner, passes the supported MCP connect signal, retains actual work/cleanup and
+keeps the old Home/chat. Only that owner's stopped identity is benign; an
+independent infrastructure failure retains exit `9`. Typed and pasted edits both
+leave Continue focus before submission. No in-scope finding is deferred.
+
+The reviewed source passes full workspace lint/typecheck/tests (CLI: 457 files,
+7,232 passing, 11 existing skips), build/format and isolation (848 collected
+files). Permanent native backpressure, draft and cancellation tests include
+landing/retained-chat, before/during-connect, post-build and independent-fault
+controls. In-memory prior-source controls reproduce the repaired failures while
+leaving the checkout unchanged. The final correctness reviewer independently
+passed 452 scoped tests; the separate security reviewer passed 385 with zero
+skips. Review totals overlap and are not added together.
+
+A current-source representative layout probe at 80 columns wrapped 500 fresh
+rich entries in 69–97 ms across five samples, and a 120 KB individual answer in
+70 ms across 1,540 rows without source loss. These local, warmed-process/fresh-entry
+measurements are exploratory functional evidence, not a cross-platform latency
+or memory guarantee. The required cold-wrap/native guards remain CI gates.
+
+All **four approved MVP-2 implementation steps and their independent review
+loops are complete**. Required combined CI, coverage, the full declared causal
+families and platform jobs gate the checkpoint PR, which records their final
+source-bound results for the maintainer. This acceptance does not merge the PR,
+publish npm, close the wider Phase 2.6 workstreams, or change the approved MVP-3…10
+scope and release guard.
 
 
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI

@@ -139,3 +139,13 @@ provider/MCP activity, tool re-execution or acknowledgement of an effect disclos
 
 Until implementation and its required reviews pass, this ADR and its linked
 accepted but unimplemented contracts do not describe shipped behavior.
+
+## Implementation and review receipt — 2026-11-10
+
+The approved display metadata, additive migration, separate safe projection and
+Home/standalone restoration paths are implemented and independently accepted on
+`development` at `cecb6191`. Four cumulative rounds resolved all verified
+findings; the final complete round and separate D64 security sitting are clean.
+The [step acceptance record](../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+records evidence and checkpoint gates. Earlier unimplemented wording records the
+design stage; this receipt changes no decision or release rule.

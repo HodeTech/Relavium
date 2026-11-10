@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -856,7 +856,10 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 
 #### Proposed user display storage — MVP-2
 
-**Implemented on development; step-4 acceptance pending — 2026-11-10.**
+**Implemented and independently accepted on development — 2026-11-10.**
+The historical heading remains for stable inbound links; the
+[step-4 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+records the reviewed source and checkpoint gates.
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
 requires an additive nullable `user_display_text TEXT` column on `session_messages`.
 Add optional `userDisplayText: string` to strict `SessionMessageMetaSchema` and

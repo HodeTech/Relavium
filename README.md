@@ -168,6 +168,11 @@ hub and MCP management — leads to `relavium` v0.2.0. Since 2026-11-08 the inte
 full-screen Home: you type `relavium` and do everything there, while subcommands stay for scripting
 ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 
+MVP-2's four steps are implemented and independently accepted on `development`:
+readable chat, native provider setup, project initialization and safe session
+discovery/resume. The [checkpoint record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+tracks review and verification; the published npm version remains `0.1.1`.
+
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is
 [docs/roadmap/current.md](docs/roadmap/current.md).

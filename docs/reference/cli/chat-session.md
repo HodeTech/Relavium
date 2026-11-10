@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-11-09
+> Last updated: 2026-11-10
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -43,12 +43,14 @@ A chat also starts from the bare-invocation **Home** (2.5.B): typing a message a
 
 ## Proposed restored transcript display — MVP-2
 
-**Implemented on development; step-4 acceptance pending — 2026-11-10.** The maintainer approved
+**Implemented and independently accepted on development — 2026-11-10.** The maintainer approved
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
 and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
 This section qualifies the earlier MVP-2 plan's literal display/model equality,
-divider and permanent-store-ceiling wording. The implementation follows the
-approved design; its cumulative review and final MVP-2 gates remain pending.
+divider and permanent-store-ceiling wording. The historical heading remains for
+stable inbound links. The complete implementation passed cumulative round 4 and
+the separate resume security sitting at `cecb6191`; see the
+[acceptance and checkpoint gates](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10).
 
 ### Sources and selection
 
