@@ -2156,6 +2156,30 @@ source-bound results for the maintainer. This acceptance does not merge the PR,
 publish npm, close the wider Phase 2.6 workstreams, or change the approved MVP-3…10
 scope and release guard.
 
+**Final CI verification — 2026-11-10.** At `9bbf42e1`, the push coverage
+run passed all 848 files (17,718 tests and 23 existing Linux skips), while the
+same-tree PR run exceeded the default five-second allowance in three markdown
+test cases. A selective retry then exposed four markdown case timeouts in the
+ordinary workspace run; two included the same grouped/scale workloads. Both PR
+Node-22 compatibility attempts exhausted their 25-minute whole-job allowance.
+These incomplete/failed runs are not checkpoint acceptance.
+
+Independent focused measurements found no production defect: the 400-line
+paragraph experiment passed its exact structural bounds, and all relevant
+raw-marker/EOF cohorts passed under coverage. The verification correction
+separates independent raw-marker size/prior, omitted-prefix and EOF chunk
+variants into individual cases, preserving every input and assertion execution.
+The inseparable 400-draw experiment retains all draws and operation limits with
+an explicit 15-second test allowance; its 100/200-draw cases retain the default.
+The four native quote tests get a 20-second outer allowance around their existing
+15-second child deadline. Their 256 MB process heap cap, 128 MB retained-heap
+assertion and causal limits are unchanged. This explicitly qualifies the earlier
+unchanged-case scheduling statement for these newly introduced markdown tests;
+security/native-media readiness, causal phase/evidence limits, pinned 449/71
+inventories and coverage floors remain unchanged. Only the advisory Node-22
+whole-job allowance increases to 35 minutes. No production behavior or dependency
+changes, and the final checkpoint still requires source-bound CI results.
+
 
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance

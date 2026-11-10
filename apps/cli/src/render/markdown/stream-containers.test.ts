@@ -99,13 +99,17 @@ describe('streamed container composition', () => {
     { count: 300, cadence: 1 },
     { count: 600, cadence: 2 },
     { count: 900, cadence: 3 },
-  ])('shares $count quoted lines with a draw every $cadence lines', ({ count }) =>
-    nativeQuoteProbe(count),
+  ])(
+    'shares $count quoted lines with a draw every $cadence lines',
+    ({ count }) => nativeQuoteProbe(count),
+    // The child already owns a 15 s native deadline; allow its real retirement
+    // and assertions instead of imposing the runner's unrelated 5 s default.
+    20_000,
   );
 
   it('keeps the native 500-line quote probe below a 256 MB heap cap', () => {
     nativeQuoteProbe(500);
-  });
+  }, 20_000);
 });
 
 function nativeQuoteProbe(count: number): void {

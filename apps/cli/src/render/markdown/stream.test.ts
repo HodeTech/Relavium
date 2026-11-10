@@ -15,39 +15,44 @@ function oneByteAtATime(source: string): MarkdownStream {
 }
 
 describe('incremental markdown stream', () => {
-  it.each([100, 200, 400])(
-    'projects completed soft paragraph lines without retaining prefix views (%i lines)',
-    (cycles) => {
-      const stream = new MarkdownStream();
-      let source = 'p ' + 'x'.repeat(4000 + cycles * 40) + '\n';
-      stream.append(source);
-      for (let line = 0; line < cycles; line++) {
-        const addition = 'x *a*\tvalue\n';
-        source += addition;
-        stream.append(addition);
-        stream.tail(80, 8);
-      }
-      const expected = layoutMarkdown(parseMarkdown(source), 100_000)
-        .map((line) => line.text)
-        .join('');
-      const actual = stream
-        .tail(100_000, 8)
-        .map((line) => line.text)
-        .join('');
-      expect(expected.endsWith(actual)).toBe(true);
-      expect(stream.checkpointWork.decisions).toBeLessThan(cycles * 6 + 10);
-      expect(stream.checkpointWork.retained).toBeLessThan(cycles * 6 + 10);
-      expect(stream.checkpointWork.copied).toBeLessThan(cycles * 6 + 10);
-      expect(stream.checkpointWork.indexed).toBeLessThan(source.length * 16);
-      // Each draw may visit its 4,000-unit visible window; ingestion must not
-      // construct or reinterpret an ever-growing paragraph-prefix view.
-      expect(stream.checkpointWork.cache).toBeLessThan(cycles * 6_000);
-      expect(stream.geometryWork.sourceUnits).toBeLessThan(source.length * 2);
-      expect(stream.geometryWork.measuredUnits).toBeLessThan(source.length);
-      expect(stream.geometryWork.visits).toBeLessThan(cycles * 4_000 * 4);
-      expect(stream.geometryWork.constructedUnits).toBeLessThan(cycles * 4_000 * 10);
-    },
-  );
+  for (const cycles of [100, 200, 400])
+    it(
+      `projects completed soft paragraph lines without retaining prefix views (${cycles} lines)`,
+      () => {
+        const stream = new MarkdownStream();
+        let source = 'p ' + 'x'.repeat(4000 + cycles * 40) + '\n';
+        stream.append(source);
+        for (let line = 0; line < cycles; line++) {
+          const addition = 'x *a*\tvalue\n';
+          source += addition;
+          stream.append(addition);
+          stream.tail(80, 8);
+        }
+        const expected = layoutMarkdown(parseMarkdown(source), 100_000)
+          .map((line) => line.text)
+          .join('');
+        const actual = stream
+          .tail(100_000, 8)
+          .map((line) => line.text)
+          .join('');
+        expect(expected.endsWith(actual)).toBe(true);
+        expect(stream.checkpointWork.decisions).toBeLessThan(cycles * 6 + 10);
+        expect(stream.checkpointWork.retained).toBeLessThan(cycles * 6 + 10);
+        expect(stream.checkpointWork.copied).toBeLessThan(cycles * 6 + 10);
+        expect(stream.checkpointWork.indexed).toBeLessThan(source.length * 16);
+        // Each draw may visit its 4,000-unit visible window; ingestion must not
+        // construct or reinterpret an ever-growing paragraph-prefix view.
+        expect(stream.checkpointWork.cache).toBeLessThan(cycles * 6_000);
+        expect(stream.geometryWork.sourceUnits).toBeLessThan(source.length * 2);
+        expect(stream.geometryWork.measuredUnits).toBeLessThan(source.length);
+        expect(stream.geometryWork.visits).toBeLessThan(cycles * 4_000 * 4);
+        expect(stream.geometryWork.constructedUnits).toBeLessThan(cycles * 4_000 * 10);
+      },
+      // The inseparable scale cohort draws its bounded 4,000-unit view 400 times.
+      // CI measured 5.86–6.00 s; retain every draw and causal bound rather than
+      // confusing the runner's default five seconds with an ingestion-work limit.
+      cycles === 400 ? 15_000 : undefined,
+    );
 
   it.each(['a  ', 'a\\', '\\', '*a*  ', '**a**\\', '`a`', '[label](url)', '𝑥_𝑦_'])(
     'preserves terminal-newline interpretation after %j',
@@ -244,39 +249,37 @@ describe('incremental markdown stream', () => {
     }
   });
 
-  it('retains tab columns from omitted prose and source prefixes', () => {
-    for (const prefix of [
-      'x'.repeat(4_001),
-      '**' + 'x'.repeat(4_001) + '**',
-      '\\*' + 'x'.repeat(4_001),
-      '[x](https://example.test)' + 'x'.repeat(4_001),
-      '界'.repeat(2_001),
-      'e\u0301'.repeat(4_001),
-      '🇺'.repeat(4_000),
-    ]) {
-      const source = prefix + '\tEND';
-      const stream = new MarkdownStream();
-      for (let at = 0; at < source.length; at += 13) {
-        stream.append(source.slice(at, at + 13));
-        if (at % 130 === 0) stream.tail(80, 7);
-      }
-      const expected = layoutMarkdown(parseMarkdown(source), 100_000)
-        .map((line) => line.text)
-        .join('\n');
-      const actual = stream
-        .tail(100_000, 7)
-        .map((line) => line.text)
-        .join('\n');
-      expect(actual.match(/ +END$/)?.[0]).toBe(expected.match(/ +END$/)?.[0]);
-      const plain = stream
-        .plainTail(100_000, 7)
-        .map((line) => line.text)
-        .join('\n');
-      const raw = layoutMarkdown([{ kind: 'literal', source, text: source }], 100_000)
-        .map((line) => line.text)
-        .join('\n');
-      expect(plain.match(/ +END$/)?.[0]).toBe(raw.match(/ +END$/)?.[0]);
+  it.each([
+    { name: 'plain', prefix: 'x'.repeat(4_001) },
+    { name: 'strong', prefix: '**' + 'x'.repeat(4_001) + '**' },
+    { name: 'escape', prefix: '\\*' + 'x'.repeat(4_001) },
+    { name: 'link', prefix: '[x](https://example.test)' + 'x'.repeat(4_001) },
+    { name: 'CJK', prefix: '界'.repeat(2_001) },
+    { name: 'combining', prefix: 'e\u0301'.repeat(4_001) },
+    { name: 'RI', prefix: '🇺'.repeat(4_000) },
+  ])('retains tab columns from omitted $name prose and source prefixes', ({ prefix }) => {
+    const source = prefix + '\tEND';
+    const stream = new MarkdownStream();
+    for (let at = 0; at < source.length; at += 13) {
+      stream.append(source.slice(at, at + 13));
+      if (at % 130 === 0) stream.tail(80, 7);
     }
+    const expected = layoutMarkdown(parseMarkdown(source), 100_000)
+      .map((line) => line.text)
+      .join('\n');
+    const actual = stream
+      .tail(100_000, 7)
+      .map((line) => line.text)
+      .join('\n');
+    expect(actual.match(/ +END$/)?.[0]).toBe(expected.match(/ +END$/)?.[0]);
+    const plain = stream
+      .plainTail(100_000, 7)
+      .map((line) => line.text)
+      .join('\n');
+    const raw = layoutMarkdown([{ kind: 'literal', source, text: source }], 100_000)
+      .map((line) => line.text)
+      .join('\n');
+    expect(plain.match(/ +END$/)?.[0]).toBe(raw.match(/ +END$/)?.[0]);
   });
 
   it('retains omitted code columns including its gutter', () => {

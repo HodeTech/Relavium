@@ -22,55 +22,54 @@ describe('streaming block transitions', () => {
   it.each(
     [3, 300, 1000, 5000].flatMap((length) =>
       ['`', '~'].flatMap((character) =>
-        ['', '> ', '- ', '- a\n  '].map((prefix) => ({ length, character, prefix })),
+        ['', '> ', '- ', '- a\n  '].flatMap((prefix) =>
+          [0, 17, 1].map((chunkSize) => ({ length, character, prefix, chunkSize })),
+        ),
       ),
     ),
   )(
-    'projects an EOF $length-unit $character closer after $prefix without stabilizing it',
-    ({ length, character, prefix }) => {
+    'projects an EOF $length-unit $character closer after $prefix without stabilizing it (chunk $chunkSize; 0 = whole)',
+    ({ length, character, prefix, chunkSize }) => {
       const marker = character.repeat(length);
       const indentation = prefix.startsWith('-') ? '  ' : prefix;
       const initial =
         prefix + marker + '\n' + indentation + 'x'.repeat(5000) + '\n' + indentation + marker;
-      for (const chunk of [initial.length, 17, 1]) {
-        const stream = new MarkdownStream();
-        let source = initial;
-        for (let at = 0; at < initial.length; at += chunk) {
-          stream.append(initial.slice(at, at + chunk));
-          if (chunk === 17 && at % (17 * 13) === 0) stream.tail(80, 20);
-        }
-        const hidden = (): void => {
-          const lines = stream.tail(80, 20);
-          expect(lines.some((line) => line.text.includes(character))).toBe(false);
-          stream.tail(40, 20);
-          expect(stream.tail(80, 20)).toEqual(lines);
-          expect(stream.sourceTail()).toBe(source.slice(-4000));
-        };
-        hidden();
-        stream.append('\t  ');
-        source += '\t  ';
-        hidden();
-        // Non-whitespace revokes this same physical closer and must reveal it
-        // as code again, including tabs whose column preceded the raw cut.
-        stream.append('X');
-        source += 'X';
-        const actual = stream.tail(100_000, 20).at(-1)?.text;
-        const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
-        expect(actual?.includes(character)).toBe(true);
-        expect(actual?.slice(-40)).toBe(expected?.slice(-40));
-        stream.append('\n\nEND');
-        source += '\n\nEND';
-        expect(stream.tail(80, 20).at(-1)).toEqual(
-          layoutMarkdown(parseMarkdown(source), 80).at(-1),
-        );
-        expect(stream.finish()).toEqual(parseMarkdown(source));
-
-        const closed = new MarkdownStream();
-        closed.append(initial + '\t\n\nEND');
-        const end = closed.tail(80, 20).at(-1);
-        expect(end).toEqual(layoutMarkdown(parseMarkdown(initial + '\t\n\nEND'), 80).at(-1));
-        expect(end?.spans.some((span) => span.code)).toBe(false);
+      const chunk = chunkSize || initial.length;
+      const stream = new MarkdownStream();
+      let source = initial;
+      for (let at = 0; at < initial.length; at += chunk) {
+        stream.append(initial.slice(at, at + chunk));
+        if (chunk === 17 && at % (17 * 13) === 0) stream.tail(80, 20);
       }
+      const hidden = (): void => {
+        const lines = stream.tail(80, 20);
+        expect(lines.some((line) => line.text.includes(character))).toBe(false);
+        stream.tail(40, 20);
+        expect(stream.tail(80, 20)).toEqual(lines);
+        expect(stream.sourceTail()).toBe(source.slice(-4000));
+      };
+      hidden();
+      stream.append('\t  ');
+      source += '\t  ';
+      hidden();
+      // Non-whitespace revokes this same physical closer and must reveal it
+      // as code again, including tabs whose column preceded the raw cut.
+      stream.append('X');
+      source += 'X';
+      const actual = stream.tail(100_000, 20).at(-1)?.text;
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+      expect(actual?.includes(character)).toBe(true);
+      expect(actual?.slice(-40)).toBe(expected?.slice(-40));
+      stream.append('\n\nEND');
+      source += '\n\nEND';
+      expect(stream.tail(80, 20).at(-1)).toEqual(layoutMarkdown(parseMarkdown(source), 80).at(-1));
+      expect(stream.finish()).toEqual(parseMarkdown(source));
+
+      const closed = new MarkdownStream();
+      closed.append(initial + '\t\n\nEND');
+      const end = closed.tail(80, 20).at(-1);
+      expect(end).toEqual(layoutMarkdown(parseMarkdown(initial + '\t\n\nEND'), 80).at(-1));
+      expect(end?.spans.some((span) => span.code)).toBe(false);
     },
   );
 

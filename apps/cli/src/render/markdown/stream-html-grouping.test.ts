@@ -133,32 +133,39 @@ describe('HTML-owned raw grouping', () => {
     },
   );
 
-  it.each(scopes)('bounds repeated raw markers across source cuts in $name', ({ wrap }) => {
-    for (const count of [80, 160, 320, 640])
-      for (const previous of [[], ['- prior']]) {
-        const stream = new MarkdownStream();
-        const source = wrap([
-          ...previous,
-          '<!--',
-          ...Array.from({ length: count }, () => '- > **raw**'),
-          '-->',
-          '  ```',
-          'x',
-        ]);
-        for (let at = 0; at < source.length; at += 17) {
-          stream.append(source.slice(at, at + 17));
-          if (at % 119 === 0) stream.tail(40, 8);
-        }
-        const work = stream.checkpointWork;
-        expect(stream.work.lexical).toBeLessThan(source.length * 5);
-        expect(work.indexed).toBeLessThan(source.length * 128);
-        expect(work.decisions).toBeLessThan(source.length * 4);
-        expect(work.retained).toBeLessThan(source.length * 3);
-        expect(work.scopeRetained).toBeLessThan(source.length * 6);
-        expect(stream.sourceTail()).toBe(source.slice(-4000));
-        expect(stream.tail(40, 8)).toEqual(layoutMarkdown(parseMarkdown(source), 40).slice(-8));
-        expect(stream.finish()).toEqual(parseMarkdown(source));
-        expect(stream.checkpointWork.scopeRetained).toBe(0);
+  it.each(
+    scopes.flatMap((scope) =>
+      [80, 160, 320, 640].flatMap((count) =>
+        [false, true].map((prior) => ({ ...scope, count, prior })),
+      ),
+    ),
+  )(
+    'bounds $count repeated raw markers across source cuts in $name (prior list: $prior)',
+    ({ wrap, count, prior }) => {
+      const previous = prior ? ['- prior'] : [];
+      const stream = new MarkdownStream();
+      const source = wrap([
+        ...previous,
+        '<!--',
+        ...Array.from({ length: count }, () => '- > **raw**'),
+        '-->',
+        '  ```',
+        'x',
+      ]);
+      for (let at = 0; at < source.length; at += 17) {
+        stream.append(source.slice(at, at + 17));
+        if (at % 119 === 0) stream.tail(40, 8);
       }
-  });
+      const work = stream.checkpointWork;
+      expect(stream.work.lexical).toBeLessThan(source.length * 5);
+      expect(work.indexed).toBeLessThan(source.length * 128);
+      expect(work.decisions).toBeLessThan(source.length * 4);
+      expect(work.retained).toBeLessThan(source.length * 3);
+      expect(work.scopeRetained).toBeLessThan(source.length * 6);
+      expect(stream.sourceTail()).toBe(source.slice(-4000));
+      expect(stream.tail(40, 8)).toEqual(layoutMarkdown(parseMarkdown(source), 40).slice(-8));
+      expect(stream.finish()).toEqual(parseMarkdown(source));
+      expect(stream.checkpointWork.scopeRetained).toBe(0);
+    },
+  );
 });

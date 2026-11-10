@@ -185,7 +185,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
     rmSync(temporary, { recursive: true, force: true });
   }
   const floor = workflow.jobs['floor-check'];
-  assert.equal(floor['timeout-minutes'], 25);
+  assert.equal(floor['timeout-minutes'], 35);
   assert.equal(workflow.jobs.coverage['timeout-minutes'], 45);
   assert.equal(
     workflow.jobs.coverage.steps.find((step) => step.run === 'pnpm coverage:enforced')?.name,
