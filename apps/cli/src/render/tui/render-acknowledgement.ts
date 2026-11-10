@@ -5,6 +5,7 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 import type { SuspendPort } from '../suspend.js';
 import type { TranscriptAcknowledgement } from './transcript-acknowledgement.js';
+import type { NativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
 
 const OUTPUT_FAILED = 'The terminal output closed before display could be acknowledged.';
 
@@ -23,6 +24,7 @@ export function useVisibleRenderFlush(
   onError: ((error: Error) => void) | undefined,
   suspendPort?: SuspendPort,
   transcript?: TranscriptAcknowledgement,
+  nativePrompt?: NativePromptAcknowledgement,
 ): NoticeFlush {
   const app = useApp();
   const { stdout } = useStdout();
@@ -62,11 +64,17 @@ export function useVisibleRenderFlush(
   }, [stdout, onError]);
   return useCallback(
     async (publish?: () => void | Promise<void>) => {
+      let nativeSnapshot: ReturnType<NativePromptAcknowledgement['current']> | undefined;
+      const active = async (work: () => Promise<void>): Promise<void> => {
+        if (suspendPort === undefined) await work();
+        else await suspendPort.withActiveTerminal(work);
+      };
       const acknowledge = async (): Promise<void> => {
         if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
         const publication = transcript?.capture();
         await publish?.();
         publication?.published();
+        nativeSnapshot = nativePrompt?.current();
         await app.waitUntilRenderFlush();
         // A newly mounted viewport seeds a blank window, then measures its allocated height.
         // Flush that follow-up layout once; an actually clipped notice still refuses immediately.
@@ -78,9 +86,23 @@ export function useVisibleRenderFlush(
             'The published terminal notice was not visible; audit evidence was retained.',
           );
       };
-      if (suspendPort === undefined) await acknowledge();
-      else await suspendPort.withActiveTerminal(acknowledge);
+      await active(acknowledge);
+      if (nativeSnapshot?.active === true && nativePrompt !== undefined) {
+        const expected = nativeSnapshot;
+        for (;;) {
+          // Do not hold terminal custody while waiting for the user to resize or cancel.
+          await active(async () => {});
+          await nativePrompt.wait(expected);
+          let visible = false;
+          await active(async () => {
+            await app.waitUntilRenderFlush();
+            if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
+            visible = nativePrompt.visible(expected);
+          });
+          if (visible) break;
+        }
+      }
     },
-    [app, stdout, suspendPort, transcript],
+    [app, stdout, suspendPort, transcript, nativePrompt],
   );
 }

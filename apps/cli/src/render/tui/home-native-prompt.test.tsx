@@ -118,7 +118,7 @@ describe('Home native prompt custody', () => {
       resize();
       await settleFrames();
       expect(controller.getSnapshot().session?.store).toBe(store);
-      expect(h.lastFrame()).toContain('Enter key');
+      expect(h.lastFrame()).toContain('Terminal too small');
       channel.flow.cancel();
       expect(await answer).toBe(NATIVE_PROMPT_CANCEL);
       await channel.flow.end();

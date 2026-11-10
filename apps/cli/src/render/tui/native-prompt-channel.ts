@@ -3,6 +3,12 @@ import { sanitizeInline } from '../sanitize.js';
 
 export const NATIVE_PROMPT_CANCEL = Symbol('native prompt cancelled');
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
+export class NativePromptVisibilityRefusedError extends Error {
+  constructor() {
+    super('The native prompt is not visibly available.');
+    this.name = 'NativePromptVisibilityRefusedError';
+  }
+}
 export interface NativePromptOption {
   readonly value: string;
   readonly label: string;
@@ -21,6 +27,13 @@ export interface NativePromptSnapshot {
 export interface NativePromptUi {
   readonly subscribe: (listener: () => void) => () => void;
   readonly getSnapshot: () => NativePromptSnapshot;
+  /** Cancellation custody only; this never exposes the private editor. */
+  readonly signal: () => AbortSignal | undefined;
+  readonly assertVisible: (snapshot: NativePromptSnapshot) => void;
+  /** Installed by the live terminal host; never accepts secret material. */
+  readonly bindVisibility: (
+    check: ((snapshot: NativePromptSnapshot) => boolean) | undefined,
+  ) => void;
   readonly input: (input: string, key: Key) => boolean;
   readonly paste: (text: string) => boolean;
   readonly dispose: () => void;
@@ -71,6 +84,7 @@ export function createNativePromptChannel(): {
   let settle: ((answer: string | symbol) => void) | undefined;
   let validate: ((value: string) => string | undefined) | undefined;
   let disposed = false;
+  let visibility: ((snapshot: NativePromptSnapshot) => boolean) | undefined;
   const listeners = new Set<() => void>();
   const publish = (next: NativePromptSnapshot): void => {
     snapshot = next;
@@ -163,6 +177,13 @@ export function createNativePromptChannel(): {
       return () => listeners.delete(listener);
     },
     getSnapshot: () => snapshot,
+    signal: () => abort?.signal,
+    assertVisible: (expected) => {
+      if (visibility?.(expected) !== true) throw new NativePromptVisibilityRefusedError();
+    },
+    bindVisibility: (check) => {
+      visibility = check;
+    },
     input: (input, key) => {
       if (!snapshot.active) return false;
       let boundary = -1;

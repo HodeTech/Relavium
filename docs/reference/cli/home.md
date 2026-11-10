@@ -39,8 +39,11 @@ classified failed chat turn into a fatal CLI failure.
 **Implemented on development — MVP-2 step 2 review pending (2026-11-10).**
 The Home mounts one Ink tree, then offers setup when no provider has a usable
 source. Select, confirm, text and masked fields use the same native input owner;
-existing chat history stays mounted while a setup card owns input. Esc/Ctrl-C
-closes the flow without leaving Home. Skipping leaves a persistent setup row;
+existing chat history stays mounted while a setup card owns input. Native cards
+require finite integer geometry of at least 80×24 and a fully visible current
+card. Input and preference publication wait through resize until that card is
+measured and flushed; a new snapshot or geometry change invalidates old evidence.
+Esc/Ctrl-C closes the flow without leaving Home. Skipping leaves a persistent setup row;
 Enter on an empty prompt or `/providers` opens it again. `/providers` is also
 available in the in-Home chat, with connect/login/key discovery terms. Standalone
 chat keeps its own palette and runs the shared setup before its normal host.
@@ -50,9 +53,9 @@ owns exact names, precedence, consent, backend-health distinctions and recovery.
 Home samples availability on opening, after setup changes and on return from a
 chat; rendering never probes the keychain. A usable source suppresses automatic
 setup. An eligible standard source awaiting consent opens its named-source card;
-a custom endpoint gets manual-key guidance instead. A genuinely unavailable
-keychain gets explicit acknowledgement/retry guidance, independent of whether an
-environment source is usable; reminder state never grants credential authority.
+a custom endpoint gets manual-key guidance instead. The `unavailable` state gets explicit acknowledgement/retry guidance. Backend
+health remains independent of source status; a usable source still suppresses
+automatic setup, and reminder state never grants credential authority.
 
 Manual setup keeps the existing provider → masked key → validation/retry or
 explicit save-anyway → OS-keychain flow. Native cards contain neither the key nor

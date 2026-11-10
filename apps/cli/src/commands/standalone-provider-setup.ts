@@ -35,7 +35,10 @@ import {
   type JobControlBinding,
   type JobControlLifecycle,
 } from '../render/suspend.js';
-import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
+import {
+  createNativePromptChannel,
+  NativePromptVisibilityRefusedError,
+} from '../render/tui/native-prompt-channel.js';
 import { NativePromptHost } from '../render/tui/native-prompt-host.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 
@@ -211,19 +214,33 @@ export async function runStandaloneProviderSetup(deps: {
       assertAdmitting: () => void,
     ): Promise<ConfigWriteResult> => {
       assertAdmitting();
-      if (prepared.rewriteNeeded) {
-        flow.note(
-          'Saving preferences rewrites the global config and removes its comments and ordering.',
-        );
-        if (flushVisible === undefined) throw new CliError('cli_internal', '');
+      if (!prepared.rewriteNeeded) return prepared.publish(assertAdmitting);
+      flow.note(
+        'Saving preferences rewrites the global config and removes its comments and ordering.',
+      );
+      const notice = ui.getSnapshot();
+      if (flushVisible === undefined) throw new CliError('cli_internal', '');
+      for (;;) {
         try {
           await flushVisible();
         } catch (cause) {
+          // Geometry/visibility waits abort with the setup flow; cancellation is not output failure.
+          setupSignal?.throwIfAborted();
           throw new CliError('output_unavailable', '', { cause });
         }
+        const assertPublication = (): void => {
+          assertAdmitting();
+          ui.assertVisible(notice);
+        };
+        try {
+          // The writer repeats this exact-card check immediately before rename as well as entry.
+          return prepared.publish(assertPublication);
+        } catch (cause) {
+          if (!(cause instanceof NativePromptVisibilityRefusedError)) throw cause;
+          assertAdmitting();
+          // A resize/suspend race invalidated the ACK. Wait for the same card to become visible again.
+        }
       }
-      assertAdmitting();
-      return prepared.publish(assertAdmitting);
     };
     const coordinator = createProviderSetupCoordinator({
       flow,

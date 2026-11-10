@@ -188,6 +188,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
       render: (props) => {
         capture(props);
+        const native = props.nativePrompt;
+        native?.bindVisibility((expected) => native.getSnapshot() === expected);
         props.onRendererReady?.(async (publish) => {
           await publish?.();
         });

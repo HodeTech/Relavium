@@ -7,7 +7,7 @@ import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { ZodError, ZodIssue, ZodType } from 'zod';
 
-import { ConfigError } from './errors.js';
+import { ConfigError, OperatorConfigError } from './errors.js';
 import { findProjectConfigDir, globalConfigDir } from './paths.js';
 import { resolveConfig, type ResolvedConfig } from './resolve.js';
 
@@ -61,11 +61,14 @@ export function loadConfigFile<T>(
     throw new ConfigError(filePath, `is not valid TOML${tomlPosition(err)}.`, { cause: err });
   }
 
-  if (opts?.projectLayer === true && hasOperatorPreferences(data)) {
-    throw new ConfigError(filePath, 'operator preferences are only allowed in global config.');
+  const projectSetting = opts?.projectLayer === true ? projectOperatorPreference(data) : undefined;
+  if (projectSetting !== undefined) {
+    throw new OperatorConfigError(projectSetting, true);
   }
   const result = schema.safeParse(data);
   if (!result.success) {
+    const setting = operatorIssue(result.error);
+    if (setting !== undefined) throw new OperatorConfigError(setting, false);
     throw new ConfigError(filePath, `is invalid — ${formatZodError(result.error)}.`, {
       cause: result.error,
     });
@@ -149,14 +152,27 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   };
 }
 
-function hasOperatorPreferences(data: unknown): boolean {
-  if (typeof data !== 'object' || data === null || !('preferences' in data)) return false;
+type OperatorSetting = 'standard_env_key_consent' | 'keychain_unavailable_acknowledged';
+
+function projectOperatorPreference(data: unknown): OperatorSetting | undefined {
+  if (typeof data !== 'object' || data === null || !('preferences' in data)) return undefined;
   const preferences: unknown = data.preferences;
-  if (typeof preferences !== 'object' || preferences === null) return false;
-  return (
-    Object.hasOwn(preferences, 'standard_env_key_consent') ||
-    Object.hasOwn(preferences, 'keychain_unavailable_acknowledged')
-  );
+  if (typeof preferences !== 'object' || preferences === null) return undefined;
+  if (Object.hasOwn(preferences, 'standard_env_key_consent')) return 'standard_env_key_consent';
+  if (Object.hasOwn(preferences, 'keychain_unavailable_acknowledged'))
+    return 'keychain_unavailable_acknowledged';
+  return undefined;
+}
+
+/** Inspect only schema-owned path segments; authored unknown keys are never promoted to diagnostics. */
+function operatorIssue(error: ZodError): OperatorSetting | undefined {
+  for (const issue of error.issues) {
+    if (issue.path[0] !== 'preferences') continue;
+    if (issue.path[1] === 'standard_env_key_consent') return 'standard_env_key_consent';
+    if (issue.path[1] === 'keychain_unavailable_acknowledged')
+      return 'keychain_unavailable_acknowledged';
+  }
+  return undefined;
 }
 
 /**

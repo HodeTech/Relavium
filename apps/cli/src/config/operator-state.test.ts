@@ -172,7 +172,7 @@ describe('operator config publication', () => {
       const path = join(project, '.relavium', name);
       writeFileSync(path, '[preferences]\nkeychain_unavailable_acknowledged = "secret-value"\n');
       expect(() => loadResolvedConfig({ cwd: project, home })).toThrow(
-        'operator preferences are only allowed in global config.',
+        'Remove it from project/workspace config and configure it only in the selected global config.',
       );
       try {
         loadResolvedConfig({ cwd: project, home });

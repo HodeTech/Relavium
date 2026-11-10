@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -11,6 +11,30 @@ import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
+import { visibleModels } from '../render/tui/model-picker.js';
+
+vi.mock('../engine/providers.js', async (original) => {
+  const actual = await original<typeof import('../engine/providers.js')>();
+  return {
+    ...actual,
+    createProviderResolver: (...args: Parameters<typeof actual.createProviderResolver>) => {
+      const resolver = actual.createProviderResolver(...args);
+      return {
+        ...resolver,
+        resolveProvider: (id: Parameters<typeof resolver.keyFor>[0]) => {
+          const adapter = resolver.resolveProvider(id);
+          return adapter === undefined
+            ? undefined
+            : {
+                ...adapter,
+                listModels: () => Promise.resolve([]),
+                generate: () => Promise.reject(new Error('Offline validation fixture')),
+              };
+        },
+      };
+    },
+  };
+});
 
 const key = {
   upArrow: false,
@@ -40,7 +64,7 @@ afterEach(() => {
   for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function setup(holdNotice = false, custom = false, projectModel?: string) {
+function setup(holdNotice = false, custom = false, projectModel?: string, manualKeys = false) {
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-home-provider-'));
   paths.push(cwd);
   const path = join(cwd, 'global.toml');
@@ -92,6 +116,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string) {
   });
   let notices = 0;
   const frames: string[] = [];
+  const storedKeys = new Map<string, string>();
   const deps: HomeDeps = {
     invocation: fixture.invocation,
     io,
@@ -101,11 +126,12 @@ function setup(holdNotice = false, custom = false, projectModel?: string) {
     },
     global: { cwd, configPath: path, json: false, color: false, verbosity: 'normal' },
     keychain: {
-      get: () => null,
-      set: () => {
-        throw new Error('unexpected key write');
+      get: (account) => storedKeys.get(account) ?? null,
+      set: (account, value) => {
+        if (!manualKeys) throw new Error('unexpected key write');
+        storedKeys.set(account, value);
       },
-      delete: () => false,
+      delete: (account) => storedKeys.delete(account),
     },
     openSessionStore: (_home, captureClose) => {
       captureClose?.(close);
@@ -113,11 +139,16 @@ function setup(holdNotice = false, custom = false, projectModel?: string) {
     },
     render: (captured) => {
       props = captured;
+      const ui = captured.nativePrompt;
+      ui?.bindVisibility((expected) => ui.getSnapshot() === expected);
       captured.nativePrompt?.subscribe(() =>
         frames.push(JSON.stringify(captured.nativePrompt?.getSnapshot())),
       );
       return {
-        unmount: rendererExit,
+        unmount: () => {
+          captured.nativePrompt?.bindVisibility(undefined);
+          rendererExit();
+        },
         waitUntilExit: () => exited,
         waitUntilRenderFlush: async () => {},
       };
@@ -169,6 +200,123 @@ function setup(holdNotice = false, custom = false, projectModel?: string) {
 }
 
 describe('driveHome native provider setup', () => {
+  it('keeps the keyless Home model remedy inside the reachable provider screen', async () => {
+    const f = setup();
+    const p = await f.ready();
+    const ui = p.nativePrompt;
+    if (!ui) throw new Error('Native setup missing');
+    try {
+      f.announce(p);
+      await vi.waitFor(() =>
+        expect(ui.getSnapshot().options.some((option) => option.value === 'defer')).toBe(true),
+      );
+      const index = ui.getSnapshot().options.findIndex((option) => option.value === 'defer');
+      for (let at = 0; at < index; at++) ui.input('', { ...key, downArrow: true });
+      ui.input('', { ...key, return: true });
+      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+      p.controller.handleKey('/', {});
+      for (const char of 'models') p.controller.handleKey(char, {});
+      p.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
+      p.controller.handleKey('', { return: true });
+      expect(p.controller.getSnapshot().modelPicker?.hint).toContain('/providers');
+      expect(p.controller.getSnapshot().modelPicker?.hint).not.toContain('provider set-key');
+    } finally {
+      ui.input('', { ...key, escape: true });
+      p.controller.handleKey('', { escape: true });
+      p.controller.handleKey('', { escape: true });
+      await f.end(p);
+    }
+  });
+
+  it.each(['picker', 'setup'] as const)(
+    'replaces an invocation-only model after a later successful %s save',
+    async (route) => {
+      const f = setup(false, false, undefined, true);
+      const p = await f.ready();
+      const ui = p.nativePrompt;
+      if (!ui) throw new Error('Native setup missing');
+      const choose = async (value: string): Promise<void> => {
+        await vi.waitFor(() =>
+          expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
+        );
+        const index = ui.getSnapshot().options.findIndex((option) => option.value === value);
+        const selected = ui.getSnapshot().selected;
+        const count = ui.getSnapshot().options.length;
+        for (let step = 0; step < (index - selected + count) % count; step++)
+          ui.input('', { ...key, downArrow: true });
+        ui.input('', { ...key, return: true });
+      };
+      try {
+        const original = f.path + '.original';
+        writeFileSync(original, baseline);
+        rmSync(f.path);
+        symlinkSync(original, f.path);
+        f.announce(p);
+        await choose('use');
+        await choose('once'); // separate source authority
+        await choose('once'); // separate invocation model
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+        rmSync(f.path);
+        writeFileSync(f.path, baseline); // operator repairs the target before the next save
+        let chosen: string;
+        if (route === 'picker') {
+          p.controller.handleKey('/', {});
+          for (const char of 'models') p.controller.handleKey(char, {});
+          p.controller.handleKey('', { return: true });
+          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
+          const picker = p.controller.getSnapshot().modelPicker;
+          const entry = picker?.entries.find(
+            (model) =>
+              model.provider === 'openai' &&
+              model.available &&
+              model.modelId !== KNOWN_PROVIDERS.openai.testModel,
+          );
+          if (!entry) throw new Error('No alternate keyed model');
+          chosen = entry.modelId;
+          for (const char of chosen) p.controller.handleKey(char, {});
+          const filtered = p.controller.getSnapshot().modelPicker;
+          if (!filtered) throw new Error('Picker closed');
+          const index = visibleModels(filtered).findIndex((model) => model.modelId === chosen);
+          if (index < 0) throw new Error('Selected model not visible');
+          for (let step = 0; step < index; step++) p.controller.handleKey('', { downArrow: true });
+          p.controller.handleKey('', { return: true });
+          if (p.controller.getSnapshot().modelPicker?.phase === 'effort')
+            p.controller.handleKey('', { return: true });
+          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeUndefined());
+        } else {
+          for (const char of '/providers') p.controller.handleKey(char, {});
+          p.controller.handleKey('', { return: true });
+          await choose('anthropic');
+          await vi.waitFor(() => expect(ui.getSnapshot().kind).toBe('password'));
+          ui.paste('second-synthetic-provider-key');
+          ui.input('', { ...key, return: true });
+          await choose('continue'); // explicit save despite the offline validation fixture
+          await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+          chosen = KNOWN_PROVIDERS.anthropic.testModel;
+        }
+        expect(readFileSync(f.path, 'utf8')).toContain(chosen);
+        p.controller.handleKey('/', {});
+        for (const char of 'models') p.controller.handleKey(char, {});
+        p.controller.handleKey('', { return: true });
+        await vi.waitFor(() =>
+          expect(p.controller.getSnapshot().modelPicker?.currentDefault).toBe(chosen),
+        );
+        p.controller.handleKey('', { escape: true });
+        for (const char of 'next chat') p.controller.handleKey(char, {});
+        p.controller.handleKey('', { return: true });
+        await vi.waitFor(() => expect(f.built).toHaveLength(1));
+        expect(f.built[0]?.model).toBe(chosen);
+        await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+      } finally {
+        ui.input('', { ...key, escape: true });
+        p.controller.handleKey('', { escape: true });
+        p.controller.handleKey('', { escape: true });
+        await f.end(p);
+      }
+    },
+  );
+
   it('waits for mounted renderer and paints rewrite notice before granting a standard source and starter default', async () => {
     const f = setup(true);
     const p = await f.ready();

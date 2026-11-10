@@ -6,7 +6,7 @@ import {
   NATIVE_PROMPT_INPUT_LIMIT,
 } from './native-prompt-channel.js';
 import { NativePromptHost } from './native-prompt-host.js';
-import { bracketed, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
 afterEach(cleanup);
 describe('native prompt host', () => {
@@ -17,7 +17,10 @@ describe('native prompt host', () => {
       flow.begin();
       const answer = flow.password({ message: 'API key' });
       const h = render(<NativePromptHost ui={ui} color={color} />);
+      Object.defineProperty(h.stdout, 'rows', { value: 24 });
+      h.stdout.emit('resize');
       await waitFor(() => (h.lastFrame() ?? '').includes('API key'));
+      await settleFrames();
       h.stdin.write(bracketed('example-super-secret-4829'));
       await waitFor(() => ui.getSnapshot().display.length > 0);
       expect(JSON.stringify(ui.getSnapshot())).not.toContain('4829');
@@ -34,7 +37,10 @@ describe('native prompt host', () => {
     flow.begin();
     const answer = flow.password({ message: 'Key' });
     const h = render(<NativePromptHost ui={ui} color={false} />);
+    Object.defineProperty(h.stdout, 'rows', { value: 24 });
+    h.stdout.emit('resize');
     await waitFor(() => (h.lastFrame() ?? '').includes('Key'));
+    await settleFrames();
     h.stdin.write(bracketed('a'.repeat(NATIVE_PROMPT_INPUT_LIMIT + 1)));
     await waitFor(() => ui.getSnapshot().error !== '');
     expect(ui.getSnapshot().display).toBe('');
@@ -52,6 +58,8 @@ describe('native prompt host', () => {
     const signal = flow.begin();
     flow.busy('Checking');
     const h = render(<NativePromptHost ui={ui} color={false} />);
+    Object.defineProperty(h.stdout, 'rows', { value: 24 });
+    h.stdout.emit('resize');
     await waitFor(() => (h.lastFrame() ?? '').includes('Checking'));
     h.stdin.write('\x03');
     await waitFor(() => signal.aborted);
@@ -64,13 +72,17 @@ describe('native prompt host', () => {
     flow.begin();
     const first = flow.password({ message: 'First key' });
     const h = render(<NativePromptHost ui={ui} color={false} />);
+    Object.defineProperty(h.stdout, 'rows', { value: 24 });
+    h.stdout.emit('resize');
     await waitFor(() => (h.lastFrame() ?? '').includes('First key'));
+    await settleFrames();
     h.stdin.write(bracketed('first-key'));
     await waitFor(() => ui.getSnapshot().display !== '');
     h.stdin.write('\rsecret-suffix');
     expect(await first).toBe('first-key');
     const second = flow.text({ message: 'Next card' });
     await waitFor(() => (h.lastFrame() ?? '').includes('Next card'));
+    await settleFrames();
     expect(ui.getSnapshot().display).toBe('');
     h.stdin.write('\r');
     expect(await second).toBe('');

@@ -18,7 +18,7 @@ import {
  * never drift on how the catalog is loaded, keyed (which provider has a key), or refreshed.
  */
 export interface ModelCatalogPort {
-  /** The merged catalog (all providers) + the newest live-refresh stamp (the freshness badge). Sync read + merge. */
+  /** Explicit open/change/refresh read + merge with current key availability; never call while rendering. */
   readonly load: () => MergedCatalogView;
   /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
   readonly refreshIfStale: () => Promise<RefreshReport | undefined>;
@@ -53,10 +53,6 @@ export function createModelCatalogPort(params: {
           invocationOptions: params.workOwner.work,
         }),
   });
-  // Memoized: a keychain read is a SYNC native N-API call (and can pop an OS ACL prompt on first access), so it must
-  // not repeat on every `/models` open + every refresh completion on the live ink render thread. The resolvable key
-  // set is fixed for the process (a mid-session key change ⇒ restart), the same posture as the startup key probe.
-  let keyedProviders: ReadonlySet<(typeof KNOWN_PROVIDER_IDS)[number]> | undefined;
   const retain = async <T>(operation: () => Promise<T>): Promise<T> => {
     if (workOwner === undefined) return operation();
     workOwner.assertAdmitting();
@@ -70,7 +66,10 @@ export function createModelCatalogPort(params: {
       // Rebuild the UUID→slug map on every load (NOT memoized): a refresh may register a provider's FK row, and the
       // next load must resolve its live rows' provider — not drop them (mirrors the Home's load).
       const slugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
-      keyedProviders ??= new Set(
+      // `load` is an explicit picker-open/refresh-completion event in Home and chat, never a render
+      // callback. Sample once per load so in-process consent/key changes update retained ports; the
+      // published catalog snapshot is then reused for rendering without native keychain probes.
+      const keyedProviders = new Set(
         KNOWN_PROVIDER_IDS.filter((id) => providerHasKey(params.providers, id)),
       );
       return buildMergedCatalog({

@@ -1,8 +1,12 @@
 import { CliError } from '../../process/cli-error.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
+import {
+  createNativePromptAcknowledgement,
+  nativePromptFits,
+} from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
-import { Box, Text, useApp, useInput, usePaste } from 'ink';
+import { Box, Text, useApp, useInput, usePaste, useStdout } from 'ink';
 import {
   useEffect,
   useLayoutEffect,
@@ -151,6 +155,8 @@ function ChatRegion(
     reasonDraft: EditorState | undefined;
     /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — forwarded to `ChatView`'s toast. */
     copied: boolean;
+    /** Reserve bounded screen space for the active native card without unmounting Static. */
+    promptHeight?: number | undefined;
   }>,
 ): ReactElement {
   // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
@@ -180,7 +186,11 @@ function ChatRegion(
     <Box
       flexDirection="column"
       width={layoutColumns(props.cols)}
-      {...(viewport === undefined ? {} : { height: viewport.rows })}
+      {...(viewport === undefined
+        ? props.promptHeight === undefined
+          ? {}
+          : { height: props.promptHeight, overflowY: 'hidden' }
+        : { height: viewport.rows, overflowY: 'hidden' })}
     >
       <ChatView
         markdown={markdown}
@@ -247,6 +257,26 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     };
   }, []);
   const { controller, getSize, subscribeResize, color } = props;
+  const { stdout } = useStdout();
+  const getSizeRef = useRef(getSize);
+  getSizeRef.current = getSize;
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  const [nativeAcknowledgement] = useState(() =>
+    props.nativePrompt === undefined
+      ? undefined
+      : createNativePromptAcknowledgement(
+          props.nativePrompt,
+          () => getSizeRef.current(),
+          () =>
+            propsRef.current.inputEnabled?.() !== false &&
+            propsRef.current.suspendPort?.isSuspended() !== true &&
+            stdout.writable !== false &&
+            !stdout.destroyed &&
+            !stdout.writableEnded,
+        ),
+  );
+  useEffect(() => () => nativeAcknowledgement?.dispose(), [nativeAcknowledgement]);
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const prompt = useSyncExternalStore(
     props.nativePrompt?.subscribe ?? emptyPromptSubscribe,
@@ -309,7 +339,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   };
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
-  useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
+  useEffect(
+    () =>
+      subscribeResize(() => {
+        nativeAcknowledgement?.invalidate();
+        setSize(getSize());
+      }),
+    [subscribeResize, getSize, nativeAcknowledgement],
+  );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
   // (RootApp is NOT remounted across a swap the way driveInk remounts ChatApp, so without this a new session would
@@ -499,6 +536,17 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (props.nativePrompt?.getSnapshot().active === true) {
       if (consumeMouseReport(input)) return;
+      if (nativeAcknowledgement?.inputVisible() !== true) {
+        if (
+          key.escape ||
+          key.meta ||
+          (key.ctrl && input.toLowerCase() === 'c') ||
+          input.includes('\x1b') ||
+          input.includes('\x03')
+        )
+          props.nativePrompt.input('\x1b', key);
+        return;
+      }
       props.nativePrompt.input(input, key);
       return;
     }
@@ -526,7 +574,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => {
     if (props.inputEnabled?.() === false) return;
-    if (props.nativePrompt?.paste(text)) return;
+    if (props.nativePrompt?.getSnapshot().active === true) {
+      if (nativeAcknowledgement?.inputVisible() === true) props.nativePrompt.paste(text);
+      return;
+    }
     if (controller.getSnapshot().providerSetupBusy) return;
     controller.handlePaste(text);
   });
@@ -534,6 +585,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     props.onRendererError,
     props.suspendPort,
     acknowledgement,
+    nativeAcknowledgement,
   );
   useEffect(() => {
     props.onRendererReady?.(flushVisible);
@@ -559,7 +611,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             props.alternateScreen === true
               ? {
                   rows: prompt.active
-                    ? Math.max(1, size.rows - promptRows(prompt, size.cols))
+                    ? nativePromptFits(size)
+                      ? Math.max(1, size.rows - promptRows(prompt, size.cols))
+                      : 1
                     : size.rows,
                   cols: size.cols,
                   scroll,
@@ -578,8 +632,22 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           historyEntries={state.historyEntries}
           attachments={state.attachments}
           copied={copied}
+          promptHeight={
+            prompt.active
+              ? nativePromptFits(size)
+                ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2)
+                : 0
+              : undefined
+          }
         />
-        <NativePromptView snapshot={prompt} color={color} />
+        {nativeAcknowledgement && (
+          <NativePromptView
+            snapshot={prompt}
+            color={color}
+            acknowledgement={nativeAcknowledgement}
+            size={size}
+          />
+        )}
       </>
     );
   }
@@ -593,26 +661,48 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         <Text {...dimProps(color)} wrap="truncate-end">
           Starting chat… · Ctrl-C to cancel
         </Text>
-        <NativePromptView snapshot={prompt} color={color} />
+        {nativeAcknowledgement && (
+          <NativePromptView
+            snapshot={prompt}
+            color={color}
+            acknowledgement={nativeAcknowledgement}
+            size={size}
+          />
+        )}
       </Box>
     );
   }
   return (
-    <Box flexDirection="column" width={layoutColumns(size.cols)}>
-      <NativePromptView snapshot={prompt} color={color} />
-      <HomeView
-        snapshot={state.snapshot}
-        editor={state.input}
-        errorText={state.errorText}
-        notice={state.notice}
-        nowMs={props.nowMs()}
-        cols={Number.isFinite(size.cols) ? size.cols : 0}
-        rows={size.rows}
-        color={color}
-        paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
-        showBanner={props.showBanner}
-        keyless={state.keyless}
-      />
+    <Box
+      flexDirection="column"
+      width={layoutColumns(size.cols)}
+      {...(prompt.active
+        ? { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' }
+        : {})}
+    >
+      {nativeAcknowledgement && (
+        <NativePromptView
+          snapshot={prompt}
+          color={color}
+          acknowledgement={nativeAcknowledgement}
+          size={size}
+        />
+      )}
+      {!prompt.active && (
+        <HomeView
+          snapshot={state.snapshot}
+          editor={state.input}
+          errorText={state.errorText}
+          notice={state.notice}
+          nowMs={props.nowMs()}
+          cols={Number.isFinite(size.cols) ? size.cols : 0}
+          rows={size.rows}
+          color={color}
+          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          showBanner={props.showBanner}
+          keyless={state.keyless}
+        />
+      )}
       {state.palette !== undefined && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
       )}

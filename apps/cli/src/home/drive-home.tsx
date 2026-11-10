@@ -75,7 +75,10 @@ import {
   type ProviderResolver,
 } from '../engine/providers.js';
 import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
-import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
+import {
+  createNativePromptChannel,
+  NativePromptVisibilityRefusedError,
+} from '../render/tui/native-prompt-channel.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -617,22 +620,37 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       prepared: PreparedConfigWrite,
       assertAdmitting: () => void,
     ): Promise<ConfigWriteResult> => {
-      assertAdmitting();
-      if (prepared.rewriteNeeded) {
-        if (flushVisible === undefined)
-          throw new CliError(
-            'output_unavailable',
-            'The config rewrite notice could not be displayed.',
-          );
-        await flushVisible(() => {
-          const notice =
-            'Saving preferences rewrites the global config and removes its comments and ordering.';
-          if (nativePrompt.ui.getSnapshot().active) promptFlow.note(notice);
-          else controller?.setProviderState(keyless, notice);
-        });
+      for (;;) {
+        assertAdmitting();
+        const native = nativePrompt.ui.getSnapshot().active;
+        if (prepared.rewriteNeeded || native) {
+          if (flushVisible === undefined)
+            throw new CliError(
+              'output_unavailable',
+              'The config rewrite notice could not be displayed.',
+            );
+          await flushVisible(() => {
+            const notice =
+              'Saving preferences rewrites the global config and removes its comments and ordering.';
+            if (native) {
+              if (prepared.rewriteNeeded) promptFlow.note(notice);
+              else promptFlow.busy('Saving preferences…');
+            } else controller?.setProviderState(keyless, notice);
+          });
+        }
+        const snapshot = native ? nativePrompt.ui.getSnapshot() : undefined;
+        const assertPublication = (): void => {
+          assertAdmitting();
+          if (snapshot !== undefined) nativePrompt.ui.assertVisible(snapshot);
+        };
+        try {
+          return prepared.publish(assertPublication);
+        } catch (cause) {
+          if (!(cause instanceof NativePromptVisibilityRefusedError)) throw cause;
+          // The temp was removed before the writer refused publication. Wait for
+          // current visible evidence again; cancellation still owns the flow.
+        }
       }
-      assertAdmitting();
-      return prepared.publish(assertAdmitting);
     };
     const writeStarterDefault = async (
       model: string,
@@ -652,6 +670,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ),
             assertAdmitting,
           );
+          invocationDefault = undefined;
           return { kind: 'saved', durability: saved.durability };
         } catch (cause) {
           assertAdmitting();
@@ -792,25 +811,37 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
       writeDefault: async (modelId, provider, reasoningEffort) => {
         ownership?.surface.work.assertAdmitting();
+        let signal: AbortSignal | undefined;
         try {
-          return await publishPreference(
-            prepareGlobalPreferences(
-              {
-                defaultModel: modelId,
-                defaultProvider: provider,
-                ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-              },
-              homeDir,
-              deps.global.configPath === undefined ? undefined : globalConfigPath,
-            ),
-            () => {
-              ownership?.surface.work.assertAdmitting();
-              if (homeInputSealed) throw new CliError('invalid_invocation', 'Home is closing.');
+          const prepared = prepareGlobalPreferences(
+            {
+              defaultModel: modelId,
+              defaultProvider: provider,
+              ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
             },
+            homeDir,
+            deps.global.configPath === undefined ? undefined : globalConfigPath,
           );
+          // A plain Home picker write needs the same real disclosure evidence
+          // as setup, without adding another confirmation or terminal owner.
+          if (prepared.rewriteNeeded) {
+            signal = promptFlow.begin();
+            promptFlow.busy('Saving default model…');
+          }
+          const saved = await publishPreference(prepared, () => {
+            ownership?.surface.work.assertAdmitting();
+            if (homeInputSealed) throw new CliError('invalid_invocation', 'Home is closing.');
+            signal?.throwIfAborted();
+          });
+          invocationDefault = undefined;
+          return saved;
         } catch (cause) {
+          if (signal?.aborted && cause === signal.reason)
+            throw new CliError('invalid_invocation', 'Default model change cancelled.');
           ownership?.surface.work.failure(cause);
           throw cause;
+        } finally {
+          if (signal !== undefined) await promptFlow.end();
         }
       },
     };

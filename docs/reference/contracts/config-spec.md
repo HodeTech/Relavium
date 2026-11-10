@@ -356,6 +356,9 @@ other settings and show the comment/order-loss notice before every existing-file
 rewrite. Pull this prerequisite from Wave 3 row 16a before adding
 `standard_env_key_consent` or `keychain_unavailable_acknowledged` in MVP-2;
 this does not implement unrelated chat HTTP policy.
+Native card evidence is bound to the current snapshot and live terminal geometry.
+Recheck it at publication, including immediately before rename; an invalid or
+clipped card waits for visible recovery or cancellation and grants nothing.
 
 **Revocation:** manually remove the provider's entry from the selected global
 consent table and restart Relavium. This is the MVP-2 revocation path; adding a
