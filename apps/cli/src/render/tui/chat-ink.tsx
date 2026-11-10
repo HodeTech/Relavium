@@ -479,13 +479,26 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols, color),
     [viewport?.cols, state.transcript, color],
   );
+  // Static advances its cursor even when a child paints no rows. Retain its
+  // admitted prefix during width suspension, then deliver pending entries once
+  // geometry is valid. Passing [] would reset Ink's cursor and reprint history.
+  const inlineWidthReady =
+    props.columns === undefined || (Number.isFinite(props.columns) && props.columns >= 1);
+  const admittedInlineCount = useRef(0);
+  useLayoutEffect(() => {
+    if (viewport === undefined && inlineWidthReady)
+      admittedInlineCount.current = state.transcript.length;
+  }, [viewport, inlineWidthReady, state.transcript]);
+  const inlineTranscript = inlineWidthReady
+    ? state.transcript
+    : state.transcript.slice(0, admittedInlineCount.current);
   return (
     <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
       {viewport === undefined || wrappedTranscript === undefined ? (
-        <Static items={[...state.transcript]}>
+        <Static items={[...inlineTranscript]}>
           {(entry, index) => (
             <TranscriptLine
               key={index}

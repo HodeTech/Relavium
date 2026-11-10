@@ -15,6 +15,235 @@ function oneByteAtATime(source: string): MarkdownStream {
 }
 
 describe('incremental markdown stream', () => {
+  it.each([100, 200, 400])(
+    'projects completed soft paragraph lines without retaining prefix views (%i lines)',
+    (cycles) => {
+      const stream = new MarkdownStream();
+      let source = 'p ' + 'x'.repeat(4000 + cycles * 40) + '\n';
+      stream.append(source);
+      for (let line = 0; line < cycles; line++) {
+        const addition = 'x *a*\tvalue\n';
+        source += addition;
+        stream.append(addition);
+        stream.tail(80, 8);
+      }
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000)
+        .map((line) => line.text)
+        .join('');
+      const actual = stream
+        .tail(100_000, 8)
+        .map((line) => line.text)
+        .join('');
+      expect(expected.endsWith(actual)).toBe(true);
+      expect(stream.checkpointWork.decisions).toBeLessThan(cycles * 6 + 10);
+      expect(stream.checkpointWork.retained).toBeLessThan(cycles * 6 + 10);
+      expect(stream.checkpointWork.copied).toBeLessThan(cycles * 6 + 10);
+      expect(stream.checkpointWork.indexed).toBeLessThan(source.length * 16);
+      // Each draw may visit its 4,000-unit visible window; ingestion must not
+      // construct or reinterpret an ever-growing paragraph-prefix view.
+      expect(stream.checkpointWork.cache).toBeLessThan(cycles * 6_000);
+      expect(stream.geometryWork.sourceUnits).toBeLessThan(source.length * 2);
+      expect(stream.geometryWork.measuredUnits).toBeLessThan(source.length);
+      expect(stream.geometryWork.visits).toBeLessThan(cycles * 4_000 * 4);
+      expect(stream.geometryWork.constructedUnits).toBeLessThan(cycles * 4_000 * 10);
+    },
+  );
+
+  it.each(['a  ', 'a\\', '\\', '*a*  ', '**a**\\', '`a`', '[label](url)', '𝑥_𝑦_'])(
+    'preserves terminal-newline interpretation after %j',
+    (ending) => {
+      for (const prefix of ['', 'x'.repeat(4001) + ' ']) {
+        const stream = new MarkdownStream();
+        stream.append(prefix);
+        const source = prefix + ending + '\n';
+        for (const unit of ending + '\n') {
+          stream.append(unit);
+          stream.tail(80, 8);
+        }
+        const expected = layoutMarkdown(parseMarkdown(source), 100_000);
+        const actual = stream.tail(100_000, 8);
+        if (!prefix) expect(actual).toEqual(expected);
+        else
+          expect(
+            expected
+              .map((line) => line.text)
+              .join('')
+              .endsWith(actual.map((line) => line.text).join('')),
+          ).toBe(true);
+        const before = stream.checkpointWork.decisions;
+        stream.append(' ');
+        stream.tail(40, 8);
+        stream.append(' ');
+        stream.tail(80, 8);
+        expect(stream.checkpointWork.decisions).toBeLessThanOrEqual(before + 2);
+        expect(stream.finish()).toEqual(parseMarkdown(source + '  '));
+      }
+    },
+  );
+
+  it.each(
+    ['*', '**', '~~', '`'].flatMap((marker) =>
+      [1, 2, 3, 17, 64].map((chunk) => ({ marker, chunk })),
+    ),
+  )('clips rendered RI pairs with $marker syntax in $chunk-unit chunks', ({ marker, chunk }) => {
+    const source = '🇺' + marker + '🇸'.repeat(2401) + marker + '\tEND';
+    const stream = new MarkdownStream();
+    for (let at = 0; at < source.length; at += chunk) stream.append(source.slice(at, at + chunk));
+    const raw = stream.sourceTail();
+    const expected = layoutMarkdown(parseMarkdown(source), 100_000)
+      .map((line) => line.text)
+      .join('');
+    const actual = stream
+      .tail(100_000, 8)
+      .map((line) => line.text)
+      .join('');
+    const start = expected.lastIndexOf(actual);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(
+      [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(expected)].some(
+        (segment) => segment.index === start,
+      ),
+    ).toBe(true);
+    expect(actual.length).toBeGreaterThan(3900);
+    expect(actual.match(/ +END$/)?.[0]).toBe(expected.match(/ +END$/)?.[0]);
+    expect(stream.sourceTail()).toBe(raw);
+  });
+
+  it.each([
+    { kind: 'RI', prefix: '🇺', separator: '🇺' },
+    { kind: 'ZWJ', prefix: '👩', separator: '\u200d💻' },
+    { kind: 'Extend', prefix: 'e', separator: '\u0301' },
+    { kind: 'growing cluster', prefix: 'p ', separator: ' ' },
+  ])('bounds reverse-backtick geometry with $kind boundaries', ({ kind, prefix, separator }) => {
+    let previous: { units: number; measured: number } | undefined;
+    for (const depth of [48, 96, 192]) {
+      const runs = Array.from({ length: depth }, (_, index) => '`'.repeat(index + 1));
+      const cluster = kind === 'growing cluster' ? 'e' + '\u0301'.repeat(depth * depth) : 'é👩‍💻';
+      let source = prefix + runs.join(separator) + ' ' + cluster + '\t' + 'x'.repeat(8003) + 'é👩‍💻';
+      const stream = new MarkdownStream();
+      stream.append(source);
+      stream.tail(80, 5);
+      for (const run of runs.toReversed()) {
+        source += ' ' + run;
+        stream.append(' ' + run);
+        stream.tail(80, 5);
+      }
+      source += '\tEND';
+      stream.append('\tEND');
+      const expected = layoutMarkdown(parseMarkdown(source), 1_000_000).at(-1)?.text;
+      const actual = stream.tail(1_000_000, 5).at(-1)?.text;
+      expect(actual?.match(/ +END$/)?.[0]).toBe(expected?.match(/ +END$/)?.[0]);
+      const geometry = stream.geometryWork;
+      const checkpoint = stream.checkpointWork;
+      expect(geometry.measuredUnits).toBeLessThan(source.length * 8);
+      expect(geometry.sourceUnits).toBeLessThan(source.length * 16);
+      expect(geometry.visits).toBeLessThan(source.length * 128);
+      expect(geometry.constructedUnits).toBeLessThan(source.length * 128);
+      expect(geometry.cacheKeyUnits).toBeLessThan(source.length * 64);
+      expect(checkpoint.decisions).toBeLessThan(source.length * 4);
+      expect(checkpoint.indexed).toBeLessThan(source.length * 128);
+      expect(checkpoint.cache).toBeLessThan(source.length * 256);
+      expect(checkpoint.retained).toBeLessThan(depth * 8 + 32);
+      if (previous)
+        expect(geometry.measuredUnits / source.length).toBeLessThan(
+          (previous.measured / previous.units) * 2.5,
+        );
+      previous = { units: source.length, measured: geometry.measuredUnits };
+    }
+  });
+
+  it.each(
+    [4001, 10001].flatMap((digits) =>
+      ['', '> ', '- ', '  - ', '> - '].map((container) => ({ digits, container })),
+    ),
+  )(
+    'keeps literal fallback for $digits-digit ordinal after "$container"',
+    ({ digits, container }) => {
+      const source = container + '9'.repeat(digits) + '. **value**\tEND';
+      const stream = new MarkdownStream();
+      for (let at = 0; at < source.length; at += 17) {
+        stream.append(source.slice(at, at + 17));
+        if (at % 170 === 0) stream.tail(80, 12);
+      }
+      const tail = stream.tail(80, 12);
+      const expected = layoutMarkdown(parseMarkdown(source), 80)
+        .map((line) => line.text)
+        .join('');
+      const actual = tail.map((line) => line.text).join('');
+      expect(actual).toContain('**value**');
+      expect(expected.endsWith(actual)).toBe(true);
+      expect(tail.flatMap((line) => line.spans).some((span) => span.strong)).toBe(false);
+      expect(stream.sourceTail()).toBe(source.slice(-4000));
+      expect(stream.checkpointWork.decisions).toBeLessThan(source.length * 2);
+      expect(stream.finish()).toEqual(parseMarkdown(source));
+    },
+  );
+
+  it('retains raw tab stops across semantic stable-block reads and resizes', () => {
+    const source = '```\n' + '界'.repeat(4001) + '\tEND\n```\n';
+    const stream = new MarkdownStream();
+    for (let at = 0; at < source.length; at += 17) stream.append(source.slice(at, at + 17));
+    const semantic = stream.tail(80, 12);
+    const plain = stream.plainTail(80, 12);
+    expect(plain.find((line) => line.text.includes('END'))?.text).toMatch(/ {6}END$/);
+    stream.tail(40, 12);
+    expect(stream.tail(80, 12)).toEqual(semantic);
+    expect(stream.plainTail(80, 12)).toEqual(plain);
+  });
+
+  it.each([25, 50, 100, 200])(
+    'reuses revoked wrapper bodies with a growing prefix (%i cycles)',
+    (cycles) => {
+      const stream = new MarkdownStream();
+      let source = '*' + 'x'.repeat(4000 + 40 * cycles);
+      stream.append(source);
+      for (let cycle = 0; cycle < cycles; cycle++) {
+        stream.append('[label*');
+        source += '[label*';
+        stream.tail(80, 5);
+        stream.append('](url)\t');
+        source += '](url)\t';
+        stream.tail(80, 5);
+      }
+      stream.append('END');
+      source += 'END';
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000).at(-1)?.text;
+      const actual = stream.tail(100_000, 5).at(-1)?.text;
+      expect(actual?.match(/ +END$/)?.[0]).toBe(expected?.match(/ +END$/)?.[0]);
+      expect(stream.checkpointWork.decisions).toBeLessThan(cycles * 20 + 100);
+      expect(stream.columnWork.units).toBeLessThan(source.length * 2);
+      expect(stream.geometryWork.measuredUnits).toBeLessThan(source.length * 8 + cycles * 256);
+      expect(stream.geometryWork.sourceUnits).toBeLessThan(source.length * 20 + cycles * 512);
+    },
+  );
+
+  it('shares canonical delimiter decisions for live tab geometry across every short split', () => {
+    for (const suffix of ['******', '**\\**', '**🇺*', '*[**x**](**x**)', '**_*', '__`_', '*\t**']) {
+      const source = 'p ' + suffix + '\tEND';
+      const expected = layoutMarkdown(parseMarkdown(source), 100_000);
+      for (let split = 0; split <= source.length; split++) {
+        const stream = new MarkdownStream();
+        stream.append(source.slice(0, split));
+        stream.tail(80, 8);
+        stream.append(source.slice(split));
+        expect(stream.tail(100_000, 20), `${suffix} split ${split}`).toEqual(expected);
+      }
+    }
+  });
+
+  it('uses canonical Setext eligibility before finalizing an underline as a rule', () => {
+    for (const source of ['    x\n---\n\nEND', '    x\n===\n\nEND', 'x\n--\n\nEND']) {
+      const expected = layoutMarkdown(parseMarkdown(source), 80);
+      for (let split = 0; split <= source.length; split++) {
+        const stream = new MarkdownStream();
+        stream.append(source.slice(0, split));
+        stream.tail(80, 20);
+        stream.append(source.slice(split));
+        expect(stream.tail(80, 20)).toEqual(expected);
+      }
+    }
+  });
+
   it('retains tab columns from omitted prose and source prefixes', () => {
     for (const prefix of [
       'x'.repeat(4_001),
