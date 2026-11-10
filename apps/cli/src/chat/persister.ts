@@ -12,14 +12,15 @@ import {
   type SessionUsageStore,
   type SessionUsageReceipt,
 } from '@relavium/db';
-import type {
-  AgentSessionRecord,
-  SessionContext,
-  SessionMessage,
-  SessionStatus,
-  SessionToolHistoryEntry,
-  UsageInvocation,
-  UsageCoverageSnapshot,
+import {
+  completedSessionTurns,
+  type AgentSessionRecord,
+  type SessionContext,
+  type SessionMessage,
+  type SessionStatus,
+  type SessionToolHistoryEntry,
+  type UsageInvocation,
+  type UsageCoverageSnapshot,
 } from '@relavium/shared';
 
 import type { GovernorWiring, SessionUsageWriter } from './session-host.js';
@@ -122,8 +123,10 @@ export interface SessionPersister {
    * has already lost data this process cannot reconstruct.
    */
   readonly durabilityFailure: Error | undefined;
+  /** Durable completed archive, including history before a compact/trim boundary. */
+  readonly hasSavedTurns: boolean;
   /** Record the user's text for the in-flight turn — the REPL calls this immediately before `sendMessage`. */
-  beginUserTurn(text: string): void;
+  beginUserTurn(text: string, userDisplayText?: string): void;
   /**
    * Persist ONE conservative budget commitment (ADR-0074 §2/§4) — the estimate twin of the `cost:updated` write.
    *
@@ -163,6 +166,8 @@ export function createSessionPersister(
   let totalOutputTokens = 0;
   let totalCostMicrocents = 0;
   let pendingUserText: string | undefined;
+  let pendingUserDisplayText: string | undefined;
+  let hasSavedTurns = false;
   let assistantText = '';
   // ADR-0059: the CATALOG ID of the model that ACTUALLY produced the in-flight assistant turn — resolved from the
   // LAST `cost:updated.model` of the turn (failover-aware: the final billed egress is the model that produced the
@@ -281,6 +286,7 @@ export function createSessionPersister(
    */
   const commitTurn = (
     userText: string,
+    userDisplayText: string | undefined,
     tokensUsed: { input: number; output: number },
     toolHistory: readonly SessionToolHistoryEntry[],
   ): void => {
@@ -312,7 +318,10 @@ export function createSessionPersister(
     const nextInput = totalInputTokens + tokensUsed.input;
     const nextOutput = totalOutputTokens + tokensUsed.output;
     deps.store.writeTurn({
-      messages: staged.map((message) => ({ message })),
+      messages: staged.map((message) => ({
+        message,
+        ...(message === user && userDisplayText !== undefined ? { meta: { userDisplayText } } : {}),
+      })),
       session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
     });
     // Committed. EVERY in-memory mutation for this turn happens here, AFTER the durable write returned —
@@ -321,6 +330,7 @@ export function createSessionPersister(
     // aborted turn), so advancing them ahead of the write made a failed turn's tokens leak into the next
     // turn's row — the session then claimed two turns' tokens for one visible exchange.
     title = nextTitle;
+    hasSavedTurns = true;
     sequenceNumber += staged.length;
     realMessageSeqs.push(user.sequenceNumber);
     const terminal = staged.at(-1);
@@ -413,7 +423,7 @@ export function createSessionPersister(
           // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
           const userText = pendingUserText;
           persistDurably(() => {
-            commitTurn(userText, event.tokensUsed, event.toolHistory ?? []);
+            commitTurn(userText, pendingUserDisplayText, event.tokensUsed, event.toolHistory ?? []);
           });
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
@@ -423,6 +433,7 @@ export function createSessionPersister(
           });
         }
         pendingUserText = undefined;
+        pendingUserDisplayText = undefined;
         assistantText = '';
         turnModelCatalogId = undefined;
         return;
@@ -538,6 +549,7 @@ export function createSessionPersister(
         // `user` the engine dropped, making the next compaction's boundary off-by-one → a silent kept-message
         // loss (the step-3 review data-loss trap). One shared projection ⇒ the host + engine can never drift.
         const messages = deps.store.loadMessages(deps.sessionId);
+        hasSavedTurns = completedSessionTurns(messages, false).length > 0;
         realMessageSeqs.push(...resumableMessageSequences(messages));
         turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
       }
@@ -555,7 +567,10 @@ export function createSessionPersister(
     get durabilityFailure(): Error | undefined {
       return durabilityFailure;
     },
-    beginUserTurn(text: string): void {
+    get hasSavedTurns(): boolean {
+      return hasSavedTurns;
+    },
+    beginUserTurn(text: string, userDisplayText?: string): void {
       // A staged turn that is still pending because its write FAILED must never be overwritten (#W15-4) —
       // that overwrite is how the durable transcript lost an exchange the in-memory session still had. The
       // host refuses new egress once `durabilityFailure` is set, so this is the backstop rather than the
@@ -565,6 +580,7 @@ export function createSessionPersister(
       // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
       // errored first turn whose message rows are rolled back — a label with no transcript behind it.
       pendingUserText = text;
+      pendingUserDisplayText = userDisplayText;
       assistantText = '';
       turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
     },

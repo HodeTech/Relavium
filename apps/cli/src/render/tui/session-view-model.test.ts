@@ -177,10 +177,10 @@ describe('session-view-model', () => {
     const entry = done.transcript[0];
     expect(entry).toMatchObject({ role: 'assistant', text: 'hello' });
     if (entry?.role === 'assistant') {
-      expect(entry.summary.stopReason).toBe('stop');
-      expect(entry.summary.tokensUsed).toEqual({ input: 10, output: 5 });
+      expect(entry.summary?.stopReason).toBe('stop');
+      expect(entry.summary?.tokensUsed).toEqual({ input: 10, output: 5 });
       // The 1ms-per-event clock: turn_started @ +1ms, two tokens, turn_completed @ +4ms ⇒ 3ms.
-      expect(entry.summary.durationMs).toBe(3);
+      expect(entry.summary?.durationMs).toBe(3);
     }
   });
 
@@ -195,8 +195,8 @@ describe('session-view-model', () => {
     const entry = state.transcript[0];
     expect(entry).toMatchObject({ role: 'assistant', text: 'partial' });
     if (entry?.role === 'assistant') {
-      expect(entry.summary.stopReason).toBe('aborted');
-      expect(entry.summary.errorCode).toBeUndefined(); // user-initiated, not a failure
+      expect(entry.summary?.stopReason).toBe('aborted');
+      expect(entry.summary?.errorCode).toBeUndefined(); // user-initiated, not a failure
     }
     expect(state.status).toBe('idle'); // the session stays alive after an abort
   });
@@ -212,7 +212,7 @@ describe('session-view-model', () => {
     expect(state.transcript).toHaveLength(1); // NOT silently dropped
     const entry = state.transcript[0];
     expect(entry).toMatchObject({ role: 'assistant', text: '' });
-    if (entry?.role === 'assistant') expect(entry.summary.stopReason).toBe('aborted');
+    if (entry?.role === 'assistant') expect(entry.summary?.stopReason).toBe('aborted');
     expect(state.status).toBe('idle');
   });
 
@@ -258,7 +258,7 @@ describe('session-view-model', () => {
     const entry = state.transcript[0];
     expect(entry?.role).toBe('assistant');
     if (entry?.role === 'assistant') {
-      expect(entry.summary.errorCode).toBe('turn_limit');
+      expect(entry.summary?.errorCode).toBe('turn_limit');
     }
   });
 
@@ -509,6 +509,7 @@ describe('session-view-model', () => {
     const entry = state.transcript[0];
     expect(entry?.role).toBe('assistant');
     if (entry?.role === 'assistant') {
+      if (entry.summary === undefined) throw new Error('missing live turn summary');
       expect('durationMs' in entry.summary).toBe(false);
     }
   });
@@ -530,7 +531,7 @@ describe('session-view-model', () => {
     const entry = state.transcript[0];
     expect(entry).toMatchObject({ role: 'assistant', text: 'partial ' });
     if (entry?.role === 'assistant') {
-      expect(entry.summary.errorCode).toBe('provider_unavailable');
+      expect(entry.summary?.errorCode).toBe('provider_unavailable');
     }
   });
 
@@ -760,7 +761,7 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
       e.turnCompleted(),
     ]);
     const last = state.transcript.at(-1);
-    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+    expect(last?.role === 'assistant' && last.summary?.model).toBe('claude-opus-4-8');
   });
 
   it('keeps the LAST cost:updated model across a multi-attempt turn (the committed model)', () => {
@@ -775,7 +776,7 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
       e.turnCompleted(),
     ]);
     const last = state.transcript.at(-1);
-    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+    expect(last?.role === 'assistant' && last.summary?.model).toBe('claude-opus-4-8');
   });
 
   it('omits the summary model when the committed model equals the bound model (no redundant noise)', () => {
@@ -788,7 +789,7 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
       e.turnCompleted(),
     ]);
     const last = state.transcript.at(-1);
-    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+    expect(last?.role === 'assistant' && last.summary?.model).toBeUndefined();
   });
 
   it('resets activeTurnModel between turns so a failover never leaks into the next turn', () => {
@@ -805,7 +806,7 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
     ]);
     const last = state.transcript.at(-1);
     expect(last?.role === 'assistant' && last.text).toBe('b');
-    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+    expect(last?.role === 'assistant' && last.summary?.model).toBeUndefined();
   });
 });
 

@@ -16,6 +16,7 @@ describe('native setup recovery names the reachable host action', () => {
         const messages: string[] = [];
         const abort = new AbortController();
         const flow: NativePromptFlow = {
+          pick: () => Promise.reject(new Error('Unexpected session picker in credential fixture.')),
           begin: () => abort.signal,
           end: () => Promise.resolve(),
           cancel: () => abort.abort(),

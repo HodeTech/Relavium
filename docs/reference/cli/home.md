@@ -34,6 +34,24 @@ implements caught Home/session fault integration and the complete fatal coordina
 it is [independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17). This does not turn a
 classified failed chat turn into a fatal CLI failure.
 
+## Resume and Continue
+
+`/resume` is available in the landing and the idle in-Home chat. It opens the
+[native session picker](chat-session.md#finding-a-saved-session) while retaining
+the current chat view. An empty landing prompt accepts Down to focus Continue's
+recent sessions; Up/Down move, Enter resumes, and Esc returns to the prompt.
+Only sessions are actionable in this increment. Session rows include a separate
+sanitized directory line; management lists trim/scroll before the focused row,
+keyless action and prompt can leave an 80×24 screen. No key/DB reads happen during
+rendering or focus movement.
+
+A saved session in another directory has a fixed open-Home-there/shell-picker
+remedy; Home never reanchors its workspace. Safe restored history is prepared
+before model/MCP build and activation, and a failed read offers retry/return.
+After selection the existing render-acknowledged effect disclosure remains the
+activation boundary. The detailed projection, memory and hatch rules live in the
+[chat reference](chat-session.md#proposed-restored-transcript-display--mvp-2).
+
 ## First-run onboarding wizard (2.5.G S8)
 
 **Accepted on development — MVP-2 step 2 (2026-11-10).**

@@ -18,18 +18,19 @@ import {
 } from './home-projection.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
+import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /**
- * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a read-only management strip — an "Attention
+ * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
  * required" section (pending human gates, then failed runs) above a "Continue" list (recent sessions / runs /
  * agents) — with a live prompt below it. No `useInput`, no state, no store: the single raw-mode owner is the
  * Home's `RootApp`, which passes the snapshot + the prompt buffer + the terminal size + a clock here. Below the
  * 80×24 minimum the whole view degrades to a single resize line (the `RootApp` holds it until a resize). The
  * strip labels come from the unit-tested `home-projection`; the prompt echo is sanitized at this boundary.
  *
- * Every dynamic row is `wrap="truncate-end"` — a long title / slug / message truncates with an ellipsis at the
+ * Every dynamic line is `wrap="truncate-end"` — a long title / slug / message truncates with an ellipsis at the
  * terminal edge rather than soft-wrapping into a second physical row (which would shatter the glanceable strip),
- * mirroring the sibling run TUI. An overdue (expired) gate is escalated yellow → red so the most time-critical
+ * mirroring the sibling run TUI. Sessions have a separate directory line. An overdue (expired) gate is escalated yellow → red so the most time-critical
  * item in "Attention required" catches the eye. A build-failure banner is rendered adjacent to the prompt (not
  * at the top) so it stays in view even when a full strip scrolls the header off a short terminal.
  */
@@ -54,12 +55,15 @@ interface HomeViewProps {
   readonly showBanner?: boolean | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */
   readonly keyless?: boolean;
+  readonly continueSessionId?: string | undefined;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
 interface StripRow {
   readonly key: string;
   readonly line: string;
+  readonly hint?: string;
+  readonly selected?: boolean;
 }
 
 /** A labeled list section ("Sessions", "Runs", …) — renders nothing when empty so the strip stays compact. An
@@ -76,14 +80,21 @@ function Section(
         </Text>
       )}
       {props.rows.map((row) => (
-        <Text
-          key={row.key}
-          {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
-          wrap="truncate-end"
-        >
-          {'  '}
-          {row.line}
-        </Text>
+        <Box key={row.key} flexDirection="column">
+          <Text
+            {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
+            wrap="truncate-end"
+          >
+            {row.selected === true ? '> ' : '  '}
+            {row.line}
+          </Text>
+          {row.hint !== undefined && (
+            <Text {...dimProps(props.color)} wrap="truncate-end">
+              {'    '}
+              {row.hint}
+            </Text>
+          )}
+        </Box>
       ))}
     </Box>
   );
@@ -110,26 +121,70 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   // Keyed by each row's durable id (gate: run+gate; run: runId; session: sessionId; agent: slug) — never the
   // array index, so React reconciliation is stable as the strip's contents change between reads.
   // Reserve terminal space for the keyless action and prompt; trim management rows first.
-  let remaining = props.keyless === true ? Math.max(0, rows - 18) : Number.POSITIVE_INFINITY;
-  const takeRows = <T,>(items: readonly T[]): readonly T[] => {
-    const selected = items.slice(0, remaining);
-    remaining -= selected.length;
+  const showBanner = shouldShowBanner({
+    configShowBanner: props.showBanner,
+    isEmpty: snapshot.isEmpty,
+    rows,
+  });
+  const promptHeight = editor.text
+    .split('\n')
+    .reduce(
+      (sum, line) => sum + Math.max(1, Math.ceil((displayWidth(sanitizeInline(line)) + 3) / cols)),
+      0,
+    );
+  const noticeLines = notice
+    ?.split('\n')
+    .slice(0, 3)
+    .map((line) => sliceDisplayColumns(sanitizeInline(line), 0, cols));
+  // Reserve all headings/margins and the whole editor before allocating management rows.
+  let remaining = Math.max(
+    0,
+    rows -
+      (showBanner ? 4 : 1) -
+      promptHeight -
+      3 -
+      (props.keyless === true ? 1 : 0) -
+      (errorText === undefined ? 0 : 2) -
+      (noticeLines === undefined ? 0 : noticeLines.length + 1) -
+      8,
+  );
+  const takeRows = <T,>(items: readonly T[], cost = 1, max = remaining): readonly T[] => {
+    const selected = items.slice(0, Math.floor(Math.min(remaining, max) / cost));
+    remaining -= selected.length * cost;
     return selected;
   };
-  const unreadable = takeRows(snapshot.unreadableRunIds);
-  const gateRows = takeRows(snapshot.attention.gates).map((g) => ({
+  const attentionBudget = Math.max(0, remaining - (snapshot.recentSessions.length > 0 ? 2 : 0));
+  const unreadable = takeRows(snapshot.unreadableRunIds, 1, Math.min(3, attentionBudget));
+  const gateRows = takeRows(
+    snapshot.attention.gates,
+    1,
+    Math.max(0, attentionBudget - unreadable.length),
+  ).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
-  const failed: StripRow[] = takeRows(snapshot.attention.failedRuns).map((r) => ({
+  const failed: StripRow[] = takeRows(
+    snapshot.attention.failedRuns,
+    1,
+    Math.max(0, attentionBudget - unreadable.length - gateRows.length),
+  ).map((r) => ({
     key: r.runId,
     line: `✗ ${runLabel(r, nowMs)}`,
   }));
-  const sessions: StripRow[] = takeRows(snapshot.recentSessions).map((s) => ({
-    key: s.sessionId,
-    line: sessionLabel(s, nowMs),
-  }));
+  const sessionCapacity = Math.floor(remaining / 2);
+  const focusedIndex = snapshot.recentSessions.findIndex(
+    (s) => s.sessionId === props.continueSessionId,
+  );
+  const sessionStart = Math.max(0, focusedIndex - sessionCapacity + 1);
+  const sessions: StripRow[] = takeRows(snapshot.recentSessions.slice(sessionStart), 2).map(
+    (s) => ({
+      key: s.sessionId,
+      line: sessionLabel(s, nowMs),
+      hint: sanitizeInline(s.workingDir),
+      selected: s.sessionId === props.continueSessionId,
+    }),
+  );
   const runs: StripRow[] = takeRows(snapshot.recentRuns).map((r) => ({
     key: r.runId,
     line: runLabel(r, nowMs),
@@ -141,11 +196,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
   return (
     <Box flexDirection="column">
-      {shouldShowBanner({
-        configShowBanner: props.showBanner,
-        isEmpty: snapshot.isEmpty,
-        rows,
-      }) ? (
+      {showBanner ? (
         // The banner REPLACES the plain heading rather than sitting above it, so nothing shifts when it is off.
         // `color === false` covers both `NO_COLOR` and `--no-color`, and takes the ASCII glyphs with it (ADR-0068).
         <Box flexDirection="column">
@@ -244,9 +295,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
         // multi-line string. Already sanitized at the source (formatDoctorReport).
         <Box marginTop={1}>
-          <Text {...dimProps(color)}>
-            {props.keyless === true ? notice.split('\n').slice(0, 2).join('\n') : notice}
-          </Text>
+          <Text {...dimProps(color)}>{noticeLines?.join('\n')}</Text>
         </Box>
       )}
 
@@ -262,9 +311,13 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
               (which surfaces Ctrl+J for a newline). */}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {editor.text.length === 0
-              ? '/ for commands · type a message to start a chat · Ctrl-C to exit'
-              : 'Enter to start the chat · Ctrl+J newline · Ctrl-C to exit'}
+            {props.continueSessionId !== undefined
+              ? '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl-C exit'
+              : editor.text.length === 0
+                ? snapshot.recentSessions.length > 0
+                  ? '/ commands · ↓ Continue · type a message to chat · Ctrl-C exit'
+                  : '/ for commands · type a message to start a chat · Ctrl-C to exit'
+                : 'Enter to start the chat · Ctrl+J newline · Ctrl-C to exit'}
           </Text>
         </Box>
       )}

@@ -9,10 +9,11 @@ import {
   type SessionMessage,
   type SessionToolCallPart,
 } from '@relavium/shared';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { visitSessionSummaries, type SessionSummary } from './session-summaries.js';
+import { listSessionPage, type SessionPage, type SessionPageOptions } from './session-discovery.js';
 import {
   completeSessionUsageInvocation,
   acknowledgeSessionUsageComplete,
@@ -71,6 +72,7 @@ export interface SessionMessageMeta {
   readonly toolCallId?: string;
   readonly name?: string;
   readonly finishReason?: string;
+  readonly userDisplayText?: string;
 }
 
 export class SessionMessageBoundaryError extends RelaviumError {
@@ -84,6 +86,17 @@ export class SessionMessageBoundaryError extends RelaviumError {
   }
 }
 
+function validDisplaySelection(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 500) return false;
+  const sequences: readonly unknown[] = value;
+  return (
+    new Set(sequences).size === sequences.length &&
+    sequences.every(
+      (sequence) => typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence >= 0,
+    )
+  );
+}
+
 function validateSessionMessage(value: unknown): SessionMessage {
   const parsed = SessionMessageSchema.safeParse(value);
   if (!parsed.success) throw new SessionMessageBoundaryError('message_invalid');
@@ -94,6 +107,8 @@ function validateMessageMeta(message: SessionMessage, value: unknown): SessionMe
   const parsed = SessionMessageMetaSchema.safeParse(value);
   if (!parsed.success) throw new SessionMessageBoundaryError('metadata_invalid');
   const meta = parsed.data;
+  if (meta.userDisplayText !== undefined && message.role !== 'user')
+    throw new SessionMessageBoundaryError('metadata_invalid');
   const calls = message.content.filter((part) => part.type === 'tool_call');
   const results = message.content.filter((part) => part.type === 'tool_result');
   const text = message.content
@@ -115,6 +130,7 @@ function validateMessageMeta(message: SessionMessage, value: unknown): SessionMe
     ...(meta.toolCallId === undefined ? {} : { toolCallId: meta.toolCallId }),
     ...(meta.name === undefined ? {} : { name: meta.name }),
     ...(meta.finishReason === undefined ? {} : { finishReason: meta.finishReason }),
+    ...(meta.userDisplayText === undefined ? {} : { userDisplayText: meta.userDisplayText }),
   };
 }
 
@@ -237,6 +253,7 @@ export function toSessionMessageRow(
     toolCallId: validatedMeta.toolCallId ?? null,
     name: validatedMeta.name ?? null,
     finishReason: validatedMeta.finishReason ?? null,
+    userDisplayText: validatedMeta.userDisplayText ?? null,
     modelId: m.modelId ?? null,
     // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
     compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
@@ -251,7 +268,9 @@ export function toSessionMessageRow(
  * aborts the read with a fixed SessionMessageBoundaryError, including malformed JSON whose native parser
  * diagnostic could otherwise contain sensitive content.
  */
-export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
+export function fromSessionMessageRow(
+  row: Omit<SessionMessageRow, 'userDisplayText'>,
+): SessionMessage {
   const candidate = {
     id: row.id,
     sessionId: row.sessionId,
@@ -402,6 +421,7 @@ export interface SessionStore {
    * omit it for the full list (the `chat-list` contract).
    */
   listSessions: (opts?: { readonly limit?: number }) => AgentSessionRecord[];
+  listSessionPage: (opts?: SessionPageOptions) => SessionPage;
   /** Visit all live discovery/accounting summaries in bounded indexed pages under one read snapshot. */
   visitSessionSummaries: (visit: (summary: SessionSummary) => void) => void;
   /**
@@ -475,6 +495,11 @@ export interface SessionStore {
   writeTurn: (turn: SessionTurnWrite) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
   loadMessages: (sessionId: string) => SessionMessage[];
+  /** Presentation-only read. Canonical history never consumes this metadata. */
+  loadUserDisplayTexts: (
+    sessionId: string,
+    sequenceNumbers: readonly number[],
+  ) => ReadonlyMap<number, string>;
   /** Load a session and its ordered transcript — the resume entry point (`undefined` if the session is absent). */
   loadFull: (
     sessionId: string,
@@ -531,12 +556,57 @@ export function createSessionStore(db: Db): SessionStore {
     // Ordered range read by session_id — index-served (idx_session_messages_seq, no filesort); its plan is
     // pinned by apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5).
     db
-      .select()
+      .select({
+        id: sessionMessages.id,
+        sessionId: sessionMessages.sessionId,
+        sequenceNumber: sessionMessages.sequenceNumber,
+        role: sessionMessages.role,
+        content: sessionMessages.content,
+        contentParts: sessionMessages.contentParts,
+        toolCalls: sessionMessages.toolCalls,
+        toolCallId: sessionMessages.toolCallId,
+        name: sessionMessages.name,
+        finishReason: sessionMessages.finishReason,
+        modelId: sessionMessages.modelId,
+        compactionDroppedThroughSequence: sessionMessages.compactionDroppedThroughSequence,
+        createdAt: sessionMessages.createdAt,
+      })
       .from(sessionMessages)
       .where(eq(sessionMessages.sessionId, sessionId))
       .orderBy(asc(sessionMessages.sequenceNumber))
       .all()
       .map(fromSessionMessageRow);
+
+  const loadUserDisplayTexts = (
+    sessionId: string,
+    sequenceNumbers: readonly number[],
+  ): ReadonlyMap<number, string> => {
+    if (!validDisplaySelection(sequenceNumbers))
+      throw new SessionMessageBoundaryError('metadata_invalid');
+    if (sequenceNumbers.length === 0) return new Map();
+    const rows = db
+      .select({
+        sequenceNumber: sessionMessages.sequenceNumber,
+        role: sessionMessages.role,
+        text: sessionMessages.userDisplayText,
+      })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.sessionId, sessionId),
+          inArray(sessionMessages.sequenceNumber, [...sequenceNumbers]),
+        ),
+      )
+      .all();
+    const display = new Map<number, string>();
+    for (const row of rows) {
+      if (row.text === null) continue;
+      if (row.role !== 'user' || typeof row.text !== 'string')
+        throw new SessionMessageBoundaryError('metadata_invalid');
+      display.set(row.sequenceNumber, row.text);
+    }
+    return display;
+  };
 
   const readCostRows = (sessionId: string, on: Executor = db): SessionCostRow[] =>
     on
@@ -789,6 +859,7 @@ export function createSessionStore(db: Db): SessionStore {
       ),
     loadSession,
     listSessions,
+    listSessionPage: (opts) => listSessionPage(db, opts),
     visitSessionSummaries: (visit) => visitSessionSummaries(db, visit),
     appendMessage: (message, meta) => {
       withSessionUsageWrite(db, [message.sessionId], (tx) => {
@@ -796,6 +867,7 @@ export function createSessionStore(db: Db): SessionStore {
       });
     },
     loadMessages,
+    loadUserDisplayTexts,
     loadFull: (sessionId) =>
       // One read transaction so the session row and its transcript come from a SINGLE consistent snapshot.
       // Without it the two SELECTs are independent reads: a concurrent writer — another `relavium` process, or

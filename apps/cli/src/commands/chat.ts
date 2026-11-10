@@ -11,6 +11,7 @@ import {
   type NativeProcessController,
 } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
+import { resumeHint } from '../chat/resume-hint.js';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
@@ -90,6 +91,9 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
+import { runSessionPicker } from '../home/session-picker.js';
+import { runStandaloneNativeFlow } from './standalone-native-flow.js';
+import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import type { FsPathPolicy } from '../engine/tool-host/fs-policy.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
@@ -415,7 +419,8 @@ export interface ChatCommandDeps {
 
 export interface ChatResumeCommandArgs {
   /** The persisted session to reload + continue (`relavium chat-resume <sessionId>`). */
-  readonly sessionId: string;
+  readonly sessionId: string | undefined;
+  readonly continueLatest?: true;
 }
 
 export interface ChatResumeCommandDeps {
@@ -931,6 +936,22 @@ async function chatResumeCommandBody(
   deps: ChatResumeCommandDeps,
   ownership?: SessionChatLifetime,
 ): Promise<ExitCode> {
+  if (args.continueLatest === true && args.sessionId !== undefined)
+    throw new CliError('invalid_invocation', '--continue cannot be combined with a session ID.');
+  if (
+    args.sessionId === undefined &&
+    args.continueLatest !== true &&
+    !chatIsInteractive(deps.io, deps.global)
+  )
+    throw new CliError(
+      'invalid_invocation',
+      'chat resume needs a session ID outside an interactive terminal.',
+    );
+  if (args.sessionId === undefined && args.continueLatest !== true && ownership === undefined)
+    throw new CliError(
+      'invalid_invocation',
+      'The session picker needs the interactive CLI. Use relavium chat resume <sessionId>.',
+    );
   const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -949,6 +970,61 @@ async function chatResumeCommandBody(
             invocation: deps.invocation,
           }),
         );
+  let chosen = args.sessionId;
+  let continueWorkingDir: string | undefined;
+  try {
+    if (chosen === undefined) {
+      let cwd: string;
+      try {
+        cwd = realpathSync.native(deps.global.cwd);
+      } catch {
+        throw new CliError('invalid_invocation', 'The current directory is unavailable.');
+      }
+      if (args.continueLatest === true) {
+        continueWorkingDir = cwd;
+        chosen = opened.store.listSessionPage({ workingDir: cwd, limit: 1 }).sessions[0]?.id;
+        if (chosen === undefined)
+          throw new CliError(
+            'invalid_invocation',
+            'No saved session exists for this directory. Start one with relavium chat.',
+          );
+      } else {
+        if (ownership === undefined) throw new CliError('cli_internal', '');
+        // Picker presentation uses operator preferences only; a selected session
+        // later re-derives its own project and authority, as explicit resume does.
+        const pickerConfig = loadResolvedConfig({
+          cwd: homeDir,
+          home: homeDir,
+          configPath: deps.global.configPath,
+        });
+        chosen = await runStandaloneNativeFlow(
+          {
+            lifetime: ownership,
+            io: deps.io,
+            global: deps.global,
+            altScreen: pickerConfig.config.altScreen,
+          },
+          ({ flow }) =>
+            runSessionPicker({
+              flow,
+              store: opened.store,
+              cwd,
+              now,
+              assertAdmitting: ownership.surface.work.assertAdmitting,
+              runRead: (read) => ownership.surface.work.enter(read),
+            }),
+        );
+      }
+    }
+  } catch (cause) {
+    if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
+    throw cause;
+  }
+  if (chosen === undefined) {
+    if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
+    return EXIT_CODES.success;
+  }
+  const selectedSessionId = chosen;
   const prepare = async (host?: SessionHostOwner) => {
     let config: LoadedConfig['config'];
     let projectConfigDir: LoadedConfig['projectConfigDir'];
@@ -973,9 +1049,9 @@ async function chatResumeCommandBody(
     try {
       // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
       // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
-      const loaded = opened.store.loadFull(args.sessionId);
+      const loaded = opened.store.loadFull(selectedSessionId);
       if (loaded === undefined) {
-        throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
+        throw new CliError('invalid_invocation', `no session found with id ${selectedSessionId}`);
       }
       if (loaded.session.agentSnapshot === undefined) {
         throw new CliError(
@@ -983,8 +1059,14 @@ async function chatResumeCommandBody(
           'The session has no stored agent snapshot and cannot be resumed.',
         );
       }
+      const savedAgent = loaded.session.agentSnapshot;
       // Recover the original workspace before reading project/workspace selectors. Launch cwd cannot substitute it.
       const originalCwd = loaded.session.context.workingDir;
+      if (continueWorkingDir !== undefined && originalCwd !== continueWorkingDir)
+        throw new CliError(
+          'invalid_invocation',
+          'The latest saved session has an inconsistent workspace anchor.',
+        );
       if (!isAbsolute(originalCwd)) {
         throw new CliError(
           'invalid_invocation',
@@ -1010,6 +1092,40 @@ async function chatResumeCommandBody(
       ({ config, projectConfigDir } = loadedConfig);
       fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
       deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
+      let historyBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
+      const restore = () =>
+        prepareRestoredHistory({
+          messages: loaded.messages,
+          memory: savedAgent.memory,
+          transcriptBound: historyBound,
+          readDisplay: (sequences) =>
+            opened.store.loadUserDisplayTexts(selectedSessionId, sequences),
+          assertAdmitting: () => {
+            host?.work.assertAdmitting();
+            ownership?.surface.work.assertAdmitting();
+          },
+          retry: () => {
+            if (ownership === undefined)
+              throw new CliError(
+                'invalid_invocation',
+                'Saved display text could not be read. Retry chat resume or return to Home.',
+              );
+            return runStandaloneNativeFlow(
+              {
+                lifetime: ownership,
+                io: deps.io,
+                global: deps.global,
+                altScreen: config.altScreen,
+              },
+              ({ flow }) => retryRestoredHistory(flow),
+            );
+          },
+        });
+      let restored = chatIsInteractive(deps.io, deps.global) ? await restore() : [];
+      if (restored === undefined) {
+        if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
+        return undefined;
+      }
       const keys = deps.resolveKeys?.(opened.db, loadedConfig);
       providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
       mcpSecretResolver =
@@ -1026,6 +1142,15 @@ async function chatResumeCommandBody(
         fsPolicy = admitChatFsPolicy(grants, originalCwd, loadedConfig.config.chat.extraRoots);
         // Interactive resume retains its existing missing-key host: setup can
         // be skipped, then /models or a later external key can unblock it.
+      }
+      const currentBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
+      if (currentBound !== historyBound && chatIsInteractive(deps.io, deps.global)) {
+        historyBound = currentBound;
+        restored = await restore();
+        if (restored === undefined) {
+          if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
+          return undefined;
+        }
       }
 
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
@@ -1092,10 +1217,8 @@ async function chatResumeCommandBody(
         now,
         uuid,
         transcriptBoundFor(chatAltActive(deps, config.altScreen)),
-        // `chat-resume` carries NOTHING: it has never repainted prior turns, in any mode or version — there is no
-        // session_messages -> TranscriptEntry projection anywhere. That is a separate, tracked gap (deferred-tasks.md),
-        // NOT this reseat's business, and projecting it here would silently change resume's behaviour.
-        [],
+        restored,
+        true,
       ));
       const turns = resumed.resumeState.turnCount;
       // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
@@ -1240,6 +1363,7 @@ async function chatResumeCommandBody(
   };
   const prepared =
     ownership === undefined ? await prepare() : await ownership.hosts.construct(prepare);
+  if (prepared === undefined) return EXIT_CODES.success;
   return await runReplLoop(
     prepared.wiring,
     {
@@ -1916,7 +2040,7 @@ export function createChatLineHandler(
     // `display` is the COMPACT transcript form (prose + chip note) when a message carried `@`/`!` attachments; the
     // model + the durable transcript get the full framed `line` (resume fidelity), the live transcript the compact one.
     store.appendUser(display ?? line);
-    persister.beginUserTurn(line);
+    persister.beginUserTurn(line, display);
     await built.session.sendMessage(line);
   };
 
@@ -2201,6 +2325,7 @@ function seedResumedWiring(
    *  full-screen viewport (F1). Both callers pass the resolved one. */
   transcriptBound: TranscriptBound,
   carriedTranscript: readonly TranscriptEntry[],
+  initialRestore = false,
 ): { store: ChatStoreController; persister: SessionPersister } {
   const costs = opened.store.loadSessionCostBreakdown(resumed.sessionId);
   const store = createChatStore(
@@ -2214,12 +2339,9 @@ function seedResumedWiring(
       usageCoverage: costs.coverage,
       unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
       turnCount: resumed.resumeState.turnCount,
-      // The RENDERED transcript to carry into the new store (2.6.C). TWO callers reach this helper and they want
-      // different things: `chat-resume` carries NOTHING (it has never repainted prior turns — a separate, tracked
-      // gap), while a `/models` RESEAT carries the live conversation so the alt screen does not go blank. Whoever
-      // generalizes this later: do not "helpfully" project `session_messages` here — that would silently change
-      // resume's behaviour. (`/clear` never reaches this helper at all; it is assembled by `buildFreshChatWiring`,
-      // and its freshness is protected there.)
+      // Initial restoration prints its safe bounded prefix once in either renderer.
+      // Same-terminal reseats carry the full current view only on the full-screen renderer.
+      ...(initialRestore ? { initialRestore: true } : {}),
       transcript: carriedTranscript,
     },
     transcriptBound,
@@ -2899,6 +3021,7 @@ export async function runReplLoop(
 ): Promise<ExitCode> {
   // The SHARED db handle — the same across every swap (a fresh / reseated session reuses it), closed ONCE below.
   const opened = wiring.opened;
+  let lastSavedSessionId: string | undefined;
   // Resolve alt-mode ONCE from the SAME signals `driveInk` uses, so the hoist and the per-session mount can never
   // disagree about the mode (2.6.F Step 4b-3, ADR-0068 §c).
   const altActive = chatAltActive(deps, wiring.altScreen);
@@ -3115,7 +3238,12 @@ export async function runReplLoop(
                       ? {}
                       : { finishJobControl: mountedJob.finish, afterTerminalRelease }),
                   };
-            const outcome = await driveOneSession(current, sessionDeps);
+            let outcome: ChatDriveOutcome;
+            try {
+              outcome = await driveOneSession(current, sessionDeps);
+            } finally {
+              if (current.persister.hasSavedTurns) lastSavedSessionId = current.built.sessionId;
+            }
             // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
             // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
             if (outcome.kind === 'exit') summaryText = outcome.summaryText;
@@ -3170,6 +3298,15 @@ export async function runReplLoop(
         }
       },
     );
+    if (
+      lastSavedSessionId !== undefined &&
+      chatIsInteractive(deps.io, deps.global) &&
+      deps.chatLifetime?.surface.invocation.registry.termination === undefined
+    ) {
+      const text = resumeHint(lastSavedSessionId);
+      if (terminalOwner === undefined) deps.io.writeOut(text);
+      else await terminalOwner.publishOut(text);
+    }
   } finally {
     // The shared db closes exactly once, AFTER the alt-exit + summary — never per-swap (that would strand the next
     // session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
@@ -3241,7 +3378,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
         if (isActive()) {
           for await (const line of lines) {
             if (!isActive()) break;
-            await ctx.processLine(line);
+            await ctx.processLine(line, line);
             if (ctx.shouldStop()) break;
           }
         }
@@ -3318,7 +3455,7 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
         if (isActive()) {
           for await (const line of lines) {
             if (!isActive()) break;
-            await ctx.processLine(line);
+            await ctx.processLine(line, line);
             if (ctx.shouldStop()) break;
           }
         }

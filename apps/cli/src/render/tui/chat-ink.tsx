@@ -1610,7 +1610,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           // a slash command, or a plain message with no attachments — the simple path (message === display)
           historyRef.current = recordHistory(historyRef.current, action.line);
           applyEditor(() => emptyEditor());
-          submit(action.line);
+          submit(action.line, action.line);
           return;
         }
         // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.

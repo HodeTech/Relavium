@@ -701,6 +701,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
           showBanner={props.showBanner}
           keyless={state.keyless}
+          continueSessionId={state.continueSessionId}
         />
       )}
       {state.palette !== undefined && (
@@ -729,6 +730,18 @@ const emptyPromptSubscribe = (): (() => void) => () => {};
 
 function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
+  if (prompt.kind === 'picker') {
+    const lines = [prompt.note, prompt.message, prompt.error].filter(Boolean);
+    return (
+      2 +
+      Math.max(1, Math.ceil((3 + displayWidth(prompt.display)) / width)) +
+      prompt.options.reduce((count, option) => count + 1 + (option.hint === undefined ? 0 : 1), 0) +
+      (prompt.picker?.loading === true || (prompt.options.length === 0 && prompt.error === '')
+        ? 1
+        : 0) +
+      lines.reduce((count, value) => count + Math.max(1, Math.ceil(displayWidth(value) / width)), 0)
+    );
+  }
   const lines = [
     prompt.note,
     prompt.message,

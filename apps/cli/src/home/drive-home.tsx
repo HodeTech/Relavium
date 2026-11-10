@@ -1,5 +1,9 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { runHomeProjectInit } from './project-init.js';
+import { runSessionPicker } from './session-picker.js';
+import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
+import { resumeHint } from '../chat/resume-hint.js';
+import { fsPolicyWorkspace } from '../engine/tool-host/fs-policy.js';
 import { ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionControlWrites } from '../chat/session-control-writes.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
@@ -72,6 +76,7 @@ import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import {
   createProviderResolver,
+  providerHasKey,
   KNOWN_PROVIDERS,
   type ProviderResolver,
 } from '../engine/providers.js';
@@ -257,6 +262,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   });
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const nativePrompt = createNativePromptChannel();
+  let lastSavedSessionId: string | undefined;
   let finalSetupNote: string | undefined;
   const promptFlow = {
     ...nativePrompt.flow,
@@ -878,6 +884,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
+      const sendGuard = (): string | undefined =>
+        providerHasKey(providers, built.agent.provider)
+          ? undefined
+          : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+      const initialKeyRefusal = sendGuard();
+      if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
       const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
       try {
         persister = createSessionPersister(
@@ -925,7 +937,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           onSetEffort,
         } = createChatLineHandler(
-          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
+          {
+            built,
+            opened,
+            store,
+            persister,
+            doctorProbes: chatDoctorProbes,
+            sendGuard,
+          },
           { ...deps, hatchPorts },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
@@ -994,7 +1013,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         };
         return {
           store,
-          processLine,
+          processLine: async (line, display) => {
+            try {
+              await processLine(line, display);
+            } finally {
+              if (persister?.hasSavedTurns === true) lastSavedSessionId = built.sessionId;
+            }
+          },
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
@@ -1003,6 +1028,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ? {}
             : {
                 onActivated: (isActive: () => boolean) => {
+                  if (isActive() && persister?.hasSavedTurns === true)
+                    lastSavedSessionId = built.sessionId;
                   const activate = () =>
                     reconcileResumedSessionEffects({
                       io: deps.io,
@@ -1152,25 +1179,30 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
     // the original fallback_chain), carrying the text-only transcript + cumulative cost/turns; a NEW instance,
     // honoring ADR-0024's one-model-per-lifetime rule. The controller drives the tear-down / swap (mirroring clearChat).
-    const reseatChat = async (
+    const restoreChat = async (
       sessionId: string,
-      target: ReseatTarget,
+      target: ReseatTarget | undefined,
       carriedTranscript: readonly TranscriptEntry[],
+      initialRestore = false,
+      preloaded?: ReturnType<OpenedSessionStore['store']['loadFull']>,
     ): Promise<HomeChatSession> =>
       constructChat(async (host) => {
-        const loaded = opened.store.loadFull(sessionId);
+        const loaded = preloaded ?? opened.store.loadFull(sessionId);
         if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
           throw new CliError(
             'invalid_invocation',
             `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
           );
         }
-        const newAgent = swapAgentModel(
-          loaded.session.agentSnapshot,
-          target.modelId,
-          target.provider,
-          target.reasoningEffort,
-        );
+        const newAgent =
+          target === undefined
+            ? loaded.session.agentSnapshot
+            : swapAgentModel(
+                loaded.session.agentSnapshot,
+                target.modelId,
+                target.provider,
+                target.reasoningEffort,
+              );
         const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
         const resolvePrice = readUserPricingOverlay(opened.db);
         // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
@@ -1210,6 +1242,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     workOwner,
                   ),
             record,
+            deferMissingKey: initialRestore,
             messages: loaded.messages,
             now,
             providers,
@@ -1255,6 +1288,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
             // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
             transcript: carriedTranscript,
+            ...(initialRestore ? { initialRestore: true } : {}),
           },
           transcriptBoundFor(altScreenActive),
         );
@@ -1271,6 +1305,49 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           initialSequenceNumber: built.nextSequenceNumber,
         });
       });
+
+    const reseatChat = (
+      sessionId: string,
+      target: ReseatTarget,
+      transcript: readonly TranscriptEntry[],
+    ) => restoreChat(sessionId, target, transcript);
+    const resumeChat = async (
+      sessionId: string,
+    ): Promise<HomeChatSession | { readonly notice: string } | undefined> => {
+      assertHomeAdmitting();
+      const loaded = opened.store.loadFull(sessionId);
+      if (loaded === undefined || loaded.session.agentSnapshot === undefined)
+        return { notice: 'This saved session is unavailable or has no agent snapshot.' };
+      // Discovery scope never grants authority. Check the canonical context, not the indexed picker column.
+      if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
+        return {
+          notice:
+            'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.',
+        };
+      const transcript = await prepareRestoredHistory({
+        messages: loaded.messages,
+        memory: loaded.session.agentSnapshot.memory,
+        transcriptBound: transcriptBoundFor(altScreenActive),
+        readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
+        assertAdmitting: assertHomeAdmitting,
+        retry: () => retryRestoredHistory(promptFlow),
+      });
+      if (transcript === undefined) return undefined;
+      assertHomeAdmitting();
+      const signal = promptFlow.begin();
+      promptFlow.note('Restoring session… Esc to return.');
+      try {
+        const built = await restoreChat(sessionId, undefined, transcript, true, loaded);
+        if (signal.aborted) {
+          await built.teardown();
+          return undefined;
+        }
+        assertHomeAdmitting();
+        return built;
+      } finally {
+        await promptFlow.end();
+      }
+    };
 
     const getSize =
       deps.getSize ??
@@ -1534,6 +1611,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         startChat,
         reseatChat,
+        resumeChat,
+        pickSession: () =>
+          runSessionPicker({
+            flow: promptFlow,
+            store: opened.store,
+            cwd: fsPolicyWorkspace(fsPolicy),
+            now,
+            assertAdmitting: assertHomeAdmitting,
+            runRead: (operation) =>
+              ownership === undefined ? operation() : ownership.surface.work.enter(operation),
+          }),
         homeStore,
         doctorProbes,
         models,
@@ -1786,5 +1874,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     }
     nativePrompt.ui.dispose();
     ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
+    if (
+      lastSavedSessionId !== undefined &&
+      ownership?.surface.invocation.registry.termination === undefined
+    ) {
+      if (ownership === undefined) deps.io.writeOut(resumeHint(lastSavedSessionId));
+      else {
+        ownership.surface.work.assertAdmitting();
+        await deps.io.writeOutAcknowledged(resumeHint(lastSavedSessionId));
+      }
+    }
   }
 }

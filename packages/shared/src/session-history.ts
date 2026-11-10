@@ -44,7 +44,7 @@ export function completedSessionTurns(
   return projectSessionHistory(messages, honorBoundary).turns;
 }
 
-function projectSessionHistory(
+export function projectSessionHistory(
   messages: readonly SessionMessage[],
   honorBoundary = true,
 ): { turns: CompletedSessionTurn[]; trailingLegacyUsers: SessionMessage[] } {

@@ -115,6 +115,41 @@ describe('createSessionPersister', () => {
     return { built, persister, store, usageStore };
   }
 
+  it('binds explicit display to the actual persisted user identity for repeated prompts, with no canonical fallback', async () => {
+    const { built, persister } = await setup(
+      scriptedResolver([textTurn('first'), textTurn('second'), textTurn('third')]),
+    );
+    try {
+      persister.start();
+      built.session.start();
+      expect(persister.hasSavedTurns).toBe(false);
+      for (const display of ['first marker', '', undefined]) {
+        persister.beginUserTurn('same expanded PRIVATE context', display);
+        await built.session.sendMessage('same expanded PRIVATE context');
+      }
+      const users = store.loadMessages(built.sessionId).filter((row) => row.role === 'user');
+      expect(users.map((row) => textOf(row.content))).toEqual(
+        Array.from({ length: 3 }, () => 'same expanded PRIVATE context'),
+      );
+      expect(new Set(users.map((row) => row.id)).size).toBe(3);
+      expect([
+        ...store.loadUserDisplayTexts(
+          built.sessionId,
+          users.map((row) => row.sequenceNumber),
+        ),
+      ]).toEqual([
+        [0, 'first marker'],
+        [2, ''],
+      ]);
+      expect(persister.hasSavedTurns).toBe(true);
+      expect(listenerNotes).toEqual([]);
+    } finally {
+      built.session.cancel();
+      await built.whenHostSafeToClose();
+      persister.close();
+    }
+  });
+
   it('keeps reasoning live-only while durably recording the completed answer', async () => {
     const privateThinking = 'live reasoning sentinel';
     const { built, persister } = await setup(

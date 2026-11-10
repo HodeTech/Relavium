@@ -61,7 +61,7 @@ export interface TurnSummary {
 /** One rendered transcript entry — a user line, a completed assistant turn, or a command-output notice. */
 export type TranscriptEntry =
   | { readonly role: 'user'; readonly text: string }
-  | { readonly role: 'assistant'; readonly text: string; readonly summary: TurnSummary }
+  | { readonly role: 'assistant'; readonly text: string; readonly summary?: TurnSummary }
   | { readonly role: 'notice'; readonly text: string };
 
 export interface SessionViewState {
@@ -205,6 +205,8 @@ export const MAX_WARNINGS = 6;
  * them** — not the ADR-0026 export, not `--json`, not a crash dump. Do not persist, export, or log this array.
  */
 export interface SessionViewSeed {
+  /** A new session restoration prints its bounded prefix once, including inline. Reseats never set this. */
+  readonly initialRestore?: true;
   readonly agentRef?: string;
   readonly model?: string;
   readonly cumulativeCostMicrocents?: number;
@@ -295,7 +297,10 @@ export function initialSessionViewState(
     ...(seedWindow === undefined ? {} : { contextWindowTokens: seedWindow }),
     status: 'idle',
     compacting: false,
-    transcript: carriesSeedTranscript(transcriptBound) ? (seed?.transcript ?? []) : [],
+    transcript:
+      carriesSeedTranscript(transcriptBound) || seed?.initialRestore === true
+        ? (seed?.transcript ?? [])
+        : [],
     transcriptBound,
     liveTokens: '',
     liveTokensTruncated: false,

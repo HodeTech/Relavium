@@ -99,6 +99,17 @@ Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 > ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C). Approval
 > **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E).
 
+### MVP-2 chat entry points
+
+The canonical `chat resume`, `chat list` and `chat export` spellings now share
+the existing flat aliases' executors. This activates only the chat family from
+the later grammar proposal. `chat resume` without an ID uses the native picker
+on a TTY and refuses before runtime services otherwise. `chat --continue` selects
+the newest saved session in the launch directory; it conflicts with `--agent`
+and chat subcommands. See [session discovery and resume](chat-session.md#finding-a-saved-session)
+for cancellation, workspace authority and machine-output behavior. The frozen
+legacy 24-command model DTO remains unchanged.
+
 ## Global options
 
 These flags are **position-independent** — they may appear anywhere on the command line, so

@@ -304,6 +304,7 @@ test('Windows cohorts retain twelve serial filesystem files and media cases', ()
   const cohorts = [
     {
       name: 'Shared media byte verification and publication (ADR-0106)',
+      serial: false,
       workspace: '@relavium/shared',
       directory: 'packages/shared',
       files: [
@@ -325,6 +326,7 @@ test('Windows cohorts retain twelve serial filesystem files and media cases', ()
     },
     {
       name: 'Native CLI media publication and offline temporary maintenance (ADR-0106)',
+      serial: true,
       workspace: 'relavium',
       directory: 'apps/cli',
       files: [
@@ -353,6 +355,7 @@ test('Windows cohorts retain twelve serial filesystem files and media cases', ()
       'exec',
       'vitest',
       'run',
+      ...(cohort.serial ? ['--no-file-parallelism', '--maxWorkers=1'] : []),
       ...cohort.files,
     ]);
   }

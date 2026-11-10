@@ -5,7 +5,7 @@ import {
   holdNativeToolProcess,
   witnessNativeToolProcess,
 } from '../commands/native-forwarding.test-support.js';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -117,6 +117,28 @@ const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
   setRawMode: () => undefined,
 };
 
+const NATIVE_RETURN = {
+  upArrow: false,
+  downArrow: false,
+  leftArrow: false,
+  rightArrow: false,
+  pageDown: false,
+  pageUp: false,
+  home: false,
+  end: false,
+  return: true,
+  escape: false,
+  ctrl: false,
+  shift: false,
+  tab: false,
+  backspace: false,
+  delete: false,
+  meta: false,
+  super: false,
+  hyper: false,
+  capsLock: false,
+  numLock: false,
+};
 describe('driveHome (2.5.B / ADR-0054)', () => {
   let client: DbClient;
   let closeSpy: ReturnType<typeof vi.fn>;
@@ -223,6 +245,120 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     };
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
+
+  it.each([true, false])(
+    'resumes safe display through Continue without changing Home workspace (inline=%s)',
+    async (inline) => {
+      let props: RootAppProps | undefined;
+      const store = createSessionStore(client.db);
+      const build = vi.fn(buildResumedChatSession);
+      let available = true;
+      const { deps } = makeDeps(
+        (value) => {
+          props = value;
+        },
+        {
+          global: { ...global, noAltScreen: inline },
+          openSessionStore: () => ({ store, db: client.db, close: closeSpy }),
+          buildResumedSession: build,
+          providers: {
+            ...scriptedResolver([textTurn('first answer'), textTurn('safe answer')]),
+            hasKey: () => available,
+          },
+        },
+      );
+      const running = driveHome(deps);
+      await vi.waitFor(() => expect(props).toBeDefined());
+      if (props === undefined) throw new Error('Home did not mount');
+      const home = props;
+      type(home, 'hello');
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => {
+        expect(home.controller.getSnapshot().mode).toBe('chat');
+        expect(home.controller.getSnapshot().submitBusy).toBe(false);
+      });
+      const first = home.controller.getSnapshot().session;
+      if (first === undefined) throw new Error('missing first chat');
+      await first.processLine('PRIVATE_CANONICAL', '@visible-safe');
+      await first.processLine('/cancel');
+      // The controller consumes the stop on its own next slash submission.
+      type(home, '/cancel');
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'));
+      available = false;
+      home.controller.handleKey('', { downArrow: true });
+      expect(home.controller.getSnapshot().continueSessionId).toBe(first.sessionId);
+      const display = vi.spyOn(store, 'loadUserDisplayTexts');
+      display.mockImplementationOnce(() => {
+        throw new Error('PRIVATE_DISPLAY_FAILURE');
+      });
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('select'));
+      expect(build).not.toHaveBeenCalled();
+      expect(home.nativePrompt?.getSnapshot().selected).toBe(1); // Return is the safe default.
+      home.nativePrompt?.input('', NATIVE_RETURN);
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect(home.controller.getSnapshot().mode).toBe('home');
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      const resumed = home.controller.getSnapshot().session;
+      expect(resumed?.sessionId).toBe(first.sessionId);
+      expect(
+        resumed?.store
+          .getSnapshot()
+          .state.transcript.filter((row) => row.role === 'user')
+          .map((row) => row.text),
+      ).toEqual(['hello', '@visible-safe']);
+      expect(JSON.stringify(resumed?.store.getSnapshot().state.transcript)).not.toContain(
+        'PRIVATE_CANONICAL',
+      );
+      expect(build.mock.calls[0]?.[0].record.context.workingDir).toBe(realpathSync.native(cwd));
+      expect(build.mock.calls[0]?.[0].deferMissingKey).toBe(true);
+      expect(
+        resumed?.store
+          .getSnapshot()
+          .state.transcript.some(
+            (row) => row.role === 'notice' && row.text.includes('no usable key'),
+          ),
+      ).toBe(true);
+      await resumed?.processLine('must not reach the provider');
+      expect(
+        store
+          .loadFull(first.sessionId)
+          ?.messages.some((message) =>
+            JSON.stringify(message.content).includes('PRIVATE_CANONICAL'),
+          ),
+      ).toBe(true);
+      // Return to Home and select a foreign context whose discovery column falsely claims the current cwd.
+      type(home, '/cancel');
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'));
+      const record = store.loadFull(first.sessionId)?.session;
+      if (record === undefined) throw new Error('missing durable record');
+      store.createSession({
+        ...record,
+        id: 'foreign-session',
+        context: { ...record.context, workingDir: '/elsewhere' },
+        updatedAt: '2099-01-01T00:00:00.000Z',
+      });
+      client.sqlite
+        .prepare('UPDATE agent_sessions SET working_dir = ? WHERE id = ?')
+        .run(realpathSync.native(cwd), 'foreign-session');
+      type(home, '/resume');
+      home.controller.handleKey('', { return: true });
+      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('picker'));
+      await vi.waitFor(() =>
+        expect(home.nativePrompt?.getSnapshot().options[0]?.value).toBe('foreign-session'),
+      );
+      home.nativePrompt?.input('', NATIVE_RETURN);
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect(home.controller.getSnapshot().notice).toContain('another directory');
+      expect(build).toHaveBeenCalledTimes(1);
+      home.controller.handleKey('c', { ctrl: true });
+      expect(await running).toBe(0);
+    },
+  );
 
   it.each([false, true])(
     'observes actual passive Home view faults before bus recovery (fault=%s)',

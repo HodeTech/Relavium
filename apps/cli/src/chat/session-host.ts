@@ -1203,8 +1203,8 @@ export interface BuildResumedChatSessionOptions extends Pick<
   /**
    * Build even when the snapshot's provider has no key, and report it as
    * {@link BuiltResumedChatSession.missingKeyProvider} instead of refusing (MVP-A4). Only an INTERACTIVE
-   * `chat-resume` sets it: there the user can still `/models` to a provider that has a key, which a refusal before
-   * the REPL would make impossible. Absent/`false` (every reseat, the Home, a non-interactive resume) ⇒ refuse.
+   * restoration (standalone or Home) sets it: the user can still connect a key or use `/models`, which a refusal
+   * before the REPL would make impossible. Absent/`false` (a model reseat or non-interactive resume) ⇒ refuse.
    */
   readonly deferMissingKey?: boolean;
   /**

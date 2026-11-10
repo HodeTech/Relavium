@@ -42,6 +42,7 @@ import {
   chatResumeCommand,
   chatIsInteractive,
   type ChatCommandArgs,
+  type ChatCommandDeps,
   type ChatResolvedKeys,
 } from './chat.js';
 import { runStandaloneProviderSetup } from './standalone-provider-setup.js';
@@ -144,6 +145,8 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
 }
 
 export function buildChatArgs(input: CommandInput): ChatCommandArgs {
+  if (boolFlag(input.options['continue']) && optString(input.options['agent']) !== undefined)
+    throw new CliError('invalid_invocation', '--continue cannot be combined with --agent.');
   return { agent: optString(input.options['agent']) };
 }
 
@@ -462,19 +465,24 @@ function chatKeyResolvers(ctx: DispatchContext, db?: Db, loaded?: LoadedConfig):
   };
 }
 
-const executeChat: CommandExecutor = (input, ctx) =>
-  chatCommand(buildChatArgs(input), {
+const executeChat: CommandExecutor = (input, ctx) => {
+  const args = buildChatArgs(input);
+  const runtime: ChatCommandDeps = {
     io: ctx.io,
     global: ctx.global,
     ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db, loaded) => chatKeyResolvers(ctx, db, loaded),
     openSessionStore,
     drive: selectChatDriver,
-  });
+  };
+  return boolFlag(input.options['continue'])
+    ? chatResumeCommand({ sessionId: undefined, continueLatest: true }, runtime)
+    : chatCommand(args, runtime);
+};
 
 const executeChatResume: CommandExecutor = (input, ctx) =>
   chatResumeCommand(
-    { sessionId: reqPositional(input, 0, 'sessionId') },
+    { sessionId: input.positionals[0] },
     {
       io: ctx.io,
       global: ctx.global,
@@ -897,6 +905,17 @@ async function executeRuntimeCommand(
   if (executor === undefined) {
     throw new CliError('invalid_invocation', 'unknown command.');
   }
+  // Programmatic invocations get the same pre-service refusal as Commander.
+  if (id === 'chat') buildChatArgs(input);
+  if (
+    id === 'chat-resume' &&
+    input.positionals[0] === undefined &&
+    !chatIsInteractive(ctx.io, ctx.global)
+  )
+    throw new CliError(
+      'invalid_invocation',
+      'chat resume needs a session ID outside an interactive terminal.',
+    );
   if (
     (ctx.global.allowFsRoots?.length ?? 0) > 0 &&
     !['chat', 'chat-resume', 'agent.run'].includes(id)

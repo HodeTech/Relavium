@@ -415,6 +415,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     const [row] = buildHomeSnapshot(deps).recentSessions;
     expect(row).toEqual({
       sessionId: 's1',
+      workingDir: '/workspace',
       title: 'Plan the launch',
       agentSlug: 'planner',
       modelId: undefined,

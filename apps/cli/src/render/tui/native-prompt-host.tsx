@@ -7,7 +7,7 @@ import type { NativePromptUi } from './native-prompt-channel.js';
 import { NativePromptView } from './native-prompt-view.js';
 import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
 
-/** One input owner for setup before standalone chat mounts. Native lifecycle belongs to its caller. */
+/** One input owner for native cards before standalone chat mounts. Lifecycle belongs to its caller. */
 export function NativePromptHost({
   ui,
   color,

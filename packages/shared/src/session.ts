@@ -107,6 +107,8 @@ export const SessionMessageMetaSchema = z
     toolCallId: SessionToolCallIdSchema.optional(),
     name: SessionToolNameSchema.optional(),
     finishReason: StopReasonSchema.optional(),
+    /** Host-captured pre-expansion user display; independent of canonical content (ADR-0123). */
+    userDisplayText: z.string().optional(),
   })
   .strict();
 

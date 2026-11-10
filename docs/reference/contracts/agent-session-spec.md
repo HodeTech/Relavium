@@ -360,7 +360,7 @@ nontrailing, preserving the old archive's ambiguity rather than permanently dele
 
 ## Proposed user display text — MVP-2
 
-**Accepted design, unimplemented — 2026-11-09.** The maintainer approved
+**Implemented on development; step-4 acceptance pending — 2026-11-10.** The maintainer approved
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md).
 The existing `SessionMessage` interface above remains the shipped contract.
 

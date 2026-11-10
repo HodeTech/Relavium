@@ -6,6 +6,7 @@ import { buildProgram } from '../program.js';
 import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { CommandInput } from './dispatch.js';
+import { COMMAND_DESCRIPTORS } from './descriptors.js';
 
 function capture(): { io: CliIo; out: string[]; err: string[] } {
   const out: string[] = [];
@@ -76,6 +77,7 @@ const cases: readonly Case[] = [
     positionals: [],
     options: { agent: 'helper' },
   },
+  { id: 'chat', argv: ['chat', '--continue'], positionals: [], options: { continue: true } },
   { id: 'chat-resume', argv: ['chat-resume', 's1'], positionals: ['s1'], options: {} },
   { id: 'chat-list', argv: ['chat-list'], positionals: [], options: {} },
   {
@@ -309,7 +311,17 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
     // several cases; its grammar is the union of theirs.
     const ids = [...new Set(cases.map((testCase) => testCase.id))];
     expect(nodes.map((node) => node.path).sort()).toEqual(
-      [...ids, 'agent', 'budget', 'provider', 'media', 'init'].sort(),
+      [
+        ...ids,
+        'agent',
+        'budget',
+        'provider',
+        'media',
+        'init',
+        ...COMMAND_DESCRIPTORS.filter(
+          (entry) => entry.path[0] === 'chat' && entry.path.length > 1,
+        ).map((entry) => entry.path.join('.')),
+      ].sort(),
     );
     for (const id of ids) {
       const group = cases.filter((testCase) => testCase.id === id);
@@ -356,7 +368,7 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
           expect(index).toBe(0);
           return [
             names[testCase.id],
-            !['gate', 'gate.list', 'status'].includes(testCase.id),
+            !['gate', 'gate.list', 'status', 'chat-resume'].includes(testCase.id),
             false,
           ];
         }),

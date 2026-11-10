@@ -380,10 +380,20 @@ const HOME_INIT_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+const HOME_RESUME_COMMAND = freezeReplCommand({
+  name: 'resume',
+  label: 'Resume session',
+  description: 'Search saved conversations and continue one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...CHAT_PALETTE_COMMANDS,
   HOME_PROVIDERS_COMMAND,
   HOME_INIT_COMMAND,
+  HOME_RESUME_COMMAND,
 ]);
 
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
@@ -392,6 +402,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
   HOME_INIT_COMMAND,
+  HOME_RESUME_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

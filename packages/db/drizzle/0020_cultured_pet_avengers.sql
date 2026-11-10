@@ -1,0 +1,2 @@
+ALTER TABLE `session_messages` ADD `user_display_text` text;--> statement-breakpoint
+CREATE INDEX `idx_agent_sessions_working_dir_updated` ON `agent_sessions` (`working_dir`,"updated_at" desc,"id" desc) WHERE "agent_sessions"."deleted_at" is null;

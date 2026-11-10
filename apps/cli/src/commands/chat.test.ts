@@ -784,7 +784,8 @@ describe('chatCommand', () => {
                 ctx.startSession();
                 await ctx.processLine('overflow please');
                 const entry = ctx.store.getSnapshot().state.transcript.at(-1);
-                if (entry?.role !== 'assistant') throw new Error('missing failed-turn display');
+                if (entry?.role !== 'assistant' || entry.summary === undefined)
+                  throw new Error('missing failed-turn display');
                 rendered =
                   formatTurnSummary(entry.summary) +
                   (errorRecoveryHint(

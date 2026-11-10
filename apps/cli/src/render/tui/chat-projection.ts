@@ -269,10 +269,9 @@ export function entryLines(entry: TranscriptEntry): DisplayLine[] {
   if (entry.role === 'notice') {
     return [{ text: stripTerminalControls(entry.text), style: 'notice' }];
   }
-  const lines: DisplayLine[] = [
-    { text: stripTerminalControls(entry.text), style: 'assistant' },
-    { text: ` ${formatTurnSummary(entry.summary)}`, style: 'summary' },
-  ];
+  const lines: DisplayLine[] = [{ text: stripTerminalControls(entry.text), style: 'assistant' }];
+  if (entry.summary === undefined) return lines;
+  lines.push({ text: ` ${formatTurnSummary(entry.summary)}`, style: 'summary' });
   const hint = errorRecoveryHint(
     entry.summary.errorCode,
     entry.summary.errorMessage,

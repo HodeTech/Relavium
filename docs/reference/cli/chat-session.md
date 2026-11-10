@@ -43,12 +43,12 @@ A chat also starts from the bare-invocation **Home** (2.5.B): typing a message a
 
 ## Proposed restored transcript display — MVP-2
 
-**Accepted design, unimplemented — 2026-11-09.** The maintainer approved
+**Implemented on development; step-4 acceptance pending — 2026-11-10.** The maintainer approved
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
 and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
 This section qualifies the earlier MVP-2 plan's literal display/model equality,
-divider and permanent-store-ceiling wording; existing shipped resume behavior is
-unchanged until implementation.
+divider and permanent-store-ceiling wording. The implementation follows the
+approved design; its cumulative review and final MVP-2 gates remain pending.
 
 ### Sources and selection
 
@@ -168,6 +168,39 @@ Initial inline restoration prints the prefix once. Same-terminal reseat retains
 the existing no-double-print rule. Repaint/picker selection is not an effect
 disclosure acknowledgement: preserve the existing input-ready/render-acknowledged
 activation and cleanup ordering before retiring any captured effect evidence.
+
+### Finding a saved session
+
+In Home (landing or idle chat), `/resume` opens the native searchable picker.
+It initially lists the current canonical directory; Tab toggles all directories,
+typing filters titles as a literal substring, PgUp/PgDn change bounded pages,
+and arrows/Enter select. All-directory rows show a separate directory hint.
+Esc/Ctrl-C returns without starting a session. Empty results retain the filter
+and return affordance; a read error offers retry/return without exposing its cause.
+Late or cancelled reads remain owned until settlement and cannot replace a newer
+query. The picker reads six rows per page through the
+[bounded discovery API](../shared-core/database-schema.md#bounded-session-discovery).
+
+`relavium chat resume <sessionId>` is the canonical shell spelling; the existing
+`chat-resume` alias uses the same executor. Omitting the ID opens the same picker
+on an interactive terminal and refuses with exit 2 before history/key work
+otherwise. Cancelling an omitted-ID picker exits 0. Explicit resume and the shell
+picker restore the saved original workspace; Home keeps its original workspace
+and refuses another directory with a fixed remedy. Discovery columns never grant
+workspace authority. Selecting the already-open conversation is a no-op notice.
+
+`relavium chat --continue` selects only the most recently updated session in the
+canonical launch directory (stable ID tie-break), using a SQL limit of one.
+No match is exit 2 with a start-chat remedy. It conflicts with `--agent` and chat
+subcommands before runtime services start. Plain/JSON explicit-ID and continue
+paths retain their existing streams and do not read presentation metadata.
+
+After an interactive conversation with a completed durable turn ends, one line
+on the restored primary terminal names `relavium`, `/resume` and the canonical
+shell resume command. Clear/reseat retain the latest saved conversation when a
+fresh replacement has no completed turn. Untrusted IDs that are not safe shell
+arguments use the picker remedy. Plain/JSON and empty fresh conversations emit
+no extra line.
 
 ## Filesystem authority and resume
 

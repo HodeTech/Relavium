@@ -43,6 +43,7 @@ function scriptedFlow(answers: (string | symbol)[]) {
   let controller = new AbortController();
   const messages: string[] = [];
   const flow: NativePromptFlow = {
+    pick: () => Promise.reject(new Error('Unexpected session picker in credential fixture.')),
     begin: () => {
       controller = new AbortController();
       return controller.signal;

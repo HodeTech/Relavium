@@ -1,5 +1,11 @@
 import type { Key } from 'ink';
 import { sanitizeInline } from '../sanitize.js';
+import {
+  createNativePicker,
+  type NativePickerController,
+  type NativePickerOptions,
+  type NativePickerSnapshot,
+} from './native-picker.js';
 
 export const NATIVE_PROMPT_CANCEL = Symbol('native prompt cancelled');
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
@@ -16,7 +22,11 @@ export interface NativePromptOption {
 }
 export interface NativePromptSnapshot {
   readonly active: boolean;
-  readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy';
+  readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy' | 'picker';
+  readonly picker?: Pick<
+    NativePickerSnapshot,
+    'allDirectories' | 'page' | 'cursor' | 'loading' | 'hasNext' | 'hasPrevious' | 'retryable'
+  >;
   readonly message: string;
   readonly note: string;
   readonly options: readonly NativePromptOption[];
@@ -46,6 +56,7 @@ export interface NativePromptFlow {
   /** Preserve a completed publication fact even if cancellation arrived after it. */
   readonly committedNote?: (message: string, title?: string) => void;
   readonly busy: (message: string) => void;
+  readonly pick: (options: NativePickerOptions) => Promise<string | symbol>;
   readonly select: (options: {
     message: string;
     options: readonly NativePromptOption[];
@@ -84,6 +95,8 @@ export function createNativePromptChannel(): {
   let settle: ((answer: string | symbol) => void) | undefined;
   let validate: ((value: string) => string | undefined) | undefined;
   let disposed = false;
+  let picker: NativePickerController | undefined;
+  const pickerDrains = new Set<Promise<void>>();
   let visibility: ((snapshot: NativePromptSnapshot) => boolean) | undefined;
   const listeners = new Set<() => void>();
   const publish = (next: NativePromptSnapshot): void => {
@@ -91,6 +104,16 @@ export function createNativePromptChannel(): {
     for (const listener of listeners) listener();
   };
   const clear = (): void => {
+    if (picker !== undefined) {
+      picker.dispose();
+      const drain = picker.whenSettled();
+      pickerDrains.add(drain);
+      void drain.then(
+        () => pickerDrains.delete(drain),
+        () => pickerDrains.delete(drain),
+      );
+      picker = undefined;
+    }
     secret = '';
     validate = undefined;
     invalid = false;
@@ -145,6 +168,10 @@ export function createNativePromptChannel(): {
     });
   };
   const append = (text: string): void => {
+    if (snapshot.kind === 'picker') {
+      picker?.paste(text);
+      return;
+    }
     if (snapshot.kind !== 'text' && snapshot.kind !== 'password') return;
     // Rejected bytes must not be silently omitted from a later submission.
     // Keep the rejection visible until the user explicitly edits or cancels.
@@ -216,7 +243,9 @@ export function createNativePromptChannel(): {
       }
       if (snapshot.kind === 'busy' || !settle) return true;
       const submitted = key.return || boundary >= 0;
-      if (snapshot.kind === 'select') {
+      if (snapshot.kind === 'picker') {
+        picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
+      } else if (snapshot.kind === 'select') {
         if (key.upArrow || key.downArrow) {
           const count = snapshot.options.length;
           if (count)
@@ -280,6 +309,7 @@ export function createNativePromptChannel(): {
     },
     end: async () => {
       cancel();
+      await Promise.allSettled([...pickerDrains]);
       await new Promise<void>((resolve) => setImmediate(resolve));
       clear();
       abort = undefined;
@@ -307,6 +337,49 @@ export function createNativePromptChannel(): {
           display: '',
           error: '',
         });
+    },
+    pick: (options) => {
+      if (!snapshot.active || abort?.signal.aborted || disposed || abort === undefined)
+        return Promise.resolve(NATIVE_PROMPT_CANCEL);
+      if (settle) throw new Error('A native prompt is already active.');
+      clear();
+      const signal = abort.signal;
+      return new Promise((resolve, reject) => {
+        settle = resolve;
+        picker = createNativePicker({
+          ...options,
+          signal,
+          onChoose: finish,
+          onFailure: (cause) => {
+            settle = undefined;
+            clear();
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the original publication fault for the owning lifetime.
+            reject(cause);
+          },
+          onChange: (state) => {
+            publish({
+              ...snapshot,
+              kind: 'picker',
+              message: sanitizeInline(options.message),
+              note: '',
+              options: state.options,
+              selected: state.selected,
+              display: state.display,
+              error: state.error,
+              picker: {
+                allDirectories: state.allDirectories,
+                page: state.page,
+                cursor: state.cursor,
+                loading: state.loading,
+                hasNext: state.hasNext,
+                hasPrevious: state.hasPrevious,
+                retryable: state.retryable,
+              },
+            });
+          },
+        });
+        picker.start();
+      });
     },
     select: (options) => prompt('select', options.message, options.options, options.initialValue),
     confirm: async (message, initialValue = true) => {

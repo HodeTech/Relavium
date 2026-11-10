@@ -816,6 +816,7 @@ CREATE INDEX idx_agent_sessions_agent  ON agent_sessions (agent_id, created_at D
 -- Backs listSessions + the 2.5.B Home "recent sessions" strip: ORDER BY (updated_at DESC, id DESC) over the
 -- non-deleted set is served off this partial index rather than a filesort (the session counterpart of idx_runs_created).
 CREATE INDEX idx_agent_sessions_updated ON agent_sessions (updated_at DESC, id DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_agent_sessions_working_dir_updated ON agent_sessions (working_dir, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 ```
 
 #### `session_messages`
@@ -829,6 +830,7 @@ pattern). Cascades from `agent_sessions`.
 | `id` | TEXT | PRIMARY KEY (UUID) |
 | `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
 | `sequence_number` | INTEGER | NOT NULL — monotonic per session (append-only) |
+| `user_display_text` | TEXT | NULL — host-recorded user display only (migration 0020); separate from canonical content and validated by the display read |
 | `role` | TEXT | NOT NULL (`system`, `user`, `assistant`, `tool`) |
 | `content` | TEXT | NULL |
 | `content_parts` | TEXT (JSON) | NULL — multimodal/structured parts |
@@ -854,7 +856,7 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 
 #### Proposed user display storage — MVP-2
 
-**Accepted design, unimplemented — 2026-11-09.**
+**Implemented on development; step-4 acceptance pending — 2026-11-10.**
 [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
 requires an additive nullable `user_display_text TEXT` column on `session_messages`.
 Add optional `userDisplayText: string` to strict `SessionMessageMetaSchema` and
@@ -893,7 +895,26 @@ behavior for direct display-column changes as part of migration acceptance.
 Choose the next free migration number at implementation, without rewriting a
 published migration; mirror the generated migration into the CLI through its
 existing build path. Test an older writer omitting the new column followed by a
-new reader. This accepted design does not change the shipped table above before implementation.
+new reader. Migration `0020_cultured_pet_avengers.sql` adds the nullable column
+without backfill; the existing transcript-update trigger covers direct metadata
+updates. Canonical reads never inspect the display column.
+
+#### Bounded session discovery
+
+`SessionStore.listSessionPage` selects only ID, title, agent slug, update time and
+working directory. It never loads transcript, context, snapshot or usage rows.
+Optional `workingDir` scopes exactly; omission lists all directories. `title` is
+a literal substring (up to 256 characters), with SQL LIKE metacharacters escaped.
+Limit defaults to 20 and is bounded to 1–100; the picker requests six.
+Ordering is `(updated_at DESC, id DESC)`, using bounded forward/backward keyset
+cursors and one lookahead row. Invalid options refuse with a fixed discovery
+boundary error rather than falling back to an unbounded query. The new partial
+`idx_agent_sessions_working_dir_updated` index serves directory scope; the
+existing update index serves all-directory discovery. Deleted rows are excluded.
+
+The indexed working directory is discovery data. Resume must independently
+validate the canonical context and invocation filesystem authority before build.
+These additions do not change the compatibility `listSessions` API or exports.
 
 #### `session_costs`
 

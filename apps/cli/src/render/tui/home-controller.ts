@@ -147,6 +147,7 @@ export interface HomeControllerState {
   readonly mode: HomeMode;
   readonly keyless: boolean;
   readonly nativeActionBusy: boolean;
+  readonly continueSessionId: string | undefined;
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
@@ -265,6 +266,10 @@ export interface HomeControllerDeps {
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
   readonly initializeProject?: () => Promise<string>;
+  readonly pickSession?: () => Promise<string | undefined>;
+  readonly resumeChat?: (
+    sessionId: string,
+  ) => Promise<HomeChatSession | { readonly notice: string } | undefined>;
   readonly providerSetup?: {
     readonly initialKeyless: boolean;
     readonly open: () => Promise<void>;
@@ -295,6 +300,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     mode: 'home',
     keyless: deps.providerSetup?.initialKeyless ?? false,
     nativeActionBusy: false,
+    continueSessionId: undefined,
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
@@ -323,6 +329,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let tearingDown: HomeChatSession | undefined;
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
+  let nativeInFlight: Promise<void> | undefined;
   const activatedSessions = new WeakSet<HomeChatSession>();
   const activationPending = new WeakMap<HomeChatSession, Promise<void>>();
   const activateSession = (session: HomeChatSession, ready: () => void): void => {
@@ -669,11 +676,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be opened.` });
       return;
     }
+    nativeInFlight = work;
     void work.then(
       () => {
+        if (nativeInFlight === work) nativeInFlight = undefined;
         if (!exiting) set({ nativeActionBusy: false });
       },
       (err: unknown) => {
+        if (nativeInFlight === work) nativeInFlight = undefined;
         deps.workOwner?.failure(err);
         if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be completed.` });
       },
@@ -705,7 +715,81 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Project initialization');
   };
 
+  const openResume = (selectedId?: string): void => {
+    const resume = deps.resumeChat;
+    if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
+      const notice = 'Session resume is unavailable here. Use relavium chat resume.';
+      set({ notice });
+      state.session?.store.note(notice);
+      return;
+    }
+    openNativeAction(async () => {
+      const old = state.session;
+      const id = selectedId ?? (await deps.pickSession?.());
+      if (id === undefined || exiting) return;
+      if (old?.sessionId === id) {
+        old.store.note('This conversation is already open.');
+        return;
+      }
+      const result = await resume(id);
+      if (result === undefined) return;
+      if ('notice' in result) {
+        if (!exiting) {
+          set({ notice: result.notice });
+          old?.store.note(result.notice);
+        }
+        return;
+      }
+      if (exiting || state.session !== old) {
+        await result.teardown();
+        return;
+      }
+      if (old !== undefined) {
+        const td = old.teardown();
+        activeTeardown = td;
+        await boundTeardown(td).catch(() => undefined);
+        if (activeTeardown === td) activeTeardown = undefined;
+      }
+      if (exiting) {
+        await result.teardown();
+        return;
+      }
+      cancelFired = false;
+      history = EMPTY_HISTORY;
+      set({
+        session: result,
+        mode: 'chat',
+        input: emptyEditor(),
+        pendingMessage: '',
+        errorText: undefined,
+        notice: undefined,
+        continueSessionId: undefined,
+        attachments: [],
+        historyEntries: [],
+        search: undefined,
+        mention: undefined,
+        modelPicker: undefined,
+        effortPicker: undefined,
+        reasonDraft: undefined,
+        shellBusy: false,
+        shellCommand: undefined,
+        submitBusy: true,
+      });
+      activateSession(result, () => set({ submitBusy: false }));
+    }, 'Session resume');
+  };
+
   const managementCommand = (text: string): boolean => {
+    if (/^\/resume(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/resume') {
+        set({ notice: '/resume accepts no arguments. Use its picker to select a session.' });
+        state.session?.store.note(
+          '/resume accepts no arguments. Use its picker to select a session.',
+        );
+      } else openResume();
+      return true;
+    }
     if (/^\/init(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/init') {
@@ -786,7 +870,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           return;
         }
         set({ session: built, mode: 'chat', submitBusy: true });
-        activateSession(built, () => sendChatLine(built, trimmed));
+        activateSession(built, () => sendChatLine(built, trimmed, trimmed));
       },
       (err: unknown) => {
         if (buildInFlight === build) buildInFlight = undefined;
@@ -1246,6 +1330,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProviderSetup();
         } else if (step.command.name === 'init') {
           openProjectInit();
+        } else if (step.command.name === 'resume') {
+          openResume();
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -1530,7 +1616,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // a slash command, or a plain message with no attachments — the simple path
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
-      sendChatLine(active, line);
+      sendChatLine(active, line, line);
       return;
     }
     // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
@@ -1652,7 +1738,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     applyChatAction(active, reduceChatKey(input, key, state.input.text, running, approvalPending));
   };
 
-  const handleHomeKey = (input: string, key: HomeKey): void => {
+  const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
       exitHome();
@@ -1664,6 +1750,32 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl-C above still bails)
+    const sessions = state.snapshot.recentSessions;
+    const focused = state.continueSessionId;
+    if (focused !== undefined) {
+      const index = sessions.findIndex((session) => session.sessionId === focused);
+      if (key.escape === true) {
+        set({ continueSessionId: undefined });
+        return;
+      }
+      if (key.return === true) {
+        if (index >= 0) openResume(focused);
+        else set({ continueSessionId: undefined });
+        return;
+      }
+      if (key.upArrow === true || key.downArrow === true) {
+        const next = index + (key.upArrow === true ? -1 : 1);
+        set({
+          continueSessionId:
+            next < 0 ? undefined : sessions[Math.min(next, sessions.length - 1)]?.sessionId,
+        });
+        return;
+      }
+      set({ continueSessionId: undefined });
+    } else if (key.downArrow === true && state.input.text.length === 0 && sessions.length > 0) {
+      set({ continueSessionId: sessions[0]?.sessionId });
+      return;
+    }
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
@@ -1782,6 +1894,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         const built = await pending.catch(() => undefined);
         if (built !== undefined) await built.teardown().catch(() => undefined);
       }
+      await nativeInFlight?.catch(() => undefined);
     },
   };
 }

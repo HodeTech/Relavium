@@ -170,10 +170,17 @@ describe('Home provider setup', () => {
         }),
     });
     c.handleKey('', { return: true });
-    await c.teardownActive();
+    let joined = false;
+    const teardown = c.teardownActive().then(() => {
+      joined = true;
+    });
     const sealed = c.getSnapshot();
-    release();
     await flush();
+    expect(joined).toBe(false);
+    release();
+    await teardown;
+    await flush();
+    expect(joined).toBe(true);
     expect(c.getSnapshot()).toBe(sealed);
   });
   it('waits for an asynchronous model save and reports unconfirmed durability', async () => {

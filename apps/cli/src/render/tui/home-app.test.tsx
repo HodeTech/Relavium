@@ -887,6 +887,7 @@ describe('RootApp — the branded Home banner', () => {
     attention: { gates: [], failedRuns: [] },
     recentSessions: [
       {
+        workingDir: '/workspace',
         sessionId: 'sess-9',
         title: 'a chat',
         agentSlug: 'default',

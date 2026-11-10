@@ -2069,6 +2069,42 @@ format, isolation, seam/engine fences, tooling typecheck, finite bundle closure
 and compiled CLI/bootstrap smoke. Whole-MVP-2 gates remain due; step 4 proceeds
 with safe display metadata, history projection and session discovery/resume.
 
+#### Step 4 implementation (2026-11-10)
+
+The approved metadata/migration, safe archive projection, shared native picker,
+Home `/resume` and Continue navigation, canonical chat shell entries and exit
+resume hint are implemented on `development`. Cumulative independent reviews,
+the separate resume security sitting and final combined CI/coverage remain due;
+this entry records implementation, not acceptance. No new design or dependency
+was introduced beyond ADR-0123 and the approved four-step plan.
+
+Author verification passes all workspace lint/typecheck/tests (CLI: 451 files,
+7,182 passing, 11 existing skips), build/format, isolation and required coverage
+(842 files, 17,669 passing, 22 existing skips). After coverage, only CLI UI hints,
+their existing native tests and Windows test scheduling/profile changed; measured
+package production sources did not. Current UI and full workspace checks pass.
+The packaged local CLI passes 177 controls and 10 smoke scenarios; compiled
+bootstrap/CLI, media, overflow, budget replay, map controls and 1,031 acceptance-tool
+tests pass. No seam, engine-dependency or unsafe-any escape was introduced.
+
+Two misleading UI hints are corrected: empty Home does not advertise Continue,
+and rejected search input offers editing rather than an unavailable Enter retry.
+A mounted renderer control fails with the old footer substituted in memory;
+the corrected view passes the complete renderer matrix; the developer source is unchanged by that control.
+The original pinned 449-case/71-child usage cohort and Commander-opacity source
+anchor remain intact; new restore cases live in a separate file. Initial failed
+runs remain recorded locally rather than being counted as acceptance.
+
+The preceding remote revision exposed Windows timing failures: the 200-pair NTFS
+identity diagnostic completed but exceeded its implicit five-second default;
+an unchanged retry passed it and instead timed out parallel media publication
+and migration setup. The diagnostic now uses the existing 15-second native
+profile with all 200 pairs/assertions retained. Windows media runs the same eight
+files serially; media case/hook, causal-phase/evidence and job bounds remain unchanged.
+The exact workflow invocation is checked by the existing scheduling guard.
+Required Windows verification on the final combined revision remains due.
+
+
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
 tools, wire and all 23 usage mutation controls. Its 115-control filesystem family
