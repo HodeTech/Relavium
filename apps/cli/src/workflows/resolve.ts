@@ -5,6 +5,7 @@ import { MAX_SOURCE_CHARS } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
+import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 /** UTF-8 uses at most four bytes per source character. Match the sibling catalog precheck;
  *  the pure parser remains authoritative for the character ceiling after decoding. */
@@ -24,7 +25,11 @@ export interface WorkflowSource {
  */
 export function resolveWorkflowSource(
   workflowArg: string,
-  opts: { readonly cwd: string; readonly projectConfigDir: string | undefined },
+  opts: {
+    readonly cwd: string;
+    readonly projectConfigDir: string | undefined;
+    readonly homeDir?: string;
+  },
 ): WorkflowSource {
   return resolveYamlSource(workflowArg, {
     cwd: opts.cwd,
@@ -32,6 +37,7 @@ export function resolveWorkflowSource(
     subdir: 'workflows',
     projectConfigDir: opts.projectConfigDir,
     idSuffixes: ['.relavium.yaml', '.yaml'],
+    ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
   });
 }
 
@@ -51,10 +57,12 @@ export function resolveYamlSource(
     readonly subdir: string;
     readonly projectConfigDir: string | undefined;
     readonly idSuffixes: readonly string[];
+    readonly homeDir?: string;
   },
 ): WorkflowSource {
   const candidates = candidatePaths(arg, opts);
   for (const candidate of candidates) {
+    if (!explicitYamlPath(arg)) assertProjectArtifactPath(candidate, opts.homeDir);
     const yaml = tryRead(candidate, opts.kind, opts.cwd);
     if (yaml !== undefined) {
       return { path: candidate, yaml };
@@ -83,13 +91,7 @@ function candidatePaths(
   // absolute path, or a `.yaml`/`.yml` suffix all mark an explicit file reference rather than a bare id/slug.
   // NOTE: the `arg.includes(sep)` arm is the Windows-only path — on POSIX `sep === '/'`, so it is a no-op
   // there and cannot be exercised by the POSIX CI (asserting it would require stubbing `path.sep`).
-  const looksLikePath =
-    isAbsolute(arg) ||
-    arg.includes('/') ||
-    arg.includes(sep) ||
-    arg.endsWith('.yaml') ||
-    arg.endsWith('.yml');
-  if (looksLikePath) {
+  if (explicitYamlPath(arg)) {
     return [isAbsolute(arg) ? arg : resolve(opts.cwd, arg)];
   }
   // A bare id/slug → discover under the project subdir (none ⇒ no candidates).
@@ -98,6 +100,16 @@ function candidatePaths(
   }
   const dir = join(opts.projectConfigDir, opts.subdir);
   return opts.idSuffixes.map((suffix) => join(dir, `${arg}${suffix}`));
+}
+
+function explicitYamlPath(arg: string): boolean {
+  return (
+    isAbsolute(arg) ||
+    arg.includes('/') ||
+    arg.includes(sep) ||
+    arg.endsWith('.yaml') ||
+    arg.endsWith('.yml')
+  );
 }
 
 /**

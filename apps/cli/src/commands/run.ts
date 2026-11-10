@@ -222,7 +222,11 @@ async function runOwned(
     configPath: deps.global.configPath,
   });
 
-  const source = resolveWorkflowSource(args.workflow, { cwd: deps.global.cwd, projectConfigDir });
+  const source = resolveWorkflowSource(args.workflow, {
+    cwd: deps.global.cwd,
+    projectConfigDir,
+    homeDir,
+  });
 
   const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   assertOrdinaryInputsAllowed(def, rawInputs);

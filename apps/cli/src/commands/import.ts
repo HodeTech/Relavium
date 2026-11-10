@@ -1,4 +1,5 @@
 import { basename, relative, resolve } from 'node:path';
+import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   assertSlugAvailable,
@@ -57,6 +58,7 @@ export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps):
 
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   const rel = relative(cwd, target);
+  assertProjectArtifactPath(target);
   writeAuthoredFile(target, rel, serializeAuthored(parsed), args.force);
   warnSnapshotLiterals(parsed.definition, deps.io);
 

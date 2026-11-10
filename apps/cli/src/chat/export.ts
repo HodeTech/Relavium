@@ -12,7 +12,7 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
-import { resolveProjectDirectory } from '../config/project-directory.js';
+import { assertProjectArtifactPath, resolveProjectDirectory } from '../config/project-directory.js';
 import {
   mkdirForStorage,
   replaceFileForStorage,
@@ -146,9 +146,10 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
   const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
+  const dir = join(root, 'workflows');
+  assertProjectArtifactPath(dir, opts.homeDir);
   const loaded = loadSession(opts.store, opts.sessionId);
   const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
-  const dir = join(root, 'workflows');
   const base = scaffold.workflow.id;
   const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>
     index === 0 ? base : `${base}-${String(index + 1)}`,
@@ -162,12 +163,13 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
   const taken =
     opts.projectConfigDir === undefined
       ? new Set<string>()
-      : takenWorkflowIds(opts.projectConfigDir, opts.cwd);
+      : takenWorkflowIds(opts.projectConfigDir, opts.cwd, opts.homeDir);
   for (const id of candidates) {
     const path = join(dir, `${id}.relavium.yaml`);
     const own = ownExport(path, opts.sessionId);
     if (own === undefined) continue;
     const definition = withWorkflowId(scaffold, id);
+    assertProjectArtifactPath(path, opts.homeDir);
     try {
       replaceFileForStorage(path, serializeWorkflow(definition), own.mode, own.identity);
     } catch (err) {
@@ -183,6 +185,7 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     const path = join(dir, `${id}.relavium.yaml`);
     const definition = withWorkflowId(scaffold, id);
     const label = sourceLabel(opts.cwd, path);
+    assertProjectArtifactPath(path, opts.homeDir);
     if (writeScaffold(path, serializeWorkflow(definition), false, label) === 'written') {
       return exportResult(path, definition, loaded);
     }

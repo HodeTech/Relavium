@@ -76,6 +76,7 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
     projectConfigDir,
     cwd: deps.global.cwd,
     kind,
+    homeDir,
   });
 
   // Last-run overlay (workflows only — agents have no runs). Open the read seam only when there is at least one

@@ -5,6 +5,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import {
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
+  REPL_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
@@ -81,6 +82,7 @@ import {
   type PaletteState,
 } from './palette-reducer.js';
 import { FORCE_TEARDOWN_MS } from './tui-constants.js';
+import { nearestCommandName } from './command-typo.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -724,6 +726,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ input: emptyEditor(), notice: 'Use /providers to connect or manage provider keys.' });
       state.session?.store.note('Use /providers to connect or manage provider keys.');
       return true;
+    }
+    // Preserve exact chat commands and their existing argument handling. Fuzzy
+    // guidance is local to Home and never invokes the suggested action.
+    const token = text.slice(0, 65).split(/\s/u, 1)[0] ?? '';
+    if (token.startsWith('/') && !REPL_COMMANDS.some((command) => `/${command.name}` === token)) {
+      const commands =
+        state.session === undefined ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS;
+      const nearest = nearestCommandName(
+        token,
+        commands.map((command) => `/${command.name}`),
+      );
+      if (nearest !== undefined) {
+        const notice = `Unknown command. Did you mean ${nearest}?`;
+        set({ input: emptyEditor(), notice });
+        state.session?.store.note(notice);
+        return true;
+      }
     }
     return false;
   };
