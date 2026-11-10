@@ -144,7 +144,7 @@ export type HomeMode = 'home' | 'loading' | 'chat';
 export interface HomeControllerState {
   readonly mode: HomeMode;
   readonly keyless: boolean;
-  readonly providerSetupBusy: boolean;
+  readonly nativeActionBusy: boolean;
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
@@ -262,6 +262,7 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
+  readonly initializeProject?: () => Promise<string>;
   readonly providerSetup?: {
     readonly initialKeyless: boolean;
     readonly open: () => Promise<void>;
@@ -291,7 +292,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let state: HomeControllerState = {
     mode: 'home',
     keyless: deps.providerSetup?.initialKeyless ?? false,
-    providerSetupBusy: false,
+    nativeActionBusy: false,
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
@@ -655,38 +656,62 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
-  const openProviderSetup = (): void => {
-    if (exiting || state.providerSetupBusy) return;
-    if (deps.providerSetup === undefined) {
-      set({ notice: 'Provider setup is unavailable in this session.' });
-      state.session?.store.note('Provider setup is unavailable in this session.');
-      return;
-    }
-    const port = deps.providerSetup;
-    set({ providerSetupBusy: true, palette: undefined });
-    const operation = (): Promise<void> => port.open();
+  const openNativeAction = (operation: () => Promise<void>, label: string): void => {
+    if (exiting || state.nativeActionBusy) return;
+    set({ nativeActionBusy: true, palette: undefined });
     let work: Promise<void>;
     try {
       work = deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
     } catch (err) {
       deps.workOwner?.failure(err);
-      if (!exiting)
-        set({ providerSetupBusy: false, notice: 'Provider setup could not be opened.' });
+      if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be opened.` });
       return;
     }
     void work.then(
       () => {
-        if (!exiting) set({ providerSetupBusy: false });
+        if (!exiting) set({ nativeActionBusy: false });
       },
       (err: unknown) => {
         deps.workOwner?.failure(err);
-        if (!exiting)
-          set({ providerSetupBusy: false, notice: 'Provider setup could not be completed.' });
+        if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be completed.` });
       },
     );
   };
 
-  const providerCommand = (text: string): boolean => {
+  const openProviderSetup = (): void => {
+    const port = deps.providerSetup;
+    if (port === undefined) {
+      set({ notice: 'Provider setup is unavailable in this session.' });
+      state.session?.store.note('Provider setup is unavailable in this session.');
+      return;
+    }
+    openNativeAction(() => port.open(), 'Provider setup');
+  };
+  const openProjectInit = (): void => {
+    const open = deps.initializeProject;
+    if (open === undefined) {
+      set({ notice: 'Project initialization is unavailable in this session.' });
+      state.session?.store.note('Project initialization is unavailable in this session.');
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await open();
+      if (!exiting) {
+        set({ notice });
+        state.session?.store.note(notice);
+      }
+    }, 'Project initialization');
+  };
+
+  const managementCommand = (text: string): boolean => {
+    if (/^\/init(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/init') {
+        set({ notice: '/init accepts no arguments.' });
+        state.session?.store.note('/init accepts no arguments.');
+      } else openProjectInit();
+      return true;
+    }
     if (/^\/providers(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/providers') {
@@ -711,7 +736,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (state.keyless) openProviderSetup();
       return;
     }
-    if (providerCommand(trimmed)) return;
+    if (managementCommand(trimmed)) return;
     history = recordHistory(history, trimmed); // the message that starts the chat is recallable via Up in it
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
@@ -1200,6 +1225,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (step.command !== undefined) {
         if (step.command.name === 'providers') {
           openProviderSetup();
+        } else if (step.command.name === 'init') {
+          openProjectInit();
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -1450,7 +1477,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
     submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
     const trimmed = line.trim();
-    if (providerCommand(trimmed)) return;
+    if (managementCommand(trimmed)) return;
     const parsed =
       active.runShellCommand !== undefined && isShellLine(trimmed)
         ? tokenizeCommand(trimmed.slice(1))
@@ -1692,10 +1719,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from
       // `useInput`), so a pasted multi-line block never arrives here char-by-char and a pasted approval token can
       // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
-      if (!exiting && !state.providerSetupBusy) dispatchKey(input, key);
+      if (!exiting && !state.nativeActionBusy) dispatchKey(input, key);
     },
     handlePaste(text) {
-      if (exiting || state.providerSetupBusy) return;
+      if (exiting || state.nativeActionBusy) return;
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)

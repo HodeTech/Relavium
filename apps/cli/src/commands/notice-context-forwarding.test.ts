@@ -21,6 +21,8 @@ it.each([
   (surface) =>
     runCase({ prefix: 'relavium-notice-context-', closeFails: false }, async (fixture) => {
       const { root, assertCurrent } = fixture;
+      const cwd = join(root, 'project');
+      mkdirSync(cwd);
       const { invocationFixture } = await import('../process/invocation.test-support.js');
       assertCurrent();
       const { captureIo } = await import('../test-support.js');
@@ -70,15 +72,15 @@ it.each([
         ...(command === undefined ? {} : { commandLifetime: command }),
         subscribeSignals: () => () => undefined,
         global: {
-          cwd: root,
+          cwd,
           configPath: join(root, 'config.toml'),
           json: true,
           color: false,
           verbosity: 'normal' as const,
         },
       };
-      mkdirSync(join(root, '.relavium', 'workflows'), { recursive: true });
-      const workflow = join(root, '.relavium', 'workflows', 'notice.relavium.yaml');
+      mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+      const workflow = join(cwd, '.relavium', 'workflows', 'notice.relavium.yaml');
       writeFileSync(
         workflow,
         `schema_version: '1.0'

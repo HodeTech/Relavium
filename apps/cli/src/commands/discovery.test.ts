@@ -10,7 +10,7 @@ function expectFrozenTree(value: unknown): void {
 }
 
 describe('pure CLI discovery DTO (unit projection, not production JSON help)', () => {
-  it('has the approved envelope, stable authored order, executable containers, groups and unavailable stub', () => {
+  it('has the approved envelope, stable authored order, executable containers, groups and implemented init', () => {
     const dto = discoverCommands();
     expect(Object.keys(dto).sort()).toEqual([
       'commands',
@@ -55,8 +55,13 @@ describe('pure CLI discovery DTO (unit projection, not production JSON help)', (
       dto.commands
         .filter((entry) => entry.availability === 'not_implemented')
         .map((entry) => entry.path),
-    ).toEqual([['init']]);
-    expect(dto.commands.filter((entry) => entry.executorId !== undefined)).toHaveLength(24);
+    ).toEqual([]);
+    expect(dto.commands.find((entry) => entry.path.join(' ') === 'init')).toMatchObject({
+      availability: 'implemented',
+      executorId: 'init',
+      effect: 'write',
+    });
+    expect(dto.commands.filter((entry) => entry.executorId !== undefined)).toHaveLength(25);
     for (const path of ['chat', 'gate', 'models'])
       expect(dto.commands.find((entry) => entry.path.join(' ') === path)?.executorId).toBe(path);
     expect(dto.commands.find((entry) => entry.path.join(' ') === 'agent')).not.toHaveProperty(

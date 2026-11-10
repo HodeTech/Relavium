@@ -84,6 +84,21 @@ key/default publication preserves its fixed committed outcome. The legacy inject
 prompter remains a test/embedding seam; production Home and TTY chat setup use the
 native host. Other shell scaffolding/gate prompts retain their existing contracts.
 
+## Project initialization
+
+**Implemented on development, MVP-2 step 3 review pending (2026-11-10).**
+`/init` is available in the landing and Home-chat palettes. Its card lists the
+exact three directories before writing and defaults to **No**. Only an explicit
+Yes creates them; Esc/Ctrl-C closes the card and keeps Home/chat. The existing
+native input owner, complete-card visibility and resize/cancellation checks apply,
+including at each directory publication. Existing chat history stays mounted.
+
+The [shared init contract](commands.md#relavium-init) owns directory creation,
+existing/nested projects, link refusal, cleanup and global-state exclusion. An
+already initialized project produces a notice without a write confirmation or
+repair. Global workflows/agents remain untouched; `/doctor` names the move/import
+remedy. No unsolicited initialization prompt is shown.
+
 ## The management strip
 
 The strip is a **display** that opens nothing yet: [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) makes it keyboard-actionable by direction, and MVP-2 makes its recent sessions openable (MVP-A24). It never mutates anything on its own (the no-IDE-shell principle of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) applied to the CLI by analogy: management + chat only — no file tree, editor, or embedded terminal). It is a bounded, indexed aggregation over the durable `history.db` ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), re-read on every return-to-Home — never a live subscription.

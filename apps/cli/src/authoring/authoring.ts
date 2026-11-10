@@ -14,7 +14,7 @@ import {
 } from '@relavium/core';
 import { SCHEMA_VERSION } from '@relavium/shared';
 
-import { findProjectConfigDir } from '../config/paths.js';
+import { resolveProjectDirectory } from '../config/project-directory.js';
 import { CliError } from '../process/errors.js';
 import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
 
@@ -45,8 +45,8 @@ const KIND_SUFFIX: Record<AuthoredKind, string> = {
 };
 
 /** The project `.relavium/` to author into: the nearest one walking up from `cwd`, else `<cwd>/.relavium`. */
-export function resolveProjectConfigDir(cwd: string): string {
-  return findProjectConfigDir(cwd) ?? join(cwd, '.relavium');
+export function resolveProjectConfigDir(cwd: string, home?: string): string {
+  return resolveProjectDirectory(cwd, home);
 }
 
 /** The canonical filename for an authored doc — `<slug>.relavium.yaml` (workflow) / `<slug>.agent.yaml` (agent). */

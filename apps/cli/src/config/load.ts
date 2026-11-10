@@ -127,7 +127,7 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
     selfHealMode: options.configPath === undefined,
   });
 
-  const projectConfigDir = findProjectConfigDir(options.cwd);
+  const projectConfigDir = findProjectConfigDir(options.cwd, home);
   let workspace: ProjectConfig | undefined;
   let project: ProjectConfig | undefined;
   if (projectConfigDir !== undefined) {

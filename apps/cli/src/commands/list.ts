@@ -1,4 +1,5 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { globalArtifactsNotice } from '../authoring/global-artifacts.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunRecord } from '@relavium/db';
 import { byCodeUnit } from '@relavium/shared';
@@ -55,6 +56,8 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
     listRuns(deps, homeDir);
     return EXIT_CODES.success;
   }
+  const globalNotice = globalArtifactsNotice(homeDir);
+  if (globalNotice !== undefined) deps.io.writeErr(`note: ${globalNotice}\n`);
 
   if (projectConfigDir === undefined) {
     // Not in a project — clearly reported (2.B acceptance), not an error. stdout stays pure under --json. A

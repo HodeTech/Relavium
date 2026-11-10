@@ -215,6 +215,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'clear',
       'models',
       'providers',
+      'init',
     ]);
   });
 });

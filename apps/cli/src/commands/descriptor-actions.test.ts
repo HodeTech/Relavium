@@ -461,12 +461,23 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
     expect(await parse(['list', '--agents', '--runs'])).toBe(0);
   });
 
-  it('keeps the init stub as an explicit unavailable action', async () => {
+  it('dispatches explicit init through its implemented descriptor', async () => {
     const execute = vi.fn(() => Promise.resolve(0 as const));
-    await expect(
-      buildProgram(capture().io, { execute }).parseAsync(['node', 'relavium', 'init']),
-    ).rejects.toMatchObject({ code: 'not_implemented', exitCode: 2 });
-    expect(execute).not.toHaveBeenCalled();
+    const { io } = capture();
+    const global = {
+      json: false,
+      color: false,
+      cwd: '/test',
+      configPath: undefined,
+      verbosity: 'normal' as const,
+    };
+    const context = { io, global, result: {} };
+    await buildProgram(io, { context, execute }).parseAsync(['node', 'relavium', 'init']);
+    expect(execute).toHaveBeenCalledWith(
+      'init',
+      { positionals: [], options: {} },
+      expect.anything(),
+    );
   });
 
   it.each(

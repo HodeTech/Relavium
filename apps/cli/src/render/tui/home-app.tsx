@@ -375,7 +375,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.effortPicker === undefined &&
     state.reasonDraft === undefined &&
     !prompt.active &&
-    !state.providerSetupBusy;
+    !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   // Capture the mouse exactly while the CHAT owns the screen — not while an overlay is open over it (a transient
   // state; toggling DECSET per overlay would be churn, and a report there is consumed and ignored anyway).
@@ -383,7 +383,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     props.alternateScreen === true &&
     state.mode === 'chat' &&
     !prompt.active &&
-    !state.providerSetupBusy;
+    !state.nativeActionBusy;
   const setMouseCapture = props.setMouseCapture;
   useEffect(() => {
     setMouseCapture?.(mouseCaptured);
@@ -453,7 +453,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (
       clipboard === undefined ||
       props.nativePrompt?.getSnapshot().active === true ||
-      current.providerSetupBusy ||
+      current.nativeActionBusy ||
       store === undefined ||
       current.mode !== 'chat' ||
       current.session !== session
@@ -474,7 +474,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           session?.shouldStop() === true ||
           props.inputEnabled?.() === false ||
           props.nativePrompt?.getSnapshot().active === true ||
-          current.providerSetupBusy
+          current.nativeActionBusy
         )
           return;
         if (outcome.kind === 'written') flashCopied();
@@ -550,7 +550,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       props.nativePrompt.input(input, key);
       return;
     }
-    if (controller.getSnapshot().providerSetupBusy) return;
+    if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
@@ -578,7 +578,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       if (nativeAcknowledgement?.inputVisible() === true) props.nativePrompt.paste(text);
       return;
     }
-    if (controller.getSnapshot().providerSetupBusy) return;
+    if (controller.getSnapshot().nativeActionBusy) return;
     controller.handlePaste(text);
   });
   const flushVisible = useVisibleRenderFlush(

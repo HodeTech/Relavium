@@ -60,7 +60,7 @@ describe('Home provider setup', () => {
     const { c } = fixture({ open });
     c.handleKey('', { return: true });
     expect(open).toHaveBeenCalledOnce();
-    expect(c.getSnapshot().providerSetupBusy).toBe(true);
+    expect(c.getSnapshot().nativeActionBusy).toBe(true);
     c.handleKey('x', {});
     expect(c.getSnapshot().input.text).toBe('');
     c.setProviderState(false, 'Source consent saved.');
@@ -68,7 +68,7 @@ describe('Home provider setup', () => {
     await flush();
     expect(c.getSnapshot()).toMatchObject({
       keyless: false,
-      providerSetupBusy: false,
+      nativeActionBusy: false,
       notice: 'Source consent saved.',
     });
   });

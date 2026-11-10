@@ -1,5 +1,8 @@
 import { CommanderError } from 'commander';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { HomeDeps } from './home/drive-home.js';
 import { CliError } from './process/errors.js';
@@ -10,6 +13,17 @@ import { run, type OpenHome } from './run.js';
 import { captureIo } from './test-support.js';
 
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
+const initRefusalDirectories: string[] = [];
+afterEach(() => {
+  for (const path of initRefusalDirectories.splice(0))
+    rmSync(path, { recursive: true, force: true });
+});
+function initRefusalCwd(): string {
+  const path = mkdtempSync(join(tmpdir(), 'relavium-init-refusal-'));
+  initRefusalDirectories.push(path);
+  writeFileSync(join(path, '.relavium'), 'not a directory');
+  return path;
+}
 
 /** An interactive-TTY {@link CliIo}: the bare-invocation Home gate (`shouldOpenHome`) needs both TTYs. */
 function interactiveIo(env: Record<string, string | undefined> = {}): {
@@ -92,7 +106,7 @@ describe('run', () => {
 
   it('keeps stderr a single JSON envelope under --json even with --verbose (no raw stack)', async () => {
     const { io, out, err } = captureIo();
-    expect(await run(argv('init', '--json', '--verbose'), io)).toBe(2); // `init` is a stub (2.J landed `create`)
+    expect(await run(argv('--cwd', initRefusalCwd(), 'init', '--json', '--verbose'), io)).toBe(2);
     expect(out()).toBe('');
     // stderr is exactly one parseable JSON line — --verbose adds no raw stack text under --json.
     const lines = err().trimEnd().split('\n');
@@ -120,10 +134,10 @@ describe('run', () => {
     expect(err()).toContain('requires a <runId>');
   });
 
-  it('exits 2 with a clean not-implemented message for a stub command (no stack leak)', async () => {
+  it('exits 2 with a clean init refusal for an invalid marker (no stack leak)', async () => {
     const { io, out, err } = captureIo();
-    expect(await run(argv('init'), io)).toBe(2); // `init` is still a stub (2.J landed `create`)
-    expect(err()).toContain('not available yet');
+    expect(await run(argv('--cwd', initRefusalCwd(), 'init'), io)).toBe(2);
+    expect(err()).toContain('not a directory');
     // No stack frame as primary output — a Node frame line is `    at …` (string check, no regex).
     const hasStackFrame = err()
       .split('\n')
@@ -134,14 +148,14 @@ describe('run', () => {
 
   it('emits the structured JSON error envelope on stderr under --json, stdout empty (ADR-0049)', async () => {
     const { io, out, err } = captureIo();
-    const code = await run(argv('init', '--json'), io); // `init` is still a stub (2.J landed `create`)
+    const code = await run(argv('--cwd', initRefusalCwd(), 'init', '--json'), io);
     expect(code).toBe(2);
     expect(out()).toBe(''); // stdout stays pure: a CLI fault is a stderr diagnostic
     const parsed: unknown = JSON.parse(err().trim());
     expect(isErrorEnvelope(parsed)).toBe(true);
     if (isErrorEnvelope(parsed)) {
       expect(parsed.type).toBe('error');
-      expect(parsed.code).toBe('not_implemented');
+      expect(parsed.code).toBe('invalid_invocation');
     }
   });
 

@@ -51,7 +51,7 @@ export interface NativePromptFlow {
     options: readonly NativePromptOption[];
     initialValue?: string;
   }) => Promise<string | symbol>;
-  readonly confirm: (message: string) => Promise<boolean | symbol>;
+  readonly confirm: (message: string, initialValue?: boolean) => Promise<boolean | symbol>;
   readonly text: (options: {
     message: string;
     validate?: (value: string) => string | undefined;
@@ -309,11 +309,16 @@ export function createNativePromptChannel(): {
         });
     },
     select: (options) => prompt('select', options.message, options.options, options.initialValue),
-    confirm: async (message) => {
-      const value = await prompt('select', message, [
-        { value: 'yes', label: 'Yes' },
-        { value: 'no', label: 'No' },
-      ]);
+    confirm: async (message, initialValue = true) => {
+      const value = await prompt(
+        'select',
+        message,
+        [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+        ],
+        initialValue ? 'yes' : 'no',
+      );
       return value === NATIVE_PROMPT_CANCEL ? value : value === 'yes';
     },
     text: (options) => prompt('text', options.message, [], undefined, options.validate),

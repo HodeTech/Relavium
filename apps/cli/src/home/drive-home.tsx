@@ -1,4 +1,5 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { runHomeProjectInit } from './project-init.js';
 import { ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionControlWrites } from '../chat/session-control-writes.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
@@ -1536,6 +1537,21 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         homeStore,
         doctorProbes,
         models,
+        initializeProject: () => {
+          if (flushVisible === undefined)
+            throw new CliError(
+              'output_unavailable',
+              'The project initialization card could not be displayed.',
+            );
+          return runHomeProjectInit({
+            cwd: deps.global.cwd,
+            home: homeDir,
+            flow: promptFlow,
+            ui: nativePrompt.ui,
+            flushVisible,
+            assertAdmitting: assertHomeAdmitting,
+          });
+        },
         providerSetup: {
           initialKeyless: keyless,
           open: () => openProviders('explicit'),

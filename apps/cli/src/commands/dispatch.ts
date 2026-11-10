@@ -1,5 +1,6 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { randomUUID } from 'node:crypto';
+import { initCommand } from './init.js';
 
 import {
   createModelCatalogStore,
@@ -825,6 +826,7 @@ export { buildMediaPruneArgs } from './media-input.js';
 // ── the dispatch table ───────────────────────────────────────────────────────
 
 const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, CommandExecutor>([
+  ['init', (_input, ctx) => Promise.resolve(initCommand(ctx))],
   [
     'media.prune-temporaries',
     (input, ctx) => pruneTemporariesCommand(buildMediaPruneArgs(input), ctx),

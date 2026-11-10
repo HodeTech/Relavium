@@ -26,11 +26,11 @@ Automatic global `tmp/` provisioning is removed; existing directories are not de
 
 > API keys are **not** stored in `config.toml`. They live in the OS keychain; the CLI's headless/CI fallback is the env var `RELAVIUM_<PROVIDER>_API_KEY`. The `secrets.enc` encrypted-file fallback is **deferred past v1.0** (it needs a proper Argon2id KDF). See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
-> **MVP-2 accepted, unimplemented:** the existing keychain/`RELAVIUM_*` chain
-> gains the eligible standard-variable fallback under the
+> **MVP-2 step 2 accepted on development (2026-11-10):** the keychain/`RELAVIUM_*`
+> chain includes the eligible standard-variable fallback under the
 > [credential-source contract](#proposed-standard-environment-key-consent--mvp-2).
 > Interactive consent and custom-endpoint exclusion apply as specified there;
-> this note does not claim that the fallback already ships.
+> this is development acceptance, not a published-release claim.
 
 ### Per-project — `<projectRoot>/.relavium/`
 
@@ -47,6 +47,14 @@ Committed to git (minus secrets) so a team shares the same workflows and agents.
 ```
 
 Opening a workspace loads every `*.relavium.yaml` and `*.agent.yaml` under `<projectRoot>/.relavium/`. An optional `workspace.toml` can declare shared variables (default model, shared tool configs) inherited by all workflows in that workspace.
+
+**MVP-2 step 3 implemented on development, review pending (2026-11-10):** CLI
+project discovery walks upward from cwd but stops at home. The global
+`~/.relavium` subtree and canonical aliases are never project configuration or
+catalogs. Global `config.toml` still loads as operator configuration; a
+`workspace.toml` or `project.toml` in that global folder is not a project layer.
+The [init/authoring contract](../cli/commands.md#relavium-init) owns safe creation,
+home fallback refusal and the read-only remedy for old global artifacts.
 
 ## Resolution order
 

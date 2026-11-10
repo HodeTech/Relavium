@@ -371,9 +371,19 @@ const HOME_PROVIDERS_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+const HOME_INIT_COMMAND = freezeReplCommand({
+  name: 'init',
+  label: 'Initialize project',
+  description: 'Initialize project workflow and agent directories after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...CHAT_PALETTE_COMMANDS,
   HOME_PROVIDERS_COMMAND,
+  HOME_INIT_COMMAND,
 ]);
 
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
@@ -381,6 +391,7 @@ export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
 export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
+  HOME_INIT_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

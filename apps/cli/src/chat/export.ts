@@ -12,6 +12,7 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { resolveProjectDirectory } from '../config/project-directory.js';
 import {
   mkdirForStorage,
   replaceFileForStorage,
@@ -96,6 +97,7 @@ export interface ExportToProjectOptions {
   readonly sessionId: string;
   /** The launch cwd — the base for display labels, and for `.relavium/` when there is no project. */
   readonly cwd: string;
+  readonly homeDir?: string;
   /** The discovered `.relavium/` directory; absent ⇒ `<cwd>/.relavium`, created by the write. */
   readonly projectConfigDir: string | undefined;
 }
@@ -143,9 +145,9 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * rename is not detected ({@link replaceFileForStorage}).
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
+  const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
   const loaded = loadSession(opts.store, opts.sessionId);
   const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
-  const root = opts.projectConfigDir ?? join(opts.cwd, '.relavium');
   const dir = join(root, 'workflows');
   const base = scaffold.workflow.id;
   const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>

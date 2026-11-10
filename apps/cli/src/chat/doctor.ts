@@ -104,6 +104,7 @@ export interface DoctorProbes {
   readonly keychain: () => void;
   readonly config: () => void;
   readonly toolHost: ToolHost;
+  readonly globalArtifacts?: () => string | undefined;
   /** `--deep`: validate each configured provider key with a minimal live request (redacted on failure). */
   readonly deepProviders?: () => Promise<readonly DoctorCheck[]>;
   /** `--deep`: probe each declared MCP server (bounded timeout, closed immediately). */
@@ -117,6 +118,9 @@ export async function runDoctorChecks(deep: boolean, probes: DoctorProbes): Prom
     checkConfig(probes.config),
     checkTools(probes.toolHost),
   ];
+  const artifacts = probes.globalArtifacts?.();
+  if (artifacts !== undefined)
+    checks.push(warnCheck('global-artifacts', 'global artifacts', artifacts));
   if (deep) {
     // Run the two deep tiers CONCURRENTLY (each is itself a `Promise.all` over its targets), so the worst case is
     // the slower tier, not their sum. The output order (providers, then MCP) is preserved.

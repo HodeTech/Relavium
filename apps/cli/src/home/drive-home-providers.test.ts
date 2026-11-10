@@ -1,6 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createClient, createProviderStore, createSessionStore, runMigrations } from '@relavium/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -202,6 +211,37 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
 }
 
 describe('driveHome native provider setup', () => {
+  it('wires Home init to the shared native core without changing operator config or building a chat', async () => {
+    const f = setup();
+    const p = await f.ready();
+    const ui = p.nativePrompt;
+    if (!ui) throw new Error('Native prompt missing');
+    try {
+      f.announce(p);
+      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(true));
+      ui.input('', { ...key, escape: true });
+      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+      for (const character of '/init') p.controller.handleKey(character, {});
+      p.controller.handleKey('', { return: true });
+      await vi.waitFor(() =>
+        expect(ui.getSnapshot().message).toContain('Create these project directories'),
+      );
+      const marker = join(dirname(f.path), '.relavium');
+      expect(existsSync(marker)).toBe(false);
+      expect(ui.getSnapshot().options[ui.getSnapshot().selected]?.value).toBe('no');
+      ui.input('', { ...key, upArrow: true });
+      ui.input('', { ...key, return: true });
+      await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      expect(readdirSync(marker).sort()).toEqual(['agents', 'workflows']);
+      expect(readFileSync(f.path, 'utf8')).toBe(baseline);
+      expect(p.controller.getSnapshot().notice).toContain('Created');
+      expect(f.built).toEqual([]);
+    } finally {
+      ui.input('', { ...key, escape: true });
+      await f.end(p);
+    }
+  });
+
   it('keeps the keyless Home model remedy inside the reachable provider screen', async () => {
     const f = setup();
     const p = await f.ready();

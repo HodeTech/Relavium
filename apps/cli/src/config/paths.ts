@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { CliError } from '../process/cli-error.js';
 
 /**
  * Filesystem discovery for the two-level config model (config-spec.md). The engine never
@@ -42,11 +43,22 @@ function isDirectory(path: string): boolean {
  * Walk up from `startCwd` looking for a `.relavium/` directory; the first one found is the
  * project root's config dir. Returns `undefined` if none exists up to the filesystem root.
  */
-export function findProjectConfigDir(startCwd: string): string | undefined {
+export function findProjectConfigDir(
+  startCwd: string,
+  home: string = homedir(),
+): string | undefined {
+  const allowed = projectBoundary(home);
+  if (allowed === undefined)
+    throw new CliError(
+      'invalid_invocation',
+      'The global configuration directory could not be resolved safely. Check directory access and symbolic links before retrying.',
+    );
   let current = resolve(startCwd);
   for (;;) {
+    // Stop at home, including canonical aliases, and never walk out of global state.
+    if (!allowed(current)) return undefined;
     const candidate = join(current, '.relavium');
-    if (isDirectory(candidate)) {
+    if (isDirectory(candidate) && allowed(candidate)) {
       return candidate;
     }
     const parent = dirname(current);
@@ -55,4 +67,53 @@ export function findProjectConfigDir(startCwd: string): string | undefined {
     }
     current = parent;
   }
+}
+
+/** Resolve existing ancestors with Node's realpath primitive; an unresolved link is never evidence of safety. */
+export function canonicalProjectPath(path: string): string | undefined {
+  let current = resolve(path);
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      return resolve(realpathSync.native(current), ...suffix.toReversed());
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') return undefined;
+      try {
+        // A dangling link must not be mistaken for an absent component.
+        lstatSync(current);
+        return undefined;
+      } catch (missing) {
+        if (errorCode(missing) !== 'ENOENT') return undefined;
+      }
+      const parent = dirname(current);
+      if (parent === current) return undefined;
+      suffix.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+function projectBoundary(home: string): ((path: string) => boolean) | undefined {
+  const canonicalHome = canonicalProjectPath(home);
+  const canonicalGlobal = canonicalProjectPath(globalConfigDir(home));
+  if (canonicalHome === undefined || canonicalGlobal === undefined) return undefined;
+  return (path) => {
+    const canonical = canonicalProjectPath(path);
+    if (canonical === undefined || relative(canonicalHome, canonical) === '') return false;
+    const fromGlobal = relative(canonicalGlobal, canonical);
+    return (
+      fromGlobal !== '' &&
+      (fromGlobal === '..' || fromGlobal.startsWith(`..${sep}`) || isAbsolute(fromGlobal))
+    );
+  };
+}
+
+/** Shared discovery/authoring exclusion: home and the global subtree are not project destinations. */
+export function projectPathIsAllowed(path: string, home: string = homedir()): boolean {
+  return projectBoundary(home)?.(path) === true;
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
 }

@@ -1569,7 +1569,7 @@ export function createChatLineHandler(
       try {
         // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
         // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
-        const { projectConfigDir } = loadResolvedConfig({
+        const { projectConfigDir, homeDir } = loadResolvedConfig({
           cwd: deps.global.cwd,
           configPath: deps.global.configPath,
         });
@@ -1578,6 +1578,7 @@ export function createChatLineHandler(
           sessionId: built.sessionId,
           cwd: deps.global.cwd,
           projectConfigDir,
+          homeDir,
         });
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;

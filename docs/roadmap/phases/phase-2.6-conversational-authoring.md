@@ -2002,6 +2002,53 @@ required package sources are unchanged. Final combined coverage, complete declar
 CI families below and mandatory remote checks remain due on the final MVP-2
 revision. Steps 3 and 4 proceed automatically in their approved order.
 
+#### Step 3 implementation (2026-11-10)
+
+Project initialization and global-state exclusion are implemented on
+`development`; the two fresh cumulative reviews and separate filesystem sitting
+remain pending. The [init contract](../../reference/cli/commands.md#relavium-init)
+owns shell results, Home confirmation, existing/nested projects, final-marker
+link refusal, partial cleanup and global-artifact remedies. Existing global
+files are left in place. Safe display metadata and history/resume remain step 4.
+
+The prepared core writes only the marker, workflows and agents directories.
+Home uses the existing native owner with a default-No card and exact visible
+admission at each directory publication; both renderers retain their chat view.
+Cleanup removes only identified, invocation-created empty directories and reports
+uncertainty without removing concurrent contents or replacements. These Node
+path/identity checks retain the owner-controlled-ancestor assumption; they do not
+claim race-free isolation from a hostile same-user process.
+
+Shared discovery and automatic authoring destinations exclude home/global state
+and canonical aliases. Unresolvable global boundaries refuse rather than silently
+discarding a project's settings. `create` checks before prompting and again after
+its asynchronous wizard. A new regression first demonstrated that a marker
+changed to a global alias during that wait could otherwise publish there; the
+corrected guard refuses it without a global write. Old-discovery in-memory probes
+also fail the new configuration/consumer checks.
+
+The initial workspace run found nine test-premise/metadata failures: old fixtures
+used home as their project and registry expectations still advertised an init
+stub. Fixtures now separate project and home; all original DB custody, notice-I/O,
+native-close and precedence assertions remain. The immutable 24-entry legacy
+manifest fixture is unchanged and still compared exactly, with the new init
+entry checked separately. Three run-stub tests were replaced one for one; that
+pinned suite remains 28 cases and its causal witness names are unchanged. Initial
+native harness failures are retained: text-plus-CR was separated into the parser's
+submit gesture, and half-column resize checks observe actual pending admission
+rather than claiming a complete instruction can be painted there.
+
+The final implementation passes full workspace lint/typecheck/tests (CLI 440
+files, 7,088 passing, 11 existing skips), build, format, isolation, finite bundle
+closure, compiled CLI/bootstrap smoke, seam/engine fences, DB sync and tooling
+typecheck. Native coverage includes
+Home/Home-chat, both renderers and colour modes, No/Esc/Ctrl-C, bracketed paste,
+post-flush resize/recovery/cancel and retained inline history. Actual CLI, driver
+and config/create/import/export/list/doctor journeys pass offline. This entry
+does not replace the required independent reviews or final combined gates.
+Required production package sources remain unchanged by this CLI-only step;
+final combined coverage remains due under the scheduling rule below.
+
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
 tools, wire and all 23 usage mutation controls. Its 115-control filesystem family

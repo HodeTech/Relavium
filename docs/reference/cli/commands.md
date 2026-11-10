@@ -143,7 +143,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
 | `relavium gate list [<runId>]` | List pending human gates (all active runs, or one run) — the multi-gate subcommand for resolving one of several concurrently-pending gates. |
 | `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> \| --abort` | Resolve a recorded budget gate with its exact frozen amount, or reject it. See [`budget resume`](#relavium-budget-resume). |
-| `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
+| `relavium init` | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium models` | List the cached model catalog (refreshes on first run if the cache is empty). See [`relavium models`](#relavium-models). |
 | `relavium models refresh` | Re-fetch **both axes**: each connected provider's live model list (availability) **and** the models.dev catalog (price, ceilings, reasoning tiers). Reports per-source outcomes. |
@@ -183,6 +183,10 @@ The **command manifest** is a derived, alias-free projection of the CLI descript
 ### In-REPL slash commands
 
 The interactive `/` palette + slash commands inside the **Home and chat** are a SEPARATE, **curated** surface ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) amendment, 2.5.C) — the runtime registry is `apps/cli/src/commands/repl-commands.ts` (`REPL_COMMANDS`), the single source for the palette, the `/help` list, and the unknown-slash hint. It surfaces only the commands that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`), info/discovery (`/help`, `/workflows`, `/cost`, `/doctor`), and — in a chat — `/mode`, `/effort`, `/thinking` (also `Ctrl+T`), the ADR-0062 context commands (`/compact`, `/trim`), `/models`, and the [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e copy-and-search hatches `/scrollback`, `/edit` + `/copy`. **Their in-chat behavior is spec'd in [chat-session.md](chat-session.md) and its ADRs** — the `/models` live-reseat vs bare-Home write-default and its reasoning-effort sub-step + picker UX ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) reseat, [ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0063](../../decisions/0063-cli-config-write-contract.md) catalog+write), `/effort`'s per-turn override ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)), and `/thinking`'s panel toggle (2.5.H) — this reference does not restate them. A slash command **never** spawns a shell subcommand (`relavium <cmd> …`). Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) every routine task gets an in-TUI form that re-hosts the same core as its subcommand, with the subcommand's contract unchanged; the tasks that have one today are the ones listed here, and the rest are reached through their subcommands until their milestone lands ([current.md](../../roadmap/current.md#next-work--the-cli-mvp)). A bare `/` at an **empty** prompt opens the filterable palette (the footer hint-bar surfaces `/ for commands` there, 2.5.C S6); an unknown slash — or an undeclared argument on a known command (`/exit now`) — prints a sanitized, secret-free hint. A command may declare flags (`/doctor --deep`) or a single positional value (`/mode plan`); the palette runs the bare form, so a flag/value is opt-in by typing it. There is no separate `/shortcuts` command — the palette's own nav hints (`↑/↓ · Enter · Esc`) + the footer keep keys discoverable in context.
+
+The Home-tree palettes additionally expose `/providers` and `/init` in the
+landing and its live chat. They rehost shared cores; they never spawn a shell
+subcommand. Standalone chat keeps its existing palette. See [Home](home.md).
 
 ### `relavium run`
 
@@ -224,6 +228,44 @@ or else the workflow id. Under `--json` each run is one record `{ kind: "runs", 
 startedAt, completedAt }` (`workflow` is the slug or `null`; absent times are `null`). It shows no amounts: a total needs
 its usage coverage ([ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)), which
 `relavium status <runId> --json` reports. The status column is the derived projection: a run whose terminal is held in the outbox after exit `5` still reads `running` here, and `relavium status <runId>` names it. `--runs` and `--agents` exclude each other (MVP-1).
+
+### `relavium init`
+
+**Implemented on development, MVP-2 step 3 review pending (2026-11-10).**
+The explicit command creates only `.relavium/`, `.relavium/workflows/` and
+`.relavium/agents/` in the working directory and prints each created directory.
+It writes no config or instruction file and requires no model, provider key or
+interactive prompt. `/init` in [Home](home.md#project-initialization) confirms the
+same prepared core before writing.
+
+An existing marker directory returns exit `0` with `Already initialized at …`;
+it does not repair missing children or alter existing files. Inside a project,
+it names that ancestor rather than nesting another marker. A final marker
+symlink, including a dangling link, or a non-directory marker is refused with
+exit `2`, before discovery could follow it. Home cwd, the global configuration
+subtree and their canonical aliases are not project destinations and receive a
+project-directory remedy. A failure cleans up only verified, invocation-created
+empty directories; concurrent content and replacements are preserved, with an
+explicit notice if cleanup cannot be confirmed.
+
+`--json` emits one result record on stdout, with cwd-relative paths:
+
+```json
+{"status":"created","path":".relavium","created":[".relavium",".relavium/workflows",".relavium/agents"]}
+```
+
+An existing project returns `status: "already-initialized"`, its cwd-relative
+`path` and `created: []`. A refusal keeps stdout empty and uses the existing
+stderr error envelope and exit `2`.
+
+Project discovery stops at home and excludes global state and its aliases for
+config, authoring, listing and id lookup. Existing global workflow/agent files
+are preserved. Catalog `list` writes a value-free move/import reminder to stderr
+(including under `--json`); `/doctor` reports it as a warning. Inspection is
+bounded and discloses incomplete/unavailable inspection instead of asserting
+that no artifact exists. Explicit file references and `relavium import <path>`
+remain available; no migration or automatic move occurs. `list --runs` continues
+to read global run history under its existing contract.
 
 ### `relavium create`
 

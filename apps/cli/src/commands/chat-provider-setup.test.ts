@@ -51,7 +51,8 @@ describe('standalone chat credential setup integration', () => {
   let client: DbClient;
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'relavium-chat-setup-'));
-    cwd = realpathSync(root);
+    cwd = join(realpathSync(root), 'project');
+    mkdirSync(cwd);
     selected = join(root, 'selected.toml');
     vi.stubEnv('HOME', root);
     vi.stubEnv('USERPROFILE', root);
@@ -66,9 +67,9 @@ describe('standalone chat credential setup integration', () => {
 
   function fixture(options: { projectModel?: string; ephemeral?: boolean } = {}) {
     if (options.projectModel !== undefined) {
-      mkdirSync(join(root, '.relavium'));
+      mkdirSync(join(cwd, '.relavium'));
       writeFileSync(
-        join(root, '.relavium', 'project.toml'),
+        join(cwd, '.relavium', 'project.toml'),
         `[chat]\ndefault_model = "${options.projectModel}"\ndefault_provider = "openai"\n`,
       );
     }
@@ -159,7 +160,7 @@ describe('standalone chat credential setup integration', () => {
         expect(f.open).toHaveBeenCalledOnce();
         expect(f.close).toHaveBeenCalledOnce();
         if (projectModel !== undefined)
-          expect(readFileSync(join(root, '.relavium', 'project.toml'), 'utf8')).toContain(
+          expect(readFileSync(join(cwd, '.relavium', 'project.toml'), 'utf8')).toContain(
             projectModel,
           );
       }

@@ -1161,12 +1161,13 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
     path: ['init'],
     label: 'Init',
     description: 'Initialize a .relavium/ directory in the current project.',
-    effect: 'read',
-    availability: 'not_implemented',
+    effect: 'write',
+    availability: 'implemented',
     aliases: [],
     positionals: [],
     options: [],
-    landsIn: 'a later workstream',
+    executorId: 'init',
+    legacyModelOrder: 24,
   },
 ] satisfies readonly CommandDescriptor[]);
 

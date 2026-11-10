@@ -67,6 +67,9 @@ export async function createCommand(
 
   const owner = deps.commandLifetime?.work;
   owner?.assertAdmitting();
+  const cwd = deps.global.cwd;
+  // Refuse an invalid launch destination before asking the user for wizard input.
+  resolveProjectConfigDir(cwd);
   const spec = await (
     deps.prompter ??
     (owner === undefined
@@ -81,7 +84,8 @@ export async function createCommand(
   }
 
   const parsed = buildAuthored(spec); // build + validate (a bad combination is a typed exit-2 CliError)
-  const cwd = deps.global.cwd;
+  // The asynchronous wizard may outlive a project-marker change. Resolve again
+  // at publication instead of retaining a now-global alias from before the prompt.
   const projectConfigDir = resolveProjectConfigDir(cwd);
   // Project-global id uniqueness (across both catalogs) — a cross-kind collision is rejected even with --force.
   assertSlugAvailable({

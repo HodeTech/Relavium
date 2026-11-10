@@ -210,26 +210,28 @@ describe('standalone native provider setup lifecycle', () => {
   });
 
   it('applies invocation defaults below validated project/workspace chat model choices', () => {
+    const cwd = join(root, 'project');
+    mkdirSync(cwd);
     const selected = join(root, 'selected.toml');
     writeFileSync(
       selected,
       '[preferences]\ndefault_model="gpt-fixture"\ndefault_provider="openai"\n',
     );
     const binding = { model: 'gemini-fixture', provider: 'gemini' as const };
-    let loaded = loadResolvedConfig({ cwd: root, home: root, configPath: selected });
+    let loaded = loadResolvedConfig({ cwd, home: root, configPath: selected });
     expect(applyStandaloneDefault(loaded, binding).config.chat.defaultModel).toBe('gemini-fixture');
-    mkdirSync(join(root, '.relavium'));
+    mkdirSync(join(cwd, '.relavium'));
     for (const file of ['workspace.toml', 'project.toml']) {
       writeFileSync(
-        join(root, '.relavium', file),
+        join(cwd, '.relavium', file),
         '[chat]\ndefault_model="claude-project"\ndefault_provider="anthropic"\n',
       );
-      loaded = loadResolvedConfig({ cwd: root, home: root, configPath: selected });
+      loaded = loadResolvedConfig({ cwd, home: root, configPath: selected });
       expect(applyStandaloneDefault(loaded, binding).config.chat.defaultModel).toBe(
         'claude-project',
       );
       expect(applyStandaloneDefault(loaded, binding).config.chat.defaultProvider).toBe('anthropic');
-      rmSync(join(root, '.relavium', file));
+      rmSync(join(cwd, '.relavium', file));
     }
     expect(readFileSync(selected, 'utf8')).toContain('gpt-fixture');
   });
