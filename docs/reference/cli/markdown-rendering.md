@@ -1,12 +1,14 @@
 # CLI assistant markdown rendering
 
-- **Status**: Implemented on development — step review and acceptance pending (design approved 2026-11-09)
-- **Date**: 2026-11-09
+- **Status**: Implemented and step-reviewed on development — final combined MVP-2 gates pending
+- **Date**: 2026-11-10
 - **Surface**: Interactive CLI, full-screen and inline, standalone and in-Home chat
 - **Related**: [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md), [chat-session.md](chat-session.md), [accessibility.md](accessibility.md), [MVP-2 proposal](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09)
 
-This is the exact display contract for MVP-2a. Implementation is on `development`;
-required independent reviews and step acceptance remain pending.
+This is the exact display contract for MVP-2a. Implementation is accepted on
+`development` at `b636be5f` after clean cumulative reviews and a separate parser
+security sitting; see the [step acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+Final combined MVP-2 gates and milestone acceptance remain pending.
 
 ## Scope and source
 

@@ -1903,6 +1903,53 @@ For each of the four steps (not each internal checklist item or commit):
    `development` revision for the final PR and observe all required CI; do not
    restart unrelated long native matrices for each intermediate review fix.
 
+#### Step 1 acceptance (2026-11-10)
+
+The readable-chat step is accepted on `development` at `b636be5f`. Round 12's
+fresh independent parser and integration reviews and separate D76 security
+sitting are clean over the cumulative diff from `6d1e7c40`. Steps 2–4 remain
+unimplemented and proceed in their approved order; this is not whole-MVP-2 or
+release acceptance.
+
+| Round | Reviewed revision | Verified corrections / result |
+|---|---|---|
+| 1 | `d7520833` | `3a86e653` |
+| 2 | `3a86e653` | `e5ece476` |
+| 3 | `e5ece476` | `5e07e083` |
+| 4 | `5e07e083` | `8c88992c` |
+| 5 | `8c88992c` | `cf8eb674` |
+| 6 | `cf8eb674` | `0436af99` |
+| 7 | `0436af99` | `7c7d27c2` |
+| 8 | `7c7d27c2` | `9d255667` |
+| 9 | `9d255667` | `f287fc43` |
+| 10 | `f287fc43` | `b6f1aad7` |
+| 11 | `b6f1aad7` | `b636be5f` |
+| 12 | `b636be5f` | Clean cumulative reviews and separate security sitting |
+
+The verified corrections cover physical/container ownership and literal
+fallbacks; exact opaque targets; Unicode/tab geometry and invalid-width
+acknowledgement; clipboard lifecycle; and indexed CPU/retention bounds. Detailed
+timestamped evidence remains local in `docs/reviews/`. Round 12 independently
+passed 88 parser tests and 15,000 mixed-block comparisons; 237 integration tests,
+40 native startup-width cases and long-source/geometry/sanitizer probes; and
+546 security tests plus hostile-control and resource probes. Finite measurements
+establish neither an all-input proof nor a universal heap ceiling.
+
+Exact-source gates pass: workspace lint/typecheck/tests (CLI 416 files, 6,852
+passing and 11 existing skips), 737 Markdown tests, build, format, isolation
+(803 files), finite bundle closure and compiled CLI smoke. Earlier failed timing
+runs remain recorded: independent helper size/container cases were separated
+without removing inputs, assertions or work bounds; each uses the default
+five-second deadline. Aggregate scheduling/budget granularity changed, not
+production performance. The R10 helper profile attributed most sampled time to
+the full-source oracle; this does not turn the failed aggregate run green.
+
+The package coverage floors previously passed and their production sources are
+unchanged by this CLI-only step. Final combined coverage, the complete declared
+CI families below and required remote checks remain due on the final MVP-2
+revision. Native/headless fixtures do not replace the real Windows terminal
+acceptance assigned to MVP-10.
+
 **Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
 invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
 tools, wire and all 23 usage mutation controls. Its 115-control filesystem family
