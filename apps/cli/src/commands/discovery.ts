@@ -59,7 +59,7 @@ function projectCommand(entry: CommandDescriptor): CliCommandDescriptor {
     aliases: entry.aliases,
     positionals: entry.positionals,
     options: Object.freeze(entry.options.map(publicOption)),
-    allowExcessArguments: entry.allowExcessArguments !== false,
+    allowExcessArguments: entry.allowExcessArguments ?? false,
     ...(entry.executorId === undefined ? {} : { executorId: entry.executorId }),
     ...(entry.modeScope === undefined ? {} : { modeScope: entry.modeScope }),
   });

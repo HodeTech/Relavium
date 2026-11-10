@@ -44,6 +44,7 @@ export interface CommandDescriptor {
   /** Existing model order is compatible even where current CLI help orders groups differently. */
   readonly legacyModelOrder?: number;
   readonly modeScope?: readonly ('ask' | 'plan' | 'accept-edits' | 'auto')[];
+  /** Absent means false in both the runtime parser and public grammar projection. */
   readonly allowExcessArguments?: boolean;
   readonly opaqueParserHint?: string;
   readonly requiredSubcommand?: string;

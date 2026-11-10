@@ -190,6 +190,11 @@ interface ListFrame {
   displayContent: number;
 }
 
+function gatherFence(line: string): { marker: string; length: number } | undefined {
+  const opening = fence(line);
+  return opening ? { marker: opening.marker[0] ?? '', length: opening.marker.length } : undefined;
+}
+
 interface ParserState {
   lists: ListFrame[];
   overflowColumn: number | undefined;
@@ -200,6 +205,7 @@ interface ParserState {
   list: ParserState | undefined;
   listPreviousWasMarker: boolean;
   listPendingTable: boolean;
+  listGatherFence: ReturnType<typeof gatherFence>;
   openFence: { marker: string; length: number; indent: number } | undefined;
   previous:
     | {
@@ -213,6 +219,7 @@ interface ParserState {
   revision: MarkdownBlock | undefined;
   preserveRevisionPrefix: boolean;
   fenceBoundary: 'open' | 'close' | undefined;
+  tableBoundary: boolean;
 }
 
 function newParserState(): ParserState {
@@ -226,12 +233,14 @@ function newParserState(): ParserState {
     list: undefined,
     listPreviousWasMarker: false,
     listPendingTable: false,
+    listGatherFence: undefined,
     openFence: undefined,
     previous: undefined,
     inTable: false,
     revision: undefined,
     preserveRevisionPrefix: false,
     fenceBoundary: undefined,
+    tableBoundary: false,
   };
 }
 
@@ -263,6 +272,7 @@ function parseWithState(
   state.revision = undefined;
   state.preserveRevisionPrefix = false;
   state.fenceBoundary = undefined;
+  state.tableBoundary = false;
   let i = 0;
   const lists = state.lists;
   let overflowColumn = state.overflowColumn;
@@ -294,6 +304,7 @@ function parseWithState(
     if (state.streaming && state.previous?.tableColumns !== undefined) {
       const alignment = delimiter(line);
       if (alignment && alignment.length === state.previous.tableColumns) {
+        state.tableBoundary = true;
         state.revision = {
           kind: 'literal',
           source: state.previous.source,
@@ -333,11 +344,11 @@ function parseWithState(
       continue;
     }
     if (state.streaming && !/^ {0,3}>/.test(line)) state.quote = undefined;
-    if (state.streaming && !line.trim() && state.list?.openFence) {
+    if (state.streaming && !line.trim() && state.list && state.listGatherFence) {
       const active = lists[lists.length - 1];
       if (active) {
         const block = parseWithState(
-          '',
+          stripIndent(line, active.content, displayOffset) ?? '',
           listDepth + lists.length,
           quoteDepth,
           displayOffset + active.displayContent,
@@ -361,6 +372,7 @@ function parseWithState(
       overflowColumn = undefined;
       lazyContinuation = false;
       state.list = undefined;
+      state.listGatherFence = undefined;
       state.quote = undefined;
       result.push({ kind: 'literal', source: line, text: line });
       i++;
@@ -378,7 +390,10 @@ function parseWithState(
     const relative = currentList
       ? stripIndent(line, currentList.content, displayOffset)
       : undefined;
-    if (state.streaming && relative === undefined) state.list = undefined;
+    if (state.streaming && relative === undefined) {
+      state.list = undefined;
+      state.listGatherFence = undefined;
+    }
     if (state.streaming && state.listPendingTable) {
       const alignment = relative === undefined ? undefined : delimiter(relative);
       if (!alignment || alignment.length !== state.list?.previous?.tableColumns)
@@ -393,7 +408,7 @@ function parseWithState(
     ) {
       const original: string[] = [];
       const inner: string[] = [];
-      let openFence: ReturnType<typeof fence>;
+      let openFence = state.streaming ? state.listGatherFence : undefined;
       while (i < lines.length) {
         const raw = lines[i] ?? '';
         const stripped = stripIndent(raw, currentList.content, displayOffset);
@@ -407,8 +422,9 @@ function parseWithState(
         if (stripped === undefined) break;
         original.push(raw);
         inner.push(stripped);
-        if (openFence && closesMarkdownFence(stripped, openFence.marker)) openFence = undefined;
-        else if (!openFence) openFence = fence(stripped);
+        if (openFence && closingFence(stripped, openFence.marker, openFence.length))
+          openFence = undefined;
+        else if (!openFence) openFence = gatherFence(stripped);
         i++;
       }
       let sourceLine = 0;
@@ -435,6 +451,8 @@ function parseWithState(
           });
       }
       state.fenceBoundary = childState?.fenceBoundary;
+      state.tableBoundary = childState?.tableBoundary ?? false;
+      if (state.streaming) state.listGatherFence = openFence;
       state.preserveRevisionPrefix =
         childState?.preserveRevisionPrefix === true ||
         (childState?.revision !== undefined && state.listPreviousWasMarker);
@@ -573,7 +591,10 @@ function parseWithState(
         i++;
         continue;
       }
-      if (state.streaming) state.list = undefined;
+      if (state.streaming) {
+        state.list = undefined;
+        state.listGatherFence = undefined;
+      }
       const marker = list[2] ?? '';
       const padding = list[3] ?? ' ';
       const visibleMarker = /^\d/.test(marker) ? marker : '•';
@@ -607,7 +628,7 @@ function parseWithState(
         const original = [line];
         const inner = [itemText];
         let cursor = i + 1;
-        let openFence = fence(itemText);
+        let openFence = gatherFence(itemText);
         while (cursor < lines.length) {
           const following = lines[cursor] ?? '';
           const stripped = stripIndent(following, content, displayOffset);
@@ -621,8 +642,9 @@ function parseWithState(
           if (stripped === undefined) break;
           original.push(following);
           inner.push(stripped);
-          if (openFence && closesMarkdownFence(stripped, openFence.marker)) openFence = undefined;
-          else if (!openFence) openFence = fence(stripped);
+          if (openFence && closingFence(stripped, openFence.marker, openFence.length))
+            openFence = undefined;
+          else if (!openFence) openFence = gatherFence(stripped);
           cursor++;
         }
         let sourceLine = 0;
@@ -654,6 +676,10 @@ function parseWithState(
           });
         }
         if (state.streaming) state.fenceBoundary = state.list?.fenceBoundary;
+        if (state.streaming) {
+          state.tableBoundary = state.list?.tableBoundary ?? false;
+          state.listGatherFence = openFence;
+        }
         i = cursor;
         continue;
       }
@@ -744,6 +770,7 @@ function parseWithState(
         });
       }
       state.fenceBoundary = childState?.fenceBoundary;
+      state.tableBoundary = childState?.tableBoundary ?? false;
       if (childState?.revision) {
         const block = childState.revision;
         state.preserveRevisionPrefix = childState.preserveRevisionPrefix;
@@ -780,17 +807,12 @@ function parseWithState(
   if (state.streaming) {
     const last = result[result.length - 1];
     const header =
-      !unsupported(source) && !fence(source) && !last?.prefix ? cells(source) : undefined;
+      !unsupported(source) && !fence(source) && last?.kind !== 'code' ? cells(source) : undefined;
     state.previous = {
       source: source.slice(0, 256),
       paragraph: last?.kind === 'paragraph' && !last.prefix,
       tableColumns: header?.length,
-      eligible:
-        !!source.trim() &&
-        !isBlockStart(source) &&
-        !last?.raw &&
-        !last?.prefix &&
-        (last?.kind === 'paragraph' || last?.kind === 'literal'),
+      eligible: !!source.trim() && !isBlockStart(source) && last?.kind !== 'code',
     };
   }
   state.overflowColumn = overflowColumn;
@@ -802,6 +824,7 @@ export interface BlockLineResult {
   readonly block: MarkdownBlock;
   readonly continuesParagraph: boolean;
   readonly fenceBoundary?: 'open' | 'close';
+  readonly tableBoundary?: true;
   /** Source prefix replaced before rendering list/container content. */
   readonly listProjection?: { readonly sourcePrefixLength: number; readonly textPrefix: string };
   readonly revision?: MarkdownBlock;
@@ -897,6 +920,7 @@ export class BlockLineClassifier {
     return {
       block,
       continuesParagraph,
+      ...(state.tableBoundary ? { tableBoundary: true } : {}),
       ...(state.fenceBoundary ? { fenceBoundary: state.fenceBoundary } : {}),
       ...(listProjection ? { listProjection } : {}),
       ...(state.revision

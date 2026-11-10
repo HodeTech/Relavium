@@ -5,7 +5,7 @@ import type { InlineSourceIndex } from './inline-index.js';
 import { interpretInlineItem } from './inline-item.js';
 import type { InlineItem, InlineItemStyle } from './inline-item.js';
 import { InlineTextFactory } from './inline-text.js';
-import type { InlineTextNode, InlineTextWork } from './inline-text.js';
+import type { InlineTabSpace, InlineTextNode, InlineTextWork } from './inline-text.js';
 import { isAutolinkTarget, isInvalidLinkTargetCharacter } from './opaque-targets.js';
 import { PositionIndex } from './position-index.js';
 import { layoutMarkdown } from './layout.js';
@@ -21,7 +21,6 @@ import type { MarkdownBlock, MarkdownDisplayLine, MarkdownSpan } from './types.j
 import { isWordCodePoint } from './unicode-word.js';
 
 const LIVE_SOURCE_LIMIT = 4_000;
-const TABLE_SOURCE_LIMIT = 65_536;
 const TAIL_CONTEXT = 64;
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -260,6 +259,7 @@ interface SourceLine {
   readonly block: MarkdownBlock;
   readonly continuesParagraph: boolean;
   readonly fenceBoundary?: 'open' | 'close';
+  readonly tableBoundary?: true;
 }
 interface RegionalSummary {
   readonly all: boolean;
@@ -524,6 +524,7 @@ class ColumnCheckpoint {
         block,
         continuesParagraph: classification?.continuesParagraph ?? false,
         ...(classification?.fenceBoundary ? { fenceBoundary: classification.fenceBoundary } : {}),
+        ...(classification?.tableBoundary ? { tableBoundary: true } : {}),
       };
       this.lines.set(start, line);
       if (this.blockLine?.start === start) this.blockLine = line;
@@ -588,7 +589,11 @@ class ColumnCheckpoint {
     }
   }
 
-  tabSpaces(start: number, end: number, plain: boolean): readonly number[] {
+  tabEntries(
+    start: number,
+    end: number,
+    plain: boolean,
+  ): readonly { position: number; spaces: number }[] {
     let last = -1;
     for (let position = start; position < end; position++)
       if (this.source[position] === '\t') last = position;
@@ -598,14 +603,18 @@ class ColumnCheckpoint {
       if (position >= retainedFrom) break;
       this.tabs.delete(position);
     }
-    const spaces: number[] = [];
+    const spaces: { position: number; spaces: number }[] = [];
     for (let position = start; position < end; position++) {
       if (this.source[position] !== '\t') continue;
       const tab = this.tabs.get(position);
       const value = plain ? tab?.raw : tab?.code;
-      if (value !== undefined) spaces.push(value);
+      if (value !== undefined) spaces.push({ position, spaces: value });
     }
     return spaces;
+  }
+
+  tabSpaces(start: number, end: number, plain: boolean): readonly number[] {
+    return this.tabEntries(start, end, plain).map((tab) => tab.spaces);
   }
 
   blockAt(position: number): SourceLine | undefined {
@@ -1468,6 +1477,11 @@ interface SavedInlineBody {
   readonly start: number;
   readonly end: number;
   readonly geometry: PositionIndex<InlineTextPlan>;
+  readonly gaps?: SavedInlineGap;
+}
+interface SavedInlineGap {
+  readonly node: MemoItem;
+  readonly previous?: SavedInlineGap;
 }
 
 /** Cache a sequence of canonical decisions; unchanged neighbours are linked, not rescanned. */
@@ -1828,6 +1842,11 @@ class InlineSequence {
     next: MemoItem | undefined,
     old?: MemoItem,
   ): MemoItem {
+    // A hidden snapshot can leave an obsolete linked successor behind. Only
+    // active indexed items can be newly covered; jump to the next live key
+    // instead of accidentally saving a dead or still-hidden owner again.
+    if (next && (!next.alive || next.start <= position || this.items.floor(next.start) !== next))
+      next = this.items.ceiling(position + 1);
     const node = this.build(position, previous);
     const saved = this.savedBodies.get(position);
     if (saved && node.item.end <= saved.start) {
@@ -1838,6 +1857,10 @@ class InlineSequence {
       if (next) next.previous = saved.last;
       else this.last = saved.last;
       if (next && saved.last.item.end < next.start) this.gaps.add(saved.last);
+      for (let gap = saved.gaps; gap; gap = gap.previous) {
+        this.accounting.visits++;
+        this.gaps.add(gap.node);
+      }
       next = saved.first;
       let dirty = this.suspended.ceiling(saved.start);
       while (dirty && dirty.start < saved.end) {
@@ -1850,14 +1873,39 @@ class InlineSequence {
     if (next && next.start < node.item.end) {
       const covered = this.items.floor(node.item.end - 1);
       if (covered && covered.start >= next.start) {
-        this.savedBodies.set(position, {
-          items: this.items.snapshot(),
-          geometry: this.geometry.snapshot(),
-          first: next,
-          last: covered,
-          start: next.start,
-          end: covered.item.end,
-        });
+        if (saved && next.start >= saved.end) {
+          // A growing provisional wrapper can cover more already-interpreted
+          // items. Preserve its earlier hidden snapshot when saving the new
+          // suffix; replacing it loses the prefix and forces a full reparse.
+          const items = saved.items.snapshot();
+          items.replaceRange(next.start, covered.item.end, this.items);
+          const geometry = saved.geometry.snapshot();
+          geometry.replaceRange(next.start, covered.item.end, this.geometry);
+          const gap: SavedInlineGap | undefined =
+            saved.last.item.end < next.start
+              ? { node: saved.last, ...(saved.gaps ? { previous: saved.gaps } : {}) }
+              : saved.gaps;
+          saved.last.next = next;
+          next.previous = saved.last;
+          this.savedBodies.set(position, {
+            items,
+            geometry,
+            first: saved.first,
+            last: covered,
+            start: saved.start,
+            end: covered.item.end,
+            ...(gap ? { gaps: gap } : {}),
+          });
+        } else {
+          this.savedBodies.set(position, {
+            items: this.items.snapshot(),
+            geometry: this.geometry.snapshot(),
+            first: next,
+            last: covered,
+            start: next.start,
+            end: covered.item.end,
+          });
+        }
       }
     }
     if (next && next.start < node.item.end) {
@@ -2238,8 +2286,8 @@ class CanonicalInlineCheckpoint {
     };
   }
 
-  tabSpaces(start: number, end: number): readonly number[] {
-    const tabs: number[] = [];
+  tabEntries(start: number, end: number): readonly InlineTabSpace[] {
+    const tabs: InlineTabSpace[] = [];
     const scopes = [
       ...this.archived,
       ...(this.sequence ? [{ sequence: this.sequence, block: this.scopeBlock }] : []),
@@ -2248,12 +2296,20 @@ class CanonicalInlineCheckpoint {
       const initial = displayWidth(scope.block?.prefix ?? '');
       const continuation = displayWidth(scope.block?.continuation ?? scope.block?.prefix ?? '');
       tabs.push(
-        ...this.textFactory
-          .tabSpaces(scope.sequence.textPlan.node, start, end, initial, continuation)
-          .map((tab) => tab.spaces),
+        ...this.textFactory.tabSpaces(
+          scope.sequence.textPlan.node,
+          start,
+          end,
+          initial,
+          continuation,
+        ),
       );
     }
     return tabs;
+  }
+
+  tabSpaces(start: number, end: number): readonly number[] {
+    return this.tabEntries(start, end).map((tab) => tab.spaces);
   }
 
   deferredUnderscore(): boolean {
@@ -2410,7 +2466,10 @@ export class MarkdownStream {
   private semanticWork = 0;
   private lineWork = 0;
   private blockClassifier = new BlockLineClassifier();
-  private classifierPrevious: { source: string; offset: number; block: MarkdownBlock } | undefined;
+  private classifierPrevious:
+    | { source: string; offset: number; block: MarkdownBlock; result: BlockLineResult }
+    | undefined;
+  private provisionalRevision = false;
   private classifiedPreview:
     | { source: string; offset: number; result: BlockLineResult }
     | undefined;
@@ -2556,7 +2615,8 @@ export class MarkdownStream {
       (this.pendingFence?.containers?.length || this.pendingFence?.classified) &&
       /\S/.test(this.linePrefix) &&
       (this.pendingFence.classified
-        ? this.columns.blockAt(this.sourceLength - this.lineLength)?.block.kind !== 'code'
+        ? this.columns.blockAt(this.sourceLength - this.lineLength)?.block.kind !== 'code' ||
+          this.columns.blockAt(this.sourceLength - this.lineLength)?.fenceBoundary === 'open'
         : fenceContent(this.linePrefix, this.pendingFence) === undefined)
     ) {
       // A nonblank dedent has already left the container, even before this
@@ -2789,7 +2849,10 @@ export class MarkdownStream {
       const revision = {
         ...classified.revision,
         source: previous.source,
-        text: previous.block.text,
+        text:
+          classified.preserveRevisionPrefix || classified.revision.prefix
+            ? previous.block.text
+            : previous.source,
         ...(classified.preserveRevisionPrefix && previous.block.prefix !== undefined
           ? { prefix: previous.block.prefix }
           : {}),
@@ -2798,8 +2861,22 @@ export class MarkdownStream {
           : {}),
       };
       this.columns.line(previous.offset, previous.source, revision, undefined, true);
+      this.provisionalRevision = !complete;
+    } else if (previous && this.provisionalRevision) {
+      this.columns.line(
+        previous.offset,
+        previous.source,
+        previous.block,
+        undefined,
+        true,
+        previous.source.length,
+        previous.result.listProjection,
+        previous.result,
+      );
+      this.provisionalRevision = false;
     }
-    if (this.pendingFence?.classified)
+    if (this.pendingFence && classified.fenceBoundary === 'open') body = undefined;
+    else if (this.pendingFence?.classified)
       body = classified.block.kind === 'code' ? classified.block.text : undefined;
     else if (this.pendingFence?.containers?.length && classified.block.kind !== 'code')
       body = undefined;
@@ -2825,7 +2902,7 @@ export class MarkdownStream {
       classified,
     );
     if (complete || source.trim()) this.inline.line(offset, block, classified.continuesParagraph);
-    if (complete) this.classifierPrevious = { source, offset, block };
+    if (complete) this.classifierPrevious = { source, offset, block, result: classified };
   }
 
   private replayInline(source: string, offset: number, complete: boolean): void {
@@ -2843,7 +2920,11 @@ export class MarkdownStream {
       const content = this.pendingFence.classified
         ? this.columns.blockAt(offset)?.block.text
         : fenceContent(line, this.pendingFence);
-      if (content !== undefined && this.columns.blockAt(offset)?.block.kind === 'code') {
+      if (
+        content !== undefined &&
+        this.columns.blockAt(offset)?.block.kind === 'code' &&
+        this.columns.blockAt(offset)?.fenceBoundary !== 'open'
+      ) {
         this.pushCompleted(line, offset);
         if (
           this.columns.blockAt(offset)?.fenceBoundary === 'close' ||
@@ -2876,37 +2957,16 @@ export class MarkdownStream {
       }
     }
     const previous = this.completed[this.completed.length - 1];
-    if (
-      previous !== undefined &&
-      previous.length + line.length + 1 <= TABLE_SOURCE_LIMIT &&
-      line.includes('|')
-    ) {
-      const candidate = this.parse(previous + '\n' + line);
-      const delimiterLike =
-        /^[ |:-]+$/.test(line) && line.includes('---') && previous.includes('|');
-      if (candidate.length === 1 && (candidate[0]?.kind === 'table' || delimiterLike)) {
-        this.completed.pop();
-        const retainedSize = previous.length + line.length + 2;
-        this.pendingSize -= retainedSize;
-        this.finalize();
-        this.completed = [previous, line];
-        this.completedStart = offset - previous.length - 1;
-        this.pendingSize = retainedSize;
-        this.pendingTable = true;
-        this.pendingTableContainers = tableContainers(previous);
-        return;
-      }
-    }
-    if (
-      previous !== undefined &&
-      previous.length + line.length + 1 > TABLE_SOURCE_LIMIT &&
-      previous.includes('|') &&
-      /^[ |:-]+$/.test(line) &&
-      line.includes('---')
-    ) {
+    if (previous !== undefined && this.columns.blockAt(offset)?.tableBoundary) {
+      this.completed.pop();
+      const retainedSize = previous.length + line.length + 2;
+      this.pendingSize -= retainedSize;
+      this.finalize();
+      this.completed = [previous, line];
+      this.completedStart = offset - previous.length - 1;
+      this.pendingSize = retainedSize;
       this.pendingTable = true;
       this.pendingTableContainers = tableContainers(previous);
-      this.pushCompleted(line, offset);
       return;
     }
     if (!line.trim()) {
@@ -3093,10 +3153,25 @@ export class MarkdownStream {
       ? this.sourceTail().slice(-Math.min(this.pendingSize, LIVE_SOURCE_LIMIT))
       : '';
     const cutOffset = this.sourceLength - pending.length;
-    const tabSpaces =
-      this.pendingTable || this.pendingFence
-        ? this.columns.tabSpaces(cutOffset, this.sourceLength, this.pendingTable)
-        : this.inline.tabSpaces(cutOffset, this.sourceLength);
+    const semanticTabs = new Map(
+      this.inline.tabEntries(cutOffset, this.sourceLength).map((tab) => [tab.position, tab.spaces]),
+    );
+    const blockTabs = new Map(
+      this.columns
+        .tabEntries(cutOffset, this.sourceLength, false)
+        .map((tab) => [tab.position, tab.spaces]),
+    );
+    const sourceTabs = this.columns.tabEntries(cutOffset, this.sourceLength, true);
+    const tabSpaces: number[] = [];
+    for (const tab of sourceTabs) {
+      const kind = this.columns.blockAt(tab.position)?.block.kind;
+      const spaces = this.pendingTable
+        ? tab.spaces
+        : kind === 'code' || kind === 'literal' || kind === 'rule'
+          ? blockTabs.get(tab.position)
+          : semanticTabs.get(tab.position);
+      if (spaces !== undefined) tabSpaces.push(spaces);
+    }
     const blocks: MarkdownBlock[] = [];
     const parsePending = (source: string, offset: number): MarkdownBlock[] => {
       const parsed = [...parseMarkdown(source)];
@@ -3392,6 +3467,7 @@ export class MarkdownStream {
     this.inline = new CanonicalInlineCheckpoint(this.columns);
     this.blockClassifier.reset();
     this.classifierPrevious = undefined;
+    this.provisionalRevision = false;
     this.classifiedPreview = undefined;
     this.resetOrdinal();
     this.cached = undefined;

@@ -147,8 +147,8 @@ describe('pure CLI discovery DTO (unit projection, not production JSON help)', (
         );
     }
     expect(
-      dto.commands.filter((entry) => !entry.allowExcessArguments).map((entry) => entry.path),
-    ).toEqual([['run'], ['media', 'prune-temporaries']]);
+      dto.commands.filter((entry) => entry.allowExcessArguments).map((entry) => entry.path),
+    ).toEqual([]);
     const pricing = discoverCommands(['models', 'pricing']).commands[0];
     expect(
       pricing?.options.filter((option) => ['provider', 'input', 'output'].includes(option.binding)),
