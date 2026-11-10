@@ -146,9 +146,15 @@ export function createNativePromptChannel(): {
   };
   const append = (text: string): void => {
     if (snapshot.kind !== 'text' && snapshot.kind !== 'password') return;
+    // Rejected bytes must not be silently omitted from a later submission.
+    // Keep the rejection visible until the user explicitly edits or cancels.
+    if (invalid) return;
     if (secret.length + text.length > NATIVE_PROMPT_INPUT_LIMIT) {
       invalid = true;
-      publish({ ...snapshot, error: 'Input is too long. Remove text or cancel.' });
+      publish({
+        ...snapshot,
+        error: 'Input is too long. Press Backspace to edit or Esc to cancel.',
+      });
       return;
     }
     if (
@@ -158,7 +164,11 @@ export function createNativePromptChannel(): {
       })
     ) {
       invalid = true;
-      publish({ ...snapshot, error: 'Input contains unsupported control characters.' });
+      publish({
+        ...snapshot,
+        error:
+          'Input contains unsupported control characters. Press Backspace to edit or Esc to cancel.',
+      });
       return;
     }
     secret += text;

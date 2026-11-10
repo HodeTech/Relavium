@@ -149,7 +149,7 @@ export function providerKeyAvailabilityMessage(
     case 'missing':
       return `no API key for provider '${id}' — ${remedy}`;
     case 'usable':
-      return 'An API key is available.';
+      return `An API key is available from ${'name' in availability.source ? availability.source.name : availability.source.label}.`;
   }
 }
 

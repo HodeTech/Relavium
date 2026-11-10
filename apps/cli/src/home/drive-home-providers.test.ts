@@ -90,6 +90,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     output = new OwnedTtyOutput(),
     stderr = new OwnedTtyOutput();
   const outputs: string[] = [];
+  const env: Record<string, string | undefined> = { OPENAI_API_KEY: 'synthetic-env-secret-7139' };
   const io: CliIo = {
     nativeStdin: input,
     nativeStdout: output,
@@ -97,7 +98,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     stdin: Readable.from([]),
     stdinIsTty: true,
     stdoutIsTty: true,
-    env: { OPENAI_API_KEY: 'synthetic-env-secret-7139' },
+    env,
     writeOut: (text) => outputs.push(text),
     writeErr: (text) => outputs.push(text),
     writeOutAcknowledged: async () => {},
@@ -193,6 +194,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     frames,
     outputs,
     built,
+    env,
     get notices() {
       return notices;
     },
@@ -285,6 +287,9 @@ describe('driveHome native provider setup', () => {
             p.controller.handleKey('', { return: true });
           await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeUndefined());
         } else {
+          // The old source is gone: this is a new first-usable-source setup,
+          // rather than key maintenance that must preserve the current model.
+          delete f.env['OPENAI_API_KEY'];
           for (const char of '/providers') p.controller.handleKey(char, {});
           p.controller.handleKey('', { return: true });
           await choose('anthropic');

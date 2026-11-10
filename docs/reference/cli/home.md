@@ -70,8 +70,10 @@ the shared typed global writer. Existing-file rewrites display their comment/ord
 loss notice before publication. A saved preference with unconfirmed directory
 sync says so; failure offers safe recovery, with a separately selected invocation
 model where applicable. Explicit invocation defaults remain below project/workspace
-model preferences. Adding consent for another provider when one is already usable
-does not itself switch the default. Resume keeps its saved agent/model.
+model preferences. Connecting or replacing a key, or adding consent for another
+provider, when one is already usable does not itself switch the default.
+Provider cards name the currently usable source (OS keychain or the exact
+environment-variable name), never its value or suffix. Resume keeps its saved agent/model.
 
 Keys are never written to a config, transcript or plaintext fallback. A keychain
 failure names the environment remedy; a later store failure does not falsely claim

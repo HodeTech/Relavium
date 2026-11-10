@@ -103,7 +103,13 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         ...deps.wizard,
         resolver: deps.resolver,
         ...(id === undefined ? {} : { initialProvider: id }),
-        native: { flow, signal, assertAdmitting, endpointContext: deps.endpointContext },
+        native: {
+          flow,
+          signal,
+          assertAdmitting,
+          endpointContext: deps.endpointContext,
+          selectStarterDefault: firstUsable,
+        },
       });
       if (committedNotice !== undefined)
         return { status: 'ready', changed: true, notice: committedNotice };
@@ -346,7 +352,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       }
       if (availability.status === 'usable') {
         deps.flow.note(
-          `A key is available for ${KNOWN_PROVIDERS[id].displayName}. ${deps.endpointContext(id)}`,
+          `${providerKeyAvailabilityMessage(id, availability, deps.credentialSurface ?? 'home')} ${deps.endpointContext(id)}`,
         );
         const answer = await deps.flow.select({
           message: 'Provider action',

@@ -185,6 +185,8 @@ export interface OnboardingDeps {
     readonly signal: AbortSignal;
     readonly assertAdmitting: () => void;
     readonly endpointContext: (id: ProviderId) => string;
+    /** Only a first usable-source setup chooses a starter; key maintenance preserves model preferences. */
+    readonly selectStarterDefault?: boolean;
   };
   /** The clack slice — omit for the real prompts; a test injects a scripted one. */
   readonly prompter?: ClackOnboardingDeps;
@@ -431,6 +433,12 @@ async function runWizard(deps: OnboardingDeps): Promise<void> {
       : verified
         ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
         : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
+  if (deps.native?.selectStarterDefault === false) {
+    reportCommitted(
+      `${storedLine}\nYour model preference is unchanged. Choose a model with /models.`,
+    );
+    return;
+  }
   try {
     assertAdmitting(deps);
     const written =
