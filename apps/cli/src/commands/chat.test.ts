@@ -1724,7 +1724,7 @@ describe('chatCommand', () => {
 
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after /clear'); // actionable, swap-kind-aware hint
-    expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(err()).toContain('relavium chat resume id-0'); // names the OLD, still-resumable conversation
     expect(err()).toContain('fresh session. Your previous conversation is saved'); // one full stop, not two
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
@@ -1877,7 +1877,7 @@ describe('chatCommand', () => {
     );
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after a model switch'); // swap-kind-aware hint
-    expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(err()).toContain('relavium chat resume id-0'); // names the OLD, still-resumable conversation
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
 

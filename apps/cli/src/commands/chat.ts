@@ -1026,6 +1026,10 @@ async function chatResumeCommandBody(
   }
   const selectedSessionId = chosen;
   const prepare = async (host?: SessionHostOwner) => {
+    const assertResumeAdmitting = (): void => {
+      host?.work.assertAdmitting();
+      ownership?.surface.work.assertAdmitting();
+    };
     let config: LoadedConfig['config'];
     let projectConfigDir: LoadedConfig['projectConfigDir'];
     let fsPolicy: FsPathPolicy;
@@ -1100,10 +1104,7 @@ async function chatResumeCommandBody(
           transcriptBound: historyBound,
           readDisplay: (sequences) =>
             opened.store.loadUserDisplayTexts(selectedSessionId, sequences),
-          assertAdmitting: () => {
-            host?.work.assertAdmitting();
-            ownership?.surface.work.assertAdmitting();
-          },
+          assertAdmitting: assertResumeAdmitting,
           retry: () => {
             if (ownership === undefined)
               throw new CliError(
@@ -1122,6 +1123,7 @@ async function chatResumeCommandBody(
           },
         });
       let restored = chatIsInteractive(deps.io, deps.global) ? await restore() : [];
+      assertResumeAdmitting();
       if (restored === undefined) {
         if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
         return undefined;
@@ -1132,6 +1134,7 @@ async function chatResumeCommandBody(
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
       if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
         await keys.prepareInteractiveSetup(ownership, opened.db);
+        assertResumeAdmitting();
         // Resume keeps the saved agent/model. Only current runtime settings are reloaded.
         loadedConfig = loadResolvedConfig({
           cwd: originalCwd,
@@ -1147,6 +1150,7 @@ async function chatResumeCommandBody(
       if (currentBound !== historyBound && chatIsInteractive(deps.io, deps.global)) {
         historyBound = currentBound;
         restored = await restore();
+        assertResumeAdmitting();
         if (restored === undefined) {
           if (ownership === undefined) closeQuietly(deps.io, 'session store', () => opened.close());
           return undefined;
@@ -3288,7 +3292,7 @@ export async function runReplLoop(
                       : String(err)
                     : toUserFacing(err).message,
                 ).replace(/\.$/u, '')}. ` +
-                `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
+                `Your previous conversation is saved. ${resumeHint(oldSessionId)}`;
               return { summaryText, errorText };
             }
           }

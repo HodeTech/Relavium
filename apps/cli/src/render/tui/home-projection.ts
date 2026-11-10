@@ -23,7 +23,12 @@ export const HOME_MIN_ROWS = 24;
 
 /** Whether the terminal is at least the Home minimum — else the caller renders {@link tooSmallMessage}. */
 export function homeFitsTerminal(cols: number, rows: number): boolean {
-  return cols >= HOME_MIN_COLS && rows >= HOME_MIN_ROWS;
+  return (
+    Number.isSafeInteger(cols) &&
+    Number.isSafeInteger(rows) &&
+    cols >= HOME_MIN_COLS &&
+    rows >= HOME_MIN_ROWS
+  );
 }
 
 /** The single-line degrade shown (and held until a resize) when the terminal is below the Home minimum. */

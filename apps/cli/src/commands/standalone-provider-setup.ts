@@ -45,12 +45,13 @@ export async function runStandaloneProviderSetup(deps: {
   readonly keychain: KeychainStore;
   readonly jobControlLifecycle?: JobControlLifecycle;
 }): Promise<StandaloneProviderSetupResult> {
+  const { lifetime, io } = deps;
+  const owner = lifetime.surface.work;
+  owner.assertAdmitting();
   if (
     sampleProviderSetup(deps.resolver).some(({ availability }) => availability.status === 'usable')
   )
     return { status: 'ready', changed: false };
-  const { lifetime, io } = deps;
-  const owner = lifetime.surface.work;
   let setupSignal: AbortSignal | undefined;
   let finalNote: string | undefined;
   let ephemeralDefault: StandaloneProviderSetupResult['ephemeralDefault'];

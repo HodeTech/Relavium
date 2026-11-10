@@ -6,6 +6,7 @@ import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
 import { formatReportedCost } from '../render/tui/format.js';
+import { resumeHint } from './resume-hint.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -188,14 +189,11 @@ export function trimNotice(result: TrimResult): string {
 
 /**
  * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a
- * fresh session started. It surfaces the OLD sessionId + the exact `relavium chat-resume` command so the prior
- * conversation is DISCOVERABLE, not merely theoretically recoverable. The id is `sanitizeInline`-guarded: a
- * `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is shared
- * with other surfaces), so a crafted stored id could otherwise smuggle a terminal escape into this notice.
+ * fresh session started. The shared resume hint names a shell-neutral ID or the native picker, so a stored ID
+ * cannot turn the recovery command into shell syntax. Other surfaces can write non-UUID session IDs.
  */
 export function clearedNotice(oldSessionId: string): string {
-  const safeId = sanitizeInline(oldSessionId);
-  return `✨ Started a fresh conversation. The previous one is saved — resume it with \`relavium chat-resume ${safeId}\`.`;
+  return `✨ Started a fresh conversation. The previous one is saved. ${resumeHint(oldSessionId).trimEnd()}`;
 }
 
 /**

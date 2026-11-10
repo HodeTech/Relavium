@@ -18,7 +18,7 @@ import {
 } from './home-projection.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
-import { displayWidth, sliceDisplayColumns } from './viewport.js';
+import { homePromptRows, layoutHomeNotice } from './home-notice.js';
 
 /**
  * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
@@ -56,6 +56,7 @@ interface HomeViewProps {
   /** Cached key availability, sampled by the host on opening and changes. */
   readonly keyless?: boolean;
   readonly continueSessionId?: string | undefined;
+  readonly noticePage?: number;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -126,58 +127,68 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     isEmpty: snapshot.isEmpty,
     rows,
   });
-  const promptHeight = editor.text
-    .split('\n')
-    .reduce(
-      (sum, line) => sum + Math.max(1, Math.ceil((displayWidth(sanitizeInline(line)) + 3) / cols)),
-      0,
-    );
-  const noticeLines = notice
-    ?.split('\n')
-    .slice(0, 3)
-    .map((line) => sliceDisplayColumns(sanitizeInline(line), 0, cols));
+  const promptHeight = homePromptRows(editor, cols);
+  const noticeLayout = layoutHomeNotice({
+    notice,
+    editor,
+    cols,
+    rows,
+    keyless: props.keyless === true,
+    errorText,
+    showBanner: props.showBanner,
+    isEmpty: snapshot.isEmpty,
+    hasSessions: snapshot.recentSessions.length > 0,
+    ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
+  });
   // Reserve all headings/margins and the whole editor before allocating management rows.
   let remaining = Math.max(
     0,
     rows -
       (showBanner ? 4 : 1) -
       promptHeight -
-      3 -
+      2 -
       (props.keyless === true ? 1 : 0) -
       (errorText === undefined ? 0 : 2) -
-      (noticeLines === undefined ? 0 : noticeLines.length + 1) -
-      8,
+      (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) -
+      (snapshot.isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1),
   );
-  const takeRows = <T,>(items: readonly T[], cost = 1, max = remaining): readonly T[] => {
-    const selected = items.slice(0, Math.floor(Math.min(remaining, max) / cost));
-    remaining -= selected.length * cost;
+  let attentionRemaining = Math.max(
+    0,
+    remaining - (snapshot.recentSessions.length > 0 ? 4 : 0) - 2,
+  );
+  const takeAttention = <T,>(items: readonly T[], max = attentionRemaining): readonly T[] => {
+    const selected = items.slice(0, Math.min(attentionRemaining, max));
+    attentionRemaining -= selected.length;
     return selected;
   };
-  const attentionBudget = Math.max(0, remaining - (snapshot.recentSessions.length > 0 ? 2 : 0));
-  const unreadable = takeRows(snapshot.unreadableRunIds, 1, Math.min(3, attentionBudget));
-  const gateRows = takeRows(
-    snapshot.attention.gates,
-    1,
-    Math.max(0, attentionBudget - unreadable.length),
-  ).map((g) => ({
+  const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
+  const gateRows = takeAttention(snapshot.attention.gates).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
-  const failed: StripRow[] = takeRows(
-    snapshot.attention.failedRuns,
-    1,
-    Math.max(0, attentionBudget - unreadable.length - gateRows.length),
-  ).map((r) => ({
+  const failed: StripRow[] = takeAttention(snapshot.attention.failedRuns).map((r) => ({
     key: r.runId,
     line: `✗ ${runLabel(r, nowMs)}`,
   }));
-  const sessionCapacity = Math.floor(remaining / 2);
+  const attentionCount = unreadable.length + gateRows.length + failed.length;
+  if (attentionCount > 0) remaining -= attentionCount + 2;
+  let continueHeading = false;
+  const takeSection = <T,>(items: readonly T[], cost = 1): readonly T[] => {
+    const chrome = continueHeading ? 1 : 2;
+    const selected = items.slice(0, Math.max(0, Math.floor((remaining - chrome) / cost)));
+    if (selected.length > 0) {
+      remaining -= chrome + selected.length * cost;
+      continueHeading = true;
+    }
+    return selected;
+  };
+  const sessionCapacity = Math.max(0, Math.floor((remaining - 2) / 2));
   const focusedIndex = snapshot.recentSessions.findIndex(
     (s) => s.sessionId === props.continueSessionId,
   );
   const sessionStart = Math.max(0, focusedIndex - sessionCapacity + 1);
-  const sessions: StripRow[] = takeRows(snapshot.recentSessions.slice(sessionStart), 2).map(
+  const sessions: StripRow[] = takeSection(snapshot.recentSessions.slice(sessionStart), 2).map(
     (s) => ({
       key: s.sessionId,
       line: sessionLabel(s, nowMs),
@@ -185,11 +196,11 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       selected: s.sessionId === props.continueSessionId,
     }),
   );
-  const runs: StripRow[] = takeRows(snapshot.recentRuns).map((r) => ({
+  const runs: StripRow[] = takeSection(snapshot.recentRuns).map((r) => ({
     key: r.runId,
     line: runLabel(r, nowMs),
   }));
-  const agents: StripRow[] = takeRows(snapshot.recentAgents).map((a) => ({
+  const agents: StripRow[] = takeSection(snapshot.recentAgents).map((a) => ({
     key: a.agentSlug,
     line: agentLabel(a, nowMs),
   }));
@@ -218,17 +229,19 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       )}
 
       {snapshot.isEmpty ? (
-        <Box flexDirection="column" marginLeft={2} marginTop={1}>
-          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-            Welcome to Relavium.
-          </Text>
-          <Text wrap="truncate-end">
-            Start an agent chat, then graduate it into a saved workflow.
-          </Text>
-          <Text {...dimProps(color)} wrap="truncate-end">
-            e.g. “summarize the files in this folder”
-          </Text>
-        </Box>
+        noticeLayout === undefined ? (
+          <Box flexDirection="column" marginLeft={2} marginTop={1}>
+            <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+              Welcome to Relavium.
+            </Text>
+            <Text wrap="truncate-end">
+              Start an agent chat, then graduate it into a saved workflow.
+            </Text>
+            <Text {...dimProps(color)} wrap="truncate-end">
+              e.g. “summarize the files in this folder”
+            </Text>
+          </Box>
+        ) : null
       ) : (
         <Box flexDirection="column" marginTop={1}>
           {(gateRows.length > 0 || failed.length > 0 || unreadable.length > 0) && (
@@ -290,12 +303,17 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      {notice !== undefined && (
+      {noticeLayout !== undefined && (
         // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
         // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
         // multi-line string. Already sanitized at the source (formatDoctorReport).
-        <Box marginTop={1}>
-          <Text {...dimProps(color)}>{noticeLines?.join('\n')}</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text {...dimProps(color)}>{noticeLayout.lines.join('\n')}</Text>
+          {noticeLayout.footer !== undefined && (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {noticeLayout.footer}
+            </Text>
+          )}
         </Box>
       )}
 

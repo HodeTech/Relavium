@@ -6,7 +6,7 @@ import {
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
-import { Box, Text, useApp, useInput, usePaste, useStdout } from 'ink';
+import { Box, Text, useApp, useInput, usePaste, useStdout, type Key } from 'ink';
 import {
   useEffect,
   useLayoutEffect,
@@ -29,6 +29,8 @@ import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-proje
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import { homeFitsTerminal } from './home-projection.js';
+import { layoutHomeNotice } from './home-notice.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
@@ -301,6 +303,23 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return () => suspendPort.attach(undefined);
   }, [app, suspendPort]);
   const [size, setSize] = useState(getSize);
+  const [noticeWindow, setNoticeWindow] = useState({
+    revision: state.noticeRevision,
+    cols: size.cols,
+    rows: size.rows,
+    page: 0,
+  });
+  const noticeWindowRef = useRef(noticeWindow);
+  const sameNotice =
+    noticeWindow.revision === state.noticeRevision &&
+    Object.is(noticeWindow.cols, size.cols) &&
+    Object.is(noticeWindow.rows, size.rows);
+  const noticePage = sameNotice ? noticeWindow.page : 0;
+  if (!sameNotice) {
+    const reset = { revision: state.noticeRevision, cols: size.cols, rows: size.rows, page: 0 };
+    noticeWindowRef.current = reset;
+    setNoticeWindow(reset);
+  }
   // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — RootApp-local (a pure-render concern, like `size`;
   // NOT session state), ref-shadowed for coalesced-chunk safety, and the viewport's live geometry lifted into
   // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
@@ -523,6 +542,52 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return true;
   };
 
+  const routeHomeInput = (input: string, key: Key): boolean => {
+    const current = controller.getSnapshot();
+    if (current.mode === 'chat') return false;
+    const live = getSizeRef.current();
+    if (!homeFitsTerminal(live.cols, live.rows)) {
+      if (key.escape || (key.ctrl && (input === 'c' || input === 'd')))
+        controller.handleKey(input, key);
+      return true;
+    }
+    if (
+      current.mode !== 'home' ||
+      current.notice === undefined ||
+      current.palette !== undefined ||
+      current.modelPicker !== undefined ||
+      (!key.pageUp && !key.pageDown)
+    )
+      return false;
+    const previous = noticeWindowRef.current;
+    const same =
+      previous.revision === current.noticeRevision &&
+      Object.is(previous.cols, live.cols) &&
+      Object.is(previous.rows, live.rows);
+    const layout = layoutHomeNotice({
+      notice: current.notice,
+      editor: current.input,
+      cols: live.cols,
+      rows: live.rows,
+      keyless: current.keyless,
+      errorText: current.errorText,
+      showBanner: props.showBanner,
+      isEmpty: current.snapshot.isEmpty,
+      hasSessions: current.snapshot.recentSessions.length > 0,
+      page: same ? previous.page : 0,
+    });
+    if (layout === undefined || layout.maxPage === 0) return false;
+    const next = {
+      revision: current.noticeRevision,
+      cols: live.cols,
+      rows: live.rows,
+      page: Math.max(0, Math.min(layout.maxPage, layout.page + (key.pageUp ? -1 : 1))),
+    };
+    noticeWindowRef.current = next;
+    setNoticeWindow(next);
+    return true;
+  };
+
   useInput((input, key) => {
     if (props.inputEnabled?.() === false) return;
     // Ink raw mode parses Ctrl-Z as Ctrl+`z` (some harnesses surface the literal SUB byte). Consume it BEFORE mouse,
@@ -552,6 +617,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
+    if (routeHomeInput(input, key)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
       // `controller.handleKey` reduces, and shadowing an abort with a cosmetic clear would be a bad trade. Mirrors
@@ -579,6 +645,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;
+    const live = getSizeRef.current();
+    if (controller.getSnapshot().mode !== 'chat' && !homeFitsTerminal(live.cols, live.rows)) return;
     controller.handlePaste(text);
   });
   const flushVisible = useVisibleRenderFlush(
@@ -702,12 +770,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           showBanner={props.showBanner}
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
+          noticePage={noticePage}
         />
       )}
-      {state.palette !== undefined && (
+      {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
       )}
-      {state.modelPicker !== undefined && (
+      {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
     </Box>

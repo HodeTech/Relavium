@@ -183,6 +183,8 @@ export interface HomeControllerState {
   /** Transient command output in the bare Home — the `/doctor` report (2.5.C S5), rendered below the strip and
    *  cleared on the next edit/submit. Multi-line + secret-free (the doctor formatter sanitizes). `undefined` ⇒ none. */
   readonly notice: string | undefined;
+  /** Distinguishes fresh reports even when their text is identical or updates are React-batched. */
+  readonly noticeRevision: number;
   /** The open `/models` picker (2.5.G S7, ADR-0064 §10) — `undefined` ⇒ closed. HOME-ONLY (a next-session config
    *  action); a keyboard-owning overlay like the palette. Opened from the Home palette's `/models`; on selection it
    *  writes the next session's default (ADR-0063), never rebinding the live session. Mutually exclusive with the palette. */
@@ -315,6 +317,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     attachments: [],
     historyEntries: [],
     notice: undefined,
+    noticeRevision: 0,
     modelPicker: undefined,
     effortPicker: undefined,
     reasonDraft: undefined,
@@ -427,7 +430,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       approvalPending: state.session?.store.getSnapshot().approval !== undefined,
     });
   const set = (patch: Partial<HomeControllerState>): void => {
-    state = { ...state, ...patch };
+    const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
+    state = { ...state, ...patch, noticeRevision };
     notify();
   };
 

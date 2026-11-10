@@ -1,6 +1,6 @@
 # `relavium` — Bare-invocation interactive Home
 
-> Last updated: 2026-10-17
+> Last updated: 2026-11-10
 
 - **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste); the in-app slash palette / `/help` / `/doctor` + the context-aware footer landed in **2.5.C**; and the reseat-less mode keymap (`Shift+Tab` / `/mode`) + the fail-closed per-tool approval + the `Esc` mid-turn abort landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — all **extend** this same canonical home. The Home-side **`/models` picker** landed in **2.5.G**: in the bare Home an accepted pick writes the global `[preferences].default_model` (+ the effort tier) for the *next* session ([ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1, [ADR-0064](../../decisions/0064-live-model-catalog.md)); in the in-Home **chat** the same picker **reseats** the live session instead ([chat-session.md](chat-session.md#model-reseat-models)).
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
@@ -211,9 +211,19 @@ the root input owner stays mounted. The resume/reseat notice and retention order
 
 ## Minimum terminal size
 
-Below **80×24** the Home **degrades** to a single line — `Terminal too small (WxH) — resize to at least 80×24.` plus a `Ctrl-C to exit` affordance — and **suspends** the strip render until a terminal **resize** arrives, rather than drawing a broken/garbled TUI. The resize is observed on `process.stdout`'s cross-platform `'resize'` event (backed by `SIGWINCH` on POSIX), not a bare `SIGWINCH` binding (unreliable on Windows). Every dynamic strip row and the prompt are truncated at the terminal edge (`truncate-end`), never soft-wrapped.
+Below **80×24** the landing shows `Terminal too small (WxH) — resize to at least 80×24.`
+and a `Ctrl-C to exit` affordance. It suspends the management strip, prompt and overlays,
+and refuses hidden typing, paste, Continue and palette activation using the live terminal
+geometry. Esc and Ctrl-C/Ctrl-D cancellation remain available. A resize restores the
+existing input and selection. The resize is observed on stdout's cross-platform `resize`
+event (backed by SIGWINCH on POSIX).
 
-> **Known limitation (tracked).** *At or above* 80×24, a very tall landing — a populated **Attention required** section (many pending gates) plus the Continue lists — can still exceed the terminal's rows, and the alt buffer has no scrollback to recover the top. This predates 2.6.F (the strip is 2.5.B) and is resolved by **2.6.G**'s management browsers, which replace the strip wholesale. See [docs/roadmap/current.md](../../roadmap/current.md).
+At or above the minimum, management lists use the remaining row budget after the full
+prompt, keyless action, errors and notices. The focused Continue session stays visible.
+Strip labels truncate at the terminal edge; diagnostic notices and recovery instructions
+wrap without dropping their source. Long notices show a range and **PgUp/PgDn** affordance
+in both renderers. A new report or resize returns to its first page. Notice paging does
+not submit input or change Continue focus, and yields to a keyboard-owning overlay.
 
 ## Signal lifecycle & exit codes
 
