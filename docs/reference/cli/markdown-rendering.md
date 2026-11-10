@@ -83,9 +83,21 @@ its displayed marker/padding width. Lazy or ambiguous continuation remains
 literal. Excess-depth list/quote lines and their over-depth continuations render
 literally until they return within the admitted depth; earlier admitted siblings
 stay styled. The limit does not turn an already completed list into raw source.
+
 Each `>` consumes one quote depth and at most one following space. Once inline
 depth reaches its cap, additional delimiters themselves remain literal; earlier
 matched spans remain styled. These are interpretation limits, not truncation.
+
+A whole-line simple opening HTML tag owns literal source through its whole-line
+matching closing tag, including same-name nested pairs. Matching is ASCII
+case-insensitive; names start with an ASCII letter, followed by ASCII letters,
+digits or hyphens. An unclosed region remains literal through EOF; leaving its
+quote/list container ends it. Self-closing tags, tags with trailing text and
+the [HTML void elements](https://html.spec.whatwg.org/dev/syntax.html#void-elements)
+remain one-line literal forms. Attributes and HTML content are never interpreted.
+Tag-led HTML comments remain literal through `-->` or EOF, and complete doctype
+declarations remain one-line literal forms. Comment terminator lines remain wholly
+literal, including trailing text.
 
 ## Supported inline constructs
 
@@ -99,10 +111,12 @@ matched spans remain styled. These are interpretation limits, not truncation.
 | `<https://example.test>` or an email autolink | Show the complete displayed target once |
 | `![alt](target)` | Dim `[image: alt] (target)`; no fetch or image decoding |
 | Backslash before ASCII punctuation | Literal escaped punctuation |
-| Two trailing spaces or a trailing backslash before newline | Hard line break |
+| Two trailing spaces or a trailing unescaped backslash before newline | Hard line break |
 
 An unmatched delimiter stays literal. Bound delimiter nesting; unsupported link
 forms, including optional titles, stay literal rather than dropping information.
+Complete bare bracket groups remain literal as unsupported shortcut-reference
+candidates; labels of valid inline links still receive inline styling.
 Labels, targets and info strings receive
 [`sanitizeInline`](../../../apps/cli/src/render/sanitize.ts) treatment, so they
 cannot forge rows. Never emit OSC 8, launch a URL, resolve it or fetch its target.
@@ -117,8 +131,10 @@ one unescaped pipe outside a code span. This distinguishes even a one-column
 table (`| Title |` / `| --- |`) from the pipe-free literal Setext pair.
 Split cells with a linear scanner that respects escaped
 pipes and code spans. Header and delimiter column counts must match; unsupported
-or ambiguous forms remain literal. Short body rows receive empty trailing cells;
-an over-wide body row makes the table literal rather than discarding a cell.
+or ambiguous forms remain literal. A body row may contain one cell without a pipe;
+short body rows receive empty trailing cells. A table ends at a blank line, an
+unambiguous new block or EOF. An over-wide body row makes the table literal
+rather than discarding a cell.
 
 Use `┌┬┐`, `├┼┤`, `└┴┘`, `─` and `│` for the grid, one space of cell padding,
 and header emphasis. Colon alignment controls cell alignment. Measure the

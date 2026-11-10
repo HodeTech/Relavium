@@ -84,8 +84,10 @@ function parseInlineInternal(
     intraword: (at) => base.intraword(at),
     opaque: (at) => base.opaque(at),
     opaqueInterior: (at) => base.opaqueInterior(at),
+    opaqueCode: (at) => base.opaqueCode(at),
     runEnd: (start, character, end) => base.runEnd(start, character, end),
     plainEnd: (start, end) => base.plainEnd(start, end),
+    hasInlineSyntax: (start, end) => base.hasInlineSyntax(start, end),
     singleCount: (marker, start, end) => base.singleCount(marker, start, end),
     validLinkTarget: (start, end) => base.validLinkTarget(start, end),
     next: (token, start, end) => {

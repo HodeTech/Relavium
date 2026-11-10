@@ -89,7 +89,11 @@ export function interpretInlineItem<T>(
       [{ start, end: start + 1, text: '' }],
     );
   if (ch === '\n') {
-    const trim: 0 | 1 | 2 = plainSuffix.endsWith('  ') ? 2 : plainSuffix.endsWith('\\') ? 1 : 0;
+    const trim: 0 | 1 | 2 = plainSuffix.endsWith('  ')
+      ? 2
+      : plainSuffix.endsWith('\\') && char(start - 1) === '\\' && !index.escaped(start - 1)
+        ? 1
+        : 0;
     return item(
       start + 1,
       true,
@@ -106,13 +110,13 @@ export function interpretInlineItem<T>(
     if (close >= 0) {
       const parts: InlineItemPart<T>[] = [];
       const edits: InlineItemEdit[] = [];
-      if (index.opaque(start)) {
+      if (index.opaqueCode(start)) {
         parts.push(raw(start, runEnd));
         edits.push({ start, end: runEnd, text: '', raw: true });
       } else edits.push({ start, end: runEnd, text: '' });
       parts.push(raw(runEnd, close, { code: true }));
       edits.push({ start: runEnd, end: close, text: '', raw: true });
-      if (index.opaque(close)) {
+      if (index.opaqueCode(close)) {
         parts.push(raw(close, close + runEnd - start));
         edits.push({ start: close, end: close + runEnd - start, text: '', raw: true });
       } else edits.push({ start: close, end: close + runEnd - start, text: '' });
@@ -190,6 +194,23 @@ export function interpretInlineItem<T>(
         [raw(start, referenceEnd + 1)],
         [{ start, end: referenceEnd + 1, text: '', raw: true }],
       );
+    // A complete bare bracket group is an ambiguous shortcut-reference
+    // candidate. Reference resolution is unsupported, so retain it literally
+    // unless a following '(' or '[' may still complete another link form.
+    const bareEnd =
+      (close >= 0 && finish < 0) || !index.hasInlineSyntax(labelStart, end)
+        ? -1
+        : next(']', labelStart);
+    if (bareEnd >= 0 && (nested < 0 || nested > bareEnd)) {
+      const following = char(bareEnd + 1);
+      if (following !== '(' && following !== '[')
+        return item(
+          bareEnd + 1,
+          true,
+          [raw(start, bareEnd + 1)],
+          [{ start, end: bareEnd + 1, text: '', raw: true }],
+        );
+    }
   }
   if (ch === '<') {
     const close = next('>', start + 1);

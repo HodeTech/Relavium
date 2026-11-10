@@ -11,6 +11,7 @@ import { PositionIndex } from './position-index.js';
 import { layoutMarkdown } from './layout.js';
 import {
   BlockLineClassifier,
+  HtmlTagLine,
   closesMarkdownFence,
   isBlockStart,
   isSetextPair,
@@ -262,6 +263,7 @@ interface SourceLine {
   readonly tableBoundary?: true;
   readonly tableRow?: true;
   readonly tableContext?: true;
+  readonly htmlLine?: true;
 }
 interface RegionalSummary {
   readonly all: boolean;
@@ -529,6 +531,7 @@ class ColumnCheckpoint {
         ...(classification?.tableBoundary ? { tableBoundary: true } : {}),
         ...(classification?.tableRow ? { tableRow: true } : {}),
         ...(classification?.tableContext ? { tableContext: true } : {}),
+        ...(classification?.htmlLine ? { htmlLine: true } : {}),
       };
       this.lines.set(start, line);
       if (this.blockLine?.start === start) this.blockLine = line;
@@ -726,13 +729,14 @@ interface IndexedRun {
 class LiveInlineIndex implements InlineSourceIndex {
   private units: string[] = [];
   private lastContent = -1;
+  private lastSpecial = -1;
   private escapes: boolean[] = [];
   private words: boolean[] = [];
   private opaqueUnits: boolean[] = [];
   private tokens = new Map<string, number>();
   private positions = new Map<string, PositionIndex<number>>();
   private allPositions = new Map<string, PositionIndex<number>>();
-  private opaqueRanges = new PositionIndex<{ start: number; end: number }>();
+  private opaqueRanges = new PositionIndex<{ start: number; end: number; bare?: boolean }>();
   private radixWork = { visits: 0 };
   private opaqueCoverage = new PositionIndex<{ start: number; end: number }>(this.radixWork);
   private invalidTargetCounts: number[] = [0];
@@ -747,6 +751,8 @@ class LiveInlineIndex implements InlineSourceIndex {
   private scopedWaiting = new Map<string, PositionIndex<ScopedInlineBucket>>();
   private scopedRetained = 0;
   private answers = new Map<number, Set<InlineObserver>>();
+  private codeAnswers = new Map<number, Set<InlineObserver>>();
+  private codeAnswerPositions = new PositionIndex<number>(this.radixWork);
   private boundaries = new Map<number, Set<InlineObserver>>();
   private wordObservers = new Map<number, Set<InlineObserver>>();
   private singleObservers = new Map<number, Set<InlineObserver>>();
@@ -760,6 +766,7 @@ class LiveInlineIndex implements InlineSourceIndex {
   private scope: InlineScope | undefined;
   private underscore: { start: number; end: number } | undefined;
   private label: number | undefined;
+  private markedBareLabel: number | undefined;
   private parentheses: number[] = [];
   private parenEnds = new Map<number, number>();
   private parenTargets = new Map<number, number>();
@@ -831,10 +838,14 @@ class LiveInlineIndex implements InlineSourceIndex {
     if (!observers) {
       observers = new Set();
       table.set(position, observers);
+      if (table === this.codeAnswers) this.codeAnswerPositions.set(position, position);
     }
     if (observers.has(owner)) return;
     observers.add(owner);
-    const scope = table === this.answers && !this.dynamic ? this.scope : undefined;
+    const scope =
+      (table === this.answers || table === this.codeAnswers) && !this.dynamic
+        ? this.scope
+        : undefined;
     const range = scope ? this.opaqueRanges.floor(position) : undefined;
     const threshold =
       scope && range && range.start >= scope.start && position < range.end && range.end > scope.end
@@ -854,7 +865,10 @@ class LiveInlineIndex implements InlineSourceIndex {
     }
     owner.dispose.push(() => {
       observers.delete(owner);
-      if (!observers.size) table.delete(position);
+      if (!observers.size) {
+        table.delete(position);
+        if (table === this.codeAnswers) this.codeAnswerPositions.delete(position);
+      }
       if (scope?.opaqueReady && threshold !== undefined && ticket) {
         const bucket = scope.opaqueReady.floor(threshold);
         if (bucket?.position === threshold) {
@@ -974,7 +988,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     this.publish(`tick:${run.end - run.start}`, run.start);
   }
 
-  private markOpaque(start: number, end: number): void {
+  private markOpaque(start: number, end: number, bare = false): void {
     // Coverage can merge adjacent intervals; owner ranges below must retain
     // their enclosing scope boundaries for bounded inline queries.
     const gaps: { start: number; end: number }[] = [];
@@ -995,12 +1009,22 @@ class LiveInlineIndex implements InlineSourceIndex {
     }
     if (cursor < end) gaps.push({ start: cursor, end });
     this.opaqueCoverage.set(first, { start: first, end: last });
+    const upgraded: { start: number; end: number }[] = [];
     let covered = this.opaqueRanges.ceiling(start);
     while (covered && covered.start < end) {
+      if (!bare && covered.bare) upgraded.push(covered);
       this.opaqueRanges.delete(covered.start);
       covered = this.opaqueRanges.ceiling(start);
     }
-    this.opaqueRanges.set(start, { start, end });
+    this.opaqueRanges.set(start, { start, end, ...(bare ? { bare: true } : {}) });
+    for (const prior of upgraded) {
+      let position = this.codeAnswerPositions.ceiling(prior.start);
+      while (position !== undefined && position < prior.end) {
+        this.work++;
+        this.wake(this.codeAnswers, position);
+        position = this.codeAnswerPositions.ceiling(position + 1);
+      }
+    }
     for (const gap of gaps)
       for (let at = gap.start; at < gap.end; at++) {
         this.work++;
@@ -1008,6 +1032,7 @@ class LiveInlineIndex implements InlineSourceIndex {
         this.updateDelimiter(at);
         this.updateSingle(at);
         this.wake(this.answers, at);
+        this.wake(this.codeAnswers, at);
         this.wake(this.singleObservers, at);
       }
   }
@@ -1119,6 +1144,7 @@ class LiveInlineIndex implements InlineSourceIndex {
       if (/\S/.test(character)) this.lastContent = position;
       if (/[\\\n`[!<*_~]/.test(character)) {
         this.specialPositions.set(position, position);
+        this.lastSpecial = position;
       }
       this.escapes.push(escaped);
       this.wake(this.boundaries, position);
@@ -1164,6 +1190,7 @@ class LiveInlineIndex implements InlineSourceIndex {
         )
           this.references.push({ start: this.label, end: position });
         this.label = position;
+        this.markedBareLabel = undefined;
       }
       if (
         character === '(' &&
@@ -1188,6 +1215,10 @@ class LiveInlineIndex implements InlineSourceIndex {
         }
       }
       if (character === ']') {
+        if (this.label !== undefined && this.markedBareLabel !== this.label) {
+          if (this.lastSpecial > this.label) this.markOpaque(this.label, position + 1, true);
+          this.markedBareLabel = this.label;
+        }
         const reference = this.references[0];
         if (reference && position > reference.end) {
           this.markOpaque(reference.start, position + 1);
@@ -1266,6 +1297,19 @@ class LiveInlineIndex implements InlineSourceIndex {
     return (
       range !== undefined &&
       range.start < index &&
+      index < range.end &&
+      range.start >= this.scopeStart &&
+      range.end <= this.scopeEnd
+    );
+  }
+
+  opaqueCode(index: number): boolean {
+    this.work++;
+    this.watch(this.codeAnswers, index);
+    const range = this.opaqueRanges.floor(index);
+    return (
+      range !== undefined &&
+      !range.bare &&
       index < range.end &&
       range.start >= this.scopeStart &&
       range.end <= this.scopeEnd
@@ -1458,6 +1502,13 @@ class LiveInlineIndex implements InlineSourceIndex {
   plainEnd(start: number, end: number): number {
     this.work++;
     return Math.min(this.specialPositions.ceiling(start) ?? this.length, end);
+  }
+
+  hasInlineSyntax(start: number, end: number): boolean {
+    this.work++;
+    if (end >= this.length) return this.lastSpecial >= start && this.lastSpecial < end;
+    const position = this.specialPositions.ceiling(start);
+    return position !== undefined && position < end;
   }
 
   get indexedWork(): number {
@@ -1879,12 +1930,10 @@ class InlineSequence {
         this.gaps.add(gap.node);
       }
       next = saved.first;
-      let dirty = this.suspended.ceiling(saved.start);
-      while (dirty && dirty.start < saved.end) {
+      this.suspended.forEachSharedIdentity(this.items, saved.start, saved.end, (dirty) => {
         this.suspended.delete(dirty.start);
         this.enqueue(dirty);
-        dirty = this.suspended.ceiling(saved.start);
-      }
+      });
       this.savedBodies.delete(position);
     }
     if (next && next.start < node.item.end) {
@@ -2449,6 +2498,7 @@ class CanonicalInlineCheckpoint {
  * the per-frame API. A resize only invalidates the one bounded layout cache.
  */
 export class MarkdownStream {
+  private htmlTag: { body: number; at: number; scanner: HtmlTagLine } | undefined;
   private invalidClosing = false;
   private closingLine:
     | { at: number; spaces: number; run: number; mode: 'indent' | 'run' | 'suffix' | 'invalid' }
@@ -2607,6 +2657,11 @@ export class MarkdownStream {
           this.lineLength - part.length,
           initialOffset + start - (this.lineLength - part.length),
         );
+        this.scanHtmlTag(
+          part,
+          this.lineLength - part.length,
+          initialOffset + start - (this.lineLength - part.length),
+        );
         this.inline.append(part, initialOffset + start);
       }
       if (i < chunk.length) {
@@ -2625,6 +2680,7 @@ export class MarkdownStream {
         this.invalidOpening = false;
         this.closingLine = undefined;
         this.invalidClosing = false;
+        this.htmlTag = undefined;
       }
       start = i + 1;
     }
@@ -2669,6 +2725,27 @@ export class MarkdownStream {
     this.ordinalDigits = 0;
     this.ordinalPadding = 0;
     this.ordinalWidth = undefined;
+  }
+
+  private scanHtmlTag(part: string, lineOffset: number, offset: number): void {
+    const metadata = this.columns.blockAt(offset);
+    if (!metadata || metadata.block.kind === 'code' || metadata.block.kind === 'heading') return;
+    const body = this.columns.bodyStart(offset, offset + this.lineLength) - offset;
+    if (!this.htmlTag || this.htmlTag.body !== body) {
+      const scanner = new HtmlTagLine();
+      scanner.append(metadata.block.text);
+      this.columns.describe(scanner.work);
+      this.htmlTag = { body, at: this.linePrefix.length, scanner };
+    }
+    const tag = this.htmlTag;
+    const before = tag.scanner.work;
+    tag.scanner.append(part.slice(Math.max(0, tag.at - lineOffset)));
+    this.columns.describe(tag.scanner.work - before);
+    tag.at = lineOffset + part.length;
+    if (tag.scanner.literal && metadata.block.kind !== 'literal') {
+      this.classifiedPreview = undefined;
+      this.columnLine(this.linePrefix, offset, false);
+    }
   }
 
   private scanOpeningInfo(part: string, lineOffset: number, offset: number): void {
@@ -2865,6 +2942,14 @@ export class MarkdownStream {
               : invalid.block.text,
           },
         };
+      } else if (this.htmlTag?.scanner.literal) {
+        // The canonical tag-prefix scanner saw a terminator beyond the bounded
+        // prefix. Supply that monotone fact without joining its preceding line.
+        const tag = this.blockClassifier.preview(prefix + '>');
+        classified = {
+          ...tag,
+          block: { ...tag.block, source: prefix, text: tag.block.text.slice(0, -1) },
+        };
       } else classified = this.blockClassifier.preview(prefix);
       this.classifiedPreview = { source: prefix, offset, result: classified };
     }
@@ -2988,7 +3073,10 @@ export class MarkdownStream {
       return;
     }
     if (!line.trim()) {
-      if (this.columns.blockAt(offset)?.block.kind === 'code') {
+      if (
+        this.columns.blockAt(offset)?.block.kind === 'code' ||
+        this.columns.blockAt(offset)?.htmlLine
+      ) {
         this.pushCompleted(line, offset);
         return;
       }
@@ -3332,7 +3420,12 @@ export class MarkdownStream {
           remainder = remainder.slice(consumed);
         }
         if (remainder) blocks.push(...parsePending(remainder, position));
-        else if (pending.endsWith('\n')) blocks.push(literal(''));
+        else if (pending.endsWith('\n')) {
+          // An implicit EOF line can leave a quote while still belonging to a
+          // list-owned raw region. Ask the same bounded physical-line state.
+          const empty = this.blockClassifier.preview('');
+          blocks.push(empty.htmlLine ? empty.block : literal(''));
+        }
       } else {
         const original = this.columns.blockAt(cutOffset);
         const midLine = original !== undefined && original.start < cutOffset;
@@ -3474,6 +3567,7 @@ export class MarkdownStream {
   }
 
   reset(): void {
+    this.htmlTag = undefined;
     this.invalidClosing = false;
     this.closingLine = undefined;
     this.openingInfo = undefined;

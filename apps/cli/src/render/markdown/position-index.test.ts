@@ -307,4 +307,53 @@ describe('fixed-depth source position index', () => {
     index.set(0, value);
     expect(fold(index)).toBe('after');
   });
+
+  it('activates only the identical owner at a shared position across persistent versions', () => {
+    const left = new PositionIndex<{ id: string }>();
+    const right = new PositionIndex<{ id: string }>();
+    const shared = { id: 'shared' };
+    const other = { id: 'same contents' };
+    left.set(3, shared);
+    left.set(256, other);
+    right.set(3, shared);
+    right.set(256, { id: 'same contents' });
+    const oldRight = right.snapshot();
+    const seen: number[] = [];
+    left.forEachSharedIdentity(right, 0, 300, (_value, position) => {
+      seen.push(position);
+      left.delete(position);
+    });
+    expect(seen).toEqual([3]);
+    expect(left.size).toBe(1);
+    right.set(256, other);
+    left.forEachSharedIdentity(oldRight, 0, 300, () => {
+      throw new Error('A different object must remain hidden');
+    });
+    left.forEachSharedIdentity(right, 0, 256, () => {
+      throw new Error('The end of the range is exclusive');
+    });
+    const restored: number[] = [];
+    left.forEachSharedIdentity(right, 0, 300, (_value, position) => restored.push(position));
+    expect(restored).toEqual([256]);
+  });
+
+  it('reuses disjoint branch-pair results as versions change outside their range', () => {
+    const hidden = new PositionIndex<{ id: number }>();
+    const active = new PositionIndex<{ id: number }>();
+    for (let position = 0; position < 4096; position++) {
+      hidden.set(position, { id: position });
+      active.set(position, { id: position });
+    }
+    hidden.forEachSharedIdentity(active, 0, 4096, () => {
+      throw new Error('Equal data does not imply the same owner');
+    });
+    const before = hidden.visits;
+    for (let change = 0; change < 32; change++) {
+      active.set(8192 + change, { id: change });
+      hidden.forEachSharedIdentity(active, 0, 4096, () => {
+        throw new Error('No suspended owner has become active');
+      });
+    }
+    expect(hidden.visits - before).toBeLessThan(32 * 1_000);
+  });
 });

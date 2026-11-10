@@ -16,6 +16,10 @@ export class PositionIndex<T extends NonNullable<unknown>> {
   private measured = 0;
   private readonly accounting: { visits: number } | undefined;
   private entries = 0;
+  private readonly disjoint = new WeakMap<
+    PositionBranch<T>,
+    WeakMap<PositionBranch<T>, { left: number; right: number }>
+  >();
 
   constructor(accounting?: { visits: number }) {
     this.accounting = accounting;
@@ -234,6 +238,70 @@ export class PositionIndex<T extends NonNullable<unknown>> {
       return total;
     };
     return count(this.root, 6, 0);
+  }
+
+  /**
+   * Visit entries owned by both indexes at the same position. Persistent
+   * no-match branch pairs are cached by revision so a later restoration can
+   * skip unchanged hidden subtrees. The receiver may be mutated by `visit`.
+   */
+  forEachSharedIdentity(
+    other: PositionIndex<T>,
+    start: number,
+    end: number,
+    visit: (value: T, position: number) => void,
+  ): void {
+    if (start >= end || !this.size || !other.size) return;
+    const source = this.snapshot();
+    const walk = (
+      left: PositionBranch<T>,
+      right: PositionBranch<T>,
+      level: number,
+      prefix: number,
+    ): boolean => {
+      this.visits++;
+      const size = 256 ** (level + 1);
+      if (prefix >= end || prefix + size <= start) return false;
+      const complete = start <= prefix && prefix + size <= end;
+      const known = complete ? this.disjoint.get(left)?.get(right) : undefined;
+      if (known?.left === left.revision && known.right === right.revision) return false;
+      let found = false;
+      for (let word = 0; word < 8; word++) {
+        this.visits++;
+        let bits = (left.bits[word] ?? 0) & (right.bits[word] ?? 0);
+        while (bits !== 0) {
+          this.visits++;
+          const bit = 31 - Math.clz32(bits & -bits);
+          const byte = word * 32 + bit;
+          const position = prefix + byte * 256 ** level;
+          if (position < end && position + 256 ** level > start) {
+            if (level === 0) {
+              const value = left.values.get(byte);
+              if (value !== undefined && value === right.values.get(byte)) {
+                found = true;
+                visit(value, position);
+              }
+            } else {
+              const leftChild = left.branches.get(byte);
+              const rightChild = right.branches.get(byte);
+              if (leftChild && rightChild && walk(leftChild, rightChild, level - 1, position))
+                found = true;
+            }
+          }
+          bits &= bits - 1;
+        }
+      }
+      if (complete && !found) {
+        let rightPairs = this.disjoint.get(left);
+        if (!rightPairs) {
+          rightPairs = new WeakMap();
+          this.disjoint.set(left, rightPairs);
+        }
+        rightPairs.set(right, { left: left.revision, right: right.revision });
+      }
+      return found;
+    };
+    walk(source.root, other.root, 6, 0);
   }
 
   /**

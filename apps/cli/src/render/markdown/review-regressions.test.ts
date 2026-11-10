@@ -7,7 +7,7 @@ const rows = (source: string, width = 80): string[] =>
 
 describe('markdown review regressions', () => {
   it('ends list context at outer blocks', () => {
-    for (const block of ['# title', '---', '```\ncode\n```', '| h |\n| --- |']) {
+    for (const block of ['# title', '---', '```\ncode\n```', '| h |\n| --- |\n']) {
       const parsed = parseMarkdown(`- a\n${block}\nhello\nworld`);
       expect(parsed.at(-1)).toMatchObject({ kind: 'paragraph', text: 'hello\nworld' });
     }

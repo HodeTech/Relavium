@@ -11,12 +11,14 @@ export interface InlineSourceIndex {
   intraword(index: number): boolean;
   opaque(index: number): boolean;
   opaqueInterior(index: number): boolean;
+  opaqueCode(index: number): boolean;
   next(token: string, start: number, end: number): number;
   tickClose(start: number, end: number): number;
   parenClose(open: number, end: number): number;
   validLinkTarget(start: number, end: number): boolean;
   runEnd(start: number, character: string, end: number): number;
   plainEnd(start: number, end: number): number;
+  hasInlineSyntax(start: number, end: number): boolean;
   singleCount(marker: string, start: number, end: number): number;
 }
 
@@ -73,8 +75,8 @@ export class StaticInlineIndex implements InlineSourceIndex {
     }
     this.opaqueMask = new Uint8Array(source.length);
     for (const range of findOpaqueTargets(source)) {
-      this.opaqueMask.fill(1, range.start, range.end);
-      this.opaqueMask[range.start] = 2;
+      this.opaqueMask.fill(range.bare ? 3 : 1, range.start, range.end);
+      this.opaqueMask[range.start] = range.bare ? 4 : 2;
     }
     for (const marker of ['*', '_']) {
       const counts = new Int32Array(source.length + 1);
@@ -120,7 +122,10 @@ export class StaticInlineIndex implements InlineSourceIndex {
     return Boolean(this.opaqueMask[index]);
   }
   opaqueInterior(index: number): boolean {
-    return this.opaqueMask[index] === 1;
+    return this.opaqueMask[index] === 1 || this.opaqueMask[index] === 3;
+  }
+  opaqueCode(index: number): boolean {
+    return this.opaqueMask[index] === 1 || this.opaqueMask[index] === 2;
   }
   intraword(index: number): boolean {
     return Boolean(this.words[index]);
@@ -149,6 +154,9 @@ export class StaticInlineIndex implements InlineSourceIndex {
       this.plainEnds = table;
     }
     return Math.min(this.plainEnds[start] ?? start, end);
+  }
+  hasInlineSyntax(start: number, end: number): boolean {
+    return this.plainEnd(start, end) < end;
   }
   runEnd(start: number, character: string, end: number): number {
     let table = this.runEnds.get(character);

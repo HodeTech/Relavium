@@ -82,16 +82,23 @@ describe('physical lookahead ownership', () => {
     }
   });
 
-  it.each([
-    [3, '`'],
-    [3, '~'],
-    [300, '`'],
-    [300, '~'],
-    [5000, '`'],
-    [5000, '~'],
-  ] as const)('keeps arbitrary cut fence marker %i %s exact', (length, marker) => {
-    const run = marker.repeat(length);
-    for (const wrap of containers) {
+  it.each(
+    (
+      [
+        [3, '`'],
+        [3, '~'],
+        [300, '`'],
+        [300, '~'],
+        [5000, '`'],
+        [5000, '~'],
+      ] as const
+    ).flatMap(([length, marker]) =>
+      containers.map((wrap, container) => ({ length, marker, wrap, container })),
+    ),
+  )(
+    'keeps arbitrary cut fence marker $length $marker exact in container $container',
+    ({ length, marker, wrap }) => {
+      const run = marker.repeat(length);
       const stream = new MarkdownStream();
       let source = wrap([run, 'x'.repeat(4100), run]);
       for (let at = 0; at < source.length; at += 17) {
@@ -121,8 +128,8 @@ describe('physical lookahead ownership', () => {
       }
       expect(stream.work.lexical).toBeLessThan(source.length * 5);
       expect(stream.finish()).toEqual(parseMarkdown(source));
-    }
-  });
+    },
+  );
 
   it.each([
     ['foo', '===', '---'],

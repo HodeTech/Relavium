@@ -3,7 +3,9 @@ import type { MarkdownBlock } from './types.js';
 type Alignment = 'left' | 'right' | 'center';
 
 /** Split on unescaped pipes outside matched backtick runs. */
-function cells(line: string): string[] | undefined {
+function cells(line: string, requirePipe: false): string[];
+function cells(line: string, requirePipe?: true): string[] | undefined;
+function cells(line: string, requirePipe = true): string[] | undefined {
   const nextRun = new Map<number, number>();
   const latest = new Map<number, number>();
   for (let at = line.length - 1; at >= 0; ) {
@@ -13,8 +15,14 @@ function cells(line: string): string[] | undefined {
     }
     const end = at + 1;
     while (at >= 0 && line[at] === '`') at--;
-    const start = at + 1;
+    let start = at + 1;
+    let escaped = false;
+    for (let before = start - 1; before >= 0 && line[before] === '\\'; before--) escaped = !escaped;
+    // The forward scanner consumes the first escaped tick with its backslash.
+    // Any remaining ticks form their own unescaped run at the next position.
+    if (escaped) start++;
     const length = end - start;
+    if (!length) continue;
     nextRun.set(start, latest.get(length) ?? -1);
     latest.set(length, start);
   }
@@ -47,7 +55,7 @@ function cells(line: string): string[] | undefined {
     } else cell += ch;
   }
   result.push(cell.trim());
-  if (firstPipe < 0) return undefined;
+  if (firstPipe < 0) return requirePipe ? undefined : result;
   if (!line.slice(0, firstPipe).trim()) result.shift();
   if (!line.slice(lastPipe + 1).trim()) result.pop();
   return result;
@@ -122,8 +130,113 @@ export function parseHeading(
 function isRule(line: string): boolean {
   return /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);
 }
+/** Incremental recognition of the existing tag-led one-line literal fallback. */
+export class HtmlTagLine {
+  private mode:
+    | 'indent'
+    | 'angle'
+    | 'first'
+    | 'name'
+    | 'slash'
+    | 'attributes'
+    | 'bang'
+    | 'commentDash'
+    | 'doctype'
+    | 'doctypeBoundary'
+    | 'done'
+    | 'invalid' = 'indent';
+  private spaces = 0;
+  private declaration = 0;
+  work = 0;
+
+  get literal(): boolean {
+    return this.mode === 'done';
+  }
+
+  append(source: string): void {
+    for (const character of source) {
+      if (this.mode === 'done' || this.mode === 'invalid') break;
+      this.work += character.length;
+      if (this.mode === 'indent') {
+        if (character === ' ' && this.spaces++ < 3) continue;
+        this.mode = character === '<' ? 'angle' : 'invalid';
+      } else if (this.mode === 'angle' && character === '/') this.mode = 'first';
+      else if (this.mode === 'angle' && character === '!') this.mode = 'bang';
+      else if (this.mode === 'bang') {
+        if (character === '-') this.mode = 'commentDash';
+        else if (character.toUpperCase() === 'D') {
+          this.mode = 'doctype';
+          this.declaration = 1;
+        } else this.mode = 'invalid';
+      } else if (this.mode === 'commentDash') this.mode = character === '-' ? 'done' : 'invalid';
+      else if (this.mode === 'doctype') {
+        if (character.toUpperCase() !== 'DOCTYPE'[this.declaration++]) this.mode = 'invalid';
+        else if (this.declaration === 7) this.mode = 'doctypeBoundary';
+      } else if (this.mode === 'doctypeBoundary')
+        this.mode = /^\s$/.test(character) ? 'attributes' : 'invalid';
+      else if (this.mode === 'angle' || this.mode === 'first')
+        this.mode = /^[A-Za-z]$/.test(character) ? 'name' : 'invalid';
+      else if (this.mode === 'name') {
+        if (/^[A-Za-z0-9-]$/.test(character)) continue;
+        this.mode =
+          character === '>'
+            ? 'done'
+            : character === '/'
+              ? 'slash'
+              : /^\s$/.test(character)
+                ? 'attributes'
+                : 'invalid';
+      } else if (this.mode === 'slash') this.mode = character === '>' ? 'done' : 'invalid';
+      else if (this.mode === 'attributes' && character === '>') this.mode = 'done';
+    }
+  }
+}
+
 function unsupported(line: string): boolean {
-  return /^ {0,3}(?:<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^>]*)?\/?>|\[[^\]]+\]:)/.test(line);
+  const tag = new HtmlTagLine();
+  tag.append(line);
+  return tag.literal || /^ {0,3}\[[^\]]+\]:/.test(line);
+}
+
+type HtmlRegion =
+  | { readonly kind: 'tag'; readonly name: string; readonly depth: number }
+  | { readonly kind: 'comment' };
+
+const voidHtml = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'source',
+  'track',
+  'wbr',
+]);
+
+/** Conservative whole-line syntax only; attributes and other HTML are never interpreted. */
+function htmlOpening(line: string): HtmlRegion | undefined {
+  const comment = /^ {0,3}<!--/.exec(line);
+  if (comment) return line.includes('-->', comment[0].length) ? undefined : { kind: 'comment' };
+  const match = /^ {0,3}<([A-Za-z][A-Za-z0-9-]*)(?:\s[^<>]*)?>[ \t]*$/.exec(line);
+  if (!match || match[0].length !== line.length || /\/>[ \t]*$/.test(line)) return undefined;
+  const name = (match[1] ?? '').toLowerCase();
+  return voidHtml.has(name) ? undefined : { kind: 'tag', name, depth: 1 };
+}
+
+function advanceHtml(region: HtmlRegion, line: string): HtmlRegion | undefined {
+  if (region.kind === 'comment') return line.includes('-->') ? undefined : region;
+  const close = /^ {0,3}<\/([A-Za-z][A-Za-z0-9-]*)>[ \t]*$/.exec(line);
+  if (close?.[0].length === line.length && close[1]?.toLowerCase() === region.name)
+    return region.depth === 1 ? undefined : { ...region, depth: region.depth - 1 };
+  const opening = htmlOpening(line);
+  if (opening?.kind === 'tag' && opening.name === region.name)
+    return { ...region, depth: region.depth + 1 };
+  return region;
 }
 export function isBlockStart(line: string): boolean {
   return (
@@ -241,7 +354,9 @@ interface ParserState {
   listPreviousWasMarker: boolean;
   listPendingTable: boolean;
   listGatherFence: ReturnType<typeof gatherFence>;
+  listGatherHtml: HtmlRegion | undefined;
   openFence: { marker: string; length: number; indent: number } | undefined;
+  openHtml: HtmlRegion | undefined;
   previous:
     | {
         source: string;
@@ -259,6 +374,7 @@ interface ParserState {
   tableBoundary: boolean;
   tableRow: boolean;
   tableContext: boolean;
+  htmlLine: boolean;
 }
 
 function newParserState(): ParserState {
@@ -273,7 +389,9 @@ function newParserState(): ParserState {
     listPreviousWasMarker: false,
     listPendingTable: false,
     listGatherFence: undefined,
+    listGatherHtml: undefined,
     openFence: undefined,
+    openHtml: undefined,
     previous: undefined,
     inTable: false,
     revision: undefined,
@@ -283,6 +401,7 @@ function newParserState(): ParserState {
     tableBoundary: false,
     tableRow: false,
     tableContext: false,
+    htmlLine: false,
   };
 }
 
@@ -290,6 +409,17 @@ function streamingParserState(): ParserState {
   const state = newParserState();
   state.streaming = true;
   return state;
+}
+
+function cloneParserState(state: ParserState): ParserState {
+  // Region names and the other immutable values remain shared. In particular,
+  // a long HTML name is not copied for each bounded current-line preview.
+  return {
+    ...state,
+    lists: state.lists.map((frame) => ({ ...frame })),
+    quote: state.quote && cloneParserState(state.quote),
+    list: state.list && cloneParserState(state.list),
+  };
 }
 
 /** Parse sanitized source. Unsupported constructs remain visible as literal text. */
@@ -318,6 +448,7 @@ function parseWithState(
   state.tableBoundary = false;
   state.tableRow = false;
   state.tableContext = false;
+  state.htmlLine = false;
   let i = 0;
   const lists = state.lists;
   let overflowColumn = state.overflowColumn;
@@ -347,9 +478,16 @@ function parseWithState(
       i++;
       continue;
     }
+    if (state.streaming && state.openHtml) {
+      state.htmlLine = true;
+      state.openHtml = advanceHtml(state.openHtml, line);
+      result.push({ kind: 'literal', source: line, text: line });
+      i++;
+      continue;
+    }
     if (state.streaming && state.inTable) {
       state.tableContext = !persistentTableBoundary(line);
-      if (line.trim() && !isBlockStart(line) && cells(line)) {
+      if (line.trim() && !isBlockStart(line)) {
         state.tableRow = true;
         result.push({ kind: 'literal', source: line, text: line });
         i++;
@@ -403,7 +541,12 @@ function parseWithState(
       continue;
     }
     if (state.streaming && !/^ {0,3}>/.test(line)) state.quote = undefined;
-    if (state.streaming && !line.trim() && state.list && state.listGatherFence) {
+    if (
+      state.streaming &&
+      !line.trim() &&
+      state.list &&
+      (state.listGatherFence || state.listGatherHtml)
+    ) {
       const active = lists[lists.length - 1];
       if (active) {
         const block = parseWithState(
@@ -414,6 +557,7 @@ function parseWithState(
           state.list,
         )[0];
         state.fenceBoundary = state.list.fenceBoundary;
+        state.htmlLine = state.list.htmlLine;
         if (block)
           result.push({
             ...block,
@@ -432,6 +576,7 @@ function parseWithState(
       lazyContinuation = false;
       state.list = undefined;
       state.listGatherFence = undefined;
+      state.listGatherHtml = undefined;
       state.quote = undefined;
       result.push({ kind: 'literal', source: line, text: line });
       i++;
@@ -453,6 +598,7 @@ function parseWithState(
     if (state.streaming && relative === undefined) {
       state.list = undefined;
       state.listGatherFence = undefined;
+      state.listGatherHtml = undefined;
     }
     if (state.streaming && state.listPendingTable) {
       const alignment = relative === undefined ? undefined : delimiter(relative);
@@ -471,11 +617,12 @@ function parseWithState(
       const original: string[] = [];
       const inner: string[] = [];
       let openFence = state.streaming ? state.listGatherFence : undefined;
+      let openHtml = state.streaming ? state.listGatherHtml : undefined;
       while (i < lines.length) {
         const raw = lines[i] ?? '';
         const stripped = stripIndent(raw, currentList.content, displayOffset);
         if (!raw.trim()) {
-          if (!openFence) break;
+          if (!openFence && !openHtml) break;
           original.push(raw);
           inner.push(stripped ?? '');
           i++;
@@ -484,9 +631,13 @@ function parseWithState(
         if (stripped === undefined) break;
         original.push(raw);
         inner.push(stripped);
-        if (openFence && closingFence(stripped, openFence.marker, openFence.length))
+        if (openHtml) openHtml = advanceHtml(openHtml, stripped);
+        else if (openFence && closingFence(stripped, openFence.marker, openFence.length))
           openFence = undefined;
-        else if (!openFence) openFence = gatherFence(stripped);
+        else if (!openFence) {
+          openFence = gatherFence(stripped);
+          if (!openFence) openHtml = htmlOpening(stripped);
+        }
         i++;
       }
       let sourceLine = 0;
@@ -516,7 +667,9 @@ function parseWithState(
       state.tableBoundary = childState?.tableBoundary ?? false;
       state.tableRow = childState?.tableRow ?? false;
       state.tableContext = childState?.tableContext ?? false;
+      state.htmlLine = childState?.htmlLine ?? false;
       if (state.streaming) state.listGatherFence = openFence;
+      if (state.streaming) state.listGatherHtml = openHtml;
       state.preserveRevisionPrefix =
         childState?.preserveRevisionPrefix === true ||
         (childState?.revision !== undefined && state.listPreviousWasMarker);
@@ -541,8 +694,23 @@ function parseWithState(
       lists.length = 0;
       overflowColumn = undefined;
       lazyContinuation = false;
-      result.push({ kind: 'literal', source: line, text: line });
-      i++;
+      let region = htmlOpening(line);
+      if (region) {
+        state.htmlLine = true;
+        const raw = [line];
+        i++;
+        while (i < lines.length && region) {
+          const next = lines[i++] ?? '';
+          raw.push(next);
+          region = advanceHtml(region, next);
+        }
+        if (state.streaming) state.openHtml = region;
+        const text = raw.join('\n');
+        result.push({ kind: 'literal', source: text, text });
+      } else {
+        result.push({ kind: 'literal', source: line, text: line });
+        i++;
+      }
       continue;
     }
     const open = fence(line);
@@ -590,8 +758,7 @@ function parseWithState(
       while (i < lines.length) {
         const next = lines[i] ?? '';
         if (!next.trim() || isBlockStart(next)) break;
-        const row = cells(next);
-        if (!row) break;
+        const row = cells(next, false);
         raw.push(next);
         size += next.length + 1;
         i++;
@@ -662,6 +829,7 @@ function parseWithState(
       if (state.streaming) {
         state.list = undefined;
         state.listGatherFence = undefined;
+        state.listGatherHtml = undefined;
       }
       const marker = list[2] ?? '';
       const padding = list[3] ?? ' ';
@@ -698,11 +866,12 @@ function parseWithState(
         const inner = [itemText];
         let cursor = i + 1;
         let openFence = gatherFence(itemText);
+        let openHtml = htmlOpening(itemText);
         while (cursor < lines.length) {
           const following = lines[cursor] ?? '';
           const stripped = stripIndent(following, content, displayOffset);
           if (!following.trim()) {
-            if (!openFence) break;
+            if (!openFence && !openHtml) break;
             original.push(following);
             inner.push(stripped ?? '');
             cursor++;
@@ -711,9 +880,13 @@ function parseWithState(
           if (stripped === undefined) break;
           original.push(following);
           inner.push(stripped);
-          if (openFence && closingFence(stripped, openFence.marker, openFence.length))
+          if (openHtml) openHtml = advanceHtml(openHtml, stripped);
+          else if (openFence && closingFence(stripped, openFence.marker, openFence.length))
             openFence = undefined;
-          else if (!openFence) openFence = gatherFence(stripped);
+          else if (!openFence) {
+            openFence = gatherFence(stripped);
+            if (!openFence) openHtml = htmlOpening(stripped);
+          }
           cursor++;
         }
         let sourceLine = 0;
@@ -749,7 +922,9 @@ function parseWithState(
           state.tableBoundary = state.list?.tableBoundary ?? false;
           state.tableRow = state.list?.tableRow ?? false;
           state.tableContext = state.list?.tableContext ?? false;
+          state.htmlLine = state.list?.htmlLine ?? false;
           state.listGatherFence = openFence;
+          state.listGatherHtml = openHtml;
         }
         i = cursor;
         continue;
@@ -766,7 +941,13 @@ function parseWithState(
         state.listPreviousWasMarker = true;
         state.listPendingTable = true;
       }
-      result.push({ kind: 'list', source: line, text: itemText, prefix: markerPrefix });
+      result.push({
+        kind: 'list',
+        source: line,
+        text: itemText,
+        prefix: markerPrefix,
+        continuation: ' '.repeat(displayContent),
+      });
       i++;
       continue;
     }
@@ -848,6 +1029,7 @@ function parseWithState(
       state.tableBoundary = childState?.tableBoundary ?? false;
       state.tableRow = childState?.tableRow ?? false;
       state.tableContext = childState?.tableContext ?? false;
+      state.htmlLine = childState?.htmlLine ?? false;
       if (childState?.revision) {
         state.revisionProjection = composeProjection(
           state.previous?.childProjection,
@@ -888,7 +1070,11 @@ function parseWithState(
   if (state.streaming) {
     const last = result[result.length - 1];
     const header =
-      !delegatedLine && !unsupported(source) && !fence(source) && last?.kind !== 'code'
+      !state.htmlLine &&
+      !delegatedLine &&
+      !unsupported(source) &&
+      !fence(source) &&
+      last?.kind !== 'code'
         ? cells(source)
         : undefined;
     state.previous = {
@@ -899,6 +1085,7 @@ function parseWithState(
       eligible:
         !consumedPair &&
         !ownedLazyLine &&
+        !state.htmlLine &&
         !delegatedLine &&
         !!source.trim() &&
         !isBlockStart(source) &&
@@ -919,6 +1106,7 @@ export interface BlockLineResult {
   readonly tableRow?: true;
   /** The existing table's container was reached and this line may still become a row. */
   readonly tableContext?: true;
+  readonly htmlLine?: true;
   /** Source prefix replaced before rendering list/container content. */
   readonly listProjection?: { readonly sourcePrefixLength: number; readonly textPrefix: string };
   readonly revision?: MarkdownBlock;
@@ -962,7 +1150,7 @@ export class BlockLineClassifier {
   private previousParagraph: { continuation: PrefixRun[]; quoted: boolean } | undefined;
 
   preview(line: string): BlockLineResult {
-    return this.classify(line, structuredClone(this.state));
+    return this.classify(line, cloneParserState(this.state));
   }
 
   commit(line: string): BlockLineResult {
@@ -1019,6 +1207,7 @@ export class BlockLineClassifier {
       ...(state.tableBoundary ? { tableBoundary: true } : {}),
       ...(state.tableRow ? { tableRow: true } : {}),
       ...(state.tableContext ? { tableContext: true } : {}),
+      ...(state.htmlLine ? { htmlLine: true } : {}),
       ...(state.fenceBoundary ? { fenceBoundary: state.fenceBoundary } : {}),
       ...(listProjection ? { listProjection } : {}),
       ...(state.revision

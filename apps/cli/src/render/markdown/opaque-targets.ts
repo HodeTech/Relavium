@@ -2,6 +2,7 @@
 export interface OpaqueTarget {
   readonly start: number;
   readonly end: number;
+  readonly bare?: boolean;
 }
 
 const invalidLinkTargetCharacter = /[\s()]/u;
@@ -69,6 +70,19 @@ export function findOpaqueTargets(source: string): readonly OpaqueTarget[] {
         if (labelEnd >= 0 && referenceEnd >= 0 && (nested < 0 || nested > labelEnd)) {
           ranges.push({ start: at, end: referenceEnd + 1 });
           at = referenceEnd;
+        } else {
+          // A complete bare group is an unsupported shortcut-reference
+          // candidate. Its label stays opaque even if a later chunk starts
+          // an inline/reference suffix; a completed construct extends it.
+          const bareEnd = next(']', at + 1);
+          if (bareEnd >= 0 && (nested < 0 || nested > bareEnd)) {
+            const significant = ['\\', '\n', '`', '[', '!', '<', '*', '_', '~'].some((token) => {
+              const position = next(token, at + 1);
+              return position >= 0 && position < bareEnd;
+            });
+            if (significant) ranges.push({ start: at, end: bareEnd + 1, bare: true });
+            at = bareEnd;
+          }
         }
       }
     } else if (source[at] === '<') {
