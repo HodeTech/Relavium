@@ -12,6 +12,7 @@ import { layoutMarkdown } from './layout.js';
 import {
   BlockLineClassifier,
   HtmlTagLine,
+  HeadingContent,
   closesMarkdownFence,
   isBlockStart,
   isSetextPair,
@@ -383,12 +384,9 @@ class ColumnCheckpoint {
     return position;
   }
 
-  containerPrefix(position: number): string {
-    const line = this.lines.floor(position);
-    const annotation = line && this.annotations.get(line.start);
-    if (!line || !annotation || annotation.consumed > LIVE_SOURCE_LIMIT) return '';
-    this.contextWork += annotation.consumed;
-    return this.originalSource(line.start, line.start + annotation.consumed);
+  headingRange(line: SourceLine): { start: number; end: number } {
+    const start = line.start + (this.annotations.get(line.start)?.consumed ?? 0);
+    return { start, end: start + line.block.text.length };
   }
 
   append(source: string): void {
@@ -462,6 +460,8 @@ class ColumnCheckpoint {
       previous.source !== source ||
       previous.body !== body ||
       previous.block.kind !== block.kind ||
+      previous.block.text !== block.text ||
+      previous.block.prefix !== block.prefix ||
       (projection !== undefined &&
         (projection.sourcePrefixLength !== consumed || projection.textPrefix !== replacement))
     ) {
@@ -2498,6 +2498,9 @@ class CanonicalInlineCheckpoint {
  * the per-frame API. A resize only invalidates the one bounded layout cache.
  */
 export class MarkdownStream {
+  private headingContent:
+    | { offset: number; body: number; at: number; content: HeadingContent }
+    | undefined;
   private htmlTag: { body: number; at: number; scanner: HtmlTagLine } | undefined;
   private invalidClosing = false;
   private closingLine:
@@ -2657,10 +2660,16 @@ export class MarkdownStream {
           this.lineLength - part.length,
           initialOffset + start - (this.lineLength - part.length),
         );
-        this.scanHtmlTag(
+        const metadata = this.scanHtmlTag(
           part,
           this.lineLength - part.length,
           initialOffset + start - (this.lineLength - part.length),
+        );
+        this.scanHeadingContent(
+          part,
+          this.lineLength - part.length,
+          initialOffset + start - (this.lineLength - part.length),
+          metadata,
         );
         this.inline.append(part, initialOffset + start);
       }
@@ -2681,15 +2690,21 @@ export class MarkdownStream {
         this.closingLine = undefined;
         this.invalidClosing = false;
         this.htmlTag = undefined;
+        this.headingContent = undefined;
       }
       start = i + 1;
     }
+    const fencePreview =
+      (this.pendingFence?.containers?.length || this.pendingFence?.classified) &&
+      this.lineLength > 0
+        ? this.columns.blockAt(this.sourceLength - this.lineLength)
+        : undefined;
     if (
       (this.pendingFence?.containers?.length || this.pendingFence?.classified) &&
-      /\S/.test(this.linePrefix) &&
+      this.lineLength > 0 &&
+      (/\S/.test(fencePreview?.block.text ?? '') || fencePreview?.fenceBoundary === 'open') &&
       (this.pendingFence.classified
-        ? this.columns.blockAt(this.sourceLength - this.lineLength)?.block.kind !== 'code' ||
-          this.columns.blockAt(this.sourceLength - this.lineLength)?.fenceBoundary === 'open'
+        ? fencePreview?.block.kind !== 'code' || fencePreview?.fenceBoundary === 'open'
         : fenceContent(this.linePrefix, this.pendingFence) === undefined)
     ) {
       // A nonblank dedent has already left the container, even before this
@@ -2700,7 +2715,10 @@ export class MarkdownStream {
       this.replayInline(this.fragments.join(''), this.sourceLength - this.lineLength, false);
     }
     const tableLine = stripContainers(this.linePrefix, this.pendingTableContainers);
-    const tablePreview = this.columns.blockAt(this.sourceLength - this.lineLength);
+    const tablePreview =
+      this.pendingTable && this.lineLength > 0
+        ? this.columns.blockAt(this.sourceLength - this.lineLength)
+        : undefined;
     if (
       this.pendingTable &&
       this.lineLength > 0 &&
@@ -2727,9 +2745,10 @@ export class MarkdownStream {
     this.ordinalWidth = undefined;
   }
 
-  private scanHtmlTag(part: string, lineOffset: number, offset: number): void {
+  private scanHtmlTag(part: string, lineOffset: number, offset: number): SourceLine | undefined {
     const metadata = this.columns.blockAt(offset);
-    if (!metadata || metadata.block.kind === 'code' || metadata.block.kind === 'heading') return;
+    if (!metadata || metadata.block.kind === 'code' || metadata.block.kind === 'heading')
+      return metadata;
     const body = this.columns.bodyStart(offset, offset + this.lineLength) - offset;
     if (!this.htmlTag || this.htmlTag.body !== body) {
       const scanner = new HtmlTagLine();
@@ -2746,6 +2765,30 @@ export class MarkdownStream {
       this.classifiedPreview = undefined;
       this.columnLine(this.linePrefix, offset, false);
     }
+    return metadata;
+  }
+
+  private scanHeadingContent(
+    part: string,
+    lineOffset: number,
+    offset: number,
+    metadata: SourceLine | undefined,
+  ): void {
+    if (metadata?.block.kind !== 'heading') return;
+    if (!this.headingContent) {
+      const marker = /#{1,6} +/.exec(this.linePrefix);
+      if (!marker) return;
+      const body = marker.index + marker[0].length;
+      const content = new HeadingContent();
+      content.append(this.linePrefix.slice(body));
+      this.columns.describe(content.work);
+      this.headingContent = { offset, body, at: this.linePrefix.length, content };
+    }
+    const heading = this.headingContent;
+    const before = heading.content.work;
+    heading.content.append(part.slice(Math.max(0, heading.at - lineOffset)));
+    this.columns.describe(heading.content.work - before);
+    heading.at = lineOffset + part.length;
   }
 
   private scanOpeningInfo(part: string, lineOffset: number, offset: number): void {
@@ -2773,6 +2816,9 @@ export class MarkdownStream {
     const opening = this.pendingFence;
     if (!opening) return;
     if (!this.closingLine) {
+      // Partial quote/list prefixes can still be classified as literal. They
+      // are container syntax, not code-body indentation or closing-marker data.
+      if (opening.classified && this.columns.blockAt(offset)?.block.kind !== 'code') return;
       let prefix = opening.classified
         ? this.columns.blockAt(offset)?.block.text
         : fenceContent(this.linePrefix, opening);
@@ -3113,7 +3159,7 @@ export class MarkdownStream {
       (opening || isBlockStart(line)) &&
       !setext &&
       (!sameList || opening?.classified) &&
-      !(quote && previousQuote) &&
+      !(quote && previousQuote && !opening) &&
       this.completed.length
     ) {
       this.pendingSize -= line.length + 1;
@@ -3293,28 +3339,101 @@ export class MarkdownStream {
       if (spaces !== undefined) tabSpaces.push(spaces);
     }
     const blocks: MarkdownBlock[] = [];
+    const headingRange = (line: SourceLine): { start: number; end: number } => {
+      const pending = this.headingContent;
+      return pending?.offset === line.start
+        ? {
+            start: line.start + pending.body + pending.content.start,
+            end: line.start + pending.body + pending.content.end,
+          }
+        : this.columns.headingRange(line);
+    };
+    const headingFragment = (source: string, offset: number, line: SourceLine): string => {
+      const range = headingRange(line);
+      const start = Math.max(offset, range.start);
+      return this.columns.originalSource(
+        start,
+        Math.max(start, Math.min(offset + source.length, range.end)),
+      );
+    };
     const parsePending = (source: string, offset: number): MarkdownBlock[] => {
-      const parsed = [...parseMarkdown(source)];
-      const first = parsed[0];
       const original = this.columns.blockAt(offset);
-      const template = original?.block;
-      if (
-        original?.start === offset &&
-        template?.prefix &&
-        first &&
-        !first.source.includes('\n') &&
-        (template.kind === 'paragraph' || template.kind === 'list' || template.kind === 'literal')
-      ) {
-        parsed[0] = {
+      if (original?.start !== offset) return [...parseMarkdown(source)];
+      // This bounded window can begin after a literal owner has been peeled
+      // away. Its remaining lines still belong to their classified containers.
+      const projected: MarkdownBlock[] = [];
+      let code: { block: MarkdownBlock; source: string[]; body: string[] } | undefined;
+      const flushCode = (): void => {
+        if (code)
+          projected.push({
+            ...code.block,
+            source: code.source.join('\n'),
+            text: code.body.join('\n'),
+          });
+        code = undefined;
+      };
+      let position = offset;
+      for (const line of source.split('\n')) {
+        const metadata = this.columns.blockAt(position);
+        const implicit = position === this.sourceLength && !line;
+        const classified = implicit ? this.blockClassifier.preview('') : metadata;
+        if (!classified || (!implicit && metadata?.start !== position)) {
+          flushCode();
+          projected.push(...parseMarkdown(source.slice(position - offset)));
+          break;
+        }
+        const template = classified.block;
+        let block: MarkdownBlock = {
           ...template,
-          source: first.source,
-          text: this.columns.renderSource(offset, offset + first.source.length).replace(/\0/g, ''),
+          source: line,
+          text: this.columns.renderSource(position, position + line.length).replace(/\0/g, ''),
         };
+        if (template.kind === 'heading') {
+          block = {
+            ...block,
+            text: metadata ? headingFragment(line, position, metadata) : template.text,
+          };
+        }
+        if (template.kind === 'code') {
+          if (classified.fenceBoundary === 'open' || !code) {
+            flushCode();
+            const marker = /`{3,}|~{3,}/.exec(line);
+            const info =
+              marker && classified.fenceBoundary === 'open'
+                ? parseMarkdown(line.slice(marker.index))[0]?.info
+                : template.info;
+            code = {
+              block: { ...block, ...(info !== undefined ? { info } : {}) },
+              source: [line],
+              body: classified.fenceBoundary === 'open' ? [] : [block.text],
+            };
+          } else {
+            code.source.push(line);
+            if (classified.fenceBoundary !== 'close') code.body.push(block.text);
+          }
+          if (classified.fenceBoundary === 'close') flushCode();
+        } else {
+          flushCode();
+          const previous = projected.at(-1);
+          if (classified.continuesParagraph && previous?.kind === 'paragraph')
+            projected[projected.length - 1] = {
+              ...previous,
+              source: previous.source + '\n' + line,
+              text: previous.text + '\n' + block.text,
+            };
+          else projected.push(block);
+        }
+        position += line.length + 1;
       }
-      return parsed;
+      flushCode();
+      return projected;
     };
     const projectFirst = (block: MarkdownBlock): MarkdownSpan[] => {
-      const body = this.columns.bodyStart(cutOffset, cutOffset + block.source.length);
+      const original = this.columns.blockAt(cutOffset);
+      const body =
+        block.kind === 'heading' && original
+          ? Math.max(cutOffset, headingRange(original).start)
+          : this.columns.bodyStart(cutOffset, cutOffset + block.source.length);
       const end =
         block.kind === 'heading' ? body + block.text.length : cutOffset + block.source.length;
       return this.inline.project(block.text, body, end);
@@ -3431,21 +3550,21 @@ export class MarkdownStream {
         const midLine = original !== undefined && original.start < cutOffset;
         const template = original?.block;
         const forceHeading = midLine && template?.kind === 'heading';
-        const sentinel = 'x';
-        const context = forceHeading ? this.columns.containerPrefix(cutOffset) : '';
-        const parsed = forceHeading
-          ? [...parseMarkdown(context + sentinel + pending)]
-          : parsePending(pending, cutOffset);
-        if (forceHeading && parsed[0]) {
-          const first = parsed[0];
-          parsed[0] = {
-            ...first,
-            source: first.source.slice(context.length + sentinel.length),
-            text: first.text.slice(sentinel.length),
-            ...(template?.prefix ? { prefix: template.prefix } : {}),
-            ...(template?.quoted ? { quoted: true } : {}),
-          };
-        }
+        const newline = pending.indexOf('\n');
+        const headingSource = newline < 0 ? pending : pending.slice(0, newline);
+        const parsed =
+          forceHeading && original
+            ? [
+                {
+                  ...template,
+                  source: headingSource,
+                  text: headingFragment(headingSource, cutOffset, original),
+                },
+                ...(newline < 0
+                  ? []
+                  : parsePending(pending.slice(newline + 1), cutOffset + newline + 1)),
+              ]
+            : parsePending(pending, cutOffset);
         if (this.pendingSize > LIVE_SOURCE_LIMIT) {
           let first = parsed[0];
           if (midLine && template && !forceHeading) {
@@ -3567,6 +3686,7 @@ export class MarkdownStream {
   }
 
   reset(): void {
+    this.headingContent = undefined;
     this.htmlTag = undefined;
     this.invalidClosing = false;
     this.closingLine = undefined;

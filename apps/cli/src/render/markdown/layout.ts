@@ -141,7 +141,7 @@ function expandCell(spans: readonly MarkdownSpan[], start: number): MarkdownSpan
 function table(
   block: MarkdownBlock,
   columns: number,
-  prefixWidth: number,
+  contentPrefixWidth: number,
 ): MarkdownDisplayLine[] | undefined {
   const rows = block.rows;
   if (!rows?.length) return undefined;
@@ -150,15 +150,68 @@ function table(
     return undefined;
   const rendered: MarkdownSpan[][][] = source.map(() => []);
   const widths: number[] = [];
-  let columnStart = prefixWidth + 2;
+  let columnStart = contentPrefixWidth + 2;
   for (let column = 0; column < (rows[0]?.length ?? 0); column++) {
-    const unaligned = source.map((row) => expandCell(row[column] ?? [], columnStart));
-    const width = Math.max(
-      ...unaligned.map((cell) => displayWidth(cell.map((span) => span.text).join(''))),
-    );
+    const alignment = block.align?.[column] ?? 'left';
+    const period = alignment === 'center' ? 16 : 8;
+    // Each residue stores the smallest admissible width for every row seen so far.
+    const bounds = Array<number>(period).fill(0);
+    const measures: number[][] = [];
+    for (const row of source) {
+      const cell = row[column] ?? [];
+      const text = cell.map((span) => span.text).join('');
+      const widthsByStart = text.includes('\t')
+        ? Array.from({ length: 8 }, (_, residue) =>
+            displayWidth(
+              expandCell(cell, residue)
+                .map((span) => span.text)
+                .join(''),
+            ),
+          )
+        : Array<number>(8).fill(displayWidth(text));
+      measures.push(widthsByStart);
+      const possible = Array<number>(period).fill(Infinity);
+      if (alignment === 'left') {
+        possible.fill(widthsByStart[columnStart % 8] ?? 0);
+      } else {
+        for (let residue = 0; residue < 8; residue++) {
+          const offset = (residue - (columnStart % 8) + 8) % 8;
+          const measured = widthsByStart[residue] ?? 0;
+          const base = measured + (alignment === 'center' ? 2 * offset : offset);
+          const variants = alignment === 'center' ? 2 : 1;
+          for (let parity = 0; parity < variants; parity++) {
+            const minimum = base + parity;
+            const key = minimum % period;
+            possible[key] = Math.min(possible[key] ?? Infinity, minimum);
+          }
+        }
+      }
+      for (let residue = 0; residue < period; residue++)
+        bounds[residue] = Math.max(bounds[residue] ?? 0, possible[residue] ?? Infinity);
+    }
+    let width = Infinity;
+    for (let residue = 0; residue < period; residue++) {
+      const minimum = bounds[residue] ?? Infinity;
+      if (Number.isFinite(minimum))
+        width = Math.min(width, minimum + ((residue - (minimum % period) + period) % period));
+    }
+    if (!Number.isFinite(width)) return undefined;
     widths.push(width);
     for (let row = 0; row < source.length; row++) {
-      rendered[row]?.push(unaligned[row] ?? []);
+      const cell = source[row]?.[column] ?? [];
+      const starts = measures[row] ?? [];
+      let before = 0;
+      if (alignment !== 'left') {
+        const match = starts.findIndex((measured, residue) => {
+          const padding = width - measured;
+          const leading = alignment === 'right' ? padding : Math.floor(padding / 2);
+          return padding >= 0 && (columnStart + leading) % 8 === residue;
+        });
+        if (match < 0) return undefined;
+        const padding = width - (starts[match] ?? 0);
+        before = alignment === 'right' ? padding : Math.floor(padding / 2);
+      }
+      rendered[row]?.push(expandCell(cell, columnStart + before));
     }
     columnStart += width + 3;
   }
@@ -196,8 +249,12 @@ export function layoutMarkdown(
     if (block.kind === 'table') {
       const grid = table(
         block,
-        columns - displayWidth(containerPrefix),
-        displayWidth(containerPrefix),
+        columns -
+          Math.max(
+            displayWidth(containerPrefix),
+            displayWidth(block.continuation ?? containerPrefix),
+          ),
+        displayWidth(block.continuation ?? containerPrefix),
       );
       if (grid) {
         for (const [index, row] of grid.entries())

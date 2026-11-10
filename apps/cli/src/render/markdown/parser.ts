@@ -86,6 +86,46 @@ function closingFence(line: string, marker: string, length: number): boolean {
 export function closesMarkdownFence(line: string, marker: string): boolean {
   return closingFence(line, marker[0] ?? '', marker.length);
 }
+
+/** Source offsets of heading content, including a provisional closing hash run. */
+export class HeadingContent {
+  private offset = 0;
+  private first: number | undefined;
+  private last = 0;
+  private spaces = 0;
+  private closing: number | undefined;
+  private previous = '';
+  work = 0;
+
+  get start(): number {
+    return this.first ?? this.offset;
+  }
+  get end(): number {
+    return Math.max(this.start, this.closing ?? this.last);
+  }
+
+  append(source: string): void {
+    for (let at = 0; at < source.length; at++) {
+      const character = source[at] ?? '';
+      const position = this.offset++;
+      this.work++;
+      if (this.first === undefined) {
+        if (character === ' ') continue;
+        this.first = position;
+      }
+      if (character === ' ') {
+        if (this.previous !== ' ') this.spaces = position;
+      } else {
+        this.last = position + 1;
+        if (character !== '#') this.closing = undefined;
+        else if (this.previous !== '#')
+          this.closing = this.previous === ' ' ? this.spaces : undefined;
+      }
+      this.previous = character;
+    }
+  }
+}
+
 /** Scan one ATX heading with a bounded number of passes over the source. */
 export function parseHeading(
   line: string,
@@ -108,24 +148,10 @@ export function parseHeading(
     contentStart++;
     if (work) work.steps++;
   }
-  let end = line.length;
-  while (end > contentStart && line[end - 1] === ' ') {
-    end--;
-    if (work) work.steps++;
-  }
-  let hashStart = end;
-  while (hashStart > contentStart && line[hashStart - 1] === '#') {
-    hashStart--;
-    if (work) work.steps++;
-  }
-  if (hashStart < end && hashStart > contentStart && line[hashStart - 1] === ' ') {
-    end = hashStart;
-    while (end > contentStart && line[end - 1] === ' ') {
-      end--;
-      if (work) work.steps++;
-    }
-  }
-  return { level, text: line.slice(contentStart, end) };
+  const content = new HeadingContent();
+  content.append(line.slice(contentStart));
+  if (work) work.steps += content.work;
+  return { level, text: line.slice(contentStart + content.start, contentStart + content.end) };
 }
 function isRule(line: string): boolean {
   return /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(line);

@@ -156,6 +156,9 @@ rows or truncate source to satisfy a parser cap. Once a streaming table crosses
 a cap, keep that table literal through its end. No later token can reactivate a
 grid and force repeated full-table layout. Layout work is linear in the admitted
 bounded table; there is no search over alternative column-width combinations.
+Alignment padding participates in tab-stop geometry. If aligned cells require
+incompatible tab-stop phases, or the compatible grid does not fit, render the
+entire table literally.
 
 ## Geometry
 
