@@ -1095,7 +1095,11 @@ function parseWithState(
   }
   if (state.streaming) {
     const last = result[result.length - 1];
+    // A recognized delimiter/body already belongs to its table. After that
+    // table ends, those physical bytes cannot become another pair's header.
+    const tableOwned = state.tableBoundary || state.tableRow;
     const header =
+      !tableOwned &&
       !state.htmlLine &&
       !delegatedLine &&
       !unsupported(source) &&
@@ -1109,6 +1113,7 @@ function parseWithState(
       tableColumns: header?.length,
       childProjection,
       eligible:
+        !tableOwned &&
         !consumedPair &&
         !ownedLazyLine &&
         !state.htmlLine &&
