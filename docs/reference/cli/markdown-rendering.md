@@ -62,10 +62,14 @@ item, a quote, then a paragraph. A thematic break wins over a list marker, so
 pair, not a table or a paragraph followed by a rule. A standalone `---` is a rule.
 Hold a potential paragraph/header line pending for this one-line lookahead.
 
-Fence openers/closers accept zero to three leading spaces relative to their
-container. Four or more spaces are unsupported indented code and stay literal.
+Fence openers/closers accept zero to three leading source ASCII spaces relative
+to their container. Four or more source ASCII spaces are unsupported indented
+code and stay literal. A root-leading source TAB remains paragraph content,
+expanded for display; it does not itself select the indented-code fallback.
+Tabs consumed as list indentation follow the structural column rules below.
 Remove up to the opener's indentation from each code-body line, preserving any
-remaining indentation. A closer may have its own zero-to-three-space indentation.
+remaining indentation. A closer may have its own zero-to-three-space indentation
+and may be followed only by ASCII spaces or TABs.
 A backtick fence's info string cannot contain a backtick; such an opener is
 literal. Tilde info strings have no corresponding backtick restriction.
 

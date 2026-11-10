@@ -22,6 +22,7 @@ import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-proje
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
@@ -172,7 +173,11 @@ function ChatRegion(
   return (
     // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
+    <Box
+      flexDirection="column"
+      width={layoutColumns(props.cols)}
+      {...(viewport === undefined ? {} : { height: viewport.rows })}
+    >
       <ChatView
         markdown={markdown}
         displaySuspended={displaySuspended}
@@ -548,7 +553,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   }
   if (state.mode === 'loading') {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={layoutColumns(size.cols)}>
         <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
           {'> '}
           {sanitizeInline(state.pendingMessage)}
@@ -560,14 +565,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     );
   }
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={layoutColumns(size.cols)}>
       <HomeView
         snapshot={state.snapshot}
         editor={state.input}
         errorText={state.errorText}
         notice={state.notice}
         nowMs={props.nowMs()}
-        cols={size.cols}
+        cols={Number.isFinite(size.cols) ? size.cols : 0}
         rows={size.rows}
         color={color}
         paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}

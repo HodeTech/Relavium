@@ -73,9 +73,9 @@ function closingFence(line: string, marker: string, length: number): boolean {
   const trimmed = line.replace(/^ {0,3}/, '');
   let i = 0;
   while (trimmed[i] === marker) i++;
-  return i >= length && /^ *$/.test(trimmed.slice(i));
+  return i >= length && /^\s*$/.test(trimmed.slice(i));
 }
-function closing(line: string, marker: string): boolean {
+export function closesMarkdownFence(line: string, marker: string): boolean {
   return closingFence(line, marker[0] ?? '', marker.length);
 }
 /** Scan one ATX heading with a bounded number of passes over the source. */
@@ -212,6 +212,7 @@ interface ParserState {
   inTable: boolean;
   revision: MarkdownBlock | undefined;
   preserveRevisionPrefix: boolean;
+  fenceBoundary: 'open' | 'close' | undefined;
 }
 
 function newParserState(): ParserState {
@@ -230,6 +231,7 @@ function newParserState(): ParserState {
     inTable: false,
     revision: undefined,
     preserveRevisionPrefix: false,
+    fenceBoundary: undefined,
   };
 }
 
@@ -260,6 +262,7 @@ function parseWithState(
   const result: MarkdownBlock[] = [];
   state.revision = undefined;
   state.preserveRevisionPrefix = false;
+  state.fenceBoundary = undefined;
   let i = 0;
   const lists = state.lists;
   let overflowColumn = state.overflowColumn;
@@ -269,6 +272,7 @@ function parseWithState(
     if (state.streaming && state.openFence) {
       const open = state.openFence;
       if (closingFence(line, open.marker, open.length)) {
+        state.fenceBoundary = 'close';
         state.openFence = undefined;
         result.push({ kind: 'code', source: line, text: '' });
       } else {
@@ -339,6 +343,7 @@ function parseWithState(
           displayOffset + active.displayContent,
           state.list,
         )[0];
+        state.fenceBoundary = state.list.fenceBoundary;
         if (block)
           result.push({
             ...block,
@@ -402,7 +407,7 @@ function parseWithState(
         if (stripped === undefined) break;
         original.push(raw);
         inner.push(stripped);
-        if (openFence && closing(stripped, openFence.marker)) openFence = undefined;
+        if (openFence && closesMarkdownFence(stripped, openFence.marker)) openFence = undefined;
         else if (!openFence) openFence = fence(stripped);
         i++;
       }
@@ -429,6 +434,7 @@ function parseWithState(
               ' '.repeat(currentList.displayContent) + (block.continuation ?? block.prefix ?? ''),
           });
       }
+      state.fenceBoundary = childState?.fenceBoundary;
       state.preserveRevisionPrefix =
         childState?.preserveRevisionPrefix === true ||
         (childState?.revision !== undefined && state.listPreviousWasMarker);
@@ -455,6 +461,7 @@ function parseWithState(
     }
     const open = fence(line);
     if (open) {
+      if (state.streaming) state.fenceBoundary = 'open';
       lists.length = 0;
       overflowColumn = undefined;
       lazyContinuation = false;
@@ -466,7 +473,7 @@ function parseWithState(
         const next = lines[i] ?? '';
         raw.push(next);
         i++;
-        if (closing(next, open.marker)) {
+        if (closesMarkdownFence(next, open.marker)) {
           closed = true;
           break;
         }
@@ -614,7 +621,7 @@ function parseWithState(
           if (stripped === undefined) break;
           original.push(following);
           inner.push(stripped);
-          if (openFence && closing(stripped, openFence.marker)) openFence = undefined;
+          if (openFence && closesMarkdownFence(stripped, openFence.marker)) openFence = undefined;
           else if (!openFence) openFence = fence(stripped);
           cursor++;
         }
@@ -646,6 +653,7 @@ function parseWithState(
             continuation: ' '.repeat(displayContent) + (block.continuation ?? block.prefix ?? ''),
           });
         }
+        if (state.streaming) state.fenceBoundary = state.list?.fenceBoundary;
         i = cursor;
         continue;
       }
@@ -735,6 +743,7 @@ function parseWithState(
           quoted: true,
         });
       }
+      state.fenceBoundary = childState?.fenceBoundary;
       if (childState?.revision) {
         const block = childState.revision;
         state.preserveRevisionPrefix = childState.preserveRevisionPrefix;
@@ -792,6 +801,7 @@ function parseWithState(
 export interface BlockLineResult {
   readonly block: MarkdownBlock;
   readonly continuesParagraph: boolean;
+  readonly fenceBoundary?: 'open' | 'close';
   /** Source prefix replaced before rendering list/container content. */
   readonly listProjection?: { readonly sourcePrefixLength: number; readonly textPrefix: string };
   readonly revision?: MarkdownBlock;
@@ -887,6 +897,7 @@ export class BlockLineClassifier {
     return {
       block,
       continuesParagraph,
+      ...(state.fenceBoundary ? { fenceBoundary: state.fenceBoundary } : {}),
       ...(listProjection ? { listProjection } : {}),
       ...(state.revision
         ? { revision: state.revision, preserveRevisionPrefix: state.preserveRevisionPrefix }

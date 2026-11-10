@@ -114,6 +114,7 @@ import {
 } from './input-history.js';
 import { PaletteView } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
+import { layoutColumns } from './layout-columns.js';
 import { ReverseSearchView } from './reverse-search-view.js';
 import {
   foldPaletteKey,
@@ -1714,7 +1715,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       : undefined;
 
   return (
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
+    <Box
+      flexDirection="column"
+      width={layoutColumns(windowSize.columns)}
+      {...(viewport === undefined ? {} : { height: viewport.rows })}
+    >
       <ChatView
         markdown={markdown}
         displaySuspended={displaySuspended}

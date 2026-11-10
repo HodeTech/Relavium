@@ -9,7 +9,13 @@ import type { InlineTextNode, InlineTextWork } from './inline-text.js';
 import { isAutolinkTarget, isInvalidLinkTargetCharacter } from './opaque-targets.js';
 import { PositionIndex } from './position-index.js';
 import { layoutMarkdown } from './layout.js';
-import { BlockLineClassifier, isBlockStart, isSetextPair, parseMarkdown } from './parser.js';
+import {
+  BlockLineClassifier,
+  closesMarkdownFence,
+  isBlockStart,
+  isSetextPair,
+  parseMarkdown,
+} from './parser.js';
 import type { BlockLineResult } from './parser.js';
 import type { MarkdownBlock, MarkdownDisplayLine, MarkdownSpan } from './types.js';
 import { isWordCodePoint } from './unicode-word.js';
@@ -51,6 +57,7 @@ function completeTail(source: string, limit = LIVE_SOURCE_LIMIT): string {
 
 type Container = { readonly kind: 'quote' } | { readonly kind: 'list'; readonly content: number };
 interface Fence {
+  readonly classified?: boolean;
   readonly containers?: readonly Container[];
   readonly block?: MarkdownBlock;
   readonly marker: string;
@@ -162,15 +169,6 @@ function stripContainers(line: string, containers: readonly Container[]): string
 function fenceContent(line: string, opening: Fence): string | undefined {
   return stripContainers(line, opening.containers ?? []);
 }
-function closesFence(line: string, marker: string): boolean {
-  let at = 0;
-  while (at < 3 && line[at] === ' ') at++;
-  const start = at;
-  while (line[at] === marker[0]) at++;
-  if (at - start < marker.length) return false;
-  while (line[at] === ' ') at++;
-  return at === line.length;
-}
 function literal(source: string): MarkdownBlock {
   return { kind: 'literal', source, text: source };
 }
@@ -260,6 +258,8 @@ class LogicalColumn {
 interface SourceLine {
   readonly start: number;
   readonly block: MarkdownBlock;
+  readonly continuesParagraph: boolean;
+  readonly fenceBoundary?: 'open' | 'close';
 }
 interface RegionalSummary {
   readonly all: boolean;
@@ -427,14 +427,16 @@ class ColumnCheckpoint {
     return { all: run.start <= start, trailing: Math.floor(units / 2) % 2 };
   }
 
-  measurePrefix(text: string, end: number): number {
-    if (!text.slice(end).includes('\t')) return 0;
+  measurePrefix(text: string, end: number, initial = 0, continuation = initial): number {
+    if (end <= 0 || !text.slice(end).includes('\t')) return 0;
     const column = new LogicalColumn();
-    column.append(text.slice(0, end));
+    const start = text.lastIndexOf('\n', end - 1) + 1;
+    column.reset(start ? continuation : initial);
+    column.append(text.slice(start, end));
     const cells = column.cells;
-    this.interpretation += end;
+    this.interpretation += end - start;
     this.measured += column.work;
-    return cells;
+    return cells - initial;
   }
 
   line(
@@ -445,6 +447,7 @@ class ColumnCheckpoint {
     complete: boolean,
     extent = source.length,
     projection?: { readonly sourcePrefixLength: number; readonly textPrefix: string },
+    classification?: BlockLineResult,
   ): void {
     const previous = this.annotations.get(start);
     const width = displayWidth(block.prefix ?? '') + (block.kind === 'code' ? 2 : 0);
@@ -491,6 +494,12 @@ class ColumnCheckpoint {
       consumed !== (previous?.consumed ?? 0) ||
       replacement !== (previous?.replacement ?? '') ||
       width !== previous?.width;
+    if (previous?.block.kind === 'code' && previous.body === undefined && block.kind !== 'code') {
+      for (let at = start; at < previous.extent; at++) {
+        this.interpretation++;
+        if (this.source[at] === '\t') this.structure.delete(at);
+      }
+    }
     if (changed) {
       for (let at = start; at < start + Math.max(consumed, previous?.consumed ?? 0); at++) {
         this.interpretation++;
@@ -510,7 +519,12 @@ class ColumnCheckpoint {
       }
     }
     if (!previous || previous.block !== block) {
-      const line = { start, block };
+      const line: SourceLine = {
+        start,
+        block,
+        continuesParagraph: classification?.continuesParagraph ?? false,
+        ...(classification?.fenceBoundary ? { fenceBoundary: classification.fenceBoundary } : {}),
+      };
       this.lines.set(start, line);
       if (this.blockLine?.start === start) this.blockLine = line;
       else if (start > (this.blockLine?.start ?? -1) && start < this.nextLine)
@@ -612,11 +626,32 @@ interface InlineObserver {
   readonly dispose: (() => void)[];
   invalidate(): void;
 }
+interface ScopedInlineQuery {
+  readonly token: string;
+  readonly start: number;
+  readonly width: number;
+  readonly owner: InlineObserver;
+  readonly scope: InlineScope;
+  queue?: 'waiting' | 'ready';
+  key?: number;
+}
+interface ScopedInlineBucket {
+  readonly position: number;
+  readonly queries: Set<ScopedInlineQuery>;
+}
+interface InlineAnswerTicket {
+  readonly owner: InlineObserver;
+}
+interface InlineAnswerBucket {
+  readonly position: number;
+  readonly tickets: Set<InlineAnswerTicket>;
+}
 interface InlineScope {
   readonly start: number;
   end: number;
-  readonly missing: Map<string, Set<{ start: number; width: number; owner: InlineObserver }>>;
   readonly boundaries: Set<InlineObserver>;
+  opaqueReady?: PositionIndex<InlineAnswerBucket>;
+  ready?: PositionIndex<ScopedInlineBucket>;
 }
 
 class InlineRangeObservers {
@@ -696,6 +731,8 @@ class LiveInlineIndex implements InlineSourceIndex {
     string,
     Set<{ start: number; end: number; width: number; owner: InlineObserver }>
   >();
+  private scopedWaiting = new Map<string, PositionIndex<ScopedInlineBucket>>();
+  private scopedRetained = 0;
   private answers = new Map<number, Set<InlineObserver>>();
   private boundaries = new Map<number, Set<InlineObserver>>();
   private wordObservers = new Map<number, Set<InlineObserver>>();
@@ -712,7 +749,6 @@ class LiveInlineIndex implements InlineSourceIndex {
   private label: number | undefined;
   private parentheses: number[] = [];
   private parenEnds = new Map<number, number>();
-  private parenOpens = new Map<number, number>();
   private parenTargets = new Map<number, number>();
   private references: { start: number; end: number }[] = [];
   private automatic: number | undefined;
@@ -726,6 +762,11 @@ class LiveInlineIndex implements InlineSourceIndex {
   /** Numeric target-validity prefix entries plus disjoint opacity coverage entries. */
   get retained(): number {
     return this.invalidTargetCounts.length + this.opaqueCoverage.size;
+  }
+
+  /** Active fixed-scope query and opaque-answer registrations. */
+  get scopeRetained(): number {
+    return this.scopedRetained;
   }
 
   hasContentAfter(position: number): boolean {
@@ -780,9 +821,35 @@ class LiveInlineIndex implements InlineSourceIndex {
     }
     if (observers.has(owner)) return;
     observers.add(owner);
+    const scope = table === this.answers && !this.dynamic ? this.scope : undefined;
+    const range = scope ? this.opaqueRanges.floor(position) : undefined;
+    const threshold =
+      scope && range && range.start >= scope.start && position < range.end && range.end > scope.end
+        ? range.end
+        : undefined;
+    let ticket: InlineAnswerTicket | undefined;
+    if (scope && threshold !== undefined) {
+      scope.opaqueReady ??= new PositionIndex(this.radixWork);
+      let bucket = scope.opaqueReady.floor(threshold);
+      if (!bucket || bucket.position !== threshold) {
+        bucket = { position: threshold, tickets: new Set() };
+        scope.opaqueReady.set(threshold, bucket);
+      }
+      ticket = { owner };
+      bucket.tickets.add(ticket);
+      this.scopedRetained++;
+    }
     owner.dispose.push(() => {
       observers.delete(owner);
       if (!observers.size) table.delete(position);
+      if (scope?.opaqueReady && threshold !== undefined && ticket) {
+        const bucket = scope.opaqueReady.floor(threshold);
+        if (bucket?.position === threshold) {
+          bucket.tickets.delete(ticket);
+          if (!bucket.tickets.size) scope.opaqueReady.delete(threshold);
+        }
+        this.scopedRetained--;
+      }
     });
   }
 
@@ -795,7 +862,64 @@ class LiveInlineIndex implements InlineSourceIndex {
     }
   }
 
+  private scopedBucket(index: PositionIndex<ScopedInlineBucket>, key: number): ScopedInlineBucket {
+    let bucket = index.floor(key);
+    if (!bucket || bucket.position !== key) {
+      bucket = { position: key, queries: new Set() };
+      index.set(key, bucket);
+    }
+    return bucket;
+  }
+
+  private removeScoped(query: ScopedInlineQuery): void {
+    const index = query.queue === 'ready' ? query.scope.ready : this.scopedWaiting.get(query.token);
+    if (index && query.key !== undefined) {
+      const bucket = index.floor(query.key);
+      if (bucket?.position === query.key) {
+        bucket.queries.delete(query);
+        if (!bucket.queries.size) index.delete(query.key);
+      }
+      if (query.queue === 'waiting' && !index.size) this.scopedWaiting.delete(query.token);
+    }
+    delete query.queue;
+    delete query.key;
+  }
+
+  private readyScoped(query: ScopedInlineQuery, position: number): void {
+    this.removeScoped(query);
+    const threshold = position + query.width;
+    if (threshold <= query.scope.end) {
+      query.owner.invalidate();
+      return;
+    }
+    query.scope.ready ??= new PositionIndex(this.radixWork);
+    this.scopedBucket(query.scope.ready, threshold).queries.add(query);
+    query.queue = 'ready';
+    query.key = threshold;
+  }
+
+  private candidate(token: string, start: number, width: number): number | undefined {
+    this.work++;
+    if (token.startsWith('paren:')) {
+      const position = this.parenEnds.get(Number(token.slice(6)));
+      return position !== undefined && position >= start ? position : undefined;
+    }
+    return token.startsWith('tick:')
+      ? this.tickPositions.get(width)?.ceiling(start)
+      : this.allPositions.get(token)?.ceiling(start);
+  }
+
   private publish(token: string, position: number): void {
+    const waiting = this.scopedWaiting.get(token);
+    let bucket = waiting?.ceiling(0);
+    while (bucket && bucket.position <= position) {
+      this.work += bucket.queries.size;
+      for (const query of [...bucket.queries]) {
+        this.work++;
+        this.readyScoped(query, position);
+      }
+      bucket = waiting?.ceiling(0);
+    }
     const observers = this.nextObservers.get(token);
     if (!observers) return;
     for (const query of [...observers]) {
@@ -1041,7 +1165,6 @@ class LiveInlineIndex implements InlineSourceIndex {
         const open = this.parentheses.pop();
         if (open !== undefined) {
           this.parenEnds.set(open, position);
-          this.parenOpens.set(position, open);
           this.publish(`paren:${open}`, position);
           const label = this.parenTargets.get(open);
           if (label !== undefined) {
@@ -1128,16 +1251,26 @@ class LiveInlineIndex implements InlineSourceIndex {
     if (!owner) return;
     const scope = !this.dynamic ? this.scope : undefined;
     if (scope) {
-      let queries = scope.missing.get(token);
-      if (!queries) {
-        queries = new Set();
-        scope.missing.set(token, queries);
+      // A fixed scope needs reconsideration only when its end reaches the
+      // earliest eligible token. If none exists yet, publish() moves this
+      // query from the ordered waiting index to that token's end threshold.
+      const query: ScopedInlineQuery = { token, start, width, owner, scope };
+      this.scopedRetained++;
+      const candidate = this.candidate(token, Math.max(start, end - width + 1), width);
+      if (candidate !== undefined) this.readyScoped(query, candidate);
+      else {
+        let waiting = this.scopedWaiting.get(token);
+        if (!waiting) {
+          waiting = new PositionIndex(this.radixWork);
+          this.scopedWaiting.set(token, waiting);
+        }
+        this.scopedBucket(waiting, start).queries.add(query);
+        query.queue = 'waiting';
+        query.key = start;
       }
-      const query = { start, width, owner };
-      queries.add(query);
       owner.dispose.push(() => {
-        queries.delete(query);
-        if (!queries.size) scope.missing.delete(token);
+        this.removeScoped(query);
+        this.scopedRetained--;
       });
       return;
     }
@@ -1166,46 +1299,33 @@ class LiveInlineIndex implements InlineSourceIndex {
   }
 
   extendScope(scope: InlineScope, end: number): void {
-    const previous = scope.end;
     scope.end = end;
-    for (const owner of [...scope.boundaries]) owner.invalidate();
-    const notify = (token: string, position: number): void => {
-      const queries = scope.missing.get(token);
-      if (queries)
-        for (const query of [...queries]) {
-          this.work++;
-          if (query.start <= position && position + query.width <= end) query.owner.invalidate();
-        }
-    };
-    const tokens = ['***', '___', '**', '__', '~~', '*', '_', '](', ')', '[', '][', ']', '>', '<'];
-    for (let position = Math.max(scope.start, previous - 2); position < end; position++) {
+    this.work += scope.boundaries.size;
+    for (const owner of [...scope.boundaries]) {
       this.work++;
-      if (!this.escapes[position])
-        for (const token of tokens) {
-          this.work++;
-          if (
-            position + token.length > previous &&
-            position + token.length <= end &&
-            token.split('').every((character, part) => this.units[position + part] === character)
-          )
-            notify(token, position);
-        }
-      const run = this.runAt.get(position);
-      if (run && run.end > previous && run.end <= end)
-        notify(`tick:${run.end - run.start}`, position);
-      const open = this.parenOpens.get(position);
-      if (position >= previous && open !== undefined) notify(`paren:${open}`, position);
+      owner.invalidate();
     }
-    let range = this.opaqueRanges.floor(previous);
-    if (!range || range.end <= previous) range = this.opaqueRanges.ceiling(previous);
-    while (range && range.end <= end) {
-      if (range.end > previous) {
-        for (let position = range.start; position < range.end; position++) {
-          this.work++;
-          this.wake(this.answers, position);
-        }
+    let ready = scope.ready?.ceiling(0);
+    while (ready && ready.position <= end) {
+      this.work += ready.queries.size;
+      for (const query of [...ready.queries]) {
+        this.work++;
+        this.removeScoped(query);
+        query.owner.invalidate();
       }
-      range = this.opaqueRanges.ceiling(range.end);
+      ready = scope.ready?.ceiling(0);
+    }
+    // An already-indexed opaque owner changes this scope's answer only once
+    // the enclosing owner's end enters the scope. Tickets belong to the
+    // observing scope and are disposed with the corresponding observer.
+    let opaque = scope.opaqueReady?.ceiling(0);
+    while (opaque && opaque.position <= end) {
+      this.work += opaque.tickets.size;
+      for (const ticket of [...opaque.tickets]) {
+        this.work++;
+        ticket.owner.invalidate();
+      }
+      opaque = scope.opaqueReady?.ceiling(0);
     }
   }
 
@@ -1396,7 +1516,7 @@ class InlineSequence {
     this.index = index;
     this.start = start;
     this.bound = bound;
-    this.scope = { start, end: bound ?? index.length, missing: new Map(), boundaries: new Set() };
+    this.scope = { start, end: bound ?? index.length, boundaries: new Set() };
     this.depth = depth;
     this.mapper = mapper;
     this.changed = changed;
@@ -2089,17 +2209,20 @@ class CanonicalInlineCheckpoint {
     cache: number;
     retained: number;
     indexRetained: number;
+    scopeRetained: number;
   }> {
     let indexed = this.retiredIndexed + this.index.work + this.index.indexedWork;
     let copied = this.retiredCopied + this.index.slices;
     let retained = this.sequence?.retained ?? 0;
     let indexRetained = this.index.retained;
+    let scopeRetained = this.index.scopeRetained;
     let queues = this.sequence?.queueWork ?? 0;
     for (const scope of this.archived) {
       indexed += scope.index.work + scope.index.indexedWork;
       copied += scope.index.slices;
       retained += scope.sequence.retained;
       indexRetained += scope.index.retained;
+      scopeRetained += scope.index.scopeRetained;
       queues += scope.sequence.queueWork;
       for (const view of this.bounded.get(scope.index)?.values() ?? []) retained += view.retained;
     }
@@ -2111,6 +2234,7 @@ class CanonicalInlineCheckpoint {
       cache: this.accounting.visits + queues,
       retained,
       indexRetained,
+      scopeRetained,
     };
   }
 
@@ -2252,11 +2376,18 @@ class CanonicalInlineCheckpoint {
  * the per-frame API. A resize only invalidates the one bounded layout cache.
  */
 export class MarkdownStream {
+  private invalidClosing = false;
+  private closingLine:
+    | { at: number; spaces: number; run: number; mode: 'indent' | 'run' | 'suffix' | 'invalid' }
+    | undefined;
+  private openingInfo: { at: number; mode: 'run' | 'info' } | undefined;
+  private invalidOpening = false;
   private source: string[] = [];
   private sourceLength = 0;
   private sourceWindow = '';
   private clippedSource: string | undefined;
   private completed: string[] = [];
+  private completedStart = 0;
   private fragments: string[] = [];
   private linePrefix = '';
   private lineLength = 0;
@@ -2337,6 +2468,7 @@ export class MarkdownStream {
     cache: number;
     retained: number;
     indexRetained: number;
+    scopeRetained: number;
   }> {
     return this.inline.checkpointWork;
   }
@@ -2389,6 +2521,16 @@ export class MarkdownStream {
           initialOffset + start - (this.lineLength - part.length),
           false,
         );
+        this.scanOpeningInfo(
+          part,
+          this.lineLength - part.length,
+          initialOffset + start - (this.lineLength - part.length),
+        );
+        this.scanClosingLine(
+          part,
+          this.lineLength - part.length,
+          initialOffset + start - (this.lineLength - part.length),
+        );
         this.inline.append(part, initialOffset + start);
       }
       if (i < chunk.length) {
@@ -2403,18 +2545,24 @@ export class MarkdownStream {
         const offset = initialOffset + i - line.length;
         this.columnLine(line, offset, true);
         this.completeLine(line, offset);
+        this.openingInfo = undefined;
+        this.invalidOpening = false;
+        this.closingLine = undefined;
+        this.invalidClosing = false;
       }
       start = i + 1;
     }
     if (
-      this.pendingFence?.containers?.length &&
+      (this.pendingFence?.containers?.length || this.pendingFence?.classified) &&
       /\S/.test(this.linePrefix) &&
-      fenceContent(this.linePrefix, this.pendingFence) === undefined
+      (this.pendingFence.classified
+        ? this.columns.blockAt(this.sourceLength - this.lineLength)?.block.kind !== 'code'
+        : fenceContent(this.linePrefix, this.pendingFence) === undefined)
     ) {
       // A nonblank dedent has already left the container, even before this
       // line's newline arrives. Keep that new block outside the old fence.
       this.pendingSize -= this.lineLength;
-      this.finalize(true);
+      this.finalize();
       this.pendingSize = this.lineLength;
       this.replayInline(this.fragments.join(''), this.sourceLength - this.lineLength, false);
     }
@@ -2437,6 +2585,95 @@ export class MarkdownStream {
     this.ordinalDigits = 0;
     this.ordinalPadding = 0;
     this.ordinalWidth = undefined;
+  }
+
+  private scanOpeningInfo(part: string, lineOffset: number, offset: number): void {
+    if (this.pendingFence || this.invalidOpening) return;
+    if (!this.openingInfo && this.columns.blockAt(offset)?.fenceBoundary === 'open') {
+      const marker = /`{3,}/.exec(this.linePrefix);
+      if (marker) this.openingInfo = { at: marker.index + marker[0].length, mode: 'run' };
+    }
+    const info = this.openingInfo;
+    if (!info) return;
+    for (let at = Math.max(0, info.at - lineOffset); at < part.length; at++) {
+      this.columns.describe(1);
+      if (part[at] !== '`') info.mode = 'info';
+      else if (info.mode === 'info') {
+        this.invalidOpening = true;
+        this.classifiedPreview = undefined;
+        this.columnLine(this.linePrefix, offset, false);
+        break;
+      }
+      info.at = lineOffset + at + 1;
+    }
+  }
+
+  private scanClosingLine(part: string, lineOffset: number, offset: number): void {
+    const opening = this.pendingFence;
+    if (!opening) return;
+    if (!this.closingLine) {
+      let prefix = opening.classified
+        ? this.columns.blockAt(offset)?.block.text
+        : fenceContent(this.linePrefix, opening);
+      if (this.columns.blockAt(offset)?.fenceBoundary === 'close') {
+        const marker = this.linePrefix.indexOf(opening.marker[0] ?? '');
+        if (marker >= 0) prefix = this.linePrefix.slice(marker);
+      }
+      if (prefix === undefined) return;
+      if (!prefix) return;
+      this.closingLine = { at: this.linePrefix.length, spaces: 0, run: 0, mode: 'indent' };
+      this.advanceClosingLine(prefix, opening);
+    }
+    const state = this.closingLine;
+    const start = Math.max(0, state.at - lineOffset);
+    this.advanceClosingLine(part.slice(start), opening);
+    state.at = lineOffset + part.length;
+    if (state.mode === 'invalid' && this.columns.blockAt(offset)?.fenceBoundary === 'close') {
+      this.invalidClosing = true;
+      this.classifiedPreview = undefined;
+      this.columnLine(this.linePrefix, offset, false);
+    }
+  }
+
+  private advanceClosingLine(source: string, opening: Fence): void {
+    const state = this.closingLine;
+    if (!state || state.mode === 'invalid') return;
+    const marker = opening.marker[0] ?? '`';
+    const sample = marker.repeat(3);
+    for (const character of source) {
+      this.columns.describe(character.length);
+      if (state.mode === 'indent') {
+        if (character === ' ' && state.spaces < 3) {
+          state.spaces++;
+          continue;
+        }
+        if (character !== marker) {
+          state.mode = 'invalid';
+          break;
+        }
+        state.mode = 'run';
+      }
+      if (state.mode === 'run' && character === marker) {
+        state.run++;
+        continue;
+      }
+      state.mode = closesMarkdownFence(
+        sample + (state.mode === 'suffix' ? ' ' : '') + character,
+        sample,
+      )
+        ? 'suffix'
+        : 'invalid';
+      if (state.mode === 'invalid') break;
+    }
+  }
+
+  private pendingClosingLine(): boolean {
+    return (
+      this.pendingFence !== undefined &&
+      this.closingLine !== undefined &&
+      this.closingLine.mode !== 'invalid' &&
+      this.closingLine.run >= this.pendingFence.marker.length
+    );
   }
 
   /** Retain the width of a leading list prefix even when its ordinal exceeds the source window. */
@@ -2527,9 +2764,24 @@ export class MarkdownStream {
       classified = this.classifiedPreview.result;
     else {
       this.columns.describe(complete ? source.length : prefix.length);
-      classified = complete
-        ? this.blockClassifier.commit(source)
-        : this.blockClassifier.preview(prefix);
+      if (complete) classified = this.blockClassifier.commit(source);
+      else if (this.invalidOpening || this.invalidClosing) {
+        // A backtick discovered beyond the bounded prefix permanently revokes
+        // this opener. Supply that fact to the canonical classifier without
+        // copying or reparsing the ever-growing info string.
+        const suffix = this.invalidOpening ? ' `' : ' X';
+        const invalid = this.blockClassifier.preview(prefix + suffix);
+        classified = {
+          ...invalid,
+          block: {
+            ...invalid.block,
+            source: prefix,
+            text: invalid.block.text.endsWith(suffix)
+              ? invalid.block.text.slice(0, -suffix.length)
+              : invalid.block.text,
+          },
+        };
+      } else classified = this.blockClassifier.preview(prefix);
       this.classifiedPreview = { source: prefix, offset, result: classified };
     }
     const previous = this.classifierPrevious;
@@ -2547,7 +2799,10 @@ export class MarkdownStream {
       };
       this.columns.line(previous.offset, previous.source, revision, undefined, true);
     }
-    if (this.pendingFence?.containers?.length && classified.block.kind !== 'code') body = undefined;
+    if (this.pendingFence?.classified)
+      body = classified.block.kind === 'code' ? classified.block.text : undefined;
+    else if (this.pendingFence?.containers?.length && classified.block.kind !== 'code')
+      body = undefined;
     const block =
       body !== undefined
         ? ({
@@ -2567,6 +2822,7 @@ export class MarkdownStream {
       complete,
       complete ? source.length : this.lineLength,
       body === undefined ? classified.listProjection : undefined,
+      classified,
     );
     if (complete || source.trim()) this.inline.line(offset, block, classified.continuesParagraph);
     if (complete) this.classifierPrevious = { source, offset, block };
@@ -2584,14 +2840,20 @@ export class MarkdownStream {
 
   private completeLine(line: string, offset: number): void {
     if (this.pendingFence) {
-      const content = fenceContent(line, this.pendingFence);
+      const content = this.pendingFence.classified
+        ? this.columns.blockAt(offset)?.block.text
+        : fenceContent(line, this.pendingFence);
       if (content !== undefined && this.columns.blockAt(offset)?.block.kind === 'code') {
-        this.completed.push(line);
-        if (closesFence(content, this.pendingFence.marker)) this.finalize();
+        this.pushCompleted(line, offset);
+        if (
+          this.columns.blockAt(offset)?.fenceBoundary === 'close' ||
+          closesMarkdownFence(content, this.pendingFence.marker)
+        )
+          this.finalize();
         return;
       }
       this.pendingSize -= line.length + 1;
-      this.finalize(true);
+      this.finalize();
       this.pendingSize = line.length + 1;
       this.replayInline(line + '\n', offset, true);
     }
@@ -2609,7 +2871,7 @@ export class MarkdownStream {
         this.pendingSize = line.length + 1;
         this.replayInline(line + '\n', offset, true);
       } else {
-        this.completed.push(line);
+        this.pushCompleted(line, offset);
         return;
       }
     }
@@ -2628,6 +2890,7 @@ export class MarkdownStream {
         this.pendingSize -= retainedSize;
         this.finalize();
         this.completed = [previous, line];
+        this.completedStart = offset - previous.length - 1;
         this.pendingSize = retainedSize;
         this.pendingTable = true;
         this.pendingTableContainers = tableContainers(previous);
@@ -2643,16 +2906,37 @@ export class MarkdownStream {
     ) {
       this.pendingTable = true;
       this.pendingTableContainers = tableContainers(previous);
-      this.completed.push(line);
+      this.pushCompleted(line, offset);
       return;
     }
     if (!line.trim()) {
+      if (this.columns.blockAt(offset)?.block.kind === 'code') {
+        this.pushCompleted(line, offset);
+        return;
+      }
       this.pendingSize -= line.length + 1;
       this.finalize();
       this.addStable(literal(line));
       return;
     }
-    const opening = containerFence(line, (source) => this.parse(source));
+    const classified = this.columns.blockAt(offset);
+    const marker = classified?.fenceBoundary === 'open' ? /`{3,}|~{3,}/.exec(line)?.[0] : undefined;
+    const detected = marker ? containerFence(line, (source) => this.parse(source)) : undefined;
+    const opening = marker
+      ? {
+          ...(detected ?? {
+            marker,
+            indent: 0,
+            info: classified?.block.info ?? '',
+            ...(classified ? { block: classified.block } : {}),
+            classified: true,
+          }),
+          ...(classified ? { block: classified.block } : {}),
+          ...(detected && detected.block?.prefix !== classified?.block.prefix
+            ? { classified: true }
+            : {}),
+        }
+      : undefined;
     // Keep a list group together: its indentation stack is block-parser state.
     const list = /^( *)(?:[-+*]|\d+[.)]) {1,4}(?:\S|$)/.test(line);
     const sameList = this.pendingList && (list || /^[ \t]/.test(line));
@@ -2662,7 +2946,7 @@ export class MarkdownStream {
     if (
       (opening || isBlockStart(line)) &&
       !setext &&
-      !sameList &&
+      (!sameList || opening?.classified) &&
       !(quote && previousQuote) &&
       this.completed.length
     ) {
@@ -2671,7 +2955,7 @@ export class MarkdownStream {
       this.pendingSize = line.length + 1;
       this.replayInline(line + '\n', offset, true);
     }
-    this.completed.push(line);
+    this.pushCompleted(line, offset);
     if (list) this.pendingList = true;
     if (opening) this.pendingFence = opening;
   }
@@ -2695,6 +2979,8 @@ export class MarkdownStream {
         tabOffset: this.columns.measurePrefix(
           block.text,
           block.text.length - completeTail(block.text).length,
+          displayWidth(block.prefix ?? '') + (block.kind === 'code' ? 2 : 0),
+          displayWidth(block.continuation ?? block.prefix ?? '') + (block.kind === 'code' ? 2 : 0),
         ),
       };
     } else {
@@ -2708,7 +2994,12 @@ export class MarkdownStream {
         source: completeTail(block.source),
         text: clippedText,
         spans,
-        tabOffset: this.columns.measurePrefix(fullText, fullText.length - clippedText.length),
+        tabOffset: this.columns.measurePrefix(
+          fullText,
+          fullText.length - clippedText.length,
+          displayWidth(block.prefix ?? ''),
+          displayWidth(block.continuation ?? block.prefix ?? ''),
+        ),
       };
     }
     const size = Math.min(LIVE_SOURCE_LIMIT, Math.max(1, block.source.length));
@@ -2722,10 +3013,62 @@ export class MarkdownStream {
     }
   }
 
-  private finalize(preserveBlockContext = false): void {
+  private pushCompleted(line: string, offset: number): void {
+    if (!this.completed.length) this.completedStart = offset;
+    this.completed.push(line);
+  }
+
+  private finalize(): void {
     if (this.completed.length) {
       const source = this.completed.join('\n');
-      for (const block of this.parse(source)) this.addStable(block);
+      if (this.pendingTable) {
+        for (const block of this.parse(source)) this.addStable(block);
+      } else {
+        this.blockWork += source.length;
+        let offset = this.completedStart;
+        const blocks: MarkdownBlock[] = [];
+        let code: { block: MarkdownBlock; source: string[]; body: string[] } | undefined;
+        const flushCode = (): void => {
+          if (code)
+            blocks.push({
+              ...code.block,
+              source: code.source.join('\n'),
+              text: code.body.join('\n'),
+            });
+          code = undefined;
+        };
+        for (const line of this.completed) {
+          const classified = this.columns.blockAt(offset);
+          const block = classified?.block ?? literal(line);
+          if (block.kind === 'code') {
+            if (classified?.fenceBoundary === 'open' || !code) {
+              flushCode();
+              code = {
+                block,
+                source: [line],
+                body: classified?.fenceBoundary === 'open' ? [] : [block.text],
+              };
+            } else {
+              code.source.push(line);
+              if (classified?.fenceBoundary !== 'close') code.body.push(block.text);
+            }
+            if (classified?.fenceBoundary === 'close') flushCode();
+          } else {
+            flushCode();
+            const previous = blocks.at(-1);
+            if (classified?.continuesParagraph && previous?.kind === 'paragraph') {
+              blocks[blocks.length - 1] = {
+                ...previous,
+                source: previous.source + '\n' + line,
+                text: previous.text + '\n' + block.text,
+              };
+            } else blocks.push({ ...block, source: line });
+          }
+          offset += line.length + 1;
+        }
+        flushCode();
+        for (const block of blocks) this.addStable(block);
+      }
     }
     this.completed = [];
     this.pendingSize = 0;
@@ -2734,11 +3077,6 @@ export class MarkdownStream {
     this.pendingTableContainers = [];
     this.pendingList = false;
     this.inline.reset();
-    if (!preserveBlockContext) {
-      this.blockClassifier.reset();
-      this.classifierPrevious = undefined;
-      this.classifiedPreview = undefined;
-    }
   }
 
   tail(columns: number, maxRows: number): readonly MarkdownDisplayLine[] {
@@ -2808,32 +3146,63 @@ export class MarkdownStream {
       else if (this.pendingFence) {
         const cut = this.pendingSize > LIVE_SOURCE_LIMIT;
         const opening = this.pendingFence;
-        const body = pending
-          .split('\n')
-          .map((line, index) => {
-            if (
-              index === 0 &&
-              this.sourceWindow[this.sourceWindow.length - pending.length - 1] !== '\n'
-            )
-              return line;
-            const content = fenceContent(line, opening) ?? line;
-            let indentation = 0;
-            while (indentation < opening.indent && content[indentation] === ' ') indentation++;
-            return content.slice(indentation);
-          })
-          .join('\n');
-        const parsed = cut
-          ? [
-              {
-                ...opening.block,
-                kind: 'code',
-                source: pending,
-                text: body,
-                info: '',
-              } satisfies MarkdownBlock,
-            ]
-          : parseMarkdown(pending);
-        blocks.push(...parsed);
+        if (opening.classified) {
+          let position = cutOffset;
+          const body: string[] = [];
+          for (const line of pending.split('\n')) {
+            const metadata = this.columns.blockAt(position);
+            const current = position + line.length === this.sourceLength;
+            const closing = current
+              ? this.pendingClosingLine()
+              : metadata?.fenceBoundary === 'close';
+            if (!closing && metadata?.fenceBoundary !== 'open')
+              body.push(
+                current && metadata?.fenceBoundary === 'close'
+                  ? line.slice(Math.max(0, metadata.block.source.indexOf(opening.marker[0] ?? '`')))
+                  : this.columns.renderSource(position, position + line.length).replace(/\0/g, ''),
+              );
+            position += line.length + 1;
+          }
+          blocks.push({
+            ...opening.block,
+            kind: 'code',
+            source: pending,
+            text: body.join('\n'),
+            info: opening.info,
+          });
+        } else {
+          let position = cutOffset;
+          const body = pending
+            .split('\n')
+            .flatMap((line, index) => {
+              const start = position;
+              position += line.length + 1;
+              if (start + line.length === this.sourceLength && this.pendingClosingLine()) return [];
+              if (
+                index === 0 &&
+                this.sourceWindow[this.sourceWindow.length - pending.length - 1] !== '\n'
+              )
+                return [line];
+              const content = fenceContent(line, opening) ?? line;
+              if (closesMarkdownFence(content, opening.marker)) return [];
+              let indentation = 0;
+              while (indentation < opening.indent && content[indentation] === ' ') indentation++;
+              return [content.slice(indentation)];
+            })
+            .join('\n');
+          const parsed = cut
+            ? [
+                {
+                  ...opening.block,
+                  kind: 'code',
+                  source: pending,
+                  text: body,
+                  info: '',
+                } satisfies MarkdownBlock,
+              ]
+            : parseMarkdown(pending);
+          blocks.push(...parsed);
+        }
       } else if (this.columns.blockAt(cutOffset)?.block.kind === 'literal') {
         // A container's lazy fallback remains literal after its fence/body has
         // been finalized. Parsing the detached suffix would invent a fresh
@@ -2998,6 +3367,10 @@ export class MarkdownStream {
   }
 
   reset(): void {
+    this.invalidClosing = false;
+    this.closingLine = undefined;
+    this.openingInfo = undefined;
+    this.invalidOpening = false;
     this.source = [];
     this.sourceLength = 0;
     this.sourceWindow = '';

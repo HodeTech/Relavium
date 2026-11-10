@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { layoutMarkdown, parseMarkdown } from './index.js';
-import { BlockLineClassifier, isSetextPair } from './parser.js';
+import { BlockLineClassifier, closesMarkdownFence, isSetextPair } from './parser.js';
 
 const rows = (source: string, width = 80): string[] =>
   layoutMarkdown(parseMarkdown(source), width).map((line) => line.text);
@@ -265,6 +265,100 @@ describe('block parser regressions', () => {
       prefix: '│   ',
       text: '    code',
     });
+  });
+
+  it('reports fence boundaries and blank body ownership through containers', () => {
+    for (const [open, blank, close] of [
+      ['```', '', '```\t'],
+      ['> ```', '> ', '> ```\t'],
+      ['- ```', '', '  ```\t'],
+      ['> - ~~~', '> ', '>   ~~~\t'],
+    ] satisfies [string, string, string][]) {
+      const classifier = new BlockLineClassifier();
+      expect(classifier.commit(open)).toMatchObject({
+        block: { kind: 'code' },
+        fenceBoundary: 'open',
+      });
+      expect(classifier.commit(blank)).toMatchObject({ block: { kind: 'code', text: '' } });
+      expect(classifier.commit(close)).toMatchObject({
+        block: { kind: 'code' },
+        fenceBoundary: 'close',
+      });
+    }
+    const nested = new BlockLineClassifier();
+    expect(nested.commit('- 1. ```').fenceBoundary).toBe('open');
+    expect(nested.commit('').block.kind).toBe('literal');
+  });
+
+  it('keeps root leading tabs distinct from four source spaces', () => {
+    const tab = '\t**x**';
+    const spaces = '    **x**';
+    expect(parseMarkdown(tab)[0]?.kind).toBe('paragraph');
+    expect(parseMarkdown(spaces)[0]?.kind).toBe('literal');
+    expect(rows(tab)).toEqual(['        x']);
+    expect(rows(spaces)).toEqual(['    **x**']);
+    expect(layoutMarkdown(parseMarkdown(tab), 80)[0]?.spans).toContainEqual({
+      text: 'x',
+      strong: true,
+    });
+    expect(new BlockLineClassifier().commit(tab).block.kind).toBe('paragraph');
+    expect(new BlockLineClassifier().commit(spaces).block.kind).toBe('literal');
+  });
+
+  it('accepts tab-suffixed fence closers without accepting trailing text', () => {
+    expect(closesMarkdownFence('   ````\t  ', '```')).toBe(true);
+    expect(closesMarkdownFence('    ```\t', '```')).toBe(false);
+    expect(closesMarkdownFence('```\ttext', '```')).toBe(false);
+    expect(closesMarkdownFence('~~\t', '~~~')).toBe(false);
+    for (const fence of ['```', '~~~']) {
+      for (const opener of [fence, `> ${fence}`, `- ${fence}`]) {
+        const prefix = opener.startsWith('>') ? '> ' : opener.startsWith('-') ? '  ' : '';
+        const source = `${opener}\n${prefix}body\n${prefix}${fence}\t\nafter`;
+        const blocks = parseMarkdown(source);
+        expect(blocks[0]).toMatchObject({ kind: 'code', text: 'body' });
+        expect(blocks.at(-1)?.source).toBe('after');
+      }
+      expect(parseMarkdown(`${fence}\nbody\n${fence}\tx\nafter`)[0]).toMatchObject({
+        kind: 'code',
+        text: `body\n${fence}\tx\nafter`,
+      });
+    }
+  });
+
+  it('retains literal fallback and blank ownership after contained fences', () => {
+    for (const [source, kinds] of [
+      [' - ```\n\n*x*\n\nout', ['code', 'code', 'literal', 'literal', 'paragraph']],
+      [' - ```\n\n  - # hi\n\nend', ['code', 'code', 'literal', 'literal', 'paragraph']],
+      ['  - a\n    ```\n\n# h', ['list', 'code', 'code', 'heading']],
+      ['  1. a\n\t```\n\n# h', ['list', 'code', 'code', 'heading']],
+    ] satisfies [string, string[]][]) {
+      const classifier = new BlockLineClassifier();
+      const blocks = source.split('\n').map((line) => classifier.commit(line).block);
+      expect(blocks.map((block) => block.kind)).toEqual(kinds);
+      const raw = blocks.find((block) => block.source === '*x*' || block.source === '  - # hi');
+      if (raw) expect(raw).toMatchObject({ kind: 'literal', text: raw.source, raw: true });
+      expect(parseMarkdown(source).at(-1)?.kind).toBe(kinds.at(-1));
+    }
+  });
+
+  it('preserves long dedented literal content after a contained fence', () => {
+    const text = '*x*'.repeat(2000) + '\tend';
+    const opener = ' - ```';
+    const source = `${opener}\n\n${text}\n\nout`;
+    const classifier = new BlockLineClassifier();
+    classifier.commit(opener);
+    classifier.commit('');
+    expect(classifier.preview(text.slice(0, 256)).block).toMatchObject({
+      kind: 'literal',
+      raw: true,
+    });
+    expect(classifier.commit(text).block).toMatchObject({
+      kind: 'literal',
+      source: text,
+      text,
+      raw: true,
+    });
+    expect(parseMarkdown(source)[1]).toMatchObject({ kind: 'literal', source: text, raw: true });
   });
 
   it('keeps blank lines inside a list fence', () => {
