@@ -1919,6 +1919,52 @@ review only: exact supported profiles, pinned/audited inputs, actual native and
 packaging proofs, fresh implementation reviews and a separate native security
 sitting remain due after approval.
 
+### ADR-0125 supplied review and design acceptance (2026-11-12)
+
+The maintainer instructed verification/correction of the supplied reviews,
+then design acceptance and continued implementation, with no compatibility
+obligation for the unaccepted prototype. ADR-0125 and its canonical metadata
+contract are **Accepted** under that instruction; native implementation and
+whole-Step-2 acceptance are separate and remain open.
+
+- **Durable overwrite uncertainty:** source inspection confirmed overwrite/new
+  `write_file` calls had no row. Every variant now requires tier-3 durability in
+  the accepted design, including empty/unchanged content. Existing strict-v2
+  inspection/resume and session non-replay apply; no adapter journal or guessed
+  old receipt is added. Missing-journal embedding paths refuse. A stale source
+  comment is not evidence of a registered `--no-history` CLI flag.
+- **Creation and recovery:** bind/revalidate OS-derived destination inheritance,
+  parent/default ACL/group/mask/credential inputs and admitted parent creation.
+  Named stages require bounded private ownership evidence before payload,
+  exclusive safe orphan cleanup and preservation of live/unknown owners. The
+  canonical contract defines timing, budgets and operator recovery. Owner-only
+  OS permissions also require an enforceable cross-host/process model-filesystem
+  exclusion for stages and aliases; otherwise placement refuses.
+- **Delivery/governance corrections:** lazy loading, original path/scope floors,
+  non-root ownership refusal, quarantine/Zone.Identifier, Cargo cooling review
+  and guide/principle forward notes are explicit. The new adapter is the third
+  native component. Its no-compile/no-extra-download rule does not describe
+  SQLite's existing prebuild/node-gyp or keyring's optional-package installation.
+  Eight targets are the new component's proof obligation, not an inferred
+  historical CLI support list. The unsafe prototype is no fallback obligation.
+  Node-API 8 is conservative; 9 also supports the exact Node 22.0.0 floor.
+- **Evidence scope:** the tracked developer probe was independently rerun by
+  root on non-root macOS arm64/Node 22.23.1. It verifies direct append refusal
+  and metadata loss under historical replacement/copy algorithms. Earlier
+  inline probes were likewise OS/algorithm experiments, not complete-host or
+  native adapter tests. No successful flags or Windows execution is inferred.
+  The [canonical receipt](../../reference/cli/native-filesystem-metadata.md#baseline-reproduction)
+  owns the reproducible command and exact observation limits.
+
+A fresh Sol/high complete design review found no remaining material issue.
+An independent Terra/high authority review found the named-stage model-access
+gap; after the explicit exclusion/refusal and consumer-proof correction, its
+affected re-review was clean. These are design reviews only. Concrete native
+profiles/allowlists, pinned/audited inputs, actual native and exact-artifact
+proofs on all enabled targets, two fresh implementation rounds and a separate
+native security sitting remain required. No native component was implemented
+before this design approval.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

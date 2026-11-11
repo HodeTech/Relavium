@@ -44,6 +44,9 @@ See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 ## The non-negotiable rules
 
 1. **TypeScript-first, strict.** No `any`, no unsafe `as`.
+   [ADR-0125](docs/decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+   permits a narrow Rust/Node-API CLI filesystem metadata adapter; shared/core
+   and the LLM seam remain platform-pure TypeScript.
 2. **Build in-house; minimize deps.** No new runtime dependency without an ADR.
    Never the Vercel AI SDK or LangChain — Relavium owns `@relavium/llm`. Never
    reinvent security-critical primitives (crypto/TLS/keychain).

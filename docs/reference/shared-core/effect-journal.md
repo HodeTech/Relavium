@@ -2,7 +2,7 @@
 
 - **Status**: Canonical
 - **Owner ADR**: [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
-- **Replay refinement**: [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md), accepted design; Step 2 implementation pending.
+- **Replay refinement**: [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md), accepted design; Step 2 implementation in progress, not accepted.
 - **Surface**: Shared — the engine (`packages/core`), the run store (`packages/db`), and both dispatch producers.
 
 This is the one canonical home for **what the engine promises about external side effects**, the identities it
@@ -42,9 +42,12 @@ tier 1 may use the words "exactly once".
 Tiers 1 and 2 are **reserved and specified, not occupied**. No shipping capability offers a receipt lookup and
 no tool injects an idempotency key. A document that says otherwise is wrong, not aspirational.
 
-The accepted MVP-3 replay refinement below remains unimplemented until Step 2;
-it does not claim that the current decoder or resume predicate already enforces
-its stricter retained-evidence checks.
+MVP-3 Step 2 implementation is in progress on `development`. The shared/core/DB
+replay changes are present in the uncommitted implementation; their review,
+security and acceptance gates remain open. The all-write durability and native
+metadata requirements in [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+remain subject to that decision's design-acceptance gate. This reference states
+the required completion contract, not accepted native support.
 
 ## 2. The five identities, and why none of them is "the key"
 
@@ -114,15 +117,30 @@ Three rules make this precise:
 1. **It is a predicate over the resolved call, not a policy class.** `governedAction` is a *security*
    classification and is deliberately wider — a read-only egress and a clipboard read are governed but mutate
    nothing. Journaling those would put two durable writes on every web search and halt a run on a crashed GET.
-2. **Two tools decide per dispatch, not per definition.** `http_request` is journaled for a non-GET method and
-   not for a GET; `write_file` is journaled when `append: true` (appends compose) and not for a whole-file
-   overwrite (naturally idempotent — the file *is* the receipt).
+2. **The tool declares its effect tier.** `http_request` is journaled for a non-GET method, not for a GET.
+   Every built-in `write_file` call is tier 3: new-file creation, overwrite, append, empty content and
+   byte-identical replacement all require a durable row. `edit_file` is also always tier 3. Final byte
+   equality does not prove a replacement's namespace/security-metadata outcome or authorize overwriting an
+   intervening change. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+   replaces the earlier overwrite exemption; this assignment is part of Step 2's completion contract.
+   Read-only file tools and GET requests remain unjournaled.
 3. **`duplicationBenign` is a trust-bearing declaration and may only be set by first-party code.** It is a
    property of a built-in `ToolDef` in this repository. It may **never** be set from MCP tool metadata, a
    discovered tool descriptor, or any other bytes originating outside the engine — the same rule that keeps MCP
    annotations from raising a tier (§5). Today its only member is `notify`.
 
-Local-filesystem writes are journaled: "external" means outside this process, not outside this machine.
+Built-in model-file writes are journaled: "external" means outside this process, not outside this machine.
+The existing required journal seam applies to overwrite and creation too; an unwired journal refuses the
+call rather than providing an in-memory or native-adapter fallback. This does not journal unrelated
+trusted-host configuration/history writes or give the native adapter a second journal.
+
+Read-only filesystem preparation, metadata admission, diff computation and approval refusal create no
+row. On an admitted new operation, durable preparation precedes directory creation, staging and native
+execution. A process crash after that claim, during publication or before settlement leaves blocking
+evidence even if the current file happens to contain the desired bytes. A valid committed retained
+result takes §4's saved-result path without another native operation. Sessions retain their content-free
+rows and never replay. No migration or manufactured row can recover evidence for an older unjournaled
+write.
 
 ## 4. The resume gate
 
@@ -183,7 +201,7 @@ follow-up stays visible.
 
 ### Retained evidence and early inspection — MVP-3
 
-**Accepted design refinement, implementation pending (2026-11-12):**
+**Accepted design refinement; Step 2 implementation in progress, not accepted (2026-11-12):**
 [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
 adds one required read-only dispatch operation and closes two inherited replay
 validation gaps. This subsection owns the new protocol; §4's node gate and
@@ -309,8 +327,8 @@ the call would be a second crash window rather than fewer.
 
 ## 7. Ordering, and what happens when each step fails
 
-For accepted but unimplemented MVP-3 prepared filesystem calls, the refined
-ordering and saved-result confirmation are in
+For MVP-3 prepared filesystem calls, whose Step 2 implementation is in progress,
+the refined ordering and saved-result confirmation are in
 [the registry contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
 The earlier read-only inspection changes no new-effect prepare/settle boundary;
 its replay and inspection-fault classifications are specified in §4 above.

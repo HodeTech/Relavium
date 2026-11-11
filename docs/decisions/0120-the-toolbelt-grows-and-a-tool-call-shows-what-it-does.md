@@ -341,3 +341,12 @@ owns scope, steps and the remaining implementation/security acceptance gates.
 - `edit_file`'s read-before-edit rule needs per-session read bookkeeping.
 - The output store adds session-scoped files on disk, with their own sweep.
 - A resumed session shows less than the live one did, by design.
+
+> Refined 2026-11-12 by [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> prepared write publication gains a narrow Rust/Node-API CLI host boundary for
+> preserve-or-refuse security metadata, OS-derived new-file inheritance and
+> private crash-recoverable staging. Every `write_file` call requires tier-3
+> durable admission; `edit_file` remains tier 3. The core capability/approval
+> seam stays platform-pure TypeScript. The [metadata contract](../reference/cli/native-filesystem-metadata.md)
+> owns exact profiles, dependency/delivery gates and native proof; this is design
+> authorization, not acceptance of the prototype or native implementation.

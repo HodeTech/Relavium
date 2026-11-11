@@ -79,8 +79,11 @@ has the full Phase 2.6 plan.
 
 These apply to every AI agent in this repo, regardless of model, runner, or tool.
 
-1. **TypeScript-first, strict.** All source is TypeScript. Strict mode; no `any`,
-   no unsafe `as`. Prefer type guards. See [docs/standards/code-style-typescript.md](docs/standards/code-style-typescript.md).
+1. **TypeScript-first, strict.** Application/engine source is TypeScript. Strict mode; no `any`,
+   no unsafe `as`. Prefer type guards. [ADR-0125](docs/decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+   permits only the CLI filesystem metadata adapter's Rust/Node-API source/build
+   boundary; shared/core and the LLM seam remain platform-pure TypeScript.
+   See [docs/standards/code-style-typescript.md](docs/standards/code-style-typescript.md).
 2. **Build in-house; minimize dependencies.** Write our own better implementations
    for the core. **No new runtime dependency without an ADR.** Never adopt the
    Vercel AI SDK or LangChain for the LLM layer — Relavium owns `@relavium/llm`.

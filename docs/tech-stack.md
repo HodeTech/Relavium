@@ -14,6 +14,18 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > version-of-record for the *choices*, the catalog for the *numbers*. A bump is a one-line
 > catalog edit.
 
+> **Native CLI filesystem exception.** [ADR-0125](decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+> selects a first-party Rust/Node-API host component with `napi`, `napi-derive`,
+> build-only `napi-build`, POSIX `libc` and Windows `windows-sys`. Its exact
+> crate/features and toolchain pins belong in the component's Cargo manifest,
+> committed lockfile and Rust toolchain file, not the npm catalog. Native
+> implementation starts only after those inputs pass the recorded provenance,
+> cooling-window, license/advisory and feature-closure review. The
+> [native contract](reference/cli/native-filesystem-metadata.md) owns the minimal
+> Node-API level, eight-target proof obligation and adapter-specific prebuilt
+> delivery rule; it does not certify the existing SQLite/keyring install paths
+> as download- or compiler-free. No native implementation is accepted yet.
+
 ## Final Stack
 
 | Layer | Decision | Key reason |

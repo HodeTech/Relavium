@@ -84,12 +84,15 @@ captures their disposition. [Step 2 implementation is active](phases/phase-2.6-c
 ADR-0124 needs no further design approval. The newly discovered native decision
 below has its own approval gate. Steps 2/3 and whole-MVP-3 acceptance remain open.
 
-**Step 2 metadata gate:** native experiments verified that mode/uid/gid-only
-atomic replacement can bypass an ACL denial and lose security attributes.
-[Proposed ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
-requires explicit maintainer approval for a narrowly scoped native host
-adapter/build exception. Independent backend/UI work continues; metadata-dependent
-publication and Step 2 acceptance remain gated.
+**Step 2 metadata design accepted:** source review and reproducible macOS
+OS/algorithm probes established the mode/uid/gid-only replacement hazard.
+[ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+is accepted under the maintainer's instruction after verifying the supplied
+reviews: all model file writes require tier-3 durability; new-file policy,
+staging recovery/model isolation and the narrow native host/build exception
+are specified in its canonical contract. Native implementation proceeds after
+dependency pin/audit; profile, implementation/security and Step 2 acceptance
+remain open. This is no claim that the complete host/native adapter was tested.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

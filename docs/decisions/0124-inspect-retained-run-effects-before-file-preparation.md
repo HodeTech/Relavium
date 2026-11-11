@@ -156,3 +156,12 @@ the current caller requests. A read-only lookup supplies the missing information
   effect-journal §4/§7, registry, three-step plan and current roadmap updates.
   This accepted design remains unimplemented; design and implementation acceptance
   must not be conflated.
+
+> Partially superseded 2026-11-12 by [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> all built-in `write_file` operations now require tier-3 durability, including
+> overwrite and new files. Prepared overwrite/new-file calls therefore use this
+> ADR's early inspection as well; the earlier overwrite-hot-path exclusion no
+> longer applies. Read-only tools remain outside journaling. Strict retained
+> evidence, current confirmation, conditional model-call identity and session
+> non-replay are unchanged. The canonical [journal predicate](../reference/shared-core/effect-journal.md#3-what-is-journaled)
+> owns the ruling; this note does not claim implementation acceptance.

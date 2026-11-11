@@ -47,6 +47,17 @@ interface ToolDef<Args = unknown, Result = unknown> {
    * base URL / timeout the model can't touch).
    */
   readonly configOnlyParams?: readonly string[];
+  /** Explicit pure field selection; absent means name-only, never enumerate arguments. */
+  readonly preview?: (args: Args) => ToolPreview;
+  /** Trusted first-party filesystem preparation; invocation is read-only, before approval. */
+  readonly prepare?: (
+    args: Args,
+    host: ToolHost,
+    ctx: ToolDispatchContext,
+  ) => Promise<ToolPreparedCall<Result>>;
+  readonly requiresFsMethod?: 'findFiles' | 'searchFiles' | 'prepareWrite';
+  readonly effect?: (args: Args) => EffectTier | undefined;
+  readonly duplicationBenign?: boolean; // trusted built-ins only; see effect-journal.md §3
 
   readonly policy: ToolPolicyClass;
 
@@ -274,6 +285,11 @@ live durability latch independently of journal tier or cached effect identity.
 
 ```ts
 interface ToolDispatchContext {
+  readonly onToolLiveEvent?: ToolLiveObserver; // synchronous, ephemeral display only; no authority
+  readonly readScope?: ToolReadScope;       // current tool-loop read evidence; never persisted
+  readonly effects: EffectDispatchPort;    // REQUIRED; unwiredEffectJournal refuses journal operations
+  readonly effectSlot: EffectSlot;         // engine-owned ordinal across the current tool loop
+  readonly effectAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
   readonly hostCallOptions?: ToolHostCallOptions | undefined; // trusted execution-only lifetime authority, never tool arguments
   readonly nodeId: string;
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
@@ -319,11 +335,13 @@ preview is **secret-free, display-only**.
  *  workflow author-trust path (governed tools proceed under the step-4 floor, unchanged). */
 interface ToolApprovalContext {
   readonly confirm?: ConfirmActionHook; // ABSENT under an active regime ⇒ fail-closed deny (no_approval_hook)
+  readonly emitApprovalRequested?: (request: ToolApprovalRequest) => void; // original closed request only
 }
 
 type ConfirmActionHook = (
   request: ToolApprovalRequest,
   signal?: AbortSignalLike, // SHOULD be honored — an abort while prompting routes to the engine's cancel path
+  live?: ToolApprovalLiveContext, // in-process only; never part of the durable approval request/event
 ) => Promise<ToolApprovalDecision>;
 
 interface ToolApprovalRequest {
@@ -349,7 +367,10 @@ interface ToolActionPreview {
 }
 
 type ToolApprovalDecision =
-  | { readonly outcome: 'approve' }
+  | {
+      readonly outcome: 'approve';
+      readonly onDispatchSucceeded?: () => void; // commit a provisional mutation grant after real non-replay success
+    }
   | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
 ```
 
@@ -566,15 +587,21 @@ and pending hosts share it, so failed replacement cannot restore a grant. A
 request admitted before narrowing may finish. Workflow domains remain separately
 owned and are not switched to global chat policy.
 
-## Proposed prepared writes and live previews — MVP-3
+<a id="proposed-prepared-writes-and-live-previews--mvp-3"></a>
 
-**Accepted design, unimplemented (2026-11-11):** implements
-[ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
-with the maintainer-approved MVP-3 plan. The replay refinement is specified by
+## Prepared writes and live previews — MVP-3
+
+**Step 2 implementation in progress, not accepted (2026-11-12):** implements
+accepted [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md),
 [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
-and the [effect-journal protocol](effect-journal.md#retained-evidence-and-early-inspection--mvp-3);
-it remains unimplemented. Existing event, effect and secret-provenance contracts
-remain in force.
+and the [effect-journal protocol](effect-journal.md#retained-evidence-and-early-inspection--mvp-3).
+Shared/core/DB and CLI implementation work is uncommitted; implementation review,
+security and acceptance gates remain open. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+defines the all-write durability and native metadata completion requirements,
+accepted as corrected design after maintainer review. The interfaces below describe the current
+Step 2 source; the durability/metadata requirements describe its required final
+behavior, not accepted native support. Existing event and secret-provenance
+contracts remain in force.
 
 The engine-side `ToolDef` gains an optional pure preview declaration, separate
 from the LLM-facing tool schema. It selects a target, explicit named fields
@@ -598,8 +625,158 @@ A trusted first-party filesystem `ToolDef.prepare` hook declares a prepared
 operation without running preparation. Its presence and a non-`undefined`
 `journaledTier` identify a dispatch eligible for early replay inspection.
 Neither model arguments, a tool-name heuristic nor MCP metadata can declare
-this behavior. Capability availability is checked before dependent host work;
-read-only and naturally idempotent overwrite calls add no journal lookup.
+this behavior. Capability availability is checked before dependent host work.
+Under [effect-journal.md §3](effect-journal.md#3-what-is-journaled), every built-in
+`write_file` call and every `edit_file` call is tier 3, so new-file creation,
+overwrite, append and empty/unchanged writes take the early lookup path. Read-only
+file tools and GET requests remain outside it. All admitted new file writes
+require the existing durable journal seam before directory creation, staging or
+execution; missing wiring refuses rather than selecting a blind or native-owned
+journal fallback.
+
+### Prepared capability and live display types
+
+The model arguments in the [tool catalog](built-in-tools.md) remain separate
+from this host-only union: `old_string`, `new_string` and `replace_all` are
+validated and lowered to the camel-case fields below. `readScope` carries only
+current-loop observed-byte evidence; its absence does not waive read-before-edit.
+
+```ts
+type ToolReadScope = object;
+type FsPrepareWriteRequest =
+  | {
+      readonly kind: 'write';
+      readonly path: string;
+      readonly content: string;
+      readonly append?: boolean | undefined;
+      readonly createDirs?: boolean | undefined;
+    }
+  | {
+      readonly kind: 'edit';
+      readonly path: string;
+      readonly oldString: string;
+      readonly newString: string;
+      readonly replaceAll?: boolean | undefined;
+      readonly readScope?: ToolReadScope | undefined;
+    };
+
+interface FsPreparedWrite {
+  readonly path: string;
+  readonly before: string | null;
+  readonly after: string;
+  execute(signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<FileWritten>;
+  release(): void | Promise<void>;
+}
+
+interface FsCapability {
+  prepareWrite?(request: FsPrepareWriteRequest, signal?: AbortSignalLike): Promise<FsPreparedWrite>;
+  readFile(path: string, opts: FsReadOpts, signal?: AbortSignalLike): Promise<FileRead>;
+  writeFile(path: string, data: string, opts: FsWriteOpts, signal?: AbortSignalLike): Promise<FileWritten>;
+  listDirectory(path: string, opts: FsListOpts, signal?: AbortSignalLike): Promise<DirListing>;
+  findFiles?(path: string, opts: FsFindOpts, signal?: AbortSignalLike): Promise<FsFindResult>;
+  searchFiles?(path: string, opts: FsSearchOpts, signal?: AbortSignalLike): Promise<FsSearchResult>;
+  acknowledgeReadResult?(scope: ToolReadScope, result: unknown): void;
+  promoteReadScope?(scope: ToolReadScope): void;
+  releaseReadScope?(scope: ToolReadScope): void;
+}
+
+interface ToolPreparedCall<Result = unknown> {
+  readonly preview: ToolPreview;
+  dispatch(ctx: ToolDispatchContext): Promise<Result>;
+  release(): void | Promise<void>;
+}
+
+interface ToolDiffSourceSpan {
+  readonly line: number;
+  readonly start: number;
+  readonly end: number;
+}
+interface ToolDiffLine {
+  readonly kind: 'context' | 'added' | 'removed';
+  readonly text: string;
+  readonly ending: 'lf' | 'crlf' | 'none';
+  readonly before?: ToolDiffSourceSpan;
+  readonly after?: ToolDiffSourceSpan;
+}
+type ToolFileEndings = 'empty' | 'lf' | 'crlf' | 'mixed' | 'none';
+interface ToolFileDiff {
+  readonly before: string | null;
+  readonly after: string;
+  readonly lines: readonly ToolDiffLine[];
+  readonly beforeEndings: ToolFileEndings;
+  readonly afterEndings: ToolFileEndings;
+  readonly stats: {
+    readonly addedLines: number;
+    readonly removedLines: number;
+    readonly beforeBytes: number;
+    readonly afterBytes: number;
+  };
+}
+interface ToolPreview {
+  readonly kind: 'operation' | 'saved-result';
+  readonly target?: string;
+  readonly fields: readonly { readonly name: string; readonly value: string }[];
+  readonly diff?: ToolFileDiff;
+}
+interface ToolApprovalLiveContext {
+  readonly callId: string;
+  readonly preview: ToolPreview;
+}
+type ToolLiveEvent =
+  | { readonly phase: 'started'; readonly callId: string; readonly toolId: string }
+  | { readonly phase: 'preview'; readonly callId: string; readonly toolId: string;
+      readonly preview: ToolPreview }
+  | { readonly phase: 'completed'; readonly callId: string; readonly toolId: string;
+      readonly outcome: 'success' | 'failure' | 'denied' | 'unknown'; readonly summary?: string };
+type ToolLiveObserver = (event: ToolLiveEvent) => void;
+```
+
+`FsPreparedWrite` owns one source identity, frozen before/after bytes and one-shot
+execution through private host closures. It exposes no native token, descriptor
+or metadata blob. `before: null` means a new file; `before: ''` means an existing
+empty file. Execution consumes the preparation after final admission and
+revalidation; release also runs on denial, cancellation, replay races and errors.
+`ToolPreparedCall` keeps that ownership inside the registry. Built-in file writes
+use this path, never a legacy `writeFile` preview/publication fallback. The
+[native metadata contract](../cli/native-filesystem-metadata.md) owns platform
+access checks, preservation and publication requirements.
+
+Diff spans use one-based source line numbers and absolute half-open UTF-16
+`start`/`end` offsets into their exact side snapshot. A span includes its line
+ending; `text` excludes it, and `ending` records it separately. UTF-8 byte counts
+are the independent `beforeBytes`/`afterBytes` statistics, never guessed from
+UTF-16 lengths. Empty files have zero source lines. Complete diff coverage must
+account for every source line on each applicable side, including unchanged
+context, both sides of every changed byte, line-ending-only changes and an
+unterminated final line. A shortened card states omissions; full inspection can
+traverse all admitted changes and original spans. Budget failure refuses with
+`diff_limit`; it never produces an approved coarse replacement or silently
+clips the diff.
+
+The synchronous `onToolLiveEvent` observer receives `started` and `completed`
+for every registry dispatch attempt, including validation failure, denial,
+read-only calls and auto/always writes. `preview` is optional declared display
+state; completion has only its outcome and optional bounded summary, not raw
+arguments or result bodies. Session call ids are engine-owned; a registry may
+issue private ids for other in-process callers. Provider/model ids never become
+this authority. Consumers correlate by these ids, not tool names or durable
+event order: the current turn emits sanitized durable tool-call/result events
+after dispatch, and failed attempts may have no durable tool-call event.
+Observer failures grant no authorization and do not change dispatch. No live
+value becomes an event, history row, journal field, seed or export.
+
+An approving hook may return `onDispatchSucceeded` to commit a provisional
+`always` choice. The registry invokes it only after an actual successful
+non-replay call and its normal mapping, bounding, settlement and cancellation
+checks. The initial approval must not eagerly populate the mutation cache:
+atomic prepare may instead return a replay. Denial, cancellation, preparation
+failure and either replay path leave that provisional grant uncommitted.
+Saved-result delivery never invokes this callback, even if a hook returns one.
+This is an in-process decision receipt; neither `ToolPreview` nor the display
+observer is an authorization channel. Pre-existing cache/mode authority retains
+its normal floor.
+
+### Dispatch ordering
 
 The dispatch order is:
 
@@ -622,7 +799,8 @@ The dispatch order is:
    context. A separate call-id-correlated live display observer handles read
    rows and auto/always traces; it is not an event/history producer. Keep the
    original target for classification; never classify a redacted target.
-5. Obtain the existing mode/once/always decision, prepare the durable effect row,
+5. Obtain the existing mode/once/always decision, prepare the durable effect row
+   for every new built-in write/edit,
    and retain all existing post-approval/post-prepare `beforeDispatch` gates.
    If atomic prepare instead finds a retained result, use the same strict replay
    validation and saved-result path; release the unused preparation.
@@ -688,7 +866,12 @@ as recoverable `tool_failed`; node retry remains disabled. On existing
 the existing finite tool/correction budgets; workflow nodes retain fail-fast
 policy. A same-shaped failure after effect preparation/dispatch is not eligible.
 Final revalidation failure stays conservatively fatal if its no-effect status
-cannot be established through the existing journal protocol. User/mode rejection,
+cannot be established through the existing journal protocol. Native metadata
+admission failures are fixed-reason fatal safety refusals, never additions to
+this correction vocabulary. Generic read-only preparation failure does not
+prove that classification: the native host must map metadata refusals to an
+existing fatal denial or fixed-diagnostic `ToolExecutionError` with both
+`recoverable: false` and `retryable: false`. User/mode rejection,
 protected/confidentiality/guardrail denial, cancellation and uncertain effects
 keep their current classifications. No generic side-effect failure or denial
 recovery is activated before MVP-4.

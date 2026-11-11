@@ -461,3 +461,13 @@ history and grants no automatic effect retry or whole-wave completion.
 > rewritten, and no effect retry authority is added. New independent review,
 > separate security and corrected-source publication checks remain pending in
 > the [second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).
+
+> Partially superseded 2026-11-12 by [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> every built-in `write_file` call is tier 3, including overwrite/new/empty and
+> byte-identical writes; `edit_file` remains tier 3. Final content alone is not
+> a receipt for inode/security-metadata publication. The existing durable claim,
+> resume gate, strict retained evidence and session non-replay remain; no second
+> native effect journal is introduced. Historical overwrite exclusions are
+> preserved above as history. The canonical [journal predicate](../reference/shared-core/effect-journal.md#3-what-is-journaled)
+> and metadata contract own the new scope and crash cuts. Implementation and
+> native security acceptance remain open.
