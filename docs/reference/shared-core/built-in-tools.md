@@ -109,6 +109,9 @@ invent an unvisited total or global-newest claim. Each clipped line states its
 exact omitted byte count. Root ignore files use the declared subset; unreadable
 or unsupported rules/nested ignore files produce incomplete results rather than
 pretending to apply those rules.
+Ignore matching uses canonical workspace-relative candidates, including an
+invocation whose working directory is a permitted symlink. A present but
+unresolvable root ignore entry is unreadable input, not a proven absent file.
 Scoped discovery checks up to 32 admitted ancestors above its selected root for
 unsupported ignore files, stopping at workspace, grant or confidentiality
 boundaries. It also

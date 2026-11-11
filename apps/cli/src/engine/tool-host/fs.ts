@@ -1143,7 +1143,10 @@ async function discover(
   const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
   for (const name of IGNORE_FILES) {
     const target = join(workspaceRoot, name);
+    let present = false;
     try {
+      await lstat(target);
+      present = true;
       const real = await realpath(target);
       if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) {
         stop('ignore');
@@ -1181,7 +1184,7 @@ async function discover(
       ignoreWork += lines.reduce((sum, line) => sum + line.length + 1, 0);
     } catch (error) {
       throwIfAborted(signal);
-      if (errnoCode(error) !== 'ENOENT') {
+      if (present || errnoCode(error) !== 'ENOENT') {
         stats.unreadable++;
         stop('ignore');
         break;
@@ -1275,7 +1278,7 @@ async function discover(
         }
         const candidate = join(resolved, entry.name);
         const rel = posixRel(root, candidate);
-        const workspaceRel = posixRel(config.workspaceDir, candidate);
+        const workspaceRel = posixRel(workspaceRoot, candidate);
         // Ignore and glob matching are independent. Charge each pattern against its candidate,
         // including retry work in the two-pointer matchers, without multiplying the two sets.
         // `**` can retry whole path segments; bound those retries by the number of

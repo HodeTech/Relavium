@@ -1674,6 +1674,19 @@ unchanged. Workspace lint/typecheck, build/format and compiled CLI smoke pass.
 A fresh cumulative review and the separate security sitting remain due;
 Step 1 is not accepted.
 
+**Independent round 4 — `3c4211cd..e5ca8a4d`:** a fresh Sol/high reviewer
+covered all 35 changed files, their real callers and persistence boundaries;
+928 tests across all 17 changed suites passed. Two native-probed medium
+findings remained: anchored ignore matching used the lexical workspace alias,
+and an existing dangling root ignore link was treated as an absent input.
+Root independently reproduced both for find/search. Matching now uses the
+canonical workspace root; fixed-name absence is distinguished from resolution
+failure after `lstat` proved presence. Four regressions failed before correction
+and now pass; the native/host matrix passes 346 tests with three existing
+platform skips. Workspace lint/typecheck, build/format and compiled CLI smoke
+pass. A fresh clean cumulative review and separate security sitting are still
+required before Step 1 acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

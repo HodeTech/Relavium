@@ -102,6 +102,43 @@ for (const tool of ['find', 'search'] as const) {
 }
 
 it.each(['.gitignore', '.relaviumignore'])(
+  'applies anchored %s rules when the workspace is reached through an alias',
+  async (name) => {
+    const physical = join(root, 'physical');
+    const alias = join(root, 'alias');
+    await mkdir(physical);
+    await symlink(physical, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await writeFile(join(physical, name), '/ignored.txt\n');
+    await writeFile(join(physical, 'ignored.txt'), 'needle\n');
+    await writeFile(join(physical, 'allowed.txt'), 'needle\n');
+    const fs = createNodeFsCapability({ tier: 'sandboxed', workspaceDir: alias, readOnly: true });
+    const found = await fs.findFiles?.('.', { glob: '*.txt' });
+    const searched = await fs.searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+    expect(found?.files.map((file) => file.path)).toEqual(['allowed.txt']);
+    expect(searched?.matches.map((match) => match.path)).toEqual(['allowed.txt']);
+    expect(found?.stats.incomplete).toBe(false);
+    expect(searched?.stats.incomplete).toBe(false);
+  },
+);
+
+it.each(['.gitignore', '.relaviumignore'])(
+  'reports a present but dangling root %s as unreadable input',
+  async (name) => {
+    await symlink(
+      join(root, 'missing-ignore'),
+      join(root, name),
+      process.platform === 'win32' ? 'junction' : 'file',
+    );
+    await writeFile(join(root, 'allowed.txt'), 'needle\n');
+    const fs = capability();
+    const found = await fs.findFiles?.('.', { glob: '*.txt' });
+    const searched = await fs.searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+    for (const result of [found, searched])
+      expect(result?.stats).toMatchObject({ unreadable: 1, incomplete: true, limit: 'ignore' });
+  },
+);
+
+it.each(['.gitignore', '.relaviumignore'])(
   'reports unsupported scoped-subdirectory %s rules for both discovery tools',
   async (name) => {
     await mkdir(join(root, 'src'));
