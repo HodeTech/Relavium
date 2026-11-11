@@ -2161,6 +2161,9 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
 > records the actual-target corrections and verification.
 
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
+
 Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
 directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
 directory is `~/.relavium/`, and it always exists after a first run. From any directory under the home folder that has
@@ -3158,6 +3161,9 @@ so directly: these "should remain visible rather than disappear behind the green
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 > owns the evidence. The description and scheduling discussion below are historical.
 
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
+
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
 >
@@ -4095,10 +4101,13 @@ future test cannot silently re-acquire it.
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [x] **Closed on development — MVP-2 step 1: alt-screen word wrapping (#61).**
+- [x] **Closed on `main` — MVP-2 step 1: alt-screen word wrapping (#61).**
   Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
   tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
   see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+  Merged 2026-11-11 through PR #98 (`0db4c940`); the
+  [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
+  closes its combined verification and maintainer gate.
   **Historical scheduling:** the maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur

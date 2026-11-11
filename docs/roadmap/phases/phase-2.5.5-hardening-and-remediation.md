@@ -10682,6 +10682,12 @@ sitting, and lands in the named MVP milestone:
 links the four steps, corrected findings and separate security sittings.
 The remaining split rows retain their recorded milestones.
 
+**Merge receipt — 2026-11-11.** These MVP-2 splits are complete on `main` through
+[PR #98](https://github.com/HodeTech/Relavium/pull/98), merge `0db4c940`.
+The [MVP-2 merge checkpoint](phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
+owns final verification and maintainer acceptance. Only the listed splits close;
+the remaining work in their Wave 3 rows keeps its paused status and acceptance rules.
+
 **Amendments to the 2026-10-19 rulings** (dated, the original text kept):
 
 - *Acceptance (D64):* tiered. An increment touching an approval or consent path, egress, keys or secrets,

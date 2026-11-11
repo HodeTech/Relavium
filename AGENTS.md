@@ -22,7 +22,7 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status (2026-11-10): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
+**Status (2026-11-11): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
 published); Phase 2.6.5 is complete with approved deferrals (49/51, PR #92). Phase 2.5.5's Waves 0–2 and Wave 3
 Steps 1–8 are merged (PR #94, PR #95), and Steps 9a.1–9b.2 and NI are accepted and on `main` since the
 `development`→`main` checkpoint (PR #96, 2026-11-04). On 2026-10-26
@@ -30,9 +30,10 @@ the maintainer paused Wave 3 (Steps 9c–19 pending, not declined) and put the C
 (milestone M3.5), ordered as MVP-1…MVP-10 under decisions D58–D72 in
 [current.md](docs/roadmap/current.md#next-work--the-cli-mvp). Phase 2.6 is in progress (2.6.C and 2.6.F done,
 2.6.Q P1–P5 landed). MVP-1 is accepted and on `main` (PR #97, 2026-11-07).
-All four MVP-2 steps are implemented and independently accepted on `development` (2026-11-10),
-with clean cumulative reviews and separate security sittings; the checkpoint PR carries combined CI and
-maintainer review ([acceptance record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)).
+MVP-2 is complete and on `main` through PR #98 (`0db4c940`, 2026-11-11), including all four steps,
+review corrections, separate security sittings and passing combined CI
+([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)).
+MVP-3 is next; ADR-0116 and ADR-0120 remain Proposed and require acceptance before implementation.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.

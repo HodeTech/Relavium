@@ -1404,9 +1404,9 @@ Home and does everything there; subcommands stay for scripts.
 [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) records it. This section is the one home
 for MVP-2's scope, slices, decisions and acceptance under that direction.
 
-**Implementation receipt — 2026-11-10:** all four approved steps are implemented
-and independently accepted on `development`; see the
-[final step acceptance and checkpoint gates](#step-4-acceptance-2026-11-10).
+**Completion receipt — 2026-11-11:** all four approved steps, review corrections
+and combined verification are complete and merged to `main` through PR #98;
+see the [merge checkpoint](#mvp-2-merge-checkpoint-2026-11-11).
 The dated research, preflight and initial verification notes retain their
 historical baseline; the acceptance records establish the delivered state.
 
@@ -2430,6 +2430,47 @@ configuration and security sources retain their accepted identities; this does
 not claim a fresh production security sitting. Only this acceptance/status record
 changes after the reviewed test commit. Final combined source-bound CI and
 maintainer review still gate the checkpoint PR.
+
+#### MVP-2 merge checkpoint (2026-11-11)
+
+**Complete and merged to `main`.** The maintainer merged
+[PR #98](https://github.com/HodeTech/Relavium/pull/98) on 2026-11-11 at
+`0db4c9408853f8770ea1ceb5c0cf27d515931ec0`. Its Git tree,
+`907c5e303b5e5a122a3da43bc4523f3ea1156fd9`, is identical to reviewed and tested
+head `81416f0d` and PR merge candidate `5868a8db`. `development` was fast-forwarded
+to the merge commit before this documentation close-out, without switching branches.
+
+- [x] [Step 1](#step-1-acceptance-2026-11-10): readable Markdown, wrapping/tabs and truthful CLI feedback.
+- [x] [Step 2](#step-2-acceptance-2026-11-10): native provider setup, typed key availability and source consent.
+- [x] [Step 3](#step-3-acceptance-2026-11-10): shared Home/shell initialization and global/project separation.
+- [x] [Step 4](#step-4-acceptance-2026-11-10): safe visible history, indexed discovery, `/resume`, Continue and exit hints.
+- [x] Verified supplied and subsequent findings resolved; required cumulative reviews and separate security sittings complete.
+- [x] Test-only fairness/oracle correction accepted after two fresh independent source reviews.
+- [x] Final source-bound verification and maintainer review/merge complete.
+
+The final [PR CI](https://github.com/HodeTech/Relavium/actions/runs/43017944352)
+and [development push CI](https://github.com/HodeTech/Relavium/actions/runs/43017937579)
+each passed all **18 jobs**, including the declared causal families, the Node-22
+floor, Windows native checks, all four installed-package consumers, and the main
+lint/typecheck/test/build/smoke gate. Each full Linux coverage run passed
+**857 files / 17,910 tests / 23 existing skips**, with no RPC errors. Final local
+build and enforced coverage passed at `81416f0d` (**17,911 tests / 22 existing
+Darwin skips**); SonarCloud's final-head quality gate passed. The merged PR retains
+the detailed checks, source identities and earlier failed/incomplete attempts;
+this closure does not relabel those attempts as successful.
+
+This checkpoint closes MVP-2's implementation, correction, CI and maintainer gates,
+including the MVP-2 splits pulled from paused Wave 3. No verified MVP-2 finding is
+deferred. Pending-gate wording in the dated step and correction records above is
+historical and is superseded by this checkpoint.
+
+MVP-3 is next under [the existing execution order](../current.md#next-work--the-cli-mvp).
+ADRs [0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+and [0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+remain Proposed and require acceptance before implementation. Their implementing
+increments retain the prescribed security review and D64 acceptance bar.
+Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open. npm
+still serves `0.1.1`; the D59 release guard and MVP-10 release gates remain in force.
 
 ## Deferred-tasks pulled into this phase
 
