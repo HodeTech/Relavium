@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -36,7 +36,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1 and MVP-2 are complete on `main`** (PR #97 and PR #98). **MVP-3 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1 and MVP-2 are complete on `main`** (PR #97 and PR #98). **MVP-3 is active**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
 | Branches | `main` is at `0db4c940`: the third `development`→`main` checkpoint, [PR #98](https://github.com/HodeTech/Relavium/pull/98), merged 2026-11-11 after MVP-2. `development` was fast-forwarded to that merge; post-merge documentation continues there. The [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11) records closure; the earlier PR #97 and PR #96 records remain under [History](#history). |
@@ -67,13 +67,17 @@ with their linked designs and three-step plan on 2026-11-11.
 The editing/default-grant and approval-preview increments keep their mandatory
 security review and D64 acceptance bar.
 
-**MVP-3 preflight (2026-11-11):** the
+**MVP-3 progress (2026-11-12):** the
 [accepted three-step plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
 records the documentation/code findings, corrected ADR refinements, public-contract
 changes and two independent review rounds plus a separate security sitting per
-step. Step 1 is starting. A separate pre-build security design sitting remains
-required before Step 2's approval card; design acceptance is not implementation
-acceptance.
+step. [Step 1 has local implementation acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12),
+including a clean final cumulative round and separate final-source security
+sitting; its pushed checkpoint must pass applicable CI before Step 2. The
+pre-build security design sitting is complete. Newly Proposed
+[ADR-0124](../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+requires maintainer approval before Step 2's replay/preparation integration.
+Steps 2/3 and whole-MVP-3 acceptance remain open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

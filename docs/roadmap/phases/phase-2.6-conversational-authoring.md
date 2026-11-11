@@ -1584,7 +1584,7 @@ rest of paused Wave 3 retain their existing owners. These are existing scope
 boundaries, not newly deferred MVP-3 work. At the end, update delivered docs and
 open the `development` → `main` PR for maintainer review; do not merge or publish.
 
-### Step 1 delivery — implementation review pending (2026-11-11)
+### Step 1 delivery and review record (2026-11-11)
 
 The first increment implements bounded ranged reads, literal search, glob
 discovery and explicit directory/discovery limits. Native read observations are
@@ -1732,6 +1732,39 @@ A separate Terra/high implementation security sitting at `5f35fb1b` reported no
 security finding after 333 tests. It predates the later glob correction and
 does not accept the final increment. A fresh complete cumulative round and a
 fresh affected security sitting are required before Step 1 acceptance.
+
+### MVP-3 Step 1 local acceptance (2026-11-12)
+
+The executable Step 1 source at `7df16ec2496877ae3c361aaeaf4d5ce1f018b483`
+has completed the requested review/fix cycle with no unresolved finding and no
+new deferral. All verified findings from rounds 1–6 were corrected; the original
+author gates and their source binding are recorded above. Post-correction
+workspace lint/typecheck, build/format, native/host tests and compiled CLI smoke
+pass. Test isolation remains intact; no deadline, test population or coverage
+floor was weakened.
+
+**Fresh complete cumulative round 7:** Terra/high independently reviewed all
+37 changed files and relevant callers, ownership, persistence/export and
+canonical contracts. It found zero findings; all 17 changed suites passed
+938 tests. Native descriptor probes independently confirmed the glob refusal
+and exact 16 MiB search ceiling. The reviewed files remained unchanged.
+
+**New separate implementation security sitting:** a fresh Sol/high independently
+reviewed that same final cumulative source, including the glob correction.
+It found zero findings after 22 complete suites/1,475 passing tests, zero skips,
+and independent native controls for budgets, prefix-only limits, read-receipt
+identity/lifetime, private-store permissions, actual producer joins and cleanup.
+Its source/caller/sink audit covers the affected security boundaries; unchanged
+provider, SSRF, desktop IPC and live keychain paths are not newly recertified.
+The prior `5f35fb1b` sitting is historical and does not substitute for this one.
+
+This is local implementation acceptance. Push the checkpoint on `development`
+and observe its applicable CI before the next step; native Windows evidence
+comes from that CI, not these local macOS tests. Physical-terminal and live
+provider/keychain execution are not claimed. Step 2/3 remain unimplemented, the
+built-in default grant is unchanged, and the separate Proposed ADR-0124 approval
+gate above remains open. This does not complete MVP-3 or authorize a merge or
+publication.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 
