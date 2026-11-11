@@ -2318,6 +2318,41 @@ was intentionally stopped after the new renderer defect was verified; that run
 is incomplete, not a green coverage receipt. A fresh cumulative round and final
 combined source-bound gates remain required after these corrections.
 
+**Cumulative correction round 2 — 2026-11-11.** Fresh native/storage and
+renderer/TUI reviewers complete the 261-path cumulative assignment at `168aaef0`
+without an actionable finding in those scopes. Their independent runs pass
+266 and 169 cases respectively; the renderer also checks 1,928 bounded input
+prefixes. These overlapping cohorts are not added to a test total.
+The separate D64 sitting passes 384 focused cases and establishes one medium
+finding: both accounting writers resolve model-catalog identity outside their
+common durability latch. A real `makeCatalogIdResolver` with an injected native
+catalog-query failure rejects an actual missing-usage or complete-usage turn,
+but a later cached-key command still dispatches in an optional-owner host.
+The finding does not establish a later provider-budget bypass or a bypass of
+production-owner termination.
+
+Both once-only catalog lookups now run inside the existing durable-write wrapper.
+Two permanent actual-turn regressions use real SQLite, the production catalog
+resolver, governor, persister and journal; they prove native query failure sets
+the original sticky error and blocks subsequent dispatch even after recovery.
+Both fail before the correction. The later superseded coverage invocation at
+`168aaef0` was intentionally stopped after this verified finding and is incomplete.
+No coverage, causal or CI acceptance is inferred from it. The final writer
+correction needs fresh independent correctness and security review; unchanged
+renderer code retains its source-bound round-2 review evidence.
+
+The writer candidate's two-worker local CLI run completes with three timeout
+failures (one existing native crash deadline and two existing Markdown timing
+cases), without a semantic assertion failure. The unchanged 200-cycle sibling
+passes after the 50/100-cycle timeouts. This run is not accepted as green. Repeat
+the entire CLI suite with one file worker, retaining every case and deadline;
+the other five workspace suites and their source identities are unchanged.
+The complete one-worker CLI repeat passes all 466 files / 7,424 cases, with the
+same 11 existing skips; build/format also pass. Together with current workspace
+lint/typecheck, isolation and the unchanged five package suites, this completes
+the author gate without raising a deadline. Independent writer review and final
+combined acceptance are still pending.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into

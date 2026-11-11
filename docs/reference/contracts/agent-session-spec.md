@@ -324,9 +324,10 @@ The persister commits the entire exchange and session totals atomically. A failu
 and stops later model/command egress. Admission checks the live latch at each provider attempt and
 effect preparation, and immediately before every actual tool dispatch, including unjournaled tools,
 a cached idle-command key and a cost-write failure after provider admission.
-Conservative-commitment writes use the same sticky failure latch: an unsuccessful
-store write preserves its original error and refuses later dispatch even if the
-store subsequently recovers. This supplements the governor's settlement barrier.
+Conservative-commitment and realized-cost writes include catalog resolution in
+the same sticky failure latch: a catalog read or store write failure preserves
+its original error and refuses later dispatch even if the store subsequently
+recovers. This supplements the governor's settlement barrier.
 The dispatch check runs
 after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.

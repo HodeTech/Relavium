@@ -602,8 +602,8 @@ export function createSessionPersister(
       // ONCE, not twice: the resolver is documented "live per lookup", so calling it in both the guard and the
       // value costs two catalog queries on a promise the governor's barrier awaits — and leaves a window where a
       // concurrent `/models` refresh between them yields `undefined`. The realized path already does this.
-      const catalogId = deps.resolveModelCatalogId?.(commitment.model);
       persistDurably(() => {
+        const catalogId = deps.resolveModelCatalogId?.(commitment.model);
         deps.store.recordSessionConservativeCommitment({
           id: deps.uuid(),
           sessionId: deps.sessionId,
@@ -675,8 +675,8 @@ export function createSessionPersister(
         draft.invocation === undefined ? undefined : usageReceipts.get(draft.invocation);
       if (receipt === undefined)
         throw new Error('session actual cost requires a live usage receipt');
-      const catalogId = deps.resolveModelCatalogId?.(draft.model);
       persistDurably(() => {
+        const catalogId = deps.resolveModelCatalogId?.(draft.model);
         const accepted = deps.store.recordSessionCost({
           id: deps.uuid(),
           sessionId: deps.sessionId,
