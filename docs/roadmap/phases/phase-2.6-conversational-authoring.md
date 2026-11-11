@@ -1600,8 +1600,9 @@ live, reused and uncertain owners. Partial initialization rolls back only proven
 owned entries and reports cleanup uncertainty. Fresh/resume/clear/reseat and
 Home teardown share the owning lifecycle, including abandoned builds.
 
-The complete author `pnpm run ci` passes with all 32 changed TypeScript files
-unchanged throughout the run. Workspace tests include 7,466 CLI and 4,992 core
+The original author gates cover the executable inputs committed as `9f148c70`:
+the complete `pnpm run ci` passes with all 32 changed TypeScript files unchanged
+throughout the run. Workspace tests include 7,466 CLI and 4,992 core
 passes; the 11 existing CLI and 11 LLM skips retain their platform/provider
 conditions. Build/format, isolation, package/bootstrap/CLI/media smokes, 1,031
 acceptance-tool tests and the wire, 23 usage, 115 filesystem and 130 secret
@@ -1617,6 +1618,26 @@ pending. Author implementation agents and
 the earlier design sitting do not count as those reviews. This entry records
 delivered scope, not Step 1 acceptance or whole-MVP-3 completion. Native Windows
 CI and real-terminal acceptance are not claimed from the local macOS run.
+
+**Independent round 1 — `3c4211cd..9f148c70`:** three fresh reviewers covered
+the entire increment: GPT-6.1 Terra/high on native filesystem behavior,
+GPT-6.1 Sol/high on private storage, and a separate Sol/high on core/lifecycle
+and canonical docs. Four findings were independently verified; none was skipped.
+
+| Verified finding | Correction |
+|---|---|
+| Scoped discovery treated a nested ignore file as workspace-root input | Compare its canonical directory with the canonical workspace root, independent of the requested walk's depth; test both ignore names and both discovery tools. |
+| A candidate open failure aborted `find_files` | Return the bounded partial result with unreadable/incomplete metadata, preserving cancellation precedence. |
+| Initial temp `fstat` failure leaked uncounted files and allowed further admission | Track exclusive creation separately; seal the instance, retain reservations and report uncertainty when no inode pin exists. Never delete an unpinned file. |
+| Scratch section claimed native chat had no allocator | Distinguish the implemented session-output lifecycle from the still separate child-artifact foundation. |
+
+Root native probes reproduced both discovery defects and the store quota
+failure before correction. Four new regression cases failed on the reviewed
+production code and pass after the fixes; the focused native/filesystem/host
+matrix passes 329 tests with three existing platform skips. Workspace
+lint/typecheck, build/format, test isolation, compiled CLI/bootstrap smokes and
+finite bundle closure pass. The fresh second round and separate security
+sitting are still pending; Step 1 is not accepted.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

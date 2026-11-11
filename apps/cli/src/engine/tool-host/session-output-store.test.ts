@@ -94,6 +94,68 @@ async function orphan(pid: number, unexpected = false): Promise<string> {
 }
 
 describe('private session-instance output store', () => {
+  it('seals admission and reports uncertainty when the first native temp fstat fails', () => {
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--no-warnings',
+        '--import',
+        new URL('../fixtures/usage-coverage-crash-register.mjs', import.meta.url).href,
+        '--input-type=module',
+        '-e',
+        `
+          import fs from 'node:fs/promises';
+          import {syncBuiltinESMExports} from 'node:module';
+          import {join} from 'node:path';
+          const originalOpen = fs.open;
+          let inject = true;
+          fs.open = async (...args) => {
+            const handle = await originalOpen(...args);
+            if (inject && String(args[0]).endsWith('.tmp'))
+              handle.stat = async () => { throw Object.assign(new Error('fixture fstat fault'), {code: 'EIO'}); };
+            return handle;
+          };
+          syncBuiltinESMExports();
+          const {createSessionOutputStore} = await import(${JSON.stringify(new URL('./session-output-store.ts', import.meta.url).href)});
+          const store = await createSessionOutputStore({homeDir: process.argv[1], limits: {files: 2}});
+          const failures = [];
+          for (let index = 0; index < 3; index++) {
+            try { await store.spill('fixture private bytes', {}); }
+            catch (error) { failures.push({reason: error.reason, cleanupUncertain: error.cleanupUncertain}); }
+          }
+          inject = false;
+          let retry;
+          try { await store.spill('healthy fixture bytes', {}); retry = 'succeeded'; }
+          catch (error) { retry = error.reason; }
+          const parent = join(process.argv[1], '.relavium', 'session-outputs-v1');
+          const root = join(parent, (await fs.readdir(parent))[0]);
+          const temps = (await fs.readdir(root)).filter(name => name.endsWith('.tmp')).length;
+          let close;
+          try { await store.close(); close = 'succeeded'; }
+          catch (error) { close = error.reason; }
+          process.stdout.write(JSON.stringify({failures, temps, retry, close}));
+        `,
+        home,
+      ],
+      { encoding: 'utf8', timeout: 4000 },
+    );
+    expect(child.stderr).toBe('');
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe(
+      JSON.stringify({
+        failures: [
+          { reason: 'io', cleanupUncertain: true },
+          { reason: 'closed', cleanupUncertain: false },
+          { reason: 'closed', cleanupUncertain: false },
+        ],
+        temps: 1,
+        retry: 'closed',
+        close: 'cleanup',
+      }),
+    );
+  });
+
   it('rolls back a failed initializer before marker publication and allows a clean retry', async () => {
     let attempts = 0;
     const options = {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -72,6 +72,36 @@ it('searches literals and applies root ignore rules and confidentiality', async 
   expect(result?.matches.map((m) => [m.path, m.line])).toEqual([['yes', 1]]);
   expect(result?.stats.incomplete).toBe(false);
 });
+
+it.each(['.gitignore', '.relaviumignore'])(
+  'reports unsupported scoped-subdirectory %s rules for both discovery tools',
+  async (name) => {
+    await mkdir(join(root, 'src'));
+    await writeFile(join(root, 'src', name), 'ignored.txt\n');
+    await writeFile(join(root, 'src', 'ignored.txt'), 'literal-needle\n');
+    const fs = capability();
+    const found = await fs.findFiles?.('src', { glob: '*.txt' });
+    const searched = await fs.searchFiles?.('src', { pattern: 'literal-needle' });
+    for (const result of [found, searched])
+      expect(result?.stats).toMatchObject({ incomplete: true, limit: 'ignore' });
+  },
+);
+
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  'returns incomplete discovery metadata when opening a regular candidate is denied',
+  async () => {
+    const target = join(root, 'unreadable.txt');
+    await writeFile(target, 'ordinary text');
+    await chmod(target, 0);
+    try {
+      const result = await capability().findFiles?.('.', { glob: '*.txt' });
+      expect(result?.files).toEqual([]);
+      expect(result?.stats).toMatchObject({ unreadable: 1, incomplete: true });
+    } finally {
+      await chmod(target, 0o600);
+    }
+  },
+);
 
 it('reports unsupported ignore input and never follows directory symlinks or hard links', async () => {
   await mkdir(join(root, 'dir'));

@@ -149,6 +149,9 @@ owners and unmarked/malformed entries. An incomplete scan emits a fixed safe
 notice. Close seals new work, joins actual read/write producers, then validates
 and removes only owned files; cleanup uncertainty is reported. This is bounded
 filesystem work under owner-controlled storage, not an OS race-free jail.
+If exclusive temporary creation succeeds but its native identity cannot be
+captured, the instance seals admission, retains the reservation and reports
+cleanup uncertainty; an unpinned file is never guessed safe to delete.
 No content/ref is added to session messages, display metadata, session effects,
 exports or `history.db`. This lifecycle is not the future child-artifact store.
 
@@ -502,7 +505,7 @@ The host-only `issueHostScratchRoot({ homeDir, rootDir })` factory issues an opa
 
 Both lexical and canonical containment must hold. Anchor/root identities are pinned and rechecked; anchor/root and descendant directories require owner-only POSIX modes and ownership, and symlink descendants refuse. The descriptor exempts only the ancestor `.relavium` component for accesses inside that exact subtree. Home config/history, every project `.relavium`, siblings/prefixes and nested secret/protected components remain denied. Windows retains the owner-controlled profile/ACL assumption; POSIX-bit checks do not verify Windows ACLs.
 
-Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automatic global tmp provisioning is removed without deleting existing directories; ordinary chat has no production allocator. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns production provisioning, per-parent isolation, join, cleanup and recovery.
+Native chat provisions the private session-output lifecycle described [above](#file-tool-inputs-results-and-resource-limits); its opaque reference reader does not add that subtree to ordinary filesystem grants. Automatic global tmp provisioning remains removed without deleting existing directories. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns child-artifact provisioning, per-parent isolation, join, cleanup and recovery; the session-output store does not activate that foundation.
 
 ### Physical media storage and limits
 

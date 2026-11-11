@@ -1124,8 +1124,9 @@ async function discover(
   };
   const bodies: string[] = [];
   let ignoreWork = 0;
+  const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
   for (const name of ['.gitignore', '.relaviumignore']) {
-    const target = join(fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config)), name);
+    const target = join(workspaceRoot, name);
     try {
       const real = await realpath(target);
       if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) {
@@ -1206,7 +1207,10 @@ async function discover(
           stop('entries');
           break;
         }
-        if (next.depth > 0 && (entry.name === '.gitignore' || entry.name === '.relaviumignore')) {
+        if (
+          resolved !== workspaceRoot &&
+          (entry.name === '.gitignore' || entry.name === '.relaviumignore')
+        ) {
           stop('ignore');
           break;
         }
@@ -1262,13 +1266,21 @@ async function discover(
         const display = relWorkspace(config, candidate);
         if (find !== undefined) {
           // Open even find results so hard links cannot disclose aliases across the jail.
-          const checked = await readJailedFile(
-            real,
-            0,
-            rejectAliasedRead(config, real),
-            undefined,
-            signal,
-          );
+          let checked: JailedRead;
+          try {
+            checked = await readJailedFile(
+              real,
+              0,
+              rejectAliasedRead(config, real),
+              undefined,
+              signal,
+            );
+          } catch {
+            throwIfAborted(signal);
+            stats.unreadable++;
+            stats.incomplete = true;
+            break;
+          }
           if (
             checked.kind === 'aliased' ||
             checked.kind === 'special' ||
@@ -1306,6 +1318,7 @@ async function discover(
             signal,
           );
         } catch {
+          throwIfAborted(signal);
           stats.unreadable++;
           stats.incomplete = true;
           break;

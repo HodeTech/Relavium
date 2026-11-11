@@ -62,7 +62,7 @@ export class SessionOutputStoreError extends HostCapabilityError {
   readonly cleanupUncertain: boolean;
   constructor(
     reason: StoreReason,
-    /** A failed initializer could not prove complete rollback; no native cause or path is retained. */
+    /** An initializer or spill could not prove complete rollback; no native cause/path is retained. */
     cleanupUncertain = false,
   ) {
     super(`session output store: ${reason}`);
@@ -560,10 +560,12 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
     const finalName = `${id}.txt`;
     let currentName = tempName;
     let identity: BigIntStats | undefined;
+    let tempCreated = false;
     let published = false;
     try {
       validateOwned();
       const handle = await open(join(root, tempName), WRITE_FLAGS, 0o600);
+      tempCreated = true;
       try {
         identity = await handle.stat({ bigint: true });
         regular(identity);
@@ -617,11 +619,21 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
       return { ref: `output://${instance}/${id}`, byteLength: length };
     } catch (error) {
       abort(signal);
-      throw normalize(error);
+      const primary = normalize(error);
+      throw tempCreated && identity === undefined
+        ? new SessionOutputStoreError(primary.reason, true)
+        : primary;
     } finally {
       if (!published) {
-        totalBytes -= length;
-        fileCount--;
+        if (tempCreated && identity === undefined) {
+          // Exclusive creation succeeded, but no inode pin was captured. Never guess deletion authority
+          // or reuse its reservations; quarantine this instance and report uncertainty on close.
+          cleanupFailed = true;
+          sealed = true;
+        } else {
+          totalBytes -= length;
+          fileCount--;
+        }
         if (identity !== undefined)
           try {
             await remove(currentName, identity);
