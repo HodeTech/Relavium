@@ -1711,6 +1711,28 @@ creating a journal row on an edit precondition refusal. Its independent proposal
 review found no blocker; this is not an implementation security sitting. Step 1
 continues independently; no Step 2 source change precedes approval.
 
+**Independent round 6 — `3c4211cd..5f35fb1b` (2026-11-12):** a fresh Sol/high
+reviewer completed all 37 changed files (including the separately Proposed
+ADR-0124/index) and surrounding callers; all 17 changed suites passed 935 tests.
+One medium finding remained in glob reads: full-source UTF-8/NUL validation
+returned a binary skip before aggregate charging. Root independently measured
+20,971,520 candidate bytes read while returning only ten valid text bytes.
+
+Glob admission now charges fully read skipped sources independently of returned
+text size. The existing bounded prefix-only binary skip remains separate; the
+opened descriptor's size must fit the remaining budget before a full read.
+Two new regressions failed before correction, and an in-budget positive control
+preserves accurate returned text size. The native/host matrix passes 352 tests
+with three existing platform skips. The same native probe now refuses at the
+8 MiB aggregate limit after 7,348,224 candidate bytes (including the final
+bounded probe); the search probe still stops at exactly 16 MiB. Workspace
+lint/typecheck, build/format and compiled CLI smoke pass.
+
+A separate Terra/high implementation security sitting at `5f35fb1b` reported no
+security finding after 333 tests. It predates the later glob correction and
+does not accept the final increment. A fresh complete cumulative round and a
+fresh affected security sitting are required before Step 1 acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

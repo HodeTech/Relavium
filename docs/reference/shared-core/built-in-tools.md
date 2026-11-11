@@ -86,13 +86,21 @@ built-in default grant remains unchanged until Step 3.
 range result adds `{ unit, start, end, startByte, endByte, omittedBytes }` to the
 existing file result; `sizeBytes` is the original source length. Empty files
 have zero lines: whole reads and byte `[0, 0)` succeed, line 1 is out of range.
-Whole/line reads scan at most 8 MiB. Byte seeks may address larger files while
-reading at most 8 MiB; only the binary prefix and requested UTF-8 slice/boundaries
-are inspected, not the unscanned file. Such large-file seeks confer no edit
+Whole/line reads scan at most 8 MiB. Byte seeks may address larger files with at
+most 8 MiB of requested bytes, plus an 8 KiB binary prefix and two one-byte
+boundary probes; only that prefix and requested UTF-8 slice/boundaries are
+inspected, not the unscanned file. Such large-file seeks confer no edit
 evidence. Stable source evidence hashes complete files of at most 8 MiB. Each
 active tool loop retains at most 256 eligible interval records and separately
 stages at most 256 records awaiting the next model response. Promotion keeps
 the newest 256 combined records; eviction only denies later edit eligibility.
+
+Glob reads admit at most 8 MiB of complete source reads in aggregate, including
+fully read candidates later skipped for NUL/invalid UTF-8. Each opened descriptor's
+size is admitted against the remaining source budget before its full read.
+The existing prefix-only binary skip is separately bounded by 8 KiB per matched
+file (at most 200 matches by default); it consumes no full-source budget.
+Returned glob `sizeBytes` counts delivered text sources, excluding skipped ones.
 
 `find_files` accepts `glob` and optional `path` (default `.`). `search_files`
 accepts a nonempty `pattern`, optional `path`/`glob`, `caseSensitive` (default

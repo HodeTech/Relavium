@@ -104,6 +104,35 @@ it('enforces the remaining byte budget against the opened file', async () => {
   expect(budget.remaining).toBe(0);
 });
 
+it.each([0, 255])(
+  'charges fully read late binary byte %i against the glob budget',
+  async (lastByte) => {
+    const content = Buffer.alloc(1024 * 1024, 97);
+    content[content.length - 1] = lastByte;
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) => writeFile(join(root, `candidate-${i}.txt`), content)),
+    );
+    await writeFile(join(root, 'valid.txt'), 'valid text');
+    await expect(capability().readFile('*.txt', { glob: true })).rejects.toThrow(/glob.*limit/);
+  },
+);
+
+it('counts only returned text in glob sizeBytes while charging skipped full-source reads', async () => {
+  const content = Buffer.alloc(16 * 1024, 97);
+  content[content.length - 1] = 255;
+  await writeFile(join(root, 'invalid.txt'), content);
+  await writeFile(join(root, 'valid.txt'), 'OK');
+  const fs = createNodeFsCapability({
+    tier: 'sandboxed',
+    workspaceDir: root,
+    readOnly: true,
+    maxReadBytes: content.length + 2,
+  });
+  const result = await fs.readFile('*.txt', { glob: true });
+  expect(result.content).toBe('===== valid.txt =====\nOK');
+  expect(result.sizeBytes).toBe(2);
+});
+
 for (const tool of ['find', 'search'] as const) {
   it.each([2, 3, 4, 5])(
     `rejects ${tool} cancellation during root-ignore reading (poll %i)`,

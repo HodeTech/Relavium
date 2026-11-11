@@ -403,36 +403,38 @@ async function readGlob(
   }
   const parts: string[] = [];
   let totalBytes = 0;
+  let sourceBytes = 0;
   let latest = 0;
   for (const m of matches) {
     throwIfAborted(signal);
     // ONE read fd per match (probe + size + content from the single open) — so a swap after the walk's realpath
     // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
-    // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
-    // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
+    // probe may skip a binary match without a full read. Full-source validation reads (including late binary
+    // failures) consume the aggregate budget independently of returned text bytes. The fd's own size is
+    // admitted BEFORE the full read; prefix-only probes remain bounded by match count × BINARY_PROBE_BYTES.
     const result = await readJailedFile(
       m.real,
-      maxReadBytes - totalBytes,
+      maxReadBytes - sourceBytes,
       rejectAliasedRead(config, m.real),
       undefined,
       signal,
     );
-    // skip a non-text match (dir / special / aliased / binary); never charge the budget. collectGlobFiles
+    if (result.kind === 'binary') {
+      sourceBytes += result.fullReadBytes;
+      continue;
+    }
+    // Skip a match that consumed no full-source read. collectGlobFiles
     // already filters to regular, in-scope, non-sensitive files — but it does NOT check nlink, so the
     // hard-link (`aliased`) skip is enforced HERE by readJailedFile's per-fd guard (the primary aliasing
     // filter for a glob read); `directory`/`special` are the belt-and-suspenders for a post-walk swap.
-    if (
-      result.kind === 'directory' ||
-      result.kind === 'special' ||
-      result.kind === 'aliased' ||
-      result.kind === 'binary'
-    )
+    if (result.kind === 'directory' || result.kind === 'special' || result.kind === 'aliased')
       continue;
     if (result.kind === 'oversize') {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
       );
     }
+    sourceBytes += result.size;
     totalBytes += result.size;
     latest = Math.max(latest, result.mtimeMs);
     let text: string;
@@ -462,7 +464,7 @@ export type JailedRead =
   | { kind: 'directory' }
   | { kind: 'special' }
   | { kind: 'aliased' }
-  | { kind: 'binary' }
+  | { kind: 'binary'; fullReadBytes: number }
   | { kind: 'oversize'; size: number }
   | {
       kind: 'file';
@@ -571,7 +573,7 @@ export async function readJailedFile(
     if (rejectAliased && st.nlink > 1) return { kind: 'aliased' };
     const probe = Buffer.allocUnsafe(Math.min(BINARY_PROBE_BYTES, st.size));
     const probed = probe.length > 0 ? await readChunk(probe, 0, probe.length, 0) : 0;
-    if (probe.subarray(0, probed).includes(0)) return { kind: 'binary' };
+    if (probe.subarray(0, probed).includes(0)) return { kind: 'binary', fullReadBytes: 0 };
     if (
       range !== undefined &&
       (!Number.isSafeInteger(range.start) ||
@@ -656,9 +658,9 @@ export async function readJailedFile(
       try {
         new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(content);
       } catch {
-        return { kind: 'binary' };
+        return { kind: 'binary', fullReadBytes: st.size };
       }
-      if (content.includes(0)) return { kind: 'binary' };
+      if (content.includes(0)) return { kind: 'binary', fullReadBytes: st.size };
     } else {
       for (const boundary of [from, to]) {
         if (boundary < st.size) {
