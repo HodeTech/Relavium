@@ -126,6 +126,10 @@ describe('immutable inline text aggregation', () => {
     (n) => {
       const source = '👩' + '``🇺'.repeat(n) + 'e' + '\u0301'.repeat(n * 16) + '\t';
       const end = source.length - 1;
+      // Ticks isolate each regional indicator. Removing a complete unit subtracts
+      // its width without remeasuring the unchanged long combining cluster per node.
+      const initialWidth = displayWidth(source.slice(0, end));
+      const unitWidth = displayWidth('``🇺');
       const { factory, work } = setup(() => source);
       for (let index = 0; index < n; index++) {
         const start = 2 + index * 4;
@@ -134,7 +138,7 @@ describe('immutable inline text aggregation', () => {
           factory.raw(start, end),
           factory.raw(end, source.length),
         ]);
-        const expected = 8 - (displayWidth(source.slice(0, 2) + source.slice(start, end)) % 8);
+        const expected = 8 - ((initialWidth - index * unitWidth) % 8);
         expect(factory.tabSpaces(node, end, source.length)).toEqual([
           { position: end, spaces: expected },
         ]);

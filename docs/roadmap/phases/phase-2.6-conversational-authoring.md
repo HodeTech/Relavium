@@ -2392,6 +2392,33 @@ state is removed only after those results are verified for maintainer review.
 Earlier incomplete/failed runs above remain incomplete/failed. The published CLI,
 release guard and wider MVP-3…10 scope retain their existing status.
 
+##### Final CI harness follow-up (2026-11-11)
+
+At `dfcf108b`, local enforced coverage passed all 857 files (17,911 cases,
+22 existing Darwin skips), and the complete wire/usage/filesystem/secrets controls
+passed with retained source/restoration and runtime evidence. The first final-source
+[PR CI](https://github.com/HodeTech/Relavium/actions/runs/43009284696) and
+[push CI](https://github.com/HodeTech/Relavium/actions/runs/43009275434) coverage jobs
+remain failed: respectively one and seven five-second renderer case overruns, plus
+two unhandled Vitest task-update RPC timeouts each. Their outcomes are not replaced
+by the local passing run or by successful sibling jobs.
+
+Independent diagnosis reproduced the RPC failure with the installed Vitest 3.2.6
+on both Node 22.23.1 and CI's Node 24.22.2: 100 synchronous 650-ms cases all pass
+their unchanged five-second budgets, but the 65-second file starves an update reply.
+The identical workload with an `afterEach` event-loop yield passes without the RPC
+error on both versions. The two long synchronous Markdown suites now yield between
+cases. Separately, the anchored-inline fixture measures its invariant Unicode body
+once and subtracts independently measured complete units, avoiding a quadratic
+reference calculation. All 1,920 former oracle values were checked for equivalence;
+every factory operation, assertion, counter bound, size and deadline is retained.
+
+The focused Node-22 run and Node-24 V8 diagnostic each pass the unchanged 256-case
+four-file cohort; they are not replacements for full enforced coverage. Other streaming case overruns
+are not attributed to the inline oracle or RPC failure without evidence. This
+test-only follow-up still requires fresh review and final combined CI. All
+production sources and security decisions retain their accepted identities.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into

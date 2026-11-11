@@ -182,7 +182,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
      verified supplied and subsequent findings are fixed, with fresh correctness
      and separate security review. The [final correction acceptance](phases/phase-2.6-conversational-authoring.md#final-correction-review-acceptance-2026-11-11)
      binds the reviewed revisions and unchanged-source evidence. Final combined
-     source-bound checks and maintainer review still gate the checkpoint PR.
+     source-bound checks and maintainer review still gate the checkpoint PR. The
+     [final CI harness follow-up](phases/phase-2.6-conversational-authoring.md#final-ci-harness-follow-up-2026-11-11)
+     records the failed coverage attempts and the test-only fairness/oracle correction;
+     its review and combined verification are in progress.
 3. **MVP-3 — The agent can edit.** ADR row 9 and its mandatory security review; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering

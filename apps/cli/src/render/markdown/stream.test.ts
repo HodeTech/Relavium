@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownStream } from './stream.js';
 import { layoutMarkdown } from './layout.js';
 import { parseMarkdown } from './parser.js';
 import * as parser from './parser.js';
 import * as layout from './layout.js';
+
+// Let runner task-update RPCs settle between synchronous geometry cases.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 const rows = (stream: MarkdownStream, columns = 80, count = 12): string[] =>
   stream.tail(columns, count).map((line) => line.text);

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { layoutMarkdown } from './layout.js';
 import { parseMarkdown } from './parser.js';
 import { MarkdownStream } from './stream.js';
+
+// Let runner task-update RPCs settle between synchronous geometry cases.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 const prefixes = ['- ', ' - ', '  - ', '1. ', '> ', '> - ', '- > ', '- 1. '];
 
