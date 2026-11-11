@@ -603,13 +603,15 @@ export function createSessionPersister(
       // value costs two catalog queries on a promise the governor's barrier awaits — and leaves a window where a
       // concurrent `/models` refresh between them yields `undefined`. The realized path already does this.
       const catalogId = deps.resolveModelCatalogId?.(commitment.model);
-      deps.store.recordSessionConservativeCommitment({
-        id: deps.uuid(),
-        sessionId: deps.sessionId,
-        model: commitment.model, // the RAW provider string — the attribution key, never the catalog UUID
-        ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
-        estimateMicrocents: commitment.estimateMicrocents,
-        ts: deps.now(),
+      persistDurably(() => {
+        deps.store.recordSessionConservativeCommitment({
+          id: deps.uuid(),
+          sessionId: deps.sessionId,
+          model: commitment.model, // the RAW provider string — the attribution key, never the catalog UUID
+          ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+          estimateMicrocents: commitment.estimateMicrocents,
+          ts: deps.now(),
+        });
       });
       await Promise.resolve();
     },

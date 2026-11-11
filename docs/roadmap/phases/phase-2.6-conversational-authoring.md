@@ -2214,6 +2214,48 @@ deferred-task closures without prematurely claiming unrelated MVPs complete.
 Then prepare the `development`→`main` PR for the maintainer's detailed review;
 merge and publication are not part of this implementation instruction.
 
+#### PR #98 supplied-review follow-up (2026-11-11)
+
+The maintainer supplied two reports. The corrected report binds the actual PR to
+`c04e6c13..3cae8c09` (250 files, +36,126/−1,045); the older 520-file report used a
+stale local base. Its findings were still checked against the actual code and
+accepted contracts. The following dispositions refer to those report-local IDs,
+not to a new risk-acceptance decision. No new ADR, runtime dependency or seam
+change is needed for these corrections.
+
+| Supplied finding | Verified result and action |
+|---|---|
+| Corrected report 1 and 3: destination mismatch / missing standalone origin | Fixed. Both native hosts obtain safe destination copy from the same private endpoint snapshot as the actual adapter. A second-process SQLite registry edit cannot change the card independently of its request. Real Home and standalone tests exercise validation with a recording transport and verify a fresh resolver adopts the new endpoint. Invalid stored endpoints retain their refusing adapter and fixed safe copy. |
+| Corrected report 2: quadratic email autolink rejection | Fixed with a single-pass predicate preserving the supported grammar. Differential and cold/split-live tests cover acceptance equivalence. Native cold wrapping and live final-`>` append regressions use 200,000 dots, a 256 MiB heap cap and a ten-second child deadline; the prior predicate times out on both paths. No provider or actual network request is used. |
+| H1: conservative-commitment durability | Fixed the narrower verified latch inconsistency. Failed writes now set the existing sticky durability latch and retain the original rejection. A real governor/store/host regression proves later cached-key command dispatch refuses even after store recovery. The report's provider-budget-bypass claim was not established: the existing governor barrier and host accounting-failure latch already refuse later provider egress. |
+| H2, M1: close at an exhausted cleanup deadline | No defect established. The promise acknowledges actual cleanup; the registry separately bounds its wait and reports unacknowledged owners. Calling `complete()` on deadline would falsely certify cleanup. |
+| H3, M10: autolink control bytes / metadata | No reachable sanitizer bypass established. Actual cold/live display boundaries sanitize before parsing, and link metadata is not a navigation, fetch or OSC-8 sink. The accepted parser precondition remains in force. |
+| H4, M9: oversized table/source retention | No defect established. Full-table literal fallback and source hatches require retaining the complete source; stream state resets at its existing ownership boundaries. Breaking early or dropping stabilized source would change that contract. |
+| M2: effect-turn reservation | No unsafe dispatch or identity reuse established. Typed transactional reservation refusals happen before dispatch; successful keys are durable before issue. Applying the transcript/cost latch indiscriminately would turn typed refusals into a new sticky-failure policy. |
+| M3: explicit export destination | Explicit `--out` is selected-file authority under the existing export contract. Automatic project targets keep their own boundary checks. No new project jail is introduced. |
+| M4, M5: remembered consent / exported config primitive | Remembered global consent is accepted user authority, not an untrusted project grant. The atomic writer has typed production callers and a fault-test seam; no plaintext-key write or bypass was found. |
+| M6: custom-adapter fetch injection | ADR-0065 assigns DNS-pinned transport to the host. The CLI always supplies its validated transport; no CLI SSRF bypass was established. Requiring a different package factory contract is not justified by this finding. |
+| M7, M8: table padding / exhausted row width | Existing grid-width invariants and boundary tests contradict a negative-padding reproduction. Narrow positive geometry preserves source; true zero geometry already suspends interaction. Clamps or empty rows would hide an invariant failure or lose text. |
+| L1–L4: zero geometry, picker cancellation, unresolved boundary, endpoint classification | Zero remains zero so hidden approvals cannot be enabled by an 80-column fallback. Picker active/generation guards discard cancelled reads. Unresolved boundaries intentionally fail closed. Host-based wire classification is the accepted factory policy, including normalization; displayed recipient origins now retain actual ports. |
+| L5: own-export read | Existing link, descriptor identity and stat-size gates were already present. A narrower growth-after-`fstat` resource gap was reproduced and fixed: the admitted descriptor reader stops at the existing byte ceiling plus one sentinel. A real appended-file regression preserves the grown candidate and selects a new export name. |
+| L6–L9: grapheme clipping, heading indices, position radix, astral words | No defect reproduced. Clipping finds the boundary across concatenated spans; headings consistently use UTF-16 offsets for ASCII markers; the radix pruning boundary is an exact power of two; the existing two-unit word window captures the preceding astral point. Per-span segmentation would break cross-style clusters. |
+| L10–L12: ADR implementation wording | Existing dated implementation receipts already qualify historical proposal wording; the Markdown reference remains the canonical complete subset contract. No duplicate ADR amendment is necessary. |
+| O1–O3: performance evidence and CI | Native resource regressions supplement structural-work assertions; timings alone do not prove linearity. Against the actual base, only the advisory Node-floor job allowance changed from 25 to 35 minutes. Coverage/secrets allowances and required Windows/dependent map controls predate this PR. Causal bounds, inventories and coverage floors remain intact. |
+
+The original Sonar analysis at `3cae8c09` really failed reliability (C rather than
+A): its three open BUG issues are two split synchronous/async promise-handler
+warnings and a one-iteration loop. Targeted probes found no corresponding
+behavioral failure. Small clarity refactors express awaited failure handling and
+the single conditional directly, preserving same-dispatch owner admission, actual
+work joins and safe failure copy. Permanent lifecycle tests additionally observe
+unexpected presentation errors through the existing Home fatal path. No Sonar
+suppression or external issue-status change was made; only a new analysis can
+establish the corrected remote gate result.
+
+Post-correction cumulative reviews, a separate security sitting and final combined
+source-bound verification are pending. Earlier step acceptance remains historical;
+it does not accept the new corrections or make the draft checkpoint ready.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into

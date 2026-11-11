@@ -58,6 +58,17 @@ export interface ProviderResolver {
    * is still on the official API, however they spell it. OPTIONAL so a test stub can omit it; absent ⇒ official.
    */
   readonly endpointKind?: (id: ProviderId) => EndpointKind;
+  /** Safe destination captured with the actual adapter; absent only on injected resolver stubs. */
+  readonly endpointContext?: (id: ProviderId) => string;
+}
+
+/** Both native setup hosts disclose the resolver's pinned recipient, never a fresh registry read. */
+export function providerEndpointContext(resolver: ProviderResolver, id: ProviderId): string {
+  if (resolver.endpointContext !== undefined) return resolver.endpointContext(id);
+  // Injected test/embedding resolvers may omit destination metadata. Production always supplies it.
+  return resolver.endpointKind?.(id) === 'custom'
+    ? 'Configured custom endpoint (origin unavailable).'
+    : `Official endpoint: ${new URL(KNOWN_PROVIDERS[id].baseUrl).origin}`;
 }
 
 /**
@@ -425,8 +436,16 @@ export function createProviderResolver(
   // mapping lives in the seam package (`@relavium/llm`); a stored CUSTOM `base_url` (ADR-0065 §3) rebinds its
   // provider's adapter to a validated per-provider endpoint here.
   const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
+  const officialContext = (id: ProviderId): string =>
+    `Official endpoint: ${new URL(KNOWN_PROVIDERS[id].baseUrl).origin}`;
+  const endpointContexts: Record<ProviderId, string> = {
+    anthropic: officialContext('anthropic'),
+    openai: officialContext('openai'),
+    gemini: officialContext('gemini'),
+    deepseek: officialContext('deepseek'),
+  };
   // Endpoint identity comes from the same adapter factory that lowers the wire cap (ADR-0101).
-  applyCustomEndpoints(adapters, options);
+  applyCustomEndpoints(adapters, options, endpointContexts);
   // A private key-bearing result never crosses the observation boundary. Every entry point uses the
   // same current-value resolution so consent cannot be bypassed by keyFor/hasKey or a replacement host.
   const resolveKey = (
@@ -493,6 +512,7 @@ export function createProviderResolver(
   return {
     resolveProvider: (id) => adapters[id],
     endpointKind: (id) => (adapters[id].customEndpoint === true ? 'custom' : 'official'),
+    endpointContext: (id) => endpointContexts[id],
     keyFor: (id) => {
       const result = resolveKey(id);
       if (result.key === undefined) {
@@ -524,6 +544,7 @@ type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
   options: ProviderResolverOptions,
+  endpointContexts: Record<ProviderId, string>,
 ): void {
   const store = options.providerStore;
   if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
@@ -533,7 +554,7 @@ function applyCustomEndpoints(
   const getValidatedFetch = (): FetchLike =>
     (validatedFetch ??= options.validatedFetch ?? createValidatedFetch());
   for (const row of store.list()) {
-    applyCustomEndpointForRow(row, adapters, getValidatedFetch);
+    applyCustomEndpointForRow(row, adapters, getValidatedFetch, endpointContexts);
   }
 }
 
@@ -542,17 +563,23 @@ function applyCustomEndpointForRow(
   row: StoredProviderRow,
   adapters: Record<ProviderId, LlmProvider>,
   getValidatedFetch: () => FetchLike,
+  endpointContexts: Record<ProviderId, string>,
 ): void {
   const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
   if (id === undefined) return; // a non-enum name (provider add enforces the closed enum) — ignore
-  if (row.baseUrl === KNOWN_PROVIDERS[id].baseUrl) return; // the default endpoint — keep the default adapter
+  const baseURL = row.baseUrl;
+  if (baseURL === KNOWN_PROVIDERS[id].baseUrl) return; // the default endpoint — keep the default adapter
   if (id !== 'openai' && id !== 'deepseek') return; // custom base_url is openai-compatible only this round (§3)
   try {
     adapters[id] = createCustomOpenAiProvider({
       providerId: id,
-      baseURL: row.baseUrl,
+      baseURL,
       fetch: getValidatedFetch(),
     });
+    // Use the exact construction input, after the factory's admission/classification. Keeping this
+    // private snapshot beside the adapter prevents a concurrent registry edit from changing its card.
+    endpointContexts[id] =
+      `${adapters[id].customEndpoint === true ? 'Custom' : 'Official'} endpoint: ${new URL(baseURL).origin}`;
   } catch (err) {
     // **A bad stored `base_url` fails CLOSED (`CR-80`).** This used to swallow the error and leave the DEFAULT
     // adapter standing, with a comment calling that "refuse the custom endpoint" — but the default adapter is
@@ -566,6 +593,7 @@ function applyCustomEndpointForRow(
     // at the point of use instead, which is the earliest place the failure can be both loud and survivable.
     if (!(err instanceof InvalidBaseUrlError)) throw err;
     adapters[id] = refusingProvider(id, adapters[id], err);
+    endpointContexts[id] = 'Custom endpoint configuration is invalid.';
   }
 }
 

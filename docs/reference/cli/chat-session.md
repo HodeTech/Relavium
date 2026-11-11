@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -29,6 +29,11 @@ relavium chat --agent code-reviewer            # resolved inside .relavium/
 ```
 
 `relavium chat` opens an `ink`-rendered interactive REPL when a TTY is attached. The session is **auto-persisted and resumable** from the moment it starts — there is no separate save step (see [agent-session-spec.md](../contracts/agent-session-spec.md#validation-and-persistence)). Resume a prior conversation with `relavium chat-resume <sessionId>` and list past sessions with `relavium chat-list` (see [commands.md](commands.md)).
+
+Preliminary credential setup uses the same [native provider setup](home.md#first-run-onboarding-wizard-25g-s8)
+as Home, including the actual adapter's safe destination origin before asking for
+a key. Restart chat after changing a provider endpoint in another process; its
+existing resolver and displayed recipient stay pinned together.
 
 On resume or `/models` reseat, including Home reseat, a notice lists unresolved external effects and effects
 that landed in a turn that did not persist; legacy rows with no durable attribution are reported conservatively.

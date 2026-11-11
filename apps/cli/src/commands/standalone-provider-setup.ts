@@ -10,7 +10,7 @@ import {
   type PreparedConfigWrite,
   type ConfigWriteResult,
 } from '../config/write.js';
-import type { ProviderResolver } from '../engine/providers.js';
+import { providerEndpointContext, type ProviderResolver } from '../engine/providers.js';
 import type { StandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
 import {
   createProviderSetupCoordinator,
@@ -120,10 +120,7 @@ export async function runStandaloneProviderSetup(deps: {
         home: deps.loaded.homeDir,
         assertAdmitting: owner.assertAdmitting,
         credentialSurface: 'standalone-chat',
-        endpointContext: (id) =>
-          deps.resolver.endpointKind?.(id) === 'custom'
-            ? 'This key will be sent to the configured custom endpoint.'
-            : 'This key will be sent to the official provider endpoint.',
+        endpointContext: (id) => providerEndpointContext(deps.resolver, id),
         publishPreference: publish,
         wizard: {
           store: deps.store,

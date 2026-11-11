@@ -669,29 +669,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  const driveNativeAction = async (
+    operation: () => Promise<void>,
+    label: string,
+  ): Promise<void> => {
+    let work: Promise<void> | undefined;
+    try {
+      // Admission stays synchronous; teardown joins the actual operation, not this UI driver.
+      work = deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
+      nativeInFlight = work;
+      await work;
+    } catch (err) {
+      if (work !== undefined && nativeInFlight === work) nativeInFlight = undefined;
+      deps.workOwner?.failure(err);
+      if (!exiting)
+        set({
+          nativeActionBusy: false,
+          notice: `${label} could not be ${work === undefined ? 'opened' : 'completed'}.`,
+        });
+      return;
+    }
+    if (nativeInFlight === work) nativeInFlight = undefined;
+    if (!exiting) set({ nativeActionBusy: false });
+  };
+
   const openNativeAction = (operation: () => Promise<void>, label: string): void => {
     if (exiting || state.nativeActionBusy) return;
     set({ nativeActionBusy: true, palette: undefined });
-    let work: Promise<void>;
-    try {
-      work = deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
-    } catch (err) {
-      deps.workOwner?.failure(err);
-      if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be opened.` });
-      return;
-    }
-    nativeInFlight = work;
-    void work.then(
-      () => {
-        if (nativeInFlight === work) nativeInFlight = undefined;
-        if (!exiting) set({ nativeActionBusy: false });
-      },
-      (err: unknown) => {
-        if (nativeInFlight === work) nativeInFlight = undefined;
-        deps.workOwner?.failure(err);
-        if (!exiting) set({ nativeActionBusy: false, notice: `${label} could not be completed.` });
-      },
-    );
+    void driveNativeAction(operation, label).catch(failHome);
   };
 
   const openProviderSetup = (): void => {
@@ -1062,19 +1067,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     set({ submitBusy: true });
     const pending = result;
-    let work: Promise<Result>;
-    try {
-      work = deps.workOwner === undefined ? pending : deps.workOwner.enter(() => pending);
-    } catch (err) {
-      void pending.catch(() => undefined);
-      deps.workOwner?.failure(err);
-      failure(err);
-      return;
-    }
-    void work.then(success, (err: unknown) => {
-      deps.workOwner?.failure(err);
-      failure(err);
-    });
+    const finishWrite = async (): Promise<void> => {
+      let work: Promise<Result> | undefined;
+      let written: Result;
+      try {
+        // Enter before the first await so cancellation cannot overtake owner admission.
+        work = deps.workOwner === undefined ? pending : deps.workOwner.enter(() => pending);
+        written = await work;
+      } catch (err) {
+        // Admission can refuse an already-started write; its original promise still needs an observer.
+        if (work === undefined) void pending.catch(() => undefined);
+        deps.workOwner?.failure(err);
+        failure(err);
+        return;
+      }
+      success(written);
+    };
+    void finishWrite().catch(failHome);
   };
 
   // EFFORT-phase accept on the live session (ADR-0066 §5): a per-turn SESSION override via the setter — NOT a reseat

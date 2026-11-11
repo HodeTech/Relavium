@@ -76,8 +76,8 @@ import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import {
   createProviderResolver,
+  providerEndpointContext,
   providerHasKey,
-  KNOWN_PROVIDERS,
   type ProviderResolver,
 } from '../engine/providers.js';
 import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
@@ -717,18 +717,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       globalConfigIsDefault: deps.global.configPath === undefined,
       home: homeDir,
       assertAdmitting: assertHomeAdmitting,
-      endpointContext: (id) => {
-        if (providers.endpointKind?.(id) !== 'custom')
-          return `Official endpoint: ${new URL(KNOWN_PROVIDERS[id].baseUrl).origin}`;
-        const row = providerStore.list().find((candidate) => candidate.name === id);
-        try {
-          return row === undefined
-            ? 'Configured custom endpoint.'
-            : `Custom endpoint: ${new URL(row.baseUrl).origin}`;
-        } catch {
-          return 'Custom endpoint configuration is invalid.';
-        }
-      },
+      endpointContext: (id) => providerEndpointContext(providers, id),
       publishPreference,
       wizard: {
         store: providerStore,

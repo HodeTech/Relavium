@@ -91,8 +91,14 @@ automatic setup, and reminder state never grants credential authority.
 
 Manual setup keeps the existing provider → masked key → validation/retry or
 explicit save-anyway → OS-keychain flow. Native cards contain neither the key nor
-its suffix, and validation copy comes from typed reasons. The destination is
-shown safely before validation. Private input is bounded, oversized paste is
+its suffix, and validation copy comes from typed reasons. Before validation, both
+Home and standalone chat show the safe origin (scheme, host and any non-default
+port), without path, query or credentials, captured with the actual provider
+adapter. A registry edit in another process cannot change that card's recipient
+independently of its validation request. Restart Home/chat to use an externally
+changed endpoint; the existing resolver keeps its original destination. An
+invalid stored endpoint refuses validation and shows fixed recovery copy.
+Private input is bounded, oversized paste is
 rejected without truncation, and input after submit/cancel in the same dispatch
 cannot become chat text or answer the next card. Actual validation work remains
 owned until settlement even if its observation is cancelled.

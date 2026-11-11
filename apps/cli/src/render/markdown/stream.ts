@@ -1414,12 +1414,13 @@ class LiveInlineIndex implements InlineSourceIndex {
           position = Math.min(position ?? Infinity, exposed);
       }
     }
-    while (position !== undefined) {
+    if (position !== undefined) {
       this.work++;
-      if (position + token.length > end) break;
-      if (token[0] === '*' || token[0] === '_' || token[0] === '~')
-        this.watch(this.answers, position);
-      return position;
+      if (position + token.length <= end) {
+        if (token[0] === '*' || token[0] === '_' || token[0] === '~')
+          this.watch(this.answers, position);
+        return position;
+      }
     }
     this.missing(token, start, end);
     return -1;

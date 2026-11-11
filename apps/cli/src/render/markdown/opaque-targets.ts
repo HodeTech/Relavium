@@ -19,7 +19,22 @@ export function isValidLinkTarget(target: string): boolean {
 
 /** Autolinks are deliberately restricted to the documented HTTP(S) and email forms. */
 export function isAutolinkTarget(target: string): boolean {
-  return /^(?:https?:\/\/[^\s<>]+|[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)$/u.test(target);
+  const start = target.startsWith('https://') ? 8 : target.startsWith('http://') ? 7 : 0;
+  let at = -1;
+  let domainDot = false;
+  // Do not use competing repetitions around the email's dot: a long dotted
+  // domain ending in a second @ otherwise backtracks quadratically on rejection.
+  for (let position = start; position < target.length; position++) {
+    const character = target[position] ?? '';
+    if (/[\s<>]/u.test(character)) return false;
+    if (start) continue;
+    if (character === '@') {
+      if (at >= 0 || position === 0) return false;
+      at = position;
+    } else if (character === '.' && at >= 0 && position > at + 1 && position < target.length - 1)
+      domainDot = true;
+  }
+  return start ? target.length > start : at > 0 && domainDot;
 }
 
 /** Find complete links and literal unsupported links in linear time. */

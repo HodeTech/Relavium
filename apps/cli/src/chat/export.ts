@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import {
@@ -206,6 +206,22 @@ interface OwnExport {
   readonly identity: StorageFileIdentity;
 }
 
+/** Read an admitted descriptor within the existing byte ceiling, even if it grows after fstat. */
+function readOwnExportBytes(fd: number): Buffer | undefined {
+  const maxBytes = MAX_SOURCE_CHARS * 4;
+  const buffer = Buffer.alloc(64 * 1024);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    // One extra byte detects overflow without following a growing file to EOF.
+    const count = readSync(fd, buffer, 0, Math.min(buffer.length, maxBytes + 1 - total), null);
+    if (count === 0) return Buffer.concat(chunks, total);
+    total += count;
+    if (total > maxBytes) return undefined;
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+  }
+}
+
 /**
  * `path` when it holds this session's own earlier export: a regular file — never a link, so a link planted at an
  * export's name is not followed or replaced as if it were ours — within the workflow parser's size bound, whose
@@ -224,7 +240,8 @@ function ownExport(path: string, sessionId: string): OwnExport | undefined {
     if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino)
       return undefined;
     if (opened.size > BigInt(MAX_SOURCE_CHARS * 4)) return undefined;
-    const bytes = readFileSync(fd);
+    const bytes = readOwnExportBytes(fd);
+    if (bytes === undefined) return undefined;
     const text = bytes.toString('utf8');
     // The parser's own bound, in characters, before any YAML is decoded.
     if (text.length > MAX_SOURCE_CHARS) return undefined;

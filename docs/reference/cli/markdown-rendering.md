@@ -227,6 +227,11 @@ Direct tests cover every subset construct, unmatched syntax, exact/+1 limits,
 hostile controls/bidi, split chunks, escaped pipes, long unfinished lines, fences,
 tables and Unicode across spans. A structural-work counter or equivalent causal
 assertion proves incremental processing; elapsed time alone cannot prove linearity.
+Autolink admission uses a single-pass target check. A malformed email candidate
+with a long dotted domain and a second `@` must remain literal without regex
+backtracking. Native child regressions exercise actual cold wrapping and the live
+closing-delimiter append with 200,000 dots, a finite deadline and a process heap
+cap; these resource checks supplement the grammar-equivalence and structural tests.
 Test `Title\n---`, `- - -`, one-column pipe tables, fence indentation/info strings
 and nesting/fallback units both complete and split at every streaming boundary,
 through both renderers and both color policies.
