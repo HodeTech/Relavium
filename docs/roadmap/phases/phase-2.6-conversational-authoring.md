@@ -2252,9 +2252,11 @@ unexpected presentation errors through the existing Home fatal path. No Sonar
 suppression or external issue-status change was made; only a new analysis can
 establish the corrected remote gate result.
 
-Post-correction cumulative reviews, a separate security sitting and final combined
-source-bound verification are pending. Earlier step acceptance remains historical;
-it does not accept the new corrections or make the draft checkpoint ready.
+**Initial follow-up state.** Post-correction cumulative reviews, a separate
+security sitting and final combined verification were pending when this follow-up
+opened. Earlier step acceptance did not accept the new corrections. The final
+correction-review acceptance below supersedes this initial review status;
+source-bound combined checks still gate the checkpoint's readiness.
 
 **Cumulative correction round 1 — 2026-11-11.** Fresh native/storage/contracts
 and renderer reviews account for all 258 changed paths in `c04e6c13..71aaca04`;
@@ -2352,6 +2354,43 @@ same 11 existing skips; build/format also pass. Together with current workspace
 lint/typecheck, isolation and the unchanged five package suites, this completes
 the author gate without raising a deadline. Independent writer review and final
 combined acceptance are still pending.
+
+##### Final correction review acceptance (2026-11-11)
+
+The corrected source is accepted on `development` at `2e57e10a`. Fresh round-3
+correctness review and its separate D64 security sitting are clean for the final
+accounting increment and complete affected cumulative accounting/session flows.
+SEC-R2-01 is closed for both usage kinds. The previously completed round-2 native
+and renderer reviews remain bound to exact unchanged source: all 257 paths outside
+the final four-file increment match `168aaef0`, including all 114 renderer paths.
+The independently recomputed renderer identity digest is
+`a46b2b9ab4be7be853a713b52e0af104c10779af592fc5c3f243eeb3e139f1f4`.
+This retains reviewed immutable code rather than claiming a third fresh renderer
+audit or treating the round-2 security finding as a clean result.
+
+Round 3 independently passes 199 correctness cases and 277 security cases, plus
+nine bounded accounting scenarios and two late-dispatch races. They establish
+original-error identity, once-only catalog reads, missing-catalog success,
+catalog/UUID/time fault latching, sticky refusal after recovery, refusal after
+approval/preparation and discard of a prepared claim. Constructor and event-only
+projection reads are distinguished from durable money operations. Review cohorts
+overlap and are not added to a test total; the finite evidence is not universal
+proof or a real-provider/keychain/terminal certification.
+
+All verified in-scope supplied and subsequent findings are fixed; none is deferred.
+No new ADR, dependency, seam, authority grant, deadline increase or floor change
+was needed. Canonical references and status summaries are reconciled. Author
+verification includes current workspace lint/typecheck, the unchanged five package
+suites, the complete one-worker CLI run (466 files / 7,424 passes / 11 existing
+skips), build/format and isolation (857 collected files).
+
+This completes correction review, not the combined CI gate. Final enforced
+coverage, complete declared wire/usage/filesystem/secrets families, package/smoke
+and platform checks bind the checkpoint source; their actual outcomes and run
+links belong in [PR #98](https://github.com/HodeTech/Relavium/pull/98). Its draft
+state is removed only after those results are verified for maintainer review.
+Earlier incomplete/failed runs above remain incomplete/failed. The published CLI,
+release guard and wider MVP-3…10 scope retain their existing status.
 
 ## Deferred-tasks pulled into this phase
 

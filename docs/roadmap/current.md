@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -178,6 +178,11 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
      [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
      closes the four-step implementation/review plan. Required combined CI,
      coverage and platform jobs gate the checkpoint PR and its maintainer review.
+   - **PR #98 correction review accepted on `development`, 2026-11-11:** all
+     verified supplied and subsequent findings are fixed, with fresh correctness
+     and separate security review. The [final correction acceptance](phases/phase-2.6-conversational-authoring.md#final-correction-review-acceptance-2026-11-11)
+     binds the reviewed revisions and unchanged-source evidence. Final combined
+     source-bound checks and maintainer review still gate the checkpoint PR.
 3. **MVP-3 — The agent can edit.** ADR row 9 and its mandatory security review; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering
