@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { createNodeFsCapability, hasObservedRead } from './fs.js';
+import { issueHostScratchRoot } from './fs-policy.js';
 
 let root: string;
 beforeEach(async () => {
@@ -86,6 +87,71 @@ it.each(['.gitignore', '.relaviumignore'])(
       expect(result?.stats).toMatchObject({ incomplete: true, limit: 'ignore' });
   },
 );
+
+it.each(['.gitignore', '.relaviumignore'])(
+  'reports unsupported ancestor %s rules above a scoped discovery root',
+  async (name) => {
+    await mkdir(join(root, 'src', 'sub'), { recursive: true });
+    await writeFile(join(root, 'src', name), 'ignored.txt\n');
+    await writeFile(join(root, 'src', 'sub', 'ignored.txt'), 'literal-needle\n');
+    const fs = capability();
+    const found = await fs.findFiles?.('src/sub', { glob: '*.txt' });
+    const searched = await fs.searchFiles?.('src/sub', { pattern: 'literal-needle' });
+    for (const result of [found, searched])
+      expect(result?.stats).toMatchObject({ incomplete: true, limit: 'ignore' });
+  },
+);
+
+it('inspects admitted extra-root ancestors without inheriting rules above the grant', async () => {
+  const workspace = join(root, 'workspace');
+  const extra = join(root, 'extra');
+  await mkdir(workspace);
+  await mkdir(join(extra, 'sub'), { recursive: true });
+  await writeFile(join(root, '.gitignore'), 'ignored.txt\n');
+  await writeFile(join(extra, 'sub', 'ignored.txt'), 'literal-needle\n');
+  const fs = createNodeFsCapability({
+    tier: 'project',
+    workspaceDir: workspace,
+    extraRoots: [extra],
+    readOnly: true,
+  });
+  const complete = await fs.findFiles?.(join(extra, 'sub'), { glob: '*.txt' });
+  expect(complete?.stats.incomplete).toBe(false);
+  expect(complete?.files).toHaveLength(1);
+  await writeFile(join(extra, '.relaviumignore'), 'ignored.txt\n');
+  const found = await fs.findFiles?.(join(extra, 'sub'), { glob: '*.txt' });
+  const searched = await fs.searchFiles?.(join(extra, 'sub'), { pattern: 'literal-needle' });
+  for (const result of [found, searched])
+    expect(result?.stats).toMatchObject({ incomplete: true, limit: 'ignore' });
+});
+
+it('bounds ignore ancestor inspection before visiting a deeply selected directory', async () => {
+  const selected = Array.from({ length: 34 }, (_, index) => `d${index}`).join('/');
+  await mkdir(join(root, selected), { recursive: true });
+  await writeFile(join(root, selected, 'match.txt'), 'needle');
+  const result = await capability().findFiles?.(selected, { glob: '*.txt' });
+  expect(result?.stats).toMatchObject({ incomplete: true, limit: 'depth', entriesVisited: 0 });
+});
+
+it('keeps a host-issued scratch root usable without inspecting its protected parent', async () => {
+  const anchor = join(root, '.relavium');
+  const scratchRoot = join(anchor, 'scratch');
+  await mkdir(anchor, { mode: 0o700 });
+  await mkdir(scratchRoot, { mode: 0o700 });
+  await writeFile(join(anchor, '.gitignore'), 'allowed.txt\n', { mode: 0o600 });
+  await writeFile(join(scratchRoot, 'allowed.txt'), 'literal-needle\n');
+  const fs = createNodeFsCapability({
+    tier: 'sandboxed',
+    workspaceDir: root,
+    scratch: issueHostScratchRoot({ homeDir: root, rootDir: scratchRoot }),
+    readOnly: true,
+  });
+  const found = await fs.findFiles?.(scratchRoot, { glob: '*.txt' });
+  const searched = await fs.searchFiles?.(scratchRoot, { pattern: 'literal-needle' });
+  expect(found?.files).toHaveLength(1);
+  expect(searched?.matches).toHaveLength(1);
+  for (const result of [found, searched]) expect(result?.stats.incomplete).toBe(false);
+});
 
 it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
   'returns incomplete discovery metadata when opening a regular candidate is denied',

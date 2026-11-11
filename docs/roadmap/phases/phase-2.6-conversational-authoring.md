@@ -1639,6 +1639,28 @@ lint/typecheck, build/format, test isolation, compiled CLI/bootstrap smokes and
 finite bundle closure pass. The fresh second round and separate security
 sitting are still pending; Step 1 is not accepted.
 
+**Independent round 2 — `3c4211cd..fc35776a`:** fresh Terra/high reviewed native
+filesystem/core/assembly and a fresh Sol/high reviewed private storage and every
+lifecycle/caller boundary. The latter was clean (37 focused tests); the former
+passed 35 CLI and 236 core tests but found one further completeness defect:
+an unsupported ignore file in an ancestor above the selected directory was not
+visited. Root independently reproduced `src/.gitignore` with a `src/sub` walk
+for both discovery tools; the finding was accepted, not deferred.
+
+The correction checks only admitted ancestors, stops at workspace/grant/confidentiality
+boundaries and caps additional ancestor inspection at 32 directories. Nested
+ignore presence is checked before directory enumeration, using the filesystem's
+actual name resolution rather than guessing filename case. Four regressions
+failed before correction and now pass, including extra-root authority and the
+depth limit. An additional boundary control caught and corrected an intermediate
+scratch-root regression before commit: its protected parent is a boundary, not
+an input to inspect or a reason to hide the explicitly granted scratch subtree.
+The native discovery suite now has 20 passing tests; the combined native/host
+matrix passes 334 tests with three existing platform skips. Workspace
+lint/typecheck, build/format, compiled CLI smoke and bundle closure pass. A
+fresh clean cumulative round remains due before the separate security sitting
+and Step 1 acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

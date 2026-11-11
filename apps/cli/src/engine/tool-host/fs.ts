@@ -1055,6 +1055,7 @@ async function listOne(
 const SCAN_ENTRIES = 10000;
 const SCAN_DIRS = 1000;
 const SCAN_DEPTH = 32;
+const SCAN_IGNORE_ANCESTORS = 32;
 const SCAN_FILES = 1000;
 const SCAN_BYTES = 16 * 1024 * 1024;
 const SCAN_FILE_BYTES = 1024 * 1024;
@@ -1063,6 +1064,21 @@ const SCAN_WORK = 16 * 1024 * 1024;
 const IGNORE_BYTES = 64 * 1024;
 const IGNORE_RULES = 256;
 const LINE_BYTES = 2048;
+const IGNORE_FILES = ['.gitignore', '.relaviumignore'] as const;
+
+/** Presence is enough: nested rules are unsupported, so never read their contents or follow a link. */
+async function hasIgnoreFile(dir: string, signal: AbortSignalLike | undefined): Promise<boolean> {
+  for (const name of IGNORE_FILES) {
+    throwIfAborted(signal);
+    try {
+      await lstat(join(dir, name));
+      return true;
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error;
+    }
+  }
+  return false;
+}
 
 async function discover(
   config: NodeFsCapabilityConfig,
@@ -1125,7 +1141,7 @@ async function discover(
   const bodies: string[] = [];
   let ignoreWork = 0;
   const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
-  for (const name of ['.gitignore', '.relaviumignore']) {
+  for (const name of IGNORE_FILES) {
     const target = join(workspaceRoot, name);
     try {
       const real = await realpath(target);
@@ -1171,6 +1187,49 @@ async function discover(
       }
     }
   }
+  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+    if (relative(workspaceRoot, dir) === '') return false;
+    try {
+      const present = await hasIgnoreFile(dir, signal);
+      throwIfAborted(signal);
+      if (!present) return false;
+    } catch {
+      throwIfAborted(signal);
+      stats.unreadable++;
+    }
+    stop('ignore');
+    return true;
+  };
+  // A scoped walk never visits its parents. Inspect only admitted ancestors, with a separate finite
+  // ceiling, so unsupported inherited rules cannot be mistaken for a complete scan. The workspace
+  // root is the supported ignore boundary; a selected extra root never grants its own parents.
+  if (relative(workspaceRoot, root) !== '') {
+    let ancestor = dirname(root);
+    let inspected = 0;
+    while (
+      !stats.incomplete &&
+      relative(workspaceRoot, ancestor) !== '' &&
+      inScope(ancestor) &&
+      !isSensitivePolicyReadPath(ancestor, config.pathPolicy)
+    ) {
+      throwIfAborted(signal);
+      if (++inspected > SCAN_IGNORE_ANCESTORS) {
+        stop('depth');
+        break;
+      }
+      const admitted = await resolveInScope(ancestor, inScope);
+      if (admitted === undefined) {
+        stats.unreadable++;
+        stop('ignore');
+        break;
+      }
+      if (isSensitivePolicyReadPath(admitted, config.pathPolicy)) break;
+      if (await checkNestedIgnore(admitted)) break;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
+  }
   const ignored = compileIgnore(...bodies);
   const matchesGlob = glob === undefined ? () => true : compileGlob(glob);
   const files: { path: string; sizeBytes: number; lastModified: string; mtimeMs: number }[] = [];
@@ -1192,6 +1251,8 @@ async function discover(
       stats.incomplete = true;
       break;
     }
+    if (await checkNestedIgnore(resolved)) break;
+    const atWorkspaceRoot = relative(workspaceRoot, resolved) === '';
     let dir;
     try {
       dir = await opendir(resolved);
@@ -1207,10 +1268,7 @@ async function discover(
           stop('entries');
           break;
         }
-        if (
-          resolved !== workspaceRoot &&
-          (entry.name === '.gitignore' || entry.name === '.relaviumignore')
-        ) {
+        if (!atWorkspaceRoot && (entry.name === '.gitignore' || entry.name === '.relaviumignore')) {
           stop('ignore');
           break;
         }

@@ -109,10 +109,17 @@ invent an unvisited total or global-newest claim. Each clipped line states its
 exact omitted byte count. Root ignore files use the declared subset; unreadable
 or unsupported rules/nested ignore files produce incomplete results rather than
 pretending to apply those rules.
+Scoped discovery checks up to 32 admitted ancestors above its selected root for
+unsupported ignore files, stopping at workspace, grant or confidentiality
+boundaries. It also
+checks each visited non-workspace directory before enumerating it; presence is
+enough, so nested rule contents and final symlink targets are never read.
+An exhausted ancestor check reports the depth limit rather than a complete scan.
 
 | Independent host ceiling | Default |
 |---|---|
 | Visited entries / directories / depth | 10,000 / 1,000 / 32 |
+| Additional admitted ancestor directories checked for ignore files | 32; up to two fixed-name presence probes per directory |
 | Candidate files / results | 1,000 / 200 |
 | Search bytes per file / call | 1 MiB / 16 MiB |
 | Conservative matcher work units | 16,777,216 |
