@@ -232,6 +232,19 @@ with a long dotted domain and a second `@` must remain literal without regex
 backtracking. Native child regressions exercise actual cold wrapping and the live
 closing-delimiter append with 200,000 dots, a finite deadline and a process heap
 cap; these resource checks supplement the grammar-equivalence and structural tests.
+Multiline literal bracket groups retain opaque ownership across LF. A provisional
+block close/reopen must reactivate cached delimiter queries as actual input grows,
+without rescanning the retained prefix. Cold/live semantic suffix and tab checks
+cover bare, link, image and reference forms, including a wrapper outside the live
+source window and a transient thematic-break candidate inside the group.
+Replacing an inner opaque owner with an enclosing literal group must notify
+cached owner/scope queries even when byte coverage stays unchanged. Restored
+dirty decisions must settle before drawing the same append, including work
+queued during gap filling; inner autolink angle bytes must not disappear.
+Escaped literal backtick runs must consume source and preserve adjacent ticks as
+literal text. Native whole/split regressions enforce finite completion, heap and
+indexed-work bounds; a synchronous no-progress loop cannot rely on an in-process
+test timer for cancellation.
 Test `Title\n---`, `- - -`, one-column pipe tables, fence indentation/info strings
 and nesting/fallback units both complete and split at every streaming boundary,
 through both renderers and both color policies.

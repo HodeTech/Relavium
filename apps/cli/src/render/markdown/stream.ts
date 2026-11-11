@@ -721,6 +721,13 @@ interface IndexedRun {
   readonly observers: Set<InlineObserver>;
 }
 
+interface IndexedOpaqueRange {
+  readonly start: number;
+  readonly end: number;
+  readonly bare?: boolean;
+  readonly observers: Set<InlineObserver>;
+}
+
 /**
  * Append-only lexical facts for the shared canonical item interpreter. A query
  * subscribes to its actual answer (or the absent next token), rather than to a
@@ -736,7 +743,7 @@ class LiveInlineIndex implements InlineSourceIndex {
   private tokens = new Map<string, number>();
   private positions = new Map<string, PositionIndex<number>>();
   private allPositions = new Map<string, PositionIndex<number>>();
-  private opaqueRanges = new PositionIndex<{ start: number; end: number; bare?: boolean }>();
+  private opaqueRanges = new PositionIndex<IndexedOpaqueRange>();
   private radixWork = { visits: 0 };
   private opaqueCoverage = new PositionIndex<{ start: number; end: number }>(this.radixWork);
   private invalidTargetCounts: number[] = [0];
@@ -752,7 +759,6 @@ class LiveInlineIndex implements InlineSourceIndex {
   private scopedRetained = 0;
   private answers = new Map<number, Set<InlineObserver>>();
   private codeAnswers = new Map<number, Set<InlineObserver>>();
-  private codeAnswerPositions = new PositionIndex<number>(this.radixWork);
   private boundaries = new Map<number, Set<InlineObserver>>();
   private wordObservers = new Map<number, Set<InlineObserver>>();
   private singleObservers = new Map<number, Set<InlineObserver>>();
@@ -838,7 +844,6 @@ class LiveInlineIndex implements InlineSourceIndex {
     if (!observers) {
       observers = new Set();
       table.set(position, observers);
-      if (table === this.codeAnswers) this.codeAnswerPositions.set(position, position);
     }
     if (observers.has(owner)) return;
     observers.add(owner);
@@ -847,6 +852,7 @@ class LiveInlineIndex implements InlineSourceIndex {
         ? this.scope
         : undefined;
     const range = scope ? this.opaqueRanges.floor(position) : undefined;
+    this.watchOpaque(range);
     const threshold =
       scope && range && range.start >= scope.start && position < range.end && range.end > scope.end
         ? range.end
@@ -867,7 +873,6 @@ class LiveInlineIndex implements InlineSourceIndex {
       observers.delete(owner);
       if (!observers.size) {
         table.delete(position);
-        if (table === this.codeAnswers) this.codeAnswerPositions.delete(position);
       }
       if (scope?.opaqueReady && threshold !== undefined && ticket) {
         const bucket = scope.opaqueReady.floor(threshold);
@@ -878,6 +883,14 @@ class LiveInlineIndex implements InlineSourceIndex {
         this.scopedRetained--;
       }
     });
+  }
+
+  /** Owner replacement can change scope/interior answers without changing covered bytes. */
+  private watchOpaque(range: IndexedOpaqueRange | undefined): void {
+    const owner = this.owner;
+    if (!range || !owner || range.observers.has(owner)) return;
+    range.observers.add(owner);
+    owner.dispose.push(() => range.observers.delete(owner));
   }
 
   private wake(table: Map<number, Set<InlineObserver>>, position: number): void {
@@ -1009,22 +1022,24 @@ class LiveInlineIndex implements InlineSourceIndex {
     }
     if (cursor < end) gaps.push({ start: cursor, end });
     this.opaqueCoverage.set(first, { start: first, end: last });
-    const upgraded: { start: number; end: number }[] = [];
+    const replaced: IndexedOpaqueRange[] = [];
     let covered = this.opaqueRanges.ceiling(start);
     while (covered && covered.start < end) {
-      if (!bare && covered.bare) upgraded.push(covered);
+      replaced.push(covered);
       this.opaqueRanges.delete(covered.start);
       covered = this.opaqueRanges.ceiling(start);
     }
-    this.opaqueRanges.set(start, { start, end, ...(bare ? { bare: true } : {}) });
-    for (const prior of upgraded) {
-      let position = this.codeAnswerPositions.ceiling(prior.start);
-      while (position !== undefined && position < prior.end) {
+    this.opaqueRanges.set(start, {
+      start,
+      end,
+      ...(bare ? { bare: true } : {}),
+      observers: new Set(),
+    });
+    for (const prior of replaced)
+      for (const owner of [...prior.observers]) {
         this.work++;
-        this.wake(this.codeAnswers, position);
-        position = this.codeAnswerPositions.ceiling(position + 1);
+        owner.invalidate();
       }
-    }
     for (const gap of gaps)
       for (let at = gap.start; at < gap.end; at++) {
         this.work++;
@@ -1181,7 +1196,9 @@ class LiveInlineIndex implements InlineSourceIndex {
       }
       if (escaped) continue;
       if (character === '(') this.parentheses.push(position);
-      if (character === '\n') this.label = undefined;
+      // Multiline labels remain opaque literal candidates in the static scan too.
+      // Expiring them at LF exposes inner markers to enclosing delimiter queries
+      // and corrupts both clipped live text and the following tab's source column.
       if (character === '[') {
         if (
           this.label !== undefined &&
@@ -1282,6 +1299,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     this.work++;
     this.watch(this.answers, index);
     const range = this.opaqueRanges.floor(index);
+    this.watchOpaque(range);
     return (
       range !== undefined &&
       index < range.end &&
@@ -1294,6 +1312,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     this.work++;
     this.watch(this.answers, index);
     const range = this.opaqueRanges.floor(index);
+    this.watchOpaque(range);
     return (
       range !== undefined &&
       range.start < index &&
@@ -1307,6 +1326,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     this.work++;
     this.watch(this.codeAnswers, index);
     const range = this.opaqueRanges.floor(index);
+    this.watchOpaque(range);
     return (
       range !== undefined &&
       !range.bare &&
@@ -1404,6 +1424,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     let position = indexed?.ceiling(start);
     if (token[0] === '*' || token[0] === '_' || token[0] === '~') {
       const boundary = this.opaqueRanges.floor(this.scopeEnd - 1);
+      this.watchOpaque(boundary);
       if (boundary && boundary.start < this.scopeEnd && boundary.end > this.scopeEnd) {
         const exposed = this.allPositions.get(token)?.ceiling(Math.max(start, boundary.start));
         if (
@@ -1448,15 +1469,22 @@ class LiveInlineIndex implements InlineSourceIndex {
   }
 
   runEnd(start: number, character: string, end: number): number {
-    const run = this.runAt.get(start);
-    if (!run || this.units[start] !== character) return start;
+    if (this.units[start] !== character) return start;
+    // An opaque construct can expose an escaped tick as a literal item. It has
+    // no delimiter run of its own, but must consume the adjacent physical run
+    // too, so its remaining ticks cannot become a new code opener.
+    const run =
+      this.runAt.get(start) ??
+      (this.escapes[start] && this.units[start + 1] === character
+        ? this.runAt.get(start + 1)
+        : undefined);
     const owner = this.owner;
-    if (owner && run.end <= end && !run.observers.has(owner)) {
+    if (owner && run && run.end <= end && !run.observers.has(owner)) {
       run.observers.add(owner);
       owner.dispose.push(() => run.observers.delete(owner));
     }
     this.work++;
-    return Math.min(run.end, end);
+    return Math.min(run?.end ?? start + 1, end);
   }
 
   parenClose(open: number, end: number): number {
@@ -1476,6 +1504,7 @@ class LiveInlineIndex implements InlineSourceIndex {
     if (this.owner) this.singleRanges.add(this.owner, start, end);
     let count = this.singles.get(marker)?.countRange(start, end) ?? 0;
     const boundary = this.opaqueRanges.floor(this.scopeEnd - 1);
+    this.watchOpaque(boundary);
     if (boundary && boundary.end > this.scopeEnd) {
       const from = Math.max(start, boundary.start);
       const to = Math.min(end, this.scopeEnd);
@@ -2023,34 +2052,46 @@ class InlineSequence {
   }
 
   flush(): void {
-    while (this.dirtyAt.size) {
-      const old = this.dequeue();
-      if (!old?.alive || !old.dirty) continue;
-      if (this.items.floor(old.start) !== old) {
-        this.suspended.set(old.start, old);
-        continue;
+    // A provisional block can close then reopen this root. Its cached fixed-scope
+    // queries must advance with actual input until they re-register dynamically.
+    if (
+      this.bound === undefined &&
+      this.index instanceof LiveInlineIndex &&
+      this.scope.end < this.index.length
+    )
+      this.index.extendScope(this.scope, this.index.length);
+    // Restoring a cached body during gap/fill work can enqueue newly active
+    // dirty owners. Settle them before projecting the same appended input.
+    do {
+      while (this.dirtyAt.size) {
+        const old = this.dequeue();
+        if (!old?.alive || !old.dirty) continue;
+        if (this.items.floor(old.start) !== old) {
+          this.suspended.set(old.start, old);
+          continue;
+        }
+        const previous = old.previous;
+        const next = old.next;
+        this.items.delete(old.start);
+        this.geometry.delete(old.start);
+        this.discard(old);
+        let node = this.insert(old.start, previous, next, old);
+        while (node.next && node.item.end < node.next.start)
+          node = this.insert(node.item.end, node, node.next);
       }
-      const previous = old.previous;
-      const next = old.next;
-      this.items.delete(old.start);
-      this.geometry.delete(old.start);
-      this.discard(old);
-      let node = this.insert(old.start, previous, next, old);
-      while (node.next && node.item.end < node.next.start)
-        node = this.insert(node.item.end, node, node.next);
-    }
-    while (this.gaps.size) {
-      const gap = this.gaps.values().next().value;
-      if (!gap) break;
-      this.gaps.delete(gap);
-      if (!gap.alive || this.items.floor(gap.start) !== gap) continue;
-      let node = gap;
-      while (node.next && node.item.end < node.next.start)
-        node = this.insert(node.item.end, node, node.next);
-    }
-    const end = this.bound ?? this.index.length;
-    while ((this.last?.item.end ?? this.start) < end)
-      this.insert(this.last?.item.end ?? this.start, this.last, undefined);
+      while (this.gaps.size) {
+        const gap = this.gaps.values().next().value;
+        if (!gap) break;
+        this.gaps.delete(gap);
+        if (!gap.alive || this.items.floor(gap.start) !== gap) continue;
+        let node = gap;
+        while (node.next && node.item.end < node.next.start)
+          node = this.insert(node.item.end, node, node.next);
+      }
+      const end = this.bound ?? this.index.length;
+      while ((this.last?.item.end ?? this.start) < end)
+        this.insert(this.last?.item.end ?? this.start, this.last, undefined);
+    } while (this.dirtyAt.size || this.gaps.size);
   }
 
   close(end: number): void {
@@ -2073,7 +2114,6 @@ class InlineSequence {
 
   reopen(): void {
     this.bound = undefined;
-    this.scope.end = this.index.length;
     this.flush();
   }
 

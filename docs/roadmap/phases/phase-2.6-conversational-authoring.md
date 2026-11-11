@@ -2256,6 +2256,68 @@ Post-correction cumulative reviews, a separate security sitting and final combin
 source-bound verification are pending. Earlier step acceptance remains historical;
 it does not accept the new corrections or make the draft checkpoint ready.
 
+**Cumulative correction round 1 — 2026-11-11.** Fresh native/storage/contracts
+and renderer reviews account for all 258 changed paths in `c04e6c13..71aaca04`;
+a separate D64 sitting finds no additional actionable security issue. The native
+pass finds five stale reference descriptions (Home actions, `/resume`, operator
+writer status and two CLI-index summaries), corrected in their canonical homes.
+The renderer pass establishes a medium live-rendering defect: expiring a literal
+bracket label at LF exposes its inner markers to enclosing delimiter queries.
+Independent reduction confirms text/style/newline loss and incorrect tab geometry;
+canonical source and finalization stay intact.
+
+The correction retains multiline opaque label ownership. Expanded regressions
+also isolate a preexisting query-liveness defect when a provisional thematic break
+closes and then reopens a paragraph: cached fixed-scope queries keep an obsolete
+end. Growing root flushes now advance that scope through the existing targeted
+threshold queue, reactivating only affected owners instead of invalidating the
+entire retained prefix. Thirty-three permanent cases cover four bracket forms, six
+wrapper markers, split boundaries, clipped semantic suffixes, tab geometry and
+two independent destination/reference reopen controls. A bounded view may rewrap
+its clipped prefix; the tests compare wide-layout character/style/newline/tab
+suffixes rather than asserting an unsupported cold/live row alignment.
+
+A bounded mixed-input author probe then exposed stale inner-autolink decisions
+when a literal enclosing group replaces an earlier opaque owner. The reduced
+cases establish two further cache-custody faults: replacement notified newly
+covered bytes but not existing owner-identity observers, and restoring a body
+during gap/fill work could enqueue dirty work after the flush's initial drain.
+Queries now subscribe to the actual opaque owner record, with disposal under the
+existing observer lifetime; replacements wake those observers. Flush settles its
+dirty/gap/fill phases iteratively before projection. This avoids a new global
+answer index or retained-prefix scan. Existing nested-target, suspended-owner and
+opaque-crossing work/retention bounds remain unchanged. The three additional
+permanent cases cover crossing code, a reopened bare group and nested autolinks;
+the isolated diagnosis includes a finite-scope interior true-to-false transition.
+
+The bounded mixed-input replay also reduced a preexisting no-progress defect to
+five UTF-16 units: an escaped backtick exposed inside an unfinished bracketed link.
+The old live run index returns the start for that literal tick, producing a
+zero-length item; an isolated `71aaca04` child reproduces nontermination. The live
+run helper now consumes at least the current matching character and an adjacent
+physical run, retaining growth observation and literal/code parity in constant
+time. Two killable native whole/split cases cover multiple run lengths, heap and
+unchanged indexed-work limits; both time out before the correction and pass after.
+The final bounded 400-sample mixed-input author replay completes with zero
+semantic/style/tab mismatches. This is supplementary evidence, not exhaustive
+input coverage or an independent acceptance round.
+
+A pre-final, uncommitted candidate's concurrent workspace run has 16 case
+timeouts and five Vitest RPC timeouts while the exploratory probe is CPU-bound;
+it is not a green gate. On this loaded local host, the replacement workspace
+verification keeps every test and case deadline and passes `--maxWorkers=2` to
+each Vitest task, with workspace concurrency one. Repository/CI commands and
+timeouts remain unchanged. The installed Turbo package has no bundled `docs/`
+directory; its version-matched `run --help` confirms argument forwarding. Final
+source-bound results still gate acceptance.
+
+Workspace checks and the native package/smoke/tooling gates passed on `71aaca04`.
+An earlier map-control invocation correctly refused a concurrent HEAD change and
+was rerun successfully on the frozen commit. Its later superseded coverage run
+was intentionally stopped after the new renderer defect was verified; that run
+is incomplete, not a green coverage receipt. A fresh cumulative round and final
+combined source-bound gates remain required after these corrections.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into

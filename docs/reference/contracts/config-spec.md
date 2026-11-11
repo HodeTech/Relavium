@@ -152,8 +152,8 @@ A config file is committed to a repository; a grant is not.
 > default: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`** and (ADR-0059) its
 > **`default_provider`** in one atomic write, and (ADR-0066 §6) the `/models` picker's **effort sub-step**
 > additionally sets **`[preferences].reasoning_effort`** for a reasoning model — **only** those three `[preferences]`
-> keys for model/effort selection. MVP-2's accepted, unimplemented operator-state
-> writers separately admit only `standard_env_key_consent` and
+> keys for model/effort selection. MVP-2's operator-state writers are implemented
+> and accepted on `development`; they separately admit only `standard_env_key_consent` and
 > `keychain_unavailable_acknowledged`, under the contract below. Both groups use
 > closed **typed setters** (never a generic key/value
 > writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
