@@ -1397,6 +1397,164 @@ on 2026-11-08, when MVP-2 was re-planned around the Home
 **Done:** MVP-A1, MVP-A2, MVP-A3, MVP-A4 and MVP-A7 shipped with MVP-1, accepted 2026-11-06 and on `main` since
 PR #97 (merged 2026-11-07); the acceptance record is [current.md](../current.md#next-work--the-cli-mvp) item 1.
 
+## MVP-3 plan — Editing, search and reviewable effects (2026-11-11)
+
+**Status: Proposed — awaiting maintainer acceptance before product code.**
+Baseline: `6c8a89e1` on `development`, after MVP-2 merged through PR #98.
+This is the one home for MVP-3's implementation plan; the existing MVP-2 records
+below remain historical. No new branch, dependency, release or history migration
+is proposed. Implementation follows `/implement-task`; approval covers the
+cross-package public API changes and new in-TUI views listed here.
+
+### Documentation preflight and decisions
+
+The author and three read-only Sol/Terra preflight agents compared the relevant
+existing documents with current authority, filesystem/dispatch and both chat
+hosts. This was design review, not implementation acceptance. The governing
+documents reviewed were ADRs 0029, 0033, 0037, 0055, 0057, 0059, 0062, 0063,
+0068, 0069, 0080, 0083, 0086, 0087, 0094, 0095, 0098, 0102, 0105, 0112,
+0113, 0116, 0120, 0122 and 0123; the built-in-tool, registry, config, chat,
+Home and accessibility references; the relevant standards; 2.6.M, MVP-A8/A9/
+A13/A14 and the recorded Wave 3 row 15c split. The ADR corpus was inventoried
+in numerical order; this is not a claim that every unrelated ADR or entire
+historical phase register received a new full review.
+
+| Confirmed gap or ambiguity | Proposed disposition and canonical home |
+|---|---|
+| Global mode key, layer precedence, model-writable `--config`, headless mode | [ADR-0116 proposal refinement](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md#proposal-review--2026-11-11), [config contract](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3): explicit global preference, repository `auto` refusal, invocation ceiling and trusted picker. |
+| Home clear currently synthesizes a new built-in agent instead of preserving its bound snapshot | Correct to existing ADR-0062 same-agent contract; preserve authored and legacy built-in grants across clear/resume/reseat. Never infer built-in provenance from its id. |
+| A ranged/truncated read does not prove the model saw the whole file; prior-turn tool content is not carried | [File-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3): bounded current-turn observed intervals tied to unchanged source bytes. |
+| Current approval happens before host write preparation; append can mutate in place | [Registry contract](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3): read-only preparation, exact-byte binding, effect barrier, final gates and atomic publication. |
+| Wholly masked changes and Unicode policy were explicitly open | [ADR-0120 proposal refinement](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md#proposal-review--2026-11-11): deliberate inspection of masked changes, conservative span provenance and escaped/code-point view; separate implementation security sitting remains mandatory. |
+| Optional general details timing was unset; full approval view was already mandatory | Include both in Step 2, sharing inspection primitives; no details-browser deferral. |
+| Native setup has flushed-frame consent evidence, legacy chat approvals do not | Reuse the acknowledgement/ownership pattern on both chat hosts; dimensions alone never authorize hidden input. |
+| Restore currently omits tool rows and budgets only conversation entries | [Chat contract](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract): bounded content-free groups, safe call-id correlation and explicit omission counts; no preamble/content restoration. |
+| Protected-path prompt wording can imply authority; preview copying can reach disk hatches | Approval cannot override the host's hard denial; keep previews/reveal buffers out of history/export/editor hatches and provide masked in-view copy. |
+| Consent zero-width ledger still says excluded from MVP-3 | Correct its scheduling to the mandatory ADR-0120 preview work; shared `[c]` extraction stays with paused Step 14b. |
+
+Two additional independent proposal reviews (GPT-6.1 Sol/high and GPT-6.1
+Terra/high) covered the complete nine-document proposal diff and checked its
+authority, preview/resource and UI contracts against current code. Verified
+corrections distinguished the pre-build design sitting from post-implementation
+security, existing authored writes from new grant activation, and intentional
+diff pagination from clipped consent controls; revealed masked spans require
+acknowledged display. Neither reviewer reported a remaining blocker after those
+corrections. Author validation checked all newly added relative links/anchors,
+documentation hygiene and unchanged executable inputs; lint/typecheck passed.
+This is approval-ready proposal review, not a passed implementation, source-bound
+runtime CI or completed pre-build security design sitting.
+
+No additional ADR number is needed for these refinements of two still-Proposed
+drafts. Before Step 1, obtain acceptance of **ADR-0116, ADR-0120, their linked
+Proposed reference sections and this three-step plan together**. Specifically,
+this includes repository prompting-mode precedence, startup-auto admission,
+the explicit in-TUI default-setting action, preservation of old agent grants,
+inspection of any masked changed content and inclusion of live details/safe
+historical groups. Nothing here marks those decisions Accepted on the user's
+behalf. On acceptance, add dated forward notes to affected Accepted decisions,
+including ADR-0057's view-only approval key exceptions, ADR-0062's configured
+reset and ADR-0105's first production session-spill consumer. Reconcile the
+security standard's approval key whitelist with the accepted view keys before
+building the card. A separate **pre-build security design sitting** must first
+confirm the masked-change/reveal policy and Unicode/inspection contract on the
+final approved documents. The general preflight is not a substitute. Its ruling
+is recorded here before any approval-card implementation; the later per-step
+security sitting tests the actual code as well.
+
+### Three cohesive implementation steps
+
+The boundaries are dependency and security boundaries. Combining all three would
+make filesystem, consent/rendering and startup authority difficult to inspect;
+splitting individual tools or screens would repeat reviews of the same seams.
+Step 2 deliberately keeps editing, preview, input custody and trace rendering
+together: no newly offered edit may exist without its reviewable effect path.
+
+| Step | Deliverable | Principal code and canonical docs |
+|---|---|---|
+| **1 — Bounded reading, search and session output** | Ranged `read_file`, current-turn read evidence, literal `search_files`, glob `find_files`, visible directory/discovery caps and private bounded output-store provisioning/read/cleanup/sweep. Freeze measured resource limits before tool registration. Keep the built-in default grant unchanged. | Core `tools/types.ts`, `builtins.ts`, `registry.ts`, `bounding.ts`; CLI `engine/tool-host/fs.ts`, `fs-policy.ts`, `assemble.ts`, new focused traversal/output-store modules and session-owner wiring; promote the relevant [file-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3). |
+| **2 — Reviewable editing and truthful tool presentation** | After the pre-build design sitting: prepared atomic `edit_file`/`write_file`; typed live previews, bounded in-house diff, full review/reveal and general details; target/diff-stat traces, ordered live assistant segments and safe restored structural groups; both-chat 80×24/input guard and Home row budget. New `edit_file` and the later built-in write grant are enabled only with their complete approval path. Existing authored `write_file` gains that path in this same step; no unrelated workflow/headless grant is removed. | Core engine-side `ToolDef`/dispatch/host capability and curated exports; CLI prepared filesystem writer, preview/diff projection, shared views/reducers/acknowledgement, `session-view-model.ts`, `chat-store.ts`, `chat-ink.tsx`, `home-controller.ts`, `home-app.tsx`, `home-view.tsx`, `restored-transcript.ts` and hatches. Promote [registry](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3) and [chat](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract) contracts; update Home/accessibility and view command references. |
+| **3 — Enable the built-in agent and startup-mode UX** | Add read/search/find/write/edit grant only after Step 2; truthful prompt; strict mode/hint keys and resolver; shared mode/default picker and writer; invocation ceiling, first-frame mode, headless clamp; fresh/resume/clear/reseat parity and same-agent Home clear correction. Complete integrated milestone verification and documentation. | Shared `config.ts` and curated schema exports; CLI `config/load.ts`, `resolve.ts`, `write.ts`, `chat/default-agent.ts`, mode/session-host owners, `commands/chat.ts`, Home wiring and REPL manifest/palette/help. Promote [config](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3), grant/mode and CLI contracts; update roadmap, first-read docs and adjacent ADR notes. |
+
+File lists identify owned seams, not a requirement to edit every named file.
+Keep new helpers focused and shared between hosts; do not decompose unrelated
+god files or activate paused work merely because a caller is nearby. Core stays
+platform-pure; no new runtime dependency or vendor type crosses the LLM seam.
+Additive exported capability/preview types, config schemas and curated index
+exports require this plan's approval. Existing hosts remain constructible and
+missing capability paths fail closed. Provider wire tool normalization is
+reused, not redesigned.
+
+### Interaction and compatibility ledger
+
+| Surface | Intended change and boundary |
+|---|---|
+| Bare Home and its chat | Mode/default settings and live tool details are in the palette; native diff review stays in the app. Geometry changes do not activate run/gate/agent management. |
+| Standalone interactive chat/resume | Same mode/settings, approval and details views, inline/no-color parity and safe restoration; no new Home-only management palette items. |
+| `/mode` | Bare interactive form becomes a picker; direct name/Shift+Tab remain unsaved per-turn changes. Home bare form configures startup only. Exact semantics live in the chat contract. |
+| `/details` | New interactive, read-only view; unavailable historical preview is labelled. Non-TTY/JSON has no overlay or new raw-content dump. |
+| New file tools | YAML-selectable through the existing tool registry; no new top-level shell command. Existing read/write arguments keep their meaning; range/edit/search arguments and finite bounds are documented in their single reference home. |
+| Headless/JSON and workflow execution | No interactive startup-mode grant or richer display event payload. Headless chat remains `ask`; workflow author trust/effect semantics stay separate. Test existing machine fixtures rather than assuming an in-TUI change cannot leak there. |
+| Resume/clear/reseat | Mode is newly resolved; per-instance approvals/read evidence/spills reset. Frozen agent grants remain frozen; starting a new built-in conversation is the upgrade path. |
+| Old strict binaries | New mode/hint keys require the explicit removal procedure in the config reference; do not claim forward key compatibility. |
+
+### Acceptance and review loop
+
+Each step is a D64 security-tier increment. The maintainer requested two fresh
+independent review rounds per step; that is the chosen process even though the
+standing tier's minimum is one clean cumulative round. For each step:
+
+1. Implement with direct negative/failure-path tests; self-review the cumulative
+   milestone diff, seams, resource ownership and changed canonical contracts.
+2. Run author gates (`pnpm run ci` and `pnpm coverage:enforced`), commit the
+   coherent implementation, then launch round 1 with fresh Sol/Terra reviewers.
+   Partition the whole cumulative scope into explicit, overlapping-risk-aware
+   assignments; do not substitute unrelated sampled files for full coverage.
+3. Reproduce/verify findings, fix those that hold, run affected checks and commit.
+   Give skipped findings a concrete reason. Run round 2 with new reviewer agents
+   over the final cumulative scope, repeat verified fixes and commit.
+4. Perform a separate scoped security sitting. An unresolved blocker/high/medium
+   or material correction requires fresh complete validation/review of the
+   affected cumulative scope; two rounds are not a license to leave a defect.
+   No verified MVP-3 issue is deferred merely to save a review. Keep local review
+   reports ignored and put concise source-bound acceptance in this register.
+5. Push the accepted increment on `development`, observe its CI and automatically
+   continue to the next step. Do not switch branches. Stop only for an actual
+   blocker or a new decision outside the approved contract.
+
+Required evidence includes real filesystem and host paths, not only mocks:
+
+- Step 1: ranges/UTF-8, binary/secret/symlink/hardlink floors; huge nonmatching
+  trees/files/ignore data, finite work and abort; exact skipped/omitted reporting;
+  native concurrent-session spill isolation, partial writes, producer shutdown
+  and crash sweep, with live/unknown-owner preservation.
+- Step 2: unique/replace-all/observed-range rules; replace/append/createDirs and
+  stale/retargeted file refusal; journal/dispatch ordering and zero mutations
+  on reject/abort; same prepared bytes shown/written. Test masked code/whole
+  changes, Unicode/line endings, budget refusal, no-color/code-point inspection,
+  all preview sinks, auto/always traces, ordered segments and historical caps.
+  Drive both mounted hosts through resize, backpressure, stale-card ownership,
+  paste/coalesced input, hidden affirmatives and inline/full-screen parity.
+- Step 3: actual fresh/resume/clear/reseat construction matrix for both hosts,
+  authored/legacy agents, strict-layer precedence including shadowed `auto`,
+  writable-config escalation, explicit operator auto, failed/stale builds,
+  headless/JSON, first-frame footer/policy agreement, approval cache resets,
+  hint acknowledgement and preference publication/durability failures.
+
+Use causal negative controls on security gates and deterministic work counters
+for complexity; wall-clock evidence supplements them. Keep existing deadlines,
+coverage floors and test populations. Re-run the complete combined author/CI
+gates at milestone closure, plus applicable native filesystem/secret/Windows
+and packaged-consumer gates for the changed surfaces. Do not represent offline
+transport tests as a live-provider or physical Windows terminal check.
+
+The failure glyph already shipped in MVP-2. Default `run_command`, new command
+approval/denial recovery, interrupt persistence/keymap and finite-ceiling config
+remain MVP-4; web is MVP-7, hub content MVP-8, MCP MVP-9, npm release MVP-10.
+Todo/`ask_user`, target-scoped approval caching, shared `[c]` extraction and the
+rest of paused Wave 3 retain their existing owners. These are existing scope
+boundaries, not newly deferred MVP-3 work. At the end, update delivered docs and
+open the `development` → `main` PR for maintainer review; do not merge or publish.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
@@ -2746,7 +2904,8 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract + the `ask_user` mid-turn pause/resume **engine** interaction (rides the EA4 pause machine; a turn-level pause distinct from the approval pause) (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts *Split 2026-11-04 for the MVP: the toolbelt and the tool-render/approval-preview contract first (MVP-3), the `ask_user` pause later.* | 2.6.M |
+| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Proposed**; MVP-3 preflight/refinements and three-step plan drafted 2026-11-11, awaiting acceptance. The split of 2026-11-04 is unchanged. | 2.6.M |
+| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Proposed**; refined with MVP-3 preflight 2026-11-11, awaiting acceptance. | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |

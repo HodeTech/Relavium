@@ -566,6 +566,66 @@ and pending hosts share it, so failed replacement cannot restore a grant. A
 request admitted before narrowing may finish. Workflow domains remain separately
 owned and are not switched to global chat policy.
 
+## Proposed prepared writes and live previews — MVP-3
+
+**Proposed, unimplemented (2026-11-11):** requires
+[ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+acceptance. Existing event, effect and secret-provenance contracts remain in force.
+
+The engine-side `ToolDef` gains an optional pure preview declaration, separate
+from the LLM-facing tool schema. It selects a target, explicit named fields
+and optional prepared-file diff; absent declaration means name-only display.
+No generic argument enumeration is permitted. Declared secret fields,
+`credentialRef` and tainted effective inputs are ineligible. Unknown external
+provenance keeps its existing documented limits; string types and shape masking
+are not proof that arbitrary user/model text contains no secret.
+
+`ToolPreview` is a bounded, immutable live display value. The core `ToolHost`
+filesystem seam gains optional read/search and prepared-write capabilities;
+their exact source/range semantics belong in
+[built-in-tools.md](built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3).
+No Node filesystem object, descriptor number, SDK type or terminal span crosses
+the seam. An opaque preparation binds one validated target, before/after byte
+snapshot and execution operation; model arguments cannot construct or substitute
+it. Existing host implementations remain constructible; a missing new capability
+refuses the dependent operation rather than approving a blind fallback.
+
+The dispatch order is:
+
+1. Resolve/grant-check, assemble and byte-bound effective arguments, validate
+   schemas/provenance, classify the immutable raw target, and enforce policy.
+2. If required, prepare through read-only, bounded, cancellable host work. This
+   includes no directory creation, temporary file or effect. Freeze content and
+   compute a bounded diff; refused preparation reaches neither approval nor write.
+3. Send the separate live preview to the in-process display/approval consumer.
+   Keep the original target for classification; never classify a redacted target.
+4. Obtain the existing mode/once/always decision, prepare the durable effect row,
+   and retain all existing post-approval/post-prepare `beforeDispatch` gates.
+5. Revalidate and execute the owned preparation once, settle/bound/map results
+   under existing effect/cancellation precedence, and release preparation state
+   on every outcome. No preview or new display callback can bypass journaling,
+   make a tier-3 failure retryable, or replay session effects.
+
+An `auto`/explicit-`[a]` write still prepares/revalidates, records its normal
+effect and emits a bounded live outcome/target/diff-stat projection. Approval
+absence in an author-trusted workflow does not create an interactive approver.
+Core never renders. Public durable events and `agent:approval_requested` retain
+their existing closed schemas; they do not receive the richer preview, diff,
+reveal buffer or opaque preparation. Logs, session history/effects, display
+metadata and export code likewise receive none of those values. Curated new
+core exports and these additive capability signatures are part of the MVP-3
+plan's public-API approval; no LLM wire/seam schema change is proposed.
+
+The CLI composes transcript sanitization with a distinct approval-safe projection.
+It needs a bounded, source-span-preserving masking projection, at least as
+conservative as the existing finite masker, including whole-field fallback.
+Never guess original offsets from replacement-string lengths or weaken existing
+event/journal redaction. Uncertain mapping refuses review, or requires deliberate
+inspection of the whole eligible field as escaped, in-memory content. Literal
+mask/escape notation must be distinguishable without color. Full-view behavior
+and permitted sinks belong in the
+[chat interaction contract](../cli/chat-session.md#proposed-mvp-3-interaction-contract).
+
 ## Secret argument provenance
 
 **Current boundary — 2026-10-16.**

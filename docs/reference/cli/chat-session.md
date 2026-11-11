@@ -310,6 +310,86 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 
 An unrecognized `/…` command — or an **undeclared argument** on a known one (`/exit now`) — prints a one-line, secret-free notice and the prompt returns. A command may accept flags (`/doctor --deep`) or a single positional value (`/mode plan`); the `/` palette runs the bare form, so a flag/value is opt-in by typing it. The idle footer surfaces `/ for commands` at an empty prompt (2.5.C S6). In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
+## Proposed MVP-3 interaction contract
+
+**Proposed, unimplemented (2026-11-11):** requires accepted
+[ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
+Until implementation, the stable sections below describe the current modes,
+restore projection and command availability.
+
+**Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker
+with current-mode selection and a separate `Save startup default` action. Direct
+`/mode <name>` and Shift+Tab still change the next turn's mode without saving.
+In idle Home, `/mode` opens only startup-default settings, with no imaginary
+active session; `/mode <name>` there does not silently save. Show the effective
+start and any project/workspace override before saving globally. Confirm `auto`
+explicitly, explain approval-free ordinary writes, and preserve hard path floors.
+Cancel saves nothing. The hint names Shift+Tab, `/mode` and the configurable
+start; persist its acknowledgement only after visible delivery. Fresh/resumed/
+cleared/reseated interactive instances bind the configured start and first-frame
+footer together, with a fresh approval cache. Preserve frozen agent grants;
+older read-only sessions require a new built-in conversation to gain new tools.
+The [config contract](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3)
+owns authority and rollback. Non-TTY/JSON never open this picker and remain
+effective `ask`; direct mode commands cannot create a headless approver.
+
+**Approval and details.** Both chat hosts reuse one pure state machine and views.
+The card names the target, exact changed/hidden byte and line counts, mask counts,
+line-ending changes and `[a]`'s tool/session scope. `[v]` opens its full view;
+the full view has bounded paging, search, both diff sides, code-point inspection,
+and an explicit `[r]` reveal action. `[r]` is never an approval key. Any masked
+changed content, or a flagged target/field span, blocks `[y]`/`[a]` until revealed
+deliberately and the required revealed spans have actually been displayed in
+acknowledged frames; an entirely masked changed line is inspectable under that
+rule, not a blind exception. The approval projection escapes invisible/control/blank
+characters and distinguishes literal escape text, tabs, trailing spaces and line
+endings under ADR-0120. Reveal is overlay-local, re-escaped and reset on close,
+card/owner replacement, geometry invalidation or abort. Structurally excluded
+secrets are never available to reveal.
+
+Every affirmative input must match the exact current card, owner, geometry and
+actually flushed measured frame. A mere React render or terminal-size check is
+insufficient. Below 80×24, clipped mandatory card content or controls, suspend,
+output backpressure or a stale/mismatched frame disables affirmatives. Intentional
+diff pagination is different: the shortened card may be approved when its target,
+effect/truncation/mask disclosures and answer controls are fully visible, its
+full view can traverse every admitted change and all required mask inspections
+are acknowledged. Visiting every unmasked diff page is the operator's choice,
+not an implicit approval prerequisite. Coalesced input or paste
+cannot reveal and approve unseen content. Existing rejection, abort, suspend
+and mouse-consumption controls remain; Esc/Ctrl-C cancel these overlays. Resize
+requires fresh visibility acknowledgement. This also applies to an idle Home's
+focused Continue row; prompt/keyless/error/notice rows get explicit priority,
+and optional rows cannot displace the focused row or active input/card. MVP-8
+still owns workflow/run/gate content and actions.
+
+Live `/details` opens a keyboard-selectable bounded tool-call list and the same
+inspection view, with declared preview and bounded result summary. It is a view
+action, never a new execution or approval. Keep targets and write diff stats
+after a live turn and order assistant text segments between calls. Failure,
+denial and unknown have distinct marks/words; missing facts never become success.
+No interrupted-turn persistence is added. Both hosts provide inline and no-color
+parity, scroll/search and explicit copy of the escaped, masked representation
+with truthful clipboard feedback. Revealing does not change that copy projection.
+Ordinary transcript hatches, `/edit`'s temporary file, `/export`, logs and display
+metadata exclude previews/reveal buffers. No preview-to-disk hatch is introduced.
+
+**Restored safe tool groups.** Extend the existing restore projection only with
+content-free call names/engine ids/outcomes already retained for completed turns.
+Join within the same turn by engine call id, never name or adjacency. Do not
+restore tool-call preambles, arguments, targets, diffs, result bodies or reasoning.
+Retain at most 16 structural call summaries per turn, displayed as a collapsed
+group of at most four logical rows with explicit omitted-call counts. Treat
+that bounded group and its user/final assistant as one restore unit; reserve
+its rows inside the existing 500/full-screen or 200/inline logical-entry budget
+before admitting an older unit. A tool-heavy latest completed turn must still
+fit. Report omitted conversation entries and omitted tool calls separately;
+physical wrapping is independently measured. Keep existing legacy-user display
+substitution, empty finals, compaction dividers and model-context projection.
+Historical unavailable preview/detail content is labelled unavailable, never
+reconstructed from text. This needs no new history payload or migration.
+
 ## Chat modes + per-tool approval (2.5.E, [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
 
 The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+write, process, egress, os); a **mode** is a policy layer on that one instance — **no reseat**, so switching never loses tool context. `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** and `/mode <name>` jumps directly; the active mode is always shown in the footer. The default is read-only **`ask`**. Two layers enforce it: a best-effort per-turn **advertise-filter** (a governed tool is not offered to the model) and the **authoritative, fail-closed `confirmAction` floor** — so even if the model names a hidden tool, the mode still decides.

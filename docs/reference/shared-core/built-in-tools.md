@@ -15,6 +15,91 @@ A tool declaration in YAML has a `type` discriminator:
 | `plugin` | a user-supplied npm package | see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md) |
 | `http` | an arbitrary REST endpoint | configured per call |
 
+## Proposed edit, search and ranged reads — MVP-3
+
+**Proposed, unimplemented (2026-11-11):**
+[ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+gates these additions. The catalog below remains the shipping contract until
+implementation promotes the relevant sections.
+
+- `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
+  `replace_all` (default false). A nonunique match without `replace_all`, no
+  match, binary/invalid UTF-8 source, stale source or insufficient observed
+  source intervals refuses without a write. Exact replacement copies untouched
+  bytes, including line endings; replacement text is UTF-8 encoded as supplied,
+  without silent newline normalization. Every changed occurrence must be
+  observable through the [prepared-write contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
+- `read_file` gains mutually exclusive line and byte ranges for a single file;
+  ranges cannot combine with glob. Line indices are one-based and inclusive;
+  byte offsets are zero-based, start-inclusive/end-exclusive UTF-8 offsets.
+  Refuse negative/reversed/out-of-file ranges and byte cuts inside a UTF-8
+  sequence. Return source range/size and explicit omitted counts alongside
+  text. The CLI continues to refuse binary/media reads: the catalog's generic
+  media-handle description does not activate CLI media support.
+- Successful model-facing reads establish source-identity/content-version and
+  delivered-byte intervals for the active agent turn's tool loop, in sessions
+  and workflow agent nodes alike. Bound both retained
+  sources and intervals; eviction only removes edit eligibility. A truncated
+  read certifies only delivered source intervals, not its marker or omitted
+  text. A spill read can extend eligibility only through a verified mapping
+  back to that unchanged source snapshot. Search snippets, find results and
+  arbitrary spill paths do not certify a file read. Reset on turn end/abort,
+  context reset, clear, resume and model reseat; do not implement CR-70's
+  deferred cross-turn tool-content carry.
+- `search_files` takes a literal nonempty pattern, optional case-sensitive and
+  whole-word matching, a scoped directory and optional file glob. Whole-word
+  boundaries use Unicode letters/numbers/underscore, not locale-dependent
+  casing or a model-supplied regular expression. Results identify usable paths,
+  one-based line numbers and bounded line excerpts. Omitted/skipped counts and
+  incomplete traversal are explicit; an unknown unvisited count is labelled
+  unknown, never invented as exact.
+- `find_files` takes a scoped directory and glob. Sort the admitted scanned set
+  by descending mtime with relative-path order as a deterministic tie-break.
+  A capped walk is labelled incomplete; it cannot claim the newest files in
+  the whole tree. Both tools reuse the existing jail, lexical/canonical
+  confidentiality checks, no-directory-symlink descent and bounded fd reads.
+- Ignore behavior starts with the existing documented in-house root-file subset:
+  workspace-root `.gitignore`, then `.relaviumignore`, last match wins;
+  comments, negation, directory suffixes, anchoring and `*`/`?`/`**` are
+  supported. Nested ignore files, character classes and other unsupported
+  syntax are not silently advertised as Git parity. Ignore rules only hide;
+  they never grant access. Bound ignore bytes/rules and matching work, preserve
+  security-pruned directories even under negation, and report unreadable or
+  unsupported ignore inputs rather than silently treating them as empty.
+- All discovery work is capped independently of matches: visited entries,
+  directories, depth, candidate files, per-file and aggregate bytes, pattern
+  and ignore work, results, output bytes and line width. Yield/check cancellation
+  during traversal and matching. Freeze named finite constants and document
+  their measured defaults during Step 1, before registering these tools; never
+  inherit an unbounded walk or an exponential matcher under a bounded result
+  list. Existing byte ceilings remain floors. `list_directory` exposes its
+  existing truncation, without an undocumented compatibility cap change.
+
+Chat wires `ToolHost.outputStore` to a random per-session-instance private
+subtree admitted by an exact [host scratch descriptor](#host-issued-scratch),
+with owner-only POSIX directory/file modes and the existing Windows profile/ACL
+assumption. The model receives an opaque reference readable only by that
+session's bounded read capability; possession is not cross-session authority.
+Stored output is the bounded-result contract's content projection, not raw
+inline media or structurally excluded secrets. Cap individual and aggregate
+spill bytes/files. Join/cancel producers before clear/reseat/end cleanup; a
+next-start sweep checks ownership and identity, refuses links and preserves
+live or uncertain owners. Failure refuses a spill or reports cleanup honestly.
+No content/ref is added to session messages, display metadata, session effects,
+exports or `history.db`. This lifecycle is not the future child-artifact store.
+
+Prepared writes cover replacement, append, new files and optional parent
+creation with the same target policy. Existing bytes and final content are
+bounded before diffing. No `mkdir` or temporary publication precedes approval
+and durable effect preparation. An unchanged source identity/version and
+missing-target expectation are rechecked immediately before atomic publication;
+detectable replacement/change refuses with a fresh-read/preview remedy. Preserve
+existing file metadata policy and untouched bytes. This is not an OS-level
+compare-and-swap or a race-free parent-directory jail against a hostile same-user
+process (ADR-0105). A host lacking the required prepared-write capability fails
+closed for the new interactive contract; it never shows a diff then dispatches
+an unbound legacy write.
+
 ## The built-in tools
 
 | Tool id | Purpose | Returns (shape) | Notes |

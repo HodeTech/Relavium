@@ -1,7 +1,7 @@
 # ADR-0116: The built-in chat agent can edit, and the starting mode is configurable
 
 - **Status**: Proposed
-- **Date**: 2026-11-05
+- **Date**: 2026-11-05 (proposal refined 2026-11-11)
 - **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [D62](../roadmap/current.md#wave-gating-decisions), [MVP-A13, MVP-A14](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
@@ -19,7 +19,7 @@ layer on top of it:
 | --- | --- | --- |
 | `ask` (the default) | No | Denied |
 | `plan` | No | Denied |
-| `accept-edits` | Yes | Prompted on every call |
+| `accept-edits` | Yes | Prompted on every call unless explicitly covered by `[a]` |
 | `auto` | Yes | Approved, except a protected-path write, which still prompts |
 
 The fail-closed `confirmAction` floor applies in every mode. Both the filesystem
@@ -43,7 +43,7 @@ avoided for the HTTP authority and D63 avoided for remembered commands.
 
 **We will widen the built-in agent's grant to editing and searching, keep
 `ask` as the default mode, and let the operator choose a different starting
-mode. A repository's config may choose a stricter start but never `auto`.**
+mode. A repository's config may choose a prompting or read-only start but never `auto`.**
 
 ### 1. The default grant
 
@@ -55,8 +55,9 @@ The built-in agent is granted:
 - **Edit.** `write_file` and `edit_file`. Both are governed `fsWrite` tools:
   - Hidden from the model in `ask` and `plan`, and denied there by the floor if
     the model names them anyway.
-  - In `accept-edits`, every call is prompted with its diff, rendered through
-    the approval-preview contract that phase 2.6 ADR row 9 defines.
+  - In `accept-edits`, every call is prompted with its diff unless covered by
+    an explicit `[a]` grant, rendered through the approval-preview contract that
+    phase 2.6 ADR row 9 defines.
   - The existing approval scopes are unchanged. `[a]` (always, this tool, this
     session instance) remains the user's explicit choice.
 - **Commands.** `run_command`, governed by the approval card D63's ADR
@@ -78,8 +79,8 @@ It instead says that writes need the user's approval and depend on the mode.
   configuration, that is `ask`, as today.
 - **Which config may set which mode:**
   - Project and workspace config may set `[chat].default_mode` to `ask`, `plan`
-    or `accept-edits`. Each of these denies or prompts for every governed
-    action.
+    or `accept-edits`. These deny or prompt for governed actions unless the
+    operator explicitly chooses an `[a]` grant in `accept-edits`.
   - A project or workspace layer naming `auto` is a strict-config error
     ([ADR-0033](0033-strict-config-files-amends-0023.md)), reported with the
     file and the key. It is never silently downgraded.
@@ -108,6 +109,53 @@ The exact keys, layers, error texts and hint wording live in
   paths have no approver, so they stay fail-closed.
 - An explicitly bound `--agent` keeps exactly the grant its YAML declares.
 - `agent run` and the other non-interactive paths keep running in `ask`.
+
+### Proposal review — 2026-11-11
+
+These refinements remain **Proposed**, with the rest of this ADR. They resolve
+the MVP-3 documentation/code preflight; they do not record maintainer acceptance.
+
+- **Config authority.** The global setting belongs in the existing operator
+  preferences table. Project-over-workspace-over-global precedence applies;
+  allowing a project to select `accept-edits` means it may request prompting,
+  even over a global read-only preference. It cannot select `auto`. Validate
+  every supplied layer, including a shadowed repository `auto` value. Exact
+  keys, diagnostics and rollback belong in the
+  [proposed config contract](../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3).
+- **An invocation ceiling.** An operator-selected `--config` can itself be
+  workspace-local and model-writable (ADR-0112). Admit startup `auto` authority
+  before any model/tool work. A later file read on clear/reseat may not create
+  that authority: it requires either that initial admission or a deliberate
+  operator action in the trusted mode/default picker. Keep this authority out
+  of session snapshots, model inputs and persisted approval caches. A malformed
+  or newly unauthorized setting refuses the replacement visibly; no fallback to
+  a captured, more permissive startup mode. Failed/stale builds cannot publish
+  a mode or widen authority.
+- **An in-TUI default setting.** Home and both interactive chat hosts share a
+  mode picker. Changing the current mode and saving a global default are
+  separate, explicit actions; selecting or opening a picker saves nothing.
+  Repository overrides and a save that will not change the effective start
+  are shown. Existing direct `/mode <name>` and Shift+Tab retain their current
+  per-turn semantics. Saving uses the typed preference writer, its existing-file
+  rewrite disclosure and truthful publication/durability outcomes. The one-time
+  hint is acknowledged only after visible delivery, never by background build.
+- **Frozen grants stay frozen.** Resume, model reseat and `/clear` preserve the
+  bound agent snapshot, including an older built-in agent's read-only grant.
+  A newly started built-in session gets the new grant; matching an agent id is
+  never proof that it is the built-in agent. Correct Home `/clear` to honor
+  ADR-0062's existing same-agent rule, as standalone clear already does. A new
+  session instance resets approval and read-evidence state.
+- **Headless and protected paths.** Non-interactive/JSON chat and `agent run`
+  are initialized and enforced as `ask`, regardless of preferences. The
+  protected-path prompt described above is only a UX fallback: even a positive
+  answer cannot override the host's hard filesystem denial. The exact
+  host-issued scratch exception from ADR-0105 stays unchanged.
+
+The [MVP-3 plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+owns implementation steps and acceptance. The
+[chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+owns picker/reset behavior. Acceptance adds dated forward notes to the related
+Accepted ADRs; this proposal does not silently rewrite their decisions.
 
 ### Alternatives considered
 

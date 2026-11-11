@@ -66,6 +66,13 @@ and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-i
 The editing/default-grant and approval-preview increments keep their mandatory
 security review and D64 acceptance bar.
 
+**MVP-3 preflight (2026-11-11):** the
+[three-step proposal](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+records the documentation/code findings, proposed ADR refinements, public-contract
+changes and two independent review rounds plus a separate security sitting per
+step. ADR-0116/0120 and their linked Proposed contracts await maintainer acceptance;
+product implementation has not started.
+
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible
 behaviour). A new user installs it, onboards with any of the four providers, chats with an agent that reads,

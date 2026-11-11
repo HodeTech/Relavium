@@ -1,7 +1,7 @@
 # ADR-0120: The toolbelt grows, and a tool call shows what it does
 
 - **Status**: Proposed
-- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review)
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; proposal refined 2026-11-11)
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [phase 2.6 · 2.6.M](../roadmap/phases/phase-2.6-conversational-authoring.md#26m--the-first-class-toolbelt-breadth--rendering), [MVP-A8, MVP-A9](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
@@ -150,16 +150,18 @@ Exact arguments, bounds and texts live in
   span is flagged the approving answers stay disabled until the user reveals the
   masked spans in the full view with a deliberate key. The full view unmasks only
   on that key. Approving approves the bytes the host will write, masked spans
-  included, and the card says so. Whether a write whose changed lines are wholly
-  masked may be approved at all is for the mandatory security review.
+  included, and the card says so. The 2026-11-11 proposal below requires deliberate
+  reveal for every masked change, including wholly masked changed lines. The
+  mandatory pre-build security design sitting confirms that resolution.
 - **These rules are a starting set, not a proof.** Each closes a way an approval
   was shown to hide content while this draft was reviewed: zero-width and tag
   runs, the line separators, line-end whitespace and endings, and code inside a
   mask. This ADR claims only the rules it states. Whether they are complete
   (other code points a font draws blank, a terminal's own rendering, anything
   else that makes two different approvals look the same) is for the mandatory
-  security review before MVP-3 builds the card, which confirms or extends them;
-  until it has ruled, no wider guarantee is made.
+  security design sitting before MVP-3 builds the card, which confirms or extends
+  them. A separate post-implementation security sitting tests the built behavior;
+  neither sitting makes a wider visual-safety guarantee.
 - **Diffs are in-house.** A diff is a line diff computed in-house, with no
   dependency.
   - It is computed over the **same bytes the host will write**. The write
@@ -195,6 +197,81 @@ Exact arguments, bounds and texts live in
   persisted. After a resume, the repaint shows each call's name and its
   ADR-0095 structure, not its target. A target is a tool argument, and arguments
   stay off disk.
+
+### Proposal review — 2026-11-11
+
+These refinements remain **Proposed**. They record the design preflight's
+recommended resolution of the open questions above, for maintainer approval;
+they are not an implementation security sitting or an acceptance claim.
+
+- **Observed ranges, not merely a read flag.** Edit evidence belongs to the
+  current agent turn/tool loop and the unchanged source-file snapshot; session
+  evidence is instance-scoped, and ADR-0095 does not carry prior-turn tool
+  contents. A range or bounded
+  result proves only the source bytes actually delivered to the model. Every
+  replaced occurrence, including every `replace_all` occurrence, must be wholly
+  within those observed intervals. Creating a spill is not evidence that its
+  omitted bytes were read. The
+  [proposed file-tool contract](../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3)
+  owns range/provenance and bounded evidence semantics.
+- **Prepare without an effect.** Grant, argument/provenance and policy checks
+  precede a bounded, abortable, read-only write preparation. That preparation
+  freezes the exact before/after bytes, including append/new-file behavior.
+  No directory creation, temporary-file write or publication occurs before
+  approval and the existing durable effect-prepare barrier. The normal final
+  dispatch gates still run. Execution revalidates the target and consumes that
+  preparation rather than recomputing the approved content. `auto` and explicit
+  `[a]` grants still prepare and produce truthful traces. The
+  [proposed registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+  owns this ordering and the platform-pure public API boundary.
+- **Masked changes require inspection.** Any mask intersecting changed content,
+  including an entirely masked changed line, disables affirmative answers until
+  the operator deliberately reveals it in the full view and the required spans
+  have actually been displayed in acknowledged frames. The earlier flagged-span
+  rule also applies to targets and fields. Structurally excluded secrets,
+  credential references and tainted parameters never enter this reveal path.
+  Revealed text still uses visible escapes, is ephemeral, and is excluded from
+  logs, history, exports and copy hatches. Masking recognizes finite shapes;
+  it does not promise to conceal every sensitive value.
+- **Visible escapes are necessary, not a universal visual proof.** Keep the
+  stated Unicode property sets, blank-character list, unambiguous literal escape
+  notation, tab/trailing-space and exact line-ending rules. Confirm their actual
+  implementation with adversarial tests and a separate security sitting before
+  acceptance. No claim covers every font, confusable glyph or terminal. Text
+  with ambiguous width/unsupported layout must have a bounded numeric-code-point
+  inspection path in the full view; a rendering failure disables approval.
+- **Inspectability includes the full change.** A shortened card names exact
+  omitted counts. Its full view can traverse every changed byte and both sides,
+  within the admitted file/diff bounds. Diff computation has explicit work and
+  memory budgets; exceeding one refuses the write with a narrowing remedy,
+  rather than offering a coarse/unreviewable replacement as an approved diff.
+  Full-view navigation and deliberate reveal are view-only exceptions to
+  ADR-0057's approval key-swallow set. They never approve. The answer keys remain
+  the unmodified `[y]`, `[a]`, `[n]` set; Esc/Ctrl-C cancel. Exact keys and
+  visibility acknowledgement belong in the
+  [proposed chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract).
+- **Details ship in MVP-3.** Reuse the same bounded view for live tool details
+  and result summaries, including auto-write diff statistics. Both hosts,
+  inline mode, color-off and the 80×24 guard are part of this vertical. Retain
+  only bounded display state; no richer event/history payload is authorized.
+- **Restore only safe structure.** MVP-2 currently restores user/final-assistant
+  entries and omits tool rows. MVP-3 adds bounded content-free tool summaries
+  from already retained ADR-0095 structure, correlated by engine call id within
+  a completed turn. It restores no arguments, targets, diffs, result bodies,
+  reasoning or assistant tool-call preambles. Historical missing outcomes stay
+  unknown; this does not activate ADR-0119's interrupted-turn marker.
+- **Private output lifetime.** Session spill provisioning consumes ADR-0105's
+  exact host-issued scratch descriptor. Cleanup joins producers before removal;
+  crash sweeping proves orphan ownership and preserves live/unknown owners.
+  The spill remains separate from `history.db` and from future child-artifact
+  storage. Its read capability must not become a grant to neighboring sessions.
+
+These choices preserve explicit `[a]` session/tool grants; only `auto` and an
+explicit `[a]` bypass a fresh card, and every resulting write remains visible.
+The existing failure glyph shipped in MVP-2; it is a regression requirement,
+not a second MVP-3 delivery. The
+[MVP-3 plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+owns scope, steps and pending maintainer acceptance.
 
 ### Alternatives considered
 

@@ -1,12 +1,57 @@
 # Configuration Specification
 
-- **Status**: Stable reference with explicitly marked accepted, unimplemented additions
+- **Status**: Stable reference with explicitly marked Proposed and accepted, unimplemented additions
 - **Scope**: Where Relavium reads configuration from, and how global and per-project settings are merged.
 - **Related**: [workflow-yaml-spec.md](workflow-yaml-spec.md), [agent-yaml-spec.md](agent-yaml-spec.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../cli/commands.md](../cli/commands.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
 Relavium uses a two-level configuration model that mirrors VS Code's **user vs. workspace** split: a **global** config in the user's home directory, and a **per-project** config committed alongside the code. The per-project layer overrides the global layer. A directory the user opens *is* the workspace — there is no separate "project" concept; the filesystem directory is the unit of organization, which makes git integration trivial.
 
 Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself. Numeric range diagnostics identify the field, schema-side bound and inclusive/exclusive operator without displaying the rejected value; loader and preference-writer validation share that formatter.
+
+## Proposed starting chat mode — MVP-3
+
+**Proposed, unimplemented (2026-11-11):** this section requires acceptance of
+[ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md).
+The remaining stable contract describes current behavior.
+
+| Location | Key | Accepted values in the proposal |
+|---|---|---|
+| Operator global `[preferences]` | `default_mode` | `ask`, `plan`, `accept-edits`, `auto` |
+| Workspace/project `[chat]` | `default_mode` | `ask`, `plan`, `accept-edits` |
+| Operator global `[preferences]` | `default_mode_hint_shown` | Boolean; absent means not acknowledged |
+
+No global `[chat]` table, environment override or new CLI flag is introduced.
+Project > workspace > global > `ask` is the mode preference order. A project may
+select `accept-edits` even when the global preference is `ask` or `plan`; a
+fresh per-call approval is still required unless the operator chooses `[a]`.
+Validate every supplied value before resolving: a shadowed workspace `auto`
+is still a strict-config error. Diagnostics name the file and key, never echo
+arbitrary rejected values. Repository files cannot set the hint key.
+
+For interactive invocations, read and admit the global startup-auto ceiling
+before model/tool work. Clear, reseat and resume resolve the current preference
+at the session workspace, preserving that invocation ceiling. A newly read
+`auto` without initial authority or an explicit trusted picker action refuses
+the replacement; it never silently downgrades or reuses a permissive captured
+value. Read/validation failure is visible and cannot widen an old host. Neither
+the ceiling nor current mode is restored from history. Non-interactive and
+JSON execution always use effective `ask`; config validation still applies.
+
+The [mode/default picker](../cli/chat-session.md#proposed-mvp-3-interaction-contract)
+writes only global preferences through the existing typed writer. A successful
+explicit operator selection can admit `auto` for this invocation; a model write
+or a background reload cannot. Cancellation/refusal publishes neither a new
+default nor new authority. A post-rename directory-sync warning is a published
+preference with uncertain durability, not an unsaved choice. Retain the existing
+symlink refusal, schema round-trip, unrelated-value preservation and rewrite
+disclosure. A hint is acknowledged only after actual visible delivery and the
+same honest writer outcomes; failure does not prevent chat.
+
+**Older-binary rollback:** remove only `default_mode` and
+`default_mode_hint_shown` from global `[preferences]`, and `default_mode` from
+each workspace/project `[chat]`, keeping other values. Older strict binaries
+can reject these new keys on any config-loading command. No credential migration
+or history migration is needed.
 
 ## Locations
 
