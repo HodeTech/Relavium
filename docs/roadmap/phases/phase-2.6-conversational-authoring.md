@@ -1508,6 +1508,15 @@ exports are covered by the accepted plan. Missing capability paths fail closed;
 no legacy preview/write bypass is retained. Provider wire tool normalization is
 reused, not redesigned.
 
+Step 2 also owns the [ADR-0124 replay refinement](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md):
+shared `run.ts`, a shared retained-envelope schema/decoder and curated exports;
+core `execution-host.ts`, `engine.ts`, `effect-receipt-health.ts` and registry;
+DB `effect-journal-store.ts` and its port; CLI durability forwarding and explicit
+test doubles. This remains one cohesive step with prepared writes, not a fourth
+increment. Strict evidence validation must gate node scheduling independently
+of model regeneration; exact invocation/mapping comparison belongs at replay.
+The scoped proposal and supplied-review disposition below govern acceptance.
+
 ### Interaction ledger
 
 | Surface | Intended change and boundary |
@@ -1560,6 +1569,15 @@ Required evidence includes real filesystem and host paths, not only mocks:
   paste/coalesced input, hidden affirmatives and inline/full-screen parity.
   Include literal marker collisions, empty/new files and final-newline-only
   changes; pin the chosen diff algorithm and finite work/memory budgets.
+  Exercise a real SQLite post-settle/pre-checkpoint edit replay with zero file
+  preparation/publication or second settle; strict shared decoder and SQLite/
+  memory gate parity, including malformed valid JSON before any model execution,
+  valid absent values, missing old evidence, same-presence mapping replacement,
+  changed destination keys, key-order equivalence and absent versus empty mapping.
+  Test saved-result confirmation without new mutation cache authority, both
+  replay entry points, projection refusal before lookup, inspection-fault no
+  retry/recovery, fencing/producer joins, atomic miss/prepare races and different
+  regenerated calls/order without claiming deterministic redelivery.
 - Step 3: actual fresh/resume/clear/reseat construction matrix for both hosts,
   authored/legacy agents, strict-layer precedence including shadowed `auto`,
   writable-config escalation, explicit operator auto, failed/stale builds,
@@ -1703,13 +1721,14 @@ bytes, matching the returned count and explicit `incomplete`/`bytes` limit.
 Workspace lint/typecheck, build/format and compiled CLI smoke pass. A fresh clean
 cumulative review and separate security sitting remain due before acceptance.
 
-**Step 2 design gate:** [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
-is Proposed and awaits explicit maintainer approval. The existing retained-run
+**Step 2 design gate (opened 2026-11-11; closed below on 2026-11-12):**
+[ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+was Proposed pending explicit maintainer approval. The existing retained-run
 replay path needs a read-only inspection before file preparation to survive the
 post-settle/pre-checkpoint crash window without reusing old read evidence or
 creating a journal row on an edit precondition refusal. Its independent proposal
 review found no blocker; this is not an implementation security sitting. Step 1
-continues independently; no Step 2 source change precedes approval.
+continued independently; no Step 2 source change preceded approval.
 
 **Independent round 6 — `3c4211cd..5f35fb1b` (2026-11-12):** a fresh Sol/high
 reviewer completed all 37 changed files (including the separately Proposed
@@ -1762,9 +1781,46 @@ This is local implementation acceptance. Push the checkpoint on `development`
 and observe its applicable CI before the next step; native Windows evidence
 comes from that CI, not these local macOS tests. Physical-terminal and live
 provider/keychain execution are not claimed. Step 2/3 remain unimplemented, the
-built-in default grant is unchanged, and the separate Proposed ADR-0124 approval
-gate above remains open. This does not complete MVP-3 or authorize a merge or
-publication.
+built-in default grant is unchanged. At this local acceptance, ADR-0124's
+separate approval gate remained open; the later design acceptance below closes
+it. This does not complete MVP-3 or authorize a merge or publication.
+
+### ADR-0124 review and design acceptance (2026-11-12)
+
+The maintainer supplied two reviews and explicitly directed verification,
+necessary corrections, acceptance and continued implementation; no older-binary
+compatibility obligation applies. Root and two independent source audits
+verified the findings against the current implementation, not their assumed
+exploitation scenarios. Read-only runtime probes reproduced the inherited
+SQLite/memory gate and registry mapping defects. No Step 2 source was changed.
+
+| Supplied concern | Verified disposition |
+|---|---|
+| Valid JSON with unusable replay structure passes the node gate | Confirmed in SQLite and memory with `{}`/unknown-version results. One strict shared decoder now belongs in the accepted contract for the gate and both replay entry points; block before model execution, preserving valid explicitly absent values. |
+| Mapping presence is weaker than mapping identity | Confirmed directly at the public registry: changed source paths with mapping still present returned the old projection. Bind the exact admitted mapping snapshot and distinguish absent/empty; no migration or guessed old evidence. |
+| Claimed CLI YAML-edit impact | Narrowed: current production callers do not supply `outputMapping`, and frozen workflow verification already rejects covered workflow drift. The registry contract defect still warrants correction in this same step. |
+| Universal replay/redelivery implication | Corrected: improvement is conditional on reproduced correlation/slot/tool, journal arguments and mapping; different regenerated calls/order retain current bounded guarantees, not logical exactly-once execution. |
+| Skip active confirmation on replay | Recommendation rejected: retain existing hook/mode/deny floors with an explicit saved-result delivery card, no current diff and no new mutation-cache authority. Existing actual-dispatch hook remains skipped only because no dispatch occurs. |
+| Inspection and post-hit errors | New inspection storage faults are explicitly non-recoverable/non-retryable; conflicts remain effect attention. Preserve cancel/fence precedence and prohibit typed or generic post-hit errors from re-enabling retries. This does not relabel every existing pre-prepare store fault. |
+| Session present row should be a miss | Recommendation rejected: a present identity conflicts under ADR-0098; absence alone is a miss. A normal content-free row is not corruption and its result column is never consumed. |
+| Signature, eligibility, stable projection and forwarding unspecified | Canonical protocol now owns required miss/replay signature, first-party prepared-hook plus journaled-tier eligibility, prelookup unsettled refusal and projection reuse, explicit fenced/lifetime/receipt/durability wrappers and doubles. |
+| Missing related links, reference order and public-API scope | Added ADR-0075/0079/0083 links, dated ADR-0080/0120 notes, shared/DB/core/CLI Step 2 scope, dispatch diagram, exact evidence protocol, current roadmap and regression matrix. The existing map/bound/settle order is accurately recorded. |
+
+A **fresh Sol/high corrected-design/security review** inspected all five
+substantive corrected documents and actual source boundaries. It found no
+unresolved blocker/high/medium design finding. Its checks specifically include
+legitimately absent mapped results and atomic prepare discovering replay after
+ordinary approval; the latter must replace the card and must not let delivery
+seed/expand mutation `always` authority. This is a design/source inspection,
+not runtime evidence for unimplemented behavior or the later implementation
+security sitting.
+
+ADR-0124 and its linked public-contract expansion are **Accepted** under the
+maintainer's instruction. The original three-step boundary is unchanged; all
+replay/evidence corrections belong to Step 2 alongside prepared writes.
+Its implementation begins after the Step 1 CI checkpoint. No further design
+approval is required for these verified corrections; ordinary implementation,
+two fresh review rounds, affected fixes and a separate security sitting remain.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

@@ -348,6 +348,14 @@ endings under ADR-0120. Reveal is overlay-local, re-escaped and reset on close,
 card/owner replacement, geometry invalidation or abort. Structurally excluded
 secrets are never available to reveal.
 
+A retained workflow result uses the
+[saved-result confirmation contract](../shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3),
+when an approval regime is present. Its live card labels delivery of a saved
+result with no new filesystem operation, shows no invented fresh diff, and
+cannot grant `always` authority for a later mutation. Current mode/denial,
+ownership, visibility and cancellation controls remain. Session effects never
+replay; this does not add replay to chat history or restore previews at rest.
+
 Every affirmative input must match the exact current card, owner, geometry and
 actually flushed measured frame. A mere React render or terminal-size check is
 insufficient. Below 80×24, clipped mandatory card content or controls, suspend,

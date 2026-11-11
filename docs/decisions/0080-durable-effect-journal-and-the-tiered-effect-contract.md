@@ -39,6 +39,18 @@
 > `packages/shared/src/run.ts` and the store's docblock are corrected when `W7` lands. Run-scoped behaviour is
 > unchanged.
 
+> **Refined 2026-11-12 by [ADR-0124](0124-inspect-retained-run-effects-before-file-preparation.md) — implementation pending in MVP-3 Step 2.**
+> Prepared journaled filesystem calls gain a required read-only inspection before
+> file preparation, preserving atomic prepare as the race backstop. One shared
+> strict retained-envelope validator also governs the node resume gate and both
+> replay paths; exact mapping evidence replaces presence-only matching. Session
+> non-replay and the absence of a universal model-replay identity remain.
+> The canonical [effect contract](../reference/shared-core/effect-journal.md#retained-evidence-and-early-inspection--mvp-3)
+> specifies the refinement. Its §7 also states the existing registry order:
+> full-result mapping and model bounding precede settlement of those projections;
+> any earlier post-effect failure leaves prepared evidence and is never retried.
+> This note does not claim implementation acceptance or new effect tiers.
+
 ## Context
 
 A tool effect can complete at its target, the process can die before the result persists, and resume re-runs the

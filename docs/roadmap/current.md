@@ -74,9 +74,12 @@ changes and two independent review rounds plus a separate security sitting per
 step. [Step 1 has local implementation acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12),
 including a clean final cumulative round and separate final-source security
 sitting; its pushed checkpoint must pass applicable CI before Step 2. The
-pre-build security design sitting is complete. Newly Proposed
+pre-build security design sitting is complete.
 [ADR-0124](../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
-requires maintainer approval before Step 2's replay/preparation integration.
+and its expanded replay/evidence contracts are accepted after verifying the
+supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
+captures their disposition. Step 2's replay/preparation integration can follow
+the Step 1 CI checkpoint without another design-approval stop.
 Steps 2/3 and whole-MVP-3 acceptance remain open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):

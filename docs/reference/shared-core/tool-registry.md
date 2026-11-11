@@ -570,8 +570,11 @@ owned and are not switched to global chat policy.
 
 **Accepted design, unimplemented (2026-11-11):** implements
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
-with the maintainer-approved MVP-3 plan. Existing event, effect and
-secret-provenance contracts remain in force.
+with the maintainer-approved MVP-3 plan. The replay refinement is specified by
+[ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+and the [effect-journal protocol](effect-journal.md#retained-evidence-and-early-inspection--mvp-3);
+it remains unimplemented. Existing event, effect and secret-provenance contracts
+remain in force.
 
 The engine-side `ToolDef` gains an optional pure preview declaration, separate
 from the LLM-facing tool schema. It selects a target, explicit named fields
@@ -591,26 +594,78 @@ snapshot and execution operation; model arguments cannot construct or substitute
 it. A missing new capability
 refuses the dependent operation rather than approving a blind fallback.
 
+A trusted first-party filesystem `ToolDef.prepare` hook declares a prepared
+operation without running preparation. Its presence and a non-`undefined`
+`journaledTier` identify a dispatch eligible for early replay inspection.
+Neither model arguments, a tool-name heuristic nor MCP metadata can declare
+this behavior. Capability availability is checked before dependent host work;
+read-only and naturally idempotent overwrite calls add no journal lookup.
+
 The dispatch order is:
 
 1. Resolve/grant-check, assemble and byte-bound effective arguments, validate
    schemas/provenance, classify the immutable raw target, and enforce policy.
-2. If required, prepare through read-only, bounded, cancellable host work. This
+   For a journaled call, compute its stable journal projection now; reject
+   unsettled/colliding projections before inspection and reuse it at prepare.
+2. For a prepared, journaled dispatch, call the required `inspectReplay` port.
+   A hit validates the shared retained envelope and exact current mapping, then
+   takes the saved-result confirmation/delivery path below with no filesystem
+   preparation/publication. A miss reserves nothing; a failure never becomes
+   a miss or a loop-correctable edit precondition.
+3. On a miss, if required, prepare through read-only, bounded, cancellable host work. This
    includes no directory creation, temporary file or effect. Freeze content and
    compute a bounded diff; refused preparation reaches neither approval nor write.
-3. Pass a separate, optional third in-process argument to `ConfirmActionHook`:
+4. Pass a separate, optional third in-process argument to `ConfirmActionHook`:
    an immutable live approval context carrying the engine call id and
    `ToolPreview`. Do not widen `ToolApprovalRequest.preview`/`ToolActionPreview`.
    The event emitter receives the original closed request only, never this live
    context. A separate call-id-correlated live display observer handles read
    rows and auto/always traces; it is not an event/history producer. Keep the
    original target for classification; never classify a redacted target.
-4. Obtain the existing mode/once/always decision, prepare the durable effect row,
+5. Obtain the existing mode/once/always decision, prepare the durable effect row,
    and retain all existing post-approval/post-prepare `beforeDispatch` gates.
-5. Revalidate and execute the owned preparation once, settle/bound/map results
+   If atomic prepare instead finds a retained result, use the same strict replay
+   validation and saved-result path; release the unused preparation.
+6. Revalidate and execute the owned preparation once, map/bound/settle results
    under existing effect/cancellation precedence, and release preparation state
    on every outcome. No preview or new display callback can bypass journaling,
    make a tier-3 failure retryable, or replay session effects.
+
+**Saved-result confirmation is not a new file-byte approval.** A replay live
+preview explicitly says saved-result delivery/no new filesystem operation;
+it contains no invented current diff, file snapshot or new change statistics.
+An active approval regime still requires its hook and current mode/decision,
+using the original policy target and existing closed approval request. The
+optional live context identifies replay to the in-process host. An absent hook,
+denial or abort cannot be bypassed because a result is recorded. Approval of
+delivery never creates/expands a future mutation's `always` cache; a prompting
+replay offers delivery-once/deny, while existing mode/pre-existing cache policy
+can decide under its normal floor. A prepare-race replay replaces the live
+projection and uses this same delivery confirmation rather than claiming that
+the previously previewed file bytes were published. Author-trusted workflows
+receive no interactive approver.
+
+Replay skips only the actual-dispatch `beforeDispatch` hook and file execution,
+as the existing replay already does. Inspection's ownership/fencing and actual
+producer lifetime, grants/provenance/policy and cancellation remain enforced.
+Its recorded result is validated at both entry points; neither a corrupt
+envelope nor an inspection error manufactures `undefined` success. Error and
+resume-gate rules belong in the effect-journal protocol linked above.
+
+```mermaid
+flowchart TD
+    A[Resolve, grant, validate and enforce policy] --> B[Stable journal projection; reject unsettled]
+    B --> C{Prepared and journaled?}
+    C -->|Yes| D[Read-only inspectReplay]
+    D -->|Retained hit| E[Validate envelope and mapping]
+    E --> F[Saved-result decision and delivery]
+    D -->|Proven miss| G[Read-only filesystem preparation if required]
+    C -->|No| G
+    G --> H[New-operation approval]
+    H --> I[Atomic durable prepare if journaled]
+    I -->|Proceed| J[beforeDispatch, revalidate and execute]
+    I -->|Replay race| E
+```
 
 An `auto`/explicit-`[a]` write still prepares/revalidates, records its normal
 effect and emits a bounded live outcome/target/diff-stat projection. Approval
@@ -650,7 +705,9 @@ and permitted sinks belong in the
 
 ## Step 1 read/search capability and evidence — MVP-3
 
-**Implemented on development; acceptance pending (2026-11-11).** `FsReadOpts`
+**Implemented on development; locally accepted (2026-11-12).** The
+[source-bound record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
+distinguishes local review/security acceptance from checkpoint CI. `FsReadOpts`
 adds `range`; filesystem capabilities may provide `findFiles`/`searchFiles`.
 The exact range/discovery inputs and bounded result fields live in
 [built-in-tools.md](built-in-tools.md#file-tool-inputs-results-and-resource-limits).

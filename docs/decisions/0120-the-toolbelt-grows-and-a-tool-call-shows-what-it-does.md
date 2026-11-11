@@ -11,6 +11,16 @@
 > governs scratch and filesystem containment; the
 > [security standard](../standards/security-review.md) governs both security gates.
 
+> **Refined 2026-11-12 by [ADR-0124](0124-inspect-retained-run-effects-before-file-preparation.md) — implementation pending in MVP-3 Step 2.**
+> A prepared journaled call first consults retained run evidence after grant,
+> provenance, policy and stable-projection admission. A miss retains this ADR's
+> read-only preparation → approval → durable prepare → execution ordering;
+> a matching retained hit performs no filesystem preparation/publication and
+> uses an explicitly labelled saved-result decision under existing approval floors.
+> Strict resume/replay evidence and exact mapping comparison are specified in the
+> [effect contract](../reference/shared-core/effect-journal.md#retained-evidence-and-early-inspection--mvp-3).
+> No session replay, persisted rich preview or new mutation authority is introduced.
+
 ## Context
 
 The registry has no way to edit part of a file, search file contents or find
