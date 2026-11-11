@@ -104,7 +104,9 @@ case folding. Word boundaries are tested on the original source.
 Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
 returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
 contain visited entries, scanned files/bytes, binary/oversize skips, unreadable
-count, `incomplete` and optional limiting category. Capped traversal does not
+count, `incomplete` and optional limiting category. Search byte accounting charges
+actual source reads, including skipped binary/invalid UTF-8 candidates; every
+descriptor read observes the remaining aggregate budget. Capped traversal does not
 invent an unvisited total or global-newest claim. Each clipped line states its
 exact omitted byte count. Root ignore files use the declared subset; unreadable
 or unsupported rules/nested ignore files produce incomplete results rather than

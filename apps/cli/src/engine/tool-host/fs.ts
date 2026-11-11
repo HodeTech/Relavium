@@ -134,6 +134,9 @@ export interface NodeFsCapabilityConfig {
  */
 export class FsCapabilityError extends HostCapabilityError {}
 
+/** Internal discovery ceiling: unlike an I/O failure, return a visibly byte-limited partial scan. */
+class FsReadBudgetError extends HostCapabilityError {}
+
 /**
  * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write through
  * a symlink — mapping to the **fatal**, non-retryable `tool_denied` (the shared {@link HostDeniedError}): a
@@ -514,6 +517,7 @@ export async function readJailedFile(
   rejectAliased = true,
   range?: FsReadRange,
   signal?: AbortSignalLike,
+  budget?: { remaining: number },
 ): Promise<JailedRead> {
   throwIfAborted(signal);
   // Windows ignores O_NOFOLLOW. Refuse an already-planted final link explicitly there;
@@ -540,6 +544,19 @@ export async function readJailedFile(
     throw error;
   });
   try {
+    const readChunk = async (
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<number> => {
+      throwIfAborted(signal);
+      const admitted = budget === undefined ? length : Math.min(length, budget.remaining);
+      if (admitted <= 0) throw new FsReadBudgetError('search_files: source byte budget reached');
+      const { bytesRead } = await handle.read(buffer, offset, admitted, position);
+      if (budget !== undefined) budget.remaining -= bytesRead;
+      return bytesRead;
+    };
     throwIfAborted(signal);
     const st = await handle.stat();
     if (st.isDirectory()) return { kind: 'directory' };
@@ -552,12 +569,9 @@ export async function readJailedFile(
     // with a name outside the jail, so a jailed tier refuses it here — race-free on the OPENED fd, before any
     // byte is read. `full` (unjailed) passes `rejectAliased: false` so a benign in-scope hard link still reads.
     if (rejectAliased && st.nlink > 1) return { kind: 'aliased' };
-    const probeLen = Math.min(BINARY_PROBE_BYTES, st.size);
-    if (probeLen > 0) {
-      const probe = Buffer.allocUnsafe(probeLen);
-      const { bytesRead } = await handle.read(probe, 0, probeLen, 0);
-      if (probe.subarray(0, bytesRead).includes(0)) return { kind: 'binary' };
-    }
+    const probe = Buffer.allocUnsafe(Math.min(BINARY_PROBE_BYTES, st.size));
+    const probed = probe.length > 0 ? await readChunk(probe, 0, probe.length, 0) : 0;
+    if (probe.subarray(0, probed).includes(0)) return { kind: 'binary' };
     if (
       range !== undefined &&
       (!Number.isSafeInteger(range.start) ||
@@ -574,10 +588,10 @@ export async function readJailedFile(
     const length = seek ? range.end - range.start : st.size;
     if (length > sizeLimit) return { kind: 'oversize', size: length };
     const content = Buffer.alloc(length);
-    let offset = 0;
+    // Whole-file reads reuse the binary prefix, so every source byte is read and charged once.
+    let offset = seek ? 0 : probe.copy(content, 0, 0, probed);
     while (offset < length) {
-      throwIfAborted(signal);
-      const { bytesRead } = await handle.read(
+      const bytesRead = await readChunk(
         content,
         offset,
         Math.min(length - offset, 64 * 1024),
@@ -648,9 +662,9 @@ export async function readJailedFile(
     } else {
       for (const boundary of [from, to]) {
         if (boundary < st.size) {
-          const probe = Buffer.alloc(1);
-          const { bytesRead } = await handle.read(probe, 0, 1, boundary);
-          if (bytesRead !== 1 || ((probe[0] ?? 0) & 0xc0) === 0x80)
+          const boundaryProbe = Buffer.alloc(1);
+          const bytesRead = await readChunk(boundaryProbe, 0, 1, boundary);
+          if (bytesRead !== 1 || ((boundaryProbe[0] ?? 0) & 0xc0) === 0x80)
             throw new FsCapabilityError('read_file: byte range cuts a UTF-8 sequence');
         }
       }
@@ -1138,6 +1152,7 @@ async function discover(
     stats.incomplete = true;
     stats.limit ??= limit;
   };
+  const sourceBudget = { remaining: SCAN_BYTES };
   const bodies: string[] = [];
   let ignoreWork = 0;
   const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
@@ -1378,19 +1393,27 @@ async function discover(
             rejectAliasedRead(config, real),
             undefined,
             signal,
+            sourceBudget,
           );
-        } catch {
+        } catch (error) {
           throwIfAborted(signal);
+          if (error instanceof FsReadBudgetError) {
+            stop('bytes');
+            break;
+          }
           stats.unreadable++;
           stats.incomplete = true;
           break;
+        } finally {
+          // Failed decoding and skipped binary candidates have already consumed real I/O too.
+          stats.bytesScanned = SCAN_BYTES - sourceBudget.remaining;
         }
         if (result.kind === 'binary') {
           stats.skippedBinary++;
           continue;
         }
+        if (result.kind === 'oversize') stats.skippedOversize++;
         if (result.kind !== 'file') continue;
-        stats.bytesScanned += result.size;
         let text: string;
         try {
           text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.bytes);

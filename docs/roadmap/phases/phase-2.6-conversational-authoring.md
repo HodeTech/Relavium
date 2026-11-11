@@ -1687,6 +1687,30 @@ platform skips. Workspace lint/typecheck, build/format and compiled CLI smoke
 pass. A fresh clean cumulative review and separate security sitting are still
 required before Step 1 acceptance.
 
+**Independent round 5 — `3c4211cd..7f6f2398`:** a fresh Terra/high reviewer
+completed all 35 changed files and their persistence/export/ownership callers;
+216 focused tests passed. One medium finding remained: late-detected binary or
+invalid UTF-8 candidates consumed source reads without charging the search byte
+budget. Root independently measured 21,135,360 actual bytes for twenty 1 MiB
+late-invalid candidates while the result claimed zero bytes and a complete scan.
+
+Every search descriptor read now observes a shared remaining budget, including
+binary probing and failed decoding. Whole-file reads reuse the probe rather than
+reading its prefix twice. Three regressions failed before correction and pass
+afterward; the native/host matrix passes 349 tests with three existing platform
+skips. An independent native descriptor probe now measures exactly 16,777,216
+bytes, matching the returned count and explicit `incomplete`/`bytes` limit.
+Workspace lint/typecheck, build/format and compiled CLI smoke pass. A fresh clean
+cumulative review and separate security sitting remain due before acceptance.
+
+**Step 2 design gate:** [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+is Proposed and awaits explicit maintainer approval. The existing retained-run
+replay path needs a read-only inspection before file preparation to survive the
+post-settle/pre-checkpoint crash window without reusing old read evidence or
+creating a journal row on an edit precondition refusal. Its independent proposal
+review found no blocker; this is not an implementation security sitting. Step 1
+continues independently; no Step 2 source change precedes approval.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

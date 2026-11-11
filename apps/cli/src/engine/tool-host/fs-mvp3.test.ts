@@ -3,7 +3,7 @@ import { chmod, link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { createNodeFsCapability, hasObservedRead } from './fs.js';
+import { createNodeFsCapability, hasObservedRead, readJailedFile } from './fs.js';
 import { issueHostScratchRoot } from './fs-policy.js';
 
 let root: string;
@@ -72,6 +72,36 @@ it('searches literals and applies root ignore rules and confidentiality', async 
   const result = await capability().searchFiles?.('.', { pattern: 'x.y' });
   expect(result?.matches.map((m) => [m.path, m.line])).toEqual([['yes', 1]]);
   expect(result?.stats.incomplete).toBe(false);
+});
+
+it.each([0, 255])(
+  'charges late binary byte %i against the search read budget',
+  async (lastByte) => {
+    const content = Buffer.alloc(1024 * 1024, 97);
+    content[content.length - 1] = lastByte;
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) => writeFile(join(root, `candidate-${i}.txt`), content)),
+    );
+    const result = await capability().searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
+    expect(result?.matches).toEqual([]);
+    expect(result?.stats).toMatchObject({
+      bytesScanned: 16 * 1024 * 1024,
+      skippedBinary: 16,
+      unreadable: 0,
+      incomplete: true,
+      limit: 'bytes',
+    });
+  },
+);
+
+it('enforces the remaining byte budget against the opened file', async () => {
+  const target = join(root, 'candidate.txt');
+  await writeFile(target, Buffer.alloc(2048, 97));
+  const budget = { remaining: 64 };
+  await expect(readJailedFile(target, 8192, true, undefined, undefined, budget)).rejects.toThrow(
+    /byte budget/,
+  );
+  expect(budget.remaining).toBe(0);
 });
 
 for (const tool of ['find', 'search'] as const) {
