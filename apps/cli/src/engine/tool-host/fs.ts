@@ -1180,6 +1180,7 @@ async function discover(
       bodies.push(text);
       ignoreWork += lines.reduce((sum, line) => sum + line.length + 1, 0);
     } catch (error) {
+      throwIfAborted(signal);
       if (errnoCode(error) !== 'ENOENT') {
         stats.unreadable++;
         stop('ignore');
@@ -1452,6 +1453,7 @@ async function discover(
       await dir.close().catch(() => undefined);
     }
   }
+  throwIfAborted(signal);
   if (find !== undefined) {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     return {

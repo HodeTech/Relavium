@@ -74,6 +74,33 @@ it('searches literals and applies root ignore rules and confidentiality', async 
   expect(result?.stats.incomplete).toBe(false);
 });
 
+for (const tool of ['find', 'search'] as const) {
+  it.each([2, 3, 4, 5])(
+    `rejects ${tool} cancellation during root-ignore reading (poll %i)`,
+    async (abortAt) => {
+      await writeFile(join(root, '.gitignore'), 'ignored.txt\n');
+      await writeFile(join(root, 'allowed.txt'), 'needle\n');
+      const controller = new AbortController();
+      let polls = 0;
+      const signal = {
+        get aborted(): boolean {
+          if (++polls === abortAt) controller.abort();
+          return controller.signal.aborted;
+        },
+        addEventListener: controller.signal.addEventListener.bind(controller.signal),
+        removeEventListener: controller.signal.removeEventListener.bind(controller.signal),
+      };
+      const fs = capability();
+      const work =
+        tool === 'find'
+          ? fs.findFiles?.('.', { glob: '*.txt' }, signal)
+          : fs.searchFiles?.('.', { pattern: 'needle' }, signal);
+      await expect(work).rejects.toThrow(/aborted/);
+      expect(controller.signal.aborted).toBe(true);
+    },
+  );
+}
+
 it.each(['.gitignore', '.relaviumignore'])(
   'reports unsupported scoped-subdirectory %s rules for both discovery tools',
   async (name) => {

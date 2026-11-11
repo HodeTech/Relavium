@@ -1661,6 +1661,19 @@ lint/typecheck, build/format, compiled CLI smoke and bundle closure pass. A
 fresh clean cumulative round remains due before the separate security sitting
 and Step 1 acceptance.
 
+**Independent round 3 — `3c4211cd..04b02024`:** fresh Terra/high covered native
+filesystem/private storage and fresh Sol/high covered core/lifecycle/docs. The
+latter was clean after 783 tests across 14 suites. The native review found one
+cancellation defect: the root-ignore read catch could return incomplete results
+after abort. Root reproduced all eight find/search cancellation cuts. The catch
+now rechecks abort before error classification, and discovery rechecks before
+returning a partial/final result. Eight regressions failed on the reviewed code
+and pass after correction; the native/host matrix passes 342 tests with three
+existing platform skips. The engine's independent cancellation floor is
+unchanged. Workspace lint/typecheck, build/format and compiled CLI smoke pass.
+A fresh cumulative review and the separate security sitting remain due;
+Step 1 is not accepted.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
