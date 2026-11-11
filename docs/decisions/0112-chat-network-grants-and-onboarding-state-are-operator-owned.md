@@ -6,6 +6,20 @@
 
 ## Context
 
+> **Amended 2026-11-09 — maintainer-approved MVP-2 refinement.** MVP-2 extends
+> operator-owned onboarding state to affirmative consent for the four standard
+> provider environment variables, as already directed by D74. The exact key,
+> cancel/defer behavior, publication/durability outcomes and rollback rules are specified in
+> [config-spec.md](../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2).
+> This is credential-source consent, not HTTP-tool domain authority. The shared
+> writer's existing accepted final-symlink, atomicity and comment-loss rules apply
+> before the new setting is written. MVP-2 pulls only that prerequisite and the
+> truthful onboarding outcomes from paused Wave 3 row 16a; it does not activate
+> chat HTTP policy or close all of row 16a. The corrected design is accepted;
+> implementation acceptance remains pending. Rename publishes a preference;
+> directory sync is best effort, so a post-publication sync fault is not an
+> unsaved grant or a rollback. ADR-0063's dated clarification preserves history.
+
 G30 exposes a missing chat HTTP policy path. Advertising `http_request` does not
 supply its domain authority. Default Home agents do not grant that tool; standalone
 agent execution is ask-mode without a confirmer. A successful request is therefore

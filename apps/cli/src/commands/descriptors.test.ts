@@ -31,8 +31,18 @@ function expectDeepFrozen(value: unknown): void {
 describe('descriptor authority and legacy compatibility (ADR-0110 Step 6)', () => {
   it('retains all 24 literal pre-refactor model entries, order, annotations and strict schemas', () => {
     expect(legacyFixture).toHaveLength(24);
-    expect(legacyManifestEntries()).toEqual(legacyFixture);
-    expect(COMMAND_MANIFEST).toEqual(legacyFixture);
+    const expected = [
+      ...legacyFixture,
+      {
+        id: 'init',
+        label: 'Init',
+        description: 'Initialize a .relavium/ directory in the current project.',
+        effect: 'write',
+      },
+    ];
+    expect(legacyManifestEntries().slice(0, 24)).toEqual(legacyFixture);
+    expect(legacyManifestEntries()).toEqual(expected);
+    expect(COMMAND_MANIFEST).toEqual(expected);
     for (const entry of COMMAND_MANIFEST) {
       expect(CommandManifestEntrySchema.parse(entry)).toEqual(entry);
       expect(CommandManifestEntrySchema.safeParse({ ...entry, path: ['leaked'] }).success).toBe(
@@ -56,14 +66,14 @@ describe('descriptor authority and legacy compatibility (ADR-0110 Step 6)', () =
     const ids = COMMAND_DESCRIPTORS.flatMap((entry) =>
       entry.executorId === undefined ? [] : [entry.executorId],
     );
-    expect(ids).toHaveLength(24);
+    expect(ids).toHaveLength(25);
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort()).toEqual([...DISPATCHABLE_COMMAND_IDS].sort());
     expect(
       COMMAND_DESCRIPTORS.filter((entry) => entry.executorId === undefined).map(
         (entry) => entry.path,
       ),
-    ).toEqual([['agent'], ['budget'], ['provider'], ['media'], ['init']]);
+    ).toEqual([['agent'], ['budget'], ['provider'], ['media']]);
     expectDeepFrozen(COMMAND_DESCRIPTORS);
     expectDeepFrozen(GLOBAL_OPTION_DESCRIPTORS);
   });

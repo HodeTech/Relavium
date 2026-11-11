@@ -202,7 +202,11 @@ describe('writeGlobalDefaultModel', () => {
     }
     // The atomic contract: a rejected write leaves no target and no orphan temp.
     expect(existsSync(globalConfigPath(home))).toBe(false);
-    expect(readdirSync(globalDir(home)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(
+      existsSync(globalDir(home))
+        ? readdirSync(globalDir(home)).filter((name) => name.endsWith('.tmp'))
+        : [],
+    ).toEqual([]);
   });
 
   it('throws a ConfigError rather than clobbering a malformed existing config', () => {

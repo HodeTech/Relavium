@@ -1356,7 +1356,10 @@ The CLI MVP (decision D58, milestone M3.5, v0.2.0) is ordered in [current.md](..
 Most of its items already have a home in a workstream above. This section is the one home for the items that had
 none, found by the 2026-11-04 review of the code at `5a328bca` and ruled by the maintainer
 ([priority reset](phase-2.5.5-hardening-and-remediation.md#mvp-priority-reset--2026-11-04)). Each belongs to the
-workstream named in its row and follows that workstream's ADR and security gates.
+workstream named in its row and follows that workstream's ADR and security gates. MVP-A24 to MVP-A30 were added
+on 2026-11-08, when MVP-2 was re-planned around the Home
+([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md),
+[MVP-2 plan](#mvp-2-plan--home-first-2026-11-08)).
 
 | ID | Workstream | Item and acceptance |
 |---|---|---|
@@ -1364,10 +1367,10 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A2 | 2.6.G | **The run id is visible.** The TTY run view and its final summary show the run id that `logs`, `status` and `gate` accept. |
 | MVP-A3 | 2.6.B | **`/export` writes where workflows live.** It writes into `.relavium/workflows/` with a slug from the session title (no UUID file in the working directory) and offers to run the result. |
 | MVP-A4 | 2.6.J | **The default model follows the stored key.** With no configured default, the chat model comes from a provider that has a key, and a missing key yields the actionable "no API key … `provider set-key`" error instead of an opaque credential failure. |
-| MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). |
-| MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. |
+| MVP-A5 | 2.6.J | **`relavium chat` offers onboarding** when no key exists, without re-running the wizard on every launch when the keychain is unavailable (#55's loop stays fixed in its own row). **Home-first (2026-11-08):** the offer is the Home's in-TUI setup (MVP-A28), and the keychain-unavailable case is handled by MVP-A27 in MVP-2 itself ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08)). |
+| MVP-A6 | 2.6.J | **Standard provider environment variables** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`) are read after the `RELAVIUM_*` variables, never logged or echoed; [config-spec.md](../../reference/contracts/config-spec.md) is updated with the code. Key-custody review. **Settled 2026-11-08:** a standard variable is never applied to a provider with a custom `base_url`; interactive surfaces ask once before using one, and non-interactive paths use it directly ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 2). |
 | MVP-A7 | 2.6.Q | **Interactive output budget.** No implicit 4,096-token cap on interactive Anthropic chat: the default is the catalog ceiling (not clamped: the chat's per-attempt deadline scales with it instead, ADR-0101 2026-11-06; chat surfaces only), with a `[chat].max_tokens` key; the budget estimate's interplay (ADR-0101) is checked. Recorded as a dated amendment to ADR-0101 (maintainer, 2026-11-05). |
-| MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. |
+| MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. **Split 2026-11-08:** MVP-2 ships the mark; the text between tool calls lands with MVP-3's tool-call rendering v2. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
 | MVP-A11 | 2.6.M | **Configurable, finite ceilings.** Tool rounds, correction attempts and the session turn limit are configurable with conservative defaults and stay finite (ADR-0086). |
@@ -1377,12 +1380,1056 @@ workstream named in its row and follows that workstream's ADR and security gates
 | MVP-A15 | 2.6.G | **`run_command` approval card (D63).** A non-allowlisted command prompts once / for the session / to remember; remembered grants live outside the repository, in operator-owned configuration keyed by project root; accept-edits keeps prompting for allowlisted commands; headless paths stay fail-closed; `!` uses the same card. New ADR amending ADR-0029(a)/0061/0063, and a security sitting. |
 | MVP-A16 | 2.6.D | **Project instructions.** A project instructions file (`AGENTS.md`) and an environment block enter the system prompt under explicit provenance rules (new ADR; independent of ADR-0060's `{{ctx.*}}`). |
 | MVP-A17 | 2.6.E | **Session entry flags.** `relavium chat --model/--provider` and a one-shot prompt mode; headless stays fail-closed; both follow ADR-0110's compatibility rules. |
-| MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. |
+| MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. **Home-first (2026-11-08):** `/init` in the Home shares its core and shows what it will create before writing; the search for a project's `.relavium/` stops treating the global `~/.relavium` as a project folder ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 9). |
 | MVP-A19 | 2.6.B | **Starter content.** Two or three starter workflows and agents a new user can run unchanged. |
 | MVP-A20 | 2.6.I | **Masked `provider set-key` on a TTY** instead of refusing an interactive terminal. Secret-input sitting. |
 | MVP-A21 | 2.6.I | **Registered MCP servers reach the default agent**, under ADR-0084 spawn consent and ADR-0088's untrusted tool definitions. |
 | MVP-A22 | 2.6.F | **Upgrade from `0.1.1`.** A populated `0.1.1` home (history.db with migrations 0000–0004, config.toml, keychain entries) upgrades through v0.2.0, with a seeded-then-migrated test. |
 | MVP-A23 | 2.6.F | **Release prerequisites for v0.2.0.** The D59 release ADR and guard change; version and CHANGELOG including the Node ≥22 break; npm token, 2FA, provenance and the `v*` ruleset verified; the publish credential scoped to the release job, either npm trusted publishing (OIDC, no long-lived token) or the `release` deployment environment with a `v*`-tag deployment policy and a required reviewer holding `NPM_TOKEN`, with the repository-level secret deleted (PR #96 review, 2026-11-04; chosen in the D59 release ADR); the interactive Home and chat checked on a real Windows terminal; a manual three-provider end-to-end turn; first-read docs (README, npm README, tutorials, runbooks) describing what ships. |
+| MVP-A24 | 2.6.G | **Actionable Continue rows (first slice of the actionable strip).** At an empty Home prompt, Down moves focus into the recent sessions; Up and Down move, Enter resumes, Esc returns to the prompt. Run and gate rows stay display-only until the hub milestone. A row from another directory shows that directory and, on Enter, how to open it there. The focused row and the keyless row always stay on screen at 80×24, until MVP-3's row budget replaces this rule. Keyboard-first, inline parity ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §4). |
+| MVP-A25 | 2.6.G | **`/resume` session picker.** In the Home and the in-Home chat: this directory's sessions by default, one key for every directory, type to filter, rows show title and age (and directory when widened). `relavium chat resume` without an id on a TTY shows the same picker before the chat host mounts, then resumes the chosen session as `chat resume <id>` does; `relavium chat --continue` resumes this directory's latest session; non-TTY still requires an id. The standalone `relavium chat` palette does not list `/resume` ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 14). |
+| MVP-A26 | 2.6.I | **`/providers`, keys slice.** Lists the four providers with key status and key source (keychain, `RELAVIUM_*` variable or a standard variable, never the value), and connects or replaces a key through MVP-A28's masked field. Its description names connecting, logging in and API keys, so the palette (which matches descriptions) finds it by any of those words; the slash set stays alias-free (ADR-0056). Removing and testing keys, custom providers and MCP stay with MVP-9. Key-custody sitting. |
+| MVP-A27 | 2.6.J | **Typed key availability** (ADR-0112's approved observation, pulled out of row 16b). A provider's key is usable, missing, unavailable, or found only in a standard variable that the TUI has not been allowed to use (MVP-A6). A locked keychain therefore shows guidance once instead of re-running setup on every launch (#55). Availability is computed when the Home opens and after a key change, never on each strip read. |
+| MVP-A28 | 2.6.E | **A native in-TUI prompt host.** Select, confirm, text and masked fields inside the ink tree, abortable, with [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §7's overlay keys. It can also run on its own before a standalone host mounts. A secret never enters React state, input history, the transcript, the copy hatches or error text. The first-run setup moves onto it from clack-before-mount; its flow logic is unchanged. |
+| MVP-A29 | 2.6.E | **In-TUI discoverability and remedies.** Every command MVP-2 adds is in the Home palette with a description and an argument hint; a remedy shown inside the TUI names the in-TUI action, while plain, `--json` and shell output keep the subcommand ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §6, §9). |
+| MVP-A30 | 2.6.E | **The way back on exit.** When the process exits after a session with at least one turn, it prints that session's resume line. |
+
+**Done:** MVP-A1, MVP-A2, MVP-A3, MVP-A4 and MVP-A7 shipped with MVP-1, accepted 2026-11-06 and on `main` since
+PR #97 (merged 2026-11-07); the acceptance record is [current.md](../current.md#next-work--the-cli-mvp) item 1.
+
+## MVP-2 plan — Home-first (2026-11-08)
+
+On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
+Home and does everything there; subcommands stay for scripts.
+[ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) records it. This section is the one home
+for MVP-2's scope, slices, decisions and acceptance under that direction.
+
+**Implementation receipt — 2026-11-10:** all four approved steps are implemented
+and independently accepted on `development`; see the
+[final step acceptance and checkpoint gates](#step-4-acceptance-2026-11-10).
+The dated research, preflight and initial verification notes retain their
+historical baseline; the acceptance records establish the delivered state.
+
+The plan rests on three pieces of research:
+
+- the [terminal agent CLI UX benchmark](../../analysis/cli-ux-benchmark-2026-11-08.md) of eleven current products;
+- a map of what the Home can reach today: 3 of 25 leaf subcommands fully, 8 partly;
+- a technical read of every MVP-2 item against the code at `0ef53496`.
+
+The maintainer delegated the non-major decisions on 2026-11-08. Those taken are listed below with their evidence,
+and the maintainer ruled the major ones the same day: D75 (the hub milestone runs right after MVP-4) and D76
+(2a's tier), with ADR-0114 and ADR-0122 accepted. They are in [current.md](../current.md#wave-gating-decisions).
+
+### What a user gets
+
+1. **A first run that never ends in an error.**
+   - With no key, `relavium` opens setup inside the TUI.
+   - A provider key found in the environment is offered, not adopted silently.
+   - Skipping setup leaves a persistent line on the Home that opens setup again.
+   - A locked keychain gets one clear message, not a setup loop.
+2. **Keys managed inside the TUI.** `/providers` shows each provider's key status and where the key comes from, and
+   connects or replaces a key through a masked field.
+3. **Sessions resumed inside the TUI.**
+   - The Home's recent sessions can be opened with the keyboard.
+   - `/resume` opens a picker for this directory.
+   - A resumed session shows its conversation.
+   - Leaving prints the way back.
+4. **A project set up inside the TUI.** `/init` shows exactly what it will create and creates `.relavium/`.
+5. **A readable transcript.** Markdown with tables, word wrap, tabs that keep the layout, and tool rows that show
+   failure.
+6. **Shell hygiene.** Extra arguments are refused, and `agent run` says when it is waiting for stdin.
+
+### Scope
+
+| Item | In-TUI form | Shell form | Slice |
+|---|---|---|---|
+| Typed key availability (MVP-A27) | One-time guidance when the keychain is unavailable | Same | 2b |
+| Standard env-var keys (MVP-A6) | Ask-once card; source shown in `/providers` and `/doctor` | Used directly | 2b |
+| Native prompt host (MVP-A28) | Select, confirm, text and masked fields | — | 2b |
+| First-run setup (MVP-A5) | Setup on the prompt host, inside the Home | Interactive `relavium chat` with no key runs the same setup before the chat mounts | 2b |
+| `/providers` keys slice (MVP-A26) | `/providers`, found in the palette by "connect", "login" or "key" | `provider` unchanged | 2b |
+| Keyless nudge (#51, row 16b) | A row on the Home; Enter opens setup | — | 2b |
+| Project init (MVP-A18) | `/init` with a confirm card | `relavium init` | 2b |
+| Resume repaint (deferred `chat-resume` entry) | The resumed chat shows its conversation | `chat resume <id>` too | 2c |
+| Session picker and continue (MVP-A25) | `/resume` | `chat resume` without an id shows the same picker before the chat mounts; `chat --continue` | 2c |
+| Actionable Continue rows (MVP-A24) | Down, Enter on a recent session | — | 2c |
+| Way back on exit (MVP-A30) | — | One resume line on exit | 2c |
+| Markdown rendering (2.6.E, [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md)) | Transcript | — | 2a |
+| Full-screen word wrap (#61) | Transcript | — | 2a |
+| Tab expansion (#65, row 15a) | Transcript | — | 2a |
+| Failure mark (MVP-A8, the mark only) | Tool rows | — | 2a |
+| Excess positional arguments refused (row 10b) | — | Every non-variadic command | 2a |
+| `agent run` stdin hint (#24, row 17a) | — | One stderr line on a TTY | 2a |
+| Discoverability and remedies (MVP-A29) | Palette entries; messages name in-TUI actions | Unchanged | each slice |
+
+### Slices and order
+
+- **2a — A readable transcript.** The order is #65, then #61, then MVP-A8, then markdown, plus row 10b, #24 and
+  the copy toast (decision 13).
+  - #65 and #61 come first because ADR-0114's layout reuses their tab rule and word wrap.
+  - ADR-0114 was accepted on 2026-11-08, so markdown can start once #65 and #61 have landed.
+  - **Tier (D76, ruled by the maintainer 2026-11-08):** D64's milestone review, plus a scoped security sitting on
+    the markdown parser's bounds, link display and sanitize order. The parser handles untrusted model text on every
+    frame.
+- **2b — First run in the Home.** The order is MVP-A27, MVP-A28, setup moved onto MVP-A28, MVP-A6, MVP-A26, #51,
+  MVP-A5, then MVP-A18 with the project-folder fix (decision 9).
+  - MVP-A6 comes after the prompt host, so no state on `development` ever adopts a standard variable silently.
+  - **Tier:** D64's security tier (keys and secrets, filesystem writes), with one key-custody sitting covering
+    both.
+- **2c — Sessions in the Home.** The order is the transcript projection and repaint, MVP-A25, MVP-A24, then MVP-A30.
+  - **Tier:** D64's security tier (the resume path).
+
+2a has no dependency on 2b or 2c and goes first. 2b precedes 2c because a first run comes before a resume in the
+user's journey.
+
+### Decisions taken (2026-11-08)
+
+1. **Every MVP-2 item gets an in-TUI form, re-hosting the same core** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md)).
+   One-shot scripting commands (`agent run`) keep a shell-only fix.
+2. **Credentials.**
+   - **Order.** The resolution order stays as ruled: keychain, then `RELAVIUM_<PROVIDER>_API_KEY`, then the
+     standard variable.
+   - **Names.** Only the four names in MVP-A6 are read. `GOOGLE_API_KEY` is not read, because it commonly holds
+     non-Gemini Google keys.
+   - **Custom endpoints.** A standard variable is never applied to a provider configured with a custom
+     `base_url`. Otherwise an ambient key could be sent to an arbitrary gateway.
+   - **The TUI asks once** before using a standard variable. "The TUI" means the Home and an interactive chat
+     session.
+     - **The card.** It reads, for example: "Found ANTHROPIC_API_KEY in your environment. Use it for Anthropic?",
+       with the choices use it, enter a different key, or not now.
+     - **Where the rule is enforced.** In the key resolver, not only at the card. The TUI's resolver returns no key
+       for a provider whose standard variable has not been allowed; MVP-A27 reports that provider as "found in the
+       environment, not yet allowed". Every egress inside the TUI shares that resolver: chat, the `/models`
+       refresh and `/doctor --deep`.
+     - **The answer.** It is a global-only preference per provider, written through ADR-0063's config-write
+       contract. It is never read from project or workspace configuration, so a cloned repository cannot grant
+       it. It stores the variable's name, never its value. Extending ADR-0112's operator-owned onboarding state
+       this way gets a dated note on ADR-0112 in slice 2b.
+     - **Evidence.** Codex CLI and Gemini CLI pre-fill instead of authenticating silently, and Claude Code asks
+       once. Codex and Claude Code were re-checked against source and docs; Gemini comes from a source read. A community issue on Claude Code's tracker reports users surprised
+       by env-key billing (#9699).
+   - **Subcommands use a standard variable directly.** That covers `run`, `agent run`, `models refresh`,
+     `provider test`, and plain and `--json` chat: these are the scripting surface. `RELAVIUM_*` variables keep
+     their direct use everywhere.
+   - **Source shown.** `/providers` and `/doctor` show each key's source by name, never its value.
+3. **Setup lives inside the TUI.**
+   - The first-run wizard's flow logic stays as it is. It moves from clack-before-mount onto the native prompt host
+     (MVP-A28).
+   - That gives one look, works in the inline renderer, and lets `/providers` and the keyless row re-enter it.
+   - The alternative, running clack under a suspended screen, was rejected. It is unproven on Windows, and the
+     screen flips away and back.
+4. **Key management in MVP-2 is a slice of `/providers`:** status, source, connect and replace. Removing and
+   testing keys, custom providers and MCP stay in MVP-9; until then, `/doctor --deep` inside a chat tests keys.
+   - **Name.** The command is `/providers`, and the slash set stays alias-free (ADR-0056).
+   - **Discovery.** Its palette description names connecting, logging in and API keys. The palette filter already
+     matches descriptions, so a user typing "connect", "login" or "key" finds it.
+5. **Session scope.**
+   - **Scope.** The picker shows sessions whose working directory is this directory, the default in Claude Code,
+     Codex CLI, Kimi and Grok Build. One key widens to every directory. Typing filters titles.
+   - **Rows** show the title and age, plus the directory when widened.
+   - **`--continue`** resumes this directory's latest session. With none, it says so and exits 2.
+   - **Non-TTY.** `chat resume` without an id still exits 2.
+   - **Other directories.** Resuming another directory's session from inside the Home is not in MVP-2, because
+     the Home's filesystem authority is anchored at launch. Applies to the picker and to the Home's Continue rows
+     (MVP-A24), which list recent sessions from every directory.
+     - Such a row shows its directory. On Enter, it shows how to open the session there.
+     - `relavium chat resume` without an id is different: its picker runs before the standalone host mounts, and
+       that host re-derives the session's own workspace authority, as `chat resume <id>` does today. Every
+       directory's sessions can therefore be resumed from the shell.
+     - In-Home re-anchoring is a recorded follow-up.
+6. **Repaint.**
+   - **Both renderers repaint.** The inline renderer gets a first-mount restore, because its `<Static>` cannot take
+     the seed the full-screen renderer uses.
+   - **What is shown:**
+     - user prompts in their displayed form, where an attachment appears as its marker and never as the attached
+       content;
+     - assistant answers;
+     - saved-context dividers following the [approved restore-display contract](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2)
+       (2026-11-09 qualification): archive, summary and later-trim regions are
+       distinguished, and memory policy determines the next request. A trim may
+       preserve an earlier summary; no blanket "earlier turns are unseen" claim.
+   - **What is not shown:**
+     - restored turns carry no per-turn usage line, because none is stored;
+     - tool rows are not repainted in MVP-2; existing content-free structure is
+       already stored. MVP-3 owns richer tool-row presentation.
+   - **Bounds.** A resume restores at most the last 500 entries into the full-screen renderer and at most the last
+     200 into the inline renderer. opencode's inline mode uses the same 200.
+     - The first restored line counts the entries left out. They stay in `history.db`, and the model's context
+       follows the existing restore rules, so nothing is lost.
+     - Paging older entries in on scroll, as Codex does, is a follow-up.
+     - **Qualified 2026-11-09:** the caps bound only the initial restored prefix,
+       including notices/dividers/placeholders. New live entries append under
+       existing behavior; caches track retained view entries. No permanent live
+       store ceiling or archive byte bound is claimed.
+   - **Shared rules, distinct projections (corrected 2026-11-09).** Archive
+     display ignores the drop boundary, while model restore honors it and omits
+     empty assistant terminal text. Both reuse shared turn rules and compatible
+     legacy context. Verify their defined identity/order relationship before
+     UI capping and request folding, then independently verify display substitution
+     and the authored memory projection. No raw equality between the capped
+     archive display and model context is required. Exact tests and dividers live
+     in [chat-session.md](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2).
+7. **Actionable rows (MVP-A24).**
+   - Down at an empty Home prompt focuses the recent sessions, Enter resumes, and Esc returns. The footer shows the
+     key.
+   - It is keyboard-first: mouse capture stays off on the landing, as [home.md](../../reference/cli/home.md) records.
+   - Only session rows are actionable in MVP-2. The rows carry the session's working directory, so a row from
+     another directory follows decision 5.
+   - **Small terminals.** MVP-2's provisional Home budget keeps the prompt, the
+     keyless row (#51) and the focused row visible at 80×24: management lists trim
+     and scroll first, and long diagnostics page without source loss. The
+     [Home reference](../../reference/cli/home.md#minimum-terminal-size) owns the
+     delivered behavior. MVP-3 retains the wider strip/browser geometry work.
+8. **The way back (MVP-A30).** On exit after a session with at least one turn, one line names both ways back: run
+   `relavium` and use `/resume`, or `relavium chat resume <id>`. Crush and Gemini CLI print the same kind of line.
+9. **Project init.**
+   - **One core.** `/init` and `relavium init` share one core. It creates `.relavium/workflows/` and
+     `.relavium/agents/` in the working directory.
+   - **No files.** It writes no config file, because an empty `project.toml` has no effect.
+   - **Safety.** It never overwrites, refuses a symlinked `.relavium`, and reports "already initialised" when the
+     folder exists (exit 0).
+   - **Confirm card.** In the TUI a card lists exactly what will be created before anything is written. The shell
+     command is explicit, so it prints what it created.
+   - **Nested projects.** Inside an existing project, `init` names that project's folder instead of nesting
+     another.
+   - **Pre-existing defect fixed here.** The upward search for a project's `.relavium/` reaches the global
+     `~/.relavium` from any directory under the home folder that has no project folder of its own. It was
+     verified on 2026-11-08 against `findProjectConfigDir`. The effects:
+     - `/export`, `create` and `import` write workflows into the global folder;
+     - `relavium list` shows them from every such directory;
+     - a `workspace.toml` or `project.toml` there would load as project config everywhere.
+
+     **The fix: the global configuration folder is never a project folder.**
+     - The upward search stops before it.
+     - The fallback that names `<cwd>/.relavium` does not apply when the working directory is the home folder
+       itself. That fallback is used by `resolveProjectConfigDir` and the chat's `/export`.
+     - At the home folder, `init`, `create`, `import` and `/export` refuse with a remedy: run them in a project
+       directory.
+     - Workflows and agents already authored into `~/.relavium/workflows/` or `agents/` are left in place and are
+       no longer discovered from projects. `relavium list` and `/doctor` name the folder and say how to move its
+       files into a project with `relavium import`, while it holds any. The product has no users yet (D72's
+       reasoning), so no migration is built.
+
+     Recorded in [deferred-tasks.md](../deferred-tasks.md).
+   - **Not in MVP-2.** Writing an `AGENTS.md`, which most products' `/init` does with the model, belongs to MVP-5's
+     project instructions (MVP-A16), which can extend `/init`. No unsolicited "initialise this project?" prompt:
+     Relavium users often chat in directories that are not projects.
+10. **Tool rows.** A success shows `✓` and a failure `✗`, by glyph as well as colour. The `agent:tool_result` event
+    already carries `success`; the view ignores it today. An interrupted state needs persisted tool rows (MVP-3).
+11. **Markdown** follows [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md)
+    as revised on 2026-11-08. Tables render as a grid when they fit, and a streaming table is held back until it
+    ends.
+12. **Shell hygiene.**
+    - **Excess arguments.** Every non-variadic command refuses extra positional arguments, and Commander's message
+      names counts, not values. A mistyped subcommand keeps its error and never opens the Home.
+    - **`agent run`.** With a TTY on stdin it writes one stderr line: "reading the prompt from stdin — finish with
+      Ctrl-D (Ctrl-Z, Enter on Windows); for an interactive session run `relavium`".
+13. **The copy toast tells the truth** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md)
+    §8). Copying goes to the clipboard over OSC 52, which a terminal can drop without telling anyone. Today's
+    `✓ Copied` toast therefore claims more than Relavium knows.
+    - In 2a the toast wording says the copy was sent to the terminal's clipboard, not that it arrived.
+    - A local write failure is reported as a failure.
+    - Using a platform clipboard tool first, which can confirm the write (Kiro does this), is a follow-up.
+14. **Where the new commands live.**
+    - `/resume`, `/providers` and `/init` are Home-tree commands: they run in the Home and in a chat started from
+      it.
+    - The standalone `relavium chat` host does not list them. The registry gains a surface value that tells the
+      in-Home chat from the standalone host. The research flagged this two-host risk: building every overlay twice
+      is the cost the Home-first direction avoids.
+    - The two shell entries that need these screens run the shared components before the standalone host mounts:
+      setup for a keyless `relavium chat`, and the picker for `chat resume` without an id.
+    - Whether the standalone host should become an entry into the Home tree is ADR-0122 §5's open consolidation.
+      MVP-2 records the measured cost of keeping it: three commands missing from its palette.
+
+### Contract changes in MVP-2
+
+[ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §2 keeps every invocation a subcommand
+accepts today byte-identical on its machine surface (`--json` and plain stdout, non-TTY behaviour, exit codes). MVP-2
+changes the following, each under [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)'s
+compatibility rules. "TTY" means an interactive terminal on both stdin and stdout, without `--json` and outside CI:
+the same gate that opens the Home.
+
+| Change | Today | TTY | Non-TTY or CI | `--json` | Basis |
+|---|---|---|---|---|---|
+| `chat resume` without an id | Exit 2, missing argument | Shows the session picker, then resumes the chosen session as `chat resume <id>` does, with its exit codes | Unchanged: exit 2 | Unchanged: exit 2 | ADR-0122 §5 |
+| `chat --continue` (new flag) | Unknown option, exit 2 | Resumes this directory's latest session | Same as `chat resume <id>` with the resolved id; exit 2 when none exists | Same as `chat resume <id> --json`; exit 2 when none exists | Additive |
+| `relavium chat` with no usable key | Exit 2 with the MVP-A4 remedy | Runs setup before the chat mounts, then the chat; cancelling setup exits 2 with the same remedy | Unchanged | Unchanged | MVP-A5 |
+| Extra positional arguments on a non-variadic command | Silently ignored, except `run` and `media prune-temporaries` | Exit 2 invocation error naming counts, not values | Same | Same | ADR-0110, "invalid grammar refuses" (row 10b, D65). **The one deliberate break for invocations accepted today** |
+| `agent run` with a TTY on stdin | Waits silently | One stderr hint line, kept under `--quiet` (the Step 17 ruling) | No change: stdin is piped | Stdout unchanged; the hint is stderr | #24 |
+| `relavium init` | "Not available yet" | Creates `.relavium/` and prints what it created; refuses at the home folder | Same | Its result shape is defined in commands.md with the code | MVP-A18 |
+| `create`, `import`, `/export` with no project folder | Write into the global `~/.relavium/` when run under the home folder | Write into `<cwd>/.relavium/`; refuse at the home folder itself | Same | Same | Decision 9 (a defect fix) |
+| The way back on exit | Nothing | One line after an interactive session ends | Never printed | Never printed | MVP-A30 |
+| Remedies shown inside the TUI | Name subcommands | Name in-TUI actions | Unchanged | Unchanged | ADR-0122 §6 |
+
+### Acceptance
+
+**Every slice:**
+
+- [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §7: inline parity, colour off, 80×24,
+  the overlay keys (Ctrl-C and Esc close and never confirm), the sanitize floor, bounded work, and secret safety
+  for any screen that takes a secret. The full ADR-0115 keymap is MVP-4's, and MVP-2 does not depend on it.
+- `pnpm run ci` and `pnpm coverage:enforced` green.
+- The canonical docs updated in the same slice: [commands.md](../../reference/cli/commands.md),
+  [home.md](../../reference/cli/home.md), [chat-session.md](../../reference/cli/chat-session.md),
+  [config-spec.md](../../reference/contracts/config-spec.md), and a new `docs/reference/cli/markdown-rendering.md`
+  for 2a.
+- **Pinned test files.** Before adding a test to any file, run `grep -rln <file> tools/`. A `tools/` control that
+  pins a file's test count or a witness title breaks CI when the file changes.
+  - Pinned today, among others: `commands/chat.test.ts`, both `run.test.ts` files, `dispatch.test.ts`,
+    `specs-forwarding.test.ts`, `fs-invocation.test.ts`, `chat-export.test.ts`, `create.test.ts`, `import.test.ts`,
+    `gate.test.ts`, `format.test.ts` (by witness title) and `sanitize.test.ts`.
+  - New tests go in new files. Implementing `init` replaces the three `init`-stub tests in `apps/cli/src/run.test.ts`
+    one for one, keeping its count.
+- Plain, `--json` and non-TTY output stay byte-identical for every invocation accepted today, except the
+  [contract changes](#contract-changes-in-mvp-2) listed above, each tested in all three modes. The packaged chat
+  smoke and the Windows headless smoke drive these paths.
+
+**2a:**
+
+- Every construct in ADR-0114's subset is tested, including adversarial and pathological input.
+- Parsing stays linear.
+- The one-row invariant holds with tabs, wide characters and tables.
+- The cold-wrap performance guard still passes.
+- A failed tool call shows `✗` in both renderers.
+- The copy toast never claims a copy arrived.
+
+**2b:**
+
+- A key typed into the masked field never reaches React state, input history, the transcript, the hatches or any
+  error text.
+- A locked keychain never loops setup.
+- A standard variable is never sent to a custom `base_url`.
+- A standard variable the TUI has not been allowed to use reaches no egress inside the TUI: chat, the `/models`
+  refresh and `/doctor --deep`.
+- The ask-once answer survives a restart, stores no value, and is ignored in project and workspace configuration.
+- `init` refuses a symlinked folder and never overwrites.
+- The global folder is never treated as a project folder, including when the working directory is the home
+  folder.
+
+**2c:**
+
+- The repaint shows no attachment content.
+- The archive/retained projections satisfy the approved
+  [structural identity and empty-terminal relationship](../../reference/cli/chat-session.md#proposed-restored-transcript-display--mvp-2),
+  with safe display substitution and separately tested memory-policy requests.
+  The earlier raw-equality acceptance wording is superseded by this 2026-11-09 correction.
+- A Continue row from another directory never resumes inside the Home.
+- At 80×24 the focused row and the keyless row stay on screen.
+- A 5,000-turn session resumes with at most 500 restored entries (full-screen) and 200 (inline), and the
+  left-out count is right.
+- The cold-wrap performance guard covers a 500-entry restore.
+- The picker pages instead of loading every session.
+- The picker's scope and widening work.
+- A picker that cannot read `history.db` shows the error and stays usable.
+
+### Not in MVP-2 (recorded)
+
+- **Resuming another directory's session inside the Home.** It needs in-Home re-anchoring.
+- **Running a workflow, answering a gate, and reading status or logs inside the Home.** These belong to the hub
+  milestone and its run-hosting ADR ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §10).
+- **Transcript search, and reprinting the transcript to the normal screen on exit.** Candidates under ADR-0122 §8.
+- **The rest of `/providers`:** removing and testing keys, custom providers, and `/mcp`. These stay in MVP-9.
+- **Picker extras:** preview, rename and delete.
+- **Writing an `AGENTS.md` from `/init`.** This is MVP-A16.
+- **Consolidating the standalone `relavium chat` host into the Home tree** ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §5).
+- **An "interrupted" tool-row state.** This is MVP-3.
+
+### MVP-2 preflight and execution proposal — 2026-11-09
+
+**Accepted execution plan — maintainer approval 2026-11-09.** This
+preflight follows the maintainer's 2026-11-09 request to review existing documents,
+settle decisions upfront, and implement on `development` through committed steps
+with two fresh independent review rounds each. It refines the 2026-11-08 plan;
+the maintainer authorized correcting supplied review findings, accepting the
+corrected documents and continuing implementation. No product implementation or
+milestone acceptance follows from design approval alone.
+
+#### Document review and required actions
+
+Three independent reviewers read ADRs 0001–0122 across their assigned numerical
+ranges, the repository guide, relevant standards and the MVP-2 contracts. The
+contract and UX reviewers also read the full Home/chat/config/accessibility
+references and the benchmark; the security reviewer read the full security
+standard. Code checks covered persistence, restore, rendering, setup, provider
+resolution, config writing, project discovery and verification harnesses.
+
+| Verified issue | Accepted resolution before implementation |
+|---|---|
+| The markdown ADR promises newline-stable parsing while tables need header lookahead and block-end conversion | Dated qualification in [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md); the new [markdown reference](../../reference/cli/markdown-rendering.md) defines the exact subset, fixed limits, geometry and incremental-work evidence |
+| Stored user text contains expanded `@`/`!` context; the original compact view is not recorded | [ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md), display-only metadata in the [DB contract](../../reference/shared-core/database-schema.md#proposed-user-display-storage--mvp-2), and its [session relationship](../../reference/contracts/agent-session-spec.md#proposed-user-display-text--mvp-2) |
+| The display/model string-equality test conflicts with hidden attachments, legacy prefixes and memory selection | Compare selected structural identities/order against real reconstruction, then test the separate safe display mapping; never claim display text equals model input |
+| A later trim can retain an earlier compact summary | Policy-aware saved-context dividers distinguish summarized history, subsequently trimmed history and retained text; no blanket claim that all earlier text is unseen |
+| The restore cap is described both as an initial limit and a permanent store ceiling | Bound only the initial restored prefix, including notices; select whole exchanges. New live entries append, full-screen reseat carries the current view, inline reseat does not reprint it, and clear starts empty |
+| The plan says MVP-3 will store tool rows although content-free structure already persists | MVP-2 omits restored tool rows; MVP-3 owns richer/interrupted tool-row presentation. The durable content-free interruption marker remains MVP-4 under the separately Proposed ADR-0119 |
+| New consent writes depend on shared-writer protections still assigned to paused row 16a | Pull only final-symlink refusal, safe typed recovery, existing-file comment-loss disclosure and truthful onboarding outcomes into step 2; row 16a's other obligations remain with their owner |
+| Consent cancellation/write failure and old-binary recovery need exact semantics | Accepted, unimplemented [config contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2) and dated ADR-0063/0112 refinements, including pre-publication failure versus published-but-unconfirmed directory sync |
+| The compaction overview repeats superseded triggers/fallbacks; the security skill claims an OS subprocess jail | Correct the existing chat reference and security skill to their accepted canonical contracts; no runtime policy change |
+| The roadmap still lists MVP-1's repaired behavior as broken | Correct current status and qualify the historical Proposed-ADR list |
+
+The supplied document reviews were independently checked against the implementation
+before acceptance. Archive display uses all completed turns without the drop boundary;
+model reconstruction still honors compact/trim boundaries and omits empty assistant
+terminal text. Both contracts now state their selection relationship explicitly.
+Markdown precedence distinguishes literal Setext pairs, rules and pipe tables and
+specifies container indentation. The config contract distinguishes pre-rename failure
+from published writes with unconfirmed directory sync, and separates the closed
+operator-state writers from the three model-preference setters. Neighboring key-source
+references qualify the accepted, unimplemented step-2 extension; ADR-0119 remains
+Proposed with forward-compatible atomic display metadata requirements.
+
+Two suggested mechanical corrections were rejected after verification: GitHub heading
+anchors retain doubled hyphens around the removed em dash, and ADR-0112's authored
+date differs legitimately from its later acceptance date. Approval marks the design
+Accepted; it does not label unimplemented runtime behavior shipped.
+
+The approved legacy display choice is explicit: an older
+user row without recorded compact display becomes a neutral placeholder, including
+an ordinary prompt without attachments. Assistant answers remain visible. Explain
+once that original user text stays stored and may enter model context. No pattern
+match, nonce or guessed frame parser establishes missing historical provenance;
+there is no backfill. New user prompts restore their exact recorded display form.
+
+#### Approved decisions and scope qualifications
+
+- ADR-0123 and the linked metadata contract are accepted. Canonical
+  `SessionMessage`, model restore, export and the LLM seam stay unchanged. A new
+  nullable migration and bounded DB metadata read are needed; this is a public
+  shared-metadata/DB API change, covered by this approval.
+- The ADR-0114 clarification and markdown reference are accepted, including
+  table/nesting bounds and literal fallbacks. The accepted in-house/no-dependency
+  direction, source hatches and color-off source rendering remain.
+- The ADR-0112/config refinement is accepted: only affirmative named-source consent
+  persists after atomic publication; defer/cancel before publication grants nothing,
+  and pre-publication failure requires a second explicit choice before ephemeral
+  use. Directory-sync failure after rename is published with a truthful qualified
+  durability notice, not an unsaved grant. The necessary row-16a writer floor moves
+  into 2b before any new preference is written; unrelated HTTP activation stays
+  with its recorded milestone.
+- `chat --continue` rejects `--agent` and combinations with `resume`, `list` or
+  `export` before history/key/provider/MCP work. Resume retains its saved bound
+  agent; the new flag never silently overrides it. An omitted-id picker cancel
+  exits 0 without starting a host; an empty picker offers cancel, with no automatic
+  new session. Explicit resume IDs keep their current behavior.
+- The initial restore budgets are entry-count limits, not a total archive byte
+  bound or a permanent live-store ceiling. No silent truncation of a large
+  restored message or live conversation is added. Measure representative and
+  large-message workloads, and resolve a demonstrated unacceptable result before
+  accepting the affected step rather than claiming performance from entry count.
+- New Home-tree commands show disabled reasons when they cannot run, argument
+  hints where needed, nearest-match typo guidance without auto-execution, and
+  remedies suitable for the actual host. Standalone chat keeps its recorded
+  three-command exclusion and names reachable alternatives.
+
+These qualifications introduce no new runtime dependency or provider call.
+The full ADR-0115 interrupt map remains MVP-4; Esc/Ctrl-C cancellation for the new
+screens already binds under ADR-0122. The existing scope exclusions above remain,
+including in-Home cross-directory re-anchoring and MVP-9's broader provider work.
+Missing legacy display provenance is an explicitly disclosed historical limit,
+not unfinished reconstruction work.
+
+#### Implementation steps
+
+**Revised and approved — 2026-11-09.** After the maintainer asked to reconsider review
+and execution cost, the eleven implementation checklist items are consolidated
+into **four steps**. The earlier list separated internal prerequisites into
+review checkpoints even where they share one user journey, code path and
+acceptance evidence. The four steps below replace that execution breakdown;
+scope, accepted contracts, dependency order and security obligations are unchanged.
+
+Each row delivers a complete behavior that can be exercised end to end. Internal
+implementation order is a checklist, not another commit/review/acceptance loop.
+Package-scope commits can still separate changes where appropriate; independent
+reviews cover the entire step, including all its internal commits, once its
+complete implementation is ready. Canonical contracts land with their behavior.
+
+| Step | Slice | Complete deliverable | Internal implementation order | Required evidence beyond ordinary gates |
+|---|---|---|---|---|
+| 1 | 2a | Readable chat and truthful CLI feedback | Tab expansion and word wrap → tool failure glyphs/copy feedback → pure markdown parser/layout → streaming/render integration and source hatches; excess-argument refusal and the `agent run` stdin hint join this slice | Every markdown construct/fallback and exact/+1 limit; linear incremental-work evidence before live tailing; Unicode/tab/selection and one-row invariants including prefix exhaustion at widths 1/2; rich assistant cold-wrap; both renderers/color modes/80×24; local clipboard failure versus sent OSC52; grammar diagnostics without reflected values; machine snapshots; scoped parser security sitting; cumulative 2a acceptance |
+| 2 | 2b, credentials | First run and provider keys managed inside the Home | Typed key availability and shared writer floor → native select/confirm/text/masked prompt host → rehosted setup → standard-env consent → `/providers`, persistent keyless row and keyless `chat` setup | Typed usable/missing/unavailable/pending/ineligible observations without per-frame key probes; symlink/dangling-link preservation before read/chmod; atomic publication with qualified crash durability, separately fault-injected file/directory sync and truthful failure/ephemeral outcomes; secret-free UI state/history/hatches/errors; bounded paste/input and cancellation/cleanup; actual resolver egress tests for chat/refresh/deep doctor; custom-endpoint and cross-layer refusals; restart/revocation behavior; palette discovery; separate credential/config security sitting |
+| 3 | 2b, projects | Safe project initialization and discovery | Shared `init` core → `/init` confirmation and shell result → global-versus-project discovery fix across all consumers → existing-global-artifact remedies | All authoring/discovery consumers, home-folder refusal, no overwrite, symlink refusal, nested projects and existing global artifacts; shell/JSON contracts; inline/full-screen/color-off confirmation/cancel; separate filesystem security sitting and cumulative 2b acceptance, including interaction with step 2's config/setup paths |
+| 4 | 2c | Find and resume a session with its safe visible history | Shared display metadata and additive migration → safe projection/repaint → indexed paged picker and `/resume`/omitted-id/`--continue` → actionable Continue rows/landing geometry → exit resume line | Metadata boundary/upgrade tests and every submit path; legacy placeholders, empty finals/prefixes, compact→trim and memory policies; unchanged model/export bytes and disclosure activation; 5,000-turn archive, restore budgets and rich cold-wrap; indexed SQL-side scope/filter/cursor tests; empty/error/retry and stale-result handling; shell grammar; original-workspace authority and no cross-directory Home resume; focused/keyless/prompt visibility at 80×24 in both renderers/color modes; separate resume security sitting and complete MVP-2 acceptance |
+
+Step 1 combines the former items 1–4; step 2 combines 5–7; step 3 is the former
+item 8; step 4 combines 9–11. No deliverable is dropped or moved past MVP-2.
+Geometry/parser/draw and metadata/projection/picker are reviewed together, so
+their integration is not repeatedly rediscovered in separate rounds.
+
+Keep project initialization separate from credential setup: it changes project
+discovery and authoring destinations across commands, has its own filesystem
+failure cases, and can be validated without the setup UI. Combining them would
+make the largest step cover two distinct behaviors and security scopes. Conversely,
+separating a parser from its renderer or a session picker from safe resume would
+add review overhead before the intended behavior can be exercised completely.
+
+The baseline is therefore **eight independent review rounds instead of twenty-two**,
+plus the required separate security sittings and any clean re-review D64 requires
+after substantive fixes. This reduces repeated setup and context loading; it is
+not a prediction that total implementation time or tokens falls by the same ratio.
+Additional steps require a demonstrated independent risk/dependency or a review
+scope that cannot be covered reliably; file count or an internal helper alone is
+not a reason to split. Record the concrete reason before adding a checkpoint.
+
+Core execution stays platform-pure. Only existing shared history selection is
+reused; display metadata and picker/storage additions belong to shared validation,
+DB and CLI, with no new model/runtime branch in the engine. Inspect exact export
+surfaces before touching public APIs; the approval covers the narrowly described
+metadata, paging and CLI additions, not unrelated API changes.
+
+#### Commit, review and acceptance loop
+
+For each of the four steps (not each internal checklist item or commit):
+
+1. Implement and self-review against `/implement-task`; add meaningful regression
+   and journey tests. Check `tools/` pinning before touching an existing suite;
+   prefer new test files. Replace the three `init` stubs one for one as already
+   required. Update canonical docs with that step.
+2. Use targeted checks while implementing internal items. Before the implementation
+   commit and step acceptance, run `pnpm ci:workspaces`, build/format, isolation,
+   coverage and the applicable smoke/causal checks. Preserve the skill's
+   lint/typecheck/test/build obligations; a failing applicable gate is not waived
+   by review. Run the complete CI family on the final combined MVP-2 revision
+   before merge, using the repository's declared shards for the large filesystem
+   and secrets cohorts. Required remote CI remains mandatory. Commit the green
+   implementation on `development` with truthful Codex trailers.
+3. Run a fresh independent comprehensive round over that committed step and its
+   affected existing paths: correctness/contracts, UX/accessibility/performance,
+   and security/lifecycle where relevant. Validate every finding before fixing;
+   commit fixes with appropriate regression evidence.
+4. Run a second round with new reviewer agents over the entire cumulative step,
+   including the fixes. Validate, fix, test and commit any confirmed findings.
+   The second round is independent of the first, not its authors rechecking only
+   their own comments.
+5. Apply D64 as well as this two-round minimum. Security-tier steps need a new
+   complete cumulative round with no blocker/high/medium after the last fixes,
+   plus the separate applicable security sitting. If round 2 needs substantive
+   fixes, obtain the necessary new clean round; do not mark an unreviewed fix
+   accepted. Resolve in-scope lows rather than creating avoidable deferrals.
+6. Record reviewed revisions, verified findings/resolutions, checks and remaining
+   gates concisely in this register; detailed timestamped records stay local in
+   `docs/reviews/`. Proceed to the next step automatically. Push the combined
+   `development` revision for the final PR and observe all required CI; do not
+   restart unrelated long native matrices for each intermediate review fix.
+
+#### Step 1 acceptance (2026-11-10)
+
+The readable-chat step is accepted on `development` at `b636be5f`. Round 12's
+fresh independent parser and integration reviews and separate D76 security
+sitting are clean over the cumulative diff from `6d1e7c40`. At that checkpoint,
+steps 2–4 were unimplemented and proceeded in their approved order; this is not whole-MVP-2 or
+release acceptance.
+
+| Round | Reviewed revision | Verified corrections / result |
+|---|---|---|
+| 1 | `d7520833` | `3a86e653` |
+| 2 | `3a86e653` | `e5ece476` |
+| 3 | `e5ece476` | `5e07e083` |
+| 4 | `5e07e083` | `8c88992c` |
+| 5 | `8c88992c` | `cf8eb674` |
+| 6 | `cf8eb674` | `0436af99` |
+| 7 | `0436af99` | `7c7d27c2` |
+| 8 | `7c7d27c2` | `9d255667` |
+| 9 | `9d255667` | `f287fc43` |
+| 10 | `f287fc43` | `b6f1aad7` |
+| 11 | `b6f1aad7` | `b636be5f` |
+| 12 | `b636be5f` | Clean cumulative reviews and separate security sitting |
+
+The verified corrections cover physical/container ownership and literal
+fallbacks; exact opaque targets; Unicode/tab geometry and invalid-width
+acknowledgement; clipboard lifecycle; and indexed CPU/retention bounds. Detailed
+timestamped evidence remains local in `docs/reviews/`. Round 12 independently
+passed 88 parser tests and 15,000 mixed-block comparisons; 237 integration tests,
+40 native startup-width cases and long-source/geometry/sanitizer probes; and
+546 security tests plus hostile-control and resource probes. Finite measurements
+establish neither an all-input proof nor a universal heap ceiling.
+
+Exact-source gates pass: workspace lint/typecheck/tests (CLI 416 files, 6,852
+passing and 11 existing skips), 737 Markdown tests, build, format, isolation
+(803 files), finite bundle closure and compiled CLI smoke. Earlier failed timing
+runs remain recorded: independent helper size/container cases were separated
+without removing inputs, assertions or work bounds; each uses the default
+five-second deadline. Aggregate scheduling/budget granularity changed, not
+production performance. The R10 helper profile attributed most sampled time to
+the full-source oracle; this does not turn the failed aggregate run green.
+
+The package coverage floors previously passed and their production sources are
+unchanged by this CLI-only step. Final combined coverage, the complete declared
+CI families below and required remote checks remain due on the final MVP-2
+revision. Native/headless fixtures do not replace the real Windows terminal
+acceptance assigned to MVP-10.
+
+#### Step 2 acceptance (2026-11-10)
+
+The credential step is accepted on `development` at `85f0e691`. Round 4's fresh
+independent correctness and native UX/lifecycle reviews and separate
+credential/config security sitting are clean over the cumulative diff from
+`5861f805`. Project initialization and safe history/resume remain steps 3 and 4;
+this is not whole-MVP-2 or release acceptance.
+
+| Round | Reviewed revision | Verified corrections / result |
+|---|---|---|
+| 1 | `60e6ecfc` | `0b60ee00`: saved-default recovery, fixed operator diagnostics, fresh catalog credential observations, exact visible native admission and Home remedy |
+| 2 | `0b60ee00` | `280be241`: preserve model preferences during additional key maintenance, name usable sources, keep rejected-paste recovery visible |
+| 3 | `280be241` | `85f0e691`: retain existing interactive keyless-resume recovery and native provider/context-specific action copy |
+| 4 | `85f0e691` | Clean cumulative reviews and separate security sitting |
+
+The native host shares one input owner with Home, retains its chat subtree and
+checks the complete current card, raw geometry, actual flush and custody at
+admission and again before config rename. Per-lookup credential authority, global
+operator state, saved/unconfirmed/explicitly ephemeral outcomes and project
+precedence remain distinct. [Home](../../reference/cli/home.md#first-run-onboarding-wizard-25g-s8)
+and the [credential-source contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+own the behavior; detailed timestamped evidence stays local in `docs/reviews/`.
+
+Round 4 independently passed 112 correctness tests; 194 native tests across 26
+files plus four mounted Home recovery controls; and 467 security tests across 40
+disjoint files plus 11 offline probes. The native run deliberately filtered two
+broad Home suites (123 other cases were not run in that sitting); the author ran
+the full workspace separately. Actual-command security probes retain resumed
+workspace/MCP consent, refuse keyless sends and compaction without recording a
+prompt, permit an explicitly granted source, block again after its removal and
+close injected owners once. These finite offline checks do not certify physical
+terminal/keychain behavior or real Windows-terminal acceptance.
+
+Self-verification and review failures remain recorded. Fresh credential refusal
+again precedes session-history acquisition, preserving the existing causal guard.
+Existing Home write assertions await asynchronous settlement before the same
+checks. The later-manual-save regression now removes the prior usable source
+first; additional-key maintenance has its own unchanged-preference regression.
+New native harness preconditions and one test mock's contextual type were fixed
+without removing or weakening assertions, deadlines or causal controls. Baseline
+in-memory old-module probes fail the new regression cases; no branch or worktree
+switch, source restoration or paid provider call was used.
+
+The accepted source passes full workspace lint/typecheck/tests (CLI 436 files,
+7,036 passing, 11 existing skips), build, format, isolation, finite bundle closure,
+compiled bootstrap/CLI smoke, seam/engine fences and DB sync. Initial enforced
+coverage passed 815 files and 17,400 tests, with 22 existing skips and required
+package floors. Later corrections changed CLI production sources only; those
+required package sources are unchanged. Final combined coverage, complete declared
+CI families below and mandatory remote checks remain due on the final MVP-2
+revision. Steps 3 and 4 proceed automatically in their approved order.
+
+#### Step 3 acceptance (2026-11-10)
+
+Project initialization and global-state exclusion are accepted on
+`development` at `ee49871d`. Three fresh cumulative rounds and a separate
+filesystem sitting satisfy the required review gates. The [init contract](../../reference/cli/commands.md#relavium-init)
+owns shell results, Home confirmation, existing/nested projects, final-marker
+link refusal, partial cleanup and global-artifact remedies. Existing global
+files are left in place. Safe display metadata and history/resume remain step 4.
+
+The prepared core writes only the marker, workflows and agents directories.
+Home uses the existing native owner with a default-No card and exact visible
+admission at each directory publication; both renderers retain their chat view.
+Cleanup removes only identified, invocation-created empty directories and reports
+uncertainty without removing concurrent contents or replacements. These Node
+path/identity checks retain the owner-controlled-ancestor assumption; they do not
+claim race-free isolation from a hostile same-user process.
+
+Shared discovery and automatic authoring destinations exclude home/global state
+and canonical aliases. Unresolvable global boundaries refuse rather than silently
+discarding a project's settings. `create` checks before prompting and again after
+its asynchronous wizard. A new regression first demonstrated that a marker
+changed to a global alias during that wait could otherwise publish there; the
+corrected guard refuses it without a global write. Old-discovery in-memory probes
+also fail the new configuration/consumer checks.
+
+The initial workspace run found nine test-premise/metadata failures: old fixtures
+used home as their project and registry expectations still advertised an init
+stub. Fixtures now separate project and home; all original DB custody, notice-I/O,
+native-close and precedence assertions remain. The immutable 24-entry legacy
+manifest fixture is unchanged and still compared exactly, with the new init
+entry checked separately. Three run-stub tests were replaced one for one; that
+pinned suite remains 28 cases and its causal witness names are unchanged. Initial
+native harness failures are retained: text-plus-CR was separated into the parser's
+submit gesture, and half-column resize checks observe actual pending admission
+rather than claiming a complete instruction can be painted there.
+
+The initial implementation passed full workspace lint/typecheck/tests (CLI 440
+files, 7,088 passing, 11 existing skips), build, format, isolation, finite bundle
+closure, compiled CLI/bootstrap smoke, seam/engine fences, DB sync and tooling
+typecheck. Native coverage includes
+Home/Home-chat, both renderers and colour modes, No/Esc/Ctrl-C, bracketed paste,
+post-flush resize/recovery/cancel and retained inline history. Actual CLI, driver
+and config/create/import/export/list/doctor journeys pass offline. This entry
+does not replace the required independent reviews or final combined gates.
+Required production package sources remain unchanged by this CLI-only step;
+final combined coverage remains due under the scheduling rule below.
+
+R1 verified actual catalog-directory/file aliases that could admit global reads
+or forced writes, plus missing local `/init` typo guidance. `5d4af759` fixed them.
+R2 verified automatic project/workspace config-file aliases, including the
+invocation-default reread, and default portable/session export targets that could
+write global files. `ee49871d` applies the shared actual-target boundary there,
+including default session export from home/global directories. Explicit selected
+config, input files and output paths retain their existing contracts. Baseline
+module controls fail the new regressions before each fix. Only the earlier safe
+export-refusal message expectations changed in two existing tests; their error
+codes, test counts and preservation assertions remain.
+
+Fresh R3 reviews at `ee49871d` found no verified findings across the whole step:
+correctness/contracts (78 independent tests), native UI/lifecycle/performance
+(246 tests), and the separate filesystem security sitting (97 tests plus 12
+compiled disposable-home probes). The final source passes workspace
+lint/typecheck/tests (CLI 443 files, 7,116 passing, 11 existing skips), build,
+format, isolation, seam/engine fences, tooling typecheck, finite bundle closure
+and compiled CLI/bootstrap smoke. Whole-MVP-2 gates remain due; step 4 proceeds
+with safe display metadata, history projection and session discovery/resume.
+
+#### Step 4 implementation (2026-11-10)
+
+The approved metadata/migration, safe archive projection, shared native picker,
+Home `/resume` and Continue navigation, canonical chat shell entries and exit
+resume hint were implemented on `development` at `22994112`. This subsection
+records the initial author evidence; the final cumulative review and acceptance
+follow below. No new design or dependency was introduced beyond ADR-0123 and the
+approved four-step plan.
+
+Author verification passes all workspace lint/typecheck/tests (CLI: 451 files,
+7,182 passing, 11 existing skips), build/format, isolation and required coverage
+(842 files, 17,669 passing, 22 existing skips). After coverage, only CLI UI hints,
+their existing native tests and Windows test scheduling/profile changed; measured
+package production sources did not. Current UI and full workspace checks pass.
+The packaged local CLI passes 177 controls and 10 smoke scenarios; compiled
+bootstrap/CLI, media, overflow, budget replay, map controls and 1,031 acceptance-tool
+tests pass. No seam, engine-dependency or unsafe-any escape was introduced.
+
+Two misleading UI hints are corrected: empty Home does not advertise Continue,
+and rejected search input offers editing rather than an unavailable Enter retry.
+A mounted renderer control fails with the old footer substituted in memory;
+the corrected view passes the complete renderer matrix; the developer source is unchanged by that control.
+The original pinned 449-case/71-child usage cohort and Commander-opacity source
+anchor remain intact; new restore cases live in a separate file. Initial failed
+runs remain recorded locally rather than being counted as acceptance.
+
+The preceding remote revision exposed Windows timing failures: the 200-pair NTFS
+identity diagnostic completed but exceeded its implicit five-second default;
+an unchanged retry passed it and instead timed out parallel media publication
+and migration setup. The diagnostic now uses the existing 15-second native
+profile with all 200 pairs/assertions retained. Windows media runs the same eight
+files serially; media case/hook, causal-phase/evidence and job bounds remain unchanged.
+The exact workflow invocation is checked by the existing scheduling guard.
+Required Windows verification on the final combined revision remains due.
+
+#### Step 4 acceptance (2026-11-10)
+
+The complete session-discovery and safe-restoration step is accepted on
+`development` at `cecb6191`. Round 4's fresh complete correctness/contracts and
+native/UX reviews and its **separate D64 security sitting** are clean over
+`528eae0f..cecb6191`. They cover the entire step and its affected existing callers,
+including all preceding corrections, rather than only the last patch.
+
+| Round | Reviewed revision | Verified findings and resolution |
+|---|---|---|
+| 1 | `22994112` | Four medium findings: truncated Home diagnostics/remedies, hidden Home activation below minimum geometry, standalone post-await credential admission, and unsafe saved-ID recovery commands. Fixed in `60bfadbb`. |
+| 2 | `60bfadbb` | Two medium findings: picker typing lost under native output backpressure and a Home post-build credential admission gap. Fixed in `14399d21`. |
+| 3 | `14399d21` | Two distinct medium findings: pasted drafts retained Continue focus and were lost on Enter; local restoration cancellation failed to stop new MCP/key admissions. Native/security cancellation reports describe the same finding. Fixed in `cecb6191`. |
+| 4 | `cecb6191` | Complete cumulative correctness, native/UX and separate security reviews: no actionable blocker, high, medium or low finding. |
+
+The corrections preserve exact current-card acknowledgement for picker selection,
+paging and scope changes while a previously visible editor retains filter input
+during result repaint. Home restoration cancels only its pending replacement
+owner, passes the supported MCP connect signal, retains actual work/cleanup and
+keeps the old Home/chat. Only that owner's stopped identity is benign; an
+independent infrastructure failure retains exit `9`. Typed and pasted edits both
+leave Continue focus before submission. No in-scope finding is deferred.
+
+The reviewed source passes full workspace lint/typecheck/tests (CLI: 457 files,
+7,232 passing, 11 existing skips), build/format and isolation (848 collected
+files). Permanent native backpressure, draft and cancellation tests include
+landing/retained-chat, before/during-connect, post-build and independent-fault
+controls. In-memory prior-source controls reproduce the repaired failures while
+leaving the checkout unchanged. The final correctness reviewer independently
+passed 452 scoped tests; the separate security reviewer passed 385 with zero
+skips. Review totals overlap and are not added together.
+
+A current-source representative layout probe at 80 columns wrapped 500 fresh
+rich entries in 69–97 ms across five samples, and a 120 KB individual answer in
+70 ms across 1,540 rows without source loss. These local, warmed-process/fresh-entry
+measurements are exploratory functional evidence, not a cross-platform latency
+or memory guarantee. The required cold-wrap/native guards remain CI gates.
+
+All **four approved MVP-2 implementation steps and their independent review
+loops are complete**. Required combined CI, coverage, the full declared causal
+families and platform jobs gate the checkpoint PR, which records their final
+source-bound results for the maintainer. This acceptance does not merge the PR,
+publish npm, close the wider Phase 2.6 workstreams, or change the approved MVP-3…10
+scope and release guard.
+
+**Final CI verification — 2026-11-10.** At `9bbf42e1`, the push coverage
+run passed all 848 files (17,718 tests and 23 existing Linux skips), while the
+same-tree PR run exceeded the default five-second allowance in three markdown
+test cases. A selective retry then exposed four markdown case timeouts in the
+ordinary workspace run; two included the same grouped/scale workloads. Both PR
+Node-22 compatibility attempts exhausted their 25-minute whole-job allowance.
+These incomplete/failed runs are not checkpoint acceptance.
+
+Independent focused measurements found no production defect: the 400-line
+paragraph experiment passed its exact structural bounds, and all relevant
+raw-marker/EOF cohorts passed under coverage. The verification correction
+separates independent raw-marker size/prior, omitted-prefix and EOF chunk
+variants into individual cases, preserving every input and assertion execution.
+The inseparable 400-draw experiment retains all draws and operation limits with
+an explicit 15-second test allowance; its 100/200-draw cases retain the default.
+The four native quote tests get a 20-second outer allowance around their existing
+15-second child deadline. Their 256 MB process heap cap, 128 MB retained-heap
+assertion and causal limits are unchanged. This explicitly qualifies the earlier
+unchanged-case scheduling statement for these newly introduced markdown tests;
+security/native-media readiness, causal phase/evidence limits, pinned 449/71
+inventories and coverage floors remain unchanged. Only the advisory Node-22
+whole-job allowance increases to 35 minutes. No production behavior or dependency
+changes, and the final checkpoint still requires source-bound CI results.
+
+
+**Verification scheduling refinement — 2026-11-10.** The step-1 full local CI
+invocation passed workspaces, build/format, package/bootstrap/smoke, acceptance
+tools, wire and all 23 usage mutation controls. Its 115-control filesystem family
+stopped at `media-temp-claim-identity/restored` without a completed report. The
+isolated unchanged fixed/removal/restored retry passed all 23/22/23 cases with
+source invariance verified; this does not make the interrupted family complete.
+The repository's required CI already runs filesystem and secrets as two shards
+with unchanged phase/case/evidence bounds and 60/75-minute job allowances.
+Use scoped checks during the steps and complete those full declared families on
+the final combined revision. No required merge gate, test inventory, deadline or
+review round is removed; retain the incomplete-run record and do not call the
+single interrupted `pnpm run ci` invocation green.
+
+Use current available Sol/Terra models with high effort for parser, security,
+storage and lifecycle review; Luna may cover a narrower low-complexity UX/docs
+pass. Use no Astra unless the maintainer later explicitly requests it. Each round
+uses fresh agents; no implementation author reviews its own work as independent.
+
+Every new screen is checked in inline/full-screen, color on/off and 80×24, with
+paste, Esc/Ctrl-C, resize, cancellation and recoverable failures. Package/Windows
+headless smokes establish machine-contract compatibility only. Mounted Ink and
+native-input tests establish the exercised interactive paths; a real Windows
+terminal remains MVP-10's separately recorded acceptance check, never inferred
+from headless success. Do not make paid provider calls or claim live validation
+from offline fixtures.
+
+The new markdown reference, accessibility/copy wording, command/Home/chat/config
+references, metadata/DB contracts and their indexes are updated in their owning
+steps. A final consistency pass updates current status, the phase acceptance and
+deferred-task closures without prematurely claiming unrelated MVPs complete.
+Then prepare the `development`→`main` PR for the maintainer's detailed review;
+merge and publication are not part of this implementation instruction.
+
+#### PR #98 supplied-review follow-up (2026-11-11)
+
+The maintainer supplied two reports. The corrected report binds the actual PR to
+`c04e6c13..3cae8c09` (250 files, +36,126/−1,045); the older 520-file report used a
+stale local base. Its findings were still checked against the actual code and
+accepted contracts. The following dispositions refer to those report-local IDs,
+not to a new risk-acceptance decision. No new ADR, runtime dependency or seam
+change is needed for these corrections.
+
+| Supplied finding | Verified result and action |
+|---|---|
+| Corrected report 1 and 3: destination mismatch / missing standalone origin | Fixed. Both native hosts obtain safe destination copy from the same private endpoint snapshot as the actual adapter. A second-process SQLite registry edit cannot change the card independently of its request. Real Home and standalone tests exercise validation with a recording transport and verify a fresh resolver adopts the new endpoint. Invalid stored endpoints retain their refusing adapter and fixed safe copy. |
+| Corrected report 2: quadratic email autolink rejection | Fixed with a single-pass predicate preserving the supported grammar. Differential and cold/split-live tests cover acceptance equivalence. Native cold wrapping and live final-`>` append regressions use 200,000 dots, a 256 MiB heap cap and a ten-second child deadline; the prior predicate times out on both paths. No provider or actual network request is used. |
+| H1: conservative-commitment durability | Fixed the narrower verified latch inconsistency. Failed writes now set the existing sticky durability latch and retain the original rejection. A real governor/store/host regression proves later cached-key command dispatch refuses even after store recovery. The report's provider-budget-bypass claim was not established: the existing governor barrier and host accounting-failure latch already refuse later provider egress. |
+| H2, M1: close at an exhausted cleanup deadline | No defect established. The promise acknowledges actual cleanup; the registry separately bounds its wait and reports unacknowledged owners. Calling `complete()` on deadline would falsely certify cleanup. |
+| H3, M10: autolink control bytes / metadata | No reachable sanitizer bypass established. Actual cold/live display boundaries sanitize before parsing, and link metadata is not a navigation, fetch or OSC-8 sink. The accepted parser precondition remains in force. |
+| H4, M9: oversized table/source retention | No defect established. Full-table literal fallback and source hatches require retaining the complete source; stream state resets at its existing ownership boundaries. Breaking early or dropping stabilized source would change that contract. |
+| M2: effect-turn reservation | No unsafe dispatch or identity reuse established. Typed transactional reservation refusals happen before dispatch; successful keys are durable before issue. Applying the transcript/cost latch indiscriminately would turn typed refusals into a new sticky-failure policy. |
+| M3: explicit export destination | Explicit `--out` is selected-file authority under the existing export contract. Automatic project targets keep their own boundary checks. No new project jail is introduced. |
+| M4, M5: remembered consent / exported config primitive | Remembered global consent is accepted user authority, not an untrusted project grant. The atomic writer has typed production callers and a fault-test seam; no plaintext-key write or bypass was found. |
+| M6: custom-adapter fetch injection | ADR-0065 assigns DNS-pinned transport to the host. The CLI always supplies its validated transport; no CLI SSRF bypass was established. Requiring a different package factory contract is not justified by this finding. |
+| M7, M8: table padding / exhausted row width | Existing grid-width invariants and boundary tests contradict a negative-padding reproduction. Narrow positive geometry preserves source; true zero geometry already suspends interaction. Clamps or empty rows would hide an invariant failure or lose text. |
+| L1–L4: zero geometry, picker cancellation, unresolved boundary, endpoint classification | Zero remains zero so hidden approvals cannot be enabled by an 80-column fallback. Picker active/generation guards discard cancelled reads. Unresolved boundaries intentionally fail closed. Host-based wire classification is the accepted factory policy, including normalization; displayed recipient origins now retain actual ports. |
+| L5: own-export read | Existing link, descriptor identity and stat-size gates were already present. A narrower growth-after-`fstat` resource gap was reproduced and fixed: the admitted descriptor reader stops at the existing byte ceiling plus one sentinel. A real appended-file regression preserves the grown candidate and selects a new export name. |
+| L6–L9: grapheme clipping, heading indices, position radix, astral words | No defect reproduced. Clipping finds the boundary across concatenated spans; headings consistently use UTF-16 offsets for ASCII markers; the radix pruning boundary is an exact power of two; the existing two-unit word window captures the preceding astral point. Per-span segmentation would break cross-style clusters. |
+| L10–L12: ADR implementation wording | Existing dated implementation receipts already qualify historical proposal wording; the Markdown reference remains the canonical complete subset contract. No duplicate ADR amendment is necessary. |
+| O1–O3: performance evidence and CI | Native resource regressions supplement structural-work assertions; timings alone do not prove linearity. Against the actual base, only the advisory Node-floor job allowance changed from 25 to 35 minutes. Coverage/secrets allowances and required Windows/dependent map controls predate this PR. Causal bounds, inventories and coverage floors remain intact. |
+
+The original Sonar analysis at `3cae8c09` really failed reliability (C rather than
+A): its three open BUG issues are two split synchronous/async promise-handler
+warnings and a one-iteration loop. Targeted probes found no corresponding
+behavioral failure. Small clarity refactors express awaited failure handling and
+the single conditional directly, preserving same-dispatch owner admission, actual
+work joins and safe failure copy. Permanent lifecycle tests additionally observe
+unexpected presentation errors through the existing Home fatal path. No Sonar
+suppression or external issue-status change was made; only a new analysis can
+establish the corrected remote gate result.
+
+**Initial follow-up state.** Post-correction cumulative reviews, a separate
+security sitting and final combined verification were pending when this follow-up
+opened. Earlier step acceptance did not accept the new corrections. The final
+correction-review acceptance below supersedes this initial review status;
+source-bound combined checks still gate the checkpoint's readiness.
+
+**Cumulative correction round 1 — 2026-11-11.** Fresh native/storage/contracts
+and renderer reviews account for all 258 changed paths in `c04e6c13..71aaca04`;
+a separate D64 sitting finds no additional actionable security issue. The native
+pass finds five stale reference descriptions (Home actions, `/resume`, operator
+writer status and two CLI-index summaries), corrected in their canonical homes.
+The renderer pass establishes a medium live-rendering defect: expiring a literal
+bracket label at LF exposes its inner markers to enclosing delimiter queries.
+Independent reduction confirms text/style/newline loss and incorrect tab geometry;
+canonical source and finalization stay intact.
+
+The correction retains multiline opaque label ownership. Expanded regressions
+also isolate a preexisting query-liveness defect when a provisional thematic break
+closes and then reopens a paragraph: cached fixed-scope queries keep an obsolete
+end. Growing root flushes now advance that scope through the existing targeted
+threshold queue, reactivating only affected owners instead of invalidating the
+entire retained prefix. Thirty-three permanent cases cover four bracket forms, six
+wrapper markers, split boundaries, clipped semantic suffixes, tab geometry and
+two independent destination/reference reopen controls. A bounded view may rewrap
+its clipped prefix; the tests compare wide-layout character/style/newline/tab
+suffixes rather than asserting an unsupported cold/live row alignment.
+
+A bounded mixed-input author probe then exposed stale inner-autolink decisions
+when a literal enclosing group replaces an earlier opaque owner. The reduced
+cases establish two further cache-custody faults: replacement notified newly
+covered bytes but not existing owner-identity observers, and restoring a body
+during gap/fill work could enqueue dirty work after the flush's initial drain.
+Queries now subscribe to the actual opaque owner record, with disposal under the
+existing observer lifetime; replacements wake those observers. Flush settles its
+dirty/gap/fill phases iteratively before projection. This avoids a new global
+answer index or retained-prefix scan. Existing nested-target, suspended-owner and
+opaque-crossing work/retention bounds remain unchanged. The three additional
+permanent cases cover crossing code, a reopened bare group and nested autolinks;
+the isolated diagnosis includes a finite-scope interior true-to-false transition.
+
+The bounded mixed-input replay also reduced a preexisting no-progress defect to
+five UTF-16 units: an escaped backtick exposed inside an unfinished bracketed link.
+The old live run index returns the start for that literal tick, producing a
+zero-length item; an isolated `71aaca04` child reproduces nontermination. The live
+run helper now consumes at least the current matching character and an adjacent
+physical run, retaining growth observation and literal/code parity in constant
+time. Two killable native whole/split cases cover multiple run lengths, heap and
+unchanged indexed-work limits; both time out before the correction and pass after.
+The final bounded 400-sample mixed-input author replay completes with zero
+semantic/style/tab mismatches. This is supplementary evidence, not exhaustive
+input coverage or an independent acceptance round.
+
+A pre-final, uncommitted candidate's concurrent workspace run has 16 case
+timeouts and five Vitest RPC timeouts while the exploratory probe is CPU-bound;
+it is not a green gate. On this loaded local host, the replacement workspace
+verification keeps every test and case deadline and passes `--maxWorkers=2` to
+each Vitest task, with workspace concurrency one. Repository/CI commands and
+timeouts remain unchanged. The installed Turbo package has no bundled `docs/`
+directory; its version-matched `run --help` confirms argument forwarding. Final
+source-bound results still gate acceptance.
+
+Workspace checks and the native package/smoke/tooling gates passed on `71aaca04`.
+An earlier map-control invocation correctly refused a concurrent HEAD change and
+was rerun successfully on the frozen commit. Its later superseded coverage run
+was intentionally stopped after the new renderer defect was verified; that run
+is incomplete, not a green coverage receipt. A fresh cumulative round and final
+combined source-bound gates remain required after these corrections.
+
+**Cumulative correction round 2 — 2026-11-11.** Fresh native/storage and
+renderer/TUI reviewers complete the 261-path cumulative assignment at `168aaef0`
+without an actionable finding in those scopes. Their independent runs pass
+266 and 169 cases respectively; the renderer also checks 1,928 bounded input
+prefixes. These overlapping cohorts are not added to a test total.
+The separate D64 sitting passes 384 focused cases and establishes one medium
+finding: both accounting writers resolve model-catalog identity outside their
+common durability latch. A real `makeCatalogIdResolver` with an injected native
+catalog-query failure rejects an actual missing-usage or complete-usage turn,
+but a later cached-key command still dispatches in an optional-owner host.
+The finding does not establish a later provider-budget bypass or a bypass of
+production-owner termination.
+
+Both once-only catalog lookups now run inside the existing durable-write wrapper.
+Two permanent actual-turn regressions use real SQLite, the production catalog
+resolver, governor, persister and journal; they prove native query failure sets
+the original sticky error and blocks subsequent dispatch even after recovery.
+Both fail before the correction. The later superseded coverage invocation at
+`168aaef0` was intentionally stopped after this verified finding and is incomplete.
+No coverage, causal or CI acceptance is inferred from it. The final writer
+correction needs fresh independent correctness and security review; unchanged
+renderer code retains its source-bound round-2 review evidence.
+
+The writer candidate's two-worker local CLI run completes with three timeout
+failures (one existing native crash deadline and two existing Markdown timing
+cases), without a semantic assertion failure. The unchanged 200-cycle sibling
+passes after the 50/100-cycle timeouts. This run is not accepted as green. Repeat
+the entire CLI suite with one file worker, retaining every case and deadline;
+the other five workspace suites and their source identities are unchanged.
+The complete one-worker CLI repeat passes all 466 files / 7,424 cases, with the
+same 11 existing skips; build/format also pass. Together with current workspace
+lint/typecheck, isolation and the unchanged five package suites, this completes
+the author gate without raising a deadline. Independent writer review and final
+combined acceptance are still pending.
+
+##### Final correction review acceptance (2026-11-11)
+
+The corrected source is accepted on `development` at `2e57e10a`. Fresh round-3
+correctness review and its separate D64 security sitting are clean for the final
+accounting increment and complete affected cumulative accounting/session flows.
+SEC-R2-01 is closed for both usage kinds. The previously completed round-2 native
+and renderer reviews remain bound to exact unchanged source: all 257 paths outside
+the final four-file increment match `168aaef0`, including all 114 renderer paths.
+The independently recomputed renderer identity digest is
+`a46b2b9ab4be7be853a713b52e0af104c10779af592fc5c3f243eeb3e139f1f4`.
+This retains reviewed immutable code rather than claiming a third fresh renderer
+audit or treating the round-2 security finding as a clean result.
+
+Round 3 independently passes 199 correctness cases and 277 security cases, plus
+nine bounded accounting scenarios and two late-dispatch races. They establish
+original-error identity, once-only catalog reads, missing-catalog success,
+catalog/UUID/time fault latching, sticky refusal after recovery, refusal after
+approval/preparation and discard of a prepared claim. Constructor and event-only
+projection reads are distinguished from durable money operations. Review cohorts
+overlap and are not added to a test total; the finite evidence is not universal
+proof or a real-provider/keychain/terminal certification.
+
+All verified in-scope supplied and subsequent findings are fixed; none is deferred.
+No new ADR, dependency, seam, authority grant, deadline increase or floor change
+was needed. Canonical references and status summaries are reconciled. Author
+verification includes current workspace lint/typecheck, the unchanged five package
+suites, the complete one-worker CLI run (466 files / 7,424 passes / 11 existing
+skips), build/format and isolation (857 collected files).
+
+This completes correction review, not the combined CI gate. Final enforced
+coverage, complete declared wire/usage/filesystem/secrets families, package/smoke
+and platform checks bind the checkpoint source; their actual outcomes and run
+links belong in [PR #98](https://github.com/HodeTech/Relavium/pull/98). Its draft
+state is removed only after those results are verified for maintainer review.
+Earlier incomplete/failed runs above remain incomplete/failed. The published CLI,
+release guard and wider MVP-3…10 scope retain their existing status.
+
+##### Final CI harness follow-up (2026-11-11)
+
+At `dfcf108b`, local enforced coverage passed all 857 files (17,911 cases,
+22 existing Darwin skips), and the complete wire/usage/filesystem/secrets controls
+passed with retained source/restoration and runtime evidence. The first final-source
+[PR CI](https://github.com/HodeTech/Relavium/actions/runs/43009284696) and
+[push CI](https://github.com/HodeTech/Relavium/actions/runs/43009275434) coverage jobs
+remain failed: respectively one and seven five-second renderer case overruns, plus
+two unhandled Vitest task-update RPC timeouts each. Their outcomes are not replaced
+by the local passing run or by successful sibling jobs.
+
+Independent diagnosis reproduced the RPC failure with the installed Vitest 3.2.6
+on both Node 22.23.1 and CI's Node 24.22.2: 100 synchronous 650-ms cases all pass
+their unchanged five-second budgets, but the 65-second file starves an update reply.
+The identical workload with an `afterEach` event-loop yield passes without the RPC
+error on both versions. The two long synchronous Markdown suites now yield between
+cases. Separately, the anchored-inline fixture measures its invariant Unicode body
+once and subtracts independently measured complete units, avoiding a quadratic
+reference calculation. All 1,920 former oracle values were checked for equivalence;
+every factory operation, assertion, counter bound, size and deadline is retained.
+
+The focused Node-22 run and Node-24 V8 diagnostic each pass the unchanged 256-case
+four-file cohort; they are not replacements for full enforced coverage. Other
+streaming case overruns are not attributed to the inline oracle or RPC failure
+without evidence.
+
+Two fresh independent source reviews accept the test-only correction at
+`f73ea504`. Round 1 verifies all 1,920 exact old/new oracle expressions on both
+Node versions and all 2,004 unchanged tree entries outside the five-file delta.
+Round 2 independently verifies oracle equivalence and passes all 223 cases in
+the three affected files. Both reviews confirm unchanged test bodies, workloads,
+structural assertions and deadlines, and explicitly retain the unresolved
+individual CI overruns as a required verification gate. These overlapping
+cohorts are not added to the full-suite test total. All production, tooling,
+configuration and security sources retain their accepted identities; this does
+not claim a fresh production security sitting. Only this acceptance/status record
+changes after the reviewed test commit. Final combined source-bound CI and
+maintainer review still gate the checkpoint PR.
 
 ## Deferred-tasks pulled into this phase
 

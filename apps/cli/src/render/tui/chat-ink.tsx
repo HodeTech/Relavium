@@ -1,5 +1,15 @@
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
-import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
+import {
+  Box,
+  Static,
+  Text,
+  render,
+  useApp,
+  useInput,
+  usePaste,
+  useStdout,
+  useWindowSize,
+} from 'ink';
 import {
   createElement,
   useCallback,
@@ -54,7 +64,7 @@ import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
-import { colorProps, dimProps } from './projection.js';
+import { colorProps, dimProps, transcriptStyleProps } from './projection.js';
 import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
@@ -104,6 +114,7 @@ import {
 } from './input-history.js';
 import { PaletteView } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
+import { layoutColumns } from './layout-columns.js';
 import { ReverseSearchView } from './reverse-search-view.js';
 import {
   foldPaletteKey,
@@ -113,13 +124,11 @@ import {
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
-  errorRecoveryHint,
   formatApprovalTarget,
   formatBusyLine,
   formatReasoningPanel,
   formatSessionFooterWithMode,
   formatToolCall,
-  formatTurnSummary,
   liveScrollGeometry,
   reasoningLabelActive,
   sanitizeApprovalReason,
@@ -151,7 +160,9 @@ import {
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
-import type { ClipboardOutcome } from '../clipboard.js';
+import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
+import { MarkdownText } from './markdown-text.js';
+import type { MarkdownStream } from '../markdown/index.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
 import { assertRenderStoreAgree } from './session-view-model.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
@@ -172,41 +183,29 @@ function TranscriptLine(
   props: Readonly<{
     entry: TranscriptEntry;
     color: boolean;
+    columns?: number | undefined;
     acknowledgement?: TranscriptAcknowledgement | undefined;
   }>,
 ): ReactElement {
   const { entry, color } = props;
+  const lines = wrapTranscript([entry], props.columns ?? 80, color);
   useLayoutEffect(() => {
-    if (entry.role === 'notice') props.acknowledgement?.inlineNotice(entry);
-  }, [entry, props.acknowledgement]);
-  if (entry.role === 'user') {
-    return (
-      <Text {...colorProps(color, 'cyan')}>
-        {'> '}
-        {stripTerminalControls(entry.text)}
-      </Text>
-    );
-  }
-  if (entry.role === 'notice') {
-    // Command output (`/workflows`, `/cost`): a dim block, distinct from the cyan user line + the assistant turn.
-    // NO `wrap` (like the assistant turn): multi-line output renders each line on its own row, and a long line
-    // WRAPS. `wrap="truncate-end"` would make ink's cli-truncate measure the whole \n-joined string and DROP
-    // every line after an over-wide one — silent data loss for the catalog list.
-    return <Text {...dimProps(color)}>{stripTerminalControls(entry.text)}</Text>;
-  }
-  // An actionable, secret-free recovery hint for a failed turn (2.5.H) — a yellow one-liner below the gray summary
-  // that names the next step and makes explicit the session is still active. `undefined` (a success/aborted turn, or
-  // a code with no guidance) renders nothing.
-  const hint = errorRecoveryHint(
-    entry.summary.errorCode,
-    entry.summary.errorMessage,
-    entry.summary,
-  );
+    if (entry.role === 'notice' && lines.length > 0) props.acknowledgement?.inlineNotice(entry);
+  }, [entry, props.acknowledgement, lines.length]);
   return (
     <Box flexDirection="column">
-      <Text>{stripTerminalControls(entry.text)}</Text>
-      <Text {...colorProps(color, 'gray')}> {formatTurnSummary(entry.summary)}</Text>
-      {hint !== undefined && <Text {...colorProps(color, 'yellow')}> → {hint}</Text>}
+      {lines.map((line, index) => (
+        <Text key={index} {...transcriptStyleProps(line.style, color)}>
+          {line.spans === undefined ? (
+            line.text || ' '
+          ) : (
+            <MarkdownText
+              spans={line.spans.length === 0 ? [{ text: ' ' }] : line.spans}
+              color={color}
+            />
+          )}
+        </Text>
+      ))}
     </Box>
   );
 }
@@ -269,10 +268,14 @@ interface ChatAppProps {
   readonly onSuspend?: (() => void) | undefined;
   /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
    *  but copy-on-select is inert (a driver/test that wires no terminal). */
-  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  readonly clipboard?: ClipboardWriter | undefined;
 }
 
 interface ChatViewProps {
+  readonly markdown?:
+    | Pick<MarkdownStream, 'tail' | 'plainTail' | 'sourceTail' | 'elided'>
+    | undefined;
+  readonly displaySuspended?: boolean | undefined;
   readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
   readonly tick: number;
@@ -296,7 +299,7 @@ interface ChatViewProps {
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
-  /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — renders a transient "✓ Copied" toast above the footer,
+  /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — renders a transient "Sent to terminal clipboard" toast above the footer,
    *  confirming the copy WITHOUT appending to the transcript (which would re-wrap the lines just selected). */
   readonly copied?: boolean;
   /** Pending `@`/`!` attachments (2.5.D chip redesign) — rendered as a compact chip bar above the idle prompt. */
@@ -337,7 +340,7 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 /**
- * The transient "✓ Copied" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
+ * The transient "Sent to terminal clipboard" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
  * channel — `store.note` — appends a TRANSCRIPT entry, which re-wraps and shifts the very lines the user just selected
  * (whole-phase review). This flag drives a toast rendered OUTSIDE the transcript, so it confirms the copy without
  * touching the selection. Shared by both surfaces (`ChatApp` and the Home's `RootApp`), each of which calls
@@ -402,11 +405,45 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
   // its `dim` flag to `<Text>`. Only rendered while `running`.
   const renderBusyLine = (): ReactElement => {
+    if (props.displaySuspended)
+      return (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          Display paused for an oversized control sequence · Esc to stop
+        </Text>
+      );
+    if (
+      props.markdown !== undefined &&
+      !state.compacting &&
+      props.busyCommand === undefined &&
+      state.liveTokens.length > 0
+    ) {
+      const cols = props.viewport?.cols ?? props.columns ?? 80;
+      const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
+      const answerRows = Math.max(0, maxRows - 1);
+      const lines = color
+        ? props.markdown.tail(cols, answerRows)
+        : props.markdown.plainTail(cols, answerRows);
+      return (
+        <Box flexDirection="column">
+          {lines.map((line, index) => (
+            <Text key={index}>
+              <MarkdownText
+                spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
+                color={color}
+              />
+            </Text>
+          ))}
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}Esc to stop
+          </Text>
+        </Box>
+      );
+    }
     const line = formatBusyLine({
       spinner: spinnerFrame(tick),
       compacting: state.compacting,
       busyCommand: props.busyCommand,
-      liveTokens: state.liveTokens,
+      liveTokens: props.markdown?.sourceTail() ?? state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
       reasoningActive,
@@ -449,21 +486,36 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
   // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
   const wrappedTranscript = useMemo(
-    () => (viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols)),
-    [viewport?.cols, state.transcript],
+    () =>
+      viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols, color),
+    [viewport?.cols, state.transcript, color],
   );
+  // Static advances its cursor even when a child paints no rows. Retain its
+  // admitted prefix during width suspension, then deliver pending entries once
+  // geometry is valid. Passing [] would reset Ink's cursor and reprint history.
+  const inlineWidthReady =
+    props.columns === undefined || (Number.isFinite(props.columns) && props.columns >= 1);
+  const admittedInlineCount = useRef(0);
+  useLayoutEffect(() => {
+    if (viewport === undefined && inlineWidthReady)
+      admittedInlineCount.current = state.transcript.length;
+  }, [viewport, inlineWidthReady, state.transcript]);
+  const inlineTranscript = inlineWidthReady
+    ? state.transcript
+    : state.transcript.slice(0, admittedInlineCount.current);
   return (
     <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
       {viewport === undefined || wrappedTranscript === undefined ? (
-        <Static items={[...state.transcript]}>
+        <Static items={[...inlineTranscript]}>
           {(entry, index) => (
             <TranscriptLine
               key={index}
               entry={entry}
               color={color}
+              columns={props.columns}
               acknowledgement={props.acknowledgement}
             />
           )}
@@ -585,10 +637,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       {props.copied === true &&
         (color ? (
           <Text backgroundColor="green" color="black" bold>
-            {' ✓ Copied '}
+            {' Sent to terminal clipboard '}
           </Text>
         ) : (
-          <Text>[Copied]</Text>
+          <Text>[Sent to terminal clipboard]</Text>
         ))}
 
       <Text {...colorProps(color, 'gray')}>
@@ -598,13 +650,45 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   );
 }
 
+/** Preserve explicit native widths that Ink's fallback would normalize to 80. */
+function useRawTerminalColumns(): number | undefined {
+  const { stdout } = useStdout();
+  const subscribe = useCallback(
+    (listener: () => void): (() => void) => {
+      stdout.on('resize', listener);
+      return () => {
+        stdout.off('resize', listener);
+      };
+    },
+    [stdout],
+  );
+  const read = useCallback((): number | undefined => stdout.columns, [stdout]);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const clipboardFeedbackMounted = useRef(true);
+  useLayoutEffect(() => {
+    clipboardFeedbackMounted.current = true;
+    return () => {
+      clipboardFeedbackMounted.current = false;
+    };
+  }, []);
   const acceptsInput = (): boolean => props.inputEnabled?.() !== false;
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
-  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
-    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const {
+    state,
+    tick,
+    color,
+    mode,
+    reasoningEffort,
+    reasoningVisible,
+    approval,
+    markdown,
+    displaySuspended,
+  } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const activationReady = useRef(props.onActivated === undefined);
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
   // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
@@ -1165,6 +1249,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.transcript,
       windowSize.columns,
       scrollGeomRef.current.height,
+      props.store.getSnapshot().color,
     );
 
   const routeSelection = (event: TerminalMouseEvent): void => {
@@ -1210,16 +1295,31 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const copySelection = (state: SelectionState): void => {
     const clipboard = props.clipboard;
     if (clipboard === undefined) return;
-    const rows = wrapTranscript(props.store.getSnapshot().state.transcript, windowSize.columns).map(
-      (line) => line.text,
-    );
-    const outcome = clipboard(selectionText(rows, normalizeSelection(state)));
-    if (outcome.kind === 'written') flashCopied();
-    else if (outcome.kind === 'too-large') {
-      props.store.note(
-        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
-      );
-    }
+    const rows = wrapTranscript(
+      props.store.getSnapshot().state.transcript,
+      windowSize.columns,
+      props.store.getSnapshot().color,
+    ).map((line) => line.text);
+    const store = props.store;
+    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
+      .then((outcome) => {
+        if (
+          !clipboardFeedbackMounted.current ||
+          storeRef.current !== store ||
+          !acceptsInput() ||
+          props.shouldStop()
+        )
+          return;
+        if (outcome.kind === 'written') flashCopied();
+        else if (outcome.kind === 'failed') {
+          store.note('Clipboard request failed locally — use /scrollback or /edit.');
+        } else if (outcome.kind === 'too-large') {
+          store.note(
+            `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+          );
+        }
+      })
+      .catch(props.onError);
   };
 
   useInput((char, key) => {
@@ -1510,7 +1610,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           // a slash command, or a plain message with no attachments — the simple path (message === display)
           historyRef.current = recordHistory(historyRef.current, action.line);
           applyEditor(() => emptyEditor());
-          submit(action.line);
+          submit(action.line, action.line);
           return;
         }
         // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
@@ -1560,12 +1660,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
-  // The live terminal size via ink 7's `useWindowSize` (2.6.F Step 4b): unlike a raw `process.stdout.columns` read,
-  // this RE-RENDERS the component on a SIGWINCH resize (ink's own resize handler only re-lays-out yoga width; it does
-  // not re-execute React, and the idle frame loop does not repaint), so the alt-screen container height, the wrap
-  // width, and the viewport's re-measure all track a resize — parity with the Home's `subscribeResize`. It falls
-  // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
-  const windowSize = useWindowSize();
+  // Observe the captured output stream on resize, as the Home does. Ink's
+  // useWindowSize supplies defaults when dimensions are unavailable, but also
+  // normalizes explicit 0/NaN widths to 80. Preserve those raw widths so a
+  // suspended transcript cannot admit invisible entries or acknowledge them.
+  const measuredSize = useWindowSize();
+  const rawColumns = useRawTerminalColumns();
+  const windowSize = {
+    columns: rawColumns === undefined ? measuredSize.columns : rawColumns,
+    rows: measuredSize.rows,
+  };
 
   const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort, acknowledgement);
   useEffect(() => {
@@ -1611,8 +1715,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       : undefined;
 
   return (
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
+    <Box
+      flexDirection="column"
+      width={layoutColumns(windowSize.columns)}
+      {...(viewport === undefined ? {} : { height: viewport.rows })}
+    >
       <ChatView
+        markdown={markdown}
+        displaySuspended={displaySuspended}
         acknowledgement={acknowledgement}
         state={state}
         tick={tick}

@@ -1,4 +1,5 @@
 import type { ManagerSkippedTool } from '@relavium/mcp';
+import { globalArtifactsNotice } from '../authoring/global-artifacts.js';
 import type { McpServerRef } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -40,6 +41,7 @@ export interface DoctorHostInputs {
 
 export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
   return {
+    globalArtifacts: () => globalArtifactsNotice(),
     keychain: () => {
       // Reachability only: read a never-set account. `null` ⇒ reachable; a `KeychainUnavailableError` ⇒ down.
       const store = inputs.keychain ?? createOsKeychainStore();

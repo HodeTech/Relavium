@@ -1,5 +1,6 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { randomUUID } from 'node:crypto';
+import { initCommand } from './init.js';
 
 import {
   createModelCatalogStore,
@@ -18,6 +19,7 @@ import {
   KNOWN_PROVIDER_IDS,
   createProviderResolver,
   type ProviderResolver,
+  type ProviderResolverOptions,
 } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
@@ -35,7 +37,17 @@ import { Readable } from 'node:stream';
 import { acquireCommandResource, withCommandLifetime } from '../process/command-lifetime.js';
 import { withSynchronousResource } from '../process/synchronous-resource.js';
 import { agentRunCommand, type AgentRunCommandArgs } from './agent-run.js';
-import { chatCommand, chatResumeCommand, type ChatCommandArgs } from './chat.js';
+import {
+  chatCommand,
+  chatResumeCommand,
+  chatIsInteractive,
+  type ChatCommandArgs,
+  type ChatCommandDeps,
+  type ChatResolvedKeys,
+} from './chat.js';
+import { runStandaloneProviderSetup } from './standalone-provider-setup.js';
+import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
+import type { LoadedConfig } from '../config/load.js';
 import { chatExportCommand, type ChatExportCommandArgs } from './chat-export.js';
 import { chatListCommand } from './chat-list.js';
 import { createCommand } from './create.js';
@@ -133,6 +145,8 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
 }
 
 export function buildChatArgs(input: CommandInput): ChatCommandArgs {
+  if (boolFlag(input.options['continue']) && optString(input.options['agent']) !== undefined)
+    throw new CliError('invalid_invocation', '--continue cannot be combined with --agent.');
   return { agent: optString(input.options['agent']) };
 }
 
@@ -371,13 +385,14 @@ function storeAwareResolver(
   ctx: DispatchContext,
   keychain: KeychainStore,
   openedDb?: Db,
+  options: Pick<ProviderResolverOptions, 'standardEnvPolicy' | 'credentialSurface'> = {},
 ): ReturnType<typeof createProviderResolver> {
   const fromDb = (db: Db): ReturnType<typeof createProviderResolver> => {
     const providerStore = createProviderStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
     });
-    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore, ...options });
   };
   if (openedDb !== undefined) return fromDb(openedDb);
   const { homeDir } = loadResolvedConfig({
@@ -417,24 +432,62 @@ const executeRun: CommandExecutor = (input, ctx) =>
     resolveKeys: () => keyResolvers(ctx),
   });
 
-const executeChat: CommandExecutor = (input, ctx) =>
-  chatCommand(buildChatArgs(input), {
+/** One named-source policy for standalone TTY setup, chat, replacement hosts and live diagnostics. */
+function chatKeyResolvers(ctx: DispatchContext, db?: Db, loaded?: LoadedConfig): ChatResolvedKeys {
+  if (!chatIsInteractive(ctx.io, ctx.global)) return keyResolvers(ctx, db);
+  if (loaded === undefined) throw new CliError('cli_internal', '');
+  const keychain = createOsKeychainStore();
+  const policy = createStandardEnvKeyPolicy(loaded.globalConfig?.preferences);
+  const providers = storeAwareResolver(ctx, keychain, db, {
+    standardEnvPolicy: policy,
+    credentialSurface: 'standalone-chat',
+  });
+  return {
+    providers,
+    mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
+    prepareInteractiveSetup: (lifetime, liveDb) => {
+      if (lifetime === undefined || liveDb === undefined) throw new CliError('cli_internal', '');
+      const store = createProviderStore(liveDb, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+      });
+      return runStandaloneProviderSetup({
+        lifetime,
+        loaded,
+        global: ctx.global,
+        io: ctx.io,
+        resolver: providers,
+        policy,
+        store,
+        keychain,
+      });
+    },
+  };
+}
+
+const executeChat: CommandExecutor = (input, ctx) => {
+  const args = buildChatArgs(input);
+  const runtime: ChatCommandDeps = {
     io: ctx.io,
     global: ctx.global,
     ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
-    resolveKeys: (db) => keyResolvers(ctx, db),
+    resolveKeys: (db, loaded) => chatKeyResolvers(ctx, db, loaded),
     openSessionStore,
     drive: selectChatDriver,
-  });
+  };
+  return boolFlag(input.options['continue'])
+    ? chatResumeCommand({ sessionId: undefined, continueLatest: true }, runtime)
+    : chatCommand(args, runtime);
+};
 
 const executeChatResume: CommandExecutor = (input, ctx) =>
   chatResumeCommand(
-    { sessionId: reqPositional(input, 0, 'sessionId') },
+    { sessionId: input.positionals[0] },
     {
       io: ctx.io,
       global: ctx.global,
       ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
-      resolveKeys: (db) => keyResolvers(ctx, db),
+      resolveKeys: (db, loaded) => chatKeyResolvers(ctx, db, loaded),
       openSessionStore,
       drive: selectChatDriver,
     },
@@ -781,6 +834,7 @@ export { buildMediaPruneArgs } from './media-input.js';
 // ── the dispatch table ───────────────────────────────────────────────────────
 
 const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, CommandExecutor>([
+  ['init', (_input, ctx) => Promise.resolve(initCommand(ctx))],
   [
     'media.prune-temporaries',
     (input, ctx) => pruneTemporariesCommand(buildMediaPruneArgs(input), ctx),
@@ -851,6 +905,17 @@ async function executeRuntimeCommand(
   if (executor === undefined) {
     throw new CliError('invalid_invocation', 'unknown command.');
   }
+  // Programmatic invocations get the same pre-service refusal as Commander.
+  if (id === 'chat') buildChatArgs(input);
+  if (
+    id === 'chat-resume' &&
+    input.positionals[0] === undefined &&
+    !chatIsInteractive(ctx.io, ctx.global)
+  )
+    throw new CliError(
+      'invalid_invocation',
+      'chat resume needs a session ID outside an interactive terminal.',
+    );
   if (
     (ctx.global.allowFsRoots?.length ?? 0) > 0 &&
     !['chat', 'chat-resume', 'agent.run'].includes(id)

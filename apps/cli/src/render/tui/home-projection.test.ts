@@ -75,6 +75,7 @@ describe('expiryLabel', () => {
 describe('row labels', () => {
   const sessionRow = (over: Partial<HomeSessionRow> = {}): HomeSessionRow => ({
     sessionId: 's1',
+    workingDir: '/workspace',
     title: 'Plan the launch',
     agentSlug: 'planner',
     modelId: 'claude-opus-4-8',

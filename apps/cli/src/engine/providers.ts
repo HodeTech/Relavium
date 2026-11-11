@@ -19,14 +19,19 @@ import {
   keychainAccount,
   type KeychainStore,
 } from '../secrets/keychain.js';
+import {
+  STANDARD_PROVIDER_KEY_ENV_VARS,
+  type StandardEnvKeyName,
+  type StandardEnvKeyPolicy,
+} from './standard-env-policy.js';
 import { createValidatedFetch, type FetchLike } from './validated-fetch.js';
 
 /**
  * The CLI's provider seam (ADR-0038 host-injected resolution). `resolveProvider` returns the keyless
  * `@relavium/llm` adapter for an authored provider id; `keyFor` resolves that provider's API key through the
- * documented chain: **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; the `secrets.enc`
- * encrypted-file fallback is deferred past v1.0 per keychain-and-secrets.md). A key is read only when
- * `keyFor` is invoked (per attempt) and is never logged, stored, or returned to a renderer.
+ * documented chain: **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` → eligible standard env → error** (the `secrets.enc`
+ * encrypted-file fallback is deferred past v1.0 per keychain-and-secrets.md). Credentials are read afresh
+ * per lookup; only `keyFor` returns a value, never an observation or renderer-facing state.
  *
  * Injectable so a test (and the 2.K regression harness) drives a stub provider + dummy key; the keychain is
  * an **optional** source so tests / the harness stay keychain-free (env-only) while production injects the
@@ -35,18 +40,10 @@ import { createValidatedFetch, type FetchLike } from './validated-fetch.js';
 export interface ProviderResolver {
   readonly resolveProvider: (id: ProviderId) => LlmProvider | undefined;
   readonly keyFor: (id: ProviderId) => string;
-  /**
-   * Whether a key for `id` is RESOLVABLE (keychain OR env) — a boolean, never the key value (2.5.G key-awareness).
-   * Used by the `/models` picker to gate a keyless provider's models and by `isProviderKeyless`. Identical
-   * resolution to {@link keyFor}: a keychain key OR the env fallback ⇒ `true`, else `false`. A **locked /
-   * unavailable** keychain is a `KeychainUnavailableError` that (like `keyFor`) falls through to env and is treated
-   * as absence — so with no env key it returns `false` (correct: the provider genuinely can't be called). Only a
-   * NON-`KeychainUnavailableError` native binding fault propagates — but the production `createOsKeychainStore`
-   * wraps every native error into `KeychainUnavailableError`, so in practice nothing propagates. OPTIONAL so a test
-   * stub can implement `keyFor` alone — consumers go through {@link providerHasKey}, which falls back to a `keyFor`
-   * probe when this is absent; the real {@link createProviderResolver} always provides it, so production never falls back.
-   */
+  /** Boolean-only per-lookup resolution; unexpected native faults propagate. */
   readonly hasKey?: (id: ProviderId) => boolean;
+  /** Value-free observation. Sample on opening/key changes, never during rendering. */
+  readonly availability?: (id: ProviderId) => ProviderKeyAvailability;
   /**
    * Is this provider talking to its OWN API, or to a custom `base_url`
    * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7)?
@@ -61,6 +58,17 @@ export interface ProviderResolver {
    * is still on the official API, however they spell it. OPTIONAL so a test stub can omit it; absent ⇒ official.
    */
   readonly endpointKind?: (id: ProviderId) => EndpointKind;
+  /** Safe destination captured with the actual adapter; absent only on injected resolver stubs. */
+  readonly endpointContext?: (id: ProviderId) => string;
+}
+
+/** Both native setup hosts disclose the resolver's pinned recipient, never a fresh registry read. */
+export function providerEndpointContext(resolver: ProviderResolver, id: ProviderId): string {
+  if (resolver.endpointContext !== undefined) return resolver.endpointContext(id);
+  // Injected test/embedding resolvers may omit destination metadata. Production always supplies it.
+  return resolver.endpointKind?.(id) === 'custom'
+    ? 'Configured custom endpoint (origin unavailable).'
+    : `Official endpoint: ${new URL(KNOWN_PROVIDERS[id].baseUrl).origin}`;
 }
 
 /**
@@ -82,9 +90,78 @@ export function providerHasKey(
   }
 }
 
-/** The env var holding a provider's API key — the headless per-invocation key source (CI / no-keychain). */
-export function providerKeyEnvVar(id: ProviderId): string {
-  return `RELAVIUM_${id.toUpperCase()}_API_KEY`;
+const RELAVIUM_PROVIDER_KEY_ENV_VARS = {
+  anthropic: 'RELAVIUM_ANTHROPIC_API_KEY',
+  openai: 'RELAVIUM_OPENAI_API_KEY',
+  gemini: 'RELAVIUM_GEMINI_API_KEY',
+  deepseek: 'RELAVIUM_DEEPSEEK_API_KEY',
+} as const satisfies Readonly<Record<ProviderId, string>>;
+
+type RelaviumKeyEnvName = (typeof RELAVIUM_PROVIDER_KEY_ENV_VARS)[ProviderId];
+export type ProviderKeySource =
+  | { readonly kind: 'keychain'; readonly label: 'OS keychain' }
+  | { readonly kind: 'relavium-env'; readonly name: RelaviumKeyEnvName }
+  | { readonly kind: 'standard-env'; readonly name: StandardEnvKeyName }
+  | { readonly kind: 'injected'; readonly label: 'Injected resolver' };
+
+/** Backend status is independent of usable env credentials. `unknown` is only for legacy injected stubs. */
+export type KeychainHealth = 'available' | 'unavailable' | 'not-configured' | 'unknown';
+type StandardEnvKeySource = Extract<ProviderKeySource, { readonly kind: 'standard-env' }>;
+export type ProviderKeyAvailability = { readonly keychainHealth: KeychainHealth } & (
+  | { readonly status: 'usable'; readonly source: ProviderKeySource }
+  | { readonly status: 'missing' | 'unavailable' }
+  | {
+      readonly status: 'present-standard-not-allowed' | 'ineligible-custom-endpoint';
+      readonly source: StandardEnvKeySource;
+    }
+);
+
+/** Safe compatibility for existing injected resolver stubs whose source/backend are unknowable. */
+export function providerKeyAvailability(
+  resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey' | 'availability'>,
+  id: ProviderId,
+): ProviderKeyAvailability {
+  if (resolver.availability !== undefined) return resolver.availability(id);
+  return providerHasKey(resolver, id)
+    ? {
+        status: 'usable',
+        source: { kind: 'injected', label: 'Injected resolver' },
+        keychainHealth: 'unknown',
+      }
+    : { status: 'missing', keychainHealth: 'unknown' };
+}
+
+/** The fixed Relavium variable, permitted directly on every endpoint. */
+export function providerKeyEnvVar(id: ProviderId): RelaviumKeyEnvName {
+  return RELAVIUM_PROVIDER_KEY_ENV_VARS[id];
+}
+
+export type CredentialSurface = 'home' | 'standalone-chat' | 'shell';
+
+/** Fixed, value-free diagnostics with a remedy reachable in the actual host. */
+export function providerKeyAvailabilityMessage(
+  id: ProviderId,
+  availability: ProviderKeyAvailability,
+  surface: CredentialSurface = 'shell',
+): string {
+  const remedy =
+    surface === 'home'
+      ? 'open `/providers` to connect a key or review its source.'
+      : surface === 'standalone-chat'
+        ? 'restart `relavium chat` to open provider setup.'
+        : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
+  switch (availability.status) {
+    case 'present-standard-not-allowed':
+      return `${availability.source.name} is present but has not been allowed for this interactive invocation — ${remedy}`;
+    case 'ineligible-custom-endpoint':
+      return `${availability.source.name} cannot be used with this provider's custom endpoint — ${remedy}`;
+    case 'unavailable':
+      return `the OS keychain is unavailable and no usable API key exists for provider '${id}' — ${remedy}`;
+    case 'missing':
+      return `no API key for provider '${id}' — ${remedy}`;
+    case 'usable':
+      return `An API key is available from ${'name' in availability.source ? availability.source.name : availability.source.label}.`;
+  }
 }
 
 /**
@@ -93,7 +170,7 @@ export function providerKeyEnvVar(id: ProviderId): string {
  * remedy whichever caught it first.
  */
 export function missingKeyMessage(id: ProviderId): string {
-  return `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
+  return providerKeyAvailabilityMessage(id, { status: 'missing', keychainHealth: 'unknown' });
 }
 
 /** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
@@ -345,6 +422,9 @@ export interface ProviderResolverOptions {
   /** The SSRF-validated `fetch` custom endpoints egress through — injectable so a test drives a fake `EgressDeps`.
    *  Default: {@link createValidatedFetch} over Node's real DNS + pinned-HTTPS connect. */
   readonly validatedFetch?: FetchLike;
+  /** Absent on scripting paths: eligible standard variables are used directly. Interactive hosts share one policy. */
+  readonly standardEnvPolicy?: Pick<StandardEnvKeyPolicy, 'allows'>;
+  readonly credentialSurface?: CredentialSurface;
 }
 
 export function createProviderResolver(
@@ -356,50 +436,95 @@ export function createProviderResolver(
   // mapping lives in the seam package (`@relavium/llm`); a stored CUSTOM `base_url` (ADR-0065 §3) rebinds its
   // provider's adapter to a validated per-provider endpoint here.
   const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
+  const officialContext = (id: ProviderId): string =>
+    `Official endpoint: ${new URL(KNOWN_PROVIDERS[id].baseUrl).origin}`;
+  const endpointContexts: Record<ProviderId, string> = {
+    anthropic: officialContext('anthropic'),
+    openai: officialContext('openai'),
+    gemini: officialContext('gemini'),
+    deepseek: officialContext('deepseek'),
+  };
   // Endpoint identity comes from the same adapter factory that lowers the wire cap (ADR-0101).
-  applyCustomEndpoints(adapters, options);
-  // The ONE key-resolution path (keychain → env), returning `undefined` for genuine absence — shared by `keyFor`
-  // (which throws on absence) and `hasKey` (which returns a boolean), so the two never drift (2.5.G key-awareness).
-  const resolveKey = (id: ProviderId): string | undefined => {
-    // 1. OS keychain (the primary store, 2.C). Absent (`null`) → fall through to env; an *unavailable* backend
-    //    (locked / no Secret Service) also falls through — the env var is the CLI's documented no-keychain path.
-    //    A NON-KeychainUnavailableError (a native binding fault) PROPAGATES — it is not silent absence.
+  applyCustomEndpoints(adapters, options, endpointContexts);
+  // A private key-bearing result never crosses the observation boundary. Every entry point uses the
+  // same current-value resolution so consent cannot be bypassed by keyFor/hasKey or a replacement host.
+  const resolveKey = (
+    id: ProviderId,
+  ): {
+    readonly key?: string;
+    readonly observation: ProviderKeyAvailability;
+  } => {
+    let keychainHealth: KeychainHealth = keychain === undefined ? 'not-configured' : 'available';
     if (keychain !== undefined) {
       let fromKeychain: string | null = null;
       try {
         fromKeychain = keychain.get(keychainAccount(id));
       } catch (err) {
-        if (!(err instanceof KeychainUnavailableError)) {
-          throw err;
-        }
+        // Genuine backend unavailability permits env fallback. Unexpected native faults stay faults.
+        if (!(err instanceof KeychainUnavailableError)) throw err;
+        keychainHealth = 'unavailable';
       }
       if (fromKeychain !== null && fromKeychain !== '') {
-        return fromKeychain;
+        return {
+          key: fromKeychain,
+          observation: {
+            status: 'usable',
+            source: { kind: 'keychain', label: 'OS keychain' },
+            keychainHealth,
+          },
+        };
       }
     }
-    // 2. Env var — the headless / CI per-invocation source.
-    const fromEnv = env[providerKeyEnvVar(id)];
+    const relaviumName = providerKeyEnvVar(id);
+    const fromEnv = env[relaviumName];
     if (fromEnv !== undefined && fromEnv !== '') {
-      return fromEnv;
+      return {
+        key: fromEnv,
+        observation: {
+          status: 'usable',
+          source: { kind: 'relavium-env', name: relaviumName },
+          keychainHealth,
+        },
+      };
     }
-    return undefined; // 3. No source.
+    const standardName = STANDARD_PROVIDER_KEY_ENV_VARS[id];
+    const fromStandard = env[standardName];
+    if (fromStandard !== undefined && fromStandard !== '') {
+      const source: StandardEnvKeySource = { kind: 'standard-env', name: standardName };
+      if (adapters[id].customEndpoint === true) {
+        return { observation: { status: 'ineligible-custom-endpoint', source, keychainHealth } };
+      }
+      if (
+        options.standardEnvPolicy !== undefined &&
+        !options.standardEnvPolicy.allows(id, standardName)
+      ) {
+        return { observation: { status: 'present-standard-not-allowed', source, keychainHealth } };
+      }
+      return { key: fromStandard, observation: { status: 'usable', source, keychainHealth } };
+    }
+    return {
+      observation: {
+        status: keychainHealth === 'unavailable' ? 'unavailable' : 'missing',
+        keychainHealth,
+      },
+    };
   };
   return {
     resolveProvider: (id) => adapters[id],
     endpointKind: (id) => (adapters[id].customEndpoint === true ? 'custom' : 'official'),
+    endpointContext: (id) => endpointContexts[id],
     keyFor: (id) => {
-      const key = resolveKey(id);
-      if (key === undefined) {
-        // A clean invocation error naming both ways to provide the key (never the key itself).
-        throw new CliError('invalid_invocation', missingKeyMessage(id));
+      const result = resolveKey(id);
+      if (result.key === undefined) {
+        throw new CliError(
+          'invalid_invocation',
+          providerKeyAvailabilityMessage(id, result.observation, options.credentialSurface),
+        );
       }
-      return key;
+      return result.key;
     },
-    // Boolean-only (never the key). Same resolution as `keyFor`: a locked/unavailable keychain (a
-    // `KeychainUnavailableError`) falls through to env, so with no env key it is `false` (correct — uncallable);
-    // only a non-`KeychainUnavailableError` native fault propagates via `resolveKey` (the production store never
-    // raises one, so nothing propagates in practice).
-    hasKey: (id) => resolveKey(id) !== undefined,
+    hasKey: (id) => resolveKey(id).key !== undefined,
+    availability: (id) => resolveKey(id).observation,
   };
 }
 
@@ -419,6 +544,7 @@ type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
   options: ProviderResolverOptions,
+  endpointContexts: Record<ProviderId, string>,
 ): void {
   const store = options.providerStore;
   if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
@@ -428,7 +554,7 @@ function applyCustomEndpoints(
   const getValidatedFetch = (): FetchLike =>
     (validatedFetch ??= options.validatedFetch ?? createValidatedFetch());
   for (const row of store.list()) {
-    applyCustomEndpointForRow(row, adapters, getValidatedFetch);
+    applyCustomEndpointForRow(row, adapters, getValidatedFetch, endpointContexts);
   }
 }
 
@@ -437,17 +563,23 @@ function applyCustomEndpointForRow(
   row: StoredProviderRow,
   adapters: Record<ProviderId, LlmProvider>,
   getValidatedFetch: () => FetchLike,
+  endpointContexts: Record<ProviderId, string>,
 ): void {
   const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
   if (id === undefined) return; // a non-enum name (provider add enforces the closed enum) — ignore
-  if (row.baseUrl === KNOWN_PROVIDERS[id].baseUrl) return; // the default endpoint — keep the default adapter
+  const baseURL = row.baseUrl;
+  if (baseURL === KNOWN_PROVIDERS[id].baseUrl) return; // the default endpoint — keep the default adapter
   if (id !== 'openai' && id !== 'deepseek') return; // custom base_url is openai-compatible only this round (§3)
   try {
     adapters[id] = createCustomOpenAiProvider({
       providerId: id,
-      baseURL: row.baseUrl,
+      baseURL,
       fetch: getValidatedFetch(),
     });
+    // Use the exact construction input, after the factory's admission/classification. Keeping this
+    // private snapshot beside the adapter prevents a concurrent registry edit from changing its card.
+    endpointContexts[id] =
+      `${adapters[id].customEndpoint === true ? 'Custom' : 'Official'} endpoint: ${new URL(baseURL).origin}`;
   } catch (err) {
     // **A bad stored `base_url` fails CLOSED (`CR-80`).** This used to swallow the error and leave the DEFAULT
     // adapter standing, with a comment calling that "refuse the custom endpoint" — but the default adapter is
@@ -461,6 +593,7 @@ function applyCustomEndpointForRow(
     // at the point of use instead, which is the earliest place the failure can be both loud and survivable.
     if (!(err instanceof InvalidBaseUrlError)) throw err;
     adapters[id] = refusingProvider(id, adapters[id], err);
+    endpointContexts[id] = 'Custom endpoint configuration is invalid.';
   }
 }
 

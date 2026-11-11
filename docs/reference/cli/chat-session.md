@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-10-18
+> Last updated: 2026-11-11
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -8,6 +8,14 @@
 - **Related**: [commands.md](commands.md), [home.md](home.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../contracts/config-spec.md](../contracts/config-spec.md), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0026-session-export-to-workflow.md](../../decisions/0026-session-export-to-workflow.md), [../../decisions/0057-cli-chat-modes-and-per-tool-approval.md](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md), [../../decisions/0059-cli-mid-session-model-reseat.md](../../decisions/0059-cli-mid-session-model-reseat.md), [../../decisions/0063-cli-config-write-contract.md](../../decisions/0063-cli-config-write-contract.md), [../../decisions/0064-live-model-catalog.md](../../decisions/0064-live-model-catalog.md), [../../decisions/0066-normalized-reasoning-effort-control.md](../../decisions/0066-normalized-reasoning-effort-control.md)
 
 `relavium chat` is the CLI's **agent-first entry point** — a multi-turn conversational REPL with a single agent, sitting beside `relavium run` on the **same** engine. Both are entry points into `@relavium/core`: `run` drives a workflow DAG, `chat` drives an [agent session](../contracts/agent-session-spec.md), and they reuse the same `ToolRegistry`, the `@relavium/llm` seam, and the event bus (see [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) and [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md)). This document is the command-surface reference for the chat REPL; it **cites** the session contract rather than restating it.
+
+Interactive assistant answers use the [Markdown display pipeline](markdown-rendering.md)
+in both renderers. User echoes, notices, reasoning and tool rows stay plain and
+sanitized. Color-disabled output retains Markdown source markers. Tabs expand to
+eight-cell stops and prose wraps at word boundaries with whole-grapheme fallback.
+Tool rows show `…` while pending, `✓` for a successful result and `✗` for a failed
+result. This changes only the in-flight mark; persistent tool-row presentation
+and interrupted-turn storage remain with their later MVP slices.
 
 ## Entry
 
@@ -22,6 +30,11 @@ relavium chat --agent code-reviewer            # resolved inside .relavium/
 
 `relavium chat` opens an `ink`-rendered interactive REPL when a TTY is attached. The session is **auto-persisted and resumable** from the moment it starts — there is no separate save step (see [agent-session-spec.md](../contracts/agent-session-spec.md#validation-and-persistence)). Resume a prior conversation with `relavium chat-resume <sessionId>` and list past sessions with `relavium chat-list` (see [commands.md](commands.md)).
 
+Preliminary credential setup uses the same [native provider setup](home.md#first-run-onboarding-wizard-25g-s8)
+as Home, including the actual adapter's safe destination origin before asking for
+a key. Restart chat after changing a provider endpoint in another process; its
+existing resolver and displayed recipient stay pinned together.
+
 On resume or `/models` reseat, including Home reseat, a notice lists unresolved external effects and effects
 that landed in a turn that did not persist; legacy rows with no durable attribution are reported conservatively.
 Completed model turns and committed `!` commands are silent. Earlier effects are **never auto-retried**: check
@@ -29,9 +42,172 @@ the target before sending the message again. TTY/Home notices appear in the acti
 use stderr. A failed disclosure preserves the audit evidence for a later resume. The exact retention and
 privacy guarantees live in [effect-journal.md §8–§11](../shared-core/effect-journal.md#8-needs_attention).
 
-Since Step 4b-3 the REPL **defaults on a TTY to the full-screen alternate-screen** mode, with **inline** as the opt-out — **`--no-alt-screen`** (one invocation) or **`[preferences].alt_screen = false`** (durable) ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e; the resolution is shared verbatim with the [Home](home.md)). A non-TTY / `--json` path is always inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (gated behind any keyboard-owning overlay); a `/clear` or `/models` swap holds the alt buffer across sessions, so it no longer flickers (Step 4b-3). Mouse reporting captures click-drag, so the alt screen runs **its own selection** (ADR-0068 §e, Step 6): drag to select, release to copy over **OSC 52**; the highlight shows exactly what is copied, a brief **`✓ Copied` toast** above the footer confirms the copy was emitted (OSC 52 has no acknowledgement — see [accessibility.md](accessibility.md)), dragging at the viewport's top or bottom row auto-scrolls to extend it, a plain click clears it, `Esc` dismisses it while idle, and `[preferences].copy_on_select = false` keeps the highlight without touching the clipboard. Because the alt buffer also has no scrollback, three **copy-and-search hatches** (Step 5d, Step 6e) give the transcript back to the tools you already have: **`/scrollback`** dumps it into the terminal's native scrollback (scroll, search, select, copy — then press Enter to return), **`/edit`** opens it read-only in `$EDITOR` (edits are never read back), and **`/copy`** sends the whole unwrapped transcript to the system clipboard. The first two suspend the renderer and restore every terminal mode on exit; `/copy` suspends nothing. None is available before the first turn. The full-screen mode is inherently inaccessible to screen readers; [accessibility.md](accessibility.md) documents the trade-off + the inline-renderer escape hatch.
+Since Step 4b-3 the REPL **defaults on a TTY to the full-screen alternate-screen** mode, with **inline** as the opt-out — **`--no-alt-screen`** (one invocation) or **`[preferences].alt_screen = false`** (durable) ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e; the resolution is shared verbatim with the [Home](home.md)). A non-TTY / `--json` path is always inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (gated behind any keyboard-owning overlay); a `/clear` or `/models` swap holds the alt buffer across sessions, so it no longer flickers (Step 4b-3). Mouse reporting captures click-drag, so the alt screen runs **its own selection** (ADR-0068 §e, Step 6): drag to select, release to copy over **OSC 52**; the highlight shows exactly what is copied, a brief **`Sent to terminal clipboard` toast** above the footer confirms the copy was emitted (OSC 52 has no acknowledgement — see [accessibility.md](accessibility.md)), dragging at the viewport's top or bottom row auto-scrolls to extend it, a plain click clears it, `Esc` dismisses it while idle, and `[preferences].copy_on_select = false` keeps the highlight without touching the clipboard. Because the alt buffer also has no scrollback, three **copy-and-search hatches** (Step 5d, Step 6e) give the transcript back to the tools you already have: **`/scrollback`** dumps it into the terminal's native scrollback (scroll, search, select, copy — then press Enter to return), **`/edit`** opens it read-only in `$EDITOR` (edits are never read back), and **`/copy`** sends the whole unwrapped transcript to the system clipboard. The first two suspend the renderer and restore every terminal mode on exit; `/copy` suspends nothing. None is available before the first turn. The full-screen mode is inherently inaccessible to screen readers; [accessibility.md](accessibility.md) documents the trade-off + the inline-renderer escape hatch.
 
 A chat also starts from the bare-invocation **Home** (2.5.B): typing a message at a bare `relavium` on a TTY graduates the Home into a chat in the **same** process — bound to the built-in default chat agent (the zero-config first run) — and returns to a freshly-read Home when the chat ends (the chat's exit code `4` is consumed by the Home loop, never leaked). The in-Home chat is the same REPL described here; see [home.md](home.md) for the Home shell, its TTY gate, and the signal/exit-code lifecycle.
+
+## Proposed restored transcript display — MVP-2
+
+**Implemented and independently accepted on development — 2026-11-10.** The maintainer approved
+[ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
+and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
+This section qualifies the earlier MVP-2 plan's literal display/model equality,
+divider and permanent-store-ceiling wording. The historical heading remains for
+stable inbound links. The complete implementation passed cumulative round 4 and
+the separate resume security sitting at `cecb6191`; see the
+[acceptance and checkpoint gates](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10).
+
+### Sources and selection
+
+Repaint the archive's historical user prompts and final assistant answers through
+the existing shared structural history rules with the drop boundary ignored:
+`completedSessionTurns(messages, false)` supplies complete exchanges. Include
+compatible legacy prefixes and the shared projection's trailing legacy context
+even when no later completed exchange exists; expose/reuse that projection support
+instead of copying its state machine into the UI. Omit tool-call preambles, tool rows,
+reasoning and interrupted exchanges. An explicit empty assistant final remains
+an empty answer entry and counts toward the restore budget; it has no invented
+usage or stop-reason line. Preserve legacy bare-user prefix/trailing-context
+identities wherever the existing reconstruction preserves them, without counting
+them as additional completed turns. A final unanswered user still rolls back.
+
+Model reconstruction is a different projection: `resumableSessionMessages`
+honors the maximum drop boundary and removes empty assistant terminal text, but
+keeps its user and completed-turn identity. Before the UI cap, selecting retained
+whole exchanges and compatible legacy entries with the boundary-aware shared
+projection, then omitting those empty assistant entries, must reproduce
+reconstructed message identities/order. Never filter archive rows independently
+at the boundary and leave an orphaned terminal. Include compatible
+legacy context. Test this against actual `reconstructSessionState`; then test
+the authored `none`/`window` request projection separately, before and after
+adjacent-same-role folding. Neither archive selection nor visible strings are
+required to equal the model's final request.
+
+For every selected user entry, look up the host-recorded
+[display metadata](../shared-core/database-schema.md#proposed-user-display-storage--mvp-2).
+Display that sanitized text when present, including a recorded empty string.
+Otherwise display `Earlier user message — compact display was not recorded.`
+Explain once when this occurs: original user text remains in history and may
+still enter model context; the screen does not reconstruct its earlier compact
+form. Do not infer attachment presence or safe display from string syntax.
+Assistant answers use sanitized stored final text and the markdown rendering
+policy; restored answers carry no per-turn usage line.
+
+The cap is 500 entries in full-screen and 200 inline, counting source entries,
+legacy placeholders and restore notices/dividers. Form an ordered list of display
+units: each completed exchange's user and terminal assistant entries are one
+indivisible unit; each compatible legacy bare-user entry is a separate one-entry
+unit. An arbitrarily long legacy prefix is not one indivisible group that can
+prevent the latest complete exchange from appearing.
+
+Choose the longest chronological suffix of whole units that fits after reserving
+its actual restore notices/dividers. Compute required notice rows before admitting
+the next older unit; never cut an exchange to fill the final slot. The first
+restore notice reports the number of source entries omitted, counting each user
+and assistant entry, including empty finals and legacy placeholders, but excluding
+synthetic notices and tool rows. It says those entries remain in history and the
+display cap does not change model context. With no omitted entries it reports
+restoration without an elision claim. There is one initial restore notice in
+either case, so changing the count never changes the reserved notice count.
+
+This bounds the initial restored prefix only. Subsequent live entries append
+under current behavior. A full-screen reseat carries its current view without
+reapplying this cap; an inline reseat does not reprint earlier static entries.
+Clear starts empty. A new process or explicit switch to another session constructs
+a new bounded prefix. Wrap/layout caches are scoped to entries retained by that
+view, not falsely described as a permanent 500/200-entry total ceiling. These are
+entry-count limits, not byte limits or permission to silently clip a source entry.
+
+### Saved-context dividers
+
+Derive boundaries from the same ordered marker rows as actual reconstruction:
+the maximum drop boundary is independent of the newest nonempty summary. Insert
+a divider only before a nonempty displayed region, and reserve its entry first:
+
+- **Archived history at/before the newest summary-producing boundary:** say
+  `Archived history — compaction produced a saved summary.` Explain that a
+  summary is lossy and need not include details or previously trimmed messages;
+  never assert that every earlier visible message is represented in it.
+- **History after that boundary but at/before a later trim boundary:** say
+  `Later history removed by /trim — outside retained conversation text.` A prior
+  saved summary may still survive; never claim trim erased it.
+- **History past the maximum drop boundary:** say
+  `Retained conversation text begins here.` With no markers this is the only
+  region; archived text remains visible when it fits the display budget.
+
+If no summary exists, entries at/before a trim boundary use
+`Archived history removed by /trim.` If no retained entries are visible, report
+that fact in a restore notice rather than placing a divider before nonexistent
+text. Do not display a stored summary as an authored system instruction.
+
+The region labels describe durable restoration, not the next model request.
+Add a policy notice for `memory: none` (earlier conversation is excluded) or
+`memory: window` (only its most recent permitted completed turns are selected;
+earlier summaries are excluded). Under other policies a retained summary may
+also enter the request as untrusted user context. The
+[memory contract](../contracts/agent-yaml-spec.md#conversational-memory) remains
+authoritative. Test plain restore, compact, trim, compact→trim, earlier trim→compact,
+each memory policy, empty finals and long legacy prefixes against actual
+`reconstructSessionState` plus the request projection; UI string equality alone
+cannot prove that relationship.
+
+### Failure, hatches and activation
+
+A display lookup/validation fault refuses interactive restoration before host
+activation, using a fixed safe diagnostic and retry/return action. Never replace
+missing/unreadable metadata with canonical user content. Machine resume does not
+read display metadata and keeps its existing behavior.
+
+`/copy`, `/edit` and `/scrollback` use this same safe restored user representation
+and assistant markdown source. They do not load older omitted entries or expanded
+attachments behind the user's visible view. A hatch explains the same initial
+elision instead of claiming to contain the complete archive. Input history is not
+seeded from canonical restored messages. Selection, copy and the empty/failed
+states work in both renderers with color off.
+
+Plain and JSON session drivers explicitly supply their captured input line as
+display text at submission (`processLine(line, line)`); they perform no `@`/`!`
+expansion. The persister still has no default from canonical text. Verify that
+a plain/JSON-created session later restores its recorded user display without
+an absent-display placeholder, including literal frame-like prose.
+
+Initial inline restoration prints the prefix once. Same-terminal reseat retains
+the existing no-double-print rule. Repaint/picker selection is not an effect
+disclosure acknowledgement: preserve the existing input-ready/render-acknowledged
+activation and cleanup ordering before retiring any captured effect evidence.
+
+### Finding a saved session
+
+In Home (landing or idle chat), `/resume` opens the native searchable picker.
+It initially lists the current canonical directory; Tab toggles all directories,
+typing filters titles as a literal substring, PgUp/PgDn change bounded pages,
+and arrows/Enter select. All-directory rows show a separate directory hint.
+Esc/Ctrl-C returns without starting a session. Empty results retain the filter
+and return affordance; a read error offers retry/return without exposing its cause.
+Late or cancelled reads remain owned until settlement and cannot replace a newer
+query. The picker reads six rows per page through the
+[bounded discovery API](../shared-core/database-schema.md#bounded-session-discovery).
+
+`relavium chat resume <sessionId>` is the canonical shell spelling; the existing
+`chat-resume` alias uses the same executor. Omitting the ID opens the same picker
+on an interactive terminal and refuses with exit 2 before history/key work
+otherwise. Cancelling an omitted-ID picker exits 0. Explicit resume and the shell
+picker restore the saved original workspace; Home keeps its original workspace
+and refuses another directory with a fixed remedy. Discovery columns never grant
+workspace authority. Selecting the already-open conversation is a no-op notice.
+
+`relavium chat --continue` selects only the most recently updated session in the
+canonical launch directory (stable ID tie-break), using a SQL limit of one.
+No match is exit 2 with a start-chat remedy. It conflicts with `--agent` and chat
+subcommands before runtime services start. Plain/JSON explicit-ID and continue
+paths retain their existing streams and do not read presentation metadata.
+
+After an interactive conversation with a completed durable turn ends, one line
+on the restored primary terminal names `relavium`, `/resume` and the canonical
+shell resume command. Clear/reseat retain the latest saved conversation when a
+fresh replacement has no completed turn. Untrusted IDs that are not safe shell
+arguments use the picker remedy. Plain/JSON and empty fresh conversations emit
+no extra line.
 
 ## Filesystem authority and resume
 
@@ -45,6 +221,14 @@ The [tool filesystem contract](../shared-core/built-in-tools.md#filesystem-permi
 
 ## Agent and model selection
 
+> **MVP-2 step 2 accepted on development:** the keychain/`RELAVIUM_*` descriptions
+> below state current MVP-A4 behavior. Step 2 extends usable-source/default-model
+> selection with the
+> [eligible standard-variable contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2).
+> A TTY's unapproved standard source is pending consent, not usable; plain/JSON
+> callers use eligible sources directly. Custom endpoints stay excluded. Do not
+> treat an ambient variable alone as authority to build an interactive provider.
+
 A session **binds one agent for its whole lifetime** — there is no mid-session *agent* switching ([agent-session-spec.md](../contracts/agent-session-spec.md#what-a-session-is-and-is-not)). The **model** is switchable: **`/models`** performs a host-side **[reseat](#model-reseat-models)**, which starts a **new `AgentSession` instance** bound to the chosen model (2.5.G, [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)) — each instance still has exactly one model.
 
 - `--agent <ref>` names the `.agent.yaml` (path or `.relavium/` id). If omitted, the chat-mode default applies.
@@ -54,7 +238,7 @@ A session **binds one agent for its whole lifetime** — there is no mid-session
 - **the default model follows the stored key (MVP-A4).** With no `default_model` at any layer, the default agent's provider is the first of `anthropic`, `openai`, `gemini`, `deepseek` that has a key (keychain or `RELAVIUM_<PROVIDER>_API_KEY`). Anthropic keeps `claude-sonnet-4-6`; another provider gets the onboarding wizard's starter model for it, so a user with only an OpenAI key reaches a working chat. A `default_provider` set without a `default_model` is ignored, as [config-spec.md](../contracts/config-spec.md) resolves it. The check is a yes/no question to the key resolver and never reads a key into the session; one session build asks it at most once per provider.
 - **a provider with no key is caught before anything is sent (MVP-A4).** Every session build asks whether the bound agent's provider has a key before it asks for MCP consent, spawns an MCP server or sends anything. The message is the one `provider set-key` documents: ``no API key for provider '<id>' — store one with `relavium provider set-key <id>` or set RELAVIUM_<ID>_API_KEY.`` What happens next depends on the surface:
   - `chat`, `agent run` and a non-interactive `chat-resume` refuse with exit `2`. `agent run --fixture` is the exception: it replays a cassette with no key, so it never refuses.
-  - An **interactive** `chat-resume` opens anyway, because `/models` can move the conversation to a provider that has a key. Its session build therefore goes on past the check: it still asks for MCP consent and starts the agent's MCP servers, and the notice comes when the view opens. The view says so on open, adding `Or switch to a model whose provider has a key with /models.`, and repeats it instead of sending each message, which is neither sent nor recorded. A key stored meanwhile, in another terminal, lets the next message through.
+  - An **interactive** `chat-resume` opens anyway, because `/models` can move the conversation to a provider that has a key. Cancelling or deferring its preliminary credential setup preserves this recovery path. Its session build therefore goes on past the check: it still asks for MCP consent and starts the agent's MCP servers, and the notice comes when the view opens. The view says so on open, adding `Or switch to a model whose provider has a key with /models.`, and repeats it instead of sending each message, which is neither sent nor recorded. A key stored meanwhile, in another terminal, lets the next message through.
   - The Home shows the message as a banner and stays open.
   - A `/models` reseat or a `/clear` whose new session cannot be built ends the `chat` REPL with the reason and the `chat-resume` command. The in-Home chat keeps the conversation instead, with a fixed note.
 
@@ -102,14 +286,14 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
-A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. Heavy shell commands (`run`, `chat`, `provider`, …) stay shell-only — they are not in-REPL slashes.
+A small, **alias-free**, curated set of slash commands drives the REPL itself (not the agent) — the in-REPL surface of the command system ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C; the curated REPL set is `apps/cli/src/commands/repl-commands.ts`, distinct from the shell command surface). The `/help` list, the unknown-slash hint, and the `/` palette all derive from that one registry, so they cannot disagree. A slash command never spawns a shell subcommand. Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) every routine task gets an in-TUI form that re-hosts the same core as its subcommand, milestone by milestone; until a task has one, it is reached through its subcommand.
 
 | Command | Effect |
 | --- | --- |
 | `/help` | List the available slash commands (**2.5.C**). Typing `/` at an idle prompt instead opens the interactive, filterable **`/` palette** over these commands (in both the chat and the bare Home). |
 | `/exit` | End the session cleanly and quit the REPL (**exit code 4**, below). |
 | `/cancel` | End the session **terminally** (aborting any in-flight turn — also entered as **Ctrl-C**). The session is **persisted and resumable** via `relavium chat-resume <sessionId>` (2.N). Exits with code 4. For a mid-turn abort that KEEPS the session alive, press **Esc** (2.5.E, below) — that is distinct from `/cancel`. |
-| `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file where workflows live — `<project>/.relavium/workflows/<id>.relavium.yaml`, where `<project>/.relavium/` is the nearest one found walking up from the working directory (under your home directory with no project in between, that is the global `~/.relavium/`), or `<cwd>/.relavium/workflows/` when there is none — with the session title's slug as the id (written into the file as `workflow.id`), and shows the path and the command that runs it (``run it with `relavium run <id>` ``) (MVP-A3) — in the transcript on the interactive chat and Home, on stderr on the plain driver. Under `--json` no path line or run hint is printed: the path is the `session:exported` event's `workflowPath`. A refusal (`export failed: …`) goes to the transcript, or to stderr on the plain and `--json` drivers. It never overwrites another workflow: the id is the first of `<slug>`, `<slug>-2`, … that no catalog file or `workflow.id` already holds. The one file it rewrites is the session's own earlier export, recognized from the file itself — a regular file, never a link, at one of those names whose `metadata.relaviumExport` names this session — so a later `/export` of the same session updates it in place, atomically, across a `/models` reseat, a `chat-resume` or a Home reopen, while a workflow put where an old export used to be is left alone. The rewrite re-checks the file just before it replaces it, so a file changed or replaced after it was recognized is left alone too and the export moves on through the same names: another of this session's own exports there is rewritten instead, otherwise the next free id is taken; the check compares the file's bytes as well as its stat, so a same-length rewrite is caught too; a swap in the moment between that check and the replace is not detected. Under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |
+| `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file where workflows live — `<project>/.relavium/workflows/<id>.relavium.yaml`, where `<project>/.relavium/` is the nearest actual project directory found walking up from the working directory (global `~/.relavium/` and its aliases are excluded by the [project-location contract](commands.md#relavium-init)), or `<cwd>/.relavium/workflows/` when there is no project — with the session title's slug as the id (written into the file as `workflow.id`), and shows the path and the command that runs it (``run it with `relavium run <id>` ``) (MVP-A3) — in the transcript on the interactive chat and Home, on stderr on the plain driver. Under `--json` no path line or run hint is printed: the path is the `session:exported` event's `workflowPath`. A refusal (`export failed: …`) goes to the transcript, or to stderr on the plain and `--json` drivers. It never overwrites another workflow: the id is the first of `<slug>`, `<slug>-2`, … that no catalog file or `workflow.id` already holds. The one file it rewrites is the session's own earlier export, recognized from the file itself — a regular file, never a link, at one of those names whose `metadata.relaviumExport` names this session — so a later `/export` of the same session updates it in place, atomically, across a `/models` reseat, a `chat-resume` or a Home reopen, while a workflow put where an old export used to be is left alone. The rewrite re-checks the file just before it replaces it, so a file changed or replaced after it was recognized is left alone too and the export moves on through the same names: another of this session's own exports there is rewritten instead, otherwise the next free id is taken; the check compares the file's bytes as well as its stat, so a same-length rewrite is caught too; a swap in the moment between that check and the replace is not detected. Under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |
 | `/workflows` | List the project's discovered workflows + agents (the disk catalog) as an in-view **notice** (**2.5.C S4**). A project-less cwd is reported, not an error. Chat-only today. |
 | `/cost` | Show the session's spend as an in-view **notice** — the total, then a **per-model breakdown** (**2.5.C S4**; the breakdown is **2.6.C**, [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)). Read from `history.db`, not from memory, so a **resumed** session shows the whole session's models and not just this process's. A `$0` row with real tokens is flagged *price unknown* — an unpriced model is not a free one. A model carrying a **conservative budget commitment** ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4 — money a provider may already have billed for an attempt that returned no trustworthy usage) shows it as *estimated, possibly billed*, **never added into the spend figure or the share**; a commitment made before any completed call on that model reads `(no completed call)` rather than claiming `0 calls`. That is what explains a `$0.0000` session whose next turn the cap refuses. Chat-only. |
 | `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
@@ -153,13 +337,16 @@ model reseat. A policy refusal is shown before any progress indicator or `/trim`
   **last exchange verbatim**. An LLM call: it reports the
   token deltas + spend and shows the summary (a lossy, paid operation is inspectable). The summary is produced
   by the session's **own bound model** (no second binding — [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)).
-- **Automatic compaction** — after a turn whose **real** input tokens exceed `[chat].compact_threshold`
-  (default `0.8`) × the serving model's context window, the session auto-compacts **before the next turn**
-  (permission follows the bound memory policy; `[chat].auto_compact` governs an omitted policy).
-  Guarded so it never thrashes (skipped when compaction can't reduce
-  below the budget) and its cost is accounted + surfaced as an inline `⟳ Context auto-compacted …` notice —
-  never a silent context swap. A model with no known window (a custom base-URL id) skips auto-compaction; a
-  summarisation failure degrades to a deterministic `/trim`.
+- **Automatic compaction** — measures the projected next request against the first
+  attemptable model's authoritative window at pre-send and after-turn entry
+  points. Permission follows the bound memory policy; `[chat].auto_compact`
+  governs an omitted policy. Automatic operations skip unknown/custom windows
+  and self-managed context providers. Pre-send failure preserves and sends the
+  original request, suppressing recovery; budget refusal preserves history and
+  never trims. Ordinary after-turn summarization failure may use the configured
+  deterministic fallback. The [engine contract](../contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+  owns threshold measurement, bounded passes, accounting and failure outcomes.
+  Last-turn input usage in the footer is observability, not this trigger.
 
 ### Where the summary goes, and why it is not an instruction
 

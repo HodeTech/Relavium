@@ -255,3 +255,10 @@ export type {
   SessionUsageInvocationInput,
   SessionUsageOwner,
 } from './session-usage-receipt.js';
+export { SessionDiscoveryBoundaryError } from './session-discovery.js';
+export type {
+  SessionPage,
+  SessionPageRow,
+  SessionPageCursor,
+  SessionPageOptions,
+} from './session-discovery.js';

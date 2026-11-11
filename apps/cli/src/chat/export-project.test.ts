@@ -297,15 +297,16 @@ describe('exportSessionToProject (MVP-A3)', () => {
       expect(caught.code).toBe('invalid_invocation');
       return caught.message;
     };
-    // `.relavium` is a file: the mkdir fails ENOTDIR.
+    // `.relavium` is a file: the actual catalog target is unresolved and refuses
+    // before history access or attempting any candidate write (MVP-2 step 3).
     writeFileSync(join(cwd, '.relavium'), '');
-    expect(refusal()).toContain('a parent of the target path is not a directory');
-    // `.relavium/workflows` is a file: the mkdir fails EEXIST — the code a target collision also uses, which is
-    // why the mkdir has its own catch.
+    expect(refusal()).toContain('project artifact target could not be resolved safely');
+    // `.relavium/workflows` is a file: the final candidate likewise refuses
+    // before mkdir, instead of treating ENOTDIR as an ordinary name collision.
     rmSync(join(cwd, '.relavium'));
     mkdirSync(join(cwd, '.relavium'));
     writeFileSync(workflows(), '');
-    expect(refusal()).toContain('a parent of the target path is not a directory');
+    expect(refusal()).toContain('project artifact target could not be resolved safely');
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -343,7 +344,7 @@ describe('exportSessionToProject (MVP-A3)', () => {
       }
       if (!isCliError(caught)) throw new Error('expected a CliError');
       expect(caught.code).toBe('invalid_invocation');
-      expect(caught.message).toContain('a parent of the target path is not a directory');
+      expect(caught.message).toContain('project artifact target could not be resolved safely');
     },
   );
 

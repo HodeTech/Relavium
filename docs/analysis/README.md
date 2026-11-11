@@ -18,6 +18,7 @@ It has two parts:
 |----------|-----------|
 | [managed-inference-business-model-2026-06-03.md](managed-inference-business-model-2026-06-03.md) | Decision analysis: BYOK vs managed inference (Relavium's own keys, metered by license). ToS/legality, competitive pricing, unit economics, gateway architecture, compliance. Led to the dual-mode decision ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)). |
 | [models-dev-dynamic-catalog-enrichment-2026-07-11.md](models-dev-dynamic-catalog-enrichment-2026-07-11.md) | Design analysis: enriching the model catalog with per-model **price** + **effort/capability** data from the open `models.dev` database. Five alternatives (runtime-dynamic, vendored snapshot, hybrid, status quo, live-only) with pros/cons against local-first, cost-cap safety, and the frozen seam. Informs a future ADR extending [ADR-0064](../decisions/0064-live-model-catalog.md). |
+| [cli-ux-benchmark-2026-11-08.md](cli-ux-benchmark-2026-11-08.md) | UX benchmark of eleven terminal agent CLIs (Claude Code, Codex CLI, opencode, Crush, Gemini CLI, Antigravity CLI, Grok Build, Copilot CLI, Kimi, Kiro, Cline): entry model, command surface, onboarding and credentials, sessions, rendering, tool rows, init, keys, platform. Informs [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md) and the MVP-2 plan. |
 | [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive itself is **frozen — never edited**. |
 
 ## Conventions

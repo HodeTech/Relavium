@@ -157,7 +157,7 @@ flowchart TD
 | 0111 | [CLI meta-operations use a lazy packaged runtime](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) | Accepted | 2026-10-15 |
 | 0112 | [Chat network grants and onboarding state are operator-owned](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) | Accepted | 2026-10-15 |
 | 0113 | [Secret-derived context keeps provenance at public sinks](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) | Accepted | 2026-10-15 |
-| 0114 | [In-house markdown rendering for the chat transcript](0114-in-house-markdown-rendering-for-the-chat-transcript.md) | Proposed | 2026-11-05 |
+| 0114 | [In-house markdown rendering for the chat transcript](0114-in-house-markdown-rendering-for-the-chat-transcript.md) | Accepted | 2026-11-05 |
 | 0115 | [One interrupt keymap for the interactive CLI](0115-one-interrupt-keymap-for-the-interactive-cli.md) | Proposed | 2026-11-05 |
 | 0116 | [The built-in chat agent can edit, and the starting mode is configurable](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Proposed | 2026-11-05 |
 | 0117 | [A denied tool call returns to the model](0117-a-denied-tool-call-returns-to-the-model.md) | Proposed | 2026-11-05 |
@@ -165,6 +165,8 @@ flowchart TD
 | 0119 | [An interrupted turn stays in the session as a content-free marker](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) | Proposed | 2026-11-05 |
 | 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Proposed | 2026-11-05 |
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
+| 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
+| 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
 
 ## Creating a new ADR
 

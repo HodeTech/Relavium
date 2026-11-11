@@ -19,6 +19,7 @@ const PRICED = [
   'models.pricing',
 ];
 const UNPRICED = [
+  'init',
   'chat-list',
   'chat-export',
   'create',
@@ -91,8 +92,8 @@ describe('finite lazy route boundary (ADR-0111)', () => {
     const advertised = COMMAND_DESCRIPTORS.flatMap((descriptor) =>
       descriptor.executorId === undefined ? [] : [descriptor.executorId],
     );
-    expect(LAZY_COMMAND_IDS).toHaveLength(24);
-    expect(new Set(LAZY_COMMAND_IDS).size).toBe(24);
+    expect(LAZY_COMMAND_IDS).toHaveLength(25);
+    expect(new Set(LAZY_COMMAND_IDS).size).toBe(25);
     expect([...LAZY_COMMAND_IDS].sort()).toEqual([...advertised].sort());
     expect([...LAZY_COMMAND_IDS].sort()).toEqual(
       [...PRICED, ...UNPRICED, 'media.prune-temporaries'].sort(),

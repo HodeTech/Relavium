@@ -1,6 +1,6 @@
 # Configuration Specification
 
-- **Status**: Stable
+- **Status**: Stable reference with explicitly marked accepted, unimplemented additions
 - **Scope**: Where Relavium reads configuration from, and how global and per-project settings are merged.
 - **Related**: [workflow-yaml-spec.md](workflow-yaml-spec.md), [agent-yaml-spec.md](agent-yaml-spec.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../cli/commands.md](../cli/commands.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
@@ -26,6 +26,12 @@ Automatic global `tmp/` provisioning is removed; existing directories are not de
 
 > API keys are **not** stored in `config.toml`. They live in the OS keychain; the CLI's headless/CI fallback is the env var `RELAVIUM_<PROVIDER>_API_KEY`. The `secrets.enc` encrypted-file fallback is **deferred past v1.0** (it needs a proper Argon2id KDF). See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
+> **MVP-2 step 2 accepted on development (2026-11-10):** the keychain/`RELAVIUM_*`
+> chain includes the eligible standard-variable fallback under the
+> [credential-source contract](#proposed-standard-environment-key-consent--mvp-2).
+> Interactive consent and custom-endpoint exclusion apply as specified there;
+> this is development acceptance, not a published-release claim.
+
 ### Per-project — `<projectRoot>/.relavium/`
 
 Committed to git (minus secrets) so a team shares the same workflows and agents.
@@ -41,6 +47,14 @@ Committed to git (minus secrets) so a team shares the same workflows and agents.
 ```
 
 Opening a workspace loads every `*.relavium.yaml` and `*.agent.yaml` under `<projectRoot>/.relavium/`. An optional `workspace.toml` can declare shared variables (default model, shared tool configs) inherited by all workflows in that workspace.
+
+**MVP-2 step 3 accepted on development (2026-11-10):** CLI
+project discovery walks upward from cwd but stops at home. The global
+`~/.relavium` subtree and canonical aliases are never project configuration or
+catalogs. Global `config.toml` still loads as operator configuration; a
+`workspace.toml` or `project.toml` in that global folder is not a project layer.
+The [init/authoring contract](../cli/commands.md#relavium-init) owns safe creation,
+home fallback refusal and the read-only remedy for old global artifacts.
 
 ## Resolution order
 
@@ -138,15 +152,23 @@ A config file is committed to a repository; a grant is not.
 > default: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`** and (ADR-0059) its
 > **`default_provider`** in one atomic write, and (ADR-0066 §6) the `/models` picker's **effort sub-step**
 > additionally sets **`[preferences].reasoning_effort`** for a reasoning model — **only** those three `[preferences]`
-> keys, and only through a **typed setter** (never a generic key/value
+> keys for model/effort selection. MVP-2's operator-state writers are implemented
+> and accepted on `development`; they separately admit only `standard_env_key_consent` and
+> `keychain_unavailable_acknowledged`, under the contract below. Both groups use
+> closed **typed setters** (never a generic key/value
 > writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
 > only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)). A partial write leaves
 > the other key unchanged (a model-only pick never clears a prior effort default).
-> The write is **atomic + durable** (a `0600` temp file in the `0700` `~/.relavium/`, `fsync` the file, `rename`
-> over the target, then `fsync` the parent directory so the rename itself survives a crash) and it both
+> The write is **atomically published with qualified durability**: create a
+> `0600` temp file in the `0700` `~/.relavium/`, require its file `fsync`, then
+> `rename` over the target. Rename is the publication point. Parent-directory
+> `fsync` is best effort across supported platforms; failure after publication
+> does not undo the visible file, and crash persistence is not guaranteed.
+> The writer both
 > re-validates the merged object against the strict `GlobalConfigSchema` AND re-parses the emitted TOML back
 > through the schema before the rename — so "the file always re-parses on the next load" is a **verified**
-> guarantee, and on any failure `config.toml` is left untouched. Two documented tradeoffs: re-serialization
+> guarantee for the bytes published. A pre-publication failure leaves the target
+> unchanged; no post-rename failure is described as rollback. Two documented tradeoffs: re-serialization
 > **drops comments and key ordering** in `config.toml` (the global file is a preference store, not a
 > hand-curated artifact — project/workspace files are never written by the tool); and there is **no lock**, so
 > two concurrent writes resolve **last-writer-wins** (a lost update, never a torn file) — acceptable for a
@@ -261,6 +283,122 @@ This is covered in full in [../desktop/keychain-and-secrets.md](../desktop/keych
 
 The workflow and agent files inside `.relavium/` carry their own `schema_version` (see [workflow-yaml-spec.md](workflow-yaml-spec.md)). Because the entire `.relavium/` directory is committed and shared, both the config files and the workflow/agent files are treated as stable, versioned, public formats — breaking changes require a migration path, never a silent reinterpretation of existing keys.
 
+## Proposed standard environment key consent — MVP-2
+
+**Accepted on development, MVP-2 step 2 — 2026-11-10.** The maintainer approved the corrected dated
+[ADR-0112 refinement](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+and the [MVP-2 execution plan](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09).
+The historical heading is retained for stable inbound links. All four MVP-2 steps
+are implemented and step-reviewed; the
+[checkpoint record](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+owns combined validation and maintainer review. Release acceptance remains separate.
+
+Add global-only `[preferences].standard_env_key_consent`, a strict optional table
+whose only optional entries are:
+
+| Entry | Only permitted value |
+|---|---|
+| `anthropic` | `"ANTHROPIC_API_KEY"` |
+| `openai` | `"OPENAI_API_KEY"` |
+| `gemini` | `"GEMINI_API_KEY"` |
+| `deepseek` | `"DEEPSEEK_API_KEY"` |
+
+Absent/empty means no standard variable has been allowed. A value is a variable
+name, never a credential value. Reject unknown entries and provider/name
+mismatches. Project/workspace config cannot supply or override it; no merge,
+agent, session or environment overlay can grant consent. Read only the invocation's
+pinned global selection. Keep this setting separate from HTTP-tool domains.
+Declaring this setting or `keychain_unavailable_acknowledged` in project/workspace
+config is a hard `config_error`, exit 2, with a fixed value-free diagnostic;
+do not silently ignore it or read it through a generic merged object.
+
+Resolution is keychain, then `RELAVIUM_<PROVIDER>_API_KEY`, then the provider's
+standard name above. A standard variable is ineligible for a configured custom
+endpoint; use the resolver's existing official/custom endpoint classification,
+not model-name inference. An explicitly spelled official endpoint remains
+official. `GOOGLE_API_KEY` is not read. Source observations contain a source kind
+and the fixed variable name or keychain label, never a key or its suffix.
+
+Interactive Home and TTY chat use a resolver that refuses an ineligible or
+unapproved standard variable at every actual lookup. TTY chat, catalog refresh and
+deep doctor share it. Noninteractive/plain/JSON and scripting subcommands use
+eligible standard variables directly. `RELAVIUM_*` retains existing direct use.
+
+The interactive consent card has three explicit outcomes:
+
+- **Use it:** persist affirmative consent through a typed secret-incapable setter.
+  Only successful atomic publication authorizes remembered use. It permits the named
+  source, not the captured key value; subsequent lookups resolve the current value.
+- **Enter a different key:** enter the shared masked setup flow without granting
+  standard-variable consent. Cancelling that flow grants nothing.
+- **Not now / Esc / Ctrl-C:** grant nothing and remember the deferral only for
+  this invocation, so automatic setup does not repeatedly ask. Explicitly opening
+  `/providers` can offer the choice again; a later invocation can ask again.
+
+If writing fails before publication, keep standard-variable use blocked and show the typed safe
+failure. Offer retry where retry is permitted, or an explicit **use for this
+invocation only** choice. That additional confirmation creates invocation-owned
+consent shared by later Home/clear/reseat/refresh paths; do not set it merely
+because a write failed. Cancel closes without a grant. Final-component symlink
+refusal offers manual repair or explicit ephemeral continuation, never an endless
+retry. No success copy claims the setting was saved on this path.
+
+If rename succeeds but directory open/fsync fails, the setting is already
+published: authorize the explicitly chosen source and report that it was saved,
+with a fixed notice that persistence after a crash is unconfirmed. The writer
+reports the post-publication sync outcome instead of swallowing it or throwing
+an error that falsely promises the old file survived. A fresh invocation honors
+only the grant actually read from validated global config. A crash may restore
+an older value; no cross-platform crash-durable consent/revocation guarantee is
+made. Cancellation before publication prevents it; after publication report the
+committed outcome rather than claiming cancellation erased the grant. Fault-inject
+file fsync, rename, directory open and directory fsync separately, including
+current/fresh-invocation authority and truthful copy for each result.
+
+Consent is not granted by opening setup, inspecting a source, selecting a model,
+an acknowledgement of keychain failure, an absent key, a validation failure or
+an async completion after cancellation. Current usable-key state takes precedence
+over first-run guidance. A genuine keychain-unavailable acknowledgement follows
+the accepted distinct boolean rule below and is never set automatically.
+
+The shared writer must enforce its accepted final-symlink refusal before any
+read/chmod side effect, retain atomic schema-verified durable writes, preserve
+other settings and show the comment/order-loss notice before every existing-file
+rewrite. Pull this prerequisite from Wave 3 row 16a before adding
+`standard_env_key_consent` or `keychain_unavailable_acknowledged` in MVP-2;
+this does not implement unrelated chat HTTP policy.
+Native card evidence is bound to the current snapshot and live terminal geometry.
+Recheck it at publication, including immediately before rename; an invalid or
+clipped card waits for visible recovery or cancellation and grants nothing.
+
+**Revocation:** manually remove the provider's entry from the selected global
+consent table and restart Relavium. This is the MVP-2 revocation path; adding a
+revoke action to `/providers` is not required for its keys slice. There is no
+watcher: existing invocation consent, including an explicit ephemeral choice,
+lasts until that invocation ends. Config rewrites are last-writer-wins; neither
+concurrency nor a crash is claimed to preserve a revoked value durably.
+
+**Typed availability:** expose a value-free state per known provider:
+`usable`, `missing`, `unavailable`, `present-standard-not-allowed`, or
+`ineligible-custom-endpoint`. A usable state names its selected source. An eligible
+standard variable without interactive consent selects the fourth state; one
+excluded by endpoint classification selects the fifth only when no higher-priority
+usable source exists. Preserve typed keychain backend health separately, so these
+states never turn a missing key or an ineligible variable into a guessed backend
+failure. Missing means no eligible/pending source and a functioning backend;
+unavailable means no usable/pending source and a genuine backend-unavailable result.
+Home opens consent for the pending state, guidance/key entry for the ineligible
+state, and ordinary setup for missing; unavailable gets its explicit acknowledgement
+and retry flow. Compute on Home open and after relevant key/consent changes, not
+on every strip read. A usable key suppresses automatic setup.
+
+**Old-binary recovery:** back up the non-secret global TOML and remove the entire
+`standard_env_key_consent` table before running a binary that lacks it. If the
+keychain acknowledgement was also added, remove that entry as directed below.
+Provider keys remain in the keychain/environment. An older strict binary may
+otherwise refuse an unknown setting with exit 2; no generic writer silently
+deletes it for compatibility.
+
 ## Proposed Wave 3 chat policy and preferences
 
 **Approved design, unshipped — 2026-10-16.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
@@ -279,8 +417,8 @@ implementation landing.
   actual connection authority. Do not introduce another ad-hoc URL parser. Workflow
   allowedDomains retains its separate existing policy; this grammar does not
   silently change stored workflow grants.
-- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, optional,
-  absent=false. It is reminder state, not credential state. Only a typed backend
+- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, implemented
+  on development in accepted MVP-2 step 2, optional, absent=false. It is reminder state, not credential state. Only a typed backend
   unavailable result plus explicit user choice may set it; no startup auto-write.
 
 Project/workspace/agent/session/environment layers cannot supply or override either
@@ -329,8 +467,11 @@ HTTPS ports; it does not enable the tool grant, a missing confirmer, search, MCP
 provider traffic or shell egress. See the
 [tool comparison contract](../shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance).
 
-Expose a typed, value-free current key-availability observation before Home's UX
-choice: usable key (including env fallback), missing entry, or unavailable backend.
+Expose the typed, value-free current
+[key-availability observation](#proposed-standard-environment-key-consent--mvp-2)
+before Home's UX choice, including pending/ineligible standard-variable states
+and separate typed backend health; the original three-state description is
+extended by MVP-2's accepted credential-source contract.
 Do not infer backend failure from absence or native error strings. Acknowledgement
 is used only with actual current unavailable+keyless state; a usable key always
 suppresses setup. Retry setup is explicit; ordinary missing-key/auth/DB failures

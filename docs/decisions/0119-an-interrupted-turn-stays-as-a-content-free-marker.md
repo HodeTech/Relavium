@@ -6,6 +6,15 @@
 
 ## Context
 
+> **MVP-2 compatibility note — 2026-11-09.** Accepted
+> [ADR-0123](0123-restored-transcripts-use-host-recorded-display-text.md) introduces
+> separate host-recorded user display metadata. If this interruption decision is
+> later accepted/implemented in MVP-4, every interrupted user-row insert carries
+> captured display metadata in the same transaction, under the existing
+> [role-restricted storage contract](../reference/shared-core/database-schema.md#proposed-user-display-storage--mvp-2).
+> No completed-success-only restriction is added to that metadata. This note does
+> not accept this Proposed ADR or activate interruption persistence in MVP-2.
+
 [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §1 persists a
 **completed** turn as content-free structure. Its rows record which tools ran,
 in what order, how large their arguments and results were, and whether each

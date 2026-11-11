@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import {
@@ -12,6 +12,7 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { assertProjectArtifactPath, resolveProjectDirectory } from '../config/project-directory.js';
 import {
   mkdirForStorage,
   replaceFileForStorage,
@@ -48,6 +49,7 @@ export interface ExportSessionOptions {
   readonly sessionId: string;
   /** The base dir a relative `outPath` (or the default `<sessionId>.relavium.yaml`) resolves against — the launch cwd. */
   readonly cwd: string;
+  readonly homeDir?: string;
   /**
    * `--out <path>` override (absolute, or relative to {@link cwd}); the default is `<sessionId>.relavium.yaml`
    * in cwd — keyed on the UNIQUE session id, not the (possibly shared/absent) title, so two sessions never
@@ -75,15 +77,18 @@ export interface ExportResult {
  * written path + the loaded record (for an optional row-marking by the caller).
  */
 export function exportSession(opts: ExportSessionOptions): ExportResult {
-  const loaded = loadSession(opts.store, opts.sessionId);
-  const definition = sessionToWorkflow(loaded.session, loaded.messages);
-
   // Default the filename to the UNIQUE session id (collision-free), not `workflow.id` (the title-slug, which
   // two untitled sessions share) — the in-file `workflow.id` stays the human-renameable title-slug.
   const path =
     opts.outPath === undefined
       ? join(opts.cwd, `${opts.sessionId}.relavium.yaml`)
       : resolve(opts.cwd, opts.outPath);
+  if (opts.outPath === undefined) {
+    assertProjectArtifactPath(opts.cwd, opts.homeDir);
+    assertProjectArtifactPath(path, opts.homeDir);
+  }
+  const loaded = loadSession(opts.store, opts.sessionId);
+  const definition = sessionToWorkflow(loaded.session, loaded.messages);
   const label = sourceLabel(opts.cwd, path);
   if (writeScaffold(path, serializeWorkflow(definition), opts.force, label) === 'exists') {
     throw new CliError('invalid_invocation', `${label} already exists — pass --force to overwrite`);
@@ -96,6 +101,7 @@ export interface ExportToProjectOptions {
   readonly sessionId: string;
   /** The launch cwd — the base for display labels, and for `.relavium/` when there is no project. */
   readonly cwd: string;
+  readonly homeDir?: string;
   /** The discovered `.relavium/` directory; absent ⇒ `<cwd>/.relavium`, created by the write. */
   readonly projectConfigDir: string | undefined;
 }
@@ -143,10 +149,11 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * rename is not detected ({@link replaceFileForStorage}).
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
+  const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
+  const dir = join(root, 'workflows');
+  assertProjectArtifactPath(dir, opts.homeDir);
   const loaded = loadSession(opts.store, opts.sessionId);
   const scaffold = sessionToWorkflow(loaded.session, loaded.messages);
-  const root = opts.projectConfigDir ?? join(opts.cwd, '.relavium');
-  const dir = join(root, 'workflows');
   const base = scaffold.workflow.id;
   const candidates = Array.from({ length: MAX_EXPORT_ID_ATTEMPTS }, (_, index) =>
     index === 0 ? base : `${base}-${String(index + 1)}`,
@@ -160,12 +167,13 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
   const taken =
     opts.projectConfigDir === undefined
       ? new Set<string>()
-      : takenWorkflowIds(opts.projectConfigDir, opts.cwd);
+      : takenWorkflowIds(opts.projectConfigDir, opts.cwd, opts.homeDir);
   for (const id of candidates) {
     const path = join(dir, `${id}.relavium.yaml`);
     const own = ownExport(path, opts.sessionId);
     if (own === undefined) continue;
     const definition = withWorkflowId(scaffold, id);
+    assertProjectArtifactPath(path, opts.homeDir);
     try {
       replaceFileForStorage(path, serializeWorkflow(definition), own.mode, own.identity);
     } catch (err) {
@@ -181,6 +189,7 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     const path = join(dir, `${id}.relavium.yaml`);
     const definition = withWorkflowId(scaffold, id);
     const label = sourceLabel(opts.cwd, path);
+    assertProjectArtifactPath(path, opts.homeDir);
     if (writeScaffold(path, serializeWorkflow(definition), false, label) === 'written') {
       return exportResult(path, definition, loaded);
     }
@@ -195,6 +204,22 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
 interface OwnExport {
   readonly mode: number;
   readonly identity: StorageFileIdentity;
+}
+
+/** Read an admitted descriptor within the existing byte ceiling, even if it grows after fstat. */
+function readOwnExportBytes(fd: number): Buffer | undefined {
+  const maxBytes = MAX_SOURCE_CHARS * 4;
+  const buffer = Buffer.alloc(64 * 1024);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    // One extra byte detects overflow without following a growing file to EOF.
+    const count = readSync(fd, buffer, 0, Math.min(buffer.length, maxBytes + 1 - total), null);
+    if (count === 0) return Buffer.concat(chunks, total);
+    total += count;
+    if (total > maxBytes) return undefined;
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+  }
 }
 
 /**
@@ -215,7 +240,8 @@ function ownExport(path: string, sessionId: string): OwnExport | undefined {
     if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino)
       return undefined;
     if (opened.size > BigInt(MAX_SOURCE_CHARS * 4)) return undefined;
-    const bytes = readFileSync(fd);
+    const bytes = readOwnExportBytes(fd);
+    if (bytes === undefined) return undefined;
     const text = bytes.toString('utf8');
     // The parser's own bound, in characters, before any YAML is decoded.
     if (text.length > MAX_SOURCE_CHARS) return undefined;

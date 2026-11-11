@@ -22,6 +22,7 @@ import {
 import { CliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
+import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 /**
  * Discover the workflow / agent YAML catalog under a project's `.relavium/` for `relavium list` (2.I). It is a
@@ -79,8 +80,10 @@ export function discoverCatalog(opts: {
   readonly projectConfigDir: string;
   readonly cwd: string;
   readonly kind: CatalogKind;
+  readonly homeDir?: string;
 }): CatalogEntry[] {
   const dir = join(opts.projectConfigDir, opts.kind);
+  assertProjectArtifactPath(dir, opts.homeDir);
   let names: readonly string[];
   let root: string;
   try {
@@ -102,7 +105,9 @@ export function discoverCatalog(opts: {
     });
   }
 
-  const entries = names.map((name) => readEntry(join(dir, name), opts.cwd, opts.kind, root));
+  const entries = names.map((name) =>
+    readEntry(join(dir, name), opts.cwd, opts.kind, root, opts.homeDir),
+  );
   return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
 
@@ -115,10 +120,19 @@ export function discoverCatalog(opts: {
  * case-insensitive filesystem `My-Id.yaml` is the same name as `my-id.yaml`. Throws the catalog's own error for an
  * unreadable or out-of-project directory.
  */
-export function takenWorkflowIds(projectConfigDir: string, cwd: string): ReadonlySet<string> {
+export function takenWorkflowIds(
+  projectConfigDir: string,
+  cwd: string,
+  homeDir?: string,
+): ReadonlySet<string> {
   const taken = new Set<string>();
   for (const kind of ['workflows', 'agents'] as const) {
-    for (const entry of discoverCatalog({ projectConfigDir, cwd, kind })) {
+    for (const entry of discoverCatalog({
+      projectConfigDir,
+      cwd,
+      kind,
+      ...(homeDir === undefined ? {} : { homeDir }),
+    })) {
       for (const id of [entry.slug, fileStem(basename(entry.path))]) {
         taken.add(id);
         taken.add(id.toLowerCase());
@@ -141,11 +155,26 @@ function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
 }
 
 /** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
-function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): CatalogEntry {
+function readEntry(
+  path: string,
+  cwd: string,
+  kind: CatalogKind,
+  root: string,
+  homeDir?: string,
+): CatalogEntry {
   const rel = sourceLabel(cwd, path);
   let yaml: string;
   try {
     const canonical = realpathSync.native(path);
+    try {
+      assertProjectArtifactPath(canonical, homeDir);
+    } catch {
+      return invalidEntry(
+        path,
+        rel,
+        'not an admitted project artifact; check global catalog links',
+      );
+    }
     if (!isWithinFsRoot(root, canonical))
       return invalidEntry(path, rel, 'outside the project catalog');
     const stats = statSync(canonical, { bigint: true });

@@ -3,9 +3,10 @@
  * 2.5.C — see the amendment). The `/` palette + slash commands inside the Home and chat surface only the commands
  * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`) and info/discovery (`/help`,
  * `/workflows`, `/cost`, `/doctor`). `/shortcuts` was dropped (S6) — the `/` palette
- * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. The heavy, session-starting
- * **shell** commands (`run`, `chat`, `provider`, …) stay shell-only ([manifest.ts](manifest.ts) /
- * [dispatch.ts](dispatch.ts)) — never run from inside a chat.
+ * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. A slash command never spawns
+ * a **shell** command ([manifest.ts](manifest.ts) / [dispatch.ts](dispatch.ts)); under
+ * [ADR-0122](../../../../docs/decisions/0122-the-home-is-the-interactive-product.md) a routine task gets an in-TUI
+ * form here that re-hosts the same core as its shell command.
  *
  * REPL commands have a different shape than shell commands: their handler runs over a {@link ReplCommandContext}
  * (the live session's lifecycle capabilities), not a `CommandInput` + the durable stores. So this is a separate,
@@ -359,11 +360,50 @@ export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
   PALETTE_COMMANDS.filter((command) => command.availableIn.includes('chat')),
 );
 
+/** Home owns this action; standalone chat must not advertise or dispatch it. */
+const HOME_PROVIDERS_COMMAND = freezeReplCommand({
+  name: 'providers',
+  label: 'Providers',
+  description: 'Connect, login, or manage provider API keys.',
+  effect: 'read',
+  availableIn: ['home'],
+  // Both Home surfaces intercept this command and open their shared setup port.
+  run: () => undefined,
+});
+
+const HOME_INIT_COMMAND = freezeReplCommand({
+  name: 'init',
+  label: 'Initialize project',
+  description: 'Initialize project workflow and agent directories after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+const HOME_RESUME_COMMAND = freezeReplCommand({
+  name: 'resume',
+  label: 'Resume session',
+  description: 'Search saved conversations and continue one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
+  ...CHAT_PALETTE_COMMANDS,
+  HOME_PROVIDERS_COMMAND,
+  HOME_INIT_COMMAND,
+  HOME_RESUME_COMMAND,
+]);
+
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
  *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
-export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
-);
+export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
+  ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
+  HOME_PROVIDERS_COMMAND,
+  HOME_INIT_COMMAND,
+  HOME_RESUME_COMMAND,
+]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */
 export function replCommandList(): string {

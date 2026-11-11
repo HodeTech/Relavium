@@ -209,6 +209,14 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     // The bare Home offers /exit + /doctor (pre-chat diagnostics), /clear (availableIn ['home','chat']; an inert
     // "nothing to clear" notice — ADR-0062 §7), and /models (availableIn ['home','chat'] — the Home writes the
     // next-session default, ADR-0064 §10; the chat reseats live, ADR-0059).
-    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor', 'clear', 'models']);
+    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
+      'exit',
+      'doctor',
+      'clear',
+      'models',
+      'providers',
+      'init',
+      'resume',
+    ]);
   });
 });

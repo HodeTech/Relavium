@@ -13,7 +13,8 @@ import { legacyManifestEntries } from './descriptors.js';
  *
  * The **in-REPL** `/` palette + slash commands are a SEPARATE, curated registry ([repl-commands.ts](repl-commands.ts),
  * `REPL_COMMANDS` — see the ADR-0056 amendment): a REPL command runs over the live session's lifecycle, not a
- * `CommandInput`, and the heavy shell commands here are never run from inside a chat. The {@link manifest.test.ts}
+ * `CommandInput`, and a slash command never spawns one of these shell commands (an in-TUI form re-hosts the same
+ * core instead, ADR-0122). The {@link manifest.test.ts}
  * drift guard asserts every real `commander` command has a matching manifest entry (so the shell surfaces cannot diverge).
  */
 

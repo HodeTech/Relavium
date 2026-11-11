@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-16
+> Last updated: 2026-11-10
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -816,6 +816,7 @@ CREATE INDEX idx_agent_sessions_agent  ON agent_sessions (agent_id, created_at D
 -- Backs listSessions + the 2.5.B Home "recent sessions" strip: ORDER BY (updated_at DESC, id DESC) over the
 -- non-deleted set is served off this partial index rather than a filesort (the session counterpart of idx_runs_created).
 CREATE INDEX idx_agent_sessions_updated ON agent_sessions (updated_at DESC, id DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_agent_sessions_working_dir_updated ON agent_sessions (working_dir, updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 ```
 
 #### `session_messages`
@@ -829,6 +830,7 @@ pattern). Cascades from `agent_sessions`.
 | `id` | TEXT | PRIMARY KEY (UUID) |
 | `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
 | `sequence_number` | INTEGER | NOT NULL — monotonic per session (append-only) |
+| `user_display_text` | TEXT | NULL — host-recorded user display only (migration 0020); separate from canonical content and validated by the display read |
 | `role` | TEXT | NOT NULL (`system`, `user`, `assistant`, `tool`) |
 | `content` | TEXT | NULL |
 | `content_parts` | TEXT (JSON) | NULL — multimodal/structured parts |
@@ -851,6 +853,71 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 > column is **structurally incapable** of holding the truth for a turn whose tool loop billed **two models**. Money
 > attribution lives in [`session_costs`](#session_costs). `model_id` **stays**: it *is* written ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md))
 > and remains the per-message "which model wrote this reply" label.
+
+#### Proposed user display storage — MVP-2
+
+**Implemented and independently accepted on development — 2026-11-10.**
+The historical heading remains for stable inbound links; the
+[step-4 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+records the reviewed source and checkpoint gates.
+[ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md)
+requires an additive nullable `user_display_text TEXT` column on `session_messages`.
+Add optional `userDisplayText: string` to strict `SessionMessageMetaSchema` and
+the DB's `SessionMessageMeta`. It is permitted only with a `role: 'user'` row;
+non-string/unknown metadata refuses. Empty text is legal. NULL means no
+host-recorded display text, never an inferred empty prompt.
+
+The migration leaves every existing row NULL. Every host user-row insert with
+captured display metadata includes that field in the same transaction. MVP-2
+uses the existing completed-turn transaction; a future accepted ADR-0119
+interruption transaction inherits this rule without being implemented here.
+Updates/backfills of historical rows
+are not introduced. Metadata writes and the separate display read reject display
+metadata on non-user roles within their admitted rows.
+Expose a separate `loadUserDisplayTexts(sessionId, sequenceNumbers)` DB read for
+the UI. In order: validate a maximum of 500 distinct non-negative safe sequence
+numbers; select `sequence_number`, `role` and `user_display_text` for those rows
+within that session, with no SQL user-role filter; reject any selected non-user
+row carrying a non-NULL display value; then return only user sequence/text pairs.
+The DB read boundary performs role validation before projecting the role away.
+An empty selection performs no query. Absent values remain absent; malformed or
+wrong-role stored metadata refuses with the existing fixed boundary diagnostic.
+Do not attach presentation metadata to `loadMessages` or `SessionMessage`, or
+add a display-metadata validation failure to their canonical read path: model
+restore, export and completed-turn identity remain unchanged. The display reader
+owns validation of its selected rows; it does not claim to scan or certify all
+archive rows. Caller selection includes the completed user/terminal identities
+within the restored window. Malformed/unreadable metadata refuses interactive
+restore before host activation, with retry/return and no canonical-text fallback.
+The persister never substitutes submitted canonical content for absent display
+metadata; only an explicit pre-expansion host display value is written.
+
+Existing denormalized content equality, transcript mutation/coverage triggers and
+at-rest permissions remain in force. Verify the current transcript-trigger
+behavior for direct display-column changes as part of migration acceptance.
+Choose the next free migration number at implementation, without rewriting a
+published migration; mirror the generated migration into the CLI through its
+existing build path. Test an older writer omitting the new column followed by a
+new reader. Migration `0020_cultured_pet_avengers.sql` adds the nullable column
+without backfill; the existing transcript-update trigger covers direct metadata
+updates. Canonical reads never inspect the display column.
+
+#### Bounded session discovery
+
+`SessionStore.listSessionPage` selects only ID, title, agent slug, update time and
+working directory. It never loads transcript, context, snapshot or usage rows.
+Optional `workingDir` scopes exactly; omission lists all directories. `title` is
+a literal substring (up to 256 characters), with SQL LIKE metacharacters escaped.
+Limit defaults to 20 and is bounded to 1–100; the picker requests six.
+Ordering is `(updated_at DESC, id DESC)`, using bounded forward/backward keyset
+cursors and one lookahead row. Invalid options refuse with a fixed discovery
+boundary error rather than falling back to an unbounded query. The new partial
+`idx_agent_sessions_working_dir_updated` index serves directory scope; the
+existing update index serves all-directory discovery. Deleted rows are excluded.
+
+The indexed working directory is discovery data. Resume must independently
+validate the canonical context and invocation filesystem authority before build.
+These additions do not change the compatibility `listSessions` API or exports.
 
 #### `session_costs`
 
@@ -1365,7 +1432,7 @@ operational SQLite provenance, even if the native error is storage-shaped.
 - **Reads that must be consistent across statements** use a read transaction: `sessionStore.loadFull` reads the session row and its transcript inside one deferred transaction so **both reads observe a single consistent DB snapshot** (never a two-`SELECT` straddle across a concurrent commit). This now composes with **turn atomicity** on the write side: `sessionStore.writeTurn` appends a turn's messages and flushes the session row in ONE `BEGIN IMMEDIATE` transaction (#228), so a snapshot can no longer observe messages ahead of their totals, and a failed write leaves neither a half-written turn nor an unanswered `user` row that resume cannot roll back. This discharges the per-turn-transaction follow-up this section previously tracked.
 - **The durable append is compare-and-append** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §2). `persistEvent` takes an optional `DurableWriteContext` carrying `expectedLastSequenceNumber` — the sequence the caller last *asked* to append, not the last it saw succeed. When present, the store reads `max(run_events.seq)` for that run **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle**, and refuses the append with a typed `AppendConflictError` when the two differ. `UNIQUE(run_id, seq)` bars a duplicate and says nothing about order or holes; this is what makes the committed log a *prefix* of what was asked rather than merely a set. Three properties are deliberate: the read is `max(seq)` rather than a denormalized `runs.last_event_seq` column, so there is no migration and no second source of truth that can drift from the rows; the check runs **before** the derived `runs`/`step_executions`/`run_costs` writes, so a refusal leaves nothing behind; and `AppendConflictError` is **not** in the retryable-code set above — a conflict is a stale belief, not lock contention, and retrying it five times would waste five transactions and report the wrong cause. The engine exempts the run TERMINAL from the guard, because exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks it; a terminal the store will not take is ADR-0078 §4's outbox to own.
 - **The same write is fenced by run ownership** ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2). `DurableWriteContext` carries a second, **independent** claim beside `expectedLastSequenceNumber`: a `fence` of `{ ownerId, generation }`. When present, the store reads the run's `run_leases` row **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle** — outside it, the read and the write would be two statements another process could interleave, which is the exact race the check exists to close — and refuses with a typed `LeaseFencedError` when the owner or generation differs, **or when the row is absent**: a writer that cannot prove ownership fails closed. It is checked *after* the append guard, because a stale belief about the log is the more specific diagnosis when a writer has both problems. The two fields are independent because the run TERMINAL carries the fence *without* the append guard — exempt from one, not the other. An **absent** `fence` is a pass rather than a refusal: a caller holding no ownership claim has nothing stale to catch. Like `AppendConflictError`, `LeaseFencedError` is **not** in the retryable set — a stale fence is an expected refusal, not lock contention.
-- **A log holds exactly one terminal, and the store refuses a second** ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s exactly-one-terminal). When the event is `run:completed`, `run:failed` or `run:cancelled`, `persistEvent` looks for an existing terminal row for that run inside the same transaction, after the guard and the fence and before the derived writes, and refuses with a typed `RunAlreadyTerminalError` if one is there. It reads the event rows rather than `runs.status`, for the same no-second-source reason as `max(seq)`. Neither claim above can do this: the engine exempts its terminal from the append guard, and a writer that never acquired a lease carries no fence. The case it guards is a `reconcile()` (which the CLI calls at `run`/`gate` start and on Home open) that settles a run in the moment between its durable `run:started` and its lease acquire, then releases its claim. Reconcile leaves a run younger than one lease TTL alone, so that takes a reconciler that claims it anyway — a development build without that rule, or a clock more than a TTL ahead. The run's own acquire then succeeds, and its terminal would land behind the first. The refused terminal goes to ADR-0078 §4's outbox, the run reports exit `5`, and the next drain drops the entry because the run is no longer open. The in-memory reference store refuses the same way.
+- **A log holds exactly one terminal, and the store refuses a second** ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s exactly-one-terminal). When the event is `run:completed`, `run:failed` or `run:cancelled`, `persistEvent` looks for an existing terminal row for that run inside the same transaction, after the guard and the fence and before the derived writes, and refuses with a typed `RunAlreadyTerminalError` if one is there. It reads the event rows rather than `runs.status`, for the same no-second-source reason as `max(seq)`. Neither claim above can do this: the engine exempts its terminal from the append guard, and a writer that never acquired a lease carries no fence. The case it guards is a `reconcile()` (which the CLI calls at `run`/`gate` start and on Home open) that settles a run in the moment between its durable `run:started` and its lease acquire, then releases its claim. Reconcile leaves a run younger than one lease TTL alone, so that takes a reconciler that claims it anyway — a development build without that rule, or a clock more than a TTL off, either way. The run's own acquire then succeeds, and its terminal would land behind the first. The refused terminal goes to ADR-0078 §4's outbox, the run reports exit `5`, and the next drain drops the entry because the run is no longer open. The in-memory reference store refuses the same way.
 - **Cross-platform:** `BEGIN IMMEDIATE` + the retry behave identically on every OS. The `0600`/`0700` at-rest guard below is a documented Windows no-op, so the concurrency test lane gates POSIX-permission assertions off Windows only.
 
 This realizes the concurrent-process write requirement recorded in the [ADR-0064](../../decisions/0064-live-model-catalog.md) §5 amendment note (2.5.I).

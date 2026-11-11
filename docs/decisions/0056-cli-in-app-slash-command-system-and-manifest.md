@@ -114,3 +114,17 @@ core decision — the slash registry, the palette, the manifest, and the `--help
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. The approved framework-free descriptor authority realizes explicit machine-readable help through a separate versioned CLI projection, preserving the strict existing model manifest. Explicit nested command paths and retained flat aliases share stable executor identities; real integration remains staged in Wave 3. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+## Home-first direction — 2026-11-08
+
+> Amended 2026-11-08: [ADR-0122](0122-the-home-is-the-interactive-product.md) (Accepted) replaces the 2026-06-29
+> amendment's clause that `run`, `chat`, `provider`, `create`, `import` and `export` stay shell-only. A routine task
+> now gets an in-TUI form that re-hosts the same core as its subcommand, and a slash command still never spawns a
+> subcommand.
+>
+> - **Unchanged:** the two registries (`COMMAND_MANIFEST` and `REPL_COMMANDS`), each the single source for its own
+>   surface, and the alias-free slash set.
+> - **Replaced:** the rule that no task appears in both registries. A slash command may now serve the same task as a
+>   shell command when both call one core.
+>
+> This note does not claim implementation landing.

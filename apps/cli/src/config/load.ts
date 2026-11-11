@@ -1,15 +1,16 @@
 import { chmodSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { GlobalConfigSchema, ProjectConfigSchema } from '@relavium/shared';
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { ZodError, ZodIssue, ZodType } from 'zod';
 
-import { ConfigError } from './errors.js';
+import { ConfigError, OperatorConfigError } from './errors.js';
 import { findProjectConfigDir, globalConfigDir } from './paths.js';
 import { resolveConfig, type ResolvedConfig } from './resolve.js';
+import { assertProjectArtifactPath } from './project-directory.js';
 
 /** Pre-parse source cap (ADR-0048 hardened loader) — a committed config file is small. */
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -24,8 +25,15 @@ const MAX_CONFIG_BYTES = 256 * 1024;
 export function loadConfigFile<T>(
   filePath: string,
   schema: ZodType<T>,
-  opts?: { readonly selfHealMode?: boolean },
+  opts?: {
+    readonly selfHealMode?: boolean;
+    readonly projectLayer?: boolean;
+    readonly home?: string;
+  },
 ): T | undefined {
+  // Automatic project layers must not read global state through child aliases.
+  // Explicit operator config reads retain their selected-file contract.
+  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home);
   let stats: Stats;
   try {
     stats = statSync(filePath);
@@ -61,8 +69,14 @@ export function loadConfigFile<T>(
     throw new ConfigError(filePath, `is not valid TOML${tomlPosition(err)}.`, { cause: err });
   }
 
+  const projectSetting = opts?.projectLayer === true ? projectOperatorPreference(data) : undefined;
+  if (projectSetting !== undefined) {
+    throw new OperatorConfigError(projectSetting, true);
+  }
   const result = schema.safeParse(data);
   if (!result.success) {
+    const setting = operatorIssue(result.error);
+    if (setting !== undefined) throw new OperatorConfigError(setting, false);
     throw new ConfigError(filePath, `is invalid — ${formatZodError(result.error)}.`, {
       cause: result.error,
     });
@@ -81,6 +95,10 @@ export interface LoadConfigOptions {
 
 export interface LoadedConfig {
   readonly config: ResolvedConfig;
+  /** Validated operator-owned state, before project/workspace resolution. */
+  readonly globalConfig: GlobalConfig | undefined;
+  /** Lexically pinned selected global file for this invocation. */
+  readonly globalConfigPath: string;
   /** The discovered project `.relavium/` directory, or `undefined` when outside a project. */
   readonly projectConfigDir: string | undefined;
   /** The resolved home directory — the root of `~/.relavium/` (where `history.db` lives, 2.H/ADR-0050). */
@@ -106,7 +124,7 @@ export function resolveHomeDir(options: Pick<LoadConfigOptions, 'home'>): string
  */
 export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   const home = resolveHomeDir(options);
-  const globalFile = options.configPath ?? join(globalConfigDir(home), 'config.toml');
+  const globalFile = resolve(options.configPath ?? join(globalConfigDir(home), 'config.toml'));
   // #33's `0600` self-heal applies to the CANONICAL global config and nothing else (#W15-13). It used to run
   // on every layer, including `workspace.toml` / `project.toml` — which `config-spec.md` describes as
   // committed and shared, so merely READING a project's config rewrote a file's mode in the user's repo and
@@ -117,21 +135,52 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
     selfHealMode: options.configPath === undefined,
   });
 
-  const projectConfigDir = findProjectConfigDir(options.cwd);
+  const projectConfigDir = findProjectConfigDir(options.cwd, home);
   let workspace: ProjectConfig | undefined;
   let project: ProjectConfig | undefined;
   if (projectConfigDir !== undefined) {
     workspace = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'workspace.toml'),
       ProjectConfigSchema,
+      { projectLayer: true, home },
     );
     project = loadConfigFile<ProjectConfig>(
       join(projectConfigDir, 'project.toml'),
       ProjectConfigSchema,
+      { projectLayer: true, home },
     );
   }
 
-  return { config: resolveConfig({ global, workspace, project }), projectConfigDir, homeDir: home };
+  return {
+    config: resolveConfig({ global, workspace, project }),
+    globalConfig: global,
+    globalConfigPath: globalFile,
+    projectConfigDir,
+    homeDir: home,
+  };
+}
+
+type OperatorSetting = 'standard_env_key_consent' | 'keychain_unavailable_acknowledged';
+
+function projectOperatorPreference(data: unknown): OperatorSetting | undefined {
+  if (typeof data !== 'object' || data === null || !('preferences' in data)) return undefined;
+  const preferences: unknown = data.preferences;
+  if (typeof preferences !== 'object' || preferences === null) return undefined;
+  if (Object.hasOwn(preferences, 'standard_env_key_consent')) return 'standard_env_key_consent';
+  if (Object.hasOwn(preferences, 'keychain_unavailable_acknowledged'))
+    return 'keychain_unavailable_acknowledged';
+  return undefined;
+}
+
+/** Inspect only schema-owned path segments; authored unknown keys are never promoted to diagnostics. */
+function operatorIssue(error: ZodError): OperatorSetting | undefined {
+  for (const issue of error.issues) {
+    if (issue.path[0] !== 'preferences') continue;
+    if (issue.path[1] === 'standard_env_key_consent') return 'standard_env_key_consent';
+    if (issue.path[1] === 'keychain_unavailable_acknowledged')
+      return 'keychain_unavailable_acknowledged';
+  }
+  return undefined;
 }
 
 /**

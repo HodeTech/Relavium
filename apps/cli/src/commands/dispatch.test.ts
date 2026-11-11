@@ -330,7 +330,11 @@ describe('executeCommand', () => {
       'logs',
     ];
     for (const id of requirePositional) {
-      await expect(executeCommand(id, input([]), ctx)).rejects.toThrow(/missing argument/);
+      await expect(executeCommand(id, input([]), ctx)).rejects.toThrow(
+        id === 'chat-resume'
+          ? 'chat resume needs a session ID outside an interactive terminal.'
+          : /missing argument/,
+      );
     }
   });
 

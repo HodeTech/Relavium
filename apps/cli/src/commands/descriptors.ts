@@ -12,6 +12,10 @@ export interface PositionalDescriptor {
   readonly variadic: boolean;
   readonly description: string;
 }
+interface AuthoredPositional extends PositionalDescriptor {
+  /** Headless model projection can require an ID while a TTY opens a picker. Never serialized. */
+  readonly modelRequired?: boolean;
+}
 export interface OptionDescriptor {
   readonly binding: string;
   readonly spellings: readonly string[];
@@ -38,12 +42,13 @@ export interface CommandDescriptor {
   readonly effect: 'read' | 'write' | 'destructive';
   readonly availability: 'implemented' | 'not_implemented';
   readonly aliases: readonly { readonly path: readonly string[]; readonly deprecated: boolean }[];
-  readonly positionals: readonly PositionalDescriptor[];
+  readonly positionals: readonly AuthoredPositional[];
   readonly options: readonly AuthoredOption[];
   readonly executorId?: string;
   /** Existing model order is compatible even where current CLI help orders groups differently. */
   readonly legacyModelOrder?: number;
   readonly modeScope?: readonly ('ask' | 'plan' | 'accept-edits' | 'auto')[];
+  /** Absent means false in both the runtime parser and public grammar projection. */
   readonly allowExcessArguments?: boolean;
   readonly opaqueParserHint?: string;
   readonly requiredSubcommand?: string;
@@ -159,8 +164,21 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
         negated: false,
         required: false,
         description: 'bind a specific agent (.agent.yaml path or .relavium/ id)',
-        conflicts: [],
+        conflicts: ['continue'],
         placeholder: 'ref',
+      },
+      {
+        binding: 'continue',
+        spellings: ['--continue'],
+        deprecatedSpellings: [],
+        arity: 'none',
+        type: 'boolean',
+        repetition: 'single',
+        negated: false,
+        required: false,
+        description: "resume this directory's latest session",
+        conflicts: ['agent'],
+        model: false,
       },
     ],
     executorId: 'chat',
@@ -183,7 +201,8 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
         name: 'sessionId',
         binding: 'sessionId',
         type: 'string',
-        required: true,
+        required: false,
+        modelRequired: true,
         variadic: false,
         description: 'the session to resume',
       },
@@ -1160,12 +1179,13 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
     path: ['init'],
     label: 'Init',
     description: 'Initialize a .relavium/ directory in the current project.',
-    effect: 'read',
-    availability: 'not_implemented',
+    effect: 'write',
+    availability: 'implemented',
     aliases: [],
     positionals: [],
     options: [],
-    landsIn: 'a later workstream',
+    executorId: 'init',
+    legacyModelOrder: 24,
   },
 ] satisfies readonly CommandDescriptor[]);
 
@@ -1274,7 +1294,7 @@ export function legacyManifestEntries(): CommandManifestEntry[] {
         ...entry.positionals.map((arg) => ({
           name: arg.binding,
           type: arg.type,
-          ...(arg.required ? { required: true } : {}),
+          ...((arg.modelRequired ?? arg.required) ? { required: true } : {}),
           description: arg.description,
         })),
         ...entry.options

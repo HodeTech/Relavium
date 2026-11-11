@@ -57,9 +57,20 @@ function projectCommand(entry: CommandDescriptor): CliCommandDescriptor {
     effect: entry.effect,
     availability: entry.availability,
     aliases: entry.aliases,
-    positionals: entry.positionals,
+    positionals: Object.freeze(
+      entry.positionals.map((arg) =>
+        Object.freeze({
+          name: arg.name,
+          binding: arg.binding,
+          type: arg.type,
+          required: arg.required,
+          variadic: arg.variadic,
+          description: arg.description,
+        }),
+      ),
+    ),
     options: Object.freeze(entry.options.map(publicOption)),
-    allowExcessArguments: entry.allowExcessArguments !== false,
+    allowExcessArguments: entry.allowExcessArguments ?? false,
     ...(entry.executorId === undefined ? {} : { executorId: entry.executorId }),
     ...(entry.modeScope === undefined ? {} : { modeScope: entry.modeScope }),
   });

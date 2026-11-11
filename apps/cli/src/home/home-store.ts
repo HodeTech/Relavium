@@ -25,6 +25,7 @@ export const DEFAULT_HOME_LIMIT = 8;
 /** A recent chat session row (the agent-first primary entity of the Home). */
 export interface HomeSessionRow {
   readonly sessionId: string;
+  readonly workingDir: string;
   readonly title: string | undefined;
   readonly agentSlug: string;
   readonly modelId: string | undefined;
@@ -292,6 +293,7 @@ function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow 
 function toSessionRow(session: AgentSessionRecord): HomeSessionRow {
   return {
     sessionId: session.id,
+    workingDir: session.context.workingDir,
     title: session.title,
     agentSlug: session.agentSlug,
     modelId: session.modelId,

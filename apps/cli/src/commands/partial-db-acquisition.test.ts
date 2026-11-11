@@ -43,9 +43,10 @@ describe('management custody before local database setup', () => {
     ({ id, positionals, options, closeFails, closeRecovers }) =>
       runCase({ prefix: 'relavium-partial-db-', closeFails, closeRecovers }, async (fixture) => {
         const { root, assertCurrent } = fixture;
-        mkdirSync(join(root, '.relavium', 'workflows'), { recursive: true });
+        const cwd = join(root, 'project');
+        mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
         writeFileSync(
-          join(root, '.relavium', 'workflows', 'synthetic.relavium.yaml'),
+          join(cwd, '.relavium', 'workflows', 'synthetic.relavium.yaml'),
           `schema_version: '1.0'
 workflow:
   id: synthetic
@@ -78,7 +79,7 @@ workflow:
               invocation: f.invocation,
               commandLifetime: lifetime,
               global: {
-                cwd: root,
+                cwd,
                 configPath: join(root, 'config.toml'),
                 json: true,
                 color: false,

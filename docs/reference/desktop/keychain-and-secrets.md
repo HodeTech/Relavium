@@ -81,6 +81,12 @@ current context qualification does not scrub or certify those records.
 
 ## Operational notes
 
+> **CLI MVP-2 step 2 accepted on development — 2026-11-10:**
+> runtime resolution uses the
+> [eligible standard-variable fallback](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2),
+> with explicit Home/TTY-chat source consent and custom-endpoint exclusion.
+> This qualifies older two-source shorthand below and changes no desktop key custody rule.
+
 - **SQLCipher passphrase must be set before plugin init.** Derive it from a stable machine secret (not hardcoded) so restarts do not require a user prompt.
 - **Capability gating.** Every keychain plugin call the frontend can trigger must be declared in the Tauri v2 capabilities manifest (`src-tauri/capabilities/`); a missing capability surfaces as a silent "not allowed" runtime error.
 - **Linux dependency.** libsecret requires a Secret Service provider to be running; if none is present in v1.0, key storage is unavailable and the app surfaces an error (the KDF-based file fallback is deferred — see [Encrypted-file fallback — deferred past v1.0](#encrypted-file-fallback--deferred-past-v10)).

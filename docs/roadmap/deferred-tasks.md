@@ -2126,6 +2126,59 @@ narrowing. Recorded:
   *Low; test gap.* *(export-2)* **Re-check:** two own exports, the first changed during the replace. *(low ·
   apps/cli/src/chat/export.ts)*
 
+**D64 round 7 of the correction (2026-11-07, at `72dee66a`)** found one medium in the correction: round 6's
+commands.md sentence said a decision from another process closes an open card, but another process's decision never
+reaches the run view; it now says only a deadline does, and what happens otherwise. It found a second medium that
+predates the correction, recorded below by the maintainer's ruling. **The maintainer merged PR #97 at `72dee66a`
+(merge commit `c04e6c13`, 2026-11-07), before a round came back clean and before the correction's separate security
+sitting was held.** Round 7's medium and its lows (the reconcile comments, the TTL rule's either-way clock, two test
+comments and a test name) were fixed on `development` after the merge. Recorded:
+
+- [ ] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
+  pre-existing (on `main` before the correction); must be fixed before v0.2.0 (maintainer ruling 2026-11-07).*
+  *(security-2)* When terminal B decides gate g with `relavium gate` and releases its lease, terminal A's open card for
+  g still takes an answer. A's resume reclaims the lease under a fresh fence, its guarded append is refused on its
+  stale head, and since only a fence refusal counts as losing ownership, A writes `run:failed{internal}` at a sequence
+  B already used. SQLite refuses it, the outbox holds it for good (A exits `5`, and `relavium status` says the run
+  FINISHED while it is paused at its next gate), and the held entry keeps every later reconcile from repairing that
+  run if it crashes. The in-memory store, with no `(runId, seq)` uniqueness, lands the bogus terminal instead. Ctrl-C
+  at the stale card writes a held `run:cancelled` the same way. **Re-check:** treat a guarded-append refusal after a
+  reclaim as ownership loss (no terminal, no outbox entry, the re-acquired row released, exit `6`), or have
+  `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
+  `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
+  *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
+- [ ] **No test pins the own-export read's size-plus-one bound.** *Low; test gap.* *(export-1)* A file that grows
+  between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
+  `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*
+
+## MVP-2 planning — the global `~/.relavium` is found as a project folder (2026-11-08)
+
+> **Closed on development by MVP-2 step 3 (2026-11-10, `ee49871d`):** the
+> shared discovery/authoring guard and `init` now exclude global state and its
+> aliases. Existing artifacts stay in place; catalog `list` and `/doctor` name the
+> [move/import remedy](../reference/cli/commands.md#relavium-init). Three cumulative
+> reviews and the separate filesystem sitting passed; the
+> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
+> records the actual-target corrections and verification.
+
+Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
+directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
+directory is `~/.relavium/`, and it always exists after a first run. From any directory under the home folder that has
+no project `.relavium/` of its own, the search therefore returns the global folder.
+
+Verified on 2026-11-08 by calling the function with a fake home: from `<home>/projects/foo` with no project folder it
+returned `<home>/.relavium`.
+
+- `relavium create` and `import` (through `resolveProjectConfigDir`) and the chat's `/export` (through the loaded
+  `projectConfigDir`) write workflow and agent YAML into `~/.relavium/workflows/` and `~/.relavium/agents/`.
+- `relavium list` and `relavium run <id>` then find those files from every such directory, so authored workflows
+  leak across unrelated projects.
+- A `workspace.toml` or `project.toml` placed in `~/.relavium/` would load as project configuration for every
+  directory under the home folder. Relavium does not create those files.
+
+**Fix:** the search stops before the global configuration directory, which is never a project folder. Existing files
+already written into `~/.relavium/workflows/` are left in place; slice 2b decides how an affected user is told.
+
 ## Wave 3 NI — recorded low findings (2026-10-25)
 
 Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
@@ -3099,6 +3152,12 @@ so directly: these "should remain visible rather than disappear behind the green
 
 ## `chat-resume` opens on an empty viewport (2.6.C spin-off, 2026-07-12)
 
+> **Closed on development — MVP-2 step 4, 2026-11-10 (`cecb6191`).**
+> Both renderers restore safe visible history, with explicit legacy placeholders,
+> archive/memory notices and initial entry budgets. The
+> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+> owns the evidence. The description and scheduling discussion below are historical.
+
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
 >
@@ -3123,7 +3182,8 @@ is a long-standing UX gap that would have added a DB read path and an inline beh
 The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
 so the remaining work is the projection and the inline decision.
 
-**Scheduled → 2.6.G** (the `/agents > Sessions` browser owns resume-in-place). The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
+**Original schedule → 2.6.G** (the `/agents > Sessions` browser owned resume-in-place).
+MVP-2's closure above supersedes that schedule. The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
@@ -4035,7 +4095,11 @@ future test cannot silently re-acquire it.
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
+- [x] **Closed on development — MVP-2 step 1: alt-screen word wrapping (#61).**
+  Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
+  tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
+  see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+  **Historical scheduling:** the maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur
   once. Wave 3 still owns grapheme/tab/resize/cache/editor bounds; this disposition

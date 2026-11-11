@@ -1083,7 +1083,7 @@ class RunExecution {
       // 2.6.G), and `reconcile()` leaves a run younger than one lease TTL alone, so a reconciler with that rule
       // never settles it (the CLI's `history/reconcile.test.ts` drives one into this window and the run
       // completes). A reconciler without it — a development build before the rule, or a clock more than a TTL
-      // ahead — can: it writes `run:failed{internal}` and releases its claim, so the acquire below usually
+      // off, either way — can: it writes `run:failed{internal}` and releases its claim, so the acquire below usually
       // SUCCEEDS; our next guarded write then conflicts with that terminal, no node
       // runs, and the store refuses our own terminal behind it (`RunAlreadyTerminalError`), which is held in
       // the outbox and reported `uncertain`. If the reconciler still holds its claim, the acquire is refused and
@@ -6362,10 +6362,10 @@ export class WorkflowEngine {
     // would write `run:failed{internal}` for a run that actually COMPLETED, the divergence the outbox exists to
     // close.
     //
-    // **The outbox is READ before the open runs are listed**, for the same reason. The drain drops an entry
-    // whose run is not in the list, which is right only if the list is no older than the entry: an owner puts
-    // its terminal only after its own `run:started` is durable, so an entry read first whose run is missing
-    // from a later list has a terminal in the log by then. Listing first let a run that started, finished and
+    // **The outbox is READ before the open runs are listed.** The drain drops an entry whose run is not in the
+    // list, which is right only if the list is no older than the entry: an owner puts its terminal only after it
+    // has attempted its own `run:started`, so an entry read first whose run is missing from a later list either has
+    // a terminal in the log by then or never had a durable `run:started`, and both are drops. Listing first let a run that started, finished and
     // had its terminal refused between the two reads lose that terminal as "already landed".
     const outbox = await this.#readOutbox();
     const interrupted = await this.#host.store.listInterruptedRuns();

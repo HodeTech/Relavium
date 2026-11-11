@@ -1,7 +1,22 @@
-import { Box, Text, useApp, useInput, usePaste } from 'ink';
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { CliError } from '../../process/cli-error.js';
+import { NativePromptView } from './native-prompt-view.js';
+import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
+import {
+  createNativePromptAcknowledgement,
+  nativePromptFits,
+} from './native-prompt-acknowledgement.js';
+import { displayWidth } from './viewport.js';
+import { Box, Text, useApp, useInput, usePaste, useStdout, type Key } from 'ink';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
 
-import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { HOME_CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
 import { ChatView, useCopiedToast } from './chat-ink.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
@@ -14,6 +29,9 @@ import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-proje
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import { homeFitsTerminal } from './home-projection.js';
+import { layoutHomeNotice } from './home-notice.js';
+import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
@@ -54,11 +72,12 @@ import {
 
 export type { HomeChatSession } from './home-controller.js';
 
-import type { ClipboardOutcome } from '../clipboard.js';
+import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 
 export interface RootAppProps {
+  readonly nativePrompt?: NativePromptUi;
   /** Synchronous native teardown seal, including mouse and paste routes before controller dispatch. */
   readonly inputEnabled?: () => boolean;
   /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
@@ -83,7 +102,7 @@ export interface RootAppProps {
   readonly onSuspend?: (() => void) | undefined;
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
-  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  readonly clipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
   /**
@@ -138,6 +157,8 @@ function ChatRegion(
     reasonDraft: EditorState | undefined;
     /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — forwarded to `ChatView`'s toast. */
     copied: boolean;
+    /** Reserve bounded screen space for the active native card without unmounting Static. */
+    promptHeight?: number | undefined;
   }>,
 ): ReactElement {
   // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
@@ -147,16 +168,35 @@ function ChatRegion(
   if (transcriptOwner.store !== props.store) {
     setTranscriptOwner({ store: props.store, generation: transcriptOwner.generation + 1 });
   }
-  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
-    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const {
+    state,
+    tick,
+    color,
+    mode,
+    reasoningEffort,
+    reasoningVisible,
+    approval,
+    markdown,
+    displaySuspended,
+  } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   const viewport = props.viewport;
   return (
     // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
+    <Box
+      flexDirection="column"
+      width={layoutColumns(props.cols)}
+      {...(viewport === undefined
+        ? props.promptHeight === undefined
+          ? {}
+          : { height: props.promptHeight, overflowY: 'hidden' }
+        : { height: viewport.rows, overflowY: 'hidden' })}
+    >
       <ChatView
+        markdown={markdown}
+        displaySuspended={displaySuspended}
         acknowledgement={props.acknowledgement}
         key={transcriptOwner.generation}
         state={state}
@@ -184,7 +224,7 @@ function ChatRegion(
         }
       />
       {props.palette !== undefined && (
-        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
+        <PaletteView commands={HOME_CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
       )}
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
@@ -211,8 +251,39 @@ function ChatRegion(
 }
 
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
+  const clipboardFeedbackMounted = useRef(true);
+  useLayoutEffect(() => {
+    clipboardFeedbackMounted.current = true;
+    return () => {
+      clipboardFeedbackMounted.current = false;
+    };
+  }, []);
   const { controller, getSize, subscribeResize, color } = props;
+  const { stdout } = useStdout();
+  const getSizeRef = useRef(getSize);
+  getSizeRef.current = getSize;
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  const [nativeAcknowledgement] = useState(() =>
+    props.nativePrompt === undefined
+      ? undefined
+      : createNativePromptAcknowledgement(
+          props.nativePrompt,
+          () => getSizeRef.current(),
+          () =>
+            propsRef.current.inputEnabled?.() !== false &&
+            propsRef.current.suspendPort?.isSuspended() !== true &&
+            stdout.writable !== false &&
+            !stdout.destroyed &&
+            !stdout.writableEnded,
+        ),
+  );
+  useEffect(() => () => nativeAcknowledgement?.dispose(), [nativeAcknowledgement]);
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const prompt = useSyncExternalStore(
+    props.nativePrompt?.subscribe ?? emptyPromptSubscribe,
+    props.nativePrompt?.getSnapshot ?? emptyPromptSnapshot,
+  );
   const [acknowledgement] = useState(() =>
     createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
   );
@@ -232,6 +303,23 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return () => suspendPort.attach(undefined);
   }, [app, suspendPort]);
   const [size, setSize] = useState(getSize);
+  const [noticeWindow, setNoticeWindow] = useState({
+    revision: state.noticeRevision,
+    cols: size.cols,
+    rows: size.rows,
+    page: 0,
+  });
+  const noticeWindowRef = useRef(noticeWindow);
+  const sameNotice =
+    noticeWindow.revision === state.noticeRevision &&
+    Object.is(noticeWindow.cols, size.cols) &&
+    Object.is(noticeWindow.rows, size.rows);
+  const noticePage = sameNotice ? noticeWindow.page : 0;
+  if (!sameNotice) {
+    const reset = { revision: state.noticeRevision, cols: size.cols, rows: size.rows, page: 0 };
+    noticeWindowRef.current = reset;
+    setNoticeWindow(reset);
+  }
   // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — RootApp-local (a pure-render concern, like `size`;
   // NOT session state), ref-shadowed for coalesced-chunk safety, and the viewport's live geometry lifted into
   // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
@@ -270,7 +358,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   };
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
-  useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
+  useEffect(
+    () =>
+      subscribeResize(() => {
+        nativeAcknowledgement?.invalidate();
+        setSize(getSize());
+      }),
+    [subscribeResize, getSize, nativeAcknowledgement],
+  );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
   // (RootApp is NOT remounted across a swap the way driveInk remounts ChatApp, so without this a new session would
@@ -297,11 +392,17 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.reasonDraft === undefined;
+    state.reasonDraft === undefined &&
+    !prompt.active &&
+    !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   // Capture the mouse exactly while the CHAT owns the screen — not while an overlay is open over it (a transient
   // state; toggling DECSET per overlay would be churn, and a report there is consumed and ignored anyway).
-  const mouseCaptured = props.alternateScreen === true && state.mode === 'chat';
+  const mouseCaptured =
+    props.alternateScreen === true &&
+    state.mode === 'chat' &&
+    !prompt.active &&
+    !state.nativeActionBusy;
   const setMouseCapture = props.setMouseCapture;
   useEffect(() => {
     setMouseCapture?.(mouseCaptured);
@@ -320,6 +421,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           store.getSnapshot().state.transcript,
           size.cols,
           scrollGeomRef.current.height,
+          store.getSnapshot().color,
         );
   };
 
@@ -364,18 +466,48 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
    *  just selected. Only a refusal (past the terminal's OSC 52 length floor) is worth telling them about. */
   const copySelection = (state_: SelectionState): void => {
     const clipboard = props.clipboard;
-    const store = state.session?.store;
-    if (clipboard === undefined || store === undefined) return;
-    const rows = wrapTranscript(store.getSnapshot().state.transcript, size.cols).map(
-      (line) => line.text,
-    );
-    const outcome = clipboard(selectionText(rows, normalizeSelection(state_)));
-    if (outcome.kind === 'written') flashCopied();
-    else if (outcome.kind === 'too-large') {
-      store.note(
-        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+    const session = state.session;
+    const current = controller.getSnapshot();
+    const store = session?.store;
+    if (
+      clipboard === undefined ||
+      props.nativePrompt?.getSnapshot().active === true ||
+      current.nativeActionBusy ||
+      store === undefined ||
+      current.mode !== 'chat' ||
+      current.session !== session
+    )
+      return;
+    const rows = wrapTranscript(
+      store.getSnapshot().state.transcript,
+      size.cols,
+      store.getSnapshot().color,
+    ).map((line) => line.text);
+    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state_)))
+      .then((outcome) => {
+        const current = controller.getSnapshot();
+        if (
+          !clipboardFeedbackMounted.current ||
+          current.mode !== 'chat' ||
+          current.session !== session ||
+          session?.shouldStop() === true ||
+          props.inputEnabled?.() === false ||
+          props.nativePrompt?.getSnapshot().active === true ||
+          current.nativeActionBusy
+        )
+          return;
+        if (outcome.kind === 'written') flashCopied();
+        else if (outcome.kind === 'failed') {
+          store.note('Clipboard request failed locally — use /scrollback or /edit.');
+        } else if (outcome.kind === 'too-large') {
+          store.note(
+            `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+          );
+        }
+      })
+      .catch((cause: unknown) =>
+        props.onRendererError?.(new CliError('cli_internal', '', { cause })),
       );
-    }
   };
 
   // A resize re-wraps the transcript, and a session swap (`/clear`, a reseat) replaces it — either way every
@@ -403,10 +535,56 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const read = mouseReaderRef.current.read(input);
     if (read.kind === 'none') return false;
     const mouse = read.kind === 'event' ? read.event : undefined;
-    if (mouse !== undefined && altChat) {
+    if (mouse !== undefined && altChat && props.nativePrompt?.getSnapshot().active !== true) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
     }
+    return true;
+  };
+
+  const routeHomeInput = (input: string, key: Key): boolean => {
+    const current = controller.getSnapshot();
+    if (current.mode === 'chat') return false;
+    const live = getSizeRef.current();
+    if (!homeFitsTerminal(live.cols, live.rows)) {
+      if (key.escape || (key.ctrl && (input === 'c' || input === 'd')))
+        controller.handleKey(input, key);
+      return true;
+    }
+    if (
+      current.mode !== 'home' ||
+      current.notice === undefined ||
+      current.palette !== undefined ||
+      current.modelPicker !== undefined ||
+      (!key.pageUp && !key.pageDown)
+    )
+      return false;
+    const previous = noticeWindowRef.current;
+    const same =
+      previous.revision === current.noticeRevision &&
+      Object.is(previous.cols, live.cols) &&
+      Object.is(previous.rows, live.rows);
+    const layout = layoutHomeNotice({
+      notice: current.notice,
+      editor: current.input,
+      cols: live.cols,
+      rows: live.rows,
+      keyless: current.keyless,
+      errorText: current.errorText,
+      showBanner: props.showBanner,
+      isEmpty: current.snapshot.isEmpty,
+      hasSessions: current.snapshot.recentSessions.length > 0,
+      page: same ? previous.page : 0,
+    });
+    if (layout === undefined || layout.maxPage === 0) return false;
+    const next = {
+      revision: current.noticeRevision,
+      cols: live.cols,
+      rows: live.rows,
+      page: Math.max(0, Math.min(layout.maxPage, layout.page + (key.pageUp ? -1 : 1))),
+    };
+    noticeWindowRef.current = next;
+    setNoticeWindow(next);
     return true;
   };
 
@@ -421,7 +599,25 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       props.onSuspend?.();
       return;
     }
+    if (props.nativePrompt?.getSnapshot().active === true) {
+      if (consumeMouseReport(input)) return;
+      if (nativeAcknowledgement?.inputVisible(input, key) !== true) {
+        if (
+          key.escape ||
+          key.meta ||
+          (key.ctrl && input.toLowerCase() === 'c') ||
+          input.includes('\x1b') ||
+          input.includes('\x03')
+        )
+          props.nativePrompt.input('\x1b', key);
+        return;
+      }
+      props.nativePrompt.input(input, key);
+      return;
+    }
+    if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
+    if (routeHomeInput(input, key)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
       // `controller.handleKey` reduces, and shadowing an abort with a cosmetic clear would be a bad trade. Mirrors
@@ -443,12 +639,21 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => {
-    if (props.inputEnabled?.() !== false) controller.handlePaste(text);
+    if (props.inputEnabled?.() === false) return;
+    if (props.nativePrompt?.getSnapshot().active === true) {
+      if (nativeAcknowledgement?.pasteVisible() === true) props.nativePrompt.paste(text);
+      return;
+    }
+    if (controller.getSnapshot().nativeActionBusy) return;
+    const live = getSizeRef.current();
+    if (controller.getSnapshot().mode !== 'chat' && !homeFitsTerminal(live.cols, live.rows)) return;
+    controller.handlePaste(text);
   });
   const flushVisible = useVisibleRenderFlush(
     props.onRendererError,
     props.suspendPort,
     acknowledgement,
+    nativeAcknowledgement,
   );
   useEffect(() => {
     props.onRendererReady?.(flushVisible);
@@ -456,46 +661,67 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
-      <ChatRegion
-        acknowledgement={acknowledgement}
-        store={state.session.store}
-        editor={state.input}
-        palette={state.palette}
-        search={state.search}
-        mention={state.mention}
-        modelPicker={state.modelPicker}
-        effortPicker={state.effortPicker}
-        now={props.nowMs}
-        cols={size.cols}
-        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
-        // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
-        viewport={
-          props.alternateScreen === true
-            ? {
-                rows: size.rows,
-                cols: size.cols,
-                scroll,
-                // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
-                ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
-                onMeasure: (g: ViewportGeometry): void => {
-                  scrollGeomRef.current = g;
-                },
-              }
-            : undefined
-        }
-        reasonDraft={state.reasonDraft}
-        shellBusy={state.shellBusy}
-        submitBusy={state.submitBusy}
-        shellCommand={state.shellCommand}
-        historyEntries={state.historyEntries}
-        attachments={state.attachments}
-        copied={copied}
-      />
+      <>
+        <ChatRegion
+          acknowledgement={acknowledgement}
+          store={state.session.store}
+          editor={state.input}
+          palette={state.palette}
+          search={state.search}
+          mention={state.mention}
+          modelPicker={state.modelPicker}
+          effortPicker={state.effortPicker}
+          now={props.nowMs}
+          cols={size.cols}
+          // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
+          // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
+          viewport={
+            props.alternateScreen === true
+              ? {
+                  rows: prompt.active
+                    ? nativePromptFits(size)
+                      ? Math.max(1, size.rows - promptRows(prompt, size.cols))
+                      : 1
+                    : size.rows,
+                  cols: size.cols,
+                  scroll,
+                  // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
+                  ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
+                  onMeasure: (g: ViewportGeometry): void => {
+                    scrollGeomRef.current = g;
+                  },
+                }
+              : undefined
+          }
+          reasonDraft={state.reasonDraft}
+          shellBusy={state.shellBusy}
+          submitBusy={state.submitBusy}
+          shellCommand={state.shellCommand}
+          historyEntries={state.historyEntries}
+          attachments={state.attachments}
+          copied={copied}
+          promptHeight={
+            prompt.active
+              ? nativePromptFits(size)
+                ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2)
+                : 0
+              : undefined
+          }
+        />
+        {nativeAcknowledgement && (
+          <NativePromptView
+            snapshot={prompt}
+            color={color}
+            acknowledgement={nativeAcknowledgement}
+            size={size}
+          />
+        )}
+      </>
     );
   }
   if (state.mode === 'loading') {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={layoutColumns(size.cols)}>
         <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
           {'> '}
           {sanitizeInline(state.pendingMessage)}
@@ -503,29 +729,96 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         <Text {...dimProps(color)} wrap="truncate-end">
           Starting chat… · Ctrl-C to cancel
         </Text>
+        {nativeAcknowledgement && (
+          <NativePromptView
+            snapshot={prompt}
+            color={color}
+            acknowledgement={nativeAcknowledgement}
+            size={size}
+          />
+        )}
       </Box>
     );
   }
   return (
-    <Box flexDirection="column">
-      <HomeView
-        snapshot={state.snapshot}
-        editor={state.input}
-        errorText={state.errorText}
-        notice={state.notice}
-        nowMs={props.nowMs()}
-        cols={size.cols}
-        rows={size.rows}
-        color={color}
-        paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
-        showBanner={props.showBanner}
-      />
-      {state.palette !== undefined && (
+    <Box
+      flexDirection="column"
+      width={layoutColumns(size.cols)}
+      {...(prompt.active
+        ? { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' }
+        : {})}
+    >
+      {nativeAcknowledgement && (
+        <NativePromptView
+          snapshot={prompt}
+          color={color}
+          acknowledgement={nativeAcknowledgement}
+          size={size}
+        />
+      )}
+      {!prompt.active && (
+        <HomeView
+          snapshot={state.snapshot}
+          editor={state.input}
+          errorText={state.errorText}
+          notice={state.notice}
+          nowMs={props.nowMs()}
+          cols={Number.isFinite(size.cols) ? size.cols : 0}
+          rows={size.rows}
+          color={color}
+          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          showBanner={props.showBanner}
+          keyless={state.keyless}
+          continueSessionId={state.continueSessionId}
+          noticePage={noticePage}
+        />
+      )}
+      {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
       )}
-      {state.modelPicker !== undefined && (
+      {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
     </Box>
+  );
+}
+
+const emptyPromptSnapshot = (): import('./native-prompt-channel.js').NativePromptSnapshot =>
+  emptyPrompt;
+const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
+  active: false,
+  kind: 'idle',
+  message: '',
+  note: '',
+  options: [],
+  selected: 0,
+  display: '',
+  error: '',
+};
+const emptyPromptSubscribe = (): (() => void) => () => {};
+
+function promptRows(prompt: NativePromptSnapshot, columns: number): number {
+  const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
+  if (prompt.kind === 'picker') {
+    const lines = [prompt.note, prompt.message, prompt.error].filter(Boolean);
+    return (
+      2 +
+      Math.max(1, Math.ceil((3 + displayWidth(prompt.display)) / width)) +
+      prompt.options.reduce((count, option) => count + 1 + (option.hint === undefined ? 0 : 1), 0) +
+      (prompt.picker?.loading === true || (prompt.options.length === 0 && prompt.error === '')
+        ? 1
+        : 0) +
+      lines.reduce((count, value) => count + Math.max(1, Math.ceil(displayWidth(value) / width)), 0)
+    );
+  }
+  const lines = [
+    prompt.note,
+    prompt.message,
+    ...prompt.options.map((option) => `  ${option.label}${option.hint ? ` — ${option.hint}` : ''}`),
+    prompt.display,
+    prompt.error,
+  ].filter(Boolean);
+  return (
+    1 + lines.reduce((sum, value) => sum + Math.max(1, Math.ceil(displayWidth(value) / width)), 0)
   );
 }

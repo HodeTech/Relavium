@@ -10676,6 +10676,12 @@ sitting, and lands in the named MVP milestone:
 | 13a–13c | G30: chat HTTP authority under ADR-0112 (egress/config-trust sitting) | MVP-7 | Row 13's "after decomposition" no longer holds: 13a/13b land before Step 12; 13c is re-scoped when MVP-7 starts because 12b's shared helpers do not exist yet |
 | Wave 5a | #61: full-screen word-wrap | MVP-2 | Its Wave 5a ownership ([later-wave ownership](#existing-later-wave-ownership-and-approval-gate)) ends |
 
+**Delivery receipt — 2026-11-10.** The MVP-2 slices of 10b, 15a's #65,
+16b's #51, 17a's #24 and #61 are implemented and independently accepted on
+`development`. The [MVP-2 acceptance register](phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+links the four steps, corrected findings and separate security sittings.
+The remaining split rows retain their recorded milestones.
+
 **Amendments to the 2026-10-19 rulings** (dated, the original text kept):
 
 - *Acceptance (D64):* tiered. An increment touching an approval or consent path, egress, keys or secrets,

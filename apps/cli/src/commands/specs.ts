@@ -2,6 +2,7 @@ import { CommanderError, Option, type Command } from 'commander';
 
 import { CliError } from '../process/cli-error.js';
 import type { ExitCode } from '../process/exit-codes.js';
+import { isInteractiveTerminal } from '../process/output-mode.js';
 import {
   COMMAND_DESCRIPTORS,
   compatibilityOptions,
@@ -33,7 +34,7 @@ function flags(option: OptionDescriptor): string {
   return `${base} ${option.arity === 'required' ? `<${value}>` : `[${value}]`}`;
 }
 
-/** Current compatibility grammar only; canonical aliases and consent integrate in Step 10. */
+/** MVP-2 activates the canonical chat family; remaining compatibility grammar stays with Step 10. */
 export function registerCommands(
   program: Command,
   context?: CommandContext,
@@ -41,8 +42,18 @@ export function registerCommands(
 ): void {
   const registered = new Map<string, Command>();
   registered.set('[]', program);
-  for (const descriptor of COMMAND_DESCRIPTORS) {
-    const path = compatibilityPath(descriptor);
+  const registrations = COMMAND_DESCRIPTORS.flatMap((descriptor) => {
+    const previous = compatibilityPath(descriptor);
+    const paths = [previous];
+    if (
+      descriptor.path[0] === 'chat' &&
+      descriptor.path.length > 1 &&
+      JSON.stringify(previous) !== JSON.stringify(descriptor.path)
+    )
+      paths.push(descriptor.path);
+    return paths.map((path) => ({ descriptor, path }));
+  });
+  for (const { descriptor, path } of registrations) {
     const parent = registered.get(JSON.stringify(path.slice(0, -1)));
     const word = path.at(-1);
     if (parent === undefined || word === undefined) throw new CliError('cli_internal', '');
@@ -61,8 +72,9 @@ export function registerCommands(
       });
     }
     command.description(descriptor.description);
-    if (descriptor.allowExcessArguments !== undefined)
-      command.allowExcessArguments(descriptor.allowExcessArguments);
+    // Invalid grammar refuses before dispatch. Commander names counts, never the
+    // rejected values; the existing opaque-parser commands keep their fixed hint.
+    command.allowExcessArguments(descriptor.allowExcessArguments ?? false);
     for (const positional of descriptor.positionals) {
       const name = `${positional.name}${positional.variadic ? '...' : ''}`;
       // Existing human argument-help layout is preserved; discovery separately carries descriptions.
@@ -119,10 +131,35 @@ function registerAction(
   const executorId = descriptor.executorId;
   command.action(async (...values: unknown[]) => {
     if (execute === undefined) throw new CliError('cli_internal', '');
+    if (path[0] === 'chat' && path.length > 1 && command.parent) {
+      const inherited: unknown = command.parent.opts();
+      if (
+        readOption(inherited, 'continue') !== undefined ||
+        readOption(inherited, 'agent') !== undefined
+      )
+        throw new CliError(
+          'invalid_invocation',
+          'Chat start options cannot be combined with a chat subcommand.',
+        );
+    }
     const positionals: string[] = [];
     for (let index = 0; index < descriptor.positionals.length; index += 1) {
       const value = values[index];
       const positional = descriptor.positionals[index];
+      if (
+        value === undefined &&
+        positional?.modelRequired === true &&
+        !isInteractiveTerminal({
+          stdoutIsTty: context.io.stdoutIsTty,
+          stdinIsTty: context.io.stdinIsTty,
+          json: context.global.json,
+          env: context.io.env,
+        })
+      )
+        throw new CliError(
+          'invalid_invocation',
+          'chat resume needs a session ID outside an interactive terminal.',
+        );
       if (value === undefined && positional?.required !== true) continue;
       if (typeof value === 'string') positionals.push(value);
       else if (positional?.variadic === true) positionals.push(...stringVector(value));

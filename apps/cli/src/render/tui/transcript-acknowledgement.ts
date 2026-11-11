@@ -35,6 +35,7 @@ export function createTranscriptAcknowledgement(
         readonly firstRow: number;
         readonly endRow: number;
         readonly measuredWidth: number;
+        readonly color: boolean;
       }
     | undefined;
   return {
@@ -43,7 +44,14 @@ export function createTranscriptAcknowledgement(
     },
     inlineNotice: (entry) => printed.add(entry),
     viewport: (transcript, columns, firstRow, endRow, measuredWidth) => {
-      frame = { transcript, columns, firstRow, endRow, measuredWidth };
+      frame = {
+        transcript,
+        columns,
+        firstRow,
+        endRow,
+        measuredWidth,
+        color: currentStore()?.getSnapshot().color ?? false,
+      };
     },
     capture: () => {
       const store = currentStore();
@@ -62,15 +70,23 @@ export function createTranscriptAcknowledgement(
           return notices.every((entry) => {
             if (printed.has(entry)) return true;
             const rendered = frame;
-            if (rendered === undefined || rendered.measuredWidth < rendered.columns) return false;
+            if (
+              rendered === undefined ||
+              !Number.isFinite(rendered.columns) ||
+              rendered.columns < 1 ||
+              !Number.isFinite(rendered.measuredWidth) ||
+              rendered.measuredWidth < rendered.columns
+            )
+              return false;
             const index = rendered.transcript.indexOf(entry);
             if (index < 0) return false;
             // Only acknowledgement walks history; ordinary streaming frames just replace frame metadata.
             const start = wrapTranscript(
               rendered.transcript.slice(0, index),
               rendered.columns,
+              rendered.color,
             ).length;
-            const end = start + wrapTranscript([entry], rendered.columns).length;
+            const end = start + wrapTranscript([entry], rendered.columns, rendered.color).length;
             return start >= rendered.firstRow && end <= rendered.endRow;
           });
         },

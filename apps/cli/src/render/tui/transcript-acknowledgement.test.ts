@@ -62,4 +62,20 @@ describe('transcript publication acknowledgement', () => {
     store = createChatStore(false, { transcript }, INLINE_TRANSCRIPT_BOUND);
     expect(publication.visible()).toBe(false);
   });
+
+  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'never treats suspended transcript painting as visible disclosure (columns=%s)',
+    (columns) => {
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      const proof = createTranscriptAcknowledgement(() => store);
+      const publication = proof.capture();
+      store.notice('effect disclosure');
+      publication.published();
+      const transcript = store.getSnapshot().state.transcript;
+      proof.viewport(transcript, columns, 0, 0, columns);
+      expect(publication.visible()).toBe(false);
+      proof.viewport(transcript, 80, 0, 1, 80);
+      expect(publication.visible()).toBe(true);
+    },
+  );
 });

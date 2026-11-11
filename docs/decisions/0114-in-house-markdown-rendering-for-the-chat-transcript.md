@@ -1,10 +1,32 @@
 # ADR-0114: In-house markdown rendering for the chat transcript
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-05
 - **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md), [ADR-0069](0069-string-width-for-the-cli-renderer.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [phase 2.6 · 2.6.E](../roadmap/phases/phase-2.6-conversational-authoring.md#26e--chat--input-parity-polish), [phase 2.6 ADR row 11](../roadmap/phases/phase-2.6-conversational-authoring.md), [MVP-2](../roadmap/current.md#next-work--the-cli-mvp)
 
+> **Revised and accepted 2026-11-08.** The [terminal agent CLI UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)
+> found that every major product renders markdown tables. §2 now renders GFM tables as an aligned grid when it fits,
+> and §4 holds a streaming table back until its block ends. The rest of the decision is unchanged. The maintainer
+> accepted the revised text on 2026-11-08 (D76 sets its acceptance tier).
+
 ## Context
+
+> **Amended 2026-11-09 — maintainer-approved clarification.** The table
+> rendering decision accepted on 2026-11-08 is unchanged. Its implementation
+> invalidates the stronger prefix/finality claims in §1 and §4: a completed line
+> can still belong to an open paragraph, fence or table. A potential table header
+> needs the next delimiter row, and an open table stays verbatim until the block
+> closes. Cache completed **stable blocks** plus open-block state, including the
+> possible header and bounded table. Consume appended sanitized input before the
+> live display tail is clipped; do not reparse only that tail. At a blank line,
+> an unambiguous new block or end-of-turn, finalize the pending table once.
+> Stable blocks never change; the pending block may change as described above.
+> Streaming parsing is amortized linear over appended input, including a single
+> long unfinished line; layout of the bounded visible tail and a bounded pending
+> table is measured separately. A resize invalidates layout, not parse state.
+> The accepted, unimplemented [markdown reference](../reference/cli/markdown-rendering.md)
+> defines exact limits, fallbacks and acceptance. The historical algorithm claims
+> below remain visible; this approved qualification governs implementation.
 
 Assistant text reaches both chat renderers as plain text. Models answer in
 markdown, so the user reads `**`, backticks, `#` and fence lines instead of
@@ -85,12 +107,20 @@ The pipeline renders a documented subset suited to model output:
 - **Inline:** code spans; strong and emphasis, with CommonMark's intraword rule
   for `_`; strikethrough; links and autolinks; images; backslash escapes; hard
   line breaks.
+- **Tables (revised 2026-11-08):** GFM pipe tables render as an aligned grid
+  with a border, when the grid fits the available width.
+  - Cell text gets inline processing.
+  - Column widths are measured with `displayWidth`, so wide and combining
+    characters do not misalign the grid.
+  - A table whose grid does not fit renders verbatim, as the sanitized source,
+    with no inline processing. Removing markers there would misalign the
+    columns the model laid out.
+  - Rows past a fixed cap render verbatim too, so one table cannot cost
+    unbounded layout work.
 
 **Anything outside the subset renders literally, as sanitized text.** That
 covers setext headings, indented code blocks, HTML, link reference definitions,
-footnotes and lazy continuation. GFM pipe tables also render verbatim, with no
-inline processing inside them, because removing markers would misalign the
-columns the model laid out.
+footnotes and lazy continuation.
 
 The pipeline is not a CommonMark implementation. The goal is predictability:
 markdown it does not understand stays readable as the plain text it was written
@@ -127,6 +157,11 @@ constructs:
 - An open fence renders as a code block until its closer arrives.
 - An unclosed inline delimiter stays literal until it is closed. That is
   CommonMark's rule.
+- A table renders verbatim until its block ends, then as a grid (revised
+  2026-11-08). A grid's column widths depend on every row. Drawing it early
+  would re-layout the rows above it on every new row. Codex CLI and
+  Antigravity CLI hold tables back for the same reason
+  ([benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)).
 
 Because block parsing is line-oriented, the rendering of every completed block
 in the live answer is the same as its final rendering. Only the in-progress last
@@ -193,12 +228,23 @@ rather than terminal control, and their rendering is a separate decision.
 
 ### Negative
 
-- Some valid markdown renders literally: tables, setext headings, HTML and
-  reference links. Tables are the most visible gap. Aligning them is a candidate
-  for a follow-up.
+- Some valid markdown renders literally: setext headings, HTML, reference
+  links, and tables too wide or too long for the grid. Wrapping cell text inside
+  a narrow grid (Gemini CLI does it) is a candidate for a follow-up.
 - Relavium now owns a parser and its edge cases, and needs tests for every
   construct in the subset, including adversarial and pathological input.
 - The two renderers may break long lines at different points, as they already
   do.
 - With color disabled, the user sees raw markdown rather than a degraded
   rendering.
+
+## Implementation and review receipt — 2026-11-10
+
+The approved in-house renderer is implemented and independently accepted on
+`development` at `b636be5f` after complete cumulative review and the separate D76
+parser security sitting. Its canonical behavior is in the
+[markdown reference](../reference/cli/markdown-rendering.md); the
+[step acceptance record](../roadmap/phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10)
+records corrections and evidence. Earlier unimplemented wording is historical.
+The complete four-step MVP-2 checkpoint retains its combined CI and maintainer
+review gates; no dependency, highlighting scope or release decision changes here.

@@ -63,6 +63,7 @@ export function chatExportCommand(
       store: opened.store,
       sessionId: args.sessionId,
       cwd: deps.global.cwd,
+      homeDir,
       ...(args.out === undefined ? {} : { outPath: args.out }),
       force: args.force,
     });

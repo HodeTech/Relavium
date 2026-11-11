@@ -1,10 +1,11 @@
 import { Box, Text, measureElement, type DOMElement } from 'ink';
-import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
-import { colorProps, dimProps } from './projection.js';
+import { transcriptStyleProps } from './projection.js';
 import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
+import { MarkdownText } from './markdown-text.js';
 
 /**
  * The full-screen alt-screen transcript **viewport** (2.6.F Step 4b, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c) —
@@ -26,26 +27,6 @@ import { windowLines, type DisplayLine } from './viewport.js';
  * SCROLL (Step 4b-2) passes an explicit `offset`; at Step 4b-1 `offset` is omitted and the window follows the TAIL
  * (an offset past the end clamps to the last full screen), so every append pins to the bottom.
  */
-
-/** Map a display-line style to its ink `<Text>` color props, mirroring `TranscriptLine` exactly (assistant text is
- *  uncolored). Typed as a `<Text>` prop subset (not `Record<string, unknown>`) so a mistyped/invalid prop is caught. */
-function styleProps(
-  style: DisplayLine['style'],
-  color: boolean,
-): Partial<ComponentProps<typeof Text>> {
-  switch (style) {
-    case 'user':
-      return colorProps(color, 'cyan');
-    case 'notice':
-      return dimProps(color);
-    case 'summary':
-      return colorProps(color, 'gray');
-    case 'hint':
-      return colorProps(color, 'yellow');
-    case 'assistant':
-      return {};
-  }
-}
 
 export interface TranscriptViewportProps {
   /** The full transcript already flattened to width-wrapped, style-tagged display lines (`wrapTranscript`). */
@@ -149,9 +130,22 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
         return (
           <Text
             key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
-            {...styleProps(line.style, props.color)}
+            {...transcriptStyleProps(line.style, props.color)}
           >
-            {segments === undefined ? (
+            {line.spans !== undefined ? (
+              <MarkdownText
+                spans={line.spans.length === 0 ? [{ text: ' ' }] : line.spans}
+                color={props.color}
+                selected={
+                  segments === undefined
+                    ? undefined
+                    : {
+                        start: segments.before.length,
+                        end: segments.before.length + segments.selected.length,
+                      }
+                }
+              />
+            ) : segments === undefined ? (
               text
             ) : (
               <>

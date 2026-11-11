@@ -126,10 +126,10 @@ describe('compactionNotice / trimNotice (ADR-0062)', () => {
 });
 
 describe('clearedNotice (ADR-0062 §7)', () => {
-  it('names the prior session + the exact chat-resume command so it is discoverable', () => {
+  it('names the prior session + the exact chat resume command so it is discoverable', () => {
     const notice = clearedNotice('sess-42');
     expect(notice).toContain('fresh conversation');
-    expect(notice).toContain('relavium chat-resume sess-42'); // the exact recovery command, not just the id
+    expect(notice).toContain('relavium chat resume sess-42'); // the exact recovery command, not just the id
   });
 
   it('sanitizes a crafted session id (no terminal escape reaches the TTY)', () => {
@@ -141,7 +141,7 @@ describe('clearedNotice (ADR-0062 §7)', () => {
     expect(notice).not.toContain(String.fromCharCode(27)); // no ESC survives
     expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
     expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line
-    expect(notice).toContain('relavium chat-resume'); // the static recovery text is intact
+    expect(notice).toContain('relavium chat resume'); // the static recovery text is intact
   });
 });
 

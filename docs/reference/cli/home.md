@@ -1,6 +1,6 @@
 # `relavium` — Bare-invocation interactive Home
 
-> Last updated: 2026-10-17
+> Last updated: 2026-11-10
 
 - **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste); the in-app slash palette / `/help` / `/doctor` + the context-aware footer landed in **2.5.C**; and the reseat-less mode keymap (`Shift+Tab` / `/mode`) + the fail-closed per-tool approval + the `Esc` mid-turn abort landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — all **extend** this same canonical home. The Home-side **`/models` picker** landed in **2.5.G**: in the bare Home an accepted pick writes the global `[preferences].default_model` (+ the effort tier) for the *next* session ([ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1, [ADR-0064](../../decisions/0064-live-model-catalog.md)); in the in-Home **chat** the same picker **reseats** the live session instead ([chat-session.md](chat-session.md#model-reseat-models)).
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
@@ -34,21 +34,110 @@ implements caught Home/session fault integration and the complete fatal coordina
 it is [independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17). This does not turn a
 classified failed chat turn into a fatal CLI failure.
 
+## Resume and Continue
+
+`/resume` is available in the landing and the idle in-Home chat. It opens the
+[native session picker](chat-session.md#finding-a-saved-session) while retaining
+the current chat view. An empty landing prompt accepts Down to focus Continue's
+recent sessions; Up/Down move, Enter resumes, and Esc returns to the prompt.
+Typing or pasting into the prompt clears Continue focus before editing, so Enter
+submits that draft rather than opening a previously focused session.
+Only sessions are actionable in this increment. Session rows include a separate
+sanitized directory line; management lists trim/scroll before the focused row,
+keyless action and prompt can leave an 80×24 screen. No key/DB reads happen during
+rendering or focus movement.
+
+A saved session in another directory has a fixed open-Home-there/shell-picker
+remedy; Home never reanchors its workspace. Safe restored history is prepared
+before model/MCP build and activation, and a failed read offers retry/return.
+Esc during restoration cancels the pending replacement host and its MCP startup,
+preventing new credential/connection work. The existing Home or chat stays in place;
+already-entered work and actual cleanup still join before the action returns.
+An independent failure retains its original classification during cancellation.
+Once a picker editor has been visibly mounted, filter typing, editing and paste
+continue while its read-only results repaint under output backpressure. Enter,
+result navigation, paging and scope changes still require the current result
+card to be measured and flushed. A resize or new prompt invalidates editing
+evidence too; suspension or loss of input custody blocks edits, and unseen input
+is never buffered.
+After selection the existing render-acknowledged effect disclosure remains the
+activation boundary. The detailed projection, memory and hatch rules live in the
+[chat reference](chat-session.md#proposed-restored-transcript-display--mvp-2).
+
 ## First-run onboarding wizard (2.5.G S8)
 
-When a bare `relavium` opens the Home on a **truly key-less** run — **no** known provider has a resolvable key (the resolver finds neither an OS-keychain key **nor** a `RELAVIUM_<PROVIDER>_API_KEY` env var) — a `@clack/prompts` **onboarding wizard** runs **before** the ink Home mounts (clack + ink both take the terminal's raw mode, so the wizard fully settles first). It is already behind the TTY gate above, so it never runs piped / `--json` / in CI. A run with **either** a keychain key or an env key is not key-less — no wizard, so a working user (including an env-key user) is never prompted.
+**Accepted on development — MVP-2 step 2 (2026-11-10).**
+The Home mounts one Ink tree, then offers setup when no provider has a usable
+source. Select, confirm, text and masked fields use the same native input owner;
+existing chat history stays mounted while a setup card owns input. Native cards
+require finite integer geometry of at least 80×24 and a fully visible current
+card. Input and preference publication wait through resize until that card is
+measured and flushed; a new snapshot or geometry change invalidates old evidence.
+Esc/Ctrl-C closes the flow without leaving Home. Skipping leaves a persistent setup row;
+Enter on an empty prompt or `/providers` opens it again. `/providers` is also
+available in the in-Home chat, with connect/login/key discovery terms. Standalone
+chat keeps its own palette and runs the shared setup before its normal host.
+Native recovery messages name `/providers` in Home; standalone setup names
+restarting `relavium chat`, where that shared setup is available.
 
-The flow: **pick a provider → paste a hidden (masked) API key → store it in the OS keychain** — riding the same tested `provider set-key` path (keychain write + the provider row + the keychain-ref, secret-free by construction; the key is captured via clack's masked `password`, whitespace-trimmed, never echoed, never written to disk, never logged beyond its last-4 hint). On a successful store the wizard also sets **`[preferences].default_model` to the chosen provider's cheap/fast starter model** (`KNOWN_PROVIDERS[provider].testModel`, via the same global config-write target as `/models` — `[chat].default_model` is only the read-time fallback that resolves down to it, ADR-0063 §1) — so the very next chat binds a model **whose key was just stored**, not the built-in `claude-sonnet-4-6` (which would error for a user who picked a non-Anthropic provider). Richer **model selection** is not part of the wizard — the user upgrades via the `/models` picker. Three fallbacks keep a first run unblocked:
+The [credential-source contract](../contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
+owns exact names, precedence, consent, backend-health distinctions and recovery.
+Home samples availability on opening, after setup changes and on return from a
+chat; rendering never probes the keychain. A usable source suppresses automatic
+setup. An eligible standard source awaiting consent opens its named-source card;
+a custom endpoint gets manual-key guidance instead. The `unavailable` state gets explicit acknowledgement/retry guidance. Backend
+health remains independent of source status; a usable source still suppresses
+automatic setup, and reminder state never grants credential authority.
 
-- **Keychain-write failure** (a locked keychain / no Secret Service / a headless box) → the wizard **never** persists the key to disk; it prints the `RELAVIUM_<PROVIDER>_API_KEY` env-var to set instead (the resolver imports an env key at call time), then hands off to the Home.
-- **Any other store fault** (e.g. a db write failure *after* the keychain write succeeded) → a **generic** "setup could not be completed" note (never mislabeled a keychain failure, and the raw error is never rendered — the key may well be in the keychain, so the copy must not claim otherwise); the underlying issue resurfaces at the Home, which reads the same store.
-- **Cancel** (Ctrl-C / Esc at any step) → a friendly pointer to `relavium provider add` / `/doctor`, then the Home mounts key-less (retry next launch, or add a key manually).
+Manual setup keeps the existing provider → masked key → validation/retry or
+explicit save-anyway → OS-keychain flow. Native cards contain neither the key nor
+its suffix, and validation copy comes from typed reasons. Before validation, both
+Home and standalone chat show the safe origin (scheme, host and any non-default
+port), without path, query or credentials, captured with the actual provider
+adapter. A registry edit in another process cannot change that card's recipient
+independently of its validation request. Restart Home/chat to use an externally
+changed endpoint; the existing resolver keeps its original destination. An
+invalid stored endpoint refuses validation and shows fixed recovery copy.
+Private input is bounded, oversized paste is
+rejected without truncation, and input after submit/cancel in the same dispatch
+cannot become chat text or answer the next card. Actual validation work remains
+owned until settlement even if its observation is cancelled.
 
-`@clack/prompts` is confined to one module behind an injectable seam (mirroring the `create` wizard + the gate prompter — [ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md)), so the flow unit-tests without a TTY. No new ADR: the wizard composes the config-write ([ADR-0063](../../decisions/0063-cli-config-write-contract.md)), keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)/[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)), and clack ([ADR-0047](../../decisions/0047-cli-framework-commander-ink-clack.md)) decisions already accepted.
+First usable-source setup selects the provider's existing starter model through
+the shared typed global writer. Existing-file rewrites display their comment/order
+loss notice before publication. A saved preference with unconfirmed directory
+sync says so; failure offers safe recovery, with a separately selected invocation
+model where applicable. Explicit invocation defaults remain below project/workspace
+model preferences. Connecting or replacing a key, or adding consent for another
+provider, when one is already usable does not itself switch the default.
+Provider cards name the currently usable source (OS keychain or the exact
+environment-variable name), never its value or suffix. Resume keeps its saved agent/model.
+
+Keys are never written to a config, transcript or plaintext fallback. A keychain
+failure names the environment remedy; a later store failure does not falsely claim
+that an already saved key vanished. Likewise, cancellation after a completed
+key/default publication preserves its fixed committed outcome. The legacy injected
+prompter remains a test/embedding seam; production Home and TTY chat setup use the
+native host. Other shell scaffolding/gate prompts retain their existing contracts.
+
+## Project initialization
+
+**Accepted on development, MVP-2 step 3 (2026-11-10).**
+`/init` is available in the landing and Home-chat palettes. Its card lists the
+exact three directories before writing and defaults to **No**. Only an explicit
+Yes creates them; Esc/Ctrl-C closes the card and keeps Home/chat. The existing
+native input owner, complete-card visibility and resize/cancellation checks apply,
+including at each directory publication. Existing chat history stays mounted.
+
+The [shared init contract](commands.md#relavium-init) owns directory creation,
+existing/nested projects, link refusal, cleanup and global-state exclusion. An
+already initialized project produces a notice without a write confirmation or
+repair. Global workflows/agents remain untouched; `/doctor` names the move/import
+remedy. No unsolicited initialization prompt is shown.
 
 ## The management strip
 
-The strip is a **read-only display** (the no-IDE-shell principle of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) applied to the CLI by analogy: management + chat only — no file tree, editor, or embedded terminal). It is a bounded, indexed aggregation over the durable `history.db` ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), re-read on every return-to-Home — never a live subscription.
+The strip is a bounded, indexed aggregation over the durable `history.db` ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), re-read on every return-to-Home — never a live subscription. Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md), MVP-2 makes its recent sessions keyboard-openable (MVP-A24); the other rows remain displays until their management milestone lands. It never mutates anything on its own (the no-IDE-shell principle of [ADR-0007](../../decisions/0007-desktop-is-not-an-ide.md) applied to the CLI by analogy: management + chat only — no file tree, editor, or embedded terminal).
 
 Before its first read the Home **reconciles** (2.6.G liveness): a run a dead process left `running` is settled and shows under *Attention required*, and a terminal held in the outbox is written. What is settled, how, and which runs are left alone are the rules `run` and `gate` follow, stated once with [exit code `5`](commands.md#exit-codes). The Home waits for this after the signal and exit nets are registered and before it mounts, so a crashed run whose lease has expired is settled before the first frame. A dead process's lease stays live for up to a minute after it died, and until it expires the run still shows as `running`; a later open settles it. Reconciling is best-effort and never keeps the Home from opening.
 
@@ -140,9 +229,19 @@ the root input owner stays mounted. The resume/reseat notice and retention order
 
 ## Minimum terminal size
 
-Below **80×24** the Home **degrades** to a single line — `Terminal too small (WxH) — resize to at least 80×24.` plus a `Ctrl-C to exit` affordance — and **suspends** the strip render until a terminal **resize** arrives, rather than drawing a broken/garbled TUI. The resize is observed on `process.stdout`'s cross-platform `'resize'` event (backed by `SIGWINCH` on POSIX), not a bare `SIGWINCH` binding (unreliable on Windows). Every dynamic strip row and the prompt are truncated at the terminal edge (`truncate-end`), never soft-wrapped.
+Below **80×24** the landing shows `Terminal too small (WxH) — resize to at least 80×24.`
+and a `Ctrl-C to exit` affordance. It suspends the management strip, prompt and overlays,
+and refuses hidden typing, paste, Continue and palette activation using the live terminal
+geometry. Esc and Ctrl-C/Ctrl-D cancellation remain available. A resize restores the
+existing input and selection. The resize is observed on stdout's cross-platform `resize`
+event (backed by SIGWINCH on POSIX).
 
-> **Known limitation (tracked).** *At or above* 80×24, a very tall landing — a populated **Attention required** section (many pending gates) plus the Continue lists — can still exceed the terminal's rows, and the alt buffer has no scrollback to recover the top. This predates 2.6.F (the strip is 2.5.B) and is resolved by **2.6.G**'s management browsers, which replace the strip wholesale. See [docs/roadmap/current.md](../../roadmap/current.md).
+At or above the minimum, management lists use the remaining row budget after the full
+prompt, keyless action, errors and notices. The focused Continue session stays visible.
+Strip labels truncate at the terminal edge; diagnostic notices and recovery instructions
+wrap without dropping their source. Long notices show a range and **PgUp/PgDn** affordance
+in both renderers. A new report or resize returns to its first page. Notice paging does
+not submit input or change Continue focus, and yields to a keyboard-owning overlay.
 
 ## Signal lifecycle & exit codes
 

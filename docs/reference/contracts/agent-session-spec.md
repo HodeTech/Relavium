@@ -323,7 +323,12 @@ structure; streaming tool inputs and result summaries never feed transcript pers
 The persister commits the entire exchange and session totals atomically. A failure latches
 and stops later model/command egress. Admission checks the live latch at each provider attempt and
 effect preparation, and immediately before every actual tool dispatch, including unjournaled tools,
-a cached idle-command key and a cost-write failure after provider admission. The dispatch check runs
+a cached idle-command key and a cost-write failure after provider admission.
+Conservative-commitment and realized-cost writes include catalog resolution in
+the same sticky failure latch: a catalog read or store write failure preserves
+its original error and refuses later dispatch even if the store subsequently
+recovers. This supplements the governor's settlement barrier.
+The dispatch check runs
 after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
 Errors and aborts commit no transcript; their billed cost remains real.
@@ -357,6 +362,51 @@ nontrailing, preserving the old archive's ambiguity rather than permanently dele
 > separate (different lifecycle and FK parent); see the table definitions in
 > [database-schema.md](../shared-core/database-schema.md). They share a shape family but must not be
 > merged, to avoid coupling the session and run persistence stories.
+
+## Proposed user display text — MVP-2
+
+**Implemented and independently accepted on development — 2026-11-10.** The maintainer approved
+[ADR-0123](../../decisions/0123-restored-transcripts-use-host-recorded-display-text.md).
+The historical heading remains for stable inbound links; the
+[step-4 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+records the reviewed source and checkpoint gates.
+The existing `SessionMessage` interface above remains the shipped contract.
+
+Keep `SessionMessage` and its canonical `content` unchanged. The host separately
+records user display metadata through the existing completed-turn write boundary;
+its exact shape and storage live in the
+[database contract](../shared-core/database-schema.md#proposed-user-display-storage--mvp-2).
+The host supplies the compact displayed prompt before attachment expansion.
+Readers must never substitute display metadata into `LlmMessage`, a compaction
+summary, an exported workflow prompt or export message metadata. No export shape
+changes as a consequence of this addition.
+
+Every host user-row insert path that has captured display text writes it in the
+same transaction as that user row. MVP-2 uses the completed-turn transaction;
+if the separately Proposed [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+lands in MVP-4, its interruption transaction inherits this rule. Metadata validation
+is role-restricted, not restricted to a successful-turn status; this does not
+activate interrupted-turn persistence now. No optional
+denormalized `content` metadata is repurposed: that remains checked against
+canonical content. The host explicitly supplies display text captured before
+expansion, even for a plain prompt. A caller without that representation leaves
+metadata absent; never infer it from canonical submitted text. Existing rows
+remain absent; no backfill guesses provenance.
+Plain/JSON drivers explicitly pass their captured, unexpanded input as the
+display argument, rather than relying on a persister fallback.
+
+On restored UI paths, absence causes a fixed legacy-prompt notice instead of
+displaying that user row: its compact display was not recorded and it may include
+attached context. This also hides plain legacy prompts. Do not infer safe display
+from attachment-tag/nonce syntax or absence. Assistant text is sanitized and shown.
+Display metadata is itself untrusted and passes the normal display sanitizer.
+This rule does not change raw history, model restore or export, and must not be
+represented as universal redaction. The notice explicitly states that original
+user text may still be part of model context under the existing memory policy.
+Display-read or validation failure refuses interactive restoration before host
+activation with a fixed safe diagnostic and retry/return action; it never causes
+fallback to canonical user text. Presentation metadata is not read by canonical
+machine resume and does not change its failure behavior.
 
 ## Tools, secrets, and security scope
 

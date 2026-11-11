@@ -3,6 +3,7 @@ import type { ModelCatalogEntry } from '@relavium/llm';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ClipboardOutcome, ClipboardWriter } from '../clipboard.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
@@ -141,7 +142,7 @@ function mountHome(
     ) => Promise<HomeChatSession>;
     models?: HomeModelsPort;
     /** Capture what copy-on-select would put on the clipboard (2.6.F Step 6). */
-    clipboard?: (text: string) => { kind: 'written'; characters: number };
+    clipboard?: ClipboardWriter;
     /** `[preferences].show_banner` (2.6.F Step 5g). */
     showBanner?: boolean;
     /** A non-empty Home strip, so `isEmpty` is false (2.6.F Step 5g). */
@@ -753,9 +754,9 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
  * `useCopiedToast` through `ChatRegion` (a separate mount from `relavium chat`'s `ChatApp`), so `chat-app.test.tsx`'s
  * toast tests prove nothing here — a `copied` prop dropped between `RootApp` and `ChatRegion`, or a `flashCopied()`
  * left off the Home's `copySelection`, would ship green there and dark here. Colour is off by default (`mountHome`),
- * so the toast renders as the plain `[Copied]` pill — `.toContain('Copied')` matches either rendering.
+ * so the toast renders as the plain `[Sent to terminal clipboard]` pill — `.toContain('Sent to terminal clipboard')` matches either rendering.
  */
-describe('RootApp — the copy-on-select "Copied" toast', () => {
+describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', () => {
   const seedThree = (): ChatStoreController => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('AAAA');
@@ -776,6 +777,60 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
     await settleFrames();
   };
 
+  it.each([false, true])(
+    'waits for local delivery and shows a fixed failure instead of Sent (failed=%s)',
+    async (failed) => {
+      let deliver: (outcome: ClipboardOutcome) => void = () => {};
+      const pending = new Promise<ClipboardOutcome>((resolve) => {
+        deliver = resolve;
+      });
+      const m = mountHome(seedThree(), { alternateScreen: true, clipboard: () => pending });
+      await copyOnce(m);
+      expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
+      deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
+      const wanted = failed ? 'Clipboard request failed locally' : 'Sent to terminal clipboard';
+      await waitFor(() => (m.harness.lastFrame() ?? '').includes(wanted));
+      expect(m.harness.lastFrame() ?? '').toContain(wanted);
+      if (failed) expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
+    },
+  );
+
+  it.each([false, true])(
+    'discards delayed clipboard feedback after a reseat (failed=%s)',
+    async (failed) => {
+      let deliver: (outcome: ClipboardOutcome) => void = () => {};
+      const pending = new Promise<ClipboardOutcome>((resolve) => {
+        deliver = resolve;
+      });
+      const first = seedThree();
+      const next = makeSession(seedThree(), 'sess-fake');
+      const note = vi.spyOn(first, 'note');
+      const m = mountHome(first, {
+        alternateScreen: true,
+        clipboard: () => pending,
+        models: makeModelsPort('next-model'),
+        reseatChat: () => Promise.resolve(next),
+      });
+      await copyOnce(m);
+      m.c.handleKey('/', {});
+      for (const char of 'models') m.c.handleKey(char, {});
+      m.c.handleKey('', { return: true });
+      await waitFor(() => m.c.getSnapshot().modelPicker !== undefined);
+      m.c.handleKey('', { return: true });
+      await waitFor(() => m.c.getSnapshot().session === next);
+      expect(m.c.getSnapshot().session).toBe(next);
+      deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
+      await settleFrames();
+      expect(note).not.toHaveBeenCalled();
+      expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
+      expect(
+        next.store
+          .getSnapshot()
+          .state.transcript.some((entry) => entry.text.includes('Clipboard request failed')),
+      ).toBe(false);
+    },
+  );
+
   it('appears after a copy, ABOVE the footer, and leaves the transcript intact', async () => {
     const copied: string[] = [];
     const m = mountHome(seedThree(), {
@@ -788,7 +843,7 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
     await copyOnce(m);
     expect(copied).toEqual(['AAA']); // the write happened
     const rows = (m.harness.lastFrame() ?? '').split('\n');
-    const toastRow = rows.findIndex((r) => r.includes('Copied'));
+    const toastRow = rows.findIndex((r) => r.includes('Sent to terminal clipboard'));
     const footerRow = rows.findIndex((r) => r.includes('turns'));
     expect(toastRow).toBeGreaterThanOrEqual(0);
     expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
@@ -807,10 +862,10 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
         },
       });
       await copyOnce(m);
-      expect(m.harness.lastFrame() ?? '').toContain('Copied');
+      expect(m.harness.lastFrame() ?? '').toContain('Sent to terminal clipboard');
       await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
       await settleFrames();
-      expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+      expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
     } finally {
       vi.useRealTimers();
     }
@@ -819,7 +874,7 @@ describe('RootApp — the copy-on-select "Copied" toast', () => {
   it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
     const m = mountHome(seedThree(), { alternateScreen: true }); // no `clipboard` ⇒ copy is inert
     await copyOnce(m);
-    expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+    expect(m.harness.lastFrame() ?? '').not.toContain('Sent to terminal clipboard');
   });
 });
 
@@ -832,6 +887,7 @@ describe('RootApp — the branded Home banner', () => {
     attention: { gates: [], failedRuns: [] },
     recentSessions: [
       {
+        workingDir: '/workspace',
         sessionId: 'sess-9',
         title: 'a chat',
         agentSlug: 'default',

@@ -160,10 +160,18 @@ are implemented. **Phase 2.6.5 — Core Reliability Remediation is complete with
 deferrals**, with W8 merged in PR #92. The joint Phase 2.5.5/2.6 security remediation
 Wave 2 merged to `main` on 2026-10-15 as PR #94. The first eight steps of Wave 3
 (“Clear the ground”) followed on 2026-10-18 as PR #95, and the hardened release tooling and
-the MVP plan on 2026-11-04 as PR #96. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
+the MVP plan on 2026-11-04 as PR #96, and the MVP's first milestone (run output, run history
+and liveness) on 2026-11-07 as PR #97. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
 is paused, not dropped, while the work a CLI user feels — visible run results, a chat agent
 that can edit and run commands, readable replies, conversational authoring, web, the Home
-hub and MCP management — leads to `relavium` v0.2.0.
+hub and MCP management — leads to `relavium` v0.2.0. Since 2026-11-08 the interactive product is the
+full-screen Home: you type `relavium` and do everything there, while subcommands stay for scripting
+([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
+
+MVP-2's four steps are implemented and independently accepted on `development`:
+readable chat, native provider setup, project initialization and safe session
+discovery/resume. The [checkpoint record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
+tracks review and verification; the published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is

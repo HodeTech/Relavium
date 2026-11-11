@@ -3,6 +3,7 @@ import {
   closeSync,
   fchmodSync,
   fsyncSync,
+  lstatSync,
   openSync,
   renameSync,
   unlinkSync,
@@ -20,6 +21,8 @@ import {
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import type { ZodError } from 'zod';
 
+import { CliError } from '../process/errors.js';
+
 import { ConfigError } from './errors.js';
 import { formatZodError, loadConfigFile } from './load.js';
 import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
@@ -34,16 +37,14 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  * Four load-bearing guarantees (the ADR-0063 contract; a security-reviewed surface):
  * 1. **Secret-free by construction.** The surface is a **typed setter** ({@link writeGlobalPreferences}, of which
  *    {@link writeGlobalDefaultModel} is a thin single-key wrapper) — never a generic `writeKey(k, v)` — so it can
- *    only ever set the three non-secret `[preferences]` keys `default_model` / `default_provider` /
- *    `reasoning_effort`. There is no API-key
+ *    only ever set the three model preferences. Separate closed setters admit the two operator-state fields.
+ *    There is no API-key
  *    field in the schema to write to (keys live only in the OS keychain, ADR-0006). And a schema-validation
  *    failure on the write path is reported through the **same value-free formatter** the loader uses
  *    ({@link formatZodError}) — never a raw `ZodError`, whose `.message` embeds the received value for several
  *    codes and could reach stderr — so the secret-free-error property survives future schema changes.
- * 2. **Atomic + durable + owner-only.** It writes a temp file created `0600` in the owner-only (`0700`)
- *    `~/.relavium/` directory, `fsync`s it, `rename`s over the target, then `fsync`s the parent directory so the
- *    rename itself is durable — an interrupted write leaves the original intact (never torn) and a completed one
- *    survives a crash.
+ * 2. **Atomic publication + qualified durability + owner-only.** The `0600` temp file is fsynced before rename;
+ *    directory fsync is best effort after publication and its outcome is returned. Crash survival is not guaranteed.
  * 3. **Verified schema round-trip.** It merges onto the *validated* existing config, re-validates the whole
  *    object against the strict {@link GlobalConfigSchema} (ADR-0033), AND re-parses the emitted TOML text back
  *    through the schema BEFORE the rename — so "the written file re-parses cleanly on the next load" is a
@@ -91,65 +92,166 @@ export interface GlobalPreferenceWrite {
  * same-filesystem rename and is `0600` by construction, the schema round-trip runs, and the typed setter stays
  * secret-incapable (config holds no secrets, so an arbitrary `--config` dir's own mode is immaterial at rest).
  */
+export interface PreparedConfigWrite {
+  /** Whether the target existed when prepared and therefore needs a visible rewrite notice. */
+  readonly rewriteNeeded: boolean;
+  /** Publish once admitted. The assertion may throw before mutation and immediately before rename. */
+  publish(assertAdmitting?: () => void): ConfigWriteResult;
+}
+
+export interface ConfigWriteResult {
+  readonly durability: 'confirmed' | 'unconfirmed';
+}
+
+/** Fixed, path-free refusal for an existing final-component symlink. */
+export class ConfigWriteRefusedError extends CliError {
+  readonly reason = 'symlink_target';
+  constructor() {
+    super(
+      'config_error',
+      'Config is a symbolic link. Edit it manually or replace the link with a regular file.',
+    );
+    this.name = 'ConfigWriteRefusedError';
+  }
+}
+
 export function writeGlobalPreferences(
   prefs: GlobalPreferenceWrite,
   home: string = homedir(),
   targetPath?: string,
-): void {
-  // An all-absent write is a no-op: touch nothing rather than emit an empty `[preferences]` table where none
-  // existed. Unreachable from the current callers (each passes ≥1 key), but keeps the typed setter footgun-free.
+): ConfigWriteResult {
+  return prepareGlobalPreferences(prefs, home, targetPath).publish();
+}
+
+export function prepareGlobalPreferences(
+  prefs: GlobalPreferenceWrite,
+  home: string = homedir(),
+  targetPath?: string,
+): PreparedConfigWrite {
+  // An empty model request performs no I/O; confirmed describes the absence of a pending publication.
   if (
     prefs.defaultModel === undefined &&
     prefs.defaultProvider === undefined &&
     prefs.reasoningEffort === undefined
   ) {
-    return;
+    return {
+      rewriteNeeded: false,
+      publish: (assertAdmitting) => {
+        assertAdmitting?.();
+        return { durability: 'confirmed' };
+      },
+    };
   }
-  let target: string;
-  let dir: string;
-  if (targetPath === undefined) {
-    try {
-      dir = ensureGlobalConfigDir(home); // `~/.relavium/` (created `0700`)
-    } catch (err) {
-      // Keep the module's "every failure is a typed, file-attributed ConfigError" contract even for the
-      // directory-create step (e.g. EACCES on a read-only home, ENOSPC) — never let a raw fs Error escape.
-      throw new ConfigError(
-        globalConfigPath(home),
-        'could not be written — its directory could not be created.',
-        { cause: err },
-      );
-    }
-    target = join(dir, 'config.toml');
-  } else {
-    // The explicit `--config` target: write beside it (its dir must exist — loadResolvedConfig already read it).
-    target = targetPath;
-    dir = dirname(targetPath);
-  }
-
-  // Read the EXISTING config through the same validating loader (so we merge onto known-good data and preserve
-  // update_channel / mcp_servers / preferences.theme + the OTHER preference). An absent file is a fresh object; an
-  // invalid one throws. Only the provided keys override — a model-only write keeps a prior `reasoning_effort`.
-  const existing = loadConfigFile<GlobalConfig>(target, GlobalConfigSchema) ?? {};
-  const merged: GlobalConfig = {
-    ...existing,
-    preferences: {
+  return prepareWrite(
+    (existing) => ({
       ...existing.preferences,
       ...(prefs.defaultModel === undefined ? {} : { default_model: prefs.defaultModel }),
       ...(prefs.defaultProvider === undefined ? {} : { default_provider: prefs.defaultProvider }),
       ...(prefs.reasoningEffort === undefined ? {} : { reasoning_effort: prefs.reasoningEffort }),
+    }),
+    home,
+    targetPath,
+  );
+}
+
+type StandardConsent = NonNullable<
+  NonNullable<GlobalConfig['preferences']>['standard_env_key_consent']
+>;
+type StandardProvider = keyof StandardConsent;
+const STANDARD_NAMES: Required<StandardConsent> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+};
+
+export function prepareStandardEnvKeyConsent(
+  provider: StandardProvider,
+  home: string = homedir(),
+  targetPath?: string,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({
+      ...existing.preferences,
+      standard_env_key_consent: {
+        ...existing.preferences?.standard_env_key_consent,
+        [provider]: STANDARD_NAMES[provider],
+      },
+    }),
+    home,
+    targetPath,
+  );
+}
+
+export function prepareKeychainUnavailableAcknowledged(
+  value: boolean,
+  home: string = homedir(),
+  targetPath?: string,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({ ...existing.preferences, keychain_unavailable_acknowledged: value }),
+    home,
+    targetPath,
+  );
+}
+
+function checkTarget(target: string): boolean {
+  try {
+    const stats = lstatSync(target);
+    if (stats.isSymbolicLink()) throw new ConfigWriteRefusedError();
+    return true;
+  } catch (err) {
+    if (err instanceof ConfigWriteRefusedError) throw err;
+    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ENOENT')
+      return false;
+    throw new ConfigError(target, 'could not be inspected for writing.', { cause: err });
+  }
+}
+
+function prepareWrite(
+  update: (existing: GlobalConfig) => NonNullable<GlobalConfig['preferences']>,
+  home: string,
+  targetPath?: string,
+): PreparedConfigWrite {
+  const target = targetPath ?? globalConfigPath(home);
+  const dir = dirname(target);
+  // This precedes the loader and any creation or chmod, including for dangling links.
+  const rewriteNeeded = checkTarget(target);
+  const existing = loadConfigFile<GlobalConfig>(target, GlobalConfigSchema) ?? {};
+  const validated = validateForWrite({ ...existing, preferences: update(existing) }, target);
+  const text = stringifyToml(validated);
+  verifyRoundTrips(text, target);
+  let published = false;
+  return {
+    rewriteNeeded,
+    publish(assertAdmitting = () => {}) {
+      if (published) throw new Error('Config write was already published.');
+      assertAdmitting();
+      // If a target appeared after preparing, a rewrite notice was not presented.
+      if (checkTarget(target) !== rewriteNeeded) {
+        throw new ConfigError(target, 'changed before writing; prepare the write again.');
+      }
+      if (targetPath === undefined) {
+        try {
+          ensureGlobalConfigDir(home);
+        } catch (err) {
+          throw new ConfigError(
+            target,
+            'could not be written — its directory could not be created.',
+            { cause: err },
+          );
+        }
+      }
+      const result = writeFileAtomic(dir, target, text, () => {
+        assertAdmitting();
+        if (checkTarget(target) !== rewriteNeeded) {
+          throw new ConfigError(target, 'changed before writing; prepare the write again.');
+        }
+      });
+      published = true;
+      return result;
     },
   };
-
-  // Re-validate the whole object so the emission is provably schema-valid (ADR-0033) — a `.strict()` round-trip
-  // that also structurally guarantees no non-schema (e.g. secret) key can reach disk. Uses the value-free
-  // failure path so a future schema refinement (e.g. a `.min(1)` on `default_model`) fails LOUDLY without ever
-  // echoing the received value.
-  const validated = validateForWrite(merged, target);
-  const text = stringifyToml(validated);
-  // Verify the emitted TEXT re-parses to a schema-valid object BEFORE the atomic rename (ADR-0063 §3) — makes
-  // the "always re-parses on next load" guarantee verified, not assumed. On failure config.toml is untouched.
-  verifyRoundTrips(text, target);
-  writeFileAtomic(dir, target, text);
 }
 
 /** Set the global `[preferences].default_model` (the common single-key write) — a thin wrapper over
@@ -158,8 +260,8 @@ export function writeGlobalDefaultModel(
   model: string,
   home: string = homedir(),
   targetPath?: string,
-): void {
-  writeGlobalPreferences({ defaultModel: model }, home, targetPath);
+): ConfigWriteResult {
+  return writeGlobalPreferences({ defaultModel: model }, home, targetPath);
 }
 
 /** Schema-validate the object to write, mapping a failure to the value-free {@link ConfigError} path. */
@@ -199,7 +301,8 @@ function configWriteError(target: string, error: ZodError): ConfigError {
  * on the same filesystem), explicitly `0600` (never relying on an inherited directory mode — `ensureGlobalConfigDir`
  * `0700`s `~/.relavium/` itself, not necessarily its children), `fsync` for data durability, `rename` over the
  * target, then a best-effort parent-directory `fsync` so the rename (the directory-entry swap) is durable too. On
- * any failure the temp is best-effort removed and a typed {@link ConfigError} is thrown.
+ * pre-publication failure the temp is best-effort removed and a typed {@link ConfigError} is thrown; admission
+ * and refusal errors retain their identity. Directory-sync failure returns unconfirmed after publication.
  *
  * Exported ONLY as a test seam — for the fault-injection test that drives the catch path with a real failing
  * rename (a `target` that is an existing directory ⇒ `EISDIR`), verifying the temp is cleaned up and the fd is
@@ -207,9 +310,15 @@ function configWriteError(target: string, error: ZodError): ConfigError {
  * primitive with no schema, so the secret-incapability guarantee is a property of {@link writeGlobalPreferences}
  * (the typed setter), never of this helper. Do not call it to write arbitrary content.
  */
-export function writeFileAtomic(dir: string, target: string, text: string): void {
+export function writeFileAtomic(
+  dir: string,
+  target: string,
+  text: string,
+  beforeRename?: () => void,
+): ConfigWriteResult {
   const tmp = join(dir, `config.toml.${randomUUID()}.tmp`);
   let fd: number | undefined;
+  let admissionFailed = false;
   try {
     fd = openSync(tmp, 'wx', 0o600); // `wx`: fail if it exists (the uuid makes a collision impossible); O_EXCL refuses a symlink
     writeFileSync(fd, text, 'utf8');
@@ -217,8 +326,14 @@ export function writeFileAtomic(dir: string, target: string, text: string): void
     fsyncSync(fd); // the temp is durably on disk before the rename
     closeSync(fd);
     fd = undefined;
+    try {
+      beforeRename?.();
+    } catch (err) {
+      admissionFailed = true;
+      throw err;
+    }
     renameSync(tmp, target); // replaces the directory entry — never writes THROUGH a symlink at `target`
-    fsyncDir(dir); // best-effort: make the rename itself durable, not just the file's data
+    return { durability: fsyncDir(dir) ? 'confirmed' : 'unconfirmed' };
   } catch (err) {
     if (fd !== undefined) {
       try {
@@ -232,23 +347,24 @@ export function writeFileAtomic(dir: string, target: string, text: string): void
     } catch {
       /* best-effort temp cleanup (it may never have been created) */
     }
+    if (admissionFailed || err instanceof ConfigWriteRefusedError || err instanceof ConfigError)
+      throw err;
     throw new ConfigError(target, 'could not be written', { cause: err });
   }
 }
 
 /**
- * Best-effort `fsync` of a directory so a `rename` into it is durable (POSIX metadata flush). Swallows every
- * error and NEVER throws — the rename has already succeeded, so a failure here (e.g. Windows, where a directory
- * fd cannot be `fsync`'d) only weakens crash-durability of the new value, never correctness. Must not throw, or
- * a post-rename failure would wrongly enter the caller's catch and report a successful write as failed.
+ * Best-effort directory fsync, returning false on failure after the rename has published the new file.
+ * This must never throw or misreport an already published write as an untouched failure.
  */
-function fsyncDir(dir: string): void {
+function fsyncDir(dir: string): boolean {
   let dfd: number | undefined;
   try {
     dfd = openSync(dir, 'r');
     fsyncSync(dfd);
+    return true;
   } catch {
-    /* best-effort durability of the rename — see the doc comment */
+    return false;
   } finally {
     if (dfd !== undefined) {
       try {

@@ -6,6 +6,7 @@ import { CliError } from '../process/cli-error.js';
 /** Fixed module edges only; command/model/user strings never become import paths. */
 const loadRuntime = () => import('./dispatch.js');
 const RUNTIME_IDS = Object.freeze([
+  'init',
   'run',
   'chat',
   'chat-resume',

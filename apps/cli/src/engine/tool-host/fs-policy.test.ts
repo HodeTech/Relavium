@@ -591,6 +591,7 @@ it.runIf(process.platform === 'win32')(
 );
 
 // NI: measures the diagnosed mechanism on the runner itself; the counts are evidence, not a pin.
+// 200 physical NTFS replacement pairs use the existing 15s native-control profile, including on slow CI hosts.
 it.runIf(process.platform === 'win32')(
   'native Windows replacement pairs stay distinct as exact identities',
   () => {
@@ -612,4 +613,5 @@ it.runIf(process.platform === 'win32')(
       `NI probe: ${collisions} of 200 replacement pairs collide as Numbers; ${negative} read negative`,
     );
   },
+  15_000,
 );

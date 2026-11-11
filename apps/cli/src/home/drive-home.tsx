@@ -1,4 +1,9 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { runHomeProjectInit } from './project-init.js';
+import { runSessionPicker } from './session-picker.js';
+import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
+import { resumeHint } from '../chat/resume-hint.js';
+import { fsPolicyWorkspace } from '../engine/tool-host/fs-policy.js';
 import { ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionControlWrites } from '../chat/session-control-writes.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
@@ -54,11 +59,34 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
-import { writeGlobalPreferences } from '../config/write.js';
+import { ConfigError } from '../config/errors.js';
+import {
+  ConfigWriteRefusedError,
+  prepareGlobalPreferences,
+  writeGlobalPreferences,
+  type PreparedConfigWrite,
+  type ConfigWriteResult,
+} from '../config/write.js';
+import {
+  applyInvocationDefault,
+  type InvocationModelDefault,
+} from '../config/invocation-default.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import {
+  createProviderResolver,
+  providerEndpointContext,
+  providerHasKey,
+  type ProviderResolver,
+} from '../engine/providers.js';
+import { createStandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
+import {
+  createNativePromptChannel,
+  NativePromptVisibilityRefusedError,
+} from '../render/tui/native-prompt-channel.js';
+import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
+import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toCliError } from '../process/errors.js';
 import {
@@ -66,13 +94,14 @@ import {
   runOnboardingWizard,
   type ClackOnboardingDeps,
 } from '../onboarding/wizard.js';
-import type { CliIo } from '../process/io.js';
+import { acknowledgeWrite, type CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/session-view-model.js';
 import { createMentionReader } from '../render/tui/mention.js';
@@ -122,6 +151,7 @@ export interface HomeDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
+  readonly keychain?: KeychainStore;
   /** Injectable session builder (tests inject a scripted provider via `providers`). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
   /** Injectable RESUMED-session builder — used by the in-Home `/models` reseat (ADR-0059). Default {@link buildResumedChatSession}. */
@@ -226,11 +256,27 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
-  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
+  const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+  const nativePrompt = createNativePromptChannel();
+  let lastSavedSessionId: string | undefined;
+  let finalSetupNote: string | undefined;
+  const promptFlow = {
+    ...nativePrompt.flow,
+    begin: () => {
+      finalSetupNote = undefined;
+      return nativePrompt.flow.begin();
+    },
+    end: async () => {
+      finalSetupNote = nativePrompt.ui.getSnapshot().note || undefined;
+      await nativePrompt.flow.end();
+    },
+  };
+  const keyPolicy = createStandardEnvKeyPolicy(globalConfig?.preferences);
+  let invocationDefault: InvocationModelDefault | undefined;
   // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
   // Home's composition-root wiring, mirroring `dispatch.ts`'s `keyResolvers` for the named commands. WITHOUT the
   // keychain the Home defaulted to an ENV-ONLY resolver, so a key stored in the OS keychain (the normal
@@ -238,7 +284,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // `relavium chat` (which IS keychain-wired via dispatch) worked. `createOsKeychainStore()` reads nothing until a
   // key is actually resolved (the default agent has no MCP servers, so the MCP resolver stays inert), so building
   // it here is side-effect-free; a test injects `providers` and never reaches the keychain.
-  const keychain = createOsKeychainStore();
+  const keychain = deps.keychain ?? createOsKeychainStore();
   const mcpSecretResolver =
     deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
   const opened =
@@ -268,6 +314,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let homeInputSealed = false;
   let stopHomeInput = (): void => {
     homeInputSealed = true;
+    promptFlow.cancel();
   };
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
@@ -465,11 +512,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let mouseCaptured = false;
   // ONE clipboard closure over the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). `/copy` (via
   // `hatchPorts`) and copy-on-select (via `RootApp`'s `clipboard` prop, when enabled) both use it.
-  const clipboard = (text: string): ClipboardOutcome =>
+  const clipboard = (text: string): Promise<ClipboardOutcome> =>
     copyToClipboard(
       {
         writeControl: (sequence) => {
-          void writeControl(sequence);
+          if (controls !== undefined) return controls.write(sequence);
+          if (deps.writeControl !== undefined) return Promise.resolve(deps.writeControl(sequence));
+          return acknowledgeWrite(process.stdout, sequence);
         },
         env: deps.io.env,
       },
@@ -537,6 +586,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   // Keep the last synchronous restore net until actual final output acknowledgement, even after stop.
   const setupView =
     ownership === undefined ? undefined : new SessionViewLifetime(ownership.surface.work, false);
+  const stopProviderSetup = (): void => promptFlow.cancel();
+  ownership?.surface.work.signal.addEventListener('abort', stopProviderSetup, { once: true });
 
   try {
     const homeStore = createHomeStore({
@@ -552,7 +603,154 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // The STORE-AWARE provider resolver (2.5.G S9, ADR-0065 §4) — built from `providerStore` so a stored custom
     // `base_url` rebinds its adapter to the SSRF-validated endpoint, for the Home's chat turns + the catalog refresh.
     const providers =
-      deps.providers ?? createProviderResolver(deps.io.env, keychain, { providerStore });
+      deps.providers ??
+      createProviderResolver(deps.io.env, keychain, {
+        providerStore,
+        standardEnvPolicy: keyPolicy,
+        credentialSurface: 'home',
+      });
+    let keyless = !sampleProviderSetup(providers).some(
+      ({ availability }) => availability.status === 'usable',
+    );
+    const refreshKeyless = (): boolean => {
+      keyless = !sampleProviderSetup(providers).some(
+        ({ availability }) => availability.status === 'usable',
+      );
+      return keyless;
+    };
+    const assertHomeAdmitting = (): void => {
+      ownership?.surface.work.assertAdmitting();
+      if (homeInputSealed || !rendererActive)
+        throw new CliError('invalid_invocation', 'Home is closing.');
+    };
+    const publishPreference = async (
+      prepared: PreparedConfigWrite,
+      assertAdmitting: () => void,
+    ): Promise<ConfigWriteResult> => {
+      for (;;) {
+        assertAdmitting();
+        const native = nativePrompt.ui.getSnapshot().active;
+        if (prepared.rewriteNeeded || native) {
+          if (flushVisible === undefined)
+            throw new CliError(
+              'output_unavailable',
+              'The config rewrite notice could not be displayed.',
+            );
+          await flushVisible(() => {
+            const notice =
+              'Saving preferences rewrites the global config and removes its comments and ordering.';
+            if (native) {
+              if (prepared.rewriteNeeded) promptFlow.note(notice);
+              else promptFlow.busy('Saving preferences…');
+            } else controller?.setProviderState(keyless, notice);
+          });
+        }
+        const snapshot = native ? nativePrompt.ui.getSnapshot() : undefined;
+        const assertPublication = (): void => {
+          assertAdmitting();
+          if (snapshot !== undefined) nativePrompt.ui.assertVisible(snapshot);
+        };
+        try {
+          return prepared.publish(assertPublication);
+        } catch (cause) {
+          if (!(cause instanceof NativePromptVisibilityRefusedError)) throw cause;
+          // The temp was removed before the writer refused publication. Wait for
+          // current visible evidence again; cancellation still owns the flow.
+        }
+      }
+    };
+    const writeStarterDefault = async (
+      model: string,
+      provider: Parameters<ProviderResolver['keyFor']>[0],
+      assertAdmitting: () => void = assertHomeAdmitting,
+    ): Promise<OnboardingDefaultResult> => {
+      for (;;) {
+        try {
+          const saved = await publishPreference(
+            prepareGlobalPreferences(
+              {
+                defaultModel: model,
+                defaultProvider: provider,
+              },
+              homeDir,
+              deps.global.configPath === undefined ? undefined : globalConfigPath,
+            ),
+            assertAdmitting,
+          );
+          invocationDefault = undefined;
+          return { kind: 'saved', durability: saved.durability };
+        } catch (cause) {
+          assertAdmitting();
+          if (!(cause instanceof ConfigError) && !(cause instanceof ConfigWriteRefusedError))
+            throw cause;
+          const refused = cause instanceof ConfigWriteRefusedError;
+          promptFlow.note(
+            refused
+              ? 'Config is a symbolic link. Edit it manually or replace it with a regular file.'
+              : 'Provider source is ready, but the default could not be saved.',
+          );
+          const choice = await promptFlow.select({
+            message: 'How would you like to continue?',
+            options: [
+              ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
+              { value: 'once', label: 'Use this model for this invocation only' },
+              { value: 'cancel', label: 'Cancel' },
+            ],
+          });
+          if (choice === 'retry') continue;
+          if (choice === 'once') {
+            assertAdmitting();
+            invocationDefault = { model, provider };
+            return { kind: 'ephemeral' };
+          }
+          promptFlow.cancel();
+          return { kind: 'cancelled' };
+        }
+      }
+    };
+    const providerSetup = createProviderSetupCoordinator({
+      flow: promptFlow,
+      resolver: providers,
+      policy: keyPolicy,
+      globalConfig,
+      globalConfigPath,
+      globalConfigIsDefault: deps.global.configPath === undefined,
+      home: homeDir,
+      assertAdmitting: assertHomeAdmitting,
+      endpointContext: (id) => providerEndpointContext(providers, id),
+      publishPreference,
+      wizard: {
+        store: providerStore,
+        keychain,
+        io: deps.io,
+        ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+        writeDefaultModel: writeStarterDefault,
+      },
+    });
+    let providerRun: Promise<void> | undefined;
+    const openProviders = (mode: 'automatic' | 'explicit'): Promise<void> => {
+      if (providerRun !== undefined) return providerRun;
+      const operation = async (): Promise<void> => {
+        const result = await providerSetup.run(mode);
+        if (homeInputSealed) return;
+        keyless = !sampleProviderSetup(providers).some(
+          ({ availability }) => availability.status === 'usable',
+        );
+        controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
+      };
+      const run = operation();
+      providerRun = run;
+      void run.then(
+        () => {
+          if (providerRun === run) providerRun = undefined;
+        },
+        () => {
+          if (providerRun === run) providerRun = undefined;
+        },
+      );
+      return run;
+    };
+
     // The Home's `/doctor` probes (built here, over the store-aware resolver). The zero-config default agent has no
     // `mcp_servers`, so the `--deep` MCP tier reports "none configured" (and the Home palette runs only the fast tier).
     const doctorProbes =
@@ -575,11 +773,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       | ReturnType<typeof loadResolvedConfig>['config']['chat']
       | undefined => {
       try {
-        return loadResolvedConfig({
-          cwd: deps.global.cwd,
-          home: homeDir,
-          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-        }).config.chat;
+        return applyInvocationDefault(
+          loadResolvedConfig({
+            cwd: deps.global.cwd,
+            home: homeDir,
+            configPath: globalConfigPath,
+          }),
+          invocationDefault,
+        ).config.chat;
       } catch {
         return undefined; // a mid-session malformed config must not crash the picker
       }
@@ -604,23 +805,39 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
-      writeDefault: (modelId, provider, reasoningEffort) => {
+      writeDefault: async (modelId, provider, reasoningEffort) => {
         ownership?.surface.work.assertAdmitting();
+        let signal: AbortSignal | undefined;
         try {
-          writeGlobalPreferences(
+          const prepared = prepareGlobalPreferences(
             {
               defaultModel: modelId,
-              defaultProvider: provider, // ADR-0059: persist the provider so the next chat skips id inference
+              defaultProvider: provider,
               ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
             },
             homeDir,
-            deps.global.configPath,
+            deps.global.configPath === undefined ? undefined : globalConfigPath,
           );
+          // A plain Home picker write needs the same real disclosure evidence
+          // as setup, without adding another confirmation or terminal owner.
+          if (prepared.rewriteNeeded) {
+            signal = promptFlow.begin();
+            promptFlow.busy('Saving default model…');
+          }
+          const saved = await publishPreference(prepared, () => {
+            ownership?.surface.work.assertAdmitting();
+            if (homeInputSealed) throw new CliError('invalid_invocation', 'Home is closing.');
+            signal?.throwIfAborted();
+          });
+          invocationDefault = undefined;
+          return saved;
         } catch (cause) {
-          // Known config refusals keep the picker's inline recovery. An unexpected fault must reach
-          // the original owner before that recovery consumes it and can otherwise permit clean exit.
+          if (signal?.aborted && cause === signal.reason)
+            throw new CliError('invalid_invocation', 'Default model change cancelled.');
           ownership?.surface.work.failure(cause);
           throw cause;
+        } finally {
+          if (signal !== undefined) await promptFlow.end();
         }
       },
     };
@@ -635,6 +852,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       store: ChatStoreController,
       opts: { readonly open: boolean; readonly initialSequenceNumber?: number },
     ): Promise<HomeChatSession> => {
+      built.workOwner?.assertAdmitting();
+      ownership?.surface.work.assertAdmitting();
       // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
       // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
       for (const tool of built.mcpSkipped) {
@@ -656,6 +875,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
+      const sendGuard = (): string | undefined => {
+        built.workOwner?.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
+        return providerHasKey(providers, built.agent.provider)
+          ? undefined
+          : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+      };
+      const initialKeyRefusal = sendGuard();
+      if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
       const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
       try {
         persister = createSessionPersister(
@@ -703,7 +931,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           onSetEffort,
         } = createChatLineHandler(
-          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
+          {
+            built,
+            opened,
+            store,
+            persister,
+            doctorProbes: chatDoctorProbes,
+            sendGuard,
+          },
           { ...deps, hatchPorts },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
@@ -772,7 +1007,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         };
         return {
           store,
-          processLine,
+          processLine: async (line, display) => {
+            try {
+              await processLine(line, display);
+            } finally {
+              if (persister?.hasSavedTurns === true) lastSavedSessionId = built.sessionId;
+            }
+          },
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
@@ -781,6 +1022,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ? {}
             : {
                 onActivated: (isActive: () => boolean) => {
+                  if (isActive() && persister?.hasSavedTurns === true)
+                    lastSavedSessionId = built.sessionId;
                   const activate = () =>
                     reconcileResumedSessionEffects({
                       io: deps.io,
@@ -923,6 +1166,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             onUnpriced: (note) => store.notice(note),
           });
         const built = host === undefined ? await build() : await host.build(build);
+        host?.work.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
         return wireHomeChatSession(built, store, { open: true });
       });
 
@@ -930,25 +1175,62 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
     // the original fallback_chain), carrying the text-only transcript + cumulative cost/turns; a NEW instance,
     // honoring ADR-0024's one-model-per-lifetime rule. The controller drives the tear-down / swap (mirroring clearChat).
-    const reseatChat = async (
+    const resumeCancelled = new CliError('invalid_invocation', 'Session restoration cancelled.');
+    const constructRestoredChat = async (
+      signal: AbortSignal | undefined,
+      factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
+    ): Promise<HomeChatSession> => {
+      if (signal === undefined) return constructChat(factory);
+      let pendingWork: SessionWorkOwner | undefined;
+      try {
+        return await constructChat(async (host) => {
+          pendingWork = host?.work;
+          const cancelPending = (): void => host?.cancel();
+          signal.addEventListener('abort', cancelPending, { once: true });
+          try {
+            if (signal.aborted) {
+              cancelPending();
+              throw resumeCancelled;
+            }
+            return await factory(host);
+          } finally {
+            signal.removeEventListener('abort', cancelPending);
+          }
+        });
+      } catch (cause) {
+        // Only this replacement owner's stop is benign; unrelated faults keep their original disposition.
+        if (signal.aborted && pendingWork?.isStoppedFailure(cause)) {
+          assertHomeAdmitting();
+          throw resumeCancelled;
+        }
+        throw cause;
+      }
+    };
+    const restoreChat = async (
       sessionId: string,
-      target: ReseatTarget,
+      target: ReseatTarget | undefined,
       carriedTranscript: readonly TranscriptEntry[],
+      initialRestore = false,
+      preloaded?: ReturnType<OpenedSessionStore['store']['loadFull']>,
+      restoreSignal?: AbortSignal,
     ): Promise<HomeChatSession> =>
-      constructChat(async (host) => {
-        const loaded = opened.store.loadFull(sessionId);
+      constructRestoredChat(restoreSignal, async (host) => {
+        const loaded = preloaded ?? opened.store.loadFull(sessionId);
         if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
           throw new CliError(
             'invalid_invocation',
             `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
           );
         }
-        const newAgent = swapAgentModel(
-          loaded.session.agentSnapshot,
-          target.modelId,
-          target.provider,
-          target.reasoningEffort,
-        );
+        const newAgent =
+          target === undefined
+            ? loaded.session.agentSnapshot
+            : swapAgentModel(
+                loaded.session.agentSnapshot,
+                target.modelId,
+                target.provider,
+                target.reasoningEffort,
+              );
         const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
         const resolvePrice = readUserPricingOverlay(opened.db);
         // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
@@ -988,6 +1270,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     workOwner,
                   ),
             record,
+            deferMissingKey: initialRestore,
+            ...(restoreSignal === undefined ? {} : { mcpConnectSignal: restoreSignal }),
             messages: loaded.messages,
             now,
             providers,
@@ -1016,6 +1300,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             onUnpriced: noteToStore,
           });
         const built = host === undefined ? await build() : await host.build(build);
+        host?.work.assertAdmitting();
+        ownership?.surface.work.assertAdmitting();
+        if (restoreSignal?.aborted) {
+          // Legacy unowned callers still owe the actual returned builder's resources.
+          if (host === undefined) {
+            built.session.cancel();
+            await built.whenHostSafeToClose();
+            await built.closeMcp?.();
+          }
+          throw resumeCancelled;
+        }
         // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
         // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
         const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
@@ -1033,6 +1328,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
             // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
             transcript: carriedTranscript,
+            ...(initialRestore ? { initialRestore: true } : {}),
           },
           transcriptBoundFor(altScreenActive),
         );
@@ -1049,6 +1345,55 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           initialSequenceNumber: built.nextSequenceNumber,
         });
       });
+
+    const reseatChat = (
+      sessionId: string,
+      target: ReseatTarget,
+      transcript: readonly TranscriptEntry[],
+    ) => restoreChat(sessionId, target, transcript);
+    const resumeChat = async (
+      sessionId: string,
+    ): Promise<HomeChatSession | { readonly notice: string } | undefined> => {
+      assertHomeAdmitting();
+      const loaded = opened.store.loadFull(sessionId);
+      if (loaded === undefined || loaded.session.agentSnapshot === undefined)
+        return { notice: 'This saved session is unavailable or has no agent snapshot.' };
+      // Discovery scope never grants authority. Check the canonical context, not the indexed picker column.
+      if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
+        return {
+          notice:
+            'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.',
+        };
+      const transcript = await prepareRestoredHistory({
+        messages: loaded.messages,
+        memory: loaded.session.agentSnapshot.memory,
+        transcriptBound: transcriptBoundFor(altScreenActive),
+        readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
+        assertAdmitting: assertHomeAdmitting,
+        retry: () => retryRestoredHistory(promptFlow),
+      });
+      if (transcript === undefined) return undefined;
+      assertHomeAdmitting();
+      const signal = promptFlow.begin();
+      promptFlow.note('Restoring session… Esc to return.');
+      try {
+        const built = await restoreChat(sessionId, undefined, transcript, true, loaded, signal);
+        if (signal.aborted) {
+          await built.teardown();
+          return undefined;
+        }
+        assertHomeAdmitting();
+        return built;
+      } catch (cause) {
+        if (signal.aborted && cause === resumeCancelled) {
+          assertHomeAdmitting();
+          return undefined;
+        }
+        throw cause;
+      } finally {
+        await promptFlow.end();
+      }
+    };
 
     const getSize =
       deps.getSize ??
@@ -1216,11 +1561,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     }
     disposeJobControl = jobControl.dispose;
 
-    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
+    // Retain the injected legacy prompter seam; production setup starts inside the mounted Ink tree.
+    // A scripted key-less embedding can still drive the established wizard without a native renderer.
     // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
     // clack restore the terminal) before `render()`. The signal and job-control nets above are already live before
     // the wizard can reach its network-bound key-validation request.
-    if (isProviderKeyless(providers)) {
+    if (deps.onboardingPrompter !== undefined && isProviderKeyless(providers)) {
       onboardingActive = true;
       onboardingFinalized = false;
       // Clack's raw-mode listener is registered after this one, so this sees SUB first. Clack itself treats Ctrl-Z as
@@ -1261,6 +1607,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     }
 
+    refreshKeyless(); // an injected legacy setup may have just changed the available source
+
     // **Liveness (2.6.G, #229): settle what a dead process left `running` before the first read of the runs**,
     // so the first frame does not show a crashed run as `running` once its dead owner's lease has expired
     // (until then the lease still claims it, and it reads `running` for up to a minute). Here, after the signal
@@ -1295,6 +1643,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       stopHomeInput = (): void => {
         if (homeInputSealed) return;
         homeInputSealed = true;
+        promptFlow.cancel();
         rendererActive = false;
         flushVisible = undefined;
         ownership?.releaseViews();
@@ -1308,9 +1657,40 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         startChat,
         reseatChat,
+        resumeChat,
+        pickSession: () =>
+          runSessionPicker({
+            flow: promptFlow,
+            store: opened.store,
+            cwd: fsPolicyWorkspace(fsPolicy),
+            now,
+            assertAdmitting: assertHomeAdmitting,
+            runRead: (operation) =>
+              ownership === undefined ? operation() : ownership.surface.work.enter(operation),
+          }),
         homeStore,
         doctorProbes,
         models,
+        initializeProject: () => {
+          if (flushVisible === undefined)
+            throw new CliError(
+              'output_unavailable',
+              'The project initialization card could not be displayed.',
+            );
+          return runHomeProjectInit({
+            cwd: deps.global.cwd,
+            home: homeDir,
+            flow: promptFlow,
+            ui: nativePrompt.ui,
+            flushVisible,
+            assertAdmitting: assertHomeAdmitting,
+          });
+        },
+        providerSetup: {
+          initialKeyless: keyless,
+          open: () => openProviders('explicit'),
+          readKeyless: refreshKeyless,
+        },
         onExit: () => {
           if (ownership !== undefined) stopHomeInput();
           rendererActive = false;
@@ -1387,10 +1767,29 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 if (!homeInputSealed) actualController.handlePaste(text);
               },
             };
+      let automaticSetupStarted = false;
       const props: RootAppProps = {
+        nativePrompt: nativePrompt.ui,
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
+          if (!automaticSetupStarted && !homeInputSealed && deps.onboardingPrompter === undefined) {
+            automaticSetupStarted = true;
+            const operation = () => openProviders('automatic');
+            const pending =
+              ownership === undefined ? operation() : ownership.surface.work.enter(operation);
+            void pending.catch((cause: unknown) => {
+              ownership?.surface.work.failure(cause);
+              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
+              reject(
+                ownership === undefined
+                  ? cause instanceof Error
+                    ? cause
+                    : new Error('Provider setup failed.')
+                  : cause,
+              );
+            });
+          }
         },
         onRendererError: (error) => {
           rendererActive = false;
@@ -1484,6 +1883,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     ownership?.surface.work.failure(cause);
     throw cause;
   } finally {
+    promptFlow.cancel();
     if (ownership !== undefined) {
       stopHomeInput();
       ownership.releaseViews();
@@ -1517,6 +1917,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
       closeDb(); // always close the shared db
+    }
+    nativePrompt.ui.dispose();
+    ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
+    if (
+      lastSavedSessionId !== undefined &&
+      ownership?.surface.invocation.registry.termination === undefined
+    ) {
+      if (ownership === undefined) deps.io.writeOut(resumeHint(lastSavedSessionId));
+      else {
+        ownership.surface.work.assertAdmitting();
+        await deps.io.writeOutAcknowledged(resumeHint(lastSavedSessionId));
+      }
     }
   }
 }

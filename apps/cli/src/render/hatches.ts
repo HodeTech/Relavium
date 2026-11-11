@@ -1,9 +1,9 @@
-import type { ClipboardOutcome } from './clipboard.js';
+import { attemptClipboardWrite, type ClipboardWriter } from './clipboard.js';
 import { toUserFacing } from '../process/errors.js';
 import { openInEditor, type EditorOutcome, type OpenInEditorDeps } from './editor.js';
 import { dumpToScrollback, type DumpToScrollbackDeps } from './scrollback.js';
 import { createSuspendPort, suspendFullScreen, type SuspendPort } from './suspend.js';
-import { transcriptDocument, wrapTranscript } from './tui/chat-projection.js';
+import { transcriptDocument } from './tui/chat-projection.js';
 import type { TranscriptEntry } from './tui/session-view-model.js';
 
 /**
@@ -59,8 +59,8 @@ export interface HatchDeps {
   /** The `$EDITOR` ports (production: `nodeSpawnEditor` + `nodeCreateTempDocument`). */
   readonly editor: OpenInEditorDeps;
   /** Put text on the system clipboard over OSC 52 (production: `copyToClipboard` bound to `writeControl` + `env`).
-   *  Used by `/copy`; the mouse selection has its own binding inside the ink tree. */
-  readonly clipboard: (text: string) => ClipboardOutcome;
+   *  Shared by `/copy` and the mouse selection inside the ink tree. */
+  readonly clipboard: ClipboardWriter;
 }
 
 /** The notice a hatch surfaces when no ink tree is mounted — a plain / `--json` driver has no terminal to suspend. */
@@ -141,7 +141,7 @@ function editorNotice(outcome: EditorOutcome): string | undefined {
 export interface Hatches {
   readonly dumpScrollback: () => Promise<void>;
   readonly editTranscript: () => Promise<void>;
-  readonly copyTranscript: () => void;
+  readonly copyTranscript: () => Promise<void>;
 }
 
 /**
@@ -222,7 +222,9 @@ export function createHatches(deps: HatchDeps): Hatches {
         return;
       }
       // Wrapped to the LIVE width, because it is printed to that terminal (unlike `/edit`, which the editor re-flows).
-      const lines = wrapTranscript(transcript, deps.terminal().columns).map((line) => line.text);
+      // The primary terminal owns wrapping. Hatches receive faithful sanitized
+      // source (including tabs), never styled grids or inserted display indents.
+      const lines = transcriptDocument(transcript).split('\n');
       await withSuspension('/scrollback', () => dumpToScrollback(deps.dump, lines));
     },
 
@@ -234,18 +236,23 @@ export function createHatches(deps: HatchDeps): Hatches {
      * a paragraph the viewport folded across four rows comes back as one line, which is what a user pasting into a
      * bug report or a chat wants. The visual fidelity of a selection is the selection's job.
      */
-    copyTranscript: () => {
+    copyTranscript: async () => {
       const transcript = deps.transcript();
       if (transcript.length === 0) {
         deps.note(`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`);
         return;
       }
-      const outcome = deps.clipboard(transcriptDocument(transcript));
+      const outcome = await attemptClipboardWrite(deps.clipboard, transcriptDocument(transcript));
       switch (outcome.kind) {
         case 'written':
           // `'written'`, never `'copied'`: OSC 52 has no acknowledgement, so a terminal that drops it (VS Code Remote
           // SSH) is indistinguishable from one that honoured it. Say what we did, not what we cannot know.
-          deps.note(`/copy: sent ${String(outcome.characters)} characters to the clipboard.`);
+          deps.note(
+            `/copy: sent ${String(outcome.characters)} characters to the terminal clipboard.`,
+          );
+          return;
+        case 'failed':
+          deps.note('/copy: clipboard request failed locally — use /scrollback or /edit.');
           return;
         case 'too-large':
           deps.note(

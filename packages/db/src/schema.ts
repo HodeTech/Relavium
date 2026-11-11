@@ -499,6 +499,9 @@ export const agentSessions = sqliteTable(
     index('idx_agent_sessions_updated')
       .on(desc(t.updatedAt), desc(t.id))
       .where(sql`${t.deletedAt} is null`),
+    index('idx_agent_sessions_working_dir_updated')
+      .on(t.workingDir, desc(t.updatedAt), desc(t.id))
+      .where(sql`${t.deletedAt} is null`),
   ],
 );
 
@@ -525,6 +528,8 @@ export const sessionMessages = sqliteTable(
     toolCallId: text('tool_call_id'),
     name: text('name'),
     finishReason: text('finish_reason'),
+    // ADR-0123: optional host-recorded presentation metadata, never canonical/model content.
+    userDisplayText: text('user_display_text'),
     // The model that produced an assistant turn (fallback-aware); NULL for non-assistant rows.
     modelId: text('model_id').references(() => modelCatalog.id),
     // NOTE (ADR-0070 §5): the per-message `input_tokens` / `output_tokens` / `cost_microcents` columns were DROPPED.

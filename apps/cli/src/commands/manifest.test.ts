@@ -5,6 +5,7 @@ import { buildProgram } from '../program.js';
 import { captureIo } from '../test-support.js';
 import { COMMAND_MANIFEST, MANIFEST_BY_ID } from './manifest.js';
 import { STUB_COMMANDS } from './specs.js';
+import { COMMAND_DESCRIPTORS } from './descriptors.js';
 
 /**
  * The command-manifest drift guard ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
@@ -38,7 +39,19 @@ function collectCommandNodes(command: Command, prefix: string): CommandNode[] {
   const nodes: CommandNode[] = [];
   for (const sub of command.commands) {
     const path = prefix === '' ? sub.name() : `${prefix} ${sub.name()}`;
-    nodes.push({ id: path.replaceAll(' ', '.'), description: sub.description(), command: sub });
+    const words = path.split(' ');
+    const descriptor = COMMAND_DESCRIPTORS.find((entry) =>
+      [entry.path, ...entry.aliases.map((alias) => alias.path)].some(
+        (candidate) =>
+          candidate.length === words.length &&
+          candidate.every((word, index) => word === words[index]),
+      ),
+    );
+    nodes.push({
+      id: descriptor?.executorId ?? path.replaceAll(' ', '.'),
+      description: sub.description(),
+      command: sub,
+    });
     nodes.push(...collectCommandNodes(sub, path));
   }
   return nodes;
@@ -100,6 +113,13 @@ describe('command manifest (ADR-0056)', () => {
       for (const option of node.command.options) {
         const key = option.attributeName();
         const arg = entry?.args?.find((candidate) => candidate.name === key);
+        const authored = COMMAND_DESCRIPTORS.find(
+          (descriptor) => descriptor.executorId === node.id,
+        )?.options.find((candidate) => candidate.binding === key);
+        if (authored?.model === false) {
+          expect(arg).toBeUndefined();
+          continue;
+        }
         expect(arg, `manifest ${node.id} is missing option arg '${key}'`).toBeDefined();
         expect(arg?.description).toBe(option.description);
       }

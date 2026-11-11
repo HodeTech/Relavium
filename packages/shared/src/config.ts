@@ -182,6 +182,16 @@ export const GlobalConfigSchema = z
         // wizard so a next-session chat over a live-discovered id whose spelling the prefix map cannot place (e.g.
         // `chatgpt-4o-latest`) still resolves its provider. Absent ⇒ fall back to prefix/catalog inference.
         default_provider: z.enum(LLM_PROVIDERS).optional(),
+        standard_env_key_consent: z
+          .object({
+            anthropic: z.literal('ANTHROPIC_API_KEY').optional(),
+            openai: z.literal('OPENAI_API_KEY').optional(),
+            gemini: z.literal('GEMINI_API_KEY').optional(),
+            deepseek: z.literal('DEEPSEEK_API_KEY').optional(),
+          })
+          .strict()
+          .optional(),
+        keychain_unavailable_acknowledged: z.boolean().optional(),
         theme: z.string().optional(),
         // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
