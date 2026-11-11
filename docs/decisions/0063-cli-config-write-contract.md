@@ -8,6 +8,14 @@
 
 > **Note (2026-07-13): the typed setter gained a third key — `[preferences].default_provider` ([ADR-0059](0059-cli-mid-session-model-reseat.md)).** The `/models` picker and the onboarding wizard now persist the provider ALONGSIDE `default_model`, in the same atomic `writeGlobalPreferences({ defaultModel?, defaultProvider?, reasoningEffort? })` write. The provider is authoritative at pick time (the live `/models` list is per-provider), and re-inferring it from an opaque id fails for a live-discovered id whose spelling the prefix map cannot place (`chatgpt-4o-latest` has no `gpt` prefix) — the "cannot infer a provider for chat model" crash this closes. `resolveChat` reads it as the global fallback below `[chat].default_provider`, the exact shape §1 established for `default_model`; `buildDefaultChatAgent` uses a persisted provider VERBATIM and only falls back to id inference (catalog first, then prefix) when none is stored. Still non-secret, still `GlobalConfigSchema`-gated, still a partial merge.
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> typed preference writes gain a startup mode and acknowledged visible hint state.
+> Runtime revocation on confirmed narrowing is distinct from preference
+> publication/durability; a failed write never restores revoked authority.
+> Existing rewrite disclosure, symlink refusal and publication outcomes remain.
+> [Config contract](../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3);
+> accepted design, implementation pending.
+
 ## Context
 
 > **Amended 2026-11-09 — approved MVP-2 review correction.** The writer's

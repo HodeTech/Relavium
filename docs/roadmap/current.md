@@ -59,19 +59,21 @@ owns delivered scope and acceptance evidence.
 
 ## Next work — the CLI MVP
 
-**Next: MVP-3 — the agent can edit.** MVP-1 and MVP-2 are complete on `main`.
-Before implementation, review and obtain maintainer acceptance for the still-Proposed
+**Active: MVP-3 — the agent can edit.** MVP-1 and MVP-2 are complete on `main`.
+The maintainer accepted the corrected
 [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
-and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
+and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+with their linked designs and three-step plan on 2026-11-11.
 The editing/default-grant and approval-preview increments keep their mandatory
 security review and D64 acceptance bar.
 
 **MVP-3 preflight (2026-11-11):** the
-[three-step proposal](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
-records the documentation/code findings, proposed ADR refinements, public-contract
+[accepted three-step plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+records the documentation/code findings, corrected ADR refinements, public-contract
 changes and two independent review rounds plus a separate security sitting per
-step. ADR-0116/0120 and their linked Proposed contracts await maintainer acceptance;
-product implementation has not started.
+step. Step 1 is starting. A separate pre-build security design sitting remains
+required before Step 2's approval card; design acceptance is not implementation
+acceptance.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible
@@ -106,7 +108,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    drafts for the new ADRs: the pre-1.0 release path (D59), the toolbelt plus tool-render/approval-preview contract
    (phase 2.6 ADR row 9, split so `ask_user` comes later), the in-house markdown architecture (ADR row 11, part 1;
    no dependency), the ADR-0057 amendments (default grant and `default_mode`, D62; denial feedback, D67), the
-   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). **Drafted 2026-11-05, initially all Proposed; ADR-0114 accepted 2026-11-08 and ADRs 0115–0121 still awaiting the maintainer:** [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (markdown), [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (keymap), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (D62), [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (D67 denials), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (D63), [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (the CR-71 residual), [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (row 9, part 1) and [ADR-0121](../decisions/0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) (D59). Maintainer
+   keymap (D68), the `run_command` approval card (D63) and the ADR-0095 amendment for the CR-71 residual (D67). **Drafted 2026-11-05, initially all Proposed; ADR-0114 accepted 2026-11-08; ADR-0116/0120 accepted 2026-11-11; ADRs 0115/0117–0119/0121 still awaiting the maintainer:** [ADR-0114](../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md) (markdown), [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (keymap), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (D62), [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (D67 denials), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (D63), [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (the CR-71 residual), [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (row 9, part 1) and [ADR-0121](../decisions/0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) (D59). Maintainer
    gates: CI provider keys for the live-nightly lane (D37), provider spend for a manual three-provider turn and a
    Windows machine for MVP-10. A stale-entry sweep of [deferred-tasks.md](deferred-tasks.md) and the phase 2.6
    bullets that 2.6.5 and Wave 2–3 work already satisfied.
@@ -189,9 +191,10 @@ MVP-1 and MVP-2 are complete; the remaining queue is **MVP-3 → MVP-4 → MVP-8
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and the Proposed ADRs 0115–0121, each
-accepted by the maintainer before the MVP item that implements it (ADR-0120's approval escape with its mandatory
-security review at MVP-3). All are in [deferred-tasks.md](deferred-tasks.md).
+the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115, 0117–0119 and
+0121, each accepted before its implementation. ADR-0116/0120 are accepted; MVP-3
+keeps their pre-build design and post-implementation security gates. All open
+obligations are in [deferred-tasks.md](deferred-tasks.md).
 
 **After v0.2.0, first:** v0.2.1 — cross-turn tool memory (CR-70, on its recorded trigger) designed together with
 ADR-0096 §5's in-turn overflow continuation (D67).

@@ -962,6 +962,21 @@ security invariants** a review must confirm are:
 
 ### CLI terminal-render safety + interactive approval (2.5.E / 2.5-close Step 14)
 
+> **Accepted MVP-3 design refinement — 2026-11-11, implementation pending:**
+> [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+> and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+> extend the earlier shipped whitelist below with view-only diff/details
+> navigation, focused search, numeric inspection and deliberate reveal. None
+> approves; the affirmative owner/card/geometry/flushed-frame check remains
+> authoritative. Approval content uses the reserved, color-independent escape
+> alphabet rather than stripping hidden source bytes. Closed proven pre-effect
+> edit preconditions may return content-free correction feedback; this does not
+> relax user/guardrail denials or post-effect uncertainty. The canonical
+> [chat](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> and [registry](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+> contracts own exact keys, eligibility and sink restrictions. Separate pre-build
+> design and post-implementation security sittings are required.
+
 - **Terminal-control + Trojan-Source floor (a rendering-safety primitive).** Every dynamic
   string written to the terminal — streamed model output, a tool id, a path in an approval
   prompt, a pasted line — passes the shared `stripTerminalControls` sanitizer at the DISPLAY

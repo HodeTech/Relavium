@@ -17,9 +17,9 @@ A tool declaration in YAML has a `type` discriminator:
 
 ## Proposed edit, search and ranged reads — MVP-3
 
-**Proposed, unimplemented (2026-11-11):**
+**Accepted design, unimplemented (2026-11-11):**
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
-gates these additions. The catalog below remains the shipping contract until
+and its linked plan authorize these additions. The catalog below remains the shipping contract until
 implementation promotes the relevant sections.
 
 - `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional

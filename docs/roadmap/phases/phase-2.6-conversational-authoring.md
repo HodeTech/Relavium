@@ -1399,7 +1399,7 @@ PR #97 (merged 2026-11-07); the acceptance record is [current.md](../current.md#
 
 ## MVP-3 plan — Editing, search and reviewable effects (2026-11-11)
 
-**Status: Proposed — awaiting maintainer acceptance before product code.**
+**Status: Accepted plan (maintainer, 2026-11-11); implementation in progress.**
 Baseline: `6c8a89e1` on `development`, after MVP-2 merged through PR #98.
 This is the one home for MVP-3's implementation plan; the existing MVP-2 records
 below remain historical. No new branch, dependency, release or history migration
@@ -1444,22 +1444,46 @@ documentation hygiene and unchanged executable inputs; lint/typecheck passed.
 This is approval-ready proposal review, not a passed implementation, source-bound
 runtime CI or completed pre-build security design sitting.
 
-No additional ADR number is needed for these refinements of two still-Proposed
-drafts. Before Step 1, obtain acceptance of **ADR-0116, ADR-0120, their linked
-Proposed reference sections and this three-step plan together**. Specifically,
-this includes repository prompting-mode precedence, startup-auto admission,
-the explicit in-TUI default-setting action, preservation of old agent grants,
-inspection of any masked changed content and inclusion of live details/safe
-historical groups. Nothing here marks those decisions Accepted on the user's
-behalf. On acceptance, add dated forward notes to affected Accepted decisions,
-including ADR-0057's view-only approval key exceptions, ADR-0062's configured
-reset and ADR-0105's first production session-spill consumer. Reconcile the
-security standard's approval key whitelist with the accepted view keys before
-building the card. A separate **pre-build security design sitting** must first
+**Maintainer acceptance — 2026-11-11:** the maintainer directed verification and
+correction of two supplied reviews, followed by acceptance of the documents and
+continued implementation without another approval stop. Both ADRs, the linked
+reference designs and this three-step plan are accepted together. No new ADR
+number is needed. Backward-compatibility adapters/migrations are not required
+for the unused development product; preserving frozen grants remains a security
+rule, not an old-version compatibility promise.
+
+| Supplied finding | Verified disposition |
+|---|---|
+| Startup-auto admission could survive deliberate narrowing | Fixed in ADR-0116/config contract: shared revocable live authority; narrower reads, errors and confirmed non-auto defaults revoke before replacement/persistence. Failed/stale hosts cannot restore it; explicit current-mode auto is separate. |
+| Synthetic whitespace/ending marks could equal literal source | Fixed: all approval tokens share reserved `<...>` syntax; every source `<` is escaped once, with no color dependency. Test literal token/dot/tab pairs on both sides and narrow layouts. |
+| Missing final newline unspecified | Fixed: final ending is LF/CRLF/none, explicit unterminated marker, empty/new-file states, newline-only add/remove tests. |
+| Expected edit preconditions could end a chat without useful feedback | Fixed: a closed content-free correction refusal is eligible only at the proven read-only pre-effect preparation cut; existing recovering chat paths/budgets apply. User/guardrail denials and uncertain effects remain fatal; MVP-4 denial recovery stays separate. |
+| Repository authority claim too broad | Corrected: a repository may request prompting and advertise writes; it cannot choose startup auto or approve for the operator. |
+| ADR-0059 reseat forward note missing | Added alongside dated 0037/0055/0057/0062/0063/0105/0112 notes and the security-standard refinement. |
+| Built-in id collision and accidental/reflex approval concerns | Step 3 requires an authored `relavium-chat` id negative control; mounted tests verify no implicit/default affirmative and visible current-mode/scope disclosures. No claim that automated tests measure human reflex behavior. |
+| Rich preview channel ambiguous | Fixed in registry contract: optional third in-process hook context, separate from closed `ToolApprovalRequest.preview` and durable events; correlated live observer covers auto/read traces. |
+| Unicode property availability | Verified locally on Node 22.23.1 and 24.22.2: 14 positive/negative vectors each for C, Z and Default_Ignorable_Code_Point. This supports language-runtime feasibility, not visual or implementation acceptance. |
+| Restore stats, MCP preview, related links and command timing | Diff stats explicitly not restored; unaudited MCP previews remain name-only; related decisions/security references added; default command grant explicitly MVP-4. Existing custom-agent command tests remain possible, without activating the new MVP-4 card. |
+
+A separate **pre-build security design sitting** must first
 confirm the masked-change/reveal policy and Unicode/inspection contract on the
 final approved documents. The general preflight is not a substitute. Its ruling
 is recorded here before any approval-card implementation; the later per-step
 security sitting tests the actual code as well.
+
+**Pre-build security design sitting — 2026-11-11:** a separate GPT-6.1 Terra/high
+review of the corrected accepted documents and existing dispatch/filesystem,
+sanitizer and native acknowledgement mechanisms found no blocking design
+finding. It confirmed the conservative reveal/acknowledgement rules, single-pass
+reserved token alphabet, EOF/empty states, bounded Unicode/code-point inspection,
+no universal visual guarantee, exact prepared-byte and journal binding, ephemeral
+sinks and shared revocable startup-auto authority. Step 2 card implementation
+may proceed under those contracts; existing in-place append, span-losing masking
+and legacy approval routing must actually be replaced. SSRF/command/keychain/IPC
+changes are outside this sitting. No implementation test or post-code security
+acceptance is claimed. A separate Sol/high authority/correction check found no
+substantive gap; its remaining stale acceptance/rollback/compatibility wording
+was corrected, and this later acceptance is linked from the dated MVP-2 checkpoint.
 
 ### Three cohesive implementation steps
 
@@ -1480,11 +1504,11 @@ Keep new helpers focused and shared between hosts; do not decompose unrelated
 god files or activate paused work merely because a caller is nearby. Core stays
 platform-pure; no new runtime dependency or vendor type crosses the LLM seam.
 Additive exported capability/preview types, config schemas and curated index
-exports require this plan's approval. Existing hosts remain constructible and
-missing capability paths fail closed. Provider wire tool normalization is
+exports are covered by the accepted plan. Missing capability paths fail closed;
+no legacy preview/write bypass is retained. Provider wire tool normalization is
 reused, not redesigned.
 
-### Interaction and compatibility ledger
+### Interaction ledger
 
 | Surface | Intended change and boundary |
 |---|---|
@@ -1495,7 +1519,7 @@ reused, not redesigned.
 | New file tools | YAML-selectable through the existing tool registry; no new top-level shell command. Existing read/write arguments keep their meaning; range/edit/search arguments and finite bounds are documented in their single reference home. |
 | Headless/JSON and workflow execution | No interactive startup-mode grant or richer display event payload. Headless chat remains `ask`; workflow author trust/effect semantics stay separate. Test existing machine fixtures rather than assuming an in-TUI change cannot leak there. |
 | Resume/clear/reseat | Mode is newly resolved; per-instance approvals/read evidence/spills reset. Frozen agent grants remain frozen; starting a new built-in conversation is the upgrade path. |
-| Old strict binaries | New mode/hint keys require the explicit removal procedure in the config reference; do not claim forward key compatibility. |
+| Development compatibility | No older-binary migration, alias or compatibility adapter is required; authority floors, frozen grants and current machine-output discipline remain. |
 
 ### Acceptance and review loop
 
@@ -1534,11 +1558,16 @@ Required evidence includes real filesystem and host paths, not only mocks:
   all preview sinks, auto/always traces, ordered segments and historical caps.
   Drive both mounted hosts through resize, backpressure, stale-card ownership,
   paste/coalesced input, hidden affirmatives and inline/full-screen parity.
+  Include literal marker collisions, empty/new files and final-newline-only
+  changes; pin the chosen diff algorithm and finite work/memory budgets.
 - Step 3: actual fresh/resume/clear/reseat construction matrix for both hosts,
   authored/legacy agents, strict-layer precedence including shadowed `auto`,
   writable-config escalation, explicit operator auto, failed/stale builds,
   headless/JSON, first-frame footer/policy agreement, approval cache resets,
   hint acknowledgement and preference publication/durability failures.
+  Include authored-agent id `relavium-chat`, startup-auto → narrower default →
+  model file rewrite to auto, retained old hosts, failed/stale replacements and
+  explicit current-mode auto as a separate control. No implicit/default approval.
 
 Use causal negative controls on security gates and deterministic work counters
 for complexity; wall-clock evidence supplements them. Keep existing deadlines,
@@ -2627,6 +2656,11 @@ ADRs [0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starti
 and [0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
 remain Proposed and require acceptance before implementation. Their implementing
 increments retain the prescribed security review and D64 acceptance bar.
+> **Later update — 2026-11-11:** the maintainer subsequently accepted corrected
+> ADR-0116/0120 and their implementation plan; the [MVP-3 record](#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+> owns that acceptance and implementation progress. The Proposed wording above
+> preserves this earlier merge-checkpoint state.
+
 Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open. npm
 still serves `0.1.1`; the D59 release guard and MVP-10 release gates remain in force.
 
@@ -2904,8 +2938,8 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Proposed**; MVP-3 preflight/refinements and three-step plan drafted 2026-11-11, awaiting acceptance. The split of 2026-11-04 is unchanged. | 2.6.M |
-| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Proposed**; refined with MVP-3 preflight 2026-11-11, awaiting acceptance. | 2.6.M |
+| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted** with corrected MVP-3 plan, 2026-11-11; implementation/security gates open. The split of 2026-11-04 is unchanged. | 2.6.M |
+| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Accepted** with corrected MVP-3 plan, 2026-11-11; implementation/security gates open. | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |

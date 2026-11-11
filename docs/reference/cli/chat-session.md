@@ -312,7 +312,7 @@ An unrecognized `/…` command — or an **undeclared argument** on a known one 
 
 ## Proposed MVP-3 interaction contract
 
-**Proposed, unimplemented (2026-11-11):** requires accepted
+**Accepted design, unimplemented (2026-11-11):** approved together with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
 and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
 Until implementation, the stable sections below describe the current modes,
@@ -331,7 +331,7 @@ cleared/reseated interactive instances bind the configured start and first-frame
 footer together, with a fresh approval cache. Preserve frozen agent grants;
 older read-only sessions require a new built-in conversation to gain new tools.
 The [config contract](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3)
-owns authority and rollback. Non-TTY/JSON never open this picker and remain
+owns authority and publication outcomes. Non-TTY/JSON never open this picker and remain
 effective `ask`; direct mode commands cannot create a headless approver.
 
 **Approval and details.** Both chat hosts reuse one pure state machine and views.
@@ -364,6 +364,21 @@ focused Continue row; prompt/keyless/error/notice rows get explicit priority,
 and optional rows cannot displace the focused row or active input/card. MVP-8
 still owns workflow/run/gate content and actions.
 
+The approval content projection has one color-independent token alphabet:
+`<U+HEX>` for escaped code points, `<TAB>`, `<SP>` for trailing ASCII spaces,
+`<LF>`, `<CRLF>`, `<EOF:NO_NEWLINE>` and labelled `<MASK:id=N;bytes=N>` spans.
+Every source `<` becomes `<U+003C>` before inserting synthetic tokens; process
+source characters once, never re-escape generated tokens. Masked source ranges
+are projected before this escaping. Literal token-shaped text therefore differs
+from every synthetic token in both sides, inline/stacked layouts and color-off.
+Gutters/status labels are typed UI framing, never inferred from source prefixes.
+Wrap tokens as indivisible atoms or disable approval if the complete required
+notation cannot be inspected. The final-line ending is `LF`, `CRLF` or `none`;
+show differing/missing final endings on both sides. Empty files have zero lines
+and an explicit empty-file state; a new empty file still has a new-file effect.
+Test literal middle dots/tokens/tabs, empty/new files and final-newline-only
+additions/removals as adversarial pairs, not just snapshots of one projection.
+
 Live `/details` opens a keyboard-selectable bounded tool-call list and the same
 inspection view, with declared preview and bounded result summary. It is a view
 action, never a new execution or approval. Keep targets and write diff stats
@@ -379,6 +394,8 @@ metadata exclude previews/reveal buffers. No preview-to-disk hatch is introduced
 content-free call names/engine ids/outcomes already retained for completed turns.
 Join within the same turn by engine call id, never name or adjacency. Do not
 restore tool-call preambles, arguments, targets, diffs, result bodies or reasoning.
+Live diff statistics are also absent after restore; only the retained safe
+structural facts supply the group, with missing outcomes shown as unknown.
 Retain at most 16 structural call summaries per turn, displayed as a collapsed
 group of at most four logical rows with explicit omitted-call counts. Treat
 that bounded group and its user/final assistant as one restore unit; reserve

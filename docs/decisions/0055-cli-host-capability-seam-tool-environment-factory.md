@@ -6,6 +6,13 @@
 
 > **Accepted (2.5.A landed).** Drafted alongside the Phase 2.5 plan and finalized when workstream 2.5.A landed: the engine amendments EA1 (`tool_unavailable`) + EA2 (real failed-turn usage), the node-backed jailed `fs` + `process` capabilities, the factory, the advertise-filter, and the both-path wiring (chat / run / gate) all shipped. The **mandatory security review passed** (a consolidated adversarial pass over the whole seam — fs jail, process env/group-kill, the read-only chat + `full`-tier clamp, the classification ladder, and secret/I3 hygiene).
 
+> Amended 2026-11-11 by accepted [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md):
+> MVP-3 extends the platform-pure filesystem/output-store seam with bounded
+> search/ranged reads and owned write preparation. Missing capabilities fail
+> closed; no unbound legacy approval/write fallback is authorized. Chat wires
+> private instance-scoped spill storage under ADR-0105. This is accepted design,
+> not implementation acceptance; the tool/registry references own exact contracts.
+
 ## Context
 
 The built-in chat agent advertises `read_file` / `list_directory` / `git_status`

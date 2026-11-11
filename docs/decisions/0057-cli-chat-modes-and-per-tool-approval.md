@@ -46,6 +46,18 @@
 >    Unicode bidirectional/directional format controls (U+202A–202E, U+2066–2069, LRM/RLM/ALM) so a streamed/pasted
 >    line can't visually spoof its logical bytes in an approval prompt (CVE-2021-42574); ZWJ/ZWNJ are preserved.
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+> and [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md):
+> configured interactive starting modes use live revocable startup-auto authority;
+> headless stays ask. Diff inspection/reveal and its focused navigation/search are
+> view-only approval-swallow exceptions; they never approve and require current
+> owner/geometry/flushed-frame evidence before affirmative input. Proven pre-effect
+> edit preconditions get the registry's scoped correction feedback, distinct from
+> MVP-4 denial recovery. Protected paths and explicit `[a]` semantics remain.
+> Implementation is pending; [chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> and [registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+> refine the earlier wording without silently changing shipped behavior.
+
 ## Context
 
 We want Claude-Code-style chat modes (ask / plan / accept-edits / auto) and per-tool approval for writes

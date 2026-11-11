@@ -3416,12 +3416,12 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
   already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
   a CVE gap (those chars cannot reorder a command to masquerade). **2026-11-06:** they can still hide content in an
-  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (Proposed) makes the
+  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (accepted 2026-11-11, implementation pending) makes the
   approval preview escape every default-ignorable and format code point, which covers this target when it lands.
   **Scheduled → 2.6.M** (with tool-render v2). **2026-11-11 preflight correction:** the
   earlier 2026-11-04 exclusion is superseded by ADR-0120's mandatory approval-preview
-  escaping in MVP-3; see the [Proposed plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
-  Acceptance and implementation remain pending; this item is not closed by a proposal.
+  escaping in MVP-3; see the [accepted plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
+  Design acceptance is complete; implementation remains pending and this item is not closed by design approval.
   *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared

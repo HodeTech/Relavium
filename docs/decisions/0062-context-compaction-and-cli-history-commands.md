@@ -75,6 +75,14 @@
 > [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md#conversational-memory) and
 > [agent-session-spec.md](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations).
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> interactive `/clear` retains this ADR's same-agent snapshot rule but starts the
+> replacement in the configured mode under live revocable startup-auto authority,
+> with a fresh approval cache, read evidence and spill lifetime. Home's current
+> default-agent reconstruction gap is corrected to that same-agent contract.
+> Implementation is pending; the [chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> owns the exact lifecycle.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`

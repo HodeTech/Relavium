@@ -53,8 +53,10 @@ Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6
 MVP-2 is complete and on `main` through PR #98 (`0db4c940`, merged 2026-11-11), including all four steps,
 review corrections, separate security sittings and passing combined CI.**
 See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
-MVP-3 is next: editing/search tools, trustworthy approval previews and tool-call rendering v2.
-ADR-0116 and ADR-0120 remain Proposed; obtain their acceptance before implementation.
+MVP-3 is active: editing/search tools, trustworthy approval previews and tool-call rendering v2.
+Corrected ADR-0116/0120, their reference designs and the three-step plan were accepted by the maintainer
+on 2026-11-11 after supplied review findings were addressed. Implementation acceptance remains open;
+the pre-build security design sitting precedes the approval card, with separate implementation sittings.
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

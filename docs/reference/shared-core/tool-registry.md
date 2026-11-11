@@ -568,9 +568,10 @@ owned and are not switched to global chat policy.
 
 ## Proposed prepared writes and live previews — MVP-3
 
-**Proposed, unimplemented (2026-11-11):** requires
+**Accepted design, unimplemented (2026-11-11):** implements
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
-acceptance. Existing event, effect and secret-provenance contracts remain in force.
+with the maintainer-approved MVP-3 plan. Existing event, effect and
+secret-provenance contracts remain in force.
 
 The engine-side `ToolDef` gains an optional pure preview declaration, separate
 from the LLM-facing tool schema. It selects a target, explicit named fields
@@ -587,7 +588,7 @@ their exact source/range semantics belong in
 No Node filesystem object, descriptor number, SDK type or terminal span crosses
 the seam. An opaque preparation binds one validated target, before/after byte
 snapshot and execution operation; model arguments cannot construct or substitute
-it. Existing host implementations remain constructible; a missing new capability
+it. A missing new capability
 refuses the dependent operation rather than approving a blind fallback.
 
 The dispatch order is:
@@ -597,8 +598,13 @@ The dispatch order is:
 2. If required, prepare through read-only, bounded, cancellable host work. This
    includes no directory creation, temporary file or effect. Freeze content and
    compute a bounded diff; refused preparation reaches neither approval nor write.
-3. Send the separate live preview to the in-process display/approval consumer.
-   Keep the original target for classification; never classify a redacted target.
+3. Pass a separate, optional third in-process argument to `ConfirmActionHook`:
+   an immutable live approval context carrying the engine call id and
+   `ToolPreview`. Do not widen `ToolApprovalRequest.preview`/`ToolActionPreview`.
+   The event emitter receives the original closed request only, never this live
+   context. A separate call-id-correlated live display observer handles read
+   rows and auto/always traces; it is not an event/history producer. Keep the
+   original target for classification; never classify a redacted target.
 4. Obtain the existing mode/once/always decision, prepare the durable effect row,
    and retain all existing post-approval/post-prepare `beforeDispatch` gates.
 5. Revalidate and execute the owned preparation once, settle/bound/map results
@@ -615,6 +621,22 @@ reveal buffer or opaque preparation. Logs, session history/effects, display
 metadata and export code likewise receive none of those values. Curated new
 core exports and these additive capability signatures are part of the MVP-3
 plan's public-API approval; no LLM wire/seam schema change is proposed.
+
+**Correctable edit preconditions.** A closed typed preparation refusal identifies
+only `read_required`, `stale_file`, `match_not_found`, `match_not_unique`,
+`unobserved_match`, `unsupported_text` or `diff_limit`, with fixed content-free
+guidance to re-read, narrow the match or reduce the change. It is not a permission
+denial and carries no source/path/match excerpt. Only the registry's read-only
+preparation cut, before durable effect preparation and dispatch, may classify it
+as recoverable `tool_failed`; node retry remains disabled. On existing
+`recoverToolFailures` chat paths it becomes a bounded `isError` tool result under
+the existing finite tool/correction budgets; workflow nodes retain fail-fast
+policy. A same-shaped failure after effect preparation/dispatch is not eligible.
+Final revalidation failure stays conservatively fatal if its no-effect status
+cannot be established through the existing journal protocol. User/mode rejection,
+protected/confidentiality/guardrail denial, cancellation and uncertain effects
+keep their current classifications. No generic side-effect failure or denial
+recovery is activated before MVP-4.
 
 The CLI composes transcript sanitization with a distinct approval-safe projection.
 It needs a bounded, source-span-preserving masking projection, at least as

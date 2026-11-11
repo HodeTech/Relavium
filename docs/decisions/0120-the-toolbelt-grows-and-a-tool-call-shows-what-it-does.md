@@ -1,8 +1,15 @@
 # ADR-0120: The toolbelt grows, and a tool call shows what it does
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; proposal refined 2026-11-11)
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [phase 2.6 · 2.6.M](../roadmap/phases/phase-2.6-conversational-authoring.md#26m--the-first-class-toolbelt-breadth--rendering), [MVP-A8, MVP-A9](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
+
+> **Accepted 2026-11-11 (maintainer):** the corrected design and linked MVP-3
+> plan are approved for implementation after addressing the supplied review.
+> This accepts the decisions, not an implementation or security sitting.
+> [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md)
+> governs scratch and filesystem containment; the
+> [security standard](../standards/security-review.md) governs both security gates.
 
 ## Context
 
@@ -53,6 +60,12 @@ Exact arguments, bounds and texts live in
     whose content changed since that read, so an edit never applies to a view
     the model did not see.
   - The write is atomic and preserves line endings. Binary files are refused.
+  - Expected, proven pre-effect edit preconditions return bounded content-free
+    correction feedback on the existing recovering chat paths. User/guardrail
+    denial and uncertain or possibly dispatched effects remain fatal under the
+    current policy. This does not activate MVP-4 denial recovery; the
+    [registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+    owns the closed reasons and classification.
 - **`search_files`.** Searches file contents.
   - The pattern is a **literal** (with case and whole-word options), never a
     regular expression, so there is no backtracking surface.
@@ -89,6 +102,10 @@ Exact arguments, bounds and texts live in
   A tool that declares none shows its name only. A field marked secret, a
   `credentialRef` or a masked input is structurally absent from `ToolPreview`'s
   type. It cannot be declared previewable.
+  MCP definitions without an audited host-owned preview declaration remain
+  name-only in MVP-3; a server cannot authorize its own preview fields. Rich MCP
+  target previews remain with MVP-9, while existing explicitly bound MCP grants
+  retain their current policy/approval floors.
 - **Every string passes the floor.** In a transcript row, each target and
   field passes `sanitizeUntrusted`: secret shapes masked on the original text,
   then terminal controls stripped. Each is bounded per field and per row. A
@@ -104,8 +121,9 @@ Exact arguments, bounds and texts live in
   approval card and its full view, every code point in a target, field or diff
   line that is not a printable graphic character renders as a visible, styled
   escape (for example `<U+202E>`, `<U+2028>` or `<U+E0049>`), never stripped and
-  never left invisible. A literal `<U+` already in the text is escaped too (its
-  `<` shows as `<U+003C>`), so the notation stays unambiguous where styling is
+  never left invisible. Every literal `<` already in the source is escaped
+  as `<U+003C>` in a single source pass; all synthetic approval tokens use the
+  reserved `<...>` namespace, so the notation stays unambiguous where styling is
   off. The set is defined by properties, with one short hand-kept list:
   - every `\p{C}` code point: controls, format characters, surrogates,
     private-use and unassigned code points;
@@ -118,17 +136,18 @@ Exact arguments, bounds and texts live in
     braille blank), U+16FE4 (a filler mark) and U+1D159 (a null notehead). A
     font can draw others blank; the mandatory security review owns this list.
 
-  A TAB shows as a styled tab mark instead, so tab-indented code stays readable
-  and a tab is still told from spaces. Whitespace at the end of a line, the
-  ASCII space included, shows as a styled mark per character (`·` for a space),
-  as `git diff` marks whitespace errors, so a trailing space never draws as
-  nothing. A CR before an LF is part of the line's ending, not trailing
+  A TAB shows as `<TAB>`. Whitespace at the end of a line shows one token per
+  character (`<SP>` for an ASCII space); a literal middle dot remains literal,
+  never an overloaded whitespace mark. A CR before an LF is part of the line's ending, not trailing
   whitespace. The line diff compares each line with its ending. The card states
   each side's endings whenever they are not all LF (a styled `CR LF endings` or
   `mixed endings` note beside the target, always shown for a new file whose
   lines end in CR LF), and a line whose ending differs from its side's or from
-  the other side's shows a styled `<CR LF>` or `<LF>` mark. A CR anywhere else is
-  escaped. A change to whitespace or to a line ending alone therefore never
+  the other side's shows `<CRLF>` or `<LF>`. A nonempty file's unterminated final
+  line shows `<EOF:NO_NEWLINE>`; an empty file has zero source lines and an
+  explicit empty-file state, not an invented unterminated line. A CR anywhere
+  else is escaped. Adding/removing only the final newline is a real two-sided
+  change. A change to whitespace or to a line ending alone therefore never
   renders as an unchanged line, and a file written in CR LF never looks like its
   LF twin. The property sets are ones the JavaScript regular-expression engine
   knows, so only the short blank-drawing list above is kept by hand. The escape
@@ -200,9 +219,8 @@ Exact arguments, bounds and texts live in
 
 ### Proposal review — 2026-11-11
 
-These refinements remain **Proposed**. They record the design preflight's
-recommended resolution of the open questions above, for maintainer approval;
-they are not an implementation security sitting or an acceptance claim.
+These refinements were initially Proposed. The acceptance receipt above includes
+their corrected final form; they are not an implementation security sitting.
 
 - **Observed ranges, not merely a read flag.** Edit evidence belongs to the
   current agent turn/tool loop and the unchanged source-file snapshot; session
@@ -271,7 +289,7 @@ explicit `[a]` bypass a fresh card, and every resulting write remains visible.
 The existing failure glyph shipped in MVP-2; it is a regression requirement,
 not a second MVP-3 delivery. The
 [MVP-3 plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
-owns scope, steps and pending maintainer acceptance.
+owns scope, steps and the remaining implementation/security acceptance gates.
 
 ### Alternatives considered
 

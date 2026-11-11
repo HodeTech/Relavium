@@ -33,7 +33,8 @@ the maintainer paused Wave 3 (Steps 9c–19 pending, not declined) and put the C
 MVP-2 is complete and on `main` through PR #98 (`0db4c940`, 2026-11-11), including all four steps,
 review corrections, separate security sittings and passing combined CI
 ([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)).
-MVP-3 is next; ADR-0116 and ADR-0120 remain Proposed and require acceptance before implementation.
+MVP-3 is active; corrected ADR-0116/0120 and the three-step plan were accepted by
+the maintainer on 2026-11-11. Implementation/review and separate security gates remain open.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.

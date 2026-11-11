@@ -10,11 +10,11 @@ Config files are **TOML 1.0**. They are decoded to plain objects by the surface 
 
 ## Proposed starting chat mode — MVP-3
 
-**Proposed, unimplemented (2026-11-11):** this section requires acceptance of
+**Accepted design, unimplemented (2026-11-11):** this section is approved with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md).
 The remaining stable contract describes current behavior.
 
-| Location | Key | Accepted values in the proposal |
+| Location | Key | Accepted values |
 |---|---|---|
 | Operator global `[preferences]` | `default_mode` | `ask`, `plan`, `accept-edits`, `auto` |
 | Workspace/project `[chat]` | `default_mode` | `ask`, `plan`, `accept-edits` |
@@ -28,30 +28,38 @@ Validate every supplied value before resolving: a shadowed workspace `auto`
 is still a strict-config error. Diagnostics name the file and key, never echo
 arbitrary rejected values. Repository files cannot set the hint key.
 
-For interactive invocations, read and admit the global startup-auto ceiling
-before model/tool work. Clear, reseat and resume resolve the current preference
-at the session workspace, preserving that invocation ceiling. A newly read
+For interactive invocations, read and admit a live startup-auto authority
+before model/tool work. Old, pending and replacement hosts share its revocation
+state. Clear, reseat and resume resolve the current preference at the session
+workspace. An observed narrower effective start, or read/validation failure,
+revokes startup-auto before building; a failed/stale replacement cannot restore
+it. Confirming a non-auto default revokes it before persistence, including write
+failure; cancel before confirmation changes nothing. A newly read
 `auto` without initial authority or an explicit trusted picker action refuses
 the replacement; it never silently downgrades or reuses a permissive captured
-value. Read/validation failure is visible and cannot widen an old host. Neither
+value. Only a new invocation or confirmed trusted default-auto action can
+re-admit it. Configured-auto hosts check the live admission at final dispatch;
+revocation prevents new effects, without recalling already-dispatched effects.
+Explicit current-session `/mode auto`/Shift+Tab is independent: it does not
+restore startup authority and a default-setting change does not silently revoke
+that explicit current-mode choice. Read/validation failure is visible. Neither
 the ceiling nor current mode is restored from history. Non-interactive and
 JSON execution always use effective `ask`; config validation still applies.
 
 The [mode/default picker](../cli/chat-session.md#proposed-mvp-3-interaction-contract)
 writes only global preferences through the existing typed writer. A successful
 explicit operator selection can admit `auto` for this invocation; a model write
-or a background reload cannot. Cancellation/refusal publishes neither a new
-default nor new authority. A post-rename directory-sync warning is a published
+or a background reload cannot. Cancellation/refusal never widens authority or
+publishes a new default. Confirmed narrowing remains live even if saving fails,
+and the UI distinguishes that from an unsaved preference. A post-rename directory-sync warning is a published
 preference with uncertain durability, not an unsaved choice. Retain the existing
 symlink refusal, schema round-trip, unrelated-value preservation and rewrite
 disclosure. A hint is acknowledged only after actual visible delivery and the
 same honest writer outcomes; failure does not prevent chat.
 
-**Older-binary rollback:** remove only `default_mode` and
-`default_mode_hint_shown` from global `[preferences]`, and `default_mode` from
-each workspace/project `[chat]`, keeping other values. Older strict binaries
-can reject these new keys on any config-loading command. No credential migration
-or history migration is needed.
+No backward-compatibility adapter or older-binary migration is required for this
+development increment (maintainer, 2026-11-11). Strict validation and authority
+checks are security requirements rather than legacy compatibility behavior.
 
 ## Locations
 
