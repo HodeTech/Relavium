@@ -17,11 +17,12 @@ A tool declaration in YAML has a `type` discriminator:
 
 ## Proposed edit, search and ranged reads — MVP-3
 
-**Accepted design (2026-11-11); Step 1 implementation under review:**
+**Accepted design (2026-11-11); Step 1 locally accepted (2026-11-12):**
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
 and its linked plan authorize these additions. Ranges, discovery, observed-read
 bookkeeping and the session spill store are implemented on `development`, with
-Step 1 acceptance still pending. Editing/prepared writes remain Step 2 and the
+the [source-bound local acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
+distinguishing review/security gates from checkpoint CI. Editing/prepared writes remain Step 2 and the
 built-in default grant remains unchanged until Step 3.
 
 - `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional

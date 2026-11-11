@@ -1822,6 +1822,30 @@ Its implementation begins after the Step 1 CI checkpoint. No further design
 approval is required for these verified corrections; ordinary implementation,
 two fresh review rounds, affected fixes and a separate security sitting remain.
 
+### MVP-3 Step 1 Windows validation extension (2026-11-12)
+
+The initial pushed checkpoint's Windows job passed its selected existing
+filesystem suites, but its explicit selection did not include the new
+`fs-mvp3.test.ts` and `session-output-store.test.ts`. Add both to that same
+serialized step, retaining all previous cases, failure guards and deadlines.
+The expanded command passes locally: 14 suites, 402 tests and ten existing
+platform skips. This macOS result is not Windows execution evidence.
+
+A fresh Sol/medium selection review identified one source-backed fixture
+portability defect: a self-killed Windows child reports exit 1 with no POSIX
+signal, so the unconditionally expected `SIGKILL` was incorrect. Root verified
+the installed Node runtime's upstream libuv implementation. The fixture now
+requires synchronous post-publication readiness, no spawn error or stderr,
+and the strict platform-specific termination result. Actual crashed-owner
+reclamation and live-owner preservation remain unchanged and unmocked.
+
+A new Luna/high review found no issue in the corrected test/CI scope. The two
+complete native suites pass 63 tests; workspace lint/typecheck, build/format
+and the final expanded 14-suite selection pass. Application production sources
+remain identical to `7df16ec2`; no population, coverage floor or case/job timeout
+was weakened and no new skip was introduced. Native Windows execution remains
+due on the extended selection before closing this validation clause.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

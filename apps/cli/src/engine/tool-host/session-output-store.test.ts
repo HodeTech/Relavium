@@ -590,13 +590,19 @@ describe('private session-instance output store', () => {
       const info = fs.lstatSync(root, {bigint: true});
       fs.writeFileSync(join(root, '.owner.json'), JSON.stringify({version: 1, pid: process.pid, instance, dev: info.dev.toString(), ino: info.ino.toString()}), {mode: 0o600});
       fs.writeFileSync(join(root, randomUUID() + '.tmp'), 'crashed bytes', {mode: 0o600});
+      fs.writeSync(1, 'ready\\n');
       process.kill(process.pid, 'SIGKILL');
     `,
         parent(),
       ],
       { encoding: 'utf8' },
     );
-    expect(child.signal).toBe('SIGKILL');
+    expect(child.error).toBeUndefined();
+    expect(child.stdout).toBe('ready\n');
+    expect(child.stderr).toBe('');
+    // Windows reports a self-kill as exit 1; the parent's handle has no POSIX signal.
+    expect(child.status).toBe(process.platform === 'win32' ? 1 : null);
+    expect(child.signal).toBe(process.platform === 'win32' ? null : 'SIGKILL');
     const alive = await orphan(process.pid);
     const store = await create();
     expect(store.startupSweep).toEqual({ removed: 1, retained: 1, incomplete: false });
