@@ -2414,10 +2414,22 @@ reference calculation. All 1,920 former oracle values were checked for equivalen
 every factory operation, assertion, counter bound, size and deadline is retained.
 
 The focused Node-22 run and Node-24 V8 diagnostic each pass the unchanged 256-case
-four-file cohort; they are not replacements for full enforced coverage. Other streaming case overruns
-are not attributed to the inline oracle or RPC failure without evidence. This
-test-only follow-up still requires fresh review and final combined CI. All
-production sources and security decisions retain their accepted identities.
+four-file cohort; they are not replacements for full enforced coverage. Other
+streaming case overruns are not attributed to the inline oracle or RPC failure
+without evidence.
+
+Two fresh independent source reviews accept the test-only correction at
+`f73ea504`. Round 1 verifies all 1,920 exact old/new oracle expressions on both
+Node versions and all 2,004 unchanged tree entries outside the five-file delta.
+Round 2 independently verifies oracle equivalence and passes all 223 cases in
+the three affected files. Both reviews confirm unchanged test bodies, workloads,
+structural assertions and deadlines, and explicitly retain the unresolved
+individual CI overruns as a required verification gate. These overlapping
+cohorts are not added to the full-suite test total. All production, tooling,
+configuration and security sources retain their accepted identities; this does
+not claim a fresh production security sitting. Only this acceptance/status record
+changes after the reviewed test commit. Final combined source-bound CI and
+maintainer review still gate the checkpoint PR.
 
 ## Deferred-tasks pulled into this phase
 
