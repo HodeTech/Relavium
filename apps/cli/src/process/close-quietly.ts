@@ -1,7 +1,13 @@
 import type { CliIo } from './io.js';
 
 /** Owned resource labels only: native failures may contain paths, credentials or hostile text. */
-type ResourceLabel = 'session store' | 'history database' | 'effect journal' | 'persister' | 'MCP';
+type ResourceLabel =
+  | 'session store'
+  | 'history database'
+  | 'effect journal'
+  | 'persister'
+  | 'MCP'
+  | 'output store';
 
 /** A secondary cleanup failure cannot replace the command result or prevent remaining teardown. */
 export function warnTeardown(io: Pick<CliIo, 'writeErr'>, label: ResourceLabel): void {

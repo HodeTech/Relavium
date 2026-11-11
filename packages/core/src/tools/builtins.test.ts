@@ -132,9 +132,9 @@ describe('built-in catalog', () => {
     expect(compiled.schema.safeParse(valid).success).toBe(true);
     expect(compiled.schema.safeParse(empty).success).toBe(false);
   });
-  it('registers 13 unique built-ins, all sourced "builtin"', () => {
-    expect(BUILTIN_TOOLS).toHaveLength(13);
-    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(13);
+  it('registers 15 unique built-ins, all sourced "builtin"', () => {
+    expect(BUILTIN_TOOLS).toHaveLength(15);
+    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(15);
     expect(BUILTIN_TOOLS.every((candidate) => candidate.source === 'builtin')).toBe(true);
   });
 

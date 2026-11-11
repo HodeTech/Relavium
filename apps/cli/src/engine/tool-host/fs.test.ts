@@ -428,11 +428,11 @@ describe('createNodeFsCapability — glob read', () => {
     expect(result.content).toContain('OK'); // the binary is skipped before its size is tested against the budget
   });
 
-  it('caps the glob read at maxGlobMatches', async () => {
+  it('refuses a glob with more matches than the limit', async () => {
     for (let i = 0; i < 5; i += 1) await writeFile(join(workspace, `f${i}.ts`), 'x');
-    const result = await sandboxed({ maxGlobMatches: 2 }).readFile('*.ts', { glob: true });
-    // each match contributes one `===== fN.ts =====` header; the cap bounds the surfaced set to 2 of the 5.
-    expect(result.content.match(/===== f\d\.ts =====/g)?.length).toBe(2);
+    await expect(sandboxed({ maxGlobMatches: 2 }).readFile('*.ts', { glob: true })).rejects.toThrow(
+      /limit/,
+    );
   });
 });
 

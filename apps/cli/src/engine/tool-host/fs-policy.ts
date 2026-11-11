@@ -160,7 +160,7 @@ function ownPolicy(
   return descriptor;
 }
 
-/** Issue the floor prerequisite only. No shipping scratch allocator/lifecycle is introduced here. */
+/** Issue an exact host-only floor descriptor; each producer owns provisioning and cleanup separately. */
 export function issueHostScratchRoot(opts: {
   readonly homeDir: string;
   readonly rootDir: string;

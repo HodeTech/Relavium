@@ -57,6 +57,7 @@ interface BuiltinSpec<A> {
   readonly duplicationBenign?: boolean;
   /** The dispatch-context delegate this tool needs, so a filter can stop advertising it — see `ToolDef`. */
   readonly requiresDelegate?: ToolDelegateName;
+  readonly requiresFsMethod?: ToolDef['requiresFsMethod'];
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
@@ -75,6 +76,7 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.effect === undefined ? {} : { effect: spec.effect }),
     ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
     ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
+    ...(spec.requiresFsMethod === undefined ? {} : { requiresFsMethod: spec.requiresFsMethod }),
     dispatch: spec.dispatch,
   };
   return def;
@@ -234,10 +236,37 @@ const MEDIA_POLICY: ToolPolicyClass = {
  * Filesystem tools.
  * ------------------------------------------------------------------------------------------------ */
 
+const readRange = z
+  .object({
+    unit: z.enum(['lines', 'bytes']),
+    start: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    end: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .superRefine((range, ctx) => {
+    if (range.end < range.start || (range.unit === 'lines' && range.start < 1))
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid source range' });
+  });
+
 const readFileTool = defineBuiltin({
   id: 'read_file',
-  description: 'Read a text file as UTF-8; binary/media content returns a durable media handle.',
-  args: z.object({ path: z.string().min(1), glob: z.boolean().optional() }).strict(),
+  description:
+    'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing.',
+  args: z
+    .object({
+      path: utf8String(4096, 1),
+      glob: z.boolean().optional(),
+      range: readRange.optional(),
+    })
+    .strict()
+    .superRefine((args, ctx) => {
+      if (args.glob === true && args.range !== undefined)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['range'],
+          message: 'a range cannot combine with glob',
+        });
+    }),
   llmVisibleParams: {
     type: 'object',
     properties: {
@@ -249,13 +278,138 @@ const readFileTool = defineBuiltin({
         type: 'boolean',
         description: 'Treat the path as a glob pattern when true; defaults to false.',
       },
+      range: {
+        type: 'object',
+        description:
+          'Exclusive of glob: lines are one-based inclusive; bytes are zero-based start-inclusive/end-exclusive UTF-8 offsets. Cuts inside a UTF-8 sequence are refused.',
+        properties: {
+          unit: {
+            type: 'string',
+            enum: ['lines', 'bytes'],
+            description: 'Choose inclusive source lines or exclusive UTF-8 byte offsets.',
+          },
+          start: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description: 'First source line (at least 1) or inclusive byte offset (at least 0).',
+          },
+          end: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description:
+              'Last source line inclusive, or byte offset exclusive; never before start.',
+          },
+        },
+        required: ['unit', 'start', 'end'],
+        additionalProperties: false,
+      },
     },
     required: ['path'],
     additionalProperties: false,
   },
   policy: FS_POLICY,
   dispatch: (args, host, ctx) =>
-    requireFs(host, 'read_file').readFile(args.path, { glob: args.glob }, ctx.signal),
+    requireFs(host, 'read_file').readFile(
+      args.path,
+      { glob: args.glob, range: args.range },
+      ctx.signal,
+    ),
+});
+
+const findFilesTool = defineBuiltin({
+  id: 'find_files',
+  description:
+    'Find authorized files by a bounded in-house glob, respecting root ignore rules. Results are sorted newest first within the scanned set; incomplete traversal and limits are explicit.',
+  args: z.object({ path: utf8String(4096, 1).default('.'), glob: utf8String(4096, 1) }).strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Scoped directory; defaults to the workspace.',
+      },
+      glob: {
+        type: 'string',
+        maxLength: 4096,
+        description:
+          'File glob, at most 4096 UTF-8 bytes; supports *, ? and **, not regular expressions.',
+      },
+    },
+    required: ['glob'],
+    additionalProperties: false,
+  },
+  policy: FS_POLICY,
+  requiresFsMethod: 'findFiles',
+  dispatch: (args, host, ctx) => {
+    const fs = requireFs(host, 'find_files');
+    if (fs.findFiles === undefined) throw new ToolUnavailableError('find_files', 'fs.findFiles');
+    return fs.findFiles(args.path, { glob: args.glob }, ctx.signal);
+  },
+});
+
+const searchFilesTool = defineBuiltin({
+  id: 'search_files',
+  description:
+    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit; results do not confer read-before-edit evidence.',
+  args: z
+    .object({
+      path: utf8String(4096, 1).default('.'),
+      pattern: utf8String(1024, 1),
+      caseSensitive: z.boolean().optional(),
+      wholeWord: z.boolean().optional(),
+      glob: utf8String(4096, 1).optional(),
+    })
+    .strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Scoped directory; defaults to the workspace.',
+      },
+      pattern: {
+        type: 'string',
+        maxLength: 1024,
+        description: 'Nonempty literal, at most 1024 UTF-8 bytes; never a regular expression.',
+      },
+      caseSensitive: {
+        type: 'boolean',
+        description: 'Case-sensitive by default; false enables locale-independent case folding.',
+      },
+      wholeWord: {
+        type: 'boolean',
+        description: 'Require Unicode letter/number/underscore word boundaries; defaults to false.',
+      },
+      glob: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Optional bounded file glob; not a regular expression.',
+      },
+    },
+    required: ['pattern'],
+    additionalProperties: false,
+  },
+  policy: FS_POLICY,
+  requiresFsMethod: 'searchFiles',
+  dispatch: (args, host, ctx) => {
+    const fs = requireFs(host, 'search_files');
+    if (fs.searchFiles === undefined)
+      throw new ToolUnavailableError('search_files', 'fs.searchFiles');
+    return fs.searchFiles(
+      args.path,
+      {
+        pattern: args.pattern,
+        caseSensitive: args.caseSensitive,
+        wholeWord: args.wholeWord,
+        glob: args.glob,
+      },
+      ctx.signal,
+    );
+  },
 });
 
 const writeFileTool = defineBuiltin({
@@ -313,7 +467,8 @@ const writeFileTool = defineBuiltin({
 
 const listDirectoryTool = defineBuiltin({
   id: 'list_directory',
-  description: 'List directory contents, optionally recursive with a glob filter.',
+  description:
+    'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries: truncated/incomplete results state the entry limit and an unknown omitted-entry count explicitly.',
   args: z
     .object({
       path: z.string().min(1),
@@ -841,6 +996,8 @@ const invokeAgentTool = defineBuiltin({
  */
 export const BUILTIN_TOOLS: readonly ToolDef[] = [
   readFileTool,
+  searchFilesTool,
+  findFilesTool,
   writeFileTool,
   listDirectoryTool,
   runCommandTool,

@@ -63,7 +63,7 @@ export interface AssembleToolEnvOptions {
   readonly workspaceDir: string;
   /** Immutable host-only invocation policy; never a project-authored grant. */
   readonly fsPolicy?: FsPathPolicy;
-  /** Exact host-issued private scratch prerequisite (no shipping allocator). */
+  /** Exact host-issued private scratch descriptor; its producer owns the separate lifetime. */
   readonly scratch?: HostScratchRoot;
   /**
    * Resolve a `web_search` / `http_request` `credentialRef` to its secret VALUE host-side (the keychain) for
@@ -216,6 +216,8 @@ function requiredArmPresent(
   delegates: ReadonlySet<ToolDelegateName>,
 ): boolean {
   if (def.source === 'mcp') return host.mcp !== undefined; // discovered MCP tools route via host.mcp
+  if (def.requiresFsMethod !== undefined && host.fs?.[def.requiresFsMethod] === undefined)
+    return false;
   // Before any policy-class arm: a tool whose DELEGATE is absent cannot succeed regardless of its arms.
   if (def.requiresDelegate !== undefined && !delegates.has(def.requiresDelegate)) return false;
   if (def.policy.fsScoped)

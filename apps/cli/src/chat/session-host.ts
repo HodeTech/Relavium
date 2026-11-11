@@ -66,6 +66,11 @@ import {
   type ProviderResolver,
 } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
+import {
+  createSessionOutputStore,
+  SessionOutputStoreError,
+  type SessionOutputStore,
+} from '../engine/tool-host/session-output-store.js';
 import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import {
   fsPolicyScopeRoots,
@@ -101,6 +106,10 @@ const SESSION_DURABILITY_FAILURE =
  */
 
 export interface BuildChatSessionOptions {
+  /** Resolved operator home, explicitly supplied by production surfaces. */
+  readonly operatorHomeDir?: string;
+  /** Explicit resource factory for hermetic embeddings and tests. */
+  readonly outputStoreFactory?: (homeDir: string) => Promise<SessionOutputStore | undefined>;
   /** Creation owner reserved by the surface before preparation; never persisted or reconstructed by ID. */
   readonly workOwner?: SessionWorkOwner;
   /** Host-only native authority for both tool processes and MCP startup. */
@@ -256,6 +265,7 @@ export interface BuiltChatSession {
   readonly workOwner?: SessionWorkOwner;
   readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
   readonly whenHostSafeToClose: () => Promise<void>;
+  readonly closeOutputStore?: () => Promise<void>;
   /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
   readonly contextWindowTokens?: number | undefined;
   readonly session: AgentSession;
@@ -374,6 +384,7 @@ function buildSessionRuntime(
   sessionId: string,
   mcp: McpClient | undefined,
   context: SessionContext,
+  outputStore?: SessionOutputStore,
 ): {
   attachUsageWriter: (writer: SessionUsageWriter) => void;
   whenHostSafeToClose: () => Promise<void>;
@@ -471,7 +482,22 @@ function buildSessionRuntime(
     ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
-  const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
+  const originalHost: ToolHost = opts.toolHost ?? factoryEnv.host;
+  const fs = originalHost.fs;
+  const baseHost: ToolHost =
+    outputStore === undefined || fs === undefined
+      ? originalHost
+      : {
+          ...originalHost,
+          outputStore,
+          fs: {
+            ...fs,
+            readFile: (path, options, signal) =>
+              path.startsWith('output://')
+                ? outputStore.read(path, options, signal)
+                : fs.readFile(path, options, signal),
+          },
+        };
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const assertDurableDispatch = (toolId: string): void => {
@@ -1009,7 +1035,23 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
         mcpOptionsFor(opts, mcpArtifact, context.workingDir),
       );
 
+  let outputStore: SessionOutputStore | undefined;
   try {
+    opts.workOwner?.assertAdmitting();
+    if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
+      outputStore =
+        opts.outputStoreFactory === undefined
+          ? await createSessionOutputStore({ homeDir: opts.operatorHomeDir })
+          : await opts.outputStoreFactory(opts.operatorHomeDir);
+    if (outputStore?.startupSweep.incomplete === true) {
+      try {
+        opts.onListenerError?.(
+          'Output cleanup scanned a bounded subset; remaining folders were preserved.',
+        );
+      } catch {
+        /* advisory */
+      }
+    }
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1022,7 +1064,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context, outputStore);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -1078,6 +1120,9 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
           }),
       attachUsageWriter,
       whenHostSafeToClose,
+      ...(outputStore === undefined
+        ? {}
+        : { closeOutputStore: outputStore.close.bind(outputStore) }),
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,
@@ -1087,8 +1132,33 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
+    if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
+      reportOutputCleanupFailure(opts, err);
+    if (outputStore !== undefined) {
+      try {
+        await outputStore.close();
+      } catch (cause) {
+        reportOutputCleanupFailure(opts, cause);
+      }
+    }
     await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
+  }
+}
+
+/** Report uncertain output cleanup without exposing native errors or replacing the build failure. */
+function reportOutputCleanupFailure(
+  opts: Pick<BuildChatSessionOptions, 'workOwner' | 'onListenerError'>,
+  cause: unknown,
+): void {
+  if (opts.workOwner !== undefined) {
+    opts.workOwner.cleanupUncertain(cause);
+    return;
+  }
+  try {
+    opts.onListenerError?.('Session output cleanup could not be confirmed.');
+  } catch {
+    // A failed diagnostic cannot replace the original build failure.
   }
 }
 
@@ -1192,6 +1262,8 @@ export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
   | 'afterTurnCompaction'
   | 'onCompactionStart'
+  | 'operatorHomeDir'
+  | 'outputStoreFactory'
   | 'fsPolicy'
   | 'nativeProcesses'
   | 'workOwner'
@@ -1322,7 +1394,23 @@ export async function buildResumedChatSession(
     mcpOptionsFor(opts, opts.mcpArtifact ?? `resumed session ${record.id}`, context.workingDir),
   );
 
+  let outputStore: SessionOutputStore | undefined;
   try {
+    opts.workOwner?.assertAdmitting();
+    if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
+      outputStore =
+        opts.outputStoreFactory === undefined
+          ? await createSessionOutputStore({ homeDir: opts.operatorHomeDir })
+          : await opts.outputStoreFactory(opts.operatorHomeDir);
+    if (outputStore?.startupSweep.incomplete === true) {
+      try {
+        opts.onListenerError?.(
+          'Output cleanup scanned a bounded subset; remaining folders were preserved.',
+        );
+      } catch {
+        /* advisory */
+      }
+    }
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1335,7 +1423,7 @@ export async function buildResumedChatSession(
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context, outputStore);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
@@ -1396,6 +1484,9 @@ export async function buildResumedChatSession(
           }),
       attachUsageWriter,
       whenHostSafeToClose,
+      ...(outputStore === undefined
+        ? {}
+        : { closeOutputStore: outputStore.close.bind(outputStore) }),
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,
@@ -1403,6 +1494,15 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
+    if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
+      reportOutputCleanupFailure(opts, err);
+    if (outputStore !== undefined) {
+      try {
+        await outputStore.close();
+      } catch (cause) {
+        reportOutputCleanupFailure(opts, cause);
+      }
+    }
     await releaseFailedBuild(opts.workOwner, mcp, err);
     throw err;
   }

@@ -1203,6 +1203,10 @@ async function dispatchToolCalls(
       false,
     );
   }
+  // Only a subsequent model response can authorize use of prior-batch read observations. A read
+  // followed by an edit in this same response has not yet exposed the read result to the model.
+  if (params.dispatchContext.readScope !== undefined)
+    params.registry.promoteReadScope?.(params.dispatchContext.readScope);
   const results: LlmMessage[] = [];
   /** Media the response's tool calls produced, delivered as ONE message after the loop (`CR-50`). */
   const pending: PendingAttachment[] = [];
@@ -1448,6 +1452,7 @@ function observeTurnMoney(
 export async function captureAgentTurnOutcome(
   params: AgentTurnParams,
 ): Promise<CapturedAgentTurnOutcome> {
+  const readScope = Object.freeze({});
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   const supplied = Object.freeze({ ...params });
   const suppliedCapabilities = Object.freeze({ ...supplied.chainCapabilities });
@@ -1459,6 +1464,7 @@ export async function captureAgentTurnOutcome(
   };
   const observed: AgentTurnParams = {
     ...supplied,
+    dispatchContext: { ...supplied.dispatchContext, readScope },
     chainCapabilities: {
       ...suppliedCapabilities,
       sleep: async (...args) => {
@@ -1575,6 +1581,13 @@ export async function captureAgentTurnOutcome(
       engaged: acc.engaged,
       usage: knownUsage,
     };
+  } finally {
+    try {
+      supplied.registry.releaseReadScope?.(readScope);
+    } catch {
+      // Fresh, private loop identities prevent reuse even if an external cache cleanup fails.
+      // This synchronous cache-release hook must not replace the canonical outcome/accounting error.
+    }
   }
 }
 

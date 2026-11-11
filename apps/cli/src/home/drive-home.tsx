@@ -146,6 +146,10 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
+  /** Explicit home override for hermetic embeddings and tests. */
+  readonly homeDir?: string;
+  /** Explicit output resource factory for hermetic embeddings and tests. */
+  readonly outputStoreFactory?: Parameters<typeof buildChatSession>[0]['outputStoreFactory'];
   /** The same bootstrap invocation used by the guarded lazy route. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -259,6 +263,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
+    ...(deps.homeDir === undefined ? {} : { home: deps.homeDir }),
   });
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const nativePrompt = createNativePromptChannel();
@@ -1001,7 +1006,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             try {
               closeQuietly(deps.io, 'persister', () => persister?.close());
             } finally {
-              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP')); // best-effort; never orphan a spawned stdio child
+              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+              await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store')); // best-effort; never orphan a spawned stdio child
             }
           }
         };
@@ -1065,6 +1071,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           closeQuietly(deps.io, 'persister', () => persister?.close());
         } finally {
           await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+          await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
         }
         throw err;
       }
@@ -1106,6 +1113,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             : [config.chat.defaultModel, config.chat.defaultProvider];
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
+            operatorHomeDir: homeDir,
+            ...(deps.outputStoreFactory === undefined
+              ? {}
+              : { outputStoreFactory: deps.outputStoreFactory }),
             ...(workOwner === undefined ? {} : { workOwner }),
             ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
             // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
@@ -1250,6 +1261,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           noteToStore(budgetWarningText(warning));
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildResumedSession ?? buildResumedChatSession)({
+            operatorHomeDir: homeDir,
+            ...(deps.outputStoreFactory === undefined
+              ? {}
+              : { outputStoreFactory: deps.outputStoreFactory }),
             ...(workOwner === undefined ? {} : { workOwner }),
             ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
             chat: config.chat,
@@ -1306,8 +1321,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           // Legacy unowned callers still owe the actual returned builder's resources.
           if (host === undefined) {
             built.session.cancel();
-            await built.whenHostSafeToClose();
-            await built.closeMcp?.();
+            try {
+              await built.whenHostSafeToClose();
+            } finally {
+              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+              await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
+            }
           }
           throw resumeCancelled;
         }

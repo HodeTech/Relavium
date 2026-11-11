@@ -12,7 +12,13 @@ interface Shape {
 }
 
 const SHAPES: readonly Shape[] = [
-  { id: 'read_file', properties: ['path', 'glob'], required: ['path'] },
+  { id: 'read_file', properties: ['path', 'glob', 'range'], required: ['path'] },
+  { id: 'find_files', properties: ['path', 'glob'], required: ['glob'] },
+  {
+    id: 'search_files',
+    properties: ['path', 'pattern', 'caseSensitive', 'wholeWord', 'glob'],
+    required: ['pattern'],
+  },
   {
     id: 'write_file',
     properties: ['path', 'content', 'append', 'createDirs'],
@@ -108,12 +114,27 @@ function expectShape(schema: unknown, shape: Shape): void {
 }
 
 const BOUNDED_FIELDS = [
+  { id: 'find_files', field: 'glob', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'search_files', field: 'pattern', cap: 1024, units: /(?:1\s*KiB|1,?024)/i },
   { id: 'write_file', field: 'content', cap: 8 * 1024 * 1024, units: /(?:8\s*MiB|8,?388,?608)/i },
   { id: 'http_request', field: 'body', cap: 1024 * 1024, units: /(?:1\s*MiB|1,?048,?576)/i },
   { id: 'git_commit', field: 'message', cap: 16 * 1024, units: /(?:16\s*KiB|16,?384)/i },
 ];
 
 function expectBounds(id: string, schema: unknown): void {
+  if (id === 'read_file') {
+    const range = record(properties(schema)['range']);
+    expect(Object.keys(properties(range)).sort()).toEqual(['end', 'start', 'unit']);
+    expect(range['required']).toEqual(['unit', 'start', 'end']);
+    const fields = properties(range);
+    expect(record(fields['unit'])['enum']).toEqual(['lines', 'bytes']);
+    for (const field of Object.values(fields)) description(field);
+    for (const key of ['start', 'end']) {
+      expect(record(fields[key])['type']).toBe('integer');
+      expect(record(fields[key])['minimum']).toBe(0);
+      expect(record(fields[key])['maximum']).toBe(Number.MAX_SAFE_INTEGER);
+    }
+  }
   for (const bound of BOUNDED_FIELDS.filter((candidate) => candidate.id === id)) {
     const field = record(properties(schema)[bound.field]);
     const text = description(field);

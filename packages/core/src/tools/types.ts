@@ -87,6 +87,8 @@ export interface FileRead {
   readonly mimeType: string;
   readonly sizeBytes: number;
   readonly lastModified: string;
+  /** Explicit source range; offsets refer to the original UTF-8 file, never the JSON wrapper. */
+  readonly range?: FileReadRange;
   /** Durable media handle(s) when the file is binary/media (ADR-0031) — never inline base64 in `content`. */
   readonly media?: ToolResultPart['media'];
 }
@@ -102,6 +104,71 @@ export interface DirEntry {
 }
 export interface DirListing {
   readonly entries: readonly DirEntry[];
+  readonly truncated?: boolean;
+  /** Count only known omitted entries; incomplete traversal must not invent a total. */
+  readonly omittedEntries?: number | null;
+  readonly entryLimit?: number;
+  readonly incomplete?: boolean;
+}
+
+export interface FsReadRange {
+  readonly unit: 'lines' | 'bytes';
+  readonly start: number;
+  readonly end: number;
+}
+export interface FileReadRange extends FsReadRange {
+  readonly startByte: number;
+  readonly endByte: number;
+  readonly omittedBytes: number;
+}
+/** Ephemeral engine-created identity, not a model argument or durable identifier. */
+export type ToolReadScope = object;
+export type FsScanLimit =
+  | 'entries'
+  | 'directories'
+  | 'depth'
+  | 'files'
+  | 'bytes'
+  | 'matches'
+  | 'ignore'
+  | 'work';
+export interface FsScanStats {
+  readonly entriesVisited: number;
+  readonly filesScanned: number;
+  readonly bytesScanned: number;
+  readonly skippedBinary: number;
+  readonly skippedOversize: number;
+  readonly unreadable: number;
+  readonly incomplete: boolean;
+  readonly limit?: FsScanLimit;
+}
+export interface FsFindOpts {
+  readonly glob: string;
+}
+export interface FsSearchOpts {
+  readonly pattern: string;
+  readonly caseSensitive?: boolean | undefined;
+  readonly wholeWord?: boolean | undefined;
+  readonly glob?: string | undefined;
+}
+export interface FsFoundFile {
+  readonly path: string;
+  readonly sizeBytes: number;
+  readonly lastModified: string;
+}
+export interface FsFindResult {
+  readonly files: readonly FsFoundFile[];
+  readonly stats: FsScanStats;
+}
+export interface FsSearchMatch {
+  readonly path: string;
+  readonly line: number;
+  readonly content: string;
+  readonly omittedBytes: number;
+}
+export interface FsSearchResult {
+  readonly matches: readonly FsSearchMatch[];
+  readonly stats: FsScanStats;
 }
 export interface ProcessResult {
   readonly exitCode: number;
@@ -138,10 +205,18 @@ export interface FsCapability {
     signal?: AbortSignalLike,
   ): Promise<FileWritten>;
   listDirectory(path: string, opts: FsListOpts, signal?: AbortSignalLike): Promise<DirListing>;
+  findFiles?(path: string, opts: FsFindOpts, signal?: AbortSignalLike): Promise<FsFindResult>;
+  searchFiles?(path: string, opts: FsSearchOpts, signal?: AbortSignalLike): Promise<FsSearchResult>;
+  /** Only an untruncated model-facing result can acknowledge its host-owned source read. */
+  acknowledgeReadResult?(scope: ToolReadScope, result: unknown): void;
+  /** Promote prior-batch reads only after the next model response proves the result was sent. */
+  promoteReadScope?(scope: ToolReadScope): void;
+  releaseReadScope?(scope: ToolReadScope): void;
 }
 // `| undefined` on these forwarded-from-optional-args fields (exactOptionalPropertyTypes pass-through).
 export interface FsReadOpts {
   readonly glob?: boolean | undefined;
+  readonly range?: FsReadRange | undefined;
 }
 export interface FsWriteOpts {
   readonly append?: boolean | undefined;
@@ -216,7 +291,7 @@ export interface McpCallInput {
   readonly args: unknown;
 }
 
-/** A run-scoped store for over-ceiling result spill — reclaimed at the run's terminal event. */
+/** A host-owned scope for over-ceiling spill: a run or ephemeral session instance, reclaimed after join. */
 export interface ToolOutputStore {
   spill(text: string, limits: ToolResultLimits, signal?: AbortSignalLike): Promise<SpilledResult>;
 }
@@ -372,6 +447,8 @@ export interface ToolApprovalContext {
 }
 
 export interface ToolDispatchContext {
+  /** Fresh per agent tool loop, released on every completion/failure; never persisted. */
+  readonly readScope?: ToolReadScope;
   /** Supplied at actual execution; preparation and model-controlled arguments grant none. */
   readonly hostCallOptions?: ToolHostCallOptions | undefined;
   readonly nodeId: string;
@@ -506,6 +583,8 @@ export interface ToolDef<Args = unknown, Result = unknown> {
    * `ToolUnavailableError`. This field only lets a caller avoid ADVERTISING a call that cannot succeed.
    */
   readonly requiresDelegate?: ToolDelegateName;
+  /** A filesystem sub-capability, checked by advertisement and at dispatch. */
+  readonly requiresFsMethod?: 'findFiles' | 'searchFiles';
   /**
    * Whether THIS call mutates state outside the process, and what the engine can honestly promise about it
    * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);
@@ -562,6 +641,9 @@ export interface PolicyTarget {
 
 /** The engine-side registry + dispatcher. One instance, shared by both entry points (1.O / 1.V). */
 export interface ToolRegistry {
+  promoteReadScope?(scope: ToolReadScope): void;
+  /** Release ephemeral host evidence at a tool-loop boundary; synchronous and I/O-free. */
+  releaseReadScope?(scope: ToolReadScope): void;
   /** Resolve, validate, guard, dispatch, bound, and taint a tool call. See the lifecycle in tool-registry.md. */
   dispatch(toolCall: ToolCallPart, ctx: ToolDispatchContext): Promise<ToolDispatchOutcome>;
   /** Whether a tool id is registered (exact match). Registered ≠ authorized — the grant is checked per dispatch. */

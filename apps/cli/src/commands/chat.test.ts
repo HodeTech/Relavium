@@ -338,8 +338,9 @@ describe('chatCommand', () => {
     );
     try {
       await vi.waitFor(() => expect(f.registry.activeOwners).toBe(3));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(suspend, 'CHAT_JOB_CUSTODY_DURING_OLD_HOST_JOIN').toBeTypeOf('function');
+      await vi.waitFor(() =>
+        expect(suspend, 'CHAT_JOB_CUSTODY_DURING_OLD_HOST_JOIN').toBeTypeOf('function'),
+      );
       suspend?.();
       await vi.waitFor(() => expect(selfStop).toHaveBeenCalledOnce());
       expect(out()).toContain(EXIT_ALT_SCREEN);

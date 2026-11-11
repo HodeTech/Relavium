@@ -9,7 +9,7 @@ import { nativeProcessesForInvocation } from '../process/native-process-owner.js
 import { catalogModel, DEFAULT_ATTEMPT_TIMEOUT_MS, prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,6 +32,7 @@ import type { AbortSignalLike, Agent, AgentSessionRecord, SessionMessage } from 
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { SessionOutputStoreError } from '../engine/tool-host/session-output-store.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 
@@ -205,6 +206,109 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('spills a real tool result and reads its opaque reference through the next model round', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'relavium-output-loop-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-loop-workspace-'));
+    const text = 'observed-source-'.repeat(5_000);
+    writeFileSync(join(workspace, 'source.txt'), text);
+    let calls = 0;
+    let reference = '';
+    let readBack = '';
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CHAT_TEXT_CAPABILITY_FLAGS,
+      generate: () => {
+        throw new Error('stream only');
+      },
+      stream: (request) => {
+        const index = calls++;
+        const results = request.messages
+          .flatMap((message) => message.content)
+          .filter((part) => part.type === 'tool_result');
+        let chunks: StreamChunk[];
+        if (index === 0) chunks = callWithArgs('source', 'read_file', { path: 'source.txt' });
+        else if (index === 1) {
+          const result = results.at(-1)?.result;
+          if (typeof result !== 'string') throw new Error('expected a bounded source result');
+          reference = /full output at (output:\/\/[a-f0-9-]+\/[a-f0-9-]+)/.exec(result)?.[1] ?? '';
+          if (reference === '') throw new Error('missing scoped output reference');
+          chunks = callWithArgs('output', 'read_file', {
+            path: reference,
+            range: { unit: 'bytes', start: 0, end: 128 },
+          });
+        } else if (index === 2) {
+          const result = results.at(-1)?.result;
+          if (
+            typeof result !== 'object' ||
+            result === null ||
+            !('content' in result) ||
+            typeof result.content !== 'string'
+          )
+            throw new Error('expected a ranged spill read');
+          readBack = result.content;
+          chunks = textTurn('done');
+        } else throw new Error('unexpected extra model request');
+        return (async function* () {
+          await Promise.resolve();
+          for (const chunk of chunks) yield chunk;
+        })();
+      },
+    };
+    let built: Awaited<ReturnType<typeof build>> | undefined;
+    try {
+      built = await build({
+        cwd: workspace,
+        operatorHomeDir: home,
+        providers: { resolveProvider: () => provider, keyFor: () => 'test-key' },
+      });
+      built.session.start();
+      await built.session.sendMessage('read the source and inspect its spilled output');
+      expect(calls).toBe(3);
+      expect(reference).toMatch(/^output:\/\//);
+      expect(readBack).toContain('observed-source-');
+      expect(Buffer.byteLength(readBack)).toBe(128);
+      expect(readdirSync(join(home, '.relavium', 'session-outputs-v1'))).toHaveLength(1);
+    } finally {
+      built?.session.cancel();
+      await built?.whenHostSafeToClose();
+      await built?.closeOutputStore?.();
+      if (built !== undefined) await built.recordedEvents;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reports uncertain output initialization without exposing its cause or masking it', async () => {
+    const report = vi.fn();
+    const failure = new SessionOutputStoreError('io', true);
+    await expect(
+      build({
+        operatorHomeDir: '/tmp',
+        onListenerError: report,
+        outputStoreFactory: () => Promise.reject(failure),
+      }),
+    ).rejects.toBe(failure);
+    expect(report).toHaveBeenCalledWith('Session output cleanup could not be confirmed.');
+  });
+
+  it('owns separate ephemeral output stores per native session instance', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'relavium-output-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-workspace-'));
+    try {
+      const first = await build({ cwd: workspace, operatorHomeDir: home });
+      const second = await build({ cwd: workspace, operatorHomeDir: home });
+      const parent = join(home, '.relavium', 'session-outputs-v1');
+      expect(readdirSync(parent)).toHaveLength(2);
+      await first.closeOutputStore?.();
+      expect(readdirSync(parent)).toHaveLength(1);
+      await second.closeOutputStore?.();
+      expect(readdirSync(parent)).toHaveLength(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('delivers a long reply live without a primary buffer or implicit iterator', async () => {
     const chunks: StreamChunk[] = Array.from({ length: 600 }, () => ({
       type: 'text_delta',
@@ -781,6 +885,24 @@ describe('buildResumedChatSession (2.N)', () => {
       consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
     });
   }
+
+  it('reports uncertain output initialization during resume without masking it', async () => {
+    const report = vi.fn();
+    const failure = new SessionOutputStoreError('io', true);
+    await expect(
+      buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record(),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([textTurn('continued')]),
+        operatorHomeDir: '/tmp',
+        onListenerError: report,
+        outputStoreFactory: () => Promise.reject(failure),
+      }),
+    ).rejects.toBe(failure);
+    expect(report).toHaveBeenCalledWith('Session output cleanup could not be confirmed.');
+  });
 
   it('resumes and reseats with live-only delivery beyond the default queue capacity', async () => {
     for (const reseat of [false, true]) {

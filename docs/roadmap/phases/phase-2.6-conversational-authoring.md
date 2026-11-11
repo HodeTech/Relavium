@@ -1584,6 +1584,40 @@ rest of paused Wave 3 retain their existing owners. These are existing scope
 boundaries, not newly deferred MVP-3 work. At the end, update delivered docs and
 open the `development` → `main` PR for maintainer review; do not merge or publish.
 
+### Step 1 delivery — implementation review pending (2026-11-11)
+
+The first increment implements bounded ranged reads, literal search, glob
+discovery and explicit directory/discovery limits. Native read observations are
+staged only for exact, untruncated model-facing results and promoted after the
+next model response; same-response sibling calls cannot borrow unseen evidence.
+Scopes are private engine identities and are released on every turn outcome.
+The built-in chat grant is unchanged; editing remains Step 2.
+
+Native chat/one-shot builders provision isolated private output stores. Opaque
+references remain instance-local; store shutdown seals admission, joins actual
+I/O and removes only pinned owned entries. Bounded startup maintenance preserves
+live, reused and uncertain owners. Partial initialization rolls back only proven
+owned entries and reports cleanup uncertainty. Fresh/resume/clear/reseat and
+Home teardown share the owning lifecycle, including abandoned builds.
+
+The complete author `pnpm run ci` passes with all 32 changed TypeScript files
+unchanged throughout the run. Workspace tests include 7,466 CLI and 4,992 core
+passes; the 11 existing CLI and 11 LLM skips retain their platform/provider
+conditions. Build/format, isolation, package/bootstrap/CLI/media smokes, 1,031
+acceptance-tool tests and the wire, 23 usage, 115 filesystem and 130 secret
+mutation controls pass. Fixed/restored runs pass and their negative controls
+detect the intended semantic failures. No deadline, population or coverage
+floor was reduced. The source-worker import uses strip-compatible TypeScript;
+asynchronous host fixtures use isolated homes and explicit readiness.
+
+`pnpm coverage:enforced` also passes on the same unchanged TypeScript inputs;
+the existing package-floor scope is unchanged. The required two fresh
+independent review rounds and separate implementation security sitting are
+pending. Author implementation agents and
+the earlier design sitting do not count as those reviews. This entry records
+delivered scope, not Step 1 acceptance or whole-MVP-3 completion. Native Windows
+CI and real-terminal acceptance are not claimed from the local macOS run.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

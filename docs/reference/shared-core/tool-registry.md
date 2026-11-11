@@ -4,9 +4,9 @@
 - **Canonical home**: the contract for the engine-side `ToolRegistry` + dispatch in `packages/core` (`@relavium/core`) and the host-injected `ToolHost` capability seam it performs side effects through — workstream **1.T**
 - **Related**: [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md) (the decision), [../../decisions/0029-tool-policy-hardening.md](../../decisions/0029-tool-policy-hardening.md) (the guardrails), [built-in-tools.md](built-in-tools.md) (the tool catalog + the concrete result-bounding / config-only-param shapes), [node-types.md](node-types.md) (the `tool_config` / `agent_config` blocks that carry `parameters` / `input_mapping` / `output_mapping`), [mcp-integration.md](mcp-integration.md) (the MCP tool transport, 2.R), [llm-provider-seam.md](llm-provider-seam.md) (the canonical `ToolDef` the `ToolNormalizer` lowers), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxonomy) (`agent:tool_call` / `agent:tool_result` payloads + the `tool_denied` / `tool_failed` codes), [../../standards/security-review.md](../../standards/security-review.md#prompt-injection-posture) (the untrusted-data + SSRF + secret rules), [../../standards/error-handling.md](../../standards/error-handling.md) (the retryable/fatal mapping), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) (the sibling `ExecutionHost` seam + the single event-translation point), [../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (durable media handles)
 
-This page is the **one canonical home** for the tool-execution *contract* — how the engine registers a tool, resolves it, assembles and validates its effective arguments, enforces [ADR-0029](../../decisions/0029-tool-policy-hardening.md)'s guardrails, performs the side effect through the host, bounds the model-facing result, and marks it untrusted. The *why* (the engine↔host boundary, the policy/mechanism split) lives in [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md); the *tool catalog* (the thirteen built-ins, their return shapes, FS scope tiers, and the concrete result-bounding thresholds) lives in [built-in-tools.md](built-in-tools.md). This file is the dry reference its consumers (the 1.T registry, the 1.O `AgentRunner`, the 1.V `AgentSession`, each surface's `ToolHost` wiring) bind to. Where any other doc names a tool-dispatch rule it links here and never restates it.
+This page is the **one canonical home** for the tool-execution *contract* — how the engine registers a tool, resolves it, assembles and validates its effective arguments, enforces [ADR-0029](../../decisions/0029-tool-policy-hardening.md)'s guardrails, performs the side effect through the host, bounds the model-facing result, and marks it untrusted. The *why* (the engine↔host boundary, the policy/mechanism split) lives in [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md); the *tool catalog* (the built-in catalog, their return shapes, FS scope tiers, and the concrete result-bounding thresholds) lives in [built-in-tools.md](built-in-tools.md). This file is the dry reference its consumers (the 1.T registry, the 1.O `AgentRunner`, the 1.V `AgentSession`, each surface's `ToolHost` wiring) bind to. Where any other doc names a tool-dispatch rule it links here and never restates it.
 
-> **The one rule that shapes everything here.** `@relavium/core` has **zero platform-specific imports** (CLAUDE.md rule 5). Twelve of the thirteen built-in tools need filesystem / process / network / OS / media-store I/O the engine therefore cannot perform (only `invoke_agent` is engine-internal). The engine owns **policy + dispatch** (pure); the **mechanism** is injected as a `ToolHost`, the same purity seam as `ResolverCapabilities.readFile` (1.L2) and the injected HTTP transport ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). The TypeScript shapes below are the canonical interface the implementation mirrors.
+> **The one rule that shapes everything here.** `@relavium/core` has **zero platform-specific imports** (CLAUDE.md rule 5). Filesystem, process, network, OS and media-store I/O stay behind host capabilities; `invoke_agent` is engine-internal. The engine owns **policy + dispatch** (pure); the **mechanism** is injected as a `ToolHost`, the same purity seam as `ResolverCapabilities.readFile` (1.L2) and the injected HTTP transport ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). The TypeScript shapes below are the canonical interface the implementation mirrors.
 
 ## The `ToolDef` — a registered tool
 
@@ -113,7 +113,7 @@ interface ToolHost {
   readonly egress?: EgressCapability;    // outbound HTTPS — shared SSRF primitive; host-resolved credential ref
   readonly os?: OsCapability;            // clipboard / native notification
   readonly mcp?: McpCapability;          // MCP client transport (ADR-0034; wired at 2.R)
-  readonly outputStore?: ToolOutputStore; // run-scoped bounded spill for over-ceiling results (below)
+  readonly outputStore?: ToolOutputStore; // host-scoped bounded spill for over-ceiling results (below)
 }
 
 interface ProcessCapability {
@@ -155,8 +155,8 @@ interface EgressCapability {
 }
 
 interface ToolOutputStore {
-  /** Spill an over-ceiling result to a run-scoped store; returns a handle + byte length, reclaimed on the
-   *  run's terminal event (ADR-0036). A genuinely streamed huge source is bounded by its host capability
+  /** Spill an over-ceiling result within its host-owned lifetime; return an authorized handle + byte length.
+   *  Reclaim after actual producers join. A genuinely streamed huge source is bounded by its host capability
    *  at the boundary (returning an already-bounded payload); this spills the in-memory result a
    *  `dispatch` returned, so the engine hands the model a preview + the spill handle, not the full bytes. */
   spill(text: string, limits: ToolResultLimits, signal?: AbortSignalLike): Promise<SpilledResult>;
@@ -414,7 +414,7 @@ distinct from the *event* `outputSummary`, which the registry bounding stage pro
 
 - **Bounding is model-facing only.** `output_mapping` runs on the **full** result (step 6) so workflow state holds the real value; only the model-facing `tool_result` is replaced by a **bounded preview + an explicit truncation marker + the spill path** (step 7).
 - **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. A **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) requires a **host-capability contract**; it is not provided by this string-returning seam. Hosts own their source limits, and network availability depends on the surface/profile wiring. The shipping CLI wires egress in `chat-read-write`; its `chat-read-only` and `workflow-read-write` profiles omit that arm. This does not claim streamed engine results or shipping workflow HTTP. The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
-- **Reclaimed at the terminal event.** Spilled output is run-scoped and swept when the run reaches a terminal event (the ADR-0036 terminal-state sweep), like other run-scoped artifacts.
+- **Reclaimed by its host lifetime.** Native CLI chat wires an ephemeral per-session-instance store, closed only after actual producers join. A host with no store returns a preview and an explicit unavailable note; the workflow factory does not yet wire a spill producer. A future run-scoped store must obey the existing run-terminal ownership contract.
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
@@ -647,6 +647,32 @@ inspection of the whole eligible field as escaped, in-memory content. Literal
 mask/escape notation must be distinguishable without color. Full-view behavior
 and permitted sinks belong in the
 [chat interaction contract](../cli/chat-session.md#proposed-mvp-3-interaction-contract).
+
+## Step 1 read/search capability and evidence — MVP-3
+
+**Implemented on development; acceptance pending (2026-11-11).** `FsReadOpts`
+adds `range`; filesystem capabilities may provide `findFiles`/`searchFiles`.
+The exact range/discovery inputs and bounded result fields live in
+[built-in-tools.md](built-in-tools.md#file-tool-inputs-results-and-resource-limits).
+An engine-side `ToolDef.requiresFsMethod` declaration names `findFiles` or
+`searchFiles`; the advertise filter checks that method, while dispatch retains
+its typed capability-unavailable backstop. This declaration never crosses the
+LLM wire schema.
+
+Every captured agent tool loop creates a fresh private object identity in
+`ToolDispatchContext.readScope`. After successful bounding, the registry forwards
+only an untruncated built-in read's exact raw result to
+`fs.acknowledgeReadResult(scope, result)`. The native host recognizes its own
+frozen result through a WeakMap and stages source-version/interval evidence;
+generic/model-created values are not receipts. The next model response's tool
+batch calls `registry.promoteReadScope(scope)` before dispatching that batch,
+promoting only previously staged observations. No promotion occurs between
+sibling calls, so a read and edit requested together cannot imply the model saw
+the read. `releaseReadScope` drops staged/promoted evidence in a finally block
+on every turn outcome. A cleanup callback failure cannot substitute an error
+for canonical accounting/outcome; a fresh identity still prevents future reuse.
+These synchronous hooks perform no I/O or durable/event writes. Session and
+workflow agents share this one substrate; no cross-turn content carry is added.
 
 ## Secret argument provenance
 

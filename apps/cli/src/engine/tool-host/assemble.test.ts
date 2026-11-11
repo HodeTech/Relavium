@@ -227,6 +227,46 @@ describe('wiredToolIds (advertise-filter)', () => {
     ]); // host.mcp present ⇒ both advertised
   });
 
+  it('advertises discovery only when its declared filesystem operation is actually wired', () => {
+    const fs = fsHost.fs;
+    if (fs === undefined) throw new Error('missing fixture filesystem');
+    const base: ToolHost = {
+      fs: {
+        readFile: fs.readFile.bind(fs),
+        writeFile: fs.writeFile.bind(fs),
+        listDirectory: fs.listDirectory.bind(fs),
+      },
+    };
+    expect(
+      wiredToolIds(['read_file', 'search_files', 'find_files'], fsHost, BUILTIN_TOOLS),
+    ).toEqual(['read_file', 'search_files', 'find_files']);
+    expect(wiredToolIds(['read_file', 'search_files', 'find_files'], base, BUILTIN_TOOLS)).toEqual([
+      'read_file',
+    ]);
+    const stats = {
+      entriesVisited: 0,
+      filesScanned: 0,
+      bytesScanned: 0,
+      skippedBinary: 0,
+      skippedOversize: 0,
+      unreadable: 0,
+      incomplete: false,
+    };
+    const host: ToolHost = {
+      fs: {
+        ...base.fs,
+        readFile: fs.readFile.bind(fs),
+        writeFile: fs.writeFile.bind(fs),
+        listDirectory: fs.listDirectory.bind(fs),
+        searchFiles: () => Promise.resolve({ matches: [], stats }),
+      },
+    };
+    expect(wiredToolIds(['read_file', 'search_files', 'find_files'], host, BUILTIN_TOOLS)).toEqual([
+      'read_file',
+      'search_files',
+    ]);
+  });
+
   it('keeps an unknown granted id (a dynamically-registered tool resolved elsewhere)', () => {
     expect(wiredToolIds(['not_a_builtin'], fsHost, defs)).toEqual(['not_a_builtin']);
   });

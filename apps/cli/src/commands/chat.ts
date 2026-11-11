@@ -689,6 +689,7 @@ async function chatCommandBody(
     const prepare = async (host?: SessionHostOwner) => {
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildSession ?? buildChatSession)({
+          operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
           chat: config.chat,
           fsPolicy,
@@ -756,6 +757,7 @@ async function chatCommandBody(
           throw err;
         }
         await built.closeMcp?.().catch(() => undefined);
+        await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
         throw err;
       }
       // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
@@ -800,6 +802,7 @@ async function chatCommandBody(
         }
         if (opened !== earlyOpened) closeQuietly(deps.io, 'session store', () => opened.close());
         await built.closeMcp?.().catch(() => undefined);
+        await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
         throw err;
       }
 
@@ -1050,6 +1053,7 @@ async function chatResumeCommandBody(
     // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
     // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
     let closeMcp: (() => Promise<void>) | undefined;
+    let closeOutputStore: (() => Promise<void>) | undefined;
     try {
       // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
       // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
@@ -1169,6 +1173,7 @@ async function chatResumeCommandBody(
       });
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildResumedSession ?? buildResumedChatSession)({
+          operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
           chat: config.chat,
           fsPolicy,
@@ -1208,6 +1213,7 @@ async function chatResumeCommandBody(
         });
       const resumed = host === undefined ? await build() : await host.build(build);
       closeMcp = resumed.closeMcp;
+      closeOutputStore = resumed.closeOutputStore;
       surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
       built = resumed;
       missingKey = resumed.missingKeyProvider;
@@ -1250,6 +1256,7 @@ async function chatResumeCommandBody(
         throw err;
       }
       await closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+      await closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
       closeQuietly(deps.io, 'session store', () => opened.close());
       throw err;
     }
@@ -2125,6 +2132,7 @@ async function buildFreshChatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildSession({
+      operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
       chat: deps.chat,
       ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
@@ -2213,7 +2221,10 @@ async function buildFreshChatWiring(
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
     // so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary error).
     if (host !== undefined) host.work.failure(err);
-    else await built.closeMcp?.().catch(() => undefined);
+    else {
+      await built.closeMcp?.().catch(() => undefined);
+      await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
+    }
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
@@ -2462,6 +2473,7 @@ async function buildReseatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildResumedSession({
+      operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
       chat: deps.chat,
       ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
@@ -2505,7 +2517,10 @@ async function buildReseatWiring(
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
     // propagates so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary).
     if (host !== undefined) host.work.failure(err);
-    else await resumed.closeMcp?.().catch(() => undefined);
+    else {
+      await resumed.closeMcp?.().catch(() => undefined);
+      await resumed.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
+    }
     throw err;
   }
   // A reseat re-drive runs INSIDE the hoisted alt buffer — route the MCP-skipped diagnostic to the reseated session's
@@ -2814,6 +2829,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         // must still release the now-quiescent persister and MCP clients.
         closeQuietly(deps.io, 'persister', () => persister.close());
         await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+        await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
       }
   }
 }

@@ -17,10 +17,12 @@ A tool declaration in YAML has a `type` discriminator:
 
 ## Proposed edit, search and ranged reads — MVP-3
 
-**Accepted design, unimplemented (2026-11-11):**
+**Accepted design (2026-11-11); Step 1 implementation under review:**
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
-and its linked plan authorize these additions. The catalog below remains the shipping contract until
-implementation promotes the relevant sections.
+and its linked plan authorize these additions. Ranges, discovery, observed-read
+bookkeeping and the session spill store are implemented on `development`, with
+Step 1 acceptance still pending. Editing/prepared writes remain Step 2 and the
+built-in default grant remains unchanged until Step 3.
 
 - `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
   `replace_all` (default false). A nonunique match without `replace_all`, no
@@ -39,10 +41,14 @@ implementation promotes the relevant sections.
 - Successful model-facing reads establish source-identity/content-version and
   delivered-byte intervals for the active agent turn's tool loop, in sessions
   and workflow agent nodes alike. Bound both retained
-  sources and intervals; eviction only removes edit eligibility. A truncated
-  read certifies only delivered source intervals, not its marker or omitted
-  text. A spill read can extend eligibility only through a verified mapping
-  back to that unchanged source snapshot. Search snippets, find results and
+  sources and intervals; eviction only removes edit eligibility. Exact raw read
+  objects stage evidence only after untruncated model bounding; the next model
+  response promotes it before that response's tool batch. Sibling read/edit
+  calls cannot borrow evidence from a result not yet sent to the model. The
+  current implementation conservatively grants no evidence for truncated
+  results or spill reads: re-read the original file in a narrower source range.
+  A future spill mapping would have to prove original snapshot intervals.
+  Search snippets, find results and
   arbitrary spill paths do not certify a file read. Reset on turn end/abort,
   context reset, clear, resume and model reseat; do not implement CR-70's
   deferred cross-turn tool-content carry.
@@ -69,11 +75,57 @@ implementation promotes the relevant sections.
 - All discovery work is capped independently of matches: visited entries,
   directories, depth, candidate files, per-file and aggregate bytes, pattern
   and ignore work, results, output bytes and line width. Yield/check cancellation
-  during traversal and matching. Freeze named finite constants and document
-  their measured defaults during Step 1, before registering these tools; never
-  inherit an unbounded walk or an exponential matcher under a bounded result
-  list. Existing byte ceilings remain floors. `list_directory` exposes its
-  existing truncation, without an undocumented compatibility cap change.
+  during traversal and matching. Named finite defaults are below. No unbounded
+  walk/exponential matcher sits behind a bounded result list. Existing byte
+  ceilings remain floors. `list_directory` exposes its existing truncation.
+
+### File-tool inputs, results and resource limits
+
+`read_file` accepts `path`, optional `glob`, and optional `range: { unit:
+"lines" | "bytes", start, end }`; `range` and `glob: true` are exclusive. A
+range result adds `{ unit, start, end, startByte, endByte, omittedBytes }` to the
+existing file result; `sizeBytes` is the original source length. Empty files
+have zero lines: whole reads and byte `[0, 0)` succeed, line 1 is out of range.
+Whole/line reads scan at most 8 MiB. Byte seeks may address larger files while
+reading at most 8 MiB; only the binary prefix and requested UTF-8 slice/boundaries
+are inspected, not the unscanned file. Such large-file seeks confer no edit
+evidence. Stable source evidence hashes complete files of at most 8 MiB. Each
+active tool loop retains at most 256 eligible interval records and separately
+stages at most 256 records awaiting the next model response. Promotion keeps
+the newest 256 combined records; eviction only denies later edit eligibility.
+
+`find_files` accepts `glob` and optional `path` (default `.`). `search_files`
+accepts a nonempty `pattern`, optional `path`/`glob`, `caseSensitive` (default
+true) and `wholeWord` (default false). Paths/globs are at most 4,096 UTF-8 bytes;
+literal patterns are at most 1,024. Case-insensitive search uses locale-independent
+per-code-point lowercase with source-offset mapping; it is not full Unicode
+case folding. Word boundaries are tested on the original source.
+
+Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
+returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
+contain visited entries, scanned files/bytes, binary/oversize skips, unreadable
+count, `incomplete` and optional limiting category. Capped traversal does not
+invent an unvisited total or global-newest claim. Each clipped line states its
+exact omitted byte count. Root ignore files use the declared subset; unreadable
+or unsupported rules/nested ignore files produce incomplete results rather than
+pretending to apply those rules.
+
+| Independent host ceiling | Default |
+|---|---|
+| Visited entries / directories / depth | 10,000 / 1,000 / 32 |
+| Candidate files / results | 1,000 / 200 |
+| Search bytes per file / call | 1 MiB / 16 MiB |
+| Conservative matcher work units | 16,777,216 |
+| Bytes / rules per root ignore file | 64 KiB / 256 |
+| UTF-8 bytes per search excerpt | 2,048 |
+| Ordinary directory entries | 200 by default; a host-selected limit cannot exceed 1,000 |
+
+Directory truncation adds `truncated`, `entryLimit` and `omittedEntries: null`
+when the remaining count is unknown; `incomplete` distinguishes an unfinished
+walk. Glob reads refuse an incomplete walk or an observed extra match beyond
+their 200-file default rather than silently dropping matches. Directory streams
+are bounded without materializing huge `readdir` arrays. Cooperative cancellation
+is checked across traversal, matching and chunked fd reads.
 
 Chat wires `ToolHost.outputStore` to a random per-session-instance private
 subtree admitted by an exact [host scratch descriptor](#host-issued-scratch),
@@ -85,6 +137,18 @@ inline media or structurally excluded secrets. Cap individual and aggregate
 spill bytes/files. Join/cancel producers before clear/reseat/end cleanup; a
 next-start sweep checks ownership and identity, refuses links and preserves
 live or uncertain owners. Failure refuses a spill or reports cleanup honestly.
+Native production builders receive the operator home explicitly. Allocation
+creates `~/.relavium/session-outputs-v1/output-v1.<pid>.<uuid>` and an identity
+marker. Model refs use `output://<instance-uuid>/<file-uuid>`, never native paths;
+only that instance's read closure recognizes them. Ordinary filesystem grants
+do not gain the store root or write authority. Limits are 16 MiB per spill,
+64 MiB and 64 files per instance. Startup sweep inspects at most 128 subtrees
+and 129 children per candidate, deletes only a proven dead PID's privately
+owned, matching regular/link-free tree, and preserves live/reused or uncertain
+owners and unmarked/malformed entries. An incomplete scan emits a fixed safe
+notice. Close seals new work, joins actual read/write producers, then validates
+and removes only owned files; cleanup uncertainty is reported. This is bounded
+filesystem work under owner-controlled storage, not an OS race-free jail.
 No content/ref is added to session messages, display metadata, session effects,
 exports or `history.db`. This lifecycle is not the future child-artifact store.
 
@@ -104,7 +168,9 @@ an unbound legacy write.
 
 | Tool id | Purpose | Returns (shape) | Notes |
 | --- | --- | --- | --- |
-| `read_file` | Read text file content as UTF-8. Supports glob for reading multiple files. | `{ content, mimeType, sizeBytes, lastModified }`; **binary/media content returns a durable media handle** (`tool_result.media`, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), never inline base64 | Respects the workflow's FS scope tier. |
+| `read_file` | Read UTF-8 text, optionally by line/byte range or multi-file glob. | `{ content, mimeType, sizeBytes, lastModified, range? }`; generic media-capable hosts may use durable handles, while CLI hosts refuse binary/invalid UTF-8 text | Respects FS scope; source evidence requires an untruncated result and a later model response. |
+| `search_files` | Bounded literal content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
+| `find_files` | Find by bounded glob, newest-first within the scanned set. | `{ files: [{ path, sizeBytes, lastModified }], stats }` | Idempotent; incomplete traversal is explicit. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
 | `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
@@ -167,14 +233,14 @@ imposing matching-name limits on unrelated fields such as `notify.body` or `git_
 
 ## Tool result bounding
 
-The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and the **path** to the full output spilled to the host's run-scoped **output store** (reclaimed at the run's terminal event). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
+The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and an authorized **reference** to the full output in the host-owned **output store**, where wired (native chat joins producers before instance cleanup). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
 
 | Knob | v1.0 default | Note |
 | --- | --- | --- |
 | Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
 | Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
 | Preview | head + tail slice within the ceiling | the marker names the omitted span; a result over the ceiling only by the inline media its text omits keeps that media-free text as its preview |
-| Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+| Spill | the host-owned output store; native chat reclaims after session-instance producer join | the path is handed to the model; readable via the FS-scope-tiered tools |
 
 **Inline media counts against the ceiling (2026-11-04).** The bound counts the inline media a result still
 holds — a base64 `data:` URI, a canonical base64 source, a binary buffer at its `byteLength` — at its full size,

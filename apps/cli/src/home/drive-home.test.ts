@@ -143,6 +143,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   let client: DbClient;
   let closeSpy: ReturnType<typeof vi.fn>;
   let cwd: string;
+  let testHomeDir: string;
 
   const io: CliIo = {
     writeOut: () => undefined,
@@ -161,9 +162,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     runMigrations(client.db);
     closeSpy = vi.fn();
     cwd = mkdtempSync(join(tmpdir(), 'relavium-home-'));
+    testHomeDir = mkdtempSync(join(tmpdir(), 'relavium-operator-home-'));
   });
   afterEach(() => {
     if (client.sqlite.open) client.sqlite.close();
+    rmSync(testHomeDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 
@@ -202,6 +205,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const writeControl = vi.fn();
     let uuidN = 0;
     const deps: HomeDeps = {
+      homeDir: testHomeDir,
+      outputStoreFactory: () => Promise.resolve(undefined),
       io,
       global,
       providers: scriptedResolver([textTurn('hello from the agent')]),
@@ -434,6 +439,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         await completion;
         vi.restoreAllMocks();
         if (client.sqlite.open) client.sqlite.close();
+        rmSync(testHomeDir, { recursive: true, force: true });
         rmSync(cwd, { recursive: true, force: true });
       }
     },

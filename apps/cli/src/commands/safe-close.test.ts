@@ -421,9 +421,8 @@ describe('command teardown preserves primary outcomes (#22)', () => {
         },
       );
       await vi.waitFor(() => expect(joined).toBe(true));
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.waitFor(() => expect(control.registry.observations.exitCode()).toBe(9));
       expect(settled, 'AGENT_CLEANUP_REFUSAL_RETAINS_OWNERSHIP').toBe(false);
-      expect(control.registry.observations.exitCode()).toBe(9);
       if (verdictFails) {
         expect(close).not.toHaveBeenCalled();
         expect(client.sqlite.open).toBe(true);

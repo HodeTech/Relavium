@@ -173,6 +173,84 @@ function baseParams(
   return params;
 }
 
+describe('ephemeral read observations follow model round trips', () => {
+  it('promotes before a new response batch, never between sibling calls, and releases each fresh scope', async () => {
+    const tools = (ids: string[]): StreamChunk[] =>
+      ids.flatMap((id) => [
+        { type: 'tool_call_start', id, name: 'echo' },
+        { type: 'tool_call_end', id },
+      ]);
+    const oneTurn: StreamChunk[][] = [
+      [...tools(['a', 'b']), STOP('tool_use')],
+      [...tools(['c']), STOP('tool_use')],
+      [STOP()],
+    ];
+    const provider = scriptedProvider('anthropic', [...oneTurn, ...oneTurn]);
+    const inner = stubRegistry();
+    const order: string[] = [];
+    const promoted: object[] = [];
+    const released: object[] = [];
+    const registry: ToolRegistry = {
+      ...inner,
+      promoteReadScope: (scope) => {
+        promoted.push(scope);
+        order.push('promote');
+      },
+      releaseReadScope: (scope) => {
+        released.push(scope);
+        order.push('release');
+      },
+      dispatch: (call, ctx) => {
+        expect(ctx.readScope).toBe(promoted.at(-1));
+        order.push(call.id);
+        return inner.dispatch(call, ctx);
+      },
+    };
+    const params = baseParams(provider, { registry });
+    await runAgentTurn(params);
+    await runAgentTurn(params);
+    expect(order).toEqual([
+      'promote',
+      'a',
+      'b',
+      'promote',
+      'c',
+      'release',
+      'promote',
+      'a',
+      'b',
+      'promote',
+      'c',
+      'release',
+    ]);
+    expect(promoted[0]).toBe(promoted[1]);
+    expect(promoted[2]).toBe(promoted[3]);
+    expect(released).toEqual([promoted[0], promoted[2]]);
+    expect(released[0]).not.toBe(released[1]);
+    expect(params.dispatchContext.readScope).toBeUndefined();
+  });
+
+  it('releases a failed loop without replacing its canonical failure with a cache-cleanup error', async () => {
+    const released: object[] = [];
+    const inner = stubRegistry();
+    const outcome = await captureAgentTurnOutcome(
+      baseParams(scriptedProvider('anthropic', [[]]), {
+        registry: {
+          ...inner,
+          releaseReadScope: (scope) => {
+            released.push(scope);
+            throw new Error('external cache cleanup');
+          },
+        },
+      }),
+    );
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind === 'failed')
+      expect(String(outcome.error)).not.toContain('external cache cleanup');
+    expect(released).toHaveLength(1);
+  });
+});
+
 describe('a streamed tool-call continuation token reaches the assembled part (CR-52, ADR-0090)', () => {
   /** A scripted stream provider that RECORDS each request — the continuation is the thing under test. */
   function recordingProvider(

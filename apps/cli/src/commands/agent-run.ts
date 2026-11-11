@@ -163,6 +163,7 @@ async function agentRunOwned(
     const built = await hostOwner.build((workOwner) =>
       (deps.buildSession ?? buildChatSession)({
         workOwner,
+        operatorHomeDir: homeDir,
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         chat: config.chat,
         oneShot: true, // MVP-A7's chat output default and its scaled deadline are for chat surfaces only.

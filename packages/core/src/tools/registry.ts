@@ -52,6 +52,7 @@ import {
   type ToolHost,
   type ToolId,
   type ToolResultPart,
+  type ToolRegistry,
 } from './types.js';
 import { journaledTier } from './effect-predicate.js';
 
@@ -170,11 +171,7 @@ function asReplayEnvelope(stored: unknown): ReplayEnvelope {
 }
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
-export function createToolRegistry(options: CreateToolRegistryOptions): {
-  dispatch(toolCall: ToolCallPart, ctx: ToolDispatchContext): Promise<ToolDispatchOutcome>;
-  has(id: ToolId): boolean;
-  list(): readonly ToolId[];
-} {
+export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegistry {
   const tools = new Map<ToolId, ToolDef>();
   for (const def of options.tools) {
     if (tools.has(def.id)) {
@@ -185,6 +182,8 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
   const host = options.host;
 
   return {
+    promoteReadScope: (scope) => host.fs?.promoteReadScope?.(scope),
+    releaseReadScope: (scope) => host.fs?.releaseReadScope?.(scope),
     has: (id) => tools.has(id),
     list: () => [...tools.keys()].sort(byCodeUnit),
     dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
@@ -551,6 +550,10 @@ async function dispatch(
         host,
         ctx.signal,
       );
+      // The host recognizes the exact read result by identity. A truncated/serialized preview is not
+      // evidence that the model saw the omitted source; callers must re-read a suitably narrow range.
+      if (def.source === 'builtin' && def.id === 'read_file' && !bounded.truncated && ctx.readScope)
+        host.fs?.acknowledgeReadResult?.(ctx.readScope, output);
     } else {
       // A REPLAY restores the recorded projections verbatim — it does not re-derive them. Re-deriving is
       // what produced the `output_mapping`-over-a-truncation-preview defect; and re-bounding a value that
