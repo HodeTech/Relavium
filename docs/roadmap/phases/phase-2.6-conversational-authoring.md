@@ -1822,6 +1822,25 @@ Its implementation begins after the Step 1 CI checkpoint. No further design
 approval is required for these verified corrections; ordinary implementation,
 two fresh review rounds, affected fixes and a separate security sitting remain.
 
+### MVP-3 Step 1 source checkpoint CI (2026-11-12)
+
+The pushed checkpoint `7889737c776f6891f2af046307a3fce06f490556` passed
+[CI run 43100476225](https://github.com/HodeTech/Relavium/actions/runs/43100476225):
+all 18 jobs succeeded, including all required contexts, complete causal-control
+families, exact packed CLI consumers, Windows and the advisory floor/peer jobs.
+The primary job verified complete causal/packed/map evidence before workspace
+execution, then passed lint/typecheck, every workspace, native DB diagnostics,
+build/format, isolation, fences, bundle closure and compiled/offline smokes.
+Workspace tests include 7,492 CLI passes/12 existing platform skips and 4,992 core
+passes. Coverage independently passed all 860 files, 18,003 tests/23 existing
+platform skips, under the unchanged llm/mcp thresholds and measured core scope.
+
+All 15 reviewed production files remain byte-identical to `7df16ec2` through
+the later documentation and test/CI-only extension. That extension's affected
+local validation and actual Windows execution supplement this complete source
+checkpoint; its initial Windows pass does not claim the two newly selected
+suites ran. Step 2 follows closure of the native validation clause below.
+
 ### MVP-3 Step 1 Windows validation extension (2026-11-12)
 
 The initial pushed checkpoint's Windows job passed its selected existing

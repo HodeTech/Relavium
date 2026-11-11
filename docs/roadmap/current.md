@@ -73,7 +73,9 @@ records the documentation/code findings, corrected ADR refinements, public-contr
 changes and two independent review rounds plus a separate security sitting per
 step. [Step 1 has local implementation acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12),
 including a clean final cumulative round and separate final-source security
-sitting; its pushed checkpoint must pass applicable CI before Step 2. The
+sitting. Its [source checkpoint CI passed all 18 jobs](phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-source-checkpoint-ci-2026-11-12);
+the [Windows validation extension](phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-windows-validation-extension-2026-11-12)
+still needs its actual native run before Step 2. The
 pre-build security design sitting is complete.
 [ADR-0124](../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
 and its expanded replay/evidence contracts are accepted after verifying the
