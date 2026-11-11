@@ -168,6 +168,7 @@ flowchart TD
 | 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
 | 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
 | 0124 | [Inspect retained run effects before file preparation](0124-inspect-retained-run-effects-before-file-preparation.md) | Accepted | 2026-11-11 |
+| 0125 | [File writes preserve security metadata through a native host adapter](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md) | Proposed | 2026-11-12 |
 
 ## Creating a new ADR
 

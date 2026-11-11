@@ -1862,8 +1862,62 @@ A new Luna/high review found no issue in the corrected test/CI scope. The two
 complete native suites pass 63 tests; workspace lint/typecheck, build/format
 and the final expanded 14-suite selection pass. Application production sources
 remain identical to `7df16ec2`; no population, coverage floor or case/job timeout
-was weakened and no new skip was introduced. Native Windows execution remains
-due on the extended selection before closing this validation clause.
+was weakened and no new skip was introduced.
+
+**Native validation closed:** on `ee50195b56f2b313e19acec1d574d8e9c2d70bb1`,
+the [extended Windows job](https://github.com/HodeTech/Relavium/actions/runs/43110550553/job/130825105102)
+passed its complete 14-suite selection: 393 tests and 19 existing platform
+skips. This explicitly includes all 25 output-store tests and 37 native
+MVP-3 filesystem passes with its one declared POSIX-permission skip. The job's
+other native suites and headless smoke also pass. These are actual Windows
+results, separate from the local counts above.
+
+Together with the complete 18-job source checkpoint, this closes Step 1's
+implementation/review/security and affected CI validation. Application sources
+were unchanged between those checkpoints. The later full CI repetition at
+`ee50195b` completed with the actual Windows extension green, but six causal
+jobs stopped before their controls because the exact Windows scheduling guard
+still expected twelve files; the dependent primary job consequently skipped
+its workspace checks. Commit `e82a4a95` aligns that guard with all fourteen
+intentionally selected files, preserving exact equality, existing cases and
+bounds. Its seven scheduling tests, lint and formatting pass locally; two new
+independent reviews (Terra/medium, Luna/high) found no issue in that exact
+guard-only correction. Replacement CI is required; the failed repetition is not recorded
+as green causal or workspace evidence. Step 2 source work continues on
+`development`; whole-MVP-3 acceptance, final combined CI and PR review remain open.
+
+### MVP-3 Step 2 implementation start (2026-11-12)
+
+The three-step boundary stays unchanged. Parallel authors own coherent backend,
+native filesystem and shared UI areas within this one increment, with root
+integrating CLI/session/command wiring. Core preparation/preview types are
+agreed first. The UI reuses the existing `@relavium/llm/scrub-secrets` rule
+authority through an additive original-mask-range helper; no second credential
+rule set, runtime dependency or LLMProvider wire/type change is introduced.
+Always answers remain provisional through atomic replay resolution, using a
+narrow in-process approval-decision lifecycle rather than making the preview
+or display observer an authorization channel. These are implementations of the
+accepted span-preservation and replay-cache floors, not a new product decision.
+
+**New metadata design gate:** a separate source/security audit reproduced an
+ACL-denied append becoming a successful mode/uid/gid-only replacement, with ACL,
+quarantine and custom-xattr loss on macOS. Historical overwrite behavior is not
+authority for that new append behavior. The prototype is not native-security
+accepted. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+and its proposed metadata contract define a preserve-or-refuse host-native
+boundary and explicit native-source/build/packaging exception for maintainer
+review. No Rust/native package implementation precedes approval. Backend/UI and
+other independent integration work can continue; metadata-dependent publication,
+Step 2 author acceptance and the Step 3 grant remain gated.
+
+The corrected proposal received a separate Sol/high read-only review with no
+finding blocking maintainer direction approval. It explicitly limits effective
+access checks, metadata visibility, native dependency families and delivery
+targets; Windows replacement candidates cannot bypass the existing atomicity
+contract by relabeling known partial failures as uncertainty. This is proposal
+review only: exact supported profiles, pinned/audited inputs, actual native and
+packaging proofs, fresh implementation reviews and a separate native security
+sitting remain due after approval.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 
