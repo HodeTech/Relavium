@@ -167,6 +167,7 @@ flowchart TD
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
 | 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
 | 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
+| 0124 | [Inspect retained run effects before file preparation](0124-inspect-retained-run-effects-before-file-preparation.md) | Proposed | 2026-11-11 |
 
 ## Creating a new ADR
 
