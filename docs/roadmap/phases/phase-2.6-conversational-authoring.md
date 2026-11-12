@@ -3103,6 +3103,32 @@ complete causal-matrix CI evidence. PR #99 stays draft for the corrected-head
 run. Browser review access is unavailable, so no remote Sonar issue classification
 is made and its separate quality gate is not claimed as passing.
 
+#### Windows scheduling inventory correction
+
+Both corrected-head CI attempts at `2e817559` reach and pass all eight native
+profiles and package production. Their shared acceptance-tool prelude then
+rejects the stale twenty-file Windows scheduling assertion: the workflow
+already selects both new preprocessing regression files, but its test inventory
+does not. The named assertion is independently reproduced locally before the
+correction. These failures are retained as failed CI attempts, not complete
+causal-matrix evidence.
+
+`b20d7d1e` adds those two files in the same order, asserts twenty-two files and
+updates the case name. All original twenty files, strict command equality,
+serial execution, media cohorts, required conditions and timeout checks remain.
+Root's complete acceptance-tool suite passes all 1,093 tests with no skips;
+focused ESLint, formatting and tools typechecking pass. Fresh independent
+Luna/medium correctness and Sol/medium gate-preservation reviews both report no
+finding and independently pass all eight scheduling tests. Production bytes
+remain at `7af8e05a`; no runtime/native change or new approval is introduced.
+The final head still requires combined CI before PR readiness.
+
+SonarCloud's `2e817559` analysis automatically closes both corrected S8786
+issues as `FIXED`, adds no issue key and retains the other 207 open reports.
+Its reliability/security gate remains red on the previously documented
+source-context dispositions; no profile suppression or manual remote
+classification is made.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
