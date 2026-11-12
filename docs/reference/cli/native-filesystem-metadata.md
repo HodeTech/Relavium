@@ -170,7 +170,13 @@ contract is proven. Named staging needs host-owned recovery evidence before
 payload bytes are written; ordinary `finally` cleanup is insufficient.
 
 Use an owner-private, versioned index under the explicit operator home's
-`.relavium/fs-staging-v1/`, isolated from model file authority. Records contain
+`.relavium-fs-private-v1/fs-staging-v1/`, isolated from model file authority.
+Its dedicated parent is created and verified by the native adapter; the shared
+`.relavium/` config/database parent is neither normalized nor used as private
+index custody. This keeps ordinary Node-created Windows config/DB directories
+usable without an eager native dependency in onboarding or read-only startup.
+The dedicated parent and index retain the same strict private ownership, ACL,
+no-follow, held-identity and flush requirements. Records contain
 only a bounded staging locator, parent/directory/file native identities,
 owner uid/SID, producer PID/nonce and protocol/cleanup state. Do not persist
 final target names, payload, preview, ACL/xattr values or process-local handles.
@@ -208,6 +214,8 @@ process or a hostile same-user process under ADR-0105.
 The index namespace itself is protected before it exists. Reject its lexical
 and canonical paths, descendants and opened directory/record/lock identities,
 including an output `save_to` root that resolves into the index through an alias.
+This includes the entire dedicated `.relavium-fs-private-v1/` parent, not only
+the index child. Keep the previous index namespace protected as described below.
 Reuse that one captured boundary through lazy root creation and publication;
 protecting only payload identities does not protect the ownership evidence.
 
@@ -246,11 +254,46 @@ does not certify machine-power-loss durability; OS flush guarantees and any
 actual power-loss evidence must be attributed separately.
 
 
+### Development layout transition
+
+The unaccepted development prototype used
+`<operator-home>/.relavium/fs-staging-v1/`. Before every new-layout model
+filesystem inventory capture, native write or explicit recovery, prove that
+this old index is absent, even if the new index does not exist. Pin and recheck
+the operator home and any existing shared `.relavium/` ancestor; reject
+symlinks/reparse objects, changed identity and ambiguous/inaccessible state.
+The shared ancestor's ordinary policy is eligible only for this absence probe,
+never as private inventory authority. Only rechecked `ENOENT` permits progress.
+
+Any old index, including a proven-empty directory, refuses with a fixed
+operator-recovery-required diagnostic. Preserve both layouts and all unknown
+evidence; do not migrate, delete, ignore or claim to have reclaimed the old
+index. The old namespace and object aliases remain excluded from model
+authority. All existing scan/cancellation budgets and producer joins apply.
+
+This is an unreleased development-layout transition, not cross-version
+compatibility. Stop previous cooperating hosts before using the new layout;
+there is no claim of a cross-version allocation lock against an old binary
+creating its index after the absence check. The maintainer confirmed the app
+is not actively used and requires no older-binary migration. An operator with
+old evidence can use a retained, source-bound pre-transition adapter and the
+recovery procedure below, inspecting that adapter's old
+`.relavium/fs-staging-v1/` layout instead of the new path in step 2; it still
+must prove private ownership and liveness.
+If it refuses or retains evidence, preserve it for explicit operator inspection
+and resolution. The new adapter cannot recover the old layout and must not
+report it as cleaned. No blind recursive removal is an approved recovery step.
+
+Mandatory integration evidence includes a real Node-created shared `.relavium`
+config/DB parent before the first Windows native write/recovery, successful
+publication through the native-private sibling, and unchanged shared-parent
+policy. Native-created replacement fixtures cannot substitute for that journey.
+
 ### Private inventory protocol and claims
 
 The implementation uses a closed binary protocol, not JSON or an extensible
 metadata document. The explicit operator home is pinned and revalidated with
-its `.relavium/` parent and `fs-staging-v1/` directory. Native placement verifies
+its `.relavium-fs-private-v1/` parent and `fs-staging-v1/` directory. Native placement verifies
 operator ownership and the profile's private directory/file policy. The
 TypeScript reader checks pinned path/object identity, regular single-link
 records and the protocol. On Windows it follows the explicit operator-home
@@ -360,7 +403,8 @@ exercised; exact-artifact and cross-platform invocation remain acceptance gates.
    to settle. Do not kill a PID merely because a record names it: it may have
    been reused by another application. Keep the private index and stages in
    place, and keep their namespace excluded from model tools.
-2. Inspect only this home's immediate `fs-staging-v1/` entries using trusted
+2. Inspect only this home's immediate
+   `.relavium-fs-private-v1/fs-staging-v1/` entries using trusted
    local read-only tooling, subject to the protocol and discovery bounds
    above. Keep locators and records local; do not paste them into model tools,
    public issues or product logs. Stop on excess entries/data, malformed

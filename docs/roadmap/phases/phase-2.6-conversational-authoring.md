@@ -2607,6 +2607,59 @@ lint/typecheck/build/format tasks. Native production source and all acceptance
 assertions/populations remain unchanged. Consumer causes and combined CI are
 still open; Step 3 grants remain gated.
 
+**Dedicated private staging-parent correction:** a separate Sol/high scope
+audit confirms the Windows fresh-journey gap: Home/config/DB first create the
+shared `.relavium` directory through Node, while native staging requires an
+exact TokenUser-private parent. Ordinary Windows inheritance cannot satisfy
+that stronger predicate. The refusal is safe but blocks the normal editing
+journey. Correcting only synthetic scratch setup would hide the product issue.
+
+ADR-0125 delegates concrete placement while preserving custody. The canonical
+contract now selects a dedicated native-created
+`<operator-home>/.relavium-fs-private-v1/fs-staging-v1/` sibling, with all strict
+private ownership/ACL, identity, alias, model-exclusion and recovery checks.
+The shared config/database directory is unchanged; onboarding and read-only
+startup gain no eager native dependency. No new ADR or approval is required
+for this invariant-preserving placement refinement.
+
+The unreleased old index is never silently ignored or migrated. Any presence
+refuses new inventory/write/recovery with an operator-recovery-required fact;
+only absence under pinned/rechecked ancestors permits progress. Old evidence
+and namespaces remain protected. Stop previous cooperating development hosts
+for the transition; no cross-version lock or older-binary compatibility is
+claimed. A retained trusted old adapter may recover only what its existing
+proof permits; unknown/live artifacts remain for explicit operator resolution.
+The canonical procedure owns those limits. Implementation and real Node-created
+Windows home/config/DB integration evidence precede acceptance.
+
+**Private-parent implementation review:** a fresh complete Terra/high affected
+round verified the sixteen-file correction. Its earlier high finding was
+reproduced: the new sibling's whole namespace also needs the permanent model
+path floor, independently of a captured inventory or the directory's existence.
+The shared parent constant now feeds lexical/canonical, sensitive-read and
+protected-write checks. Actual capability regressions fail before correction
+and pass afterward, including discovery, aliases and prepared writes.
+A new independent Terra/high static security sitting reviewed the complete
+corrected scope and callers with zero blocker/high/medium findings; it did
+not execute tests. The complete affected code round is also clean.
+
+Root verification passes 7,657 CLI tests with twelve conditional platform
+skips, 249 affected tools, nineteen workspace lint/typecheck/build/format
+tasks and tools lint/typecheck. Fresh macOS native execution passes all
+thirty-five parents, three declared owned child exclusions and eleven Node
+cases. The native source binds to
+`ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`;
+build binding is
+`dd0231a86da30f3aa0033555874ca4137734b70e03a4c766f6d411401f0e8874`.
+Actual Windows fresh config/database integration and all-target/combined CI
+for this placement remain required before Step 2 acceptance.
+
+The earlier `691c782c` consumer diagnostics now establish multiple links on
+all eleven literal native assets on Linux/Windows, where the strict loader
+refuses; macOS loads but stops at the denied-effect workflow checkpoint.
+These causes and the causal-control integration failures remain open. No
+loader policy is weakened and no installed-consumer success is claimed here.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

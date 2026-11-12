@@ -22,6 +22,8 @@ import {
 } from './fs-stage-inventory.js';
 import { createSyntheticPinnedStage } from './fs-stage.test-support.js';
 import { createNodeFsCapability } from './fs.js';
+import { openLocalDb } from '../../db/open.js';
+import { prepareGlobalPreferences } from '../../config/write.js';
 
 let home: string;
 let workspace: string;
@@ -30,8 +32,8 @@ beforeEach(async () => {
   home = await realpath(await mkdtemp(join(tmpdir(), 'relavium-stage-index-')));
   workspace = join(home, 'project');
   await mkdir(workspace, { mode: 0o700 });
-  await mkdir(join(home, '.relavium'), { mode: 0o700 });
-  index = join(home, '.relavium', 'fs-staging-v1');
+  await mkdir(join(home, '.relavium-fs-private-v1'), { mode: 0o700 });
+  index = join(home, '.relavium-fs-private-v1', 'fs-staging-v1');
   await mkdir(index, { mode: 0o700 });
 });
 afterEach(async () => {
@@ -50,7 +52,9 @@ it('protects the private index namespace and its opened objects independently of
     const identity = await stat(path, { bigint: true });
     expect(() => inventory.assertIdentity(identity)).toThrow(FsStageInventoryError);
   }
-  expect(() => inventory.assertPath(`${index}-ordinary/out`)).not.toThrow();
+  expect(() =>
+    inventory.assertPath(join(home, '.relavium-fs-private-v1-ordinary', 'out')),
+  ).not.toThrow();
   expect(() => inventory.assertPath(join(workspace, 'ordinary'))).not.toThrow();
 });
 
@@ -59,9 +63,67 @@ it('protects the canonical index namespace before it exists, including a home al
   const alias = join(home, 'operator-home-alias');
   await symlink(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
   const inventory = await captureFsStageInventory(alias);
-  for (const path of [index, join(index, 'new'), join(alias, '.relavium', 'fs-staging-v1')])
+  for (const path of [
+    index,
+    join(index, 'new'),
+    join(alias, '.relavium-fs-private-v1', 'fs-staging-v1'),
+  ])
     expect(() => inventory.assertPath(path)).toThrow(FsStageInventoryError);
-  expect(await readdir(join(home, '.relavium'))).toEqual([]);
+  expect(await readdir(join(home, '.relavium-fs-private-v1'))).toEqual([]);
+});
+
+it('rejects any retired index even when the dedicated index is missing', async () => {
+  await rm(index, { recursive: true });
+  const shared = join(home, '.relavium');
+  await mkdir(shared);
+  const inventory = await captureFsStageInventory(home);
+  expect(() => inventory.assertPath(join(shared, 'fs-staging-v1', 'record'))).toThrow();
+  expect(() => inventory.assertPath(join(home, '.relavium-fs-private-v1'))).toThrow();
+  const legacy = join(shared, 'fs-staging-v1');
+  await mkdir(legacy);
+  await expect(captureFsStageInventory(home)).rejects.toThrow('operator recovery required');
+  expect(await readdir(legacy)).toEqual([]);
+  await rm(legacy, { recursive: true });
+  await symlink(workspace, legacy, process.platform === 'win32' ? 'junction' : 'dir');
+  await expect(captureFsStageInventory(home)).rejects.toThrow('operator recovery required');
+  expect((await stat(workspace)).isDirectory()).toBe(true);
+});
+
+it('publishes after real Home DB and configuration initialize the shared parent', async () => {
+  await rm(join(home, '.relavium-fs-private-v1'), { recursive: true });
+  const database = openLocalDb(home);
+  database.close();
+  prepareGlobalPreferences(
+    { defaultModel: 'gpt-4o-mini', defaultProvider: 'openai' },
+    home,
+  ).publish();
+  const shared = join(home, '.relavium');
+  const before = await stat(shared, { bigint: true });
+  const config = await readFile(join(shared, 'config.toml'));
+  const db = await readFile(join(shared, 'history.db'));
+  const capability = createNodeFsCapability({
+    tier: 'full',
+    workspaceDir: workspace,
+    operatorHomeDir: home,
+    readOnly: false,
+  });
+  const prepared = await capability.prepareWrite!({
+    kind: 'write',
+    path: 'target',
+    content: 'reviewed',
+  });
+  try {
+    await prepared.execute();
+    expect(await readFile(join(workspace, 'target'), 'utf8')).toBe('reviewed');
+    const after = await stat(shared, { bigint: true });
+    expect([after.dev, after.ino, after.mode]).toEqual([before.dev, before.ino, before.mode]);
+    expect(await readFile(join(shared, 'config.toml'))).toEqual(config);
+    expect(await readFile(join(shared, 'history.db'))).toEqual(db);
+    expect((await stat(index)).isDirectory()).toBe(true);
+    expect(await readdir(shared)).not.toContain('fs-staging-v1');
+  } finally {
+    await prepared.release();
+  }
 });
 
 it.runIf(process.platform === 'win32')(

@@ -208,6 +208,64 @@ impl Record {
     }
 }
 
+// The retired development index is evidence, never an input to this profile.
+fn require_legacy_absent<P: Profile>(
+    home: &Path,
+    canonical: &Path,
+    home_id: NativeIdentity,
+    start: Instant,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), NativeFailure> {
+    let parent_path = canonical.join(".relavium");
+    let check_home = || -> Result<(), NativeFailure> {
+        tick(start, cancelled)?;
+        if io(fs::canonicalize(home))? != canonical
+            || P::identity(&P::open_parent(canonical)?)? != home_id
+        {
+            return refused();
+        }
+        Ok(())
+    };
+    tick(start, cancelled)?;
+    let parent = match fs::symlink_metadata(&parent_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            check_home()?;
+            tick(start, cancelled)?;
+            return match fs::symlink_metadata(&parent_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => check_home(),
+                _ => refused(),
+            };
+        }
+        Ok(info) if info.is_dir() && !info.file_type().is_symlink() => {
+            P::open_parent(&parent_path)?
+        }
+        _ => return refused(),
+    };
+    let parent_id = P::identity(&parent)?;
+    if io(fs::canonicalize(&parent_path))? != parent_path {
+        return refused();
+    }
+    let old = parent_path.join("fs-staging-v1");
+    for _ in 0..2 {
+        tick(start, cancelled)?;
+        match fs::symlink_metadata(&old) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(NativeFailure::LegacyRecoveryRequired),
+            Err(_) => return refused(),
+        }
+        check_home()?;
+        let current = io(fs::symlink_metadata(&parent_path))?;
+        if !current.is_dir()
+            || current.file_type().is_symlink()
+            || io(fs::canonicalize(&parent_path))? != parent_path
+            || P::identity(&P::open_parent(&parent_path)?)? != parent_id
+        {
+            return refused();
+        }
+    }
+    Ok(())
+}
+
 struct Index<P: Profile> {
     context: Vec<u8>,
     requested_home: PathBuf,
@@ -242,7 +300,8 @@ impl<P: Profile> Index<P> {
         let home_file = P::open_parent(&home_path)?;
         tick(start, cancelled)?;
         let home_id = P::identity(&home_file)?;
-        let parent_path = home_path.join(".relavium");
+        require_legacy_absent::<P>(home, &home_path, home_id, start, cancelled)?;
+        let parent_path = home_path.join(".relavium-fs-private-v1");
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("index-parent-open");
@@ -1112,6 +1171,7 @@ fn open_existing_index<P: Profile>(
     tick(start, cancelled)?;
     let home_handle = P::open_parent(&canonical)?;
     let home_id = P::identity(&home_handle)?;
+    require_legacy_absent::<P>(home, &canonical, home_id, start, cancelled)?;
     let recheck_home = || -> Result<(), NativeFailure> {
         tick(start, cancelled)?;
         if P::operation_context()? != context {
@@ -1124,7 +1184,7 @@ fn open_existing_index<P: Profile>(
         }
         Ok(())
     };
-    let parent_path = canonical.join(".relavium");
+    let parent_path = canonical.join(".relavium-fs-private-v1");
     tick(start, cancelled)?;
     match fs::symlink_metadata(&parent_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1497,7 +1557,28 @@ mod tests {
                 .removed,
             0
         );
-        let parent_path = fixture.0.join(".relavium");
+        let shared = fixture.0.join(".relavium");
+        fs::create_dir(&shared).expect("ordinary shared parent");
+        assert_eq!(
+            recover::<MacosProfile>(&fixture.0)
+                .expect("shared parent")
+                .removed,
+            0
+        );
+        let old = shared.join("fs-staging-v1");
+        fs::create_dir(&old).expect("retired index");
+        assert!(matches!(
+            recover::<MacosProfile>(&fixture.0),
+            Err(NativeFailure::LegacyRecoveryRequired)
+        ));
+        assert!(old.is_dir());
+        assert!(matches!(
+            Index::<MacosProfile>::open(&fixture.0, true),
+            Err(NativeFailure::LegacyRecoveryRequired)
+        ));
+        assert!(!fixture.0.join(".relavium-fs-private-v1").exists());
+        fs::remove_dir(&old).expect("own empty test index");
+        let parent_path = fixture.0.join(".relavium-fs-private-v1");
         assert!(!parent_path.exists());
         let parent = MacosProfile::create_private_directory(&parent_path).expect("private parent");
         assert_eq!(

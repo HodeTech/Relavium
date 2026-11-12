@@ -67,6 +67,10 @@ checks are security requirements rather than legacy compatibility behavior.
 
 Created on first launch. Holds user-wide preferences and the registry of MCP servers.
 
+Native file-write recovery keeps its separate, native-private sibling under
+the operator home; it does not change this configuration directory's policy.
+See the [staging custody and layout contract](../cli/native-filesystem-metadata.md#crash-staging-ownership-and-recovery).
+
 ```
 ~/.relavium/
   config.toml        # global preferences, MCP server registrations, update channel

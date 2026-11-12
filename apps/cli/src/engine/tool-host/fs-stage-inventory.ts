@@ -11,6 +11,7 @@ const MAX_RECORD_BYTES = 16 * 1024;
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const SCAN_MS = 2000;
 const STAGE_PREFIX = '.relavium-fs-stage-v1.';
+export const FS_PRIVATE_INDEX_PARENT = '.relavium-fs-private-v1';
 const recordName = /^([a-f0-9]{32})\.(record|reserved|prepare)$/;
 const MAGIC = Buffer.from('RVSTG001');
 
@@ -83,8 +84,8 @@ export interface FsStageInventory {
   assertIdentity(identity: Identity): void;
 }
 export class FsStageInventoryError extends HostDeniedError {
-  constructor() {
-    super('filesystem staging inventory is unavailable or unsafe');
+  constructor(message = 'filesystem staging inventory is unavailable or unsafe') {
+    super(message);
   }
 }
 function code(error: unknown): unknown {
@@ -96,6 +97,64 @@ function tick(start: number, signal: AbortSignalLike | undefined): void {
 }
 function same(a: Identity, b: Identity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
+}
+
+async function requireLegacyAbsent(
+  requestedHome: string,
+  home: string,
+  homeInfo: Identity,
+  start: number,
+  signal: AbortSignalLike | undefined,
+): Promise<void> {
+  const parent = join(home, '.relavium');
+  const verifyHome = async (): Promise<void> => {
+    tick(start, signal);
+    if (
+      !same(homeInfo, await stat(requestedHome, { bigint: true })) ||
+      (await realpath(requestedHome)) !== home
+    )
+      throw new FsStageInventoryError();
+  };
+  let parentInfo;
+  try {
+    tick(start, signal);
+    parentInfo = await lstat(parent, { bigint: true });
+  } catch (error) {
+    if (code(error) !== 'ENOENT') throw error;
+    await verifyHome();
+    try {
+      await lstat(parent);
+      throw new FsStageInventoryError();
+    } catch (again) {
+      if (code(again) !== 'ENOENT') throw again;
+    }
+    await verifyHome();
+    return;
+  }
+  if (
+    !parentInfo.isDirectory() ||
+    parentInfo.isSymbolicLink() ||
+    (await realpath(parent)) !== parent
+  )
+    throw new FsStageInventoryError();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    tick(start, signal);
+    try {
+      await lstat(join(parent, 'fs-staging-v1'));
+      throw new FsStageInventoryError('filesystem staging operator recovery required');
+    } catch (error) {
+      if (code(error) !== 'ENOENT') throw error;
+    }
+    await verifyHome();
+    const current = await lstat(parent, { bigint: true });
+    if (
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      !same(parentInfo, current) ||
+      (await realpath(parent)) !== parent
+    )
+      throw new FsStageInventoryError();
+  }
 }
 
 /** Capture one bounded inventory per model operation; subsequent identity checks are constant-time. */
@@ -140,11 +199,20 @@ export async function captureFsStageInventory(
     if (!homeInfo.isDirectory()) throw new FsStageInventoryError();
     tick(start, signal);
     const home = await realpath(requestedHome);
-    const requestedIndex = join(requestedHome, '.relavium', 'fs-staging-v1');
+    const requestedParent = join(requestedHome, FS_PRIVATE_INDEX_PARENT);
+    const requestedIndex = join(requestedParent, 'fs-staging-v1');
     privateRoots.push(
-      pathParts(requestedIndex),
+      pathParts(requestedParent),
+      pathParts(join(home, FS_PRIVATE_INDEX_PARENT)),
+      pathParts(join(requestedHome, '.relavium', 'fs-staging-v1')),
       pathParts(join(home, '.relavium', 'fs-staging-v1')),
     );
+    await requireLegacyAbsent(requestedHome, home, homeInfo, start, signal);
+    const windows = process.platform === 'win32';
+    if (!windows && typeof process.geteuid !== 'function') throw new FsStageInventoryError();
+    const uid = !windows && process.geteuid ? BigInt(process.geteuid()) : undefined;
+    const privatePolicy = (info: { readonly uid: bigint; readonly mode: bigint }): boolean =>
+      windows || (info.uid === uid && (info.mode & 0o077n) === 0n);
     let indexInfo;
     try {
       tick(start, signal);
@@ -152,6 +220,19 @@ export async function captureFsStageInventory(
     } catch (error) {
       if (code(error) === 'ENOENT') {
         tick(start, signal);
+        try {
+          const parentInfo = await lstat(requestedParent, { bigint: true });
+          if (
+            !parentInfo.isDirectory() ||
+            parentInfo.isSymbolicLink() ||
+            !privatePolicy(parentInfo) ||
+            (await realpath(requestedParent)) !== join(home, FS_PRIVATE_INDEX_PARENT)
+          )
+            throw new FsStageInventoryError();
+          protectIdentity(parentInfo);
+        } catch (parentError) {
+          if (code(parentError) !== 'ENOENT') throw parentError;
+        }
         const currentHome = await stat(requestedHome, { bigint: true });
         if (
           !same(homeInfo, currentHome) ||
@@ -165,14 +246,9 @@ export async function captureFsStageInventory(
     }
     // Windows follows ADR-0050's explicit operator-home ACL trust boundary. Native
     // placement proves its private ACL; Node mode bits are never ACL evidence.
-    const windows = process.platform === 'win32';
-    if (!windows && typeof process.geteuid !== 'function') throw new FsStageInventoryError();
     tick(start, signal);
-    const parent = join(home, '.relavium');
+    const parent = join(home, FS_PRIVATE_INDEX_PARENT);
     const index = join(parent, 'fs-staging-v1');
-    const uid = !windows && process.geteuid ? BigInt(process.geteuid()) : undefined;
-    const privatePolicy = (info: { readonly uid: bigint; readonly mode: bigint }): boolean =>
-      windows || (info.uid === uid && (info.mode & 0o077n) === 0n);
     tick(start, signal);
     const parentInfo = await lstat(parent, { bigint: true });
     if (
@@ -185,6 +261,7 @@ export async function captureFsStageInventory(
       (await realpath(index)) !== index
     )
       throw new FsStageInventoryError();
+    protectIdentity(parentInfo);
     protectIdentity(indexInfo);
     tick(start, signal);
     const directory = await opendir(index);

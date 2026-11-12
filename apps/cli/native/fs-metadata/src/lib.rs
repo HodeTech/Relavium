@@ -139,6 +139,7 @@ mod test_hooks {
             NativeFailure::Cancelled => "failure-cancelled",
             NativeFailure::PossiblyPublished => "failure-possibly-published",
             NativeFailure::CleanupUncertain => "failure-cleanup-uncertain",
+            NativeFailure::LegacyRecoveryRequired => "failure-legacy-recovery-required",
         });
     }
 

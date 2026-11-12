@@ -35,6 +35,7 @@ import { runNativeStage } from './fs-native-write.js';
 import {
   captureFsStageInventory,
   FsStageInventoryError,
+  FS_PRIVATE_INDEX_PARENT,
   normalizeNodeFsIdentity,
   type FsStageInventory,
 } from './fs-stage-inventory.js';
@@ -792,7 +793,11 @@ export const FS_STAGE_DIRECTORY = '.relavium-fs-stage-v1';
 export function isFsStagePath(path: string): boolean {
   return path.split(/[\\/]/).some((part) => {
     const folded = foldPathComponent(part);
-    return folded === FS_STAGE_DIRECTORY || folded.startsWith(`${FS_STAGE_DIRECTORY}.`);
+    return (
+      folded === FS_PRIVATE_INDEX_PARENT ||
+      folded === FS_STAGE_DIRECTORY ||
+      folded.startsWith(`${FS_STAGE_DIRECTORY}.`)
+    );
   });
 }
 const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
@@ -800,6 +805,7 @@ const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.relavium',
   '.ssh',
   FS_STAGE_DIRECTORY,
+  FS_PRIVATE_INDEX_PARENT,
 ]);
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bashrc',
@@ -882,6 +888,7 @@ const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
   '.relavium',
   FS_STAGE_DIRECTORY,
+  FS_PRIVATE_INDEX_PARENT,
   '.aws',
   '.kube',
   '.azure',

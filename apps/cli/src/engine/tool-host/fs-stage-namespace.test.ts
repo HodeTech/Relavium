@@ -30,6 +30,9 @@ it('reserves the staging component under folded lexical path variants', () => {
     `${FS_STAGE_DIRECTORY}. `,
     `${FS_STAGE_DIRECTORY}:stream`,
     `${FS_STAGE_DIRECTORY}.1234-abcdef`,
+    '.relavium-fs-private-v1',
+    '.RELAVIUM-FS-PRIVATE-V1:stream',
+    '.relavium-fs-private-v1. ',
   ]) {
     expect(isSensitiveReadPath(join(root, component, 'payload.txt'))).toBe(true);
     expect(isProtectedPath(join(root, component, 'payload.txt'))).toBe(true);
@@ -122,3 +125,55 @@ it('denies direct and canonical aliases while pruning listing, glob and discover
   const searched = await fs.searchFiles?.('.', { pattern: 'PRIVATE_STAGE_SENTINEL' });
   expect(searched?.matches).toEqual([]);
 });
+
+it.each(['absent', 'empty', 'child'] as const)(
+  'denies the private inventory parent for every model consumer when %s',
+  async (state) => {
+    const privateRoot = join(root, '.relavium-fs-private-v1');
+    if (state !== 'absent') {
+      await mkdir(join(privateRoot, 'fs-staging-v1'), { recursive: true, mode: 0o700 });
+      if (state === 'child')
+        await writeFile(join(privateRoot, 'canary.txt'), 'PRIVATE_INVENTORY_CANARY');
+    }
+    const fs = createNodeFsCapability({
+      tier: 'full',
+      workspaceDir: root,
+      operatorHomeDir: root,
+      readOnly: false,
+    });
+    const target = join(privateRoot, state === 'child' ? 'canary.txt' : 'uncreated/target.txt');
+    const homeAlias = join(root, 'home-alias');
+    await symlink(root, homeAlias, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(
+      fs.readFile(join(homeAlias, '.relavium-fs-private-v1', 'canary.txt'), {}),
+    ).rejects.toThrow();
+    await expect(
+      fs.prepareWrite?.({ kind: 'write', path: target, content: 'poison', createDirs: true }),
+    ).rejects.toThrow();
+    await expect(fs.readFile(target, {})).rejects.toThrow();
+    await expect(fs.listDirectory(privateRoot, {})).rejects.toThrow();
+    await expect(fs.findFiles?.(privateRoot, { glob: '**/*' })).rejects.toThrow();
+    await expect(
+      fs.searchFiles?.(privateRoot, { pattern: 'PRIVATE_INVENTORY_CANARY' }),
+    ).rejects.toThrow();
+    if (state !== 'absent') {
+      if (state === 'child') await expect(fs.readFile(target, {})).rejects.toThrow();
+      const alias = join(root, 'private-alias');
+      await symlink(privateRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      await expect(fs.listDirectory(alias, {})).rejects.toThrow();
+      await expect(
+        fs.prepareWrite?.({ kind: 'write', path: join(alias, 'new'), content: 'poison' }),
+      ).rejects.toThrow();
+      if (state === 'child')
+        await expect(fs.readFile(join(alias, 'canary.txt'), {})).rejects.toThrow();
+    }
+    const listing = await fs.listDirectory('.', { recursive: true });
+    const glob = await fs.readFile('**/*.txt', { glob: true });
+    const found = await fs.findFiles?.('.', { glob: '**/*' });
+    const search = await fs.searchFiles?.('.', { pattern: 'PRIVATE_INVENTORY_CANARY' });
+    for (const result of [listing, glob, found, search]) {
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_INVENTORY_CANARY');
+      expect(JSON.stringify(result)).not.toContain('canary.txt');
+    }
+  },
+);

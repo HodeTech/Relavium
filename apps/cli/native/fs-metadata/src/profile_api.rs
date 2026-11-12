@@ -19,6 +19,7 @@ pub(crate) enum NativeFailure {
     PossiblyPublished,
     /// Pre-publication cleanup could not prove its owned empty artifact removed.
     CleanupUncertain,
+    LegacyRecoveryRequired,
 }
 
 /// Native full identity and separately proven Node-visible identity, host-private.

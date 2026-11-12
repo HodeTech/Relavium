@@ -511,6 +511,8 @@ it.each(['workspace', 'grant', 'selector'] as const)(
       kind === 'workspace' ? '.relavium' : kind === 'grant' ? '.azure' : '.kube',
     );
     symlinkSync(grant, alias, 'junction');
+    const operatorHome = join(base, 'operator-home');
+    mkdirSync(operatorHome);
     const policy =
       kind === 'workspace'
         ? createFsPathPolicy({ workspaceDir: alias })
@@ -520,7 +522,7 @@ it.each(['workspace', 'grant', 'selector'] as const)(
             kind === 'selector' ? [alias] : undefined,
           );
     const fs = createNodeFsCapability({
-      operatorHomeDir: base,
+      operatorHomeDir: operatorHome,
       tier: 'project',
       workspaceDir: kind === 'workspace' ? grant : workspace,
       readOnly: false,

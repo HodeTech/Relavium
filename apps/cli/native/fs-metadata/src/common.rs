@@ -1111,6 +1111,7 @@ fn native_error(error: crate::profile_api::NativeFailure) -> Error {
     let message = match error {
         NativeFailure::PossiblyPublished => "filesystem publication outcome uncertain",
         NativeFailure::CleanupUncertain => "filesystem metadata cleanup unavailable",
+        NativeFailure::LegacyRecoveryRequired => "filesystem staging operator recovery required",
         NativeFailure::Cancelled => "filesystem operation cancelled",
         NativeFailure::Changed => "filesystem preparation changed",
         NativeFailure::AccessDenied => "filesystem access denied",
@@ -1510,6 +1511,7 @@ mod producer_crash_tests {
         "failure-cancelled",
         "failure-changed",
         "failure-cleanup-uncertain",
+        "failure-legacy-recovery-required",
         "failure-possibly-published",
         "failure-unsupported",
         "first-index-open",
@@ -2006,7 +2008,7 @@ mod template_cleanup_tests {
                     .file_name()
                     .to_string_lossy()
                     .starts_with(".relavium-fs-stage-v1.")));
-            let index = fixture.0.join("home/.relavium/fs-staging-v1");
+            let index = fixture.0.join("home/.relavium-fs-private-v1/fs-staging-v1");
             assert!(!std::fs::read_dir(index)
                 .expect("inventory")
                 .any(|entry| entry
@@ -2078,7 +2080,7 @@ mod template_cleanup_tests {
         assert!(!fixture.0.join("target").exists());
         assert!(fixture
             .0
-            .join("home/.relavium/fs-staging-v1/cccccccccccccccccccccccccccccccc.reserved")
+            .join("home/.relavium-fs-private-v1/fs-staging-v1/cccccccccccccccccccccccccccccccc.reserved")
             .exists());
         assert!(std::fs::read_dir(&fixture.0)
             .expect("root")
@@ -2148,7 +2150,7 @@ mod template_cleanup_tests {
                     .file_name()
                     .to_string_lossy()
                     .starts_with(".relavium-fs-stage-v1.")));
-            let index_path = fixture.0.join("home/.relavium/fs-staging-v1");
+            let index_path = fixture.0.join("home/.relavium-fs-private-v1/fs-staging-v1");
             assert!(!std::fs::read_dir(index_path)
                 .expect("inventory")
                 .any(|entry| {
@@ -2243,7 +2245,7 @@ mod template_cleanup_tests {
         assert!(fixture.0.join("fixture-alias").exists());
         assert!(fixture
             .0
-            .join("home/.relavium/fs-staging-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.reserved")
+            .join("home/.relavium-fs-private-v1/fs-staging-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.reserved")
             .exists());
         assert!(std::fs::read_dir(&fixture.0)
             .expect("root entries")

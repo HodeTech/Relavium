@@ -12,7 +12,7 @@ export async function createSyntheticPinnedStage(
   const parent = resolve(parentDir);
   const stage = join(parent, `.relavium-fs-stage-v1.${process.pid}.${nonce}`);
   const payload = join(stage, 'payload');
-  const index = join(operatorHomeDir, '.relavium', 'fs-staging-v1');
+  const index = join(operatorHomeDir, '.relavium-fs-private-v1', 'fs-staging-v1');
   await mkdir(index, { recursive: true, mode: 0o700 });
   await mkdir(stage, { mode: 0o700 });
   await writeFile(payload, '', { flag: 'wx', mode: 0o600 });

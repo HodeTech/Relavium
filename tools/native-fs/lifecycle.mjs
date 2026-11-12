@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -224,6 +225,20 @@ export async function runLifecycle(binary) {
       },
     );
   await run('new-parent-inheritance', async (context) => {
+    // Real Node creation deliberately retains the operating system's default policy.
+    const shared = join(context.home, '.relavium');
+    mkdirSync(shared);
+    const config = join(shared, 'config.toml');
+    writeFileSync(config, 'synthetic configuration');
+    const sharedBefore = statSync(shared, { bigint: true });
+    const retired = join(shared, 'fs-staging-v1');
+    mkdirSync(retired);
+    await assert.rejects(addon.recoverMetadataStaging(context.home, context.token), {
+      message: 'filesystem staging operator recovery required',
+    });
+    assert.equal(existsSync(join(context.home, '.relavium-fs-private-v1')), false);
+    assert.deepEqual(readdirSync(retired), []);
+    rmdirSync(retired);
     const direct = join(context.root, 'direct');
     writeFileSync(direct, 'direct');
     const policy = statSync(direct, { bigint: true });
@@ -233,6 +248,13 @@ export async function runLifecycle(binary) {
     assert.equal(await addon.publishMetadata(stage, MASK, context.token), true);
     assert.deepEqual(readFileSync(context.target), after);
     samePolicy(policy, statSync(context.target, { bigint: true }));
+    const sharedAfter = statSync(shared, { bigint: true });
+    assert.equal(sharedAfter.dev, sharedBefore.dev);
+    assert.equal(sharedAfter.ino, sharedBefore.ino);
+    samePolicy(sharedBefore, sharedAfter);
+    assert.equal(readFileSync(config, 'utf8'), 'synthetic configuration');
+    assert.equal(existsSync(join(context.home, '.relavium-fs-private-v1', 'fs-staging-v1')), true);
+    assert.equal(existsSync(retired), false);
   });
   await run('new-no-clobber', async (context) => {
     const stage = await stageNew(addon, context, Buffer.from('reviewed'));

@@ -226,6 +226,7 @@ export const RUST_CHECKPOINTS = Object.freeze([
   'failure-cancelled',
   'failure-changed',
   'failure-cleanup-uncertain',
+  'failure-legacy-recovery-required',
   'failure-possibly-published',
   'failure-unsupported',
   'first-index-open',

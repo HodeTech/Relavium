@@ -232,6 +232,33 @@ describe('createCliHost', () => {
         rmSync(base, { recursive: true, force: true });
       }
     });
+    it('denies save_to into the dedicated private parent before and after creation', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-private-parent-'));
+      const home = join(base, 'home');
+      const reserved = join(home, '.relavium-fs-private-v1');
+      try {
+        mkdirSync(home);
+        const absent = createCliHost(undefined, {
+          operatorHomeDir: home,
+          media: { saveToRoot: reserved },
+        });
+        await expect(absent.mediaWrite?.('new/out', new Uint8Array([1]))).rejects.toThrow();
+        expect(existsSync(reserved)).toBe(false);
+        mkdirSync(join(reserved, 'fs-staging-v1'), { recursive: true, mode: 0o700 });
+        writeFileSync(join(reserved, 'canary'), 'private');
+        const alias = join(base, 'alias');
+        symlinkSync(reserved, alias, process.platform === 'win32' ? 'junction' : 'dir');
+        const present = createCliHost(undefined, {
+          operatorHomeDir: home,
+          media: { saveToRoot: alias },
+        });
+        await expect(present.mediaWrite?.('new/out', new Uint8Array([1]))).rejects.toThrow();
+        expect(readFileSync(join(reserved, 'canary'), 'utf8')).toBe('private');
+        expect(existsSync(join(reserved, 'new'))).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
     it('denies generated native runtime targets before provisioning or publication', async () => {
       const base = mkdtempSync(join(tmpdir(), 'relavium-save-runtime-'));
       const saveToRoot = join(nativeMetadataRuntimeRoot, 'uncreated-save-test');
@@ -247,7 +274,7 @@ describe('createCliHost', () => {
       const base = mkdtempSync(join(tmpdir(), 'relavium-save-index-'));
       const home = join(base, 'home');
       const project = join(base, 'project');
-      const index = join(home, '.relavium', 'fs-staging-v1');
+      const index = join(home, '.relavium-fs-private-v1', 'fs-staging-v1');
       try {
         mkdirSync(index, { recursive: true, mode: 0o700 });
         mkdirSync(join(project, '.relavium'), { recursive: true, mode: 0o700 });
