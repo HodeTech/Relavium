@@ -1403,10 +1403,7 @@ impl Profile for WindowsProfile {
                 drop(guard.transfer());
                 Ok(peer)
             }
-            Err(error) => {
-                guard.abort()?;
-                Err(error)
-            }
+            Err(error) => Err(error.with_cleanup(guard.abort().is_err())),
         }
     }
     fn verify_private_directory(path: &Path, directory: &File) -> Result<(), NativeFailure> {
@@ -1453,8 +1450,7 @@ impl Profile for WindowsProfile {
             adopt(guard.file())
         })();
         if let Err(error) = attempt {
-            guard.abort()?;
-            return Err(error);
+            return Err(error.with_cleanup(guard.abort().is_err()));
         }
         Ok(guard.transfer())
     }
@@ -1564,8 +1560,7 @@ impl Profile for WindowsProfile {
         let inherited = match attempt {
             Ok(policy) => policy,
             Err(error) => {
-                guard.abort()?;
-                return Err(error);
+                return Err(error.with_cleanup(guard.abort().is_err()));
             }
         };
         let file = guard.transfer();
@@ -2180,6 +2175,231 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn windows_profile_refuses_readonly_sparse_compressed_and_linked_sources() {
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        // Fixed SDK winioctl.h controls; used only to construct real NTFS fixtures.
+        const SET_SPARSE: u32 = 590020;
+        const SET_COMPRESSION: u32 = 639040;
+        for kind in ["readonly", "sparse", "compressed", "hardlink"] {
+            let fixture = Fixture::new();
+            let source = fixture.file("source", b"original bytes");
+            let path = fixture.path.join("source");
+            WindowsProfile::capture_existing(&source, &path, WriteOperation::Replace)
+                .expect("ordinary positive control");
+            let identity_before = WindowsProfile::identity(&source).expect("source identity");
+            struct RestoreReadonly(PathBuf);
+            impl Drop for RestoreReadonly {
+                fn drop(&mut self) {
+                    let path = wide(self.0.as_os_str()).expect("fixture path");
+                    unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_NORMAL) };
+                }
+            }
+            let _restore = (kind == "readonly").then(|| RestoreReadonly(path.clone()));
+            let expected_attribute = match kind {
+                "readonly" => {
+                    let encoded = wide(path.as_os_str()).expect("fixture path");
+                    assert_ne!(
+                        unsafe { SetFileAttributesW(encoded.as_ptr(), FILE_ATTRIBUTE_READONLY) },
+                        0
+                    );
+                    FILE_ATTRIBUTE_READONLY
+                }
+                "sparse" | "compressed" => {
+                    let format = COMPRESSION_FORMAT_DEFAULT;
+                    let (control, input, length) = if kind == "sparse" {
+                        (SET_SPARSE, ptr::null(), 0)
+                    } else {
+                        (
+                            SET_COMPRESSION,
+                            (&format as *const u16).cast(),
+                            size_of::<u16>() as u32,
+                        )
+                    };
+                    let mut returned = 0;
+                    assert_ne!(
+                        unsafe {
+                            DeviceIoControl(
+                                handle(&source),
+                                control,
+                                input,
+                                length,
+                                ptr::null_mut(),
+                                0,
+                                &mut returned,
+                                ptr::null_mut(),
+                            )
+                        },
+                        0,
+                        "actual NTFS fixture must be supported"
+                    );
+                    if kind == "sparse" {
+                        FILE_ATTRIBUTE_SPARSE_FILE
+                    } else {
+                        FILE_ATTRIBUTE_COMPRESSED
+                    }
+                }
+                "hardlink" => {
+                    std::fs::hard_link(&path, fixture.path.join("alias")).expect("actual hardlink");
+                    assert_eq!(info(&source).expect("linked source").nNumberOfLinks, 2);
+                    0
+                }
+                _ => unreachable!(),
+            };
+            if expected_attribute != 0 {
+                assert_ne!(
+                    info(&source).expect("attributed source").dwFileAttributes & expected_attribute,
+                    0
+                );
+            }
+            for operation in [WriteOperation::Replace, WriteOperation::Append] {
+                assert!(matches!(
+                    WindowsProfile::capture_existing(&source, &path, operation),
+                    Err(NativeFailure::Unsupported)
+                ));
+            }
+            assert!(
+                WindowsProfile::identity(&source).expect("unchanged identity") == identity_before
+            );
+            assert_eq!(fixture.bytes("source"), b"original bytes");
+        }
+    }
+
+    #[test]
+    fn windows_profile_refuses_explicit_mandatory_label_without_changing_source() {
+        let fixture = Fixture::new();
+        let source = fixture.file("source", b"original bytes");
+        let path = fixture.path.join("source");
+        WindowsProfile::capture_existing(&source, &path, WriteOperation::Replace)
+            .expect("ordinary positive control");
+        let identity_before = WindowsProfile::identity(&source).expect("source identity");
+        struct Local(*mut c_void);
+        impl Drop for Local {
+            fn drop(&mut self) {
+                unsafe { LocalFree(self.0) };
+            }
+        }
+        let text = wide(OsStr::new("S:(ML;;NW;;;LW)")).expect("fixed low integrity SDDL");
+        let mut descriptor = ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    DESCRIPTOR_REVISION,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _descriptor = Local(descriptor);
+        let (mut present, mut defaulted, mut sacl) = (0, 0, ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorSacl(descriptor, &mut present, &mut sacl, &mut defaulted)
+            },
+            0
+        );
+        assert_ne!(present, 0);
+        assert!(!sacl.is_null());
+        assert_eq!(
+            unsafe {
+                SetSecurityInfo(
+                    handle(&source),
+                    SE_FILE_OBJECT,
+                    LABEL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                    sacl,
+                )
+            },
+            ERROR_SUCCESS,
+            "owned fixture must accept an explicit low mandatory label"
+        );
+        let observe_label = || {
+            let (mut allocated, mut observed) = (ptr::null_mut(), ptr::null_mut());
+            assert_eq!(
+                unsafe {
+                    GetSecurityInfo(
+                        handle(&source),
+                        SE_FILE_OBJECT,
+                        LABEL_SECURITY_INFORMATION,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        &mut observed,
+                        &mut allocated,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+            let _allocated = Local(allocated);
+            assert!(!observed.is_null());
+            assert_ne!(unsafe { (*observed).AceCount }, 0);
+            let size = unsafe { (*observed).AclSize } as usize;
+            assert!((size_of::<ACL>()..=SECURITY_LIMIT).contains(&size));
+            unsafe { std::slice::from_raw_parts(observed.cast::<u8>(), size) }.to_vec()
+        };
+        let before = observe_label();
+        assert_eq!(policy(&source).err(), Some(NativeFailure::Unsupported));
+        for operation in [WriteOperation::Replace, WriteOperation::Append] {
+            assert!(matches!(
+                WindowsProfile::capture_existing(&source, &path, operation),
+                Err(NativeFailure::Unsupported)
+            ));
+        }
+        assert_eq!(observe_label(), before);
+        assert!(WindowsProfile::identity(&source).expect("unchanged identity") == identity_before);
+        assert_eq!(fixture.bytes("source"), b"original bytes");
+    }
+
+    #[test]
+    fn windows_profile_rejects_invalid_components_and_reparse_handles() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "a:b",
+            "a\0b",
+            &"x".repeat(256),
+        ] {
+            assert_eq!(component(OsStr::new(name)), Err(NativeFailure::Unsupported));
+        }
+        component(OsStr::new("ordinary-unicode-é.txt")).expect("ordinary component");
+        let fixture = Fixture::new();
+        let source = fixture.file("source", b"original bytes");
+        let link = fixture.path.join("link");
+        let target = wide(fixture.path.join("source").as_os_str()).expect("target path");
+        let encoded = wide(link.as_os_str()).expect("link path");
+        assert!(
+            unsafe {
+                CreateSymbolicLinkW(
+                    encoded.as_ptr(),
+                    target.as_ptr(),
+                    SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+                )
+            },
+            "actual reparse fixture must be supported"
+        );
+        let reparse = open(
+            &link,
+            FILE_READ_ATTRIBUTES | READ_CONTROL_ACCESS,
+            OPEN_EXISTING,
+            0,
+            ptr::null(),
+        )
+        .expect("open reparse object without following it");
+        assert!(matches!(info(&reparse), Err(NativeFailure::Unsupported)));
+        assert!(
+            WindowsProfile::capture_existing(&reparse, &link, WriteOperation::Replace).is_err()
+        );
+        assert_eq!(fixture.bytes("source"), b"original bytes");
+        assert!(info(&source).is_ok());
+    }
+
     mod security_probe {
         use super::*;
         fn has_inherited(policy: &Policy) -> Option<bool> {
@@ -2785,10 +3005,19 @@ pub(crate) mod tests {
                 retained = Some(file.try_clone().map_err(|_| NativeFailure::Unsupported)?);
                 Err(NativeFailure::Changed)
             });
-        assert!(matches!(
-            rejected,
-            Err(NativeFailure::Changed | NativeFailure::CleanupUncertain)
-        ));
+        let uncertain = match rejected {
+            Err(NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Changed,
+                uncertain,
+            }) => uncertain,
+            _ => panic!("captured primary must survive cleanup"),
+        };
+        if !uncertain {
+            assert!(
+                !rejected_path.exists(),
+                "proven cleanup removed the directory"
+            );
+        }
         let retained = retained.expect("callback retained peer");
         let retained_id = WindowsProfile::identity(&retained).expect("retained peer identity");
         drop(retained);

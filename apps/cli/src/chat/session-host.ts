@@ -218,6 +218,8 @@ export interface BuildChatSessionOptions {
    * Absent ⇒ a no-op, and the tier is still withheld (never guessed at).
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Required production disclosure after an aborted turn's actual effect producers have joined. */
+  readonly onEffectAttention?: (note: string) => void;
   /**
    * Sink for a **passive subscriber** that threw while handling a session event (#228) — in practice the chat
    * persister failing a durable `history.db` write after its bounded retry was exhausted. Same channel shape as
@@ -350,6 +352,10 @@ export interface BuiltChatSession {
   readonly mcpSkipped: readonly ManagerSkippedTool[];
 }
 
+/** Content-free interruption disclosure, separate from the session's terminal and durable events. */
+export const ABORTED_EFFECT_ATTENTION_NOTICE =
+  'Some actions could not be confirmed after interruption. Check the target before repeating them.';
+
 /** The safe default filesystem tier when `[chat].fs_scope` is unset (mirrors the workflow default). */
 const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 
@@ -372,6 +378,7 @@ type SessionRuntimeOptions = Pick<
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
+  | 'onEffectAttention'
   | 'onListenerError'
   | 'resolvePrice'
 >;
@@ -502,10 +509,21 @@ function buildSessionRuntime(
           outputStore,
           fs: {
             ...fs,
-            readFile: (path, options, signal) =>
-              path.startsWith('output://')
-                ? outputStore.read(path, options, signal)
-                : fs.readFile(path, options, signal),
+            readFile: async (path, options, signal) => {
+              if (!path.startsWith('output://')) return fs.readFile(path, options, signal);
+              try {
+                return await outputStore.read(path, options, signal);
+              } catch (error) {
+                if (error instanceof SessionOutputStoreError && error.reason === 'range_required')
+                  throw new ToolExecutionError(
+                    'read_file',
+                    'read this output with an explicit line or byte range',
+                    undefined,
+                    { recoverable: true, retryable: false },
+                  );
+                throw error;
+              }
+            },
           },
         };
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
@@ -578,6 +596,38 @@ function buildSessionRuntime(
     return usageWriter;
   };
   const hostWork = new HostWorkRegistry(sessionId);
+  // Separate from hostWork: a disclosure waits for producers and must never join itself.
+  const effectNotices = new HostWorkRegistry(sessionId);
+  let effectNoticeFailure: Error | undefined;
+  let turnClaims = new Set<string>();
+  let turnDisclosed = false;
+  let turnActive = false;
+  const discloseAbortedEffects = (): void => {
+    if (turnDisclosed) return;
+    turnDisclosed = true;
+    const claims = turnClaims;
+    const notify = async (): Promise<void> => {
+      await hostWork.join();
+      if (claims.size === 0) return;
+      try {
+        if (opts.onEffectAttention === undefined)
+          throw new Error('Unconfirmed effect disclosure is unavailable.');
+        opts.onEffectAttention(ABORTED_EFFECT_ATTENTION_NOTICE);
+      } catch (cause) {
+        effectNoticeFailure ??= new Error('Unconfirmed effect disclosure failed.', { cause });
+        opts.workOwner?.failure(effectNoticeFailure);
+      }
+    };
+    // Observe notification failure above; lifetime retention is independent of terminal cancellation.
+    void effectNotices
+      .invoke(() =>
+        opts.workOwner === undefined ? notify() : opts.workOwner.work.retainWork(notify),
+      )
+      .catch((cause: unknown) => {
+        effectNoticeFailure ??= new Error('Unconfirmed effect disclosure failed.', { cause });
+        opts.workOwner?.failure(effectNoticeFailure);
+      });
+  };
   let cumulativeCost = 0;
   let accountingSnapshot: SessionAccountingSnapshot | undefined;
   let accountingFailure: { readonly cause: unknown } | undefined;
@@ -713,6 +763,9 @@ function buildSessionRuntime(
     // and the same posture the commitment writer takes for money.
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
+      const claims = turnClaims;
+      const claimKey = (slot: number, toolId: string): string =>
+        JSON.stringify([correlation, slot, toolId]);
       return {
         inspectReplay: async (slot, toolId, redactedArgs) => {
           // A retained result is admitted only while this instance still owns healthy durability.
@@ -726,7 +779,7 @@ function buildSessionRuntime(
           // Settling/discarding an existing claim must remain possible after a failure: that records what
           // already happened rather than admitting another effect.
           assertDurableDispatch(toolId);
-          return await (port ?? unwiredEffectJournal()).prepare(
+          const verdict = await (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,
@@ -734,10 +787,17 @@ function buildSessionRuntime(
             targetIdempotencyKey,
             callAttempt,
           );
+          if (tier === 3 && verdict.outcome === 'proceed') claims.add(claimKey(slot, toolId));
+          return verdict;
         },
-        settle: (slot, toolId, state, result) =>
-          (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
-        discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
+        settle: async (slot, toolId, state, result) => {
+          await (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result);
+          if (state === 'committed') claims.delete(claimKey(slot, toolId));
+        },
+        discard: async (slot, toolId) => {
+          await (port ?? unwiredEffectJournal()).discard(slot, toolId);
+          claims.delete(claimKey(slot, toolId));
+        },
       };
     },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
@@ -768,6 +828,18 @@ function buildSessionRuntime(
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
     emit: (event) => {
+      if (event.type === 'session:turn_started') {
+        turnClaims = new Set();
+        turnDisclosed = false;
+        turnActive = true;
+      }
+      if (
+        (event.type === 'session:cancelled' && turnActive) ||
+        (event.type === 'session:turn_completed' && event.stopReason === 'aborted')
+      )
+        discloseAbortedEffects();
+      if (event.type === 'session:cancelled' || event.type === 'session:turn_completed')
+        turnActive = false;
       if (usageWriter !== undefined) requiredUsageWriter();
       if (event.type === 'cost:updated') {
         // The engine/governor still owns its attempt-time counter. Public session money is
@@ -844,6 +916,8 @@ function buildSessionRuntime(
     },
     whenHostSafeToClose: async () => {
       await hostWork.join();
+      await effectNotices.join();
+      if (effectNoticeFailure !== undefined) throw effectNoticeFailure;
       await money.waitForWrites();
       await joinMoney();
       if (publicationFailure !== undefined) throw publicationFailure;
@@ -1289,6 +1363,8 @@ export interface BuildResumedChatSessionOptions extends Pick<
    * with, and the catalog may have moved under it since.
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Required production disclosure after an aborted turn's actual effect producers have joined. */
+  readonly onEffectAttention?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
   readonly onUnpriced?: (note: string) => void;
   /**

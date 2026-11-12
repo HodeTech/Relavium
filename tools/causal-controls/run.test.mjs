@@ -84,6 +84,18 @@ for (const [kind, background] of [
         assert.equal(child.timedOut, false);
         const root = join(evidence, 'filesystem');
         const summary = JSON.parse(readFileSync(join(root, 'summary.json'), 'utf8'));
+        // Establish the primary refusal before inspecting artifacts that an earlier failure omits.
+        assert.equal(child.code, 1, 'A real background error must refuse the complete coordinator');
+        assert.equal(summary.complete, false);
+        assert.match(
+          summary.failure.message,
+          /Unhandled runtime error/,
+          'Coordinator must reach the background runtime-error refusal',
+        );
+        assert.deepEqual(
+          summary.mechanisms.map(({ id }) => id),
+          [success.id],
+        );
         const removal = JSON.parse(
           readFileSync(join(root, contaminated.id, 'mutated', 'vitest.json'), 'utf8'),
         );
@@ -93,13 +105,6 @@ for (const [kind, background] of [
           removal.testResults[0].assertionResults[0].failureMessages[0],
           /^AssertionError: CAUSAL_SYNTHETIC_DECLARED/,
         );
-        assert.equal(child.code, 1, 'A real background error must refuse the complete coordinator');
-        assert.equal(summary.complete, false);
-        assert.deepEqual(
-          summary.mechanisms.map(({ id }) => id),
-          [success.id],
-        );
-        assert.match(summary.failure.message, /Unhandled runtime error/);
         assert.equal(summary.restorations.length, 2);
         for (const restored of summary.restorations)
           assert.equal(restored.fixedSha256, restored.restoredSha256);

@@ -846,6 +846,23 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     };
 
+    const closeFailedUnownedBuild = async (built: BuiltChatSession): Promise<void> => {
+      try {
+        built.session.cancel();
+      } catch {
+        warnTeardown(deps.io, 'chat host');
+      }
+      try {
+        await built.whenHostSafeToClose();
+      } catch {
+        // A secondary close failure cannot hide the construction fault.
+        warnTeardown(deps.io, 'chat host');
+      } finally {
+        await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+        await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
+      }
+    };
+
     // The SHARED HomeChatSession wiring over a built (FRESH or RESUMED) session + its view store — the persister,
     // the shared line handler (owns the ADR-0057 mode floor), the stream subscription + frame, the mention/shell
     // ports, and the bounded teardown. Used by startChat (fresh) and reseatChat (the ADR-0059 model switch), so the
@@ -856,44 +873,45 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       store: ChatStoreController,
       opts: { readonly open: boolean; readonly initialSequenceNumber?: number },
     ): Promise<HomeChatSession> => {
-      built.workOwner?.assertAdmitting();
-      ownership?.surface.work.assertAdmitting();
-      // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
-      // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
-      for (const tool of built.mcpSkipped) {
-        store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
-      }
-      // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
-      const chatDoctorProbes =
-        deps.doctorProbes ??
-        assembleDoctorProbes({
-          readConfig: () => {
-            startingModes.read(built.context.workingDir);
-          },
-          operatorHomeDir: homeDir,
-          ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
-          cwd: deps.global.cwd,
-          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-          resolver: providers,
-          agentMcpServers: built.agent.mcp_servers ?? [],
-          mcpSkipped: built.mcpSkipped,
-        });
-      // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring must
-      // reclaim them — and any spawned MCP child — rather than leak the timer/subscription (chatCommand's guard).
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
-      const sendGuard = (): string | undefined => {
+      let view: ReturnType<SessionHomeLifetime['view']> | undefined;
+      try {
         built.workOwner?.assertAdmitting();
         ownership?.surface.work.assertAdmitting();
-        return providerHasKey(providers, built.agent.provider)
-          ? undefined
-          : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
-      };
-      const initialKeyRefusal = sendGuard();
-      if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
-      const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
-      try {
+        // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
+        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
+        for (const tool of built.mcpSkipped) {
+          store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
+        }
+        // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
+        const chatDoctorProbes =
+          deps.doctorProbes ??
+          assembleDoctorProbes({
+            readConfig: () => {
+              startingModes.read(built.context.workingDir);
+            },
+            operatorHomeDir: homeDir,
+            ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            cwd: deps.global.cwd,
+            ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+            resolver: providers,
+            agentMcpServers: built.agent.mcp_servers ?? [],
+            mcpSkipped: built.mcpSkipped,
+          });
+        // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring must
+        // reclaim them — and any spawned MCP child — rather than leak the timer/subscription (chatCommand's guard).
+        const sendGuard = (): string | undefined => {
+          built.workOwner?.assertAdmitting();
+          ownership?.surface.work.assertAdmitting();
+          return providerHasKey(providers, built.agent.provider)
+            ? undefined
+            : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+        };
+        const initialKeyRefusal = sendGuard();
+        if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
+        view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
         view?.acquire(() => () => closeQuietly(deps.io, 'tool previews', store.sealToolPreviews));
         persister = createSessionPersister(
           {
@@ -1112,12 +1130,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();
-        try {
-          closeQuietly(deps.io, 'persister', () => persister?.close());
-        } finally {
-          await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
-          await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
-        }
+        await closeFailedUnownedBuild(built);
+        closeQuietly(deps.io, 'persister', () => persister?.close());
         throw err;
       }
     };
@@ -1227,6 +1241,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+            onEffectAttention: (note) => store.notice(note),
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
           });
@@ -1373,58 +1388,56 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
+            onEffectAttention: noteToStore,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,
           });
         const built = host === undefined ? await build() : await host.build(build);
-        host?.work.assertAdmitting();
-        ownership?.surface.work.assertAdmitting();
-        if (restoreSignal?.aborted) {
-          // Legacy unowned callers still owe the actual returned builder's resources.
-          if (host === undefined) {
-            built.session.cancel();
-            try {
-              await built.whenHostSafeToClose();
-            } finally {
-              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
-              await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
-            }
+        let transferred = false;
+        try {
+          host?.work.assertAdmitting();
+          ownership?.surface.work.assertAdmitting();
+          if (restoreSignal?.aborted) {
+            throw resumeCancelled;
           }
-          throw resumeCancelled;
+          // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
+          // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
+          const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
+          const store = createChatStore(
+            deps.global.color,
+            {
+              agentRef: built.agent.id,
+              model: built.agent.model,
+              // The amount and its qualifiers share this read even if another live host settled during build.
+              cumulativeCostMicrocents: costs.totalCostMicrocents,
+              usageCoverage: costs.coverage,
+              unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+              turnCount: built.resumeState.turnCount,
+              // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
+              // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
+              // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
+              transcript: carriedTranscript,
+              ...(initialRestore ? { initialRestore: true } : {}),
+            },
+            transcriptBoundFor(altScreenActive),
+          );
+          // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+          // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+          assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
+          storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+          // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
+          // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
+          for (const note of pendingNotes) store.notice(note);
+          pendingNotes.length = 0;
+          transferred = true;
+          return await wireHomeChatSession(built, store, {
+            open: false,
+            initialSequenceNumber: built.nextSequenceNumber,
+          });
+        } catch (cause) {
+          if (!transferred && host === undefined) await closeFailedUnownedBuild(built);
+          throw cause;
         }
-        // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
-        // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
-        const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
-        const store = createChatStore(
-          deps.global.color,
-          {
-            agentRef: built.agent.id,
-            model: built.agent.model,
-            // The amount and its qualifiers share this read even if another live host settled during build.
-            cumulativeCostMicrocents: costs.totalCostMicrocents,
-            usageCoverage: costs.coverage,
-            unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-            turnCount: built.resumeState.turnCount,
-            // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
-            // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
-            // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
-            transcript: carriedTranscript,
-            ...(initialRestore ? { initialRestore: true } : {}),
-          },
-          transcriptBoundFor(altScreenActive),
-        );
-        // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
-        // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
-        assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
-        storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
-        // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
-        // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
-        for (const note of pendingNotes) store.notice(note);
-        pendingNotes.length = 0;
-        return wireHomeChatSession(built, store, {
-          open: false,
-          initialSequenceNumber: built.nextSequenceNumber,
-        });
       });
 
     const reseatChat = (

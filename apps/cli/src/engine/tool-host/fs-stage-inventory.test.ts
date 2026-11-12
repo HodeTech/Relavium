@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   chmod,
   link,
@@ -22,6 +23,7 @@ import {
 } from './fs-stage-inventory.js';
 import { createSyntheticPinnedStage } from './fs-stage.test-support.js';
 import { createNodeFsCapability } from './fs.js';
+import { loadNativeMetadataWriteAdapter } from './fs-native-metadata.js';
 import { openLocalDb } from '../../db/open.js';
 import { prepareGlobalPreferences } from '../../config/write.js';
 
@@ -147,6 +149,96 @@ it.runIf(process.platform === 'win32')(
     }
   },
 );
+
+it.skipIf(process.platform === 'win32')(
+  'protects v1 and v2 identities and refuses mismatched or unknown protocol pairs',
+  async () => {
+    const old = await createSyntheticPinnedStage(home, workspace);
+    const newer = await createSyntheticPinnedStage(home, workspace);
+    const records = (await readdir(index)).filter((name) => name.endsWith('.record'));
+    const newPath = join(index, records[1]!);
+    const newRecord = await readFile(newPath);
+    newRecord.write('RVSTG002', 0, 'ascii');
+    newRecord[8] = 2;
+    await writeFile(newPath, newRecord);
+    const inventory = await captureFsStageInventory(home);
+    const awaitedIdentities = new Map(
+      await Promise.all(
+        [old.stage, old.payload, newer.stage, newer.payload].map(
+          async (path) => [path, await stat(path, { bigint: true })] as const,
+        ),
+      ),
+    );
+    for (const path of [old.stage, old.payload, newer.stage, newer.payload]) {
+      expect(() => inventory.assertIdentity(awaitedIdentities.get(path)!)).toThrow(
+        FsStageInventoryError,
+      );
+    }
+    for (const [magic, version] of [
+      ['RVSTG001', 2],
+      ['RVSTG002', 1],
+      ['RVSTG003', 3],
+    ] as const) {
+      const bad = Buffer.from(newRecord);
+      bad.write(magic, 0, 'ascii');
+      bad[8] = version;
+      await writeFile(newPath, bad);
+      await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    }
+  },
+);
+
+it('protects native-produced v2 records and rejects unknown native record versions', async () => {
+  const adapter = await loadNativeMetadataWriteAdapter();
+  const mask = process.platform === 'win32' ? undefined : process.umask();
+  const prepared: unknown[] = [];
+  const stages: unknown[] = [];
+  const nonces = [randomBytes(16).toString('hex'), randomBytes(16).toString('hex')];
+  const records = nonces.map((nonce) => join(index, `${nonce}.record`));
+  const originals: Buffer[] = [];
+  try {
+    for (const [position, nonce] of nonces.entries()) {
+      const entry = await adapter.prepareNewMetadata(
+        join(workspace, `native-target-${position}`),
+        mask,
+      );
+      prepared.push(entry);
+      const stage = await adapter.stageNewMetadata(
+        entry,
+        home,
+        Buffer.from('native payload'),
+        nonce,
+        mask,
+        adapter.createWriteCancellation(),
+      );
+      stages.push(stage);
+      originals.push(await readFile(records[position]!));
+      expect(originals[position]!.subarray(0, 9)).toEqual(Buffer.from('RVSTG002\x02'));
+    }
+    // Preserve a native-produced body and identities while exercising the legacy wire pair.
+    const legacy = Buffer.from(originals[0]!);
+    legacy.write('RVSTG001', 0, 'ascii');
+    legacy[8] = 1;
+    await writeFile(records[0]!, legacy);
+    const inventory = await captureFsStageInventory(home);
+    for (const nonce of nonces) {
+      const stage = join(workspace, `.relavium-fs-stage-v1.${process.pid}.${nonce}`);
+      const stageIdentity = await stat(stage, { bigint: true });
+      const payloadIdentity = await stat(join(stage, 'payload'), { bigint: true });
+      expect(() => inventory.assertIdentity(stageIdentity)).toThrow(FsStageInventoryError);
+      expect(() => inventory.assertIdentity(payloadIdentity)).toThrow(FsStageInventoryError);
+    }
+    const unknown = Buffer.from(originals[1]!);
+    unknown.write('RVSTG003', 0, 'ascii');
+    unknown[8] = 3;
+    await writeFile(records[1]!, unknown);
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+  } finally {
+    for (const [position, bytes] of originals.entries()) await writeFile(records[position]!, bytes);
+    for (const stage of stages.reverse()) await adapter.releaseMetadataStage(stage);
+    for (const entry of prepared.reverse()) await adapter.releaseNewMetadata(entry);
+  }
+});
 
 it.skipIf(process.platform === 'win32')(
   'rejects an opened hard-link alias to a recorded stage and permits an ordinary file',

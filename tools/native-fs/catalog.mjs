@@ -20,6 +20,7 @@ export const NATIVE_BUILD_INPUTS = Object.freeze([
   'apps/cli/src/engine/tool-host/fs-native-loader-integrity.ts',
   'apps/cli/src/engine/tool-host/fs-native-metadata.ts',
   'tools/cli-package/files.mjs',
+  'tools/native-fs/artifact.mjs',
   'tools/native-fs/assemble.mjs',
   'tools/native-fs/assets.mjs',
   'tools/native-fs/build.mjs',
@@ -33,6 +34,7 @@ export const NATIVE_BUILD_INPUTS = Object.freeze([
   'tools/native-fs/profile-catalog.mjs',
   'tools/native-fs/profile.mjs',
   'tools/native-fs/musl.Dockerfile',
+  'tools/native-fs/pid-namespace-custody.mjs',
   'tools/native-fs/probe.mjs',
   'tools/native-fs/stage.mjs',
 ]);

@@ -7,8 +7,9 @@
 # 2026-10-19): `publish` first runs a fail-closed guard that refuses every artifact. Only a verified release
 # candidate (exact tarball, original ciphertext and release binding receipt) may publish, and Step 9d's custody
 # validator, which replaces the guard, is what will verify one; Wave 4b supplies the production recipient. Until
-# both exist every tag push stops at the guard, after the cross-OS smoke, so not even a v0.1.x patch publishes.
-# The flow description below is the pre-custody shape the guard now blocks.
+# both exist no tag, including a v0.1.x patch, may publish. Current tag admission also requires
+# Accepted ADR-0121 before native builds; that earlier stop does not replace the independent publish guard.
+# workflow_dispatch remains build-only. The flow description below is the pre-custody shape.
 #
 # Amended 2026-11-04 (decision D59, release path B): the condition above is to be superseded by a pre-1.0
 # release ADR that publishes the smoke-verified package-test tarball, with a sunset at 1.0 or when Steps
@@ -172,7 +173,7 @@ jobs:
       - name: Download all eight source-bound native execution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: native-fs-${{ github.run_id }}-*
           path: ${{ runner.temp }}/native-fs-assets
           merge-multiple: false
       - name: Require the complete native asset inventory before packing

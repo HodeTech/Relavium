@@ -46,7 +46,25 @@ function checkDelivery(value, ci = parse(read('.github/workflows/ci.yml'))) {
         step.if === "runner.os == 'Linux'",
     ),
   );
-  assert.ok(job.steps.some((step) => step.run === 'node tools/native-fs/check-target.mjs'));
+  const check = job.steps.findIndex((step) => step.run === 'node tools/native-fs/check-target.mjs');
+  const stage = job.steps.findIndex(
+    (step) =>
+      step.run ===
+      "node tools/native-fs/artifact.mjs stage '${{ runner.temp }}/native-fs-artifact'",
+  );
+  const upload = job.steps.findIndex((step) => step.uses?.startsWith('actions/upload-artifact@'));
+  assert.ok(check >= 0 && stage > check && upload > stage);
+  assert.equal(job.steps[stage].env.RELAVIUM_EXPECTED_NATIVE_TARGET, '${{ matrix.target }}');
+  assert.equal(
+    job.steps[upload].uses,
+    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
+  );
+  assert.deepEqual(job.steps[upload].with, {
+    name: 'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}',
+    path: '${{ runner.temp }}/native-fs-artifact/*',
+    'retention-days': 7,
+    'if-no-files-found': 'error',
+  });
   assert.equal(ci.jobs['native-fs-assets'].uses, './.github/workflows/native-fs.yml');
   for (const name of ['pack-cli', 'map-controls']) {
     const consumer = ci.jobs[name];
@@ -54,7 +72,7 @@ function checkDelivery(value, ci = parse(read('.github/workflows/ci.yml'))) {
     const download = consumer.steps.findIndex(
       (step) =>
         step.uses?.startsWith('actions/download-artifact@') &&
-        step.with.pattern === 'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*',
+        step.with.pattern === 'native-fs-${{ github.run_id }}-*',
     );
     const assembly = consumer.steps.findIndex(
       (step) =>
@@ -72,6 +90,7 @@ function checkDelivery(value, ci = parse(read('.github/workflows/ci.yml'))) {
 test('eight native ABI producers execute exact Node floor and complete source-bound assets gate pack and map controls', () => {
   checkDelivery(workflow());
   assert.ok(NATIVE_BUILD_INPUTS.includes('.github/workflows/native-fs.yml'));
+  assert.ok(NATIVE_BUILD_INPUTS.includes('tools/native-fs/artifact.mjs'));
   assert.ok(NATIVE_BUILD_INPUTS.includes('tools/native-fs/gnu.Dockerfile'));
   assert.ok(NATIVE_BUILD_INPUTS.includes('tools/native-fs/musl.Dockerfile'));
 });
@@ -94,6 +113,21 @@ test('delivery controls independently refuse omitted targets, emulated/mismatche
       value.jobs['native-fs'].steps.find((step) =>
         step.uses?.startsWith('actions/setup-node@'),
       ).with['node-version'] = '22';
+    },
+    (value) => {
+      value.jobs['native-fs'].steps.find((step) =>
+        step.uses?.startsWith('actions/upload-artifact@'),
+      ).with.name = 'native-fs-${{ github.run_id }}-${{ matrix.target }}';
+    },
+    (value) => {
+      value.jobs['native-fs'].steps.find((step) =>
+        step.uses?.startsWith('actions/upload-artifact@'),
+      ).with.path = 'apps/cli/native/fs-metadata/runtime/*';
+    },
+    (value) => {
+      value.jobs['native-fs'].steps = value.jobs['native-fs'].steps.filter(
+        (step) => !step.run?.includes('artifact.mjs stage'),
+      );
     },
   ]) {
     const value = workflow();
@@ -251,10 +285,7 @@ function checkRelease(value) {
     pack.steps[source].run,
     /assert.equal\(process.env.ADMITTED_SOURCE, process.env.GITHUB_SHA\)/u,
   );
-  assert.equal(
-    pack.steps[download].with.pattern,
-    'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*',
-  );
+  assert.equal(pack.steps[download].with.pattern, 'native-fs-${{ github.run_id }}-*');
   assert.equal(pack.steps[download].with['merge-multiple'], false);
   const publish = value.jobs.publish;
   assert.equal(
@@ -389,14 +420,17 @@ test('source and bundled host loader pins and path-selection define cannot drift
     assert.ok([ci.jobs[name].needs].flat().includes('native-fs-assets'));
     const target =
       name === 'windows-concurrency' ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
-    assert.ok(
-      ci.jobs[name].steps.some(
-        (step) =>
-          step.with?.name ===
-            `native-fs-\${{ github.run_id }}-\${{ github.run_attempt }}-${target}` &&
-          step.with.path === 'apps/cli/native/fs-metadata/runtime',
-      ),
+    const download = ci.jobs[name].steps.findIndex(
+      (step) => step.with?.pattern === 'native-fs-${{ github.run_id }}-*',
     );
+    const select = ci.jobs[name].steps.findIndex(
+      (step) =>
+        step.run ===
+        `node tools/native-fs/artifact.mjs select '\${{ runner.temp }}/native-fs-assets' ${target}`,
+    );
+    assert.ok(download >= 0 && select > download);
+    assert.equal(ci.jobs[name].steps[download].with.path, '${{ runner.temp }}/native-fs-assets');
+    assert.equal(ci.jobs[name].steps[download].with['merge-multiple'], false);
   }
   const cli = JSON.parse(read('apps/cli/turbo.json'));
   assert.equal(cli.tasks.build.cache, false);
@@ -582,4 +616,72 @@ test('plain Node namespace control reproduces the former shorthand-only export f
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+function checkRetryConsumers(ci, release) {
+  for (const [workflow, count] of [
+    [ci, 10],
+    [release, 1],
+  ]) {
+    const consumers = Object.entries(workflow.jobs).filter(([, job]) =>
+      job.steps?.some((step) => step.with?.pattern?.startsWith('native-fs-')),
+    );
+    assert.equal(consumers.length, count);
+    for (const [name, job] of consumers) {
+      const download = job.steps.findIndex((step) => step.with?.pattern?.startsWith('native-fs-'));
+      assert.equal(
+        job.steps[download].uses,
+        'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
+      );
+      // Default action custody is this workflow run: no token, repository or alternate run override.
+      assert.deepEqual(job.steps[download].with, {
+        pattern: 'native-fs-${{ github.run_id }}-*',
+        path: '${{ runner.temp }}/native-fs-assets',
+        'merge-multiple': false,
+      });
+      const next = job.steps[download + 1];
+      if (['pack-cli', 'map-controls', 'pack'].includes(name))
+        assert.equal(
+          next.run,
+          "node tools/native-fs/assemble.mjs '${{ runner.temp }}/native-fs-assets'",
+        );
+      else {
+        const target =
+          name === 'windows-concurrency' ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
+        assert.equal(
+          next.run,
+          `node tools/native-fs/artifact.mjs select '\${{ runner.temp }}/native-fs-assets' ${target}`,
+        );
+      }
+    }
+  }
+}
+
+test('all eleven native consumers keep own-run separated downloads and validate producer attempts before use', () => {
+  const ci = parse(read('.github/workflows/ci.yml'));
+  const release = parse(read('.github/workflows/release.yml'));
+  checkRetryConsumers(ci, release);
+  for (const mutation of [
+    (step) => {
+      step.with.pattern = 'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*';
+    },
+    (step) => {
+      step.with['merge-multiple'] = true;
+    },
+    (step) => {
+      step.with['run-id'] = '123';
+    },
+    (step) => {
+      step.uses = 'actions/download-artifact@v4';
+    },
+  ]) {
+    const altered = JSON.parse(JSON.stringify(ci));
+    mutation(altered.jobs.ci.steps.find((step) => step.with?.pattern?.startsWith('native-fs-')));
+    assert.throws(() => checkRetryConsumers(altered, release));
+  }
+  const altered = JSON.parse(JSON.stringify(ci));
+  altered.jobs.ci.steps = altered.jobs.ci.steps.filter(
+    (step) => !step.run?.includes('artifact.mjs select'),
+  );
+  assert.throws(() => checkRetryConsumers(altered, release));
 });

@@ -185,7 +185,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
     rmSync(temporary, { recursive: true, force: true });
   }
   const floor = workflow.jobs['floor-check'];
-  assert.equal(floor['timeout-minutes'], 35);
+  assert.equal(floor['timeout-minutes'], 45);
   assert.equal(workflow.jobs.coverage['timeout-minutes'], 45);
   assert.equal(
     workflow.jobs.coverage.steps.find((step) => step.run === 'pnpm coverage:enforced')?.name,
@@ -345,7 +345,7 @@ test('required checks keep their branch-protection names and cannot be skipped',
   }
 });
 
-test('Windows cohorts retain twenty-two serial filesystem files and media cases', () => {
+test('Windows cohorts retain twenty-four serial filesystem files and media cases', () => {
   const require = createRequire(new URL('apps/cli/package.json', root));
   const { parse } = require('yaml');
   const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
@@ -368,6 +368,8 @@ test('Windows cohorts retain twenty-two serial filesystem files and media cases'
     'src/engine/tool-host/fs-mvp3.test.ts',
     'src/engine/tool-host/fs-discovery-ignore-work.test.ts',
     'src/engine/tool-host/fs-path-component.test.ts',
+    'src/engine/tool-host/fs-unicode-policy.test.ts',
+    'src/engine/tool-host/fs-native-write.test.ts',
     'src/engine/tool-host/session-output-store.test.ts',
     'src/commands/fs-invocation.test.ts',
     'src/commands/fs-workspace-admission.test.ts',
@@ -383,7 +385,7 @@ test('Windows cohorts retain twenty-two serial filesystem files and media cases'
     'src/engine/tool-host/prepared-replay.e2e.test.ts',
     'src/engine/host.test.ts',
   ];
-  assert.equal(files.length, 22);
+  assert.equal(files.length, 24);
   for (const file of files) assert.ok(existsSync(new URL(`apps/cli/${file}`, root)), file);
   assert.deepEqual(step.run.trim().split(/\s+/), [
     'pnpm',

@@ -1,19 +1,17 @@
 /** Assemble eight independent native execution outputs, refusing duplicates or source drift. */
-import { readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { inspectNativeAssets, nativeSourceBinding, writeNativeAssets } from './assets.mjs';
+import { writeNativeAssets } from './assets.mjs';
+import { selectNativeArtifacts } from './artifact.mjs';
 import { validateProfileEvidence } from './profile.mjs';
 import { NATIVE_DIRECTORY, NATIVE_TARGETS } from './catalog.mjs';
 if (process.argv.length !== 3) throw new Error('NATIVE_FS_ASSEMBLY_ARGUMENTS');
 const repository = fileURLToPath(new URL('../..', import.meta.url));
 const inputs = resolve(process.argv[2]);
-const binding = nativeSourceBinding(repository);
 const files = new Map();
 const assets = [];
 let base;
-for (const name of readdirSync(inputs).sort()) {
-  const checked = inspectNativeAssets(join(inputs, name), { binding });
+for (const { checked } of selectNativeArtifacts({ repository, inputs })) {
   if (checked.manifest.scope !== 'development-current') throw new Error('NATIVE_FS_ASSEMBLY_SCOPE');
   base ??= checked.manifest;
   const asset = checked.manifest.assets[0];

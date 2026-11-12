@@ -270,13 +270,13 @@ export function createChatStore(
         event.callId,
         updateToolDisplay(toolDisplays.get(event.callId), event),
       );
-      // Current consent is pinned. Other full detail snapshots expire under a fixed aggregate budget.
+      // Current consent/contents are pinned; list selection follows stable identity through eviction.
+      const pinnedCallId = review?.screen === 'list' ? undefined : review?.callId;
       let bytes =
-        (review?.callId === undefined
-          ? 0
-          : toolDisplays.get(review.callId)?.document?.sourceBytes) ?? 0;
+        (pinnedCallId === undefined ? 0 : toolDisplays.get(pinnedCallId)?.document?.sourceBytes) ??
+        0;
       for (const [id, value] of [...toolDisplays].reverse()) {
-        if (id === review?.callId) continue;
+        if (id === pinnedCallId) continue;
         const cost = value.document?.sourceBytes ?? 0;
         if (bytes + cost > 32 * 1024 * 1024) {
           const summary = { ...value };
@@ -285,9 +285,15 @@ export function createChatStore(
         } else bytes += cost;
       }
       while (toolDisplays.size > 64) {
-        const id = [...toolDisplays.keys()].find((key) => key !== review?.callId);
+        const id = [...toolDisplays.keys()].find((key) => key !== pinnedCallId);
         if (id === undefined) break;
         toolDisplays.delete(id);
+      }
+      if (review?.screen === 'list') {
+        const callId = review.callId ?? toolDisplays.keys().next().value;
+        const selected = [...toolDisplays.keys()].findIndex((id) => id === callId);
+        review = selected < 0 ? undefined : { ...review, callId, selected };
+        reviewPage = undefined;
       }
       flush();
     },
@@ -302,7 +308,7 @@ export function createChatStore(
     },
     openDetails: () => {
       if (!sealed && approval === undefined) {
-        review = initialToolReview('details');
+        review = initialToolReview('details', toolDisplays.keys().next().value);
         flush();
       }
     },
@@ -350,7 +356,18 @@ export function createChatStore(
       );
       switch (action.kind) {
         case 'state':
-          review = action.state;
+          review =
+            action.state.screen === 'list'
+              ? {
+                  ...action.state,
+                  callId:
+                    review.screen === 'list' ? calls[action.state.selected]?.callId : review.callId,
+                  selected:
+                    review.screen === 'list'
+                      ? action.state.selected
+                      : calls.findIndex((call) => call.callId === review.callId),
+                }
+              : action.state;
           reviewPage = undefined;
           flush();
           break;
@@ -374,7 +391,8 @@ export function createChatStore(
           flush();
           break;
         case 'select': {
-          const selected = calls[review.selected];
+          const selected =
+            review.callId === undefined ? undefined : toolDisplays.get(review.callId);
           if (selected !== undefined) {
             review = initialToolReview('details', selected.callId, detailsDocument(selected));
             flush();
@@ -490,7 +508,7 @@ export function createChatStore(
     },
     requestApproval: (request, cacheable, signal, live) =>
       new Promise<ApprovalAnswer>((resolve, reject) => {
-        if (settleApproval !== undefined) {
+        if (sealed || settleApproval !== undefined) {
           reject(abortError());
           return;
         }
@@ -518,10 +536,6 @@ export function createChatStore(
           clear();
           resolve(answer);
         };
-        if (sealed) {
-          reject(abortError());
-          return;
-        }
         approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
         const fallback = {
           kind: 'operation',

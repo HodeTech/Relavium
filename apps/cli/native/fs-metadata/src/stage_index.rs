@@ -13,7 +13,8 @@ const MAX_RECORDS: usize = 128;
 const MAX_RECORD_BYTES: usize = 16 * 1024;
 const MAX_SCAN_BYTES: usize = 2 * 1024 * 1024;
 const PREFIX: &str = ".relavium-fs-stage-v1.";
-const MAGIC: &[u8; 8] = b"RVSTG001";
+const MAGIC_V1: &[u8; 8] = b"RVSTG001";
+const MAGIC_V2: &[u8; 8] = b"RVSTG002";
 
 fn refused<T>() -> Result<T, NativeFailure> {
     Err(NativeFailure::Changed)
@@ -68,8 +69,15 @@ fn record_name(name: &str) -> Option<&str> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecordVersion {
+    V1,
+    V2,
+}
+
 #[derive(Clone)]
 struct Record {
+    version: RecordVersion,
     pid: u32,
     nonce: String,
     owner: String,
@@ -95,8 +103,12 @@ impl Record {
             return refused();
         }
         let mut out = Vec::with_capacity(176 + owner.len() + stage.len());
-        out.extend_from_slice(MAGIC);
-        out.push(1);
+        let (magic, version) = match self.version {
+            RecordVersion::V1 => (MAGIC_V1, 1),
+            RecordVersion::V2 => (MAGIC_V2, 2),
+        };
+        out.extend_from_slice(magic);
+        out.push(version);
         out.extend_from_slice(&[0; 7]);
         out.extend_from_slice(&self.pid.to_le_bytes());
         out.extend_from_slice(
@@ -121,9 +133,14 @@ impl Record {
         Ok(out)
     }
     fn decode(bytes: &[u8]) -> Result<Self, NativeFailure> {
-        if bytes.len() < 176 || &bytes[..8] != MAGIC || bytes[8] != 1 || bytes[9..16] != [0; 7] {
+        if bytes.len() < 176 || bytes[9..16] != [0; 7] {
             return refused();
         }
+        let version = match (&bytes[..8], bytes[8]) {
+            (b"RVSTG001", 1) => RecordVersion::V1,
+            (b"RVSTG002", 2) => RecordVersion::V2,
+            _ => return refused(),
+        };
         let pid = u32::from_le_bytes(
             bytes[16..20]
                 .try_into()
@@ -197,6 +214,7 @@ impl Record {
             Ok(id)
         };
         Ok(Self {
+            version,
             pid,
             nonce,
             owner,
@@ -364,8 +382,18 @@ impl<P: Profile> Index<P> {
         start: Instant,
         cancelled: Option<&AtomicBool>,
     ) -> Result<(), NativeFailure> {
+        self.recheck_proof(Some((start, cancelled)))
+    }
+    fn recheck_proof(
+        &self,
+        checks: Option<(Instant, Option<&AtomicBool>)>,
+    ) -> Result<(), NativeFailure> {
+        let checkpoint = || match checks {
+            Some((start, cancelled)) => tick(start, cancelled),
+            None => Ok(()),
+        };
         self.ensure_context()?;
-        tick(start, cancelled)?;
+        checkpoint()?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-home-path");
         if io(fs::canonicalize(&self.requested_home))? != self.home_path {
@@ -378,24 +406,24 @@ impl<P: Profile> Index<P> {
             (&self.parent, self.parent_id),
             (&self.directory, self.id),
         ] {
-            tick(start, cancelled)?;
+            checkpoint()?;
             if P::identity(file)? != expected {
                 return refused();
             }
         }
-        tick(start, cancelled)?;
+        checkpoint()?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-home-reopen");
         let current_home = P::open_parent(&self.home_path)?;
-        tick(start, cancelled)?;
+        checkpoint()?;
         if P::identity(&current_home)? != self.home_id {
             return refused();
         }
-        tick(start, cancelled)?;
+        checkpoint()?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-parent-private");
         P::verify_private_directory(&self.parent_path, &self.parent)?;
-        tick(start, cancelled)?;
+        checkpoint()?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-index-private");
         P::verify_private_directory(&self.path, &self.directory)?;
@@ -521,6 +549,14 @@ fn private_dir<P: Profile>(path: &Path, create: bool) -> Result<File, NativeFail
     Ok(file)
 }
 
+struct MarkerClaim(File);
+impl MarkerClaim {
+    fn acquire(file: File) -> Result<Self, NativeFailure> {
+        lock(&file).map_err(|_| NativeFailure::CleanupUncertain)?;
+        Ok(Self(file))
+    }
+}
+
 struct EphemeralArtifact {
     file: File,
     identity: NativeIdentity,
@@ -533,7 +569,8 @@ pub(crate) struct OwnedStage<P: Profile> {
     path: PathBuf,
     reservation: File,
     record: Option<Record>,
-    pinned_file: Option<File>,
+    pinned_file: Option<MarkerClaim>,
+    pending_claim: Option<MarkerClaim>,
     adopted_directory: Option<EphemeralArtifact>,
     adopted_payload: Option<EphemeralArtifact>,
     pending_record: Option<Record>,
@@ -619,6 +656,7 @@ impl<P: Profile> OwnedStage<P> {
             reservation,
             record: None,
             pinned_file: None,
+            pending_claim: None,
             adopted_directory: None,
             adopted_payload: None,
             pending_record: None,
@@ -725,6 +763,7 @@ impl<P: Profile> OwnedStage<P> {
         tick(start, cancelled)?;
         trace_failure!("first-pin-owned-payload", P::verify_owned_file(payload))?;
         let record = Record {
+            version: RecordVersion::V2,
             pid: std::process::id(),
             nonce: self.nonce.clone(),
             owner: P::owner_identity()?,
@@ -740,7 +779,7 @@ impl<P: Profile> OwnedStage<P> {
         tick(start, cancelled)?;
         self.pending_record = Some(record.clone());
         let pending_file = &mut self.pending_file;
-        let mut file = trace_failure!(
+        let file = trace_failure!(
             "first-pin-record-create",
             P::create_private_file_owned(
                 &self.index.directory,
@@ -754,6 +793,12 @@ impl<P: Profile> OwnedStage<P> {
                 },
             )
         )?;
+        self.pending_claim = Some(MarkerClaim::acquire(file)?);
+        let file = &mut self
+            .pending_claim
+            .as_mut()
+            .ok_or(NativeFailure::CleanupUncertain)?
+            .0;
         #[cfg(test)]
         if crate::test_hooks::fail("private-marker-adopted") {
             return Err(NativeFailure::Unsupported);
@@ -809,7 +854,7 @@ impl<P: Profile> OwnedStage<P> {
         trace_failure!("first-pin-index-flush", io(self.index.directory.sync_all()))?;
         // A failed pin never grants permission to write payload. Preserve its evidence.
         self.record = Some(record);
-        self.pinned_file = Some(file);
+        self.pinned_file = self.pending_claim.take();
         tick(start, cancelled)?;
         trace_failure!(
             "first-pin-context-before-remove",
@@ -838,9 +883,9 @@ impl<P: Profile> OwnedStage<P> {
             return self.cleanup_ephemeral();
         }
         let record = self.record.as_ref().ok_or(NativeFailure::Changed)?;
-        let file = self.pinned_file.as_ref().ok_or(NativeFailure::Changed)?;
+        let file = &self.pinned_file.as_ref().ok_or(NativeFailure::Changed)?.0;
         let _allocation = self.index.allocation_lock()?;
-        lock(file)?;
+        // The producer retains its original claim; never relock it.
         // Cancellation after the pinned rename may leave our zero-byte reservation.
         // Remove it only while the pinned record still protects all artifact aliases.
         let reservation_path = self.index.path.join(format!("{}.reserved", self.nonce));
@@ -891,13 +936,16 @@ impl<P: Profile> OwnedStage<P> {
         self.adopted_payload = None;
         self.pending_record = None;
         self.pending_file = None;
+        self.pending_claim = None;
         Ok(())
     }
     fn ephemeral_markers(&self, start: Instant) -> Result<Vec<PathBuf>, NativeFailure> {
         let mut marker_paths = Vec::new();
         if let Some(pending) = &self.pending_file {
             P::verify_private_file(&pending.file)?;
-            lock(&pending.file)?;
+            if self.pending_claim.is_none() {
+                return Err(NativeFailure::CleanupUncertain);
+            }
         }
         for suffix in ["prepare", "record"] {
             tick(start, None)?;
@@ -1072,8 +1120,12 @@ fn finish_reservation<P: Profile>(
         crate::test_hooks::remember_failure("first-reservation-finish", failure);
         // The allocation claim remains held. Cleanup ignores cancellation but
         // preserves evidence if its identity/private-authority checks fail.
-        let _cleanup = cleanup_empty_reservation::<P>(index, reservation, nonce);
-        return Err(failure);
+        let cleanup = cleanup_empty_reservation::<P>(index, reservation, nonce);
+        return Err(if cleanup.is_err() {
+            failure.with_cleanup(true)
+        } else {
+            failure
+        });
     }
     Ok(())
 }
@@ -1083,6 +1135,10 @@ fn cleanup_empty_reservation<P: Profile>(
     reservation: &File,
     nonce: &str,
 ) -> Result<(), NativeFailure> {
+    #[cfg(test)]
+    if crate::test_hooks::fail("reservation-cleanup-failure") {
+        return refused();
+    }
     index.recheck()?;
     P::verify_private_file(reservation)?;
     let path = index.path.join(format!("{nonce}.reserved"));
@@ -1167,7 +1223,8 @@ pub(crate) fn recover_with_cancel<P: Profile>(
                 continue;
             }
         };
-        if record.nonce != nonce
+        if record.version != RecordVersion::V2
+            || record.nonce != nonce
             || record.owner != P::owner_identity()?
             || !producer_dead(record.pid)
         {
@@ -1177,6 +1234,7 @@ pub(crate) fn recover_with_cancel<P: Profile>(
         tick(start, cancelled)?;
         match cleanup_record::<P>(&index, &record, &file, start, true, cancelled) {
             Ok(()) => summary.removed += 1,
+            Err(NativeFailure::CleanupUncertain) => return Err(NativeFailure::CleanupUncertain),
             Err(_) => summary.retained += 1,
         }
     }
@@ -1341,20 +1399,39 @@ fn cleanup_record<P: Profile>(
     tick(start, cancelled)?;
     index.ensure_context()?;
     io(fs::remove_dir(&record.stage))?;
-    index.ensure_context()?;
-    tick(start, cancelled)?;
-    io(parent.sync_all())?;
-    index.recheck_checked(start, cancelled)?;
-    if P::identity(marker)? != P::identity(&open_nofollow(&marker_path)?)? {
-        return refused();
+    #[cfg(test)]
+    if crate::test_hooks::fail("completion-cancel-after-rmdir") {
+        if let Some(signal) = cancelled {
+            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
-    tick(start, cancelled)?;
-    index.ensure_context()?;
-    io(fs::remove_file(marker_path))?;
-    index.ensure_context()?;
-    tick(start, cancelled)?;
-    io(index.directory.sync_all())?;
-    Ok(())
+    #[cfg(test)]
+    if crate::test_hooks::fail("completion-deadline-after-rmdir") {
+        std::thread::sleep(Duration::from_millis(2100));
+    }
+    // After rmdir, finish only the fixed proof and durability sequence. Every
+    // failure is uncertain, including a failure after the marker was removed.
+    (|| {
+        index.ensure_context()?;
+        #[cfg(test)]
+        if crate::test_hooks::fail("completion-parent-flush") {
+            return refused();
+        }
+        io(parent.sync_all())?;
+        index.recheck_proof(None)?;
+        if P::identity(marker)? != P::identity(&open_nofollow(&marker_path)?)? {
+            return refused();
+        }
+        index.ensure_context()?;
+        io(fs::remove_file(marker_path))?;
+        index.ensure_context()?;
+        #[cfg(test)]
+        if crate::test_hooks::fail("completion-index-flush") {
+            return refused();
+        }
+        io(index.directory.sync_all())
+    })()
+    .map_err(|_| NativeFailure::CleanupUncertain)
 }
 #[cfg(unix)]
 fn open_nofollow(path: &Path) -> Result<File, NativeFailure> {
@@ -1493,6 +1570,7 @@ mod tests {
             node_ino: 9,
         };
         let record = Record {
+            version: RecordVersion::V2,
             pid: 1,
             nonce: "a".repeat(32),
             owner: "501".into(),
@@ -1514,6 +1592,81 @@ mod tests {
         bad[9] = 1;
         assert!(Record::decode(&bad).is_err());
     }
+    #[test]
+    fn producer_claim_is_noninheritable_and_duplicate_does_not_relock() {
+        use std::os::fd::AsRawFd;
+        let fixture = Fixture::new();
+        let mut owned = pin(&fixture.0, &"d".repeat(32));
+        let claim = &owned.pinned_file.as_ref().expect("claim").0;
+        let duplicate = claim.try_clone().expect("duplicate");
+        for file in [claim, &duplicate] {
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+            assert_ne!(flags, -1);
+            assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        }
+        let independent = open_nofollow(&owned.index.path.join(format!("{}.record", owned.nonce)))
+            .expect("independent");
+        assert!(lock(&independent).is_err());
+        drop(duplicate);
+        owned.cleanup().expect("cleanup reuses original claim");
+    }
+
+    #[test]
+    fn v1_record_decodes_and_mismatched_versions_are_rejected() {
+        let fixture = Fixture::new();
+        let mut owned = pin(&fixture.0, &"e".repeat(32));
+        let record = owned.record.as_mut().expect("record");
+        record.version = RecordVersion::V1;
+        let bytes = record.encode().expect("v1");
+        assert!(matches!(
+            Record::decode(&bytes).expect("v1 decode").version,
+            RecordVersion::V1
+        ));
+        let mut mismatched = bytes.clone();
+        mismatched[8] = 2;
+        assert!(Record::decode(&mismatched).is_err());
+        record.version = RecordVersion::V2;
+        owned.cleanup().expect("cleanup");
+    }
+
+    #[test]
+    fn completion_finishes_after_cancellation_and_reports_post_rmdir_faults() {
+        for phase in [
+            "completion-cancel-after-rmdir",
+            "completion-deadline-after-rmdir",
+            "completion-parent-flush",
+            "completion-index-flush",
+        ] {
+            let fixture = Fixture::new();
+            let owned = pin(&fixture.0, &"f".repeat(32));
+            let signal = AtomicBool::new(false);
+            let marker_path = owned.index.path.join(format!("{}.record", owned.nonce));
+            crate::test_hooks::inject_failure(Some(phase));
+            let outcome = cleanup_record::<MacosProfile>(
+                &owned.index,
+                owned.record.as_ref().expect("record"),
+                &owned.pinned_file.as_ref().expect("claim").0,
+                Instant::now(),
+                false,
+                Some(&signal),
+            );
+            crate::test_hooks::inject_failure(None);
+            assert!(!owned.path.exists());
+            if phase == "completion-cancel-after-rmdir"
+                || phase == "completion-deadline-after-rmdir"
+            {
+                assert!(outcome.is_ok());
+                if phase == "completion-cancel-after-rmdir" {
+                    assert!(signal.load(Ordering::SeqCst));
+                }
+                assert!(!marker_path.exists());
+            } else {
+                assert!(matches!(outcome, Err(NativeFailure::CleanupUncertain)));
+                assert_eq!(marker_path.exists(), phase == "completion-parent-flush");
+            }
+        }
+    }
+
     #[test]
     fn pin_is_empty_only_and_cleanup_is_exact() {
         let fixture = Fixture::new();
@@ -1657,12 +1810,14 @@ mod tests {
         ));
         let marker = owned.index.path.join(format!("{}.record", "d".repeat(32)));
         let first = open_nofollow(&marker).expect("claim");
-        lock(&first).expect("exclusive first claim");
+        assert!(lock(&first).is_err());
+        assert!(owned.path.join("payload").is_file());
+        drop(owned);
+        lock(&first).expect("kernel releases closed producer claim");
         let second = open_nofollow(&marker).expect("second descriptor");
         assert!(lock(&second).is_err());
         drop(first);
         lock(&second).expect("kernel releases closed claimant");
-        assert!(owned.path.join("payload").is_file());
     }
     #[test]
     fn changed_home_authority_and_changed_marker_preserve_ownership_evidence() {
@@ -1760,6 +1915,37 @@ mod tests {
         assert_eq!(fs::read_dir(&index.path).expect("index").count(), 1);
     }
     #[test]
+    fn reservation_cleanup_uncertainty_preserves_cancellation() {
+        use crate::profile_api::NativePrimary;
+        let fixture = Fixture::new();
+        let index = Index::<MacosProfile>::open(&fixture.0, true).expect("index");
+        let _allocation = index.allocation_lock().expect("allocation claim");
+        let nonce = "9".repeat(32);
+        let reservation = MacosProfile::create_private_file(
+            &index.directory,
+            OsStr::new(&format!("{nonce}.reserved")),
+        )
+        .expect("reservation");
+        crate::test_hooks::inject_failure(Some("reservation-cleanup-failure"));
+        let result = finish_reservation::<MacosProfile>(
+            &index,
+            &reservation,
+            &nonce,
+            Instant::now(),
+            Some(&AtomicBool::new(true)),
+        );
+        crate::test_hooks::inject_failure(None);
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: NativePrimary::Cancelled,
+                uncertain: true
+            })
+        ));
+        assert!(index.path.join(format!("{nonce}.reserved")).exists());
+    }
+
+    #[test]
     fn pre_pin_cleanup_preserves_aliases_and_unknown_children() {
         let fixture = Fixture::new();
         let parent = MacosProfile::open_parent(&fixture.0).expect("parent");
@@ -1804,6 +1990,7 @@ mod tests {
                 .expect("payload");
             owned.adopt_empty(&directory, &payload).expect("empty");
             let record = Record {
+                version: RecordVersion::V2,
                 pid: std::process::id(),
                 nonce: owned.nonce.clone(),
                 owner: MacosProfile::owner_identity().expect("owner"),
@@ -1827,8 +2014,9 @@ mod tests {
             owned.pending_record = Some(record);
             owned.pending_file = Some(EphemeralArtifact {
                 identity: MacosProfile::identity(&marker).expect("marker identity"),
-                file: marker,
+                file: marker.try_clone().expect("duplicate marker"),
             });
+            owned.pending_claim = Some(MarkerClaim::acquire(marker).expect("marker claim"));
             if renamed {
                 fs::rename(
                     prepare,
@@ -1872,7 +2060,7 @@ mod tests {
     }
     #[test]
     fn killed_native_producer_is_recovered_only_after_pinning() {
-        for pinned in [false, true] {
+        for (pinned, legacy) in [(false, false), (true, false), (true, true)] {
             let fixture = Fixture::new();
             let mut command = Command::new(std::env::current_exe().expect("test executable"));
             command
@@ -1905,14 +2093,221 @@ mod tests {
             assert_eq!(live.removed, 0);
             child.kill().expect("kill");
             child.wait().expect("join killed producer");
+            if legacy {
+                let marker = fixture
+                    .0
+                    .join(".relavium-fs-private-v1/fs-staging-v1")
+                    .join(format!("{}.record", "c".repeat(32)));
+                let mut bytes = fs::read(&marker).expect("native v2 record");
+                bytes[..8].copy_from_slice(MAGIC_V1);
+                bytes[8] = 1;
+                fs::write(&marker, bytes).expect("legacy fixture");
+            }
             let recovered = recover::<MacosProfile>(&fixture.0).expect("orphan scan");
-            assert_eq!(recovered.removed, usize::from(pinned));
+            assert_eq!(recovered.removed, usize::from(pinned && !legacy));
+            assert_eq!(recovered.retained, usize::from(!pinned || legacy));
             let count = fs::read_dir(&fixture.0)
                 .expect("fixture")
                 .filter_map(Result::ok)
                 .filter(|e| e.file_name().to_string_lossy().starts_with(PREFIX))
                 .count();
-            assert_eq!(count, usize::from(!pinned));
+            assert_eq!(count, usize::from(!pinned || legacy));
         }
+    }
+}
+
+// Portable OS-lock tests deliberately use independent handles and processes.
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    #[ignore = "subprocess fixture for claim_survives_duplicates_but_not_child_exec"]
+    fn claim_exec_child() {
+        let ready = std::env::var_os("RELAVIUM_CUSTODY_CHILD_READY").expect("ready path");
+        let path = std::env::var_os("RELAVIUM_CUSTODY_CHILD_RECORD").expect("record path");
+        let mut reader = open_nofollow(Path::new(&path)).expect("child reader");
+        let mut bytes = Vec::new();
+        (&mut reader)
+            .take((MAX_RECORD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .expect("child read");
+        if std::env::var_os("RELAVIUM_CUSTODY_NATIVE_RECORD").is_some() {
+            assert!(bytes.starts_with(b"RVSTG002\x02"));
+        } else {
+            assert_eq!(bytes, b"bounded record");
+        }
+        assert!(lock(&reader).is_err(), "child must contend with producer");
+        drop(reader);
+        fs::write(ready, b"ready").expect("signal readiness");
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    type TestProfile = crate::macos::MacosProfile;
+    #[cfg(target_os = "linux")]
+    type TestProfile = crate::linux::LinuxProfile;
+    #[cfg(windows)]
+    type TestProfile = crate::windows::WindowsProfile;
+
+    #[test]
+    fn native_producer_claim_noninheritance_and_independent_reader() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "relavium-native-claim-{}-{stamp}",
+            std::process::id()
+        ));
+        let home = TestProfile::create_private_directory(&root).expect("private home");
+        let root = fs::canonicalize(root).expect("home path");
+        let mut owned = OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"7".repeat(32))
+            .expect("reserve");
+        let stage = TestProfile::create_private_directory(owned.stage_path()).expect("stage");
+        let payload =
+            TestProfile::create_private_file(&stage, OsStr::new("payload")).expect("payload");
+        let stage_path = owned.stage_path().to_owned();
+        owned.pin_empty(&stage, &payload, &stage_path).expect("pin");
+        let path = owned.index.path.join(format!("{}.record", owned.nonce));
+        let ready = root.join("child-ready");
+        let claim = &owned.pinned_file.as_ref().expect("claim").0;
+        let duplicate = claim.try_clone().expect("duplicate");
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            for file in [claim, &duplicate] {
+                let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+                assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+            for file in [claim, &duplicate] {
+                let mut flags = 0;
+                assert_ne!(
+                    unsafe { GetHandleInformation(file.as_raw_handle().cast(), &mut flags) },
+                    0
+                );
+                assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+        let reader = open_nofollow(&path).expect("separate reader");
+        assert!(lock(&reader).is_err());
+        let mut child = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--ignored",
+                "--exact",
+                "stage_index::custody_tests::claim_exec_child",
+            ])
+            .env("RELAVIUM_CUSTODY_CHILD_READY", &ready)
+            .env("RELAVIUM_CUSTODY_CHILD_RECORD", &path)
+            .env("RELAVIUM_CUSTODY_NATIVE_RECORD", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("child");
+        let start = Instant::now();
+        while !ready.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "child did not read record while locked");
+        drop(owned);
+        drop(duplicate);
+        assert!(lock(&reader).is_ok(), "child inherited native marker claim");
+        child.kill().expect("stop child");
+        child.wait().expect("join child");
+        drop(reader);
+        drop(payload);
+        drop(stage);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove owned fixture");
+    }
+
+    #[test]
+    fn claim_survives_duplicates_but_not_child_exec() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("relavium-claim-{}-{stamp}", std::process::id()));
+        fs::create_dir(&root).expect("fixture");
+        let path = root.join("record");
+        let ready = root.join("ready");
+        let mut original = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("record");
+        original.write_all(b"bounded record").expect("bytes");
+        let claim = MarkerClaim::acquire(original).expect("claim");
+        let duplicate = claim.0.try_clone().expect("duplicate");
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            for file in [&claim.0, &duplicate] {
+                let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+                assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+            for file in [&claim.0, &duplicate] {
+                let mut flags = 0;
+                assert_ne!(
+                    unsafe { GetHandleInformation(file.as_raw_handle().cast(), &mut flags) },
+                    0
+                );
+                assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+        let mut reader = open_nofollow(&path).expect("independent reader");
+        assert!(lock(&reader).is_err());
+        let mut bytes = Vec::new();
+        (&mut reader)
+            .take((MAX_RECORD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .expect("reader does not overlap lock byte");
+        assert_eq!(bytes, b"bounded record");
+        let mut child = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--ignored",
+                "--exact",
+                "stage_index::custody_tests::claim_exec_child",
+            ])
+            .env("RELAVIUM_CUSTODY_CHILD_READY", &ready)
+            .env("RELAVIUM_CUSTODY_CHILD_RECORD", &path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("child");
+        let start = Instant::now();
+        while !ready.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "child exec did not become ready");
+        drop(claim);
+        // On POSIX the duplicate shares the open description; on Windows the
+        // original handle owns the byte lock and its duplicate must not relock.
+        #[cfg(unix)]
+        assert!(lock(&reader).is_err());
+        drop(duplicate);
+        assert!(lock(&reader).is_ok(), "exec child inherited a claim");
+        child.kill().expect("stop child");
+        child.wait().expect("join child");
+        drop(reader);
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 }

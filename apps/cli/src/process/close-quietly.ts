@@ -2,6 +2,7 @@ import type { CliIo } from './io.js';
 
 /** Owned resource labels only: native failures may contain paths, credentials or hostile text. */
 type ResourceLabel =
+  | 'chat host'
   | 'session store'
   | 'history database'
   | 'effect journal'

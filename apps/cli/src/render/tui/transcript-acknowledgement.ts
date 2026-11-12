@@ -1,4 +1,5 @@
 import { wrapTranscript } from './chat-projection.js';
+import type { ToolDisplay } from './tool-display.js';
 import type { ChatStore } from './chat-store.js';
 import type { TranscriptEntry } from './session-view-model.js';
 
@@ -19,6 +20,7 @@ export interface TranscriptAcknowledgement {
     firstRow: number,
     endRow: number,
     measuredWidth: number,
+    displays?: ReadonlyMap<string, ToolDisplay>,
   ): void;
 }
 
@@ -36,6 +38,7 @@ export function createTranscriptAcknowledgement(
         readonly endRow: number;
         readonly measuredWidth: number;
         readonly color: boolean;
+        readonly displays: ReadonlyMap<string, ToolDisplay> | undefined;
       }
     | undefined;
   return {
@@ -43,13 +46,14 @@ export function createTranscriptAcknowledgement(
       frame = undefined;
     },
     inlineNotice: (entry) => printed.add(entry),
-    viewport: (transcript, columns, firstRow, endRow, measuredWidth) => {
+    viewport: (transcript, columns, firstRow, endRow, measuredWidth, displays) => {
       frame = {
         transcript,
         columns,
         firstRow,
         endRow,
         measuredWidth,
+        displays,
         color: currentStore()?.getSnapshot().color ?? false,
       };
     },
@@ -85,6 +89,7 @@ export function createTranscriptAcknowledgement(
               rendered.transcript.slice(0, index),
               rendered.columns,
               rendered.color,
+              rendered.displays,
             ).length;
             const end = start + wrapTranscript([entry], rendered.columns, rendered.color).length;
             return start >= rendered.firstRow && end <= rendered.endRow;

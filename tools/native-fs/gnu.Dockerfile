@@ -14,4 +14,14 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/tmp/native-cargo
 ENV HOME=/tmp/native-home
 ENV PATH=/usr/local/cargo/bin:/usr/local/bin:${PATH}
+ARG FIXTURE_UID=10001
+ARG FIXTURE_GID=10001
+RUN mkdir -p /relavium-native-lower /fixture && \
+    chown "${FIXTURE_UID}:${FIXTURE_GID}" /fixture && chmod 700 /fixture && \
+    for name in success append cancel error crash unavailable changed-bytes changed-mode changed-mtime changed-identity changed-xattr changed-nlink changed-ctime; do \
+      printf 'before' > "/relavium-native-lower/$name"; \
+    done && \
+    chown -R "${FIXTURE_UID}:${FIXTURE_GID}" /relavium-native-lower && \
+    chmod 700 /relavium-native-lower && chmod 600 /relavium-native-lower/*
+ENV RELAVIUM_TEST_LOWER_ROOT=/relavium-native-lower
 WORKDIR /source

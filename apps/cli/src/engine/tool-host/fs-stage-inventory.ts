@@ -14,14 +14,17 @@ const SCAN_MS = 2000;
 const STAGE_PREFIX = '.relavium-fs-stage-v1.';
 export const FS_PRIVATE_INDEX_PARENT = '.relavium-fs-private-v1';
 const recordName = /^([a-f0-9]{32})\.(record|reserved|prepare)$/;
-const MAGIC = Buffer.from('RVSTG001');
+const MAGIC_V1 = Buffer.from('RVSTG001');
+const MAGIC_V2 = Buffer.from('RVSTG002');
 
 /** Closed binary protocol: header(24), nonce(32), owner, stage locator, 3 full identities(40 each). */
 function parseRecord(bytes: Buffer, nonce: string, uid: bigint | undefined): readonly Identity[] {
   if (
     bytes.length < 176 ||
-    !bytes.subarray(0, 8).equals(MAGIC) ||
-    bytes[8] !== 1 ||
+    !(
+      (bytes.subarray(0, 8).equals(MAGIC_V1) && bytes[8] === 1) ||
+      (bytes.subarray(0, 8).equals(MAGIC_V2) && bytes[8] === 2)
+    ) ||
     bytes.subarray(9, 16).some((value) => value !== 0)
   )
     throw new FsStageInventoryError();

@@ -36,8 +36,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'ink';
 import { createElement } from 'react';
 
+import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
-import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
+import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
+  buildChatSession,
+  buildResumedChatSession,
+} from '../chat/session-host.js';
 import {
   scriptedResolver,
   stop,
@@ -1173,6 +1178,162 @@ describe('chatCommand', () => {
     });
     expect(notices.some((t) => t.includes('budget warning'))).toBe(true); // routed to the transcript
     expect(err).not.toContain('budget warning'); // …and NOT to raw stderr (the alt buffer would eat it)
+  });
+
+  it.each([
+    { mode: 'tty', tty: true, json: false },
+    { mode: 'plain', tty: false, json: false },
+    { mode: 'json', tty: true, json: true },
+  ])(
+    'wires required interrupted-effect disclosure to the visible $mode notice channel',
+    async ({ tty, json }) => {
+      const { d, out, err } = deps([], [textTurn('unused')]);
+      let notify: ((note: string) => void) | undefined;
+      let store: ChatStoreController | undefined;
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: tty },
+          global: { ...d.global, json },
+          buildSession: (options) => {
+            notify = options.onEffectAttention;
+            return buildChatSession(options);
+          },
+          drive: async (ctx) => {
+            store = ctx.store;
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            expect(notify).toBeTypeOf('function');
+            notify?.(ABORTED_EFFECT_ATTENTION_NOTICE);
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+      const notes =
+        store
+          ?.getSnapshot()
+          .state.transcript.filter((entry) => entry.role === 'notice')
+          .map((entry) => entry.text) ?? [];
+      expect(notes.includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(tty && !json);
+      expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(!tty || json);
+      expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    },
+  );
+
+  it('discloses an actual interrupted claim in the standalone TTY with SQLite evidence', async () => {
+    const tty = true,
+      json = false;
+    const {
+      d,
+      out,
+      err,
+      store: history,
+      sessionId,
+    } = deps(
+      [],
+      [
+        [
+          { type: 'tool_call_start', id: 'write', name: 'write_file' },
+          {
+            type: 'tool_call_delta',
+            id: 'write',
+            argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+          },
+          { type: 'tool_call_end', id: 'write' },
+          stop('tool_use'),
+        ],
+      ],
+    );
+    let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+    let executions = 0;
+    const events: SessionStreamHandleEvent[] = [];
+    let store: ChatStoreController | undefined;
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: tty },
+        global: { ...d.global, json },
+        buildSession: async (options) => {
+          expect(options.onEffectAttention).toBeTypeOf('function');
+          built = await buildChatSession({
+            ...options,
+            toolHost: {
+              fs: {
+                readFile: () =>
+                  Promise.resolve({
+                    content: '',
+                    mimeType: 'text/plain',
+                    sizeBytes: 0,
+                    lastModified: '',
+                  }),
+                listDirectory: () => Promise.resolve({ entries: [] }),
+                writeFile: () => Promise.reject(new Error('blind write forbidden')),
+                prepareWrite: () =>
+                  Promise.resolve({
+                    path: 'private-target',
+                    before: 'old',
+                    after: 'new',
+                    release: () => {},
+                    execute: () => {
+                      executions++;
+                      built?.session.abort();
+                      return Promise.resolve({ path: 'private-target', bytesWritten: 3 });
+                    },
+                  }),
+              },
+            },
+          });
+          built.handle.subscribe((event) => events.push(event));
+          return built;
+        },
+        drive: async (ctx) => {
+          store = ctx.store;
+          ctx.startSession();
+          await ctx.onActivated?.(() => !ctx.shouldStop());
+          if (built === undefined || built.startingMode === undefined)
+            throw new Error('missing standalone host');
+          applyChatMode(
+            makeChatModeEnv({
+              session: built.session,
+              tools: built.tools,
+              workspaceDir: built.context.workingDir,
+              startingModeAuthority: built.startingMode.authority,
+              prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+            }),
+            'accept-edits',
+          );
+          await ctx.processLine('write');
+          await built?.whenHostSafeToClose();
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    const notes =
+      store
+        ?.getSnapshot()
+        .state.transcript.filter((entry) => entry.role === 'notice')
+        .map((entry) => entry.text) ?? [];
+    expect(executions).toBe(1);
+    expect(events.filter((event) => event.type === 'session:turn_completed')).toEqual([
+      expect.objectContaining({ stopReason: 'aborted' }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    expect(notes.includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(tty && !json);
+    expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(!tty || json);
+    expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    expect(executions).toBe(1);
+    expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+      expect.objectContaining({ state: 'prepared' }),
+    ]);
+    expect(JSON.stringify(history.loadFull(sessionId)?.messages)).not.toContain(
+      ABORTED_EFFECT_ATTENTION_NOTICE,
+    );
   });
 
   it('a NON-interactive (plain / --json) session keeps the budget warning on STDERR — those drivers never render the store', async () => {

@@ -8,7 +8,9 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+#[cfg(test)]
+use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 const MAX_NAMES: usize = 65_536;
@@ -33,6 +35,7 @@ struct Credentials {
     gid: u32,
     groups: Vec<u32>,
     umask: u32,
+    authority: Vec<String>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -123,7 +126,7 @@ fn credentials() -> Result<Credentials, NativeFailure> {
     let status = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open("/proc/self/status")
+        .open("/proc/thread-self/status")
         .map_err(|_| NativeFailure::Unsupported)?;
     let mut bytes = Vec::new();
     status
@@ -146,6 +149,27 @@ fn credentials() -> Result<Credentials, NativeFailure> {
         return Err(NativeFailure::Unsupported);
     }
     let umask = u32::from_str_radix(token, 8).map_err(|_| NativeFailure::Unsupported)?;
+    // Linux filesystem access also depends on fsuid/fsgid and capabilities.
+    // Keep the kernel's complete bounded status fields as a private witness.
+    let mut authority = Vec::new();
+    for key in [
+        "Uid:",
+        "Gid:",
+        "Groups:",
+        "CapInh:",
+        "CapPrm:",
+        "CapEff:",
+        "CapBnd:",
+        "CapAmb:",
+        "NoNewPrivs:",
+        "Seccomp:",
+    ] {
+        let matches: Vec<&str> = text.lines().filter(|line| line.starts_with(key)).collect();
+        if matches.len() != 1 {
+            return Err(NativeFailure::Unsupported);
+        }
+        authority.push(matches[0].to_owned());
+    }
     // libc accepts NULL when the count is zero. A racing group change refuses.
     let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
     if !(0..=256).contains(&count) {
@@ -162,6 +186,7 @@ fn credentials() -> Result<Credentials, NativeFailure> {
         gid: unsafe { libc::getegid() },
         groups,
         umask,
+        authority,
     })
 }
 
@@ -311,32 +336,54 @@ fn policy(file: &File, directory: bool) -> Result<Policy, NativeFailure> {
     })
 }
 
-fn writable_source(
-    source: &File,
-    path: &Path,
-    operation: WriteOperation,
-) -> Result<(), NativeFailure> {
-    let before = metadata(source)?;
-    let name = path_string(path)?;
-    let mode = libc::O_WRONLY
-        | libc::O_NOFOLLOW
-        | libc::O_CLOEXEC
-        | libc::O_NONBLOCK
-        | if matches!(operation, WriteOperation::Append) {
-            libc::O_APPEND
-        } else {
-            0
-        };
-    // The kernel performs actual non-truncating access using effective credentials.
-    let raw = unsafe { libc::open(name.as_ptr(), mode) };
-    if raw < 0 {
+fn provisional_write_access(source: &File) -> Result<(), NativeFailure> {
+    // faccessat2 is descriptor-bound and uses effective credentials. No emulation.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            source.as_raw_fd(),
+            c"".as_ptr(),
+            libc::W_OK,
+            libc::AT_EACCESS | libc::AT_EMPTY_PATH,
+        )
+    };
+    if result != 0 {
         return Err(failure());
     }
-    let writable = unsafe { File::from_raw_fd(raw) };
-    if !same_version(&before, &metadata(&writable)?) {
+    Ok(())
+}
+
+fn exact_bytes(file: &File, expected: &[u8]) -> Result<(), NativeFailure> {
+    use std::io::{Seek, SeekFrom};
+    let mut reader = file.try_clone().map_err(|_| NativeFailure::Unsupported)?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| NativeFailure::Unsupported)?;
+    let mut bytes = Vec::with_capacity(expected.len());
+    reader
+        .take((expected.len() + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| NativeFailure::Unsupported)?;
+    if bytes != expected {
         return Err(NativeFailure::Changed);
     }
     Ok(())
+}
+
+fn named_source(path: &Path) -> Result<File, NativeFailure> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| NativeFailure::Changed)
+}
+
+fn overlay(file: &File) -> Result<bool, NativeFailure> {
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(failure());
+    }
+    Ok(unsafe { stat.assume_init() }.f_type as u64 == 0x794c_7630)
 }
 
 fn assert_entry(directory: &File, name: &CString, held: &File) -> Result<(), NativeFailure> {
@@ -415,11 +462,11 @@ impl Profile for LinuxProfile {
 
     fn capture_existing(
         source: &File,
-        path: &Path,
-        operation: WriteOperation,
+        _path: &Path,
+        _operation: WriteOperation,
     ) -> Result<ExistingSnapshot, NativeFailure> {
         let before = metadata(source)?;
-        writable_source(source, path, operation)?;
+        provisional_write_access(source)?;
         let policy = policy(source, false)?;
         let credentials = credentials()?;
         if !same_version(&before, &metadata(source)?) {
@@ -436,7 +483,7 @@ impl Profile for LinuxProfile {
         snapshot: &ExistingSnapshot,
         source: &File,
         path: &Path,
-        operation: WriteOperation,
+        _operation: WriteOperation,
     ) -> Result<(), NativeFailure> {
         if credentials()? != snapshot.credentials
             || !same_version(&snapshot.metadata, &metadata(source)?)
@@ -444,11 +491,84 @@ impl Profile for LinuxProfile {
         {
             return Err(NativeFailure::Changed);
         }
-        writable_source(source, path, operation)?;
+        let named = named_source(path)?;
+        if !same_version(&snapshot.metadata, &metadata(&named)?) {
+            return Err(NativeFailure::Changed);
+        }
+        provisional_write_access(source)?;
         if !same_version(&snapshot.metadata, &metadata(source)?) {
             return Err(NativeFailure::Changed);
         }
         Ok(())
+    }
+
+    fn admit_existing(
+        snapshot: &ExistingSnapshot,
+        source: &File,
+        path: &Path,
+        operation: WriteOperation,
+        expected: &[u8],
+    ) -> Result<Option<(File, ExistingSnapshot)>, NativeFailure> {
+        Self::recheck_existing(snapshot, source, path, operation)?;
+        exact_bytes(source, expected)?;
+        Self::recheck_existing(snapshot, source, path, operation)?;
+        let name = path_string(path)?;
+        let flags = libc::O_WRONLY
+            | libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | libc::O_NONBLOCK
+            | if matches!(operation, WriteOperation::Append) {
+                libc::O_APPEND
+            } else {
+                0
+            };
+        let raw = unsafe { libc::open(name.as_ptr(), flags) };
+        if raw < 0 {
+            return Err(failure());
+        }
+        let writable = unsafe { File::from_raw_fd(raw) };
+        #[cfg(test)]
+        crate::test_hooks::hit("admitted-write-open");
+        let fresh = named_source(path)?;
+        let fresh_metadata = metadata(&fresh)?;
+        let write_metadata = metadata(&writable)?;
+        let old_metadata = metadata(source)?;
+        let mut expected_version = snapshot.metadata.clone();
+        // Compare every version field except ctime only at this overlay admission cut.
+        let permitted_ctime = overlay(&fresh)?;
+        let base_equal = |a: &Metadata, b: &Metadata| {
+            a.dev() == b.dev()
+                && a.ino() == b.ino()
+                && a.size() == b.size()
+                && a.mtime() == b.mtime()
+                && a.mtime_nsec() == b.mtime_nsec()
+                && a.nlink() == 1
+                && b.nlink() == 1
+                && a.is_file()
+                && b.is_file()
+        };
+        if !base_equal(&expected_version, &fresh_metadata)
+            || !base_equal(&expected_version, &old_metadata)
+            || !same_version(&fresh_metadata, &write_metadata)
+            || (!permitted_ctime && !same_version(&expected_version, &fresh_metadata))
+            || policy(source, false)? != snapshot.policy
+            || policy(&fresh, false)? != snapshot.policy
+            || policy(&writable, false)? != snapshot.policy
+            || credentials()? != snapshot.credentials
+        {
+            return Err(NativeFailure::Changed);
+        }
+        exact_bytes(&fresh, expected)?;
+        expected_version = fresh_metadata;
+        let refreshed = ExistingSnapshot {
+            metadata: expected_version,
+            policy: policy(&fresh, false)?,
+            credentials: credentials()?,
+        };
+        Self::recheck_existing(&refreshed, &fresh, path, operation)?;
+        exact_bytes(&fresh, expected)?;
+        Self::recheck_existing(&refreshed, &fresh, path, operation)?;
+        Ok(Some((fresh, refreshed)))
     }
 
     fn apply_and_verify_existing(
@@ -577,7 +697,9 @@ impl Profile for LinuxProfile {
             adopt(guard.file())
         })();
         if let Err(error) = attempt {
-            guard.abort()?;
+            if guard.abort().is_err() {
+                return Err(error.with_cleanup(true));
+            }
             return Err(error);
         }
         Ok(guard.transfer())
@@ -639,7 +761,9 @@ impl Profile for LinuxProfile {
             adopt(guard.file())
         })();
         if let Err(error) = attempt {
-            guard.abort()?;
+            if guard.abort().is_err() {
+                return Err(error.with_cleanup(true));
+            }
             return Err(error);
         }
         Ok(guard.transfer())
@@ -771,7 +895,9 @@ impl Profile for LinuxProfile {
         let initial = match attempt {
             Ok(initial) => initial,
             Err(error) => {
-                guard.abort()?;
+                if guard.abort().is_err() {
+                    return Err(error.with_cleanup(true));
+                }
                 return Err(error);
             }
         };
@@ -1011,6 +1137,115 @@ mod tests {
                 == policy(&direct, false).expect("direct policy")
         );
         LinuxProfile::recheck_parent(&snapshot, &parent, None).expect("parent remains bound");
+    }
+
+    #[test]
+    #[ignore = "isolated minimal-capability Linux ACL/effective-ID probe"]
+    fn linux_effective_uid_acl_denies_real_uid_root() {
+        assert_eq!(
+            unsafe { libc::getuid() },
+            0,
+            "probe requires isolated root setup"
+        );
+        let fixture = Fixture::new();
+        std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o755))
+            .expect("traversal");
+        let path = fixture.0.join("acl");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o666)
+            .open(&path)
+            .expect("file");
+        let mut bytes = 2_u32.to_le_bytes().to_vec();
+        for (tag, permission, id) in [
+            (1_u16, 6_u16, u32::MAX),
+            (2, 4, 10001),
+            (4, 6, u32::MAX),
+            (16, 6, u32::MAX),
+            (32, 6, u32::MAX),
+        ] {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&permission.to_le_bytes());
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        set_attribute(&file, b"system.posix_acl_access", &bytes);
+        assert_eq!(metadata(&file).expect("mode").mode() & 0o777, 0o666);
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { libc::seteuid(0) }, 0);
+            }
+        }
+        assert_eq!(unsafe { libc::seteuid(10001) }, 0);
+        let _restore = Restore;
+        let name = path_string(&path).expect("path");
+        assert_eq!(
+            unsafe { libc::access(name.as_ptr(), libc::W_OK) },
+            0,
+            "real root has write access"
+        );
+        assert!(
+            matches!(
+                LinuxProfile::capture_existing(&file, &path, WriteOperation::Replace),
+                Err(NativeFailure::AccessDenied)
+            ),
+            "effective UID and ACL must deny write"
+        );
+    }
+
+    #[test]
+    fn linux_cleanup_failure_keeps_original_primary() {
+        let fixture = Fixture::new();
+        let parent = LinuxProfile::open_parent(&fixture.0).expect("parent");
+        let payload = fixture.0.join("payload");
+        let alias = fixture.0.join("alias");
+        let result =
+            LinuxProfile::create_private_file_owned(&parent, OsStr::new("payload"), &mut |_| {
+                std::fs::hard_link(&payload, &alias).expect("hardlink");
+                Err(NativeFailure::Changed)
+            });
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Changed,
+                uncertain: true
+            })
+        ));
+        assert!(payload.exists());
+        assert!(alias.exists());
+    }
+
+    #[test]
+    fn linux_admission_handoff_rechecks_bytes_and_policy() {
+        let fixture = Fixture::new();
+        let source = fixture.source();
+        let path = fixture.0.join("source");
+        let snapshot = LinuxProfile::capture_existing(&source, &path, WriteOperation::Append)
+            .expect("capture");
+        let bytes = std::fs::read(&path).expect("original bytes");
+        assert!(matches!(
+            LinuxProfile::admit_existing(
+                &snapshot,
+                &source,
+                &path,
+                WriteOperation::Append,
+                b"incorrect"
+            ),
+            Err(NativeFailure::Changed)
+        ));
+        let (fresh, admitted) =
+            LinuxProfile::admit_existing(&snapshot, &source, &path, WriteOperation::Append, &bytes)
+                .expect("admit")
+                .expect("fresh pair");
+        LinuxProfile::recheck_existing(&admitted, &fresh, &path, WriteOperation::Append)
+            .expect("strict admitted pair");
+        set_attribute(&fresh, b"user.relavium.admission-change", b"changed");
+        assert!(matches!(
+            LinuxProfile::recheck_existing(&admitted, &fresh, &path, WriteOperation::Append),
+            Err(NativeFailure::Changed)
+        ));
     }
 
     #[test]

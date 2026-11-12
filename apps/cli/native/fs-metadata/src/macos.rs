@@ -700,7 +700,11 @@ impl crate::profile_api::Profile for MacosProfile {
             libc::openat(
                 parent.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                libc::O_RDONLY
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
@@ -742,8 +746,7 @@ impl crate::profile_api::Profile for MacosProfile {
             adopt(guard.file())
         })();
         if let Err(error) = attempt {
-            guard.abort()?;
-            return Err(error);
+            return Err(error.with_cleanup(guard.abort().is_err()));
         }
         Ok(guard.transfer())
     }
@@ -785,7 +788,12 @@ impl crate::profile_api::Profile for MacosProfile {
             libc::openat(
                 parent.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_RDWR
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
                 0o600,
             )
         };
@@ -807,8 +815,7 @@ impl crate::profile_api::Profile for MacosProfile {
             adopt(guard.file())
         })();
         if let Err(error) = attempt {
-            guard.abort()?;
-            return Err(error);
+            return Err(error.with_cleanup(guard.abort().is_err()));
         }
         Ok(guard.transfer())
     }
@@ -885,7 +892,12 @@ impl crate::profile_api::Profile for MacosProfile {
             libc::openat(
                 parent.as_raw_fd(),
                 temp.as_ptr(),
-                libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+                libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_RDWR
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
                 0o666,
             )
         };
@@ -937,8 +949,7 @@ impl crate::profile_api::Profile for MacosProfile {
         let (before, acl, attributes) = match attempt {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                guard.abort()?;
-                return Err(error);
+                return Err(error.with_cleanup(guard.abort().is_err()));
             }
         };
         let file = guard.transfer();

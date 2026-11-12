@@ -105,7 +105,7 @@ export function ToolReviewHost(
   const [blocked, setBlocked] = useState<typeof review>(undefined);
   const [acknowledgement] = useState(() =>
     createMeasuredFrameAcknowledgement({
-      current: () => props.store.getSnapshot().review,
+      current: () => latest.current.store.getSnapshot().review,
       getSize: () => latest.current.size,
       hasCustody: () =>
         latest.current.hasCustody() &&
@@ -114,7 +114,8 @@ export function ToolReviewHost(
         !stdout.writableEnded &&
         !stdout.errored,
       onAcknowledge: (current) => {
-        if (current !== undefined) props.store.acknowledgeReviewFrame(current, pageRef.current);
+        if (current !== undefined)
+          latest.current.store.acknowledgeReviewFrame(current, pageRef.current);
       },
     }),
   );

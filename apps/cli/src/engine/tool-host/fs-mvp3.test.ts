@@ -444,3 +444,15 @@ it('bounds adversarial matcher work and repeated non-word matches', async () => 
   expect(repeated?.matches).toEqual([]);
   expect(repeated?.stats.incomplete).toBe(false);
 });
+
+it('reports an unfinished depth-limited list without claiming the result cap was reached', async () => {
+  let path = root;
+  for (let depth = 0; depth < 34; depth++) {
+    path = join(path, 'd');
+    await mkdir(path);
+  }
+  const listing = await capability().listDirectory('.', { recursive: true });
+  expect(listing.entries.length).toBeLessThan(200);
+  expect(listing).toMatchObject({ truncated: true, incomplete: true, omittedEntries: null });
+  expect(listing).not.toHaveProperty('entryLimit');
+});

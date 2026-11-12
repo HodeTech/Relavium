@@ -64,14 +64,6 @@ import {
   type ScrollState,
 } from './scroll.js';
 
-/**
- * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
- * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
- * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
- * `controller.handleKey`, and renders the Home strip, the loading echo, or the chat region from the published
- * state. The clock + terminal size are injected so the strip degrade (<80×24) and the relative times are testable.
- */
-
 export type { HomeChatSession } from './home-controller.js';
 
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
@@ -267,6 +259,13 @@ function ChatRegion(
   );
 }
 
+/**
+ * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
+ * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
+ * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
+ * `controller.handleKey`, and renders the Home strip, the loading echo, or the chat region from the published
+ * state. The clock + terminal size are injected so the strip degrade (<80×24) and the relative times are testable.
+ */
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {

@@ -140,6 +140,7 @@ mod test_hooks {
             NativeFailure::PossiblyPublished => "failure-possibly-published",
             NativeFailure::CleanupUncertain => "failure-cleanup-uncertain",
             NativeFailure::LegacyRecoveryRequired => "failure-legacy-recovery-required",
+            NativeFailure::CleanupFacts { .. } => "failure-cleanup-facts",
         });
     }
 

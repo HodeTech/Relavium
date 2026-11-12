@@ -143,8 +143,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
@@ -302,8 +305,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       - name: Verify causal outcome and worker lifecycle guards
@@ -350,8 +356,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       - name: Verify causal outcome and worker lifecycle guards
@@ -387,8 +396,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       - name: Build workspaces
@@ -439,8 +451,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       - name: Build workspaces
@@ -477,10 +492,10 @@ jobs:
     needs: native-fs-assets
     name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
-    # The complete serialized compatibility suite includes native DB waits. Both final
-    # MVP-2 PR attempts exhausted 25 minutes while the same-tree push completed;
-    # reserve finite whole-suite headroom without filtering tests or changing native bounds.
-    timeout-minutes: 35
+    # A measured 35-minute run completed all commands before the outer watchdog canceled
+    # final wrap-up. Reserve finite whole-job headroom for this serialized compatibility
+    # suite without filtering tests, bypassing hooks or changing native/causal bounds.
+    timeout-minutes: 45
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
     # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
     # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
@@ -502,8 +517,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
         run: pnpm install --frozen-lockfile
       - name: Typecheck, test, build on the exact floor
@@ -570,8 +588,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-unknown-linux-gnu
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       # Share the same Turborepo local cache the `ci` job writes, so the build below is a warm cache hit
@@ -635,8 +656,11 @@ jobs:
       - name: Download the verified current-host native component for source tests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-x86_64-pc-windows-msvc
-          path: apps/cli/native/fs-metadata/runtime
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-pc-windows-msvc
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
       - name: Restore Turborepo cache
@@ -661,7 +685,7 @@ jobs:
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
       - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/engine/tool-host/fs-mvp3.test.ts src/engine/tool-host/fs-discovery-ignore-work.test.ts src/engine/tool-host/fs-path-component.test.ts src/engine/tool-host/session-output-store.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts src/engine/tool-host/fs-policy-scratch-composition.test.ts src/engine/tool-host/fs-rooted-glob.test.ts src/engine/tool-host/fs-write-floor-contract.test.ts src/engine/tool-host/fs-prepared.test.ts src/engine/tool-host/fs-creation-mask.test.ts src/engine/tool-host/fs-stage-inventory.test.ts src/engine/tool-host/fs-stage-namespace.test.ts src/engine/tool-host/prepared-replay.e2e.test.ts src/engine/host.test.ts
+        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/engine/tool-host/fs-mvp3.test.ts src/engine/tool-host/fs-discovery-ignore-work.test.ts src/engine/tool-host/fs-path-component.test.ts src/engine/tool-host/fs-unicode-policy.test.ts src/engine/tool-host/fs-native-write.test.ts src/engine/tool-host/session-output-store.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts src/engine/tool-host/fs-policy-scratch-composition.test.ts src/engine/tool-host/fs-rooted-glob.test.ts src/engine/tool-host/fs-write-floor-contract.test.ts src/engine/tool-host/fs-prepared.test.ts src/engine/tool-host/fs-creation-mask.test.ts src/engine/tool-host/fs-stage-inventory.test.ts src/engine/tool-host/fs-stage-namespace.test.ts src/engine/tool-host/prepared-replay.e2e.test.ts src/engine/host.test.ts
       - name: Native CAS and save_to containment (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store-entry-snapshots.test.ts src/media-store-publication-contention.test.ts src/media-store.test.ts src/media-write.test.ts
@@ -731,7 +755,7 @@ jobs:
       - name: Download all eight source-bound native execution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: native-fs-${{ github.run_id }}-*
           path: ${{ runner.temp }}/native-fs-assets
           merge-multiple: false
       - name: Require the complete native asset inventory before packing
@@ -783,7 +807,7 @@ jobs:
       - name: Download all eight source-bound native execution artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: native-fs-${{ github.run_id }}-*
           path: ${{ runner.temp }}/native-fs-assets
           merge-multiple: false
       - name: Require the complete native asset inventory before map controls

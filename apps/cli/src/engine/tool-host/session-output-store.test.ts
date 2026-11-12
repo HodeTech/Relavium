@@ -1,3 +1,10 @@
+import {
+  BUILTIN_TOOLS,
+  createInMemoryEffectJournal,
+  createToolRegistry,
+  unwrapUntrusted,
+  type ToolDef,
+} from '@relavium/core';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
@@ -350,13 +357,80 @@ describe('private session-instance output store', () => {
 
   it('refuses NUL and invalid UTF-8 without returning replacement text', async () => {
     const store = await create();
-    const nul = await store.spill('a\0b', MODEL_LIMITS);
-    await expect(store.read(nul.ref, {})).rejects.toMatchObject({ reason: 'invalid_text' });
     const root = await rootOf(store);
+    const nul = await store.spill('abc', MODEL_LIMITS);
+    await writeFile(join(root, `${nul.ref.split('/')[3]}.txt`), 'a\0b');
+    await expect(store.read(nul.ref, {})).rejects.toMatchObject({ reason: 'invalid_text' });
     const output = await store.spill('ok', MODEL_LIMITS);
     const name = `${output.ref.split('/')[3]}.txt`;
     await writeFile(join(root, name), Buffer.from([0xff, 0xfe]));
     await expect(store.read(output.ref, {})).rejects.toMatchObject({ reason: 'invalid_text' });
+  });
+
+  it('rejects NUL text before any quota reservation or output artifact', async () => {
+    const store = await create({ limits: { fileBytes: 3, totalBytes: 3, files: 1 } });
+    const rootName = (await readdir(parent()))[0];
+    if (rootName === undefined) throw new SessionOutputStoreError('io');
+    const root = join(parent(), rootName);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(store.spill('a\0b', MODEL_LIMITS)).rejects.toMatchObject({
+        reason: 'invalid_text',
+        cleanupUncertain: false,
+      });
+      expect(await readdir(root)).toEqual(['.owner.json']);
+    }
+    const healthy = await store.spill('abc', MODEL_LIMITS);
+    expect((await store.read(healthy.ref, {})).content).toBe('abc');
+    expect((await readdir(root)).filter((name) => name.endsWith('.txt'))).toHaveLength(1);
+  });
+
+  it('keeps a successful NUL-containing tool result on the existing preview-only spill fallback', async () => {
+    const store = await create({ limits: { files: 1 } });
+    const text = 'source'.repeat(20) + '\0';
+    const read = BUILTIN_TOOLS.find((tool) => tool.id === 'read_file');
+    if (read === undefined) throw new Error('missing read tool');
+    const tool: ToolDef = { ...read, dispatch: () => Promise.resolve(text) };
+    const registry = createToolRegistry({ tools: [tool], host: { outputStore: store } });
+    const outcome = await registry.dispatch(
+      { type: 'tool_call', id: 'nul', name: 'read_file', args: { path: 'unused' } },
+      {
+        nodeId: 'node',
+        grantedToolIds: new Set(['read_file']),
+        config: {},
+        toolPolicy: {},
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects: createInMemoryEffectJournal({ kind: 'session', sessionId: 'unit', turn: 1 }),
+        effectSlot: 0,
+        limits: MODEL_LIMITS,
+      },
+    );
+    expect(outcome.output).toBe(text);
+    expect(outcome.truncated).toBe(true);
+    expect(unwrapUntrusted(outcome.toolResult).result).toContain(
+      'full output unavailable (spill failed)',
+    );
+    const healthy = await store.spill('healthy', MODEL_LIMITS);
+    expect((await store.read(healthy.ref, {})).content).toBe('healthy');
+  });
+
+  it('requires an explicit range for a full output read over the model ceiling, including JSON escaping', async () => {
+    const store = await create({ limits: { files: 2 } });
+    for (const text of ['x'.repeat(52 * 1024), '"'.repeat(30 * 1024)]) {
+      const output = await store.spill(text, MODEL_LIMITS);
+      const refusal: unknown = await store.read(output.ref, {}).catch((error: unknown) => error);
+      expect(refusal).toMatchObject({ reason: 'range_required' });
+      if (!(refusal instanceof SessionOutputStoreError)) throw new Error('missing range refusal');
+      expect(refusal.message).toContain('explicit line or byte range');
+      expect(
+        (await store.read(output.ref, { range: { unit: 'bytes', start: 0, end: 16 } })).content,
+      ).toBe(text.slice(0, 16));
+    }
+    const rootName = (await readdir(parent()))[0];
+    if (rootName === undefined) throw new SessionOutputStoreError('io');
+    expect(
+      (await readdir(join(parent(), rootName))).filter((name) => name.endsWith('.txt')),
+    ).toHaveLength(2);
   });
 
   it('reserves byte/file quotas before concurrent work, and releases failed reservations', async () => {

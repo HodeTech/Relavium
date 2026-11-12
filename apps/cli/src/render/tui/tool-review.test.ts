@@ -299,6 +299,35 @@ it.each(['git_status', 'mcp:server:custom'])(
   },
 );
 
+it('keeps the selected details call stable when older calls are evicted', () => {
+  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+  for (let index = 0; index < 64; index++)
+    store.applyToolLiveEvent({ phase: 'started', callId: `call-${index}`, toolId: 'git_status' });
+  store.openDetails();
+  store.bindReviewVisibility(() => true);
+  store.handleReviewInput('', { downArrow: true });
+  store.applyToolLiveEvent({ phase: 'started', callId: 'new-call', toolId: 'git_status' });
+  expect(store.getSnapshot().toolDisplays.has('call-0')).toBe(false);
+  expect(store.getSnapshot().review?.selected).toBe(0);
+  store.handleReviewInput('', { return: true });
+  expect(store.getSnapshot().review?.callId).toBe('call-1');
+  store.handleReviewInput('b', {});
+  store.handleReviewInput('', { return: true });
+  expect(store.getSnapshot().review?.callId).toBe('call-1');
+});
+
+it('closes the details list when its selected call is evicted', () => {
+  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+  for (let index = 0; index < 64; index++)
+    store.applyToolLiveEvent({ phase: 'started', callId: `call-${index}`, toolId: 'git_status' });
+  store.openDetails();
+  store.bindReviewVisibility(() => true);
+  store.applyToolLiveEvent({ phase: 'started', callId: 'new-call', toolId: 'git_status' });
+  expect(store.getSnapshot().toolDisplays.has('call-0')).toBe(false);
+  expect(store.getSnapshot().review).toBeUndefined();
+  expect(store.handleReviewInput('', { return: true })).toBeUndefined();
+});
+
 it('opens the retained summary after the actual aggregate preview budget evicts a document', () => {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   // Four-byte source preserves the real byte-budget proof with less code-point indexing work.

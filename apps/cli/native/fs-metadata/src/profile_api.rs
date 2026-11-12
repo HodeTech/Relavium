@@ -20,6 +20,62 @@ pub(crate) enum NativeFailure {
     /// Pre-publication cleanup could not prove its owned empty artifact removed.
     CleanupUncertain,
     LegacyRecoveryRequired,
+    /// Original failure together with the outcome of owned-artifact cleanup.
+    CleanupFacts {
+        primary: NativePrimary,
+        uncertain: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativePrimary {
+    None,
+    Unsupported,
+    AccessDenied,
+    Changed,
+    Cancelled,
+    PossiblyPublished,
+    LegacyRecoveryRequired,
+    Unknown,
+}
+
+impl NativeFailure {
+    pub(crate) fn cleanup_uncertain(self) -> bool {
+        matches!(
+            self,
+            Self::CleanupUncertain
+                | Self::CleanupFacts {
+                    uncertain: true,
+                    ..
+                }
+        )
+    }
+    pub(crate) fn with_cleanup(self, uncertain: bool) -> Self {
+        let primary = match self {
+            Self::Unsupported => NativePrimary::Unsupported,
+            Self::AccessDenied => NativePrimary::AccessDenied,
+            Self::Changed => NativePrimary::Changed,
+            Self::Cancelled => NativePrimary::Cancelled,
+            Self::PossiblyPublished => NativePrimary::PossiblyPublished,
+            Self::LegacyRecoveryRequired => NativePrimary::LegacyRecoveryRequired,
+            Self::CleanupUncertain => {
+                return Self::CleanupFacts {
+                    primary: NativePrimary::Unknown,
+                    uncertain: true,
+                }
+            }
+            Self::CleanupFacts {
+                primary,
+                uncertain: prior,
+            } => {
+                return Self::CleanupFacts {
+                    primary,
+                    uncertain: prior || uncertain,
+                }
+            }
+        };
+        Self::CleanupFacts { primary, uncertain }
+    }
 }
 
 /// Native full identity and separately proven Node-visible identity, host-private.
@@ -56,6 +112,17 @@ pub(crate) trait Profile {
         path: &Path,
         operation: WriteOperation,
     ) -> Result<(), NativeFailure>;
+    /// One admitted source handoff; profiles without a refresh retain their strict pair.
+    fn admit_existing(
+        snapshot: &Self::ExistingSnapshot,
+        source: &File,
+        path: &Path,
+        operation: WriteOperation,
+        _expected: &[u8],
+    ) -> Result<Option<(File, Self::ExistingSnapshot)>, NativeFailure> {
+        Self::recheck_existing(snapshot, source, path, operation)?;
+        Ok(None)
+    }
     fn apply_and_verify_existing(
         snapshot: &Self::ExistingSnapshot,
         source: &File,

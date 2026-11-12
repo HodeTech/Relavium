@@ -25,14 +25,27 @@ required. `same` truthfully describes
 a local TokenUser-only owner context and is not evidence for the distinct TokenOwner case. Both
 Windows CI target checks and complete eight-target assembly require `distinct` independently for
 x64 and arm64. Missing, duplicate or malformed markers refuse; no SID, path or token bytes enter the
-receipt. Synthetic fixture values exercise the validator only and never certify a target. `assemble.mjs <directory>` requires exactly
-one source-bound native execution artifact with that validation per required target and writes
-`release-complete`; eight protocol-only assets cannot pass. The matrix runs on native x64/arm64 runners;
+receipt. Synthetic fixture values exercise the validator only and never certify a target.
+`assemble.mjs <directory>` selects one validated native execution artifact per required target and
+writes `release-complete`; eight protocol-only assets cannot pass. The matrix runs on native x64/arm64 runners;
 Linux uses digest-pinned baseline images without emulation. GNU assets build and execute with glibc
 2.28. The selected Rust musl toolchain uses musl 1.2.5, and the Alpine recipe executes Node 22.0.0 on
 that baseline. macOS sets deployment target 11.0; Windows uses MSVC. This is an adapter-specific
 build/deployment profile, not evidence that the whole CLI's SQLite/keyring closure works on every
 architecture, minimum OS, filesystem or libc. The existing four installed consumers remain required.
+Native CI uploads immutable `native-fs-<run>-<producer-attempt>-<target>` artifacts, each containing
+`delivery.json` and a nested exact `assets/` inventory. The envelope locates a producer; it grants no
+native admission. Consumers download only their own run into separate directories, then
+`artifact.mjs select <directory> <target>` or complete assembly validates every candidate's locator,
+exact source commit, native source/recipe/lock/notices binding, binary identity and profile evidence
+before choosing the latest successful producer attempt per target. A failed consumer can reuse an
+earlier successful producer; a partially retried matrix can combine identical-source successes from
+different attempts. A corrupt older candidate still refuses, even beside a valid newer candidate.
+No artifact directories are blindly merged, and full reruns retain their distinct immutable names.
+The offline selector admits at most 256 candidate directories and 32 distinct producer attempts,
+with bounded names, envelope bytes and the existing exact native file/byte limits. The consumer's
+attempt number has no corresponding cap. Exceeding a candidate quota requires a fresh workflow run.
+
 Each native CI check also inspects the actual addon bytes and rejects the fixed
 test-hook/checkpoint prefix, even when all hashes and profile receipt fields otherwise match.
 
@@ -64,7 +77,7 @@ SQLite's existing prebuild-download/node-gyp behavior is outside that narrower p
 Run validator, delivery and independent closure controls with:
 
 ```sh
-node --test tools/native-fs/assets.test.mjs tools/native-fs/delivery.test.mjs tools/bundle-closure/closure.test.mjs
+node --test tools/native-fs/assets.test.mjs tools/native-fs/artifact.test.mjs tools/native-fs/checkout.test.mjs tools/native-fs/delivery.test.mjs tools/bundle-closure/closure.test.mjs
 ```
 
 `fixture.mjs` creates explicitly synthetic format/inventory fixtures for refusal controls only. It

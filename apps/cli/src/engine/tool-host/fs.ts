@@ -31,7 +31,7 @@ import {
   loadNativeMetadataWriteAdapter,
 } from './fs-native-metadata.js';
 import { captureRequiredCreationMask } from './fs-creation-mask.js';
-import { runNativeStage } from './fs-native-write.js';
+import { nativeWriteAttentionFailure, runNativeStage } from './fs-native-write.js';
 import { foldPathComponent } from './fs-path-component.js';
 import {
   captureFsStageInventory,
@@ -805,9 +805,9 @@ export async function readJailedFile(
  * directory-pattern sources (fish `conf.d/*.fish`), OS launch agents (`~/Library/LaunchAgents/*.plist`), or
  * editor auto-run config — those are out of the basename model's reach and rely on the fs jail + approval.
  *
- * {@link foldPathComponent} normalizes each compared name the way a real filesystem folds a component: it
+ * {@link foldPathComponent} conservatively folds policy labels, including Unicode case aliases: it
  * takes the part before the first `:` (Win32 NTFS `name::$DATA` / `name:stream` addresses the SAME default
- * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), lowercases (a case-insensitive FS / a
+ * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), closes case equivalence (a case-insensitive FS / a
  * `.GIT` variant must not slip through), AND strips trailing dots/spaces — Win32 silently drops those at open
  * time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on the REAL protected target while the
  * unfolded name missed the set. Folding always (not only on win32) over-denies a genuinely-distinct `.git.` or
@@ -1250,6 +1250,11 @@ async function prepareWrite(
   };
   const initialMask = await creationMask(signal);
   async function prepareNative(): Promise<unknown> {
+    if (
+      target !== undefined &&
+      !equalSnapshot(before, await snapshotPrepared(target, maxBytes, signal, stage))
+    )
+      throw new ToolPreparationError('stale_file');
     let nativePrepared: unknown;
     let preparationOwned = false;
     try {
@@ -1280,6 +1285,11 @@ async function prepareWrite(
         }
       }
       await verifyPreparedIdentity();
+      if (
+        target !== undefined &&
+        !equalSnapshot(before, await snapshotPrepared(target, maxBytes, signal, stage))
+      )
+        throw new ToolPreparationError('stale_file');
     } catch (error) {
       if (preparationOwned) {
         try {
@@ -1300,6 +1310,13 @@ async function prepareWrite(
   let released = false;
   const run = async (executeSignal?: AbortSignalLike): Promise<FileWritten> => {
     throwIfAborted(executeSignal);
+    const executionCreationMask = async (): Promise<number | undefined> => {
+      try {
+        return await creationMask(executeSignal);
+      } catch (error) {
+        throw nativeWriteAttentionFailure(error);
+      }
+    };
     if (config.operatorHomeDir === undefined) throw new FsStageInventoryError();
     const executionStage = await captureFsStageInventory(config.operatorHomeDir, executeSignal);
     const executionNativeFloor = await captureNativeRuntimeWriteFloor();
@@ -1343,8 +1360,7 @@ async function prepareWrite(
             if (errnoCode(error) !== 'ENOENT') throw error;
             missing.push(cursor);
             const next = dirname(cursor);
-            if (next === cursor)
-              throw new HostDeniedError('filesystem creation policy unavailable');
+            if (next === cursor) throw nativeWriteAttentionFailure();
             cursor = next;
           }
         }
@@ -1353,11 +1369,11 @@ async function prepareWrite(
       const missing = await findMissing();
       for (const directory of missing.reverse()) {
         throwIfAborted(executeSignal);
-        const mask = await creationMask(executeSignal);
+        const mask = await executionCreationMask();
         try {
           await native.recheckNewMetadata(nativePrepared, mask);
-        } catch {
-          throw new HostDeniedError('filesystem creation policy unavailable');
+        } catch (error) {
+          throw nativeWriteAttentionFailure(error);
         }
         executionNativeFloor.assertPath(directory);
         assertNotProtectedPath(directory, config.pathPolicy);
@@ -1377,8 +1393,8 @@ async function prepareWrite(
           throw new ToolPreparationError('stale_file');
         try {
           await native.recheckNewMetadata(nativePrepared, mask);
-        } catch {
-          throw new HostDeniedError('filesystem creation policy unavailable');
+        } catch (error) {
+          throw nativeWriteAttentionFailure(error);
         }
       }
     }
@@ -1391,6 +1407,16 @@ async function prepareWrite(
     await assertNotSymlink(finalTarget);
     if (target !== undefined && finalTarget !== target)
       throw new ToolPreparationError('stale_file');
+    const stageMask = await executionCreationMask();
+    if (target === undefined) {
+      try {
+        await native.recheckNewMetadata(nativePrepared, stageMask);
+        await native.releaseNewMetadata(nativePrepared);
+        nativePrepared = await native.prepareNewMetadata(finalTarget, stageMask);
+      } catch (error) {
+        throw nativeWriteAttentionFailure(error);
+      }
+    }
     if (
       !equalSnapshot(
         before,
@@ -1399,24 +1425,15 @@ async function prepareWrite(
     )
       throw new ToolPreparationError('stale_file');
     throwIfAborted(executeSignal);
-    if (target === undefined) {
-      const mask = await creationMask(executeSignal);
-      try {
-        await native.recheckNewMetadata(nativePrepared, mask);
-        await native.releaseNewMetadata(nativePrepared);
-        nativePrepared = await native.prepareNewMetadata(finalTarget, mask);
-      } catch {
-        throw new HostDeniedError('filesystem creation policy unavailable');
-      }
-    }
     await runNativeStage({
+      stageMask,
       adapter: native,
       prepared: nativePrepared,
       before: before === null ? null : Buffer.from(before.text, 'utf8'),
       after: Buffer.from(after, 'utf8'),
       home: config.operatorHomeDir,
       nonce: randomUUID().replaceAll('-', ''),
-      creationMask: async () => creationMask(executeSignal),
+      creationMask: executionCreationMask,
       ...(executeSignal === undefined ? {} : { signal: executeSignal }),
     });
     return {
@@ -1446,6 +1463,7 @@ async function prepareWrite(
         if (before === null) await native.releaseNewMetadata(nativePrepared);
         else await native.releaseExistingMetadata(nativePrepared);
       } catch {
+        if (used) throw nativeWriteAttentionFailure();
         throw new HostDeniedError('filesystem metadata cleanup failed');
       }
     },
@@ -1519,7 +1537,8 @@ async function listOne(
   );
   return {
     entries,
-    ...(truncated || !complete ? { truncated: true, entryLimit: cap, omittedEntries: null } : {}),
+    ...(truncated || !complete ? { truncated: true, omittedEntries: null } : {}),
+    ...(truncated ? { entryLimit: cap } : {}),
     ...(!complete ? { incomplete: true } : {}),
   };
 }
@@ -1617,7 +1636,6 @@ async function discover(
   };
   const sourceBudget = { remaining: SCAN_BYTES };
   const bodies: string[] = [];
-  let ignoreWork = 0;
   const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
   async function loadIgnore(name: string): Promise<boolean> {
     const target = join(workspaceRoot, name);
@@ -1643,7 +1661,7 @@ async function discover(
         stop('ignore');
         return false;
       }
-      const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.bytes);
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
       const lines = parseIgnoreLines(text);
       if (
         lines.length > IGNORE_RULES ||
@@ -1659,7 +1677,6 @@ async function discover(
         return false;
       }
       bodies.push(text);
-      ignoreWork += lines.reduce((sum, line) => sum + line.length + 1, 0);
     } catch (error) {
       throwIfAborted(signal);
       if (error instanceof FsStageInventoryError) throw error;
@@ -1721,12 +1738,16 @@ async function discover(
   }
   await inspectAncestors();
   const ignored = compileIgnore(...bodies);
-  const matchesGlob = glob === undefined ? () => true : compileGlob(glob);
+  let work = 0;
+  const matcherLimit = new Error('filesystem matcher work limit reached');
+  const consumeMatcherWork = (): void => {
+    if (++work > SCAN_WORK) throw matcherLimit;
+  };
+  const matchesGlob = glob === undefined ? () => true : compileGlob(glob, consumeMatcherWork);
   const files: { path: string; sizeBytes: number; lastModified: string; mtimeMs: number }[] = [];
   const matches: { path: string; line: number; content: string; omittedBytes: number }[] = [];
   const stack = [{ dir: root, depth: 0 }];
   let directories = 0;
-  let work = 0;
   function admitDirectory(): boolean {
     if (++directories <= SCAN_DIRS) return true;
     stop('directories');
@@ -1776,23 +1797,23 @@ async function discover(
         const candidate = join(currentDir, entry.name);
         const rel = posixRel(root, candidate);
         const workspaceRel = posixRel(workspaceRoot, candidate);
-        // Ignore and glob matching are independent. Charge each pattern against its candidate,
-        // including retry work in the two-pointer matchers, without multiplying the two sets.
-        // `**` can retry whole path segments; bound those retries by the number of
-        // segments as well as the segment-level character comparisons.
-        const segmentFactor = Math.max(rel.split('/').length, workspaceRel.split('/').length);
-        work +=
-          segmentFactor *
-          ((workspaceRel.length + 1) * ignoreWork + (rel.length + 1) * (glob?.length ?? 0));
-        if (work > SCAN_WORK) {
+        let ignoredCandidate: boolean;
+        let matchesCandidate: boolean;
+        try {
+          // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
+          work += rel.length + workspaceRel.length + 2;
+          consumeMatcherWork();
+          ignoredCandidate =
+            isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
+            (isWithinFsRoot(workspaceRoot, candidate) &&
+              ignored.ignores(workspaceRel, entry.isDirectory(), consumeMatcherWork));
+          matchesCandidate = !ignoredCandidate && (entry.isDirectory() || matchesGlob(rel));
+        } catch (cause) {
+          if (cause !== matcherLimit) throw cause;
           stop('work');
           return 'stop';
         }
-        if (
-          isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
-          ignored.ignores(workspaceRel, entry.isDirectory())
-        )
-          return 'next';
+        if (ignoredCandidate) return 'next';
         stage.assertIdentity(await lstat(candidate, { bigint: true }));
         function queueDirectory(): 'next' | 'stop' {
           if (depth >= SCAN_DEPTH) {
@@ -1803,7 +1824,7 @@ async function discover(
           return 'next';
         }
         if (entry.isDirectory()) return queueDirectory();
-        if (!matchesGlob(rel)) return 'next';
+        if (!matchesCandidate) return 'next';
         const real = await realpath(candidate).catch(() => undefined);
         if (real === undefined) {
           stats.unreadable++;
@@ -2334,23 +2355,28 @@ async function collectGlobFiles(
  * ------------------------------------------------------------------------------------------------ */
 
 /** Compile a glob pattern to a predicate over a POSIX-separated relative path. */
-function compileGlob(pattern: string): (path: string) => boolean {
+function compileGlob(pattern: string, consumeWork?: () => void): (path: string) => boolean {
   const pat = pattern.split('/');
-  return (path: string) => matchSegments(pat, path.split('/'));
+  return (path: string) => matchSegments(pat, path.split('/'), consumeWork);
 }
 
 /** Match a pattern segment-list against a path segment-list; `**` matches zero or more whole segments. */
-function matchSegments(pat: readonly string[], str: readonly string[]): boolean {
+function matchSegments(
+  pat: readonly string[],
+  str: readonly string[],
+  consumeWork?: () => void,
+): boolean {
   let p = 0;
   let s = 0;
   let starP = -1; // pattern index just past the last `**`
   let starS = 0; // str index to resume from when extending the last `**`
   while (s < str.length) {
+    consumeWork?.();
     const seg = pat[p];
     if (seg === '**') {
       starP = ++p; // `**` matches zero segments first; remember where to extend it
       starS = s;
-    } else if (seg !== undefined && matchSegment(seg, str[s] ?? '')) {
+    } else if (seg !== undefined && matchSegment(seg, str[s] ?? '', consumeWork)) {
       p++;
       s++;
     } else if (starP >= 0) {
@@ -2360,17 +2386,21 @@ function matchSegments(pat: readonly string[], str: readonly string[]): boolean 
       return false;
     }
   }
-  while (pat[p] === '**') p++; // trailing `**` segments match the empty remainder
+  while (pat[p] === '**') {
+    consumeWork?.();
+    p++;
+  } // trailing `**` segments match the empty remainder
   return p === pat.length;
 }
 
 /** Match a single glob segment (`*` = any run sans `/`, `?` = one char sans `/`) against a path segment. */
-function matchSegment(glob: string, value: string): boolean {
+function matchSegment(glob: string, value: string, consumeWork?: () => void): boolean {
   let g = 0;
   let v = 0;
   let star = -1;
   let mark = 0;
   while (v < value.length) {
+    consumeWork?.();
     const gc = glob[g];
     if (gc === '?' || (gc !== undefined && gc !== '*' && gc === value[v])) {
       g++;
@@ -2385,7 +2415,10 @@ function matchSegment(glob: string, value: string): boolean {
       return false;
     }
   }
-  while (glob[g] === '*') g++;
+  while (glob[g] === '*') {
+    consumeWork?.();
+    g++;
+  }
   return g === glob.length;
 }
 

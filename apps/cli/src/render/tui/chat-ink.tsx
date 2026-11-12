@@ -551,6 +551,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               firstRow,
               endRow,
               measuredWidth,
+              props.toolDisplays,
             )
           }
         />

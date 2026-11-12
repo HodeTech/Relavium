@@ -65,11 +65,11 @@ test('the complete native/scale workload has its own calculated bound and exact 
   assert.equal(ordinaryPhaseTimeoutMs, 300_000);
   assert.equal(permanentPhaseTimeoutMs, 300_000 + 71 * 20_000 + 600_000);
   const result = {
-    tests: Array.from({ length: 455 }),
+    tests: Array.from({ length: 459 }),
     runtime: { nativeChildren: 71, readinessTimeoutChildren: 1 },
   };
   assert.doesNotThrow(() => assertPermanentWorkload(result));
-  for (const count of [0, 440, 449, 452, 454, 456]) {
+  for (const count of [0, 440, 449, 452, 454, 455, 456, 458, 460]) {
     assert.throws(
       () => assertPermanentWorkload({ ...result, tests: Array.from({ length: count }) }),
       /Permanent case inventory drift/,

@@ -169,3 +169,52 @@ it('refuses expanded replacements before allocating the result', async () => {
   ).rejects.toMatchObject({ reason: 'diff_limit' });
   expect((await stat(join(root, 'target'))).size).toBe(1024);
 });
+
+it.each([
+  { oldString: '', reason: 'match_not_found' },
+  { oldString: 'absent', reason: 'match_not_found' },
+  { oldString: 'same', reason: 'match_not_unique' },
+])(
+  'refuses $reason before editing even with promoted full-file read evidence',
+  async ({ oldString, reason }) => {
+    const fs = host(),
+      readScope = {};
+    await writeFile(join(root, 'file'), 'same\r\nsame\r\n');
+    const observed = await fs.readFile('file', {});
+    fs.acknowledgeReadResult?.(readScope, observed);
+    fs.promoteReadScope?.(readScope);
+    await expect(
+      fs.prepareWrite?.({ kind: 'edit', path: 'file', oldString, newString: 'changed', readScope }),
+    ).rejects.toMatchObject({ reason });
+    expect(await readFile(join(root, 'file'), 'utf8')).toBe('same\r\nsame\r\n');
+  },
+);
+
+it.each([false, true])(
+  'preserves BOM and CRLF through a promoted exact edit (no-op=%s)',
+  async (noop) => {
+    const fs = host(),
+      readScope = {};
+    const before = '\ufefffirst\r\nsecond\r\n';
+    await writeFile(join(root, 'file'), before);
+    const observed = await fs.readFile('file', {});
+    fs.acknowledgeReadResult?.(readScope, observed);
+    fs.promoteReadScope?.(readScope);
+    const prepared = await fs.prepareWrite!({
+      kind: 'edit',
+      path: 'file',
+      oldString: 'second',
+      newString: noop ? 'second' : 'changed',
+      readScope,
+    });
+    const expected = noop ? before : '\ufefffirst\r\nchanged\r\n';
+    expect(prepared.before).toBe(before);
+    expect(prepared.after).toBe(expected);
+    try {
+      await prepared.execute();
+    } finally {
+      await prepared.release();
+    }
+    expect(await readFile(join(root, 'file'))).toEqual(Buffer.from(expected));
+  },
+);

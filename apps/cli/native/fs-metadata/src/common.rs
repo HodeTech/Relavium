@@ -227,7 +227,7 @@ pub struct StagedExisting {
 
 #[allow(dead_code)]
 fn stage_existing(
-    prepared: PreparedSource,
+    mut prepared: PreparedSource,
     home: &Path,
     before: &[u8],
     after: &[u8],
@@ -291,6 +291,26 @@ fn stage_existing(
     {
         return Err(NativeFailure::Changed);
     }
+    if let Some((source, snapshot)) = CurrentProfile::admit_existing(
+        &prepared.snapshot,
+        &prepared.source,
+        &prepared.path,
+        prepared.operation,
+        before,
+    )? {
+        prepared.source = source;
+        prepared.snapshot = snapshot;
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        if crate::test_hooks::fail("after-admission-error") {
+            return Err(NativeFailure::Unsupported);
+        }
+        if crate::test_hooks::fail("after-admission-cancel") {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+    check()?;
     #[cfg(test)]
     crate::test_hooks::checkpoint("stage-recover");
     trace_failure!(
@@ -312,7 +332,7 @@ fn stage_existing(
     )?;
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
-    let setup = (|| {
+    let setup: std::result::Result<_, NativeFailure> = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
         let stage_directory = trace_failure!(
@@ -378,13 +398,13 @@ fn stage_existing(
         Err(error) => {
             #[cfg(test)]
             crate::test_hooks::remember_failure("first-setup", error);
-            if error != NativeFailure::CleanupUncertain {
-                let _ = owned.cleanup();
+            if error.cleanup_uncertain() {
+                return Err(error);
             }
-            return Err(error);
+            return Err(error.with_cleanup(owned.cleanup().is_err()));
         }
     };
-    let result = (|| {
+    let result: std::result::Result<(), NativeFailure> = (|| {
         check()?;
         #[cfg(test)]
         if crate::test_hooks::selected("partial-payload") && after.len() > 1 {
@@ -432,8 +452,7 @@ fn stage_existing(
     if let Err(error) = result {
         #[cfg(test)]
         crate::test_hooks::remember_failure("first-payload-result", error);
-        let _ = owned.cleanup();
-        return Err(error);
+        return Err(error.with_cleanup(owned.cleanup().is_err()));
     }
     Ok(StagedExisting {
         prepared,
@@ -498,8 +517,8 @@ fn publish_staged_existing(
     let cleanup = state.owned.cleanup();
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(_)) => Err(NativeFailure::PossiblyPublished),
-        (Err(error), _) => Err(error),
+        (Ok(()), Err(_)) => Err(NativeFailure::PossiblyPublished.with_cleanup(true)),
+        (Err(error), cleanup) => Err(error.with_cleanup(cleanup.is_err())),
     }
 }
 
@@ -748,7 +767,10 @@ mod producer_tests {
         cancelled.store(true, std::sync::atomic::Ordering::Release);
         assert!(matches!(
             publish_staged_new(staged, Some(mask), &cancelled),
-            Err(crate::profile_api::NativeFailure::Cancelled)
+            Err(crate::profile_api::NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Cancelled,
+                uncertain: false
+            })
         ));
         assert!(!root.join("cancelled").exists());
         assert!(!stage_path.exists());
@@ -913,7 +935,7 @@ fn stage_new(
     )?;
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
-    let setup = (|| {
+    let setup: std::result::Result<_, NativeFailure> = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
         let stage_directory = trace_failure!(
@@ -978,10 +1000,10 @@ fn stage_new(
         Err(error) => {
             #[cfg(test)]
             crate::test_hooks::remember_failure("first-setup", error);
-            if error != NativeFailure::CleanupUncertain {
-                let _ = owned.cleanup();
+            if error.cleanup_uncertain() {
+                return Err(error);
             }
-            return Err(error);
+            return Err(error.with_cleanup(owned.cleanup().is_err()));
         }
     };
     let result = (|| {
@@ -1035,8 +1057,7 @@ fn stage_new(
     if let Err(error) = result {
         #[cfg(test)]
         crate::test_hooks::remember_failure("first-payload-result", error);
-        let _ = owned.cleanup();
-        return Err(error);
+        return Err(error.with_cleanup(owned.cleanup().is_err()));
     }
     Ok(StagedNew {
         prepared,
@@ -1091,8 +1112,8 @@ fn publish_staged_new(
     let cleanup = state.owned.cleanup();
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(_)) => Err(NativeFailure::PossiblyPublished),
-        (Err(error), _) => Err(error),
+        (Ok(()), Err(_)) => Err(NativeFailure::PossiblyPublished.with_cleanup(true)),
+        (Err(error), cleanup) => Err(error.with_cleanup(cleanup.is_err())),
     }
 }
 
@@ -1107,17 +1128,41 @@ pub enum OwnedPreparedStage {
 type SharedStage = Arc<Mutex<Option<OwnedPreparedStage>>>;
 
 fn native_error(error: crate::profile_api::NativeFailure) -> Error {
-    use crate::profile_api::NativeFailure;
-    let message = match error {
-        NativeFailure::PossiblyPublished => "filesystem publication outcome uncertain",
-        NativeFailure::CleanupUncertain => "filesystem metadata cleanup unavailable",
-        NativeFailure::LegacyRecoveryRequired => "filesystem staging operator recovery required",
-        NativeFailure::Cancelled => "filesystem operation cancelled",
-        NativeFailure::Changed => "filesystem preparation changed",
-        NativeFailure::AccessDenied => "filesystem access denied",
-        NativeFailure::Unsupported => "filesystem metadata protection unavailable",
+    use crate::profile_api::{NativeFailure, NativePrimary};
+    let (primary, cleanup) = match error {
+        NativeFailure::CleanupFacts { primary, uncertain } => {
+            (primary, if uncertain { "uncertain" } else { "proven" })
+        }
+        NativeFailure::CleanupUncertain => (NativePrimary::Unknown, "uncertain"),
+        other => {
+            let primary = match other {
+                NativeFailure::Unsupported => NativePrimary::Unsupported,
+                NativeFailure::AccessDenied => NativePrimary::AccessDenied,
+                NativeFailure::Changed => NativePrimary::Changed,
+                NativeFailure::Cancelled => NativePrimary::Cancelled,
+                NativeFailure::PossiblyPublished => NativePrimary::PossiblyPublished,
+                NativeFailure::LegacyRecoveryRequired => NativePrimary::LegacyRecoveryRequired,
+                NativeFailure::CleanupUncertain | NativeFailure::CleanupFacts { .. } => {
+                    NativePrimary::Unknown
+                }
+            };
+            (primary, "not_needed")
+        }
     };
-    Error::new(Status::GenericFailure, message)
+    let primary = match primary {
+        NativePrimary::None => "none",
+        NativePrimary::Unsupported => "unsupported",
+        NativePrimary::AccessDenied => "access_denied",
+        NativePrimary::Changed => "changed",
+        NativePrimary::Cancelled => "cancelled",
+        NativePrimary::PossiblyPublished => "possibly_published",
+        NativePrimary::LegacyRecoveryRequired => "legacy_recovery_required",
+        NativePrimary::Unknown => "unknown",
+    };
+    Error::new(
+        Status::GenericFailure,
+        format!("RELAVIUM_NATIVE_WRITE:{primary}:{cleanup}"),
+    )
 }
 
 #[napi]
@@ -1185,8 +1230,13 @@ impl Task for StageExistingTask {
     type Output = SharedStage;
     type JsValue = External<SharedStage>;
     fn compute(&mut self) -> Result<Self::Output> {
-        let mut guard = self.prepared.lock().map_err(|_| refusal())?;
-        let state = guard.take().ok_or_else(refusal)?;
+        let mut guard = self
+            .prepared
+            .lock()
+            .map_err(|_| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
+        let state = guard
+            .take()
+            .ok_or_else(|| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
         let staged = stage_existing(
             state,
             &self.home,
@@ -1238,8 +1288,13 @@ impl Task for StageNewTask {
     type Output = SharedStage;
     type JsValue = External<SharedStage>;
     fn compute(&mut self) -> Result<Self::Output> {
-        let mut guard = self.prepared.lock().map_err(|_| refusal())?;
-        let state = guard.take().ok_or_else(refusal)?;
+        let mut guard = self
+            .prepared
+            .lock()
+            .map_err(|_| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
+        let state = guard
+            .take()
+            .ok_or_else(|| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
         let staged = stage_new(
             state,
             &self.home,
@@ -1283,8 +1338,13 @@ impl Task for PublishTask {
     type Output = bool;
     type JsValue = bool;
     fn compute(&mut self) -> Result<bool> {
-        let mut guard = self.stage.lock().map_err(|_| refusal())?;
-        let state = guard.take().ok_or_else(refusal)?;
+        let mut guard = self
+            .stage
+            .lock()
+            .map_err(|_| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
+        let state = guard
+            .take()
+            .ok_or_else(|| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?;
         match state {
             OwnedPreparedStage::Existing(state) => {
                 publish_staged_existing(state, self.mask, &self.cancelled)
@@ -1318,14 +1378,26 @@ impl Task for ReleaseStageTask {
     type Output = bool;
     type JsValue = bool;
     fn compute(&mut self) -> Result<bool> {
-        let state = self.stage.lock().map_err(|_| refusal())?.take();
+        let state = self
+            .stage
+            .lock()
+            .map_err(|_| native_error(crate::profile_api::NativeFailure::CleanupUncertain))?
+            .take();
         match state {
             Some(OwnedPreparedStage::Existing(mut state)) => {
-                state.owned.cleanup().map_err(native_error)?
+                state.owned.cleanup().map_err(|_| {
+                    native_error(crate::profile_api::NativeFailure::CleanupFacts {
+                        primary: crate::profile_api::NativePrimary::None,
+                        uncertain: true,
+                    })
+                })?
             }
-            Some(OwnedPreparedStage::New(mut state)) => {
-                state.owned.cleanup().map_err(native_error)?
-            }
+            Some(OwnedPreparedStage::New(mut state)) => state.owned.cleanup().map_err(|_| {
+                native_error(crate::profile_api::NativeFailure::CleanupFacts {
+                    primary: crate::profile_api::NativePrimary::None,
+                    uncertain: true,
+                })
+            })?,
             None => (),
         }
         Ok(true)
@@ -1938,6 +2010,20 @@ mod template_cleanup_tests {
     }
 
     #[test]
+    fn write_failure_tokens_preserve_primary_and_cleanup() {
+        use crate::profile_api::NativePrimary;
+        let error = native_error(NativeFailure::CleanupFacts {
+            primary: NativePrimary::Cancelled,
+            uncertain: true,
+        });
+        assert_eq!(error.reason, "RELAVIUM_NATIVE_WRITE:cancelled:uncertain");
+        let error = native_error(NativeFailure::Changed.with_cleanup(false));
+        assert_eq!(error.reason, "RELAVIUM_NATIVE_WRITE:changed:proven");
+        let error = native_error(NativeFailure::CleanupUncertain);
+        assert_eq!(error.reason, "RELAVIUM_NATIVE_WRITE:unknown:uncertain");
+    }
+
+    #[test]
     fn diagnostic_unwrapped_source_error_precedes_cleanup_failure() {
         let fixture = Fixture::new();
         let mask = mask();
@@ -1953,7 +2039,13 @@ mod template_cleanup_tests {
             mask,
             &cancelled,
         );
-        assert!(matches!(result, Err(NativeFailure::Changed)));
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Changed,
+                uncertain: true
+            })
+        ));
         assert_eq!(
             crate::test_hooks::observed_first_failure(),
             Some(("first-setup", NativeFailure::Changed))
@@ -2004,7 +2096,13 @@ mod template_cleanup_tests {
                 mask,
                 &AtomicBool::new(false),
             );
-            assert!(matches!(result, Err(NativeFailure::Unsupported)));
+            assert!(matches!(
+                result,
+                Err(NativeFailure::CleanupFacts {
+                    primary: crate::profile_api::NativePrimary::Unsupported,
+                    uncertain: false
+                })
+            ));
             assert_eq!(std::fs::read(path).expect("source remains"), b"before");
             assert!(!std::fs::read_dir(&fixture.0)
                 .expect("root")
@@ -2042,7 +2140,13 @@ mod template_cleanup_tests {
                     Err(NativeFailure::Changed)
                 },
             );
-            assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+            assert!(matches!(
+                result,
+                Err(NativeFailure::CleanupFacts {
+                    primary: crate::profile_api::NativePrimary::Changed,
+                    uncertain: true
+                })
+            ));
             assert!(alternate.exists());
             if scenario == "swap" {
                 assert_eq!(std::fs::read(&payload).expect("foreign"), b"foreign");
@@ -2063,7 +2167,13 @@ mod template_cleanup_tests {
                 )?);
                 Err(NativeFailure::Changed)
             });
-        assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Changed,
+                uncertain: true
+            })
+        ));
         assert!(unknown_directory.join("foreign-child").exists());
     }
 
@@ -2146,7 +2256,13 @@ mod template_cleanup_tests {
                 mask,
                 &cancelled,
             );
-            assert!(matches!(result, Err(NativeFailure::Unsupported)));
+            assert!(matches!(
+                result,
+                Err(NativeFailure::CleanupFacts {
+                    primary: crate::profile_api::NativePrimary::Unsupported,
+                    uncertain: false
+                })
+            ));
             assert!(!fixture.0.join("target").exists());
             assert!(!std::fs::read_dir(&fixture.0)
                 .expect("fixture entries")
@@ -2214,7 +2330,13 @@ mod template_cleanup_tests {
                     Err(NativeFailure::Changed)
                 },
             );
-            assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+            assert!(matches!(
+                result,
+                Err(NativeFailure::CleanupFacts {
+                    primary: crate::profile_api::NativePrimary::Changed,
+                    uncertain: true
+                })
+            ));
             assert!(alternate.exists());
             if scenario == "hardlink" {
                 assert_eq!(std::fs::metadata(&payload).expect("payload").len(), 0);
@@ -2245,7 +2367,13 @@ mod template_cleanup_tests {
             mask,
             &AtomicBool::new(false),
         );
-        assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: crate::profile_api::NativePrimary::Changed,
+                uncertain: true
+            })
+        ));
         assert!(!fixture.0.join("target").exists());
         assert!(fixture.0.join("fixture-alias").exists());
         assert!(fixture
@@ -2261,5 +2389,383 @@ mod template_cleanup_tests {
                     .to_string_lossy()
                     .starts_with(".relavium-fs-stage-v1.")
             }));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_lower_admission_tests {
+    use super::*;
+    use crate::profile_api::NativeFailure;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::atomic::AtomicBool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn lower() -> Option<PathBuf> {
+        std::env::var_os("RELAVIUM_TEST_LOWER_ROOT").map(PathBuf::from)
+    }
+    fn home() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "relavium-lower-home-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("home parent");
+        let home = path.join("home");
+        drop(CurrentProfile::create_private_directory(&home).expect("private home"));
+        home
+    }
+    fn prepare(path: &Path) -> PreparedSource {
+        let source = open_source(path).expect("source");
+        let operation = WriteOperation::Replace;
+        let snapshot =
+            CurrentProfile::capture_existing(&source, path, operation).expect("read-only prepare");
+        let identity = CurrentProfile::identity(&source).expect("identity");
+        let parent_path = path.parent().expect("parent").to_path_buf();
+        let parent = CurrentProfile::open_parent(&parent_path).expect("parent open");
+        let parent_snapshot = CurrentProfile::capture_parent(&parent, None).expect("parent policy");
+        PreparedSource {
+            source,
+            path: path.to_owned(),
+            operation,
+            snapshot,
+            identity,
+            parent,
+            parent_path,
+            parent_snapshot,
+        }
+    }
+    fn run(
+        prepared: PreparedSource,
+        home: &Path,
+        cancel: &AtomicBool,
+    ) -> std::result::Result<StagedExisting, NativeFailure> {
+        stage_existing(
+            prepared,
+            home,
+            b"before",
+            b"after",
+            "12121212121212121212121212121212",
+            None,
+            cancel,
+        )
+    }
+    #[test]
+    #[ignore = "subprocess controlled by linux_image_lower_full_admission_and_failure_cuts"]
+    fn linux_image_lower_crash_child() {
+        let root = lower().expect("lower fixture");
+        let home = PathBuf::from(std::env::var_os("RELAVIUM_TEST_LOWER_HOME").expect("home"));
+        let _ = run(prepare(&root.join("crash")), &home, &AtomicBool::new(false));
+        panic!("admission crash checkpoint did not stop child");
+    }
+
+    #[test]
+    #[ignore = "subprocess controlled by linux_image_lower_full_admission_and_failure_cuts"]
+    fn linux_faccessat2_unavailable_child() {
+        let path = lower().expect("lower fixture").join("unavailable");
+        let source = open_source(&path).expect("source");
+        let before = std::fs::metadata(&path).expect("metadata");
+        let filter = [
+            libc::sock_filter {
+                code: 0x20,
+                jt: 0,
+                jf: 0,
+                k: 0,
+            },
+            libc::sock_filter {
+                code: 0x15,
+                jt: 0,
+                jf: 1,
+                k: libc::SYS_faccessat2 as u32,
+            },
+            libc::sock_filter {
+                code: 0x06,
+                jt: 0,
+                jf: 0,
+                k: 0x0005_0000 | libc::ENOSYS as u32,
+            },
+            libc::sock_filter {
+                code: 0x06,
+                jt: 0,
+                jf: 0,
+                k: 0x7fff_0000,
+            },
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr().cast_mut(),
+        };
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) },
+            0
+        );
+        assert!(matches!(
+            CurrentProfile::capture_existing(&source, &path, WriteOperation::Replace),
+            Err(NativeFailure::Unsupported)
+        ));
+        let after = std::fs::metadata(&path).expect("metadata after refusal");
+        assert_eq!(
+            (
+                before.dev(),
+                before.ino(),
+                before.ctime(),
+                before.ctime_nsec()
+            ),
+            (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+        );
+        assert_eq!(std::fs::read(path).expect("unchanged"), b"before");
+    }
+
+    fn unavailable_query_refuses() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "common::linux_lower_admission_tests::linux_faccessat2_unavailable_child",
+            ])
+            .output()
+            .expect("seccomp child");
+        assert!(
+            status.status.success(),
+            "faccessat2 unavailable child: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    fn killed_after_write_open(root: &Path, home: &Path) {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "common::linux_lower_admission_tests::linux_image_lower_crash_child",
+                "--nocapture",
+            ])
+            .env("RELAVIUM_TEST_LOWER_HOME", home)
+            .env("RELAVIUM_TEST_NATIVE_PHASE", "admitted-write-open")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn admission child");
+        let stdout = child.stdout.take().expect("child output");
+        let (send, receive) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout)
+                .lines()
+                .map_while(std::result::Result::ok)
+            {
+                if line.contains("RELAVIUM_NATIVE_PHASE:admitted-write-open:") {
+                    let _ = send.send(());
+                    break;
+                }
+            }
+        });
+        if receive
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .is_err()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            panic!("admitted open receipt missing");
+        }
+        child.kill().expect("kill admitted child");
+        child.wait().expect("join child");
+        reader.join().expect("join output reader");
+        assert_eq!(
+            std::fs::read(root.join("crash")).expect("target after kill"),
+            b"before"
+        );
+        assert!(!std::fs::read_dir(root)
+            .expect("fixture entries")
+            .any(|entry| entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".relavium-fs-stage-v1.")));
+    }
+
+    #[test]
+    fn linux_image_lower_full_admission_and_failure_cuts() {
+        let Some(root) = lower() else {
+            assert!(
+                std::env::var_os("RELAVIUM_REQUIRE_LOWER").is_none(),
+                "required lower fixture unavailable"
+            );
+            return;
+        };
+        let home = home();
+        let success = root.join("success");
+        let before = std::fs::metadata(&success).expect("lower metadata");
+        let prepared = prepare(&success);
+        let mut statfs = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        use std::os::fd::AsRawFd;
+        assert_eq!(
+            unsafe { libc::fstatfs(prepared.source.as_raw_fd(), statfs.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(
+            unsafe { statfs.assume_init() }.f_type as u64,
+            0x794c_7630,
+            "fixture must be overlayfs"
+        );
+        let after_prepare = std::fs::metadata(&success).expect("prepared metadata");
+        assert_eq!(
+            (
+                before.dev(),
+                before.ino(),
+                before.ctime(),
+                before.ctime_nsec()
+            ),
+            (
+                after_prepare.dev(),
+                after_prepare.ino(),
+                after_prepare.ctime(),
+                after_prepare.ctime_nsec()
+            )
+        );
+        assert_eq!(std::fs::read(&success).expect("prepared bytes"), b"before");
+        let stage = run(prepared, &home, &AtomicBool::new(false)).expect("admitted stage");
+        assert_eq!(
+            std::fs::read(&success).expect("unchanged until publish"),
+            b"before"
+        );
+        let admitted = std::fs::metadata(&success).expect("post-admission metadata");
+        assert_eq!(
+            (
+                before.dev(),
+                before.ino(),
+                before.mode(),
+                before.uid(),
+                before.gid(),
+                before.size(),
+                before.mtime(),
+                before.mtime_nsec()
+            ),
+            (
+                admitted.dev(),
+                admitted.ino(),
+                admitted.mode(),
+                admitted.uid(),
+                admitted.gid(),
+                admitted.size(),
+                admitted.mtime(),
+                admitted.mtime_nsec()
+            )
+        );
+        // Overlay copy-up may change ctime; it is intentionally not asserted equal.
+
+        publish_staged_existing(stage, None, &AtomicBool::new(false)).expect("publish");
+        assert_eq!(std::fs::read(&success).expect("published bytes"), b"after");
+        let append_path = root.join("append");
+        let mut append = prepare(&append_path);
+        append.operation = WriteOperation::Append;
+        append.snapshot =
+            CurrentProfile::capture_existing(&append.source, &append.path, append.operation)
+                .expect("append prepare");
+        let append_stage = stage_existing(
+            append,
+            &home,
+            b"before",
+            b"before+append",
+            "34343434343434343434343434343434",
+            None,
+            &AtomicBool::new(false),
+        )
+        .expect("append admission");
+        publish_staged_existing(append_stage, None, &AtomicBool::new(false))
+            .expect("append publish");
+        assert_eq!(
+            std::fs::read(append_path).expect("append bytes"),
+            b"before+append"
+        );
+        for (name, hook) in [
+            ("cancel", "after-admission-cancel"),
+            ("error", "after-admission-error"),
+        ] {
+            let path = root.join(name);
+            let prepared = prepare(&path);
+            crate::test_hooks::inject_failure(Some(hook));
+            let result = run(prepared, &home, &AtomicBool::new(false));
+            crate::test_hooks::inject_failure(None);
+            assert!(matches!(
+                (name, result),
+                ("cancel", Err(NativeFailure::Cancelled))
+                    | ("error", Err(NativeFailure::Unsupported))
+            ));
+            assert_eq!(std::fs::read(path).expect("unchanged target"), b"before");
+        }
+        for name in [
+            "changed-bytes",
+            "changed-mode",
+            "changed-mtime",
+            "changed-identity",
+            "changed-xattr",
+            "changed-nlink",
+            "changed-ctime",
+        ] {
+            let path = root.join(name);
+            let prepared = prepare(&path);
+            match name {
+                "changed-bytes" => std::fs::write(&path, b"other!").expect("change bytes"),
+                "changed-mode" => {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+                        .expect("change mode")
+                }
+                "changed-xattr" => {
+                    let name = std::ffi::CString::new("user.relavium.changed").expect("name");
+                    assert_eq!(
+                        unsafe {
+                            libc::fsetxattr(
+                                prepared.source.as_raw_fd(),
+                                name.as_ptr(),
+                                b"changed".as_ptr().cast(),
+                                7,
+                                0,
+                            )
+                        },
+                        0
+                    );
+                }
+                "changed-nlink" => {
+                    std::fs::hard_link(&path, root.join("extra-link")).expect("hardlink")
+                }
+                "changed-ctime" => assert_eq!(
+                    unsafe { libc::fchmod(prepared.source.as_raw_fd(), 0o600) },
+                    0
+                ),
+                "changed-mtime" => {
+                    use std::os::fd::AsRawFd;
+                    let times = [
+                        libc::timespec {
+                            tv_sec: 1,
+                            tv_nsec: 0,
+                        },
+                        libc::timespec {
+                            tv_sec: 1,
+                            tv_nsec: 1,
+                        },
+                    ];
+                    assert_eq!(
+                        unsafe { libc::futimens(prepared.source.as_raw_fd(), times.as_ptr()) },
+                        0
+                    );
+                }
+                _ => {
+                    std::fs::rename(&path, root.join("moved-identity")).expect("move original");
+                    std::fs::write(&path, b"before").expect("replacement");
+                }
+            }
+            assert!(run(prepared, &home, &AtomicBool::new(false)).is_err());
+        }
+        unavailable_query_refuses();
+        killed_after_write_open(&root, &home);
+        std::fs::remove_dir_all(home.parent().expect("fixture root")).expect("cleanup home");
     }
 }

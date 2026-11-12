@@ -1,7 +1,7 @@
 import { render } from 'ink';
 import { createSuspendPort, type SuspendPort } from '../suspend.js';
 import type { ClipboardWriter } from '../clipboard.js';
-import { toolReviewIdentity } from './tool-review-view.js';
+import { ToolReviewHost, toolReviewIdentity } from './tool-review-view.js';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolPreview } from '@relavium/core';
@@ -566,4 +566,59 @@ describe.each(['chat', 'home'] as const)('flushed review custody %s', (host) => 
     });
     expect(await second).toEqual({ outcome: 'reject' });
   });
+});
+
+it('acknowledges approvals and denials from the replacement store after reseat', async () => {
+  const input = new OwnedTtyInput(),
+    output = new OwnedTtyOutput(),
+    stderr = new OwnedTtyOutput();
+  output.columns = 80;
+  output.rows = 24;
+  const first = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND),
+    second = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND),
+    third = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+  const tree = (store: typeof first) =>
+    createElement(ToolReviewHost, {
+      store,
+      size: { cols: 80, rows: 24 },
+      hasCustody: () => true,
+    });
+  const instance = render(tree(first), {
+    stdin: input,
+    stdout: output,
+    stderr,
+    interactive: true,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  });
+  cleanups.push(() => {
+    for (const store of [first, second, third]) store.sealToolPreviews();
+    instance.unmount();
+    input.destroy();
+    output.destroy();
+    stderr.destroy();
+  });
+  for (const [store, key, outcome] of [
+    [first, 'y', 'approve'],
+    [second, 'y', 'approve'],
+    [third, 'n', 'reject'],
+  ] as const) {
+    instance.rerender(tree(store));
+    let answered: string | undefined;
+    const answer = store
+      .requestApproval(request, false, undefined, {
+        callId: 'call',
+        preview: { kind: 'saved-result', target: 'safe.txt', fields: [] },
+      })
+      .then((value) => {
+        answered = value.outcome;
+        return value;
+      });
+    await vi.waitFor(() => {
+      store.handleReviewInput(key, {});
+      expect(answered).toBe(outcome);
+    });
+    expect((await answer).outcome).toBe(outcome);
+    expect(first.getSnapshot().approval).toBeUndefined();
+  }
 });

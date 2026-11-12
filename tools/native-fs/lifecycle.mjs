@@ -269,7 +269,7 @@ export async function runLifecycle(binary) {
     const retired = join(shared, 'fs-staging-v1');
     mkdirSync(retired);
     await assert.rejects(addon.recoverMetadataStaging(context.home, context.token), {
-      message: 'filesystem staging operator recovery required',
+      message: 'RELAVIUM_NATIVE_WRITE:legacy_recovery_required:not_needed',
     });
     assert.equal(existsSync(join(context.home, '.relavium-fs-private-v1')), false);
     assert.deepEqual(readdirSync(retired), []);

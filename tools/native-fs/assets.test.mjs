@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import {
+  captureNativeInputs,
   copyNativeAssets,
   inspectNativeAssets,
   nativeSourceBinding,
@@ -505,16 +506,36 @@ test('synthetic Windows same-owner receipts cannot pass CI certification or comp
     asset.validation.genuineOwnerContext = 'same';
     const inputs = join(value.root, 'native-producer-fixtures');
     mkdirSync(inputs);
-    for (const entry of value.manifest.assets)
+    const environment = {
+      ...process.env,
+      GITHUB_RUN_ID: '123',
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_SHA: 'a'.repeat(40),
+    };
+    for (const entry of value.manifest.assets) {
+      const directory = join(inputs, `native-fs-123-1-${entry.target}`);
+      mkdirSync(directory);
+      writeFileSync(
+        join(directory, 'delivery.json'),
+        JSON.stringify({
+          version: 1,
+          runId: '123',
+          attempt: '1',
+          sourceSha: environment.GITHUB_SHA,
+          target: entry.target,
+        }),
+      );
       writeNativeAssets(
-        join(inputs, entry.target),
+        join(directory, 'assets'),
         { ...value.manifest, scope: 'development-current', assets: [entry] },
         filesFor(entry.target),
       );
+    }
     const assembly = spawnSync(
       process.execPath,
       [join(value.root, 'tools/native-fs/assemble.mjs'), inputs],
       {
+        env: environment,
         encoding: 'utf8',
         timeout: 10_000,
       },
@@ -526,7 +547,7 @@ test('synthetic Windows same-owner receipts cannot pass CI certification or comp
     refusal(() => validateNativeManifest(value.manifest), 'PROFILE_EVIDENCE');
     asset.validation.genuineOwnerContext = 'distinct';
     writeNativeAssets(
-      join(inputs, target),
+      join(inputs, `native-fs-123-1-${target}`, 'assets'),
       { ...value.manifest, scope: 'development-current', assets: [asset] },
       filesFor(target),
     );
@@ -534,6 +555,7 @@ test('synthetic Windows same-owner receipts cannot pass CI certification or comp
       process.execPath,
       [join(value.root, 'tools/native-fs/assemble.mjs'), inputs],
       {
+        env: environment,
         encoding: 'utf8',
         timeout: 10_000,
       },
@@ -548,5 +570,68 @@ test('synthetic Windows same-owner receipts cannot pass CI certification or comp
       (entry) => entry.execution.platform === 'win32',
     ))
       assert.equal(win.validation.genuineOwnerContext, 'distinct');
+  }
+});
+
+test('format and CPU mismatch refuse even when an altered binary matches its declared digest and length', () => {
+  const value = fixture();
+  for (const target of NATIVE_TARGETS) {
+    const wrong = target.startsWith('aarch64')
+      ? target.replace('aarch64', 'x86_64')
+      : target.replace('x86_64', 'aarch64');
+    const bytes = value.files.get(`${wrong}.node`);
+    const original = value.files.get(`${target}.node`);
+    assert.equal(bytes.length, original.length);
+    const manifest = JSON.parse(JSON.stringify(value.manifest));
+    manifest.assets.find((asset) => asset.target === target).sha256 = sha256(bytes);
+    writeFileSync(join(value.directory, `${target}.node`), bytes);
+    writeFileSync(join(value.directory, 'native-assets.json'), JSON.stringify(manifest));
+    refusal(() => inspectNativeAssets(value.directory), 'BINARY_TARGET');
+    writeFileSync(join(value.directory, `${target}.node`), original);
+  }
+});
+
+test('same-length Cargo.lock tampering changes lock and source digests and refuses previously bound assets', () => {
+  const value = fixture();
+  const before = captureNativeInputs(value.root);
+  const path = join(value.root, 'apps/cli/native/fs-metadata/Cargo.lock');
+  const bytes = readFileSync(path);
+  bytes[0] ^= 1;
+  writeFileSync(path, bytes);
+  const after = captureNativeInputs(value.root);
+  assert.deepEqual(
+    after.files.map((file) => file.bytes),
+    before.files.map((file) => file.bytes),
+  );
+  assert.notEqual(after.binding.lockSha256, before.binding.lockSha256);
+  assert.notEqual(after.binding.sourceSha256, before.binding.sourceSha256);
+  assert.equal(after.binding.buildSha256, before.binding.buildSha256);
+  refusal(() => copyNativeAssets({ repository: value.root, complete: true }), 'SOURCE_BINDING');
+});
+
+test('source capture refuses invalid names, linked source, excessive population/bytes and a changed toolchain', () => {
+  for (const [mutate, code] of [
+    [(root) => writeFileSync(join(root, 'src/Unexpected.rs'), ''), 'SOURCE_NAME'],
+    [(root) => symlinkSync(join(root, 'Cargo.lock'), join(root, 'src/linked.rs')), 'SOURCE_KIND'],
+    [
+      (root) => writeFileSync(join(root, 'src/large.rs'), 'x'.repeat(1024 * 1024 + 1)),
+      'UNREADABLE',
+    ],
+    [
+      (root) => {
+        for (let index = 0; index < 124; index++)
+          writeFileSync(join(root, `src/source_${index}.rs`), '');
+      },
+      'SOURCE_BOUND',
+    ],
+    [
+      (root) =>
+        writeFileSync(join(root, 'rust-toolchain.toml'), '[toolchain]\nchannel = "stable"\n'),
+      'TOOLCHAIN',
+    ],
+  ]) {
+    const value = fixture();
+    mutate(join(value.root, 'apps/cli/native/fs-metadata'));
+    refusal(() => captureNativeInputs(value.root), code);
   }
 });

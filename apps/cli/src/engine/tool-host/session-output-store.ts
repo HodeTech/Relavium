@@ -8,6 +8,7 @@ import { constants, lstatSync, realpathSync, type BigIntStats } from 'node:fs';
 import { mkdir, open, opendir, rename, rmdir, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
+import { DEFAULT_TOOL_RESULT_LIMITS } from '@relavium/core';
 import type {
   FileRead,
   FsReadOpts,
@@ -52,6 +53,7 @@ type StoreReason =
   | 'unsafe_path'
   | 'invalid_range'
   | 'invalid_text'
+  | 'range_required'
   | 'io'
   | 'cleanup'
   | 'aborted';
@@ -65,7 +67,11 @@ export class SessionOutputStoreError extends HostCapabilityError {
     /** An initializer or spill could not prove complete rollback; no native cause/path is retained. */
     cleanupUncertain = false,
   ) {
-    super(`session output store: ${reason}`);
+    super(
+      reason === 'range_required'
+        ? 'session output store: range_required; read this output with an explicit line or byte range'
+        : `session output store: ${reason}`,
+    );
     this.reason = reason;
     this.cleanupUncertain = cleanupUncertain;
   }
@@ -552,6 +558,7 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
   }
   async function write(text: string, signal?: AbortSignalLike): Promise<SpilledResult> {
     abort(signal);
+    if (text.includes('\0')) fail('invalid_text');
     const length = Buffer.byteLength(text, 'utf8');
     if (
       length > limits.fileBytes ||
@@ -673,12 +680,23 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
         options.testHooks?.beforeReadChunk,
       );
       abort(signal);
-      return {
+      const output: FileRead = {
         ...slice(result.bytes, opts),
         mimeType: 'text/plain',
         sizeBytes: Number(result.info.size),
         lastModified: new Date(Number(result.info.mtimeMs)).toISOString(),
       };
+      if (opts.range === undefined) {
+        // Measure the complete plain FileRead envelope, including JSON escaping, before
+        // returning a value that the registry would otherwise spill into another artifact.
+        const serialized = JSON.stringify(output);
+        if (
+          Buffer.byteLength(serialized, 'utf8') > DEFAULT_TOOL_RESULT_LIMITS.maxBytes ||
+          serialized.split('\n').length > DEFAULT_TOOL_RESULT_LIMITS.maxLines
+        )
+          fail('range_required');
+      }
+      return output;
     } catch (error) {
       abort(signal);
       throw normalize(error);

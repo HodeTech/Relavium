@@ -760,6 +760,7 @@ async function chatCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          onEffectAttention: (note) => emitLiveNotice(deps.io, note),
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
         });
@@ -1259,6 +1260,7 @@ async function chatResumeCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          onEffectAttention: (note) => emitLiveNotice(deps.io, note),
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
         });
@@ -2215,6 +2217,7 @@ interface FreshChatWiringDeps {
   /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
    *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
   readonly onListenerError: NonNullable<BuildChatSessionOptions['onListenerError']>;
   readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
@@ -2268,6 +2271,7 @@ async function buildFreshChatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,
     });
@@ -2426,6 +2430,7 @@ function createClearRebuild(params: {
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
     onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
+    onEffectAttention: (note) => emitLiveNotice(params.io, note),
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
@@ -2537,6 +2542,7 @@ interface ReseatWiringDeps {
   /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
    *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
   readonly onListenerError: NonNullable<BuildChatSessionOptions['onListenerError']>;
   readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
@@ -2622,6 +2628,7 @@ async function buildReseatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,
     });
@@ -2757,6 +2764,7 @@ function createReseatRebuild(params: {
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
     onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
+    onEffectAttention: (note) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId, target, carriedTranscript) =>
