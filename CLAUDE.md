@@ -56,7 +56,7 @@ See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authorin
 MVP-3's three steps are implemented and independently accepted on `development`:
 editing/search tools, trustworthy approval previews and tool-call rendering v2,
 native metadata preservation, the built-in editing grant and startup-mode settings.
-The final Step 3 source is `f6b61474`; Sonar corrections through `9f7811ae` pass
+The final Step 3 source is `f6b61474`; Sonar corrections through `3240fb88` pass
 18,543 workspace tests and 1,093 acceptance-tool cases, with two fresh clean
 review rounds and a separate security sitting. All 207 baseline reports have
 source actions or verified remote dispositions. The earlier `4e337553` checkpoint

@@ -35,7 +35,7 @@ review corrections, separate security sittings and passing combined CI
 ([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)).
 MVP-3's three steps are implemented and independently accepted on `development`,
 with clean cumulative reviews and separate security sittings. Sonar remediation
-through `9f7811ae` passes 18,543 workspace tests and 1,093 acceptance-tool cases,
+through `3240fb88` passes 18,543 workspace tests and 1,093 acceptance-tool cases,
 with two fresh clean review rounds and a separate security sitting. All 207
 baseline Sonar reports have source actions or verified remote dispositions;
 PR #99 requires final-head scanner/platform checks and maintainer review. The

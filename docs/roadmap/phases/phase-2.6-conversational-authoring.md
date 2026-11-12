@@ -3218,13 +3218,51 @@ second Terra/high complete cumulative and Sol/high CLI/UX/disposition reviews
 also report no finding. Sol independently passes 128 focused cases and compares
 135 documents, 53,258 pages, 466,560 key actions and 121 line-diff pairs against
 the baseline with exact equality. Both rounds and the separate security sitting
-review the same `9f7811ae` implementation; no corrective source follows them.
+bind the `9f7811ae` implementation before the scanner follow-up below.
 
 No runtime/Cargo dependency, public package contract, accepted architectural
 decision or release permission changes. Work stays on `development`; maintainer
 review and merge remain separate. The latest scanner and combined platform
 results are owned by [PR #99's checks](https://github.com/HodeTech/Relavium/pull/99/checks),
 which must match its final head before merge; local checks do not certify them.
+
+#### Fresh analysis correction receipt
+
+The fresh analysis explicitly binds `372e5488` and automatically marks every one
+of the 131 source-correction keys FIXED. Twelve obsolete contextual records also
+close as the code moves. Six new records are checked against their actual new
+sites: two string-inventory sorts receive independently verified False Positive
+transitions, and two ordered parent-validation/orphan-sweep awaits receive
+independently verified Accepted transitions. Their underlying canonical ordering,
+cancellation, custody and resource limits remain intentional.
+
+`3240fb88` fixes the other two records: a redundant zero assignment in line-range
+selection is removed, and the pure Windows probe buffer-size calculation is
+extracted from its remaining over-threshold test helper. The allocation, pointer
+writes, I/O status block and pending syscall lifetime remain together in the
+original attempt. This changes no registered parent, 60+8 rename rows, twelve
+security measurements, syscall parameter or production Windows publication.
+
+Full workspace verification is repeated successfully: 18,543 passing cases,
+24 conditional skips, lint/typecheck and six builds. The focused filesystem
+cohort passes 98 cases, the actual macOS profile again passes all 35 parents and
+eleven lifecycle cases, and pinned Windows test cross-compilation passes without
+claiming Windows execution. A new Sol/high complete cumulative review examines
+all 45 changed files through `3240fb88`, reports no finding and independently
+passes 99 cases without skips. A new Terra/high focused corrective security
+sitting reports no finding after verifying exact read bounds, ABI size formulas,
+types, held buffers and the unchanged pending-operation handling; it runs no
+independent test suite and does not recertify unrelated code.
+
+Final native source SHA-256 is
+`7937e1ab3698eaadc6068fc86daf76cfd904d24dd76156fed9d909f3cdf53d47`;
+reviewed recipe and loader bindings remain
+`1209fc99aff264a3ea04afc1ec0fbef4a95a683d2e8e54df57ef6b163c0ba198` and
+`e7edb7aeb59fdd61fd933dade7d05eae852db6a69b8dff97590a94119e74040a`.
+The two `372e5488` CI attempts are superseded and cancelled rather than counted
+as passing combined evidence. The corrected final PR head must obtain its own
+complete scanner/platform checks. No finding is manually marked fixed; source
+closure remains a fresh-analysis result.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 
