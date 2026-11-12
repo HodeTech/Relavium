@@ -79,7 +79,7 @@ function fixture(yieldControl?: () => Promise<void>) {
     name: 'edit_file',
     args: { path: 'a', old_string: 'old', new_string: 'new' },
   } as const;
-  return { execute, release, prepareWrite, registry, call };
+  return { execute, release, prepareWrite, registry, call, fs };
 }
 function port(overrides: Partial<EffectDispatchPort> = {}): EffectDispatchPort {
   return {
@@ -914,4 +914,73 @@ describe.each(WRITE_VARIANTS)('ADR-0125 $name dispatch', (variant) => {
     expect(journal.rows()).toEqual([]);
     expect(f.execute).not.toHaveBeenCalled();
   });
+});
+
+it('preserves cancellation when failed preparation cleanup also rejects', async () => {
+  const controller = createAbortController();
+  const f = fixture(() => {
+    controller.abort();
+    return Promise.resolve();
+  });
+  f.prepareWrite.mockResolvedValue({
+    path: 'a',
+    before: 'a\n'.repeat(5000),
+    after: 'b\n'.repeat(5000),
+    execute: f.execute,
+    release: () => Promise.reject(new Error('private cleanup detail')),
+  });
+  const effects = port();
+  await expect(
+    f.registry.dispatch(f.call, context({ effects, signal: controller.signal })),
+  ).rejects.toMatchObject({ code: 'cancelled' });
+  expect(effects.prepare).not.toHaveBeenCalled();
+  expect(f.execute).not.toHaveBeenCalled();
+});
+
+it('preserves the preparation cancellation itself when release rejects', async () => {
+  const controller = createAbortController();
+  controller.abort();
+  const f = fixture();
+  const release = vi.fn(() => Promise.reject(new Error('private cleanup detail')));
+  f.prepareWrite.mockResolvedValue({
+    path: 'a',
+    before: null,
+    after: 'new',
+    execute: f.execute,
+    release,
+  });
+  const tool = BUILTIN_TOOLS.find((entry) => entry.id === 'write_file');
+  if (tool?.prepare === undefined) throw new Error('missing write preparation');
+  await expect(
+    tool.prepare(
+      { path: 'a', content: 'new' },
+      { fs: f.fs },
+      context({ signal: controller.signal }),
+    ),
+  ).rejects.toMatchObject({ code: 'cancelled' });
+  expect(release).toHaveBeenCalledOnce();
+  expect(f.execute).not.toHaveBeenCalled();
+});
+
+it('replays exact retained mapping with an own prototype-named key', async () => {
+  const f = fixture();
+  const mapping = { ['__proto__']: 'ignored', selected: 'bytesWritten' };
+  const effects = port({
+    inspectReplay: () => Promise.resolve({ outcome: 'replay', result: retained(mapping) }),
+  });
+  const out = await f.registry.dispatch(
+    f.call,
+    context({ effects, config: { outputMapping: mapping } }),
+  );
+  expect(out.output).toBeUndefined();
+  expect(f.prepareWrite).not.toHaveBeenCalled();
+  await expect(
+    f.registry.dispatch(
+      f.call,
+      context({
+        effects,
+        config: { outputMapping: { ...mapping, ['__proto__']: 'changed' } },
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'effect_conflict' });
 });

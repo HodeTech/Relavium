@@ -1079,6 +1079,14 @@ function projectInput(
   purpose: 'display' | 'journal',
 ): { readonly input: Readonly<Record<string, unknown>>; readonly unsettled: readonly string[] } {
   const out: Record<string, unknown> = { ...effective };
+  if (
+    purpose === 'display' &&
+    def.source === 'builtin' &&
+    def.id === 'read_file' &&
+    typeof out['path'] === 'string' &&
+    out['path'].startsWith('output://')
+  )
+    delete out['path'];
   for (const key of def.configOnlyParams ?? []) {
     delete out[key];
   }

@@ -2745,8 +2745,10 @@ class RunExecution {
    *
    * A blanket "refuse a stale write" here would resurrect the exact defect `PR83-04` fixed — a row stuck
    * `prepared` forever, swept by nothing, reported as `needs_attention` for an effect that actually
-   * completed. So the three methods split:
+   * completed. So the methods split:
    *
+   * - `inspectReplay` is **refused** before and after inspection once the dispatch is stale; retained
+   *   results must not escape into an abandoned dispatch.
    * - `prepare` is **refused**. The effect has not left the process, and refusing it is the whole point: a
    *   dispatch the grace window abandoned must not start new external work.
    * - `settle` is **allowed**. The effect already left under a valid claim; refusing its receipt would leave

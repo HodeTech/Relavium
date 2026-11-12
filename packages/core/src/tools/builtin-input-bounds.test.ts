@@ -66,13 +66,12 @@ describe('built-in executable UTF-8 input admission', () => {
     it(`[CHEAP-STRING] ${id}.${field} rejects impossible UTF-16 length before byte scanning`, () => {
       const byteLength = vi.mocked(utf8ByteLength);
       byteLength.mockClear();
-      expect(() => tool(id).parseArgs({ ...base, [field]: 'a'.repeat(cap + 1) })).toThrow(
-        z.ZodError,
-      );
+      const oversized = 'a'.repeat(cap + 1);
+      expect(() => tool(id).parseArgs({ ...base, [field]: oversized })).toThrow(z.ZodError);
       expect(
-        byteLength,
-        'cheap character lower bound must precede byte measurement',
-      ).not.toHaveBeenCalled();
+        byteLength.mock.calls.some(([value]) => value === oversized),
+        'cheap character lower bound must precede byte measurement of the oversized value',
+      ).toBe(false);
     });
 
     it(`[REAL-BYTES] ${id}.${field} measures plausible multibyte overflow and exact cap`, () => {

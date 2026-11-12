@@ -170,3 +170,60 @@ describe('bounded file tools at the actual registry boundary', () => {
     expect(releaseReadScope).toHaveBeenCalledExactlyOnceWith(scope);
   });
 });
+
+it('keeps opaque output references out of built-in read display projections', async () => {
+  const ref = 'output://session/private';
+  const readFile = vi.fn<FsCapability['readFile']>(() => Promise.resolve(source));
+  const events: unknown[] = [];
+  const registry = createToolRegistry({
+    tools: BUILTIN_TOOLS,
+    host: { fs: filesystem({ readFile }) },
+  });
+  const result = await registry.dispatch(
+    { type: 'tool_call', id: 'r', name: 'read_file', args: { path: ref } },
+    context({ onToolLiveEvent: (event) => events.push(event) }),
+  );
+  expect(readFile).toHaveBeenCalledWith(ref, { glob: undefined, range: undefined }, undefined);
+  expect(JSON.stringify(events)).not.toContain(ref);
+  expect(JSON.stringify(result.events.call.toolInput)).not.toContain(ref);
+});
+
+it('keeps filesystem paths and same-named non-builtin tool inputs visible', async () => {
+  const ref = 'output://session/private';
+  const builtin = BUILTIN_TOOLS.find((tool) => tool.id === 'read_file');
+  if (builtin === undefined) throw new Error('missing read_file');
+  const events: unknown[] = [];
+  const host = { fs: filesystem() };
+  const ordinary = createToolRegistry({ tools: [builtin], host });
+  const result = await ordinary.dispatch(
+    { type: 'tool_call', id: 'r', name: 'read_file', args: { path: 'file.txt' } },
+    context({ onToolLiveEvent: (event) => events.push(event) }),
+  );
+  expect(JSON.stringify(events)).toContain('file.txt');
+  expect(result.events.call.toolInput['path']).toBe('file.txt');
+  const other = createToolRegistry({ tools: [{ ...builtin, source: 'mcp' }], host });
+  const otherResult = await other.dispatch(
+    { type: 'tool_call', id: 'r', name: 'read_file', args: { path: ref } },
+    context(),
+  );
+  expect(otherResult.events.call.toolInput['path']).toBe(ref);
+});
+
+it('bounds write, edit and list path and glob in UTF-8 bytes', () => {
+  const cases = [
+    { id: 'write_file', args: { path: 'a', content: '' } },
+    { id: 'edit_file', args: { path: 'a', old_string: 'x', new_string: '' } },
+    { id: 'list_directory', args: { path: 'a', glob: '' } },
+  ];
+  for (const { id, args } of cases) {
+    const tool = BUILTIN_TOOLS.find((entry) => entry.id === id);
+    if (tool === undefined) throw new Error('missing tool');
+    expect(() => tool.parseArgs({ ...args, path: 'é'.repeat(2048) })).not.toThrow();
+    expect(() => tool.parseArgs({ ...args, path: 'é'.repeat(2048) + 'x' })).toThrow();
+    if (id === 'list_directory') {
+      expect(() => tool.parseArgs(args)).not.toThrow();
+      expect(() => tool.parseArgs({ ...args, glob: 'é'.repeat(2048) })).not.toThrow();
+      expect(() => tool.parseArgs({ ...args, glob: 'é'.repeat(2048) + 'x' })).toThrow();
+    }
+  }
+});

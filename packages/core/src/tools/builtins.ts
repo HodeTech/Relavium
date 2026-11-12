@@ -269,7 +269,11 @@ const readRange = z
 
 const readFileTool = defineBuiltin({
   id: 'read_file',
-  preview: (args) => ({ kind: 'operation', target: args.path, fields: [] }),
+  preview: (args) => ({
+    kind: 'operation',
+    ...(args.path.startsWith('output://') ? {} : { target: args.path }),
+    fields: [],
+  }),
   description:
     'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing.',
   args: z
@@ -490,7 +494,15 @@ async function prepareFile(
     if (error instanceof DiffLimitError) throw new ToolPreparationError('diff_limit');
     throw error;
   } finally {
-    if (!retained) await prepared.release();
+    if (!retained) {
+      // Preparation has already failed. Preserve that primary refusal or cancellation;
+      // the host retains responsibility for any uncertain cleanup.
+      try {
+        await prepared.release();
+      } catch {
+        // Cleanup failure cannot replace the primary error.
+      }
+    }
   }
 }
 
@@ -499,7 +511,7 @@ const writeFileTool = defineBuiltin({
   description: 'Write or append content to a file, within the allowed FS scope only.',
   args: z
     .object({
-      path: z.string().min(1),
+      path: utf8String(4096, 1),
       content: utf8String(WRITE_CONTENT_MAX_BYTES),
       append: z.boolean().optional(),
       createDirs: z.boolean().optional(),
@@ -560,7 +572,7 @@ const editFileTool = defineBuiltin({
     'Replace exact text in a previously observed unchanged UTF-8 text file; binary files refuse. Re-read or narrow the match after a preparation refusal.',
   args: z
     .object({
-      path: z.string().min(1),
+      path: utf8String(4096, 1),
       old_string: utf8String(WRITE_CONTENT_MAX_BYTES, 1),
       new_string: utf8String(WRITE_CONTENT_MAX_BYTES),
       replace_all: z.boolean().optional(),
@@ -620,9 +632,9 @@ const listDirectoryTool = defineBuiltin({
     'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries: truncated/incomplete results state the entry limit and an unknown omitted-entry count explicitly.',
   args: z
     .object({
-      path: z.string().min(1),
+      path: utf8String(4096, 1),
       recursive: z.boolean().optional(),
-      glob: z.string().optional(),
+      glob: utf8String(4096).optional(),
     })
     .strict(),
   llmVisibleParams: {

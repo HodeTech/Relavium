@@ -196,6 +196,64 @@ function backtrack(
   return reversed;
 }
 
+async function boundedOperations(
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  options: DiffOptions,
+): Promise<LineDiffOperation[]> {
+  const operations: LineDiffOperation[] = [];
+  let work = 0;
+  const tick = (): boolean => ++work % 4096 === 0;
+  const yieldWork = async (): Promise<void> => {
+    options.checkCancelled?.();
+    await options.yield?.();
+    options.checkCancelled?.();
+  };
+  let prefix = 0;
+  while (prefix < old.length && prefix < next.length && same(old[prefix]!, next[prefix]!)) {
+    prefix++;
+    if (tick()) await yieldWork();
+  }
+  let oldEnd = old.length;
+  let nextEnd = next.length;
+  while (oldEnd > prefix && nextEnd > prefix && same(old[oldEnd - 1]!, next[nextEnd - 1]!)) {
+    oldEnd--;
+    nextEnd--;
+    if (tick()) await yieldWork();
+  }
+  const add = (operation: LineDiffOperation): void => {
+    if (operations.length >= MAX_OPERATIONS) throw new DiffLimitError();
+    operations.push(operation);
+  };
+  for (let i = 0; i < prefix; i++) {
+    add({ kind: 'equal', before: old[i]!, after: next[i]! });
+    if (tick()) await yieldWork();
+  }
+  const middleOld = old.slice(prefix, oldEnd);
+  const middleNext = next.slice(prefix, nextEnd);
+  if (middleOld.length === 0 || middleNext.length === 0) {
+    for (const line of middleOld) {
+      add({ kind: 'delete', before: line });
+      if (tick()) await yieldWork();
+    }
+    for (const line of middleNext) {
+      add({ kind: 'insert', after: line });
+      if (tick()) await yieldWork();
+    }
+  } else {
+    const { trace, distance } = await shortestPath(middleOld, middleNext, options);
+    for (const operation of backtrack(middleOld, middleNext, trace, distance)) {
+      add(operation);
+      if (tick()) await yieldWork();
+    }
+  }
+  for (let i = 0; i < old.length - oldEnd; i++) {
+    add({ kind: 'equal', before: old[oldEnd + i]!, after: next[nextEnd + i]! });
+    if (tick()) await yieldWork();
+  }
+  return operations;
+}
+
 /** Bounded Myers shortest edit script. Refusal never returns a partial review. */
 export async function diffLines(
   before: string | null,
@@ -208,8 +266,16 @@ export async function diffLines(
   if (beforeBytes > MAX_BYTES || afterBytes > MAX_BYTES) throw new DiffLimitError();
   const old = lines(before ?? '');
   const next = lines(after);
-  const { trace, distance } = await shortestPath(old, next, options);
-  const operations = backtrack(old, next, trace, distance);
+  let operations: LineDiffOperation[];
+  // Small diffs retain the established Myers tie choices. Large inputs use one
+  // trimmed frontier; matching context and output passes are separately bounded
+  // by MAX_LINES and MAX_OPERATIONS and do not reset the frontier budget.
+  if (old.length === 0 || next.length === 0 || old.length + next.length >= 1414) {
+    operations = await boundedOperations(old, next, options);
+  } else {
+    const { trace, distance } = await shortestPath(old, next, options);
+    operations = backtrack(old, next, trace, distance);
+  }
   let addedLines = 0;
   let removedLines = 0;
   for (const operation of operations) {
