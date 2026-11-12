@@ -1828,7 +1828,7 @@ export const mutations = [
     '      options.runtime.authority.revoke();',
     '      void mode;',
     ['apps/cli/src/chat/mode-settings.test.ts'],
-    23,
+    25,
     'confirmed narrowing revokes before failed prepare and does not leak the error',
     'W2_STARTUP_CONFIRMED_NARROWING',
     [
@@ -1844,7 +1844,7 @@ export const mutations = [
     '    if (expectedRevision !== this.revision) return false;',
     '    void expectedRevision;',
     ['apps/cli/src/chat/mode-settings.test.ts'],
-    23,
+    25,
     'a later narrower config observation wins over a pending successful auto publication',
     'W2_STARTUP_STALE_AUTO_ADMISSION',
     [
@@ -1903,7 +1903,7 @@ export const mutations = [
     "  observer?.observed(existing.preferences?.default_mode ?? 'ask');\n",
     '',
     ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
-    46,
+    48,
     "'model preferences' source 'ask'",
     'W2_STARTUP_WRITER_MODE_OBSERVATION',
     [
@@ -1933,7 +1933,7 @@ export const mutations = [
     '    observer?.failed();\n',
     '',
     ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
-    46,
+    48,
     "'model preferences' source 'invalid'",
     'W2_STARTUP_WRITER_READ_FAILURE',
     [

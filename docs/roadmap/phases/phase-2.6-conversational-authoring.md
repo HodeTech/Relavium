@@ -3264,6 +3264,23 @@ as passing combined evidence. The corrected final PR head must obtain its own
 complete scanner/platform checks. No finding is manually marked fixed; source
 closure remains a fresh-analysis result.
 
+#### Causal inventory correction receipt
+
+The `f13c6a1b` PR run correctly refuses the secrets matrix with `Declared
+workload drift`: the two Sonar prompt-boundary regressions extend the complete
+mode-settings file from 23 to 25 cases. Four declarations had retained the old
+counts. The two picker-only controls now require 25 cases and the two combined
+writer/picker controls require 48; the writer-only cohort remains 23.
+
+All four affected controls pass fresh physical fixed/removal/restored runs with
+the complete 25/48-case inventories, their existing named negative witnesses,
+exact restoration and unchanged developer sources. These selected diagnostic
+runs retain `complete: false`; they do not substitute for the complete CI family.
+All 1,093 acceptance-tool cases pass without skips. No test selection, assertion,
+mutation, witness, timeout, evidence bound or runtime source changes. The failed
+PR run and superseded push retry remain historical evidence; the corrected head
+must pass fresh complete scanner/platform checks before merge.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

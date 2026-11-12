@@ -11,7 +11,7 @@ passed. Actual fixed/removal/restored results belong to the coordinator's summar
 Four MVP-3 controls additionally remove the repository `auto` exclusion, the
 captured-turn final dispatch admission, immediate confirmed-default narrowing,
 and the revision check on a delayed successful auto save. Their complete files
-contain 16 schema, five actual session dispatch, and 23 picker cases. Eight named
+contain 16 schema, five actual session dispatch, and 25 picker cases. Eight named
 witnesses require repository refusal, all three revocation races, both failed
 save phases and both later configuration observations. Positive explicit-current
 auto and unchanged admitted-auto dispatch remain in the same cohort. No test
@@ -30,7 +30,9 @@ from the original validated layers instead of reopening configuration files.
 Three writer controls independently remove validated mode observation, source
 load failure reporting, and pre-load source inspection failure reporting. Their
 complete writer cohort has 23 cases across five closed setters; mode/load
-controls also execute all 23 picker cases. Twelve named mode witnesses cover
+controls also execute all 25 picker cases, including the two prompt-boundary
+cancellation and ownership-loss regressions added during Sonar remediation.
+Their combined writer/picker workload is 48 cases. Twelve named mode witnesses cover
 ask/absent sources and two changed-after-confirmation modes. Seven source-load
 witnesses cover five invalid sources, a directory and a picker validation failure;
 the separate inspection witness covers an `ENOTDIR` parent. The unchanged-auto,
