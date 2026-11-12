@@ -2573,6 +2573,40 @@ workspace lint/typecheck/build/format tasks pass; Windows test code compiles.
 The remaining Windows parents, Node lifecycle, combined CI and consumers still
 require actual execution; Step 2 acceptance remains open.
 
+**First complete native matrix and combined integration findings:**
+`c6cbb295` [CI run 43172318349](https://github.com/HodeTech/Relavium/actions/runs/43172318349)
+passes all eight native targets, both Windows twenty-parent/eleven-Node
+populations, the exact packed producer, product-map and wire/usage controls.
+This is not combined Step 2 acceptance. Four filesystem/secrets legs stop
+before their causal cohorts at a new delivery fixture's dependence on missing
+workspace `dist` exports. The fixture now resolves only three exact curated
+source exports; a source-only metafile assertion and cold/warm unaliased
+negative prevent generated local output from concealing that dependency.
+
+Windows replay workers also received a drive-letter path as an ESM `--import`;
+use its file URL, keeping all twenty-three cut/receipt assertions and joins.
+The other eight Windows scratch positives exposed a real shared-home/private-
+index integration gap; do not hide it by making every fixture native-private.
+That placement correction follows separately within ADR-0125's delegation.
+
+Installed consumers fail at the workflow case on all four legs; three
+non-macOS legs also fail native load. The exact tarball passes all ten smoke
+cases on a runtime-aligned local macOS installation, but that is not a CI
+consumer receipt. Local macOS and an ARM Linux container do not reproduce a
+hardlink failure. Keep product loader policy unchanged until actual evidence
+identifies the cause. The existing failure diagnostic now projects only fixed,
+case-fenced native-load/workflow checkpoints and eleven literal asset link-state
+enums; raw paths, stacks and private child content remain excluded under the
+unchanged eight-KiB one-line ceiling.
+
+Fresh complete Terra/high affected review and separate Sol/high security
+sitting are clean for this seven-file test/tool batch. Independent smoke tests
+pass 87/87 and delivery tests 10/10; root passes all twenty-three real SQLite
+replay cases, 115 affected tools, tools lint/typecheck and nineteen workspace
+lint/typecheck/build/format tasks. Native production source and all acceptance
+assertions/populations remain unchanged. Consumer causes and combined CI are
+still open; Step 3 grants remain gated.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

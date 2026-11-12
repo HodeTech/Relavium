@@ -9,6 +9,8 @@ const workflow = (id, nodes, edges, extra = {}) =>
 const edge = (from, to) => ({ from, to });
 export async function assertInstalledWorkflows(context) {
   const { root, Database, cli, environment, calls } = context;
+  const checkpoint = context.workflowCheckpoint ?? (() => {});
+  checkpoint('start');
   const home = join(root, 'workflow-home');
   mkdirSync(home);
   const invokeCli = async (args, code, input = '', extra = {}, keyringAttempts = 0) => {
@@ -52,6 +54,7 @@ export async function assertInstalledWorkflows(context) {
       db.close();
     }
   };
+  checkpoint('sequential');
   const sequential = join(home, 'sequential.relavium.yaml');
   writeFileSync(
     sequential,
@@ -80,6 +83,7 @@ export async function assertInstalledWorkflows(context) {
     'Installed drizzle migrations must execute',
   );
 
+  checkpoint('human-gate');
   const human = join(home, 'human.relavium.yaml');
   writeFileSync(
     human,
@@ -112,6 +116,7 @@ export async function assertInstalledWorkflows(context) {
   const history = await invokeCli(['logs', paused.runId, '--json'], 0);
   assert.ok(ndjson(history.stdout).some((event) => event.type === 'run:completed'));
 
+  checkpoint('budget-pause');
   const budget = join(home, 'budget.relavium.yaml');
   writeFileSync(
     budget,
@@ -160,6 +165,7 @@ export async function assertInstalledWorkflows(context) {
   assert.ok(Number.isSafeInteger(amount) && amount > 1);
   const budgetStatus = JSON.parse((await invokeCli(['status', '--json'], 0)).stdout);
   assert.ok(budgetStatus.pendingBudgetGates.some((gate) => gate.gateId === authorization.gateId));
+  checkpoint('budget-decisions');
   const before = snapshot();
   for (const invalid of ['-1', '1.5', '9007199254740992', String(amount + 1)]) {
     const refusal = await invokeCli(
@@ -201,6 +207,7 @@ export async function assertInstalledWorkflows(context) {
 
   // Exercise the shipped, documented agent-run cassette seam and the real tool policy.
   // No product implementation is substituted; a noninteractive governed write must be refused.
+  checkpoint('denied-effect');
   const agent = join(home, 'effects.agent.yaml'),
     cassette = join(home, 'effects.json');
   writeFileSync(
@@ -253,6 +260,7 @@ export async function assertInstalledWorkflows(context) {
   );
   // Real installed CLI -> compiled AgentNodeExecutor -> native host -> durable effect journal.
   // Only the already source-owned SDK transport is scripted; no product approval or loader is replaced.
+  checkpoint('native-start');
   const nativeWorkflow = join(home, 'native-write.relavium.yaml');
   const nativeTarget = join(home, 'native-write-target.txt');
   const nativePrompt = 'packaged native write prompt';
@@ -300,6 +308,7 @@ export async function assertInstalledWorkflows(context) {
   });
   let nativeCompleted;
   try {
+    checkpoint('native-barrier');
     await poll(
       () => {
         assert.equal(ownedNative.isSettled(), false, ownedNative.output().stderr);
@@ -312,12 +321,15 @@ export async function assertInstalledWorkflows(context) {
       (event) => event.type === 'run:started',
     );
     assert.ok(started?.runId);
+    checkpoint('native-bytes');
     assert.equal(readFileSync(nativeTarget, 'utf8'), 'installed native reviewed bytes 🙂\n');
+    checkpoint('native-metadata');
     const nativeAfter = statSync(nativeTarget, { bigint: true });
     if (process.platform !== 'win32') {
       for (const field of ['uid', 'gid']) assert.equal(nativeAfter[field], nativePolicy[field]);
       assert.equal(nativeAfter.mode & 0o7777n, nativePolicy.mode & 0o7777n);
     }
+    checkpoint('native-journal');
     const nativeEffects = query(
       'SELECT * FROM run_effects WHERE scope = ?',
       `run:${started.runId}:writer`,
@@ -329,17 +341,21 @@ export async function assertInstalledWorkflows(context) {
     );
     assert.equal(nativeEffects[0].state, 'committed');
     assert.equal(nativeEffects[0].tool_id, 'write_file');
+    checkpoint('native-release');
     writeFileSync(barrier + '.release', '', { flag: 'wx', mode: 0o600 });
     ownedNative.child.stdin.end();
+    checkpoint('native-terminal');
     const result = await ownedNative.result();
     assertExit(result, 0);
     nativeCompleted = ndjson(result.stdout).find((event) => event.type === 'run:completed');
     assert.equal(nativeCompleted?.runId, started.runId);
+    checkpoint('native-sweep');
     assert.equal(
       query('SELECT * FROM run_effects WHERE scope = ?', `run:${started.runId}:writer`).length,
       0,
       'Terminal non-resumable run must sweep its committed effect',
     );
+    checkpoint('native-observations');
     const observed = calls().slice(nativeCallsBefore);
     assert.equal(observed.filter((call) => call.operation === 'keyring.Entry').length, 3);
     assert.equal(
@@ -349,11 +365,13 @@ export async function assertInstalledWorkflows(context) {
   } finally {
     await ownedNative.close();
   }
+  checkpoint('native-observations');
   const nativeSdkCalls = calls()
     .slice(nativeCallsBefore)
     .filter((call) => call.operation === 'sdk-fetch');
   assert.equal(nativeSdkCalls.length, 2);
   assert.equal(nativeSdkCalls[1].body.messages.at(-1).role, 'tool');
+  checkpoint('complete');
   return {
     workflow: {
       terminal: completed,

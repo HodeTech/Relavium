@@ -407,7 +407,7 @@ test('source and bundled host loader pins and path-selection define cannot drift
 test('plain Node executes the actual bundled host helper through the staged named CJS export', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
-  const { join, resolve } = await import('node:path');
+  const { join, resolve, relative, sep } = await import('node:path');
   const { pathToFileURL, fileURLToPath } = await import('node:url');
   const { spawnSync } = await import('node:child_process');
   const { copyNativeAssets } = await import('./assets.mjs');
@@ -417,8 +417,32 @@ test('plain Node executes the actual bundled host helper through the staged name
   try {
     copyNativeAssets({ repository, destination: join(directory, 'native-fs') });
     const helper = resolve(repository, 'apps/cli/src/engine/tool-host/fs-native-metadata.ts');
-    await build({
+    // These three runtime seams are the complete package imports of this fixture's source graph.
+    // Package exports point at dist; acceptance-tool jobs intentionally run before workspace builds.
+    const sourceAliases = {
+      '@relavium/shared/relavium-error': 'packages/shared/src/relavium-error.ts',
+      '@relavium/core/tool-dispatch-error': 'packages/core/src/tools/dispatch-error.ts',
+      '@relavium/shared/fs-root-limits': 'packages/shared/src/fs-root-limits.ts',
+    };
+    const assertSourceInputs = (metafile) => {
+      const inputs = Object.keys(metafile.inputs).map((path) =>
+        relative(repository, resolve(repository, path)).split(sep).join('/'),
+      );
+      assert.deepEqual(
+        inputs.filter((path) => /^(?:apps|packages)\/[^/]+\/dist\//u.test(path)),
+        [],
+        'NATIVE_HOST_FIXTURE_DIST_INPUT',
+      );
+      assert.deepEqual(
+        inputs.filter((path) => path.startsWith('packages/')).sort(),
+        Object.values(sourceAliases).sort(),
+        'NATIVE_HOST_FIXTURE_SOURCE_INPUTS',
+      );
+    };
+    const options = {
       entryPoints: [helper],
+      absWorkingDir: repository,
+      metafile: true,
       bundle: true,
       platform: 'node',
       format: 'esm',
@@ -440,7 +464,43 @@ test('plain Node executes the actual bundled host helper through the staged name
           },
         },
       ],
+    };
+    // Without these exact aliases, cold exports cannot resolve; a warm local dist must also refuse
+    // the source-only invariant rather than concealing that cold-checkout dependency.
+    let unaliased;
+    try {
+      unaliased = await build({ ...options, write: false, logLevel: 'silent' });
+    } catch (error) {
+      assert.ok(Array.isArray(error.errors) && error.errors.length > 0);
+      for (const entry of error.errors) {
+        const missing = /^Could not resolve "([^"]+)"$/u.exec(entry.text)?.[1];
+        assert.ok(Object.hasOwn(sourceAliases, missing), 'Unexpected unaliased fixture failure');
+      }
+    }
+    if (unaliased !== undefined)
+      assert.throws(
+        () => assertSourceInputs(unaliased.metafile),
+        /NATIVE_HOST_FIXTURE_(?:DIST_INPUT|SOURCE_INPUTS)/u,
+      );
+    const resultGraph = await build({
+      ...options,
+      plugins: [
+        ...options.plugins,
+        {
+          name: 'closed-native-host-source-seams',
+          setup(build) {
+            build.onResolve(
+              {
+                filter:
+                  /^@relavium\/(?:shared\/(?:relavium-error|fs-root-limits)|core\/tool-dispatch-error)$/,
+              },
+              (args) => ({ path: resolve(repository, sourceAliases[args.path]) }),
+            );
+          },
+        },
+      ],
     });
+    assertSourceInputs(resultGraph.metafile);
     const code = `const host = await import(${JSON.stringify(pathToFileURL(join(directory, 'host.mjs')).href)}); const adapter = await host.loadNativeMetadataWriteAdapter(); if (adapter.protocolVersion() !== 1) throw new Error('NATIVE_HOST_PROTOCOL'); process.stdout.write('native-host-edge-ok');`;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
       encoding: 'utf8',

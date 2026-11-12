@@ -99,7 +99,10 @@ records the clean final UI review/security sitting, native ownership/cleanup
 corrections and the runtime-loader refusal fix. Final affected reviews and
 separate UI/backend/native/delivery security sittings are clean. Checkpoint
 `3beeefea` passes enforced coverage and all acceptance-tool tests; actual
-Windows and combined Step 2 acceptance remain open.
+native validation at `c6cbb295` passes all eight targets and the exact packed
+producer. Combined CI still exposes cold-checkout fixture, Windows shared-home
+and installed-consumer integration findings, tracked in that same record.
+Step 2 acceptance remains open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

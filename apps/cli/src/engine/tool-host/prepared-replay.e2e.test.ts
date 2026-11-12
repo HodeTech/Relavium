@@ -27,9 +27,7 @@ import {
 } from './fixtures/prepared-replay-contract.js';
 
 const worker = fileURLToPath(new URL('./fixtures/prepared-replay-worker.ts', import.meta.url));
-const register = fileURLToPath(
-  new URL('../fixtures/usage-coverage-crash-register.mjs', import.meta.url),
-);
+const register = new URL('../fixtures/usage-coverage-crash-register.mjs', import.meta.url).href;
 function start(
   root: string,
   mode: 'crash' | 'resume',
