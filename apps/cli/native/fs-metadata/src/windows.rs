@@ -393,6 +393,17 @@ struct TokenContext {
 fn statistics(token: &Handle) -> Result<Vec<u8>, NativeFailure> {
     let data = token_data(token, TokenStatistics)?;
     let stats = unsafe { &*data.as_ptr().cast::<TOKEN_STATISTICS>() };
+    statistics_bytes(stats)
+}
+fn statistics_bytes(stats: &TOKEN_STATISTICS) -> Result<Vec<u8>, NativeFailure> {
+    // Microsoft defines ImpersonationLevel only for impersonation tokens.
+    let impersonation_level = if stats.TokenType == TokenPrimary {
+        0
+    } else if stats.TokenType == TokenImpersonation {
+        stats.ImpersonationLevel
+    } else {
+        return Err(NativeFailure::Unsupported);
+    };
     let mut bytes = Vec::new();
     for luid in [&stats.TokenId, &stats.AuthenticationId, &stats.ModifiedId] {
         bytes.extend_from_slice(&luid.LowPart.to_le_bytes());
@@ -400,7 +411,7 @@ fn statistics(token: &Handle) -> Result<Vec<u8>, NativeFailure> {
     }
     bytes.extend_from_slice(&stats.ExpirationTime.to_le_bytes());
     bytes.extend_from_slice(&stats.TokenType.to_le_bytes());
-    bytes.extend_from_slice(&stats.ImpersonationLevel.to_le_bytes());
+    bytes.extend_from_slice(&impersonation_level.to_le_bytes());
     bytes.extend_from_slice(&stats.DynamicCharged.to_le_bytes());
     bytes.extend_from_slice(&stats.DynamicAvailable.to_le_bytes());
     bytes.extend_from_slice(&stats.GroupCount.to_le_bytes());
@@ -563,7 +574,10 @@ fn streams(file: &File) -> Result<Option<Vec<u8>>, NativeFailure> {
             return if data_seen {
                 Ok(zone)
             } else {
-                Err(NativeFailure::Unsupported)
+                trace_failure!(
+                    "first-stream-no-data-header",
+                    Err(NativeFailure::Unsupported)
+                )
             };
         }
         if read != header.len() {
@@ -1052,35 +1066,56 @@ impl Profile for WindowsProfile {
         stage: &File,
         stage_path: &Path,
     ) -> Result<(), NativeFailure> {
-        if credentials()? != snapshot.credentials {
-            return Err(NativeFailure::Changed);
+        let current_context = trace_failure!("first-metadata-credentials", credentials())?;
+        if current_context != snapshot.credentials {
+            return trace_failure!(
+                "first-metadata-context-changed",
+                Err(NativeFailure::Changed)
+            );
         }
-        if identity(source)? != snapshot.identity
-            || !same_policy(&policy(source)?, &snapshot.policy)
-            || streams(source)? != snapshot.zone
+        if trace_failure!("first-metadata-source-identity", identity(source))? != snapshot.identity
+            || !same_policy(
+                &trace_failure!("first-metadata-source-policy", policy(source))?,
+                &snapshot.policy,
+            )
+            || trace_failure!("first-metadata-source-streams", streams(source))? != snapshot.zone
         {
-            return Err(NativeFailure::Changed);
+            return trace_failure!("first-metadata-source-changed", Err(NativeFailure::Changed));
         }
-        bind(stage, stage_path, false)?;
-        if streams(stage)?.is_some() {
-            return Err(NativeFailure::Unsupported);
+        trace_failure!("first-metadata-stage-bind", bind(stage, stage_path, false))?;
+        if trace_failure!("first-metadata-stage-streams", streams(stage))?.is_some() {
+            return trace_failure!(
+                "first-metadata-stage-unexpected-stream",
+                Err(NativeFailure::Unsupported)
+            );
         }
         if let Some(value) = &snapshot.zone {
             let path = zone_path(stage_path);
-            let mut stream = open(
-                &path,
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                CREATE_NEW,
-                0,
-                ptr::null(),
+            let mut stream = trace_failure!(
+                "first-metadata-zone-open",
+                open(
+                    &path,
+                    FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                    CREATE_NEW,
+                    0,
+                    ptr::null(),
+                )
             )?;
-            if identity(&stream)? != identity(stage)? {
-                return Err(NativeFailure::Changed);
+            if trace_failure!("first-metadata-zone-identity", identity(&stream))?
+                != trace_failure!("first-metadata-stage-identity", identity(stage))?
+            {
+                return trace_failure!("first-metadata-zone-mismatch", Err(NativeFailure::Changed));
             }
-            stream
-                .write_all(value)
-                .map_err(|_| NativeFailure::Unsupported)?;
-            stream.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-metadata-zone-write",
+                stream
+                    .write_all(value)
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
+            trace_failure!(
+                "first-metadata-zone-flush",
+                stream.sync_all().map_err(|_| NativeFailure::Unsupported)
+            )?;
         }
         #[cfg(test)]
         crate::test_hooks::hit("partial-metadata");
@@ -1589,6 +1624,43 @@ mod tests {
 
     #[test]
     fn windows_token_context_owner_pair_is_closed_and_binds_identity() {
+        let mut primary = TOKEN_STATISTICS {
+            TokenType: TokenPrimary,
+            ..TOKEN_STATISTICS::default()
+        };
+        let primary_initial = statistics_bytes(&primary).expect("primary token statistics");
+        primary.ImpersonationLevel = 2;
+        assert_eq!(
+            statistics_bytes(&primary).expect("ignored primary level"),
+            primary_initial
+        );
+        let mut impersonated = primary;
+        impersonated.TokenType = TokenImpersonation;
+        let impersonation_initial =
+            statistics_bytes(&impersonated).expect("impersonation statistics");
+        impersonated.ImpersonationLevel = 3;
+        assert_ne!(
+            statistics_bytes(&impersonated).expect("changed impersonation"),
+            impersonation_initial
+        );
+        for field in 0..3 {
+            let mut changed = primary;
+            match field {
+                0 => changed.TokenId.LowPart ^= 1,
+                1 => changed.AuthenticationId.LowPart ^= 1,
+                _ => changed.ModifiedId.LowPart ^= 1,
+            }
+            assert_ne!(
+                statistics_bytes(&changed).expect("changed token identity"),
+                primary_initial
+            );
+        }
+        let mut unknown = primary;
+        unknown.TokenType = 0;
+        assert!(matches!(
+            statistics_bytes(&unknown),
+            Err(NativeFailure::Unsupported)
+        ));
         let context = token_context().expect("effective token");
         assert!(context.admits_owner(&context.user));
         assert!(context.admits_owner(&context.owner));

@@ -698,12 +698,18 @@ impl<P: Profile> OwnedStage<P> {
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-parent-flush");
         trace_failure!("first-pin-parent-flush", io(parent.sync_all()))?;
-        self.index.recheck_checked(start, cancelled)?;
-        tick(start, cancelled)?;
-        io(fs::rename(
-            self.index.path.join(format!("{}.prepare", self.nonce)),
-            self.index.path.join(format!("{}.record", self.nonce)),
-        ))?;
+        trace_failure!(
+            "first-pin-postflush-recheck",
+            self.index.recheck_checked(start, cancelled)
+        )?;
+        trace_failure!("first-pin-postflush-budget", tick(start, cancelled))?;
+        trace_failure!(
+            "first-pin-rename",
+            io(fs::rename(
+                self.index.path.join(format!("{}.prepare", self.nonce)),
+                self.index.path.join(format!("{}.record", self.nonce)),
+            ))
+        )?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-index-flush");
@@ -712,13 +718,22 @@ impl<P: Profile> OwnedStage<P> {
         self.record = Some(record);
         self.pinned_file = Some(file);
         tick(start, cancelled)?;
-        self.index.ensure_context()?;
-        io(fs::remove_file(
-            self.index.path.join(format!("{}.reserved", self.nonce)),
-        ))?;
-        self.index.ensure_context()?;
+        trace_failure!(
+            "first-pin-context-before-remove",
+            self.index.ensure_context()
+        )?;
+        trace_failure!(
+            "first-pin-reservation-remove",
+            io(fs::remove_file(
+                self.index.path.join(format!("{}.reserved", self.nonce)),
+            ))
+        )?;
+        trace_failure!(
+            "first-pin-context-after-remove",
+            self.index.ensure_context()
+        )?;
         tick(start, cancelled)?;
-        io(self.index.directory.sync_all())?;
+        trace_failure!("first-pin-final-flush", io(self.index.directory.sync_all()))?;
         Ok(())
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), NativeFailure> {

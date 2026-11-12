@@ -2283,6 +2283,27 @@ byte-identical to the coverage checkpoint, with all 43 tokens, the injected
 phase and test-hook prefix absent. Windows GNU cross-checking is compilation
 evidence only. New actual Windows execution remains required.
 
+**Windows token-contract correction:** the actual first-failure repetition at
+`21c4a2b0` passes all six Linux/macOS native profiles but still fails on both
+Windows architectures: x64 reports `first-pin`/`Changed`, while arm64 reports
+`first-metadata`/`Unsupported`. These identify boundaries, not root causes.
+Source review independently confirmed that primary-token comparison included
+ImpersonationLevel even though Windows defines that member only for an
+impersonation token. Normalize it only for a primary token, preserve the real
+impersonation level and every other selected statistic, and reject an unknown
+token type. Same-handle user/owner bracketing and ModifiedId checks remain.
+The existing Windows context parent now tests those distinctions and all three
+token identifiers; its native Windows execution remains due.
+
+Another 23 fixed test-only cuts distinguish the remaining pin/context and
+metadata/stream stages without changing stream admission. The complete Rust/JS
+allowlists match at 114 entries; output remains bounded to sixteen entries and
+1,024 characters. A new complete Terra/high affected review and a separate
+Terra/high security sitting are clean. Local macOS native/Node and lint,
+typecheck, build/format gates pass with an unchanged macOS release binary.
+This fixes a documented contract defect without claiming it caused either
+Windows failure or accepting either Windows profile.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

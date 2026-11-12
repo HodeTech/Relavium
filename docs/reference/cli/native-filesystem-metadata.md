@@ -779,6 +779,14 @@ binds the current recovery operation's context; the record does not contain the
 old producer's token identity and does not establish that it matches. Unknown
 current ownership or changed context preserves unproven artifacts.
 
+Token statistics bind TokenId, AuthenticationId, ModifiedId and the token type.
+Compare ImpersonationLevel only for an impersonation token; its primary-token
+value is undefined by the
+[Windows contract](https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-token_statistics)
+and is normalized rather than treated as authority or context drift. All other
+selected statistics and same-handle user/owner bracketing remain checked. This
+correction is independent of the still-unresolved Windows CI failure cause.
+
 The private staging directory's DACL is not a child-access barrier: Windows
 traverse privileges can bypass directory traversal checks. Once the approved
 final metadata has been applied to a payload, the access claim is the exact
