@@ -5,8 +5,15 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BUILTIN_TOOLS, ToolUnavailableError, type ToolDef, type ToolHost } from '@relavium/core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  BUILTIN_TOOLS,
+  createInMemoryEffectJournal,
+  createToolRegistry,
+  ToolUnavailableError,
+  type ToolDef,
+  type ToolHost,
+} from '@relavium/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assembleToolEnv, wiredToolIds } from './assemble.js';
 
@@ -26,6 +33,72 @@ afterEach(async () => {
 });
 
 describe('assembleToolEnv', () => {
+  it('lets a scheduled timer cancel a large prepared diff before approval or dispatch', async () => {
+    const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
+      profile: 'chat-read-write',
+      fsScopeTier: 'sandboxed',
+      workspaceDir: workspace,
+    });
+    const controller = new AbortController();
+    const release = vi.fn();
+    const execute = vi.fn();
+    const confirm = vi.fn();
+    const effects = createInMemoryEffectJournal({
+      kind: 'run',
+      runId: 'r',
+      nodeId: 'n',
+      attempt: 1,
+    });
+    const prepare = vi.spyOn(effects, 'prepare');
+    let timerFired = false;
+    const fs = host.fs!;
+    const registry = createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: {
+        ...host,
+        fs: {
+          ...fs,
+          prepareWrite: async () => {
+            setTimeout(() => {
+              timerFired = true;
+              controller.abort();
+            }, 0);
+            await Promise.resolve();
+            return {
+              path: 'a',
+              before: 'a\n'.repeat(5000),
+              after: 'b\n'.repeat(5000),
+              execute,
+              release,
+            };
+          },
+        },
+      },
+    });
+    await expect(
+      registry.dispatch(
+        { type: 'tool_call', id: 'id', name: 'write_file', args: { path: 'a', content: 'b' } },
+        {
+          nodeId: 'n',
+          grantedToolIds: new Set(['write_file']),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects,
+          effectSlot: 0,
+          signal: controller.signal,
+          approval: { confirm },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(timerFired).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
   it('carries native authority inertly, then registers a real process in the original invocation', async () => {
     const invocation = createCliInvocation();
     const nativeProcesses = nativeProcessesForInvocation(invocation);

@@ -357,6 +357,8 @@ export interface ChatDriveContext {
    * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
    */
   readonly clipboard?: ClipboardWriter | undefined;
+  /** Explicit masked review copy; independent of mouse selection preferences. */
+  readonly reviewClipboard?: ClipboardWriter | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -2809,6 +2811,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
       // ABSENT when `[preferences].copy_on_select = false` (or `--no-mouse`, which resolves it false): the selection
       // still highlights, and `/copy` still copies the whole transcript.
+      ...(hatchPortsForClipboard === undefined
+        ? {}
+        : { reviewClipboard: hatchPortsForClipboard.clipboard }),
       ...(hatchPortsForClipboard === undefined || deps.copyOnSelect !== true
         ? {}
         : {

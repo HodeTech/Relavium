@@ -117,8 +117,13 @@ capability is absent fails with a typed `ToolUnavailableError` (never a crash, n
 sneaking into the engine) — exactly as an absent `ResolverCapabilities.readFile` fails the `read_file`
 interpolation filter.
 
+Prepared file diffs use `yieldControl` at bounded work intervals so host input and deadlines can run.
+The host must resolve it after an event-loop turn; if it is absent when a diff needs to yield, preparation
+fails closed and releases its handle before approval or journaling.
+
 ```ts
 interface ToolHost {
+  readonly yieldControl?: () => Promise<void>; // resolves after a host event-loop turn
   readonly fs?: FsCapability;            // file read/write/list, jailed to the active FS scope tier
   readonly process?: ProcessCapability;  // process spawn — host-resolved executable + base env; shell:false
   readonly egress?: EgressCapability;    // outbound HTTPS — shared SSRF primitive; host-resolved credential ref

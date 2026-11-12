@@ -1853,6 +1853,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
         // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
+        reviewClipboard: clipboard,
         ...(copyOnSelect ? { clipboard } : {}),
       };
       const mount = () =>

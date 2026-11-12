@@ -808,6 +808,7 @@ impl crate::profile_api::Profile for MacosProfile {
         private_stage: &std::fs::File,
         temporary_name: &std::ffi::OsStr,
         stage_name: &std::ffi::OsStr,
+        adopt: &mut dyn FnMut(&std::fs::File) -> Result<(), crate::profile_api::NativeFailure>,
     ) -> Result<std::fs::File, crate::profile_api::NativeFailure> {
         use crate::profile_api::NativeFailure;
         use std::os::fd::FromRawFd;
@@ -846,25 +847,57 @@ impl crate::profile_api::Profile for MacosProfile {
             return Err(NativeFailure::Unsupported);
         }
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        let before = source_state(&file)?;
-        if before.size != 0 || before.uid != unsafe { libc::geteuid() } {
-            return Err(NativeFailure::Unsupported);
-        }
-        let acl = capture_acl(file.as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?;
-        let attributes = supported_xattrs(file.as_raw_fd())?;
-        if observed_mask(host_mask)? != mask {
-            return Err(NativeFailure::Changed);
-        }
-        if unsafe {
-            libc::renameatx_np(
-                parent.as_raw_fd(),
-                temp.as_ptr(),
-                private_stage.as_raw_fd(),
-                stage.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        } != 0
-        {
+        let guard = crate::unix_template_guard::EmptyTemplate::<Self>::new(
+            file,
+            parent,
+            &temp,
+            private_stage,
+            &stage,
+        )?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-created") {
+                return Err(NativeFailure::Unsupported);
+            }
+            let before = source_state(guard.file())?;
+            if before.size != 0 || before.uid != unsafe { libc::geteuid() } {
+                return Err(NativeFailure::Unsupported);
+            }
+            let acl =
+                capture_acl(guard.file().as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?;
+            let attributes = supported_xattrs(guard.file().as_raw_fd())?;
+            if observed_mask(host_mask)? != mask {
+                return Err(NativeFailure::Changed);
+            }
+            if unsafe {
+                libc::renameatx_np(
+                    parent.as_raw_fd(),
+                    temp.as_ptr(),
+                    private_stage.as_raw_fd(),
+                    stage.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            } != 0
+            {
+                return Err(NativeFailure::Unsupported);
+            }
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-moved") {
+                return Err(NativeFailure::Unsupported);
+            }
+            adopt(guard.file())?;
+            Ok((before, acl, attributes))
+        })();
+        let (before, acl, attributes) = match attempt {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                guard.abort()?;
+                return Err(error);
+            }
+        };
+        let file = guard.transfer();
+        #[cfg(test)]
+        if crate::test_hooks::fail("template-adopted") {
             return Err(NativeFailure::Unsupported);
         }
         let after = source_state(&file)?;

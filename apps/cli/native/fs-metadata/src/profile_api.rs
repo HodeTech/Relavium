@@ -17,6 +17,8 @@ pub(crate) enum NativeFailure {
     Changed,
     Cancelled,
     PossiblyPublished,
+    /// Pre-publication cleanup could not prove its owned empty artifact removed.
+    CleanupUncertain,
 }
 
 /// Native full identity and separately proven Node-visible identity, host-private.
@@ -86,6 +88,7 @@ pub(crate) trait Profile {
         private_stage: &File,
         temporary_name: &OsStr,
         stage_name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
     ) -> Result<File, NativeFailure>;
     fn capture_inherited_stage(
         parent: &Self::ParentSnapshot,

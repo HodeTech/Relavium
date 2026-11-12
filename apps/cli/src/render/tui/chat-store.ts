@@ -375,22 +375,23 @@ export function createChatStore(
         case 'select': {
           const selected = calls[review.selected];
           if (selected !== undefined) {
-            review =
-              selected.document === undefined
-                ? { ...review, message: 'Preview unavailable — not retained for this call.' }
-                : initialToolReview(
-                    'details',
-                    selected.callId,
-                    selected.summary === undefined
-                      ? selected.document
-                      : createReviewDocument({
-                          ...selected.document.preview,
-                          fields: [
-                            ...selected.document.preview.fields,
-                            { name: 'Result summary', value: selected.summary },
-                          ],
-                        }),
-                  );
+            const preview = selected.document?.preview;
+            review = initialToolReview(
+              'details',
+              selected.callId,
+              createReviewDocument({
+                ...(preview ?? { kind: 'operation', fields: [] }),
+                fields: [
+                  ...(preview?.fields ?? []),
+                  ...(preview === undefined
+                    ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
+                    : []),
+                  ...(selected.summary === undefined
+                    ? []
+                    : [{ name: 'Result summary', value: selected.summary }]),
+                ],
+              }),
+            );
             flush();
           }
           break;

@@ -13,7 +13,13 @@ import {
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
 import { reviewInspected, toolReviewPage, toolReviewTarget } from './tool-review-model.js';
-import { escapeReviewCharacter, type ReviewPage } from './tool-review-projection.js';
+import {
+  createReviewDocument,
+  escapeReviewCharacter,
+  projectReviewPage,
+  REVIEW_START,
+  type ReviewPage,
+} from './tool-review-projection.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
 
@@ -33,6 +39,45 @@ function inputDisplay(text: string): string {
   return (
     output + (count < chars.length ? `… (${chars.length - count} input characters omitted)` : '')
   );
+}
+
+/** Identity is mandatory, never abbreviated into another tool's apparent grant scope. */
+export function toolReviewIdentity(
+  toolId: string,
+  label: 'action' | 'outcome',
+  value: string,
+  columns: number,
+): Pick<ReviewPage, 'rows' | 'valid'> {
+  const document = createReviewDocument({
+    kind: 'operation',
+    fields: [
+      { name: 'tool', value: toolId },
+      { name: label, value },
+    ],
+  });
+  const page = projectReviewPage(
+    {
+      ...document,
+      lines: document.lines
+        .filter((_, index) => index % 2 === 1)
+        .map((line, index) => ({
+          ...line,
+          label: index === 0 ? 'tool' : label,
+        })),
+    },
+    REVIEW_START,
+    Math.max(0, columns - 2),
+    2,
+  );
+  return {
+    rows: page.rows,
+    valid:
+      page.valid &&
+      page.next === undefined &&
+      document.masks.length === 0 &&
+      toolId.length > 0 &&
+      value.length > 0,
+  };
 }
 
 /** Shared live review overlay. Input stays with the host's existing single owner. */
@@ -90,6 +135,24 @@ export function ToolReviewHost(
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
   const page =
     review === undefined ? undefined : toolReviewPage(review, props.size.cols, props.size.rows);
+  const selectedCall =
+    review?.callId === undefined ? undefined : snapshot.toolDisplays.get(review.callId);
+  const identity =
+    review === undefined || review.screen === 'list'
+      ? undefined
+      : review.kind === 'approval' && snapshot.approval !== undefined
+        ? toolReviewIdentity(
+            snapshot.approval.request.toolId,
+            'action',
+            snapshot.approval.request.action,
+            props.size.cols,
+          )
+        : toolReviewIdentity(
+            selectedCall?.toolId ?? '',
+            'outcome',
+            selectedCall?.outcome ?? 'unknown',
+            props.size.cols,
+          );
   pageRef.current = page;
   useLayoutEffect(() => {
     if (blocked !== undefined && blocked !== review) setBlocked(undefined);
@@ -98,7 +161,8 @@ export function ToolReviewHost(
       review === undefined ||
       !reviewTerminalFits(props.size) ||
       blocked === review ||
-      page?.valid === false
+      page?.valid === false ||
+      identity?.valid === false
     )
       return;
     if (!acknowledgement.commit(review, ref.current, () => app.waitUntilRenderFlush()))
@@ -107,7 +171,7 @@ export function ToolReviewHost(
   if (review === undefined) return null;
   if (!reviewTerminalFits(props.size))
     return <Text>Terminal too small — resize to at least 80×24. Esc cancels.</Text>;
-  if (blocked === review || page?.valid === false)
+  if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
         Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.
@@ -138,7 +202,7 @@ export function ToolReviewHost(
             .map((call, index) => (
               <Text key={call.callId}>
                 {review.selected === selectedStart + index ? '> ' : '  '}
-                {sanitizeUntrustedInline(call.toolId)} — {call.outcome}
+                {inputDisplay(sanitizeUntrustedInline(call.toolId))} — {call.outcome}
                 {call.document === undefined ? ' · preview unavailable' : ''}
               </Text>
             ))}
@@ -146,6 +210,9 @@ export function ToolReviewHost(
         </>
       ) : (
         <>
+          {(identity?.rows ?? []).map((row, index) => (
+            <Text key={`identity-${index}`}>{row}</Text>
+          ))}
           {(target?.rows ?? []).map((row, index) => (
             <Text key={`target-${index}`}>{row}</Text>
           ))}
@@ -161,7 +228,7 @@ export function ToolReviewHost(
               {diff.afterEndings}
             </Text>
           )}
-          {document?.masks.length !== 0 && (
+          {(document?.masks.length ?? 0) !== 0 && (
             <Text>
               Approval includes masked bytes. Changed/flagged masks require [v], [r] and visible
               inspection.
@@ -196,7 +263,7 @@ export function ToolReviewHost(
             <>
               <Text>
                 {snapshot.approval?.cacheable === true
-                  ? '[y] once · [a] always (this tool, this session) · [n] deny · Esc/Ctrl-C abort'
+                  ? '[y] once · [a] always for named tool (session) · [n] deny · Esc/Ctrl-C abort'
                   : '[y] once · [n] deny · Esc/Ctrl-C abort'}
               </Text>
               <Text>Approval cannot override protected-path or permission denials.</Text>

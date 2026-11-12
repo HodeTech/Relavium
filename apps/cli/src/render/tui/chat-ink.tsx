@@ -272,6 +272,8 @@ interface ChatAppProps {
   /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
    *  but copy-on-select is inert (a driver/test that wires no terminal). */
   readonly clipboard?: ClipboardWriter | undefined;
+  /** Explicit masked review copy; independent of mouse selection preferences. */
+  readonly reviewClipboard?: ClipboardWriter | undefined;
 }
 
 interface ChatViewProps {
@@ -1177,9 +1179,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const suspendPort = props.suspendPort;
   useEffect(() => {
     if (suspendPort === undefined) return;
-    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    suspendPort.attach(async (callback) => {
+      props.store.invalidateToolReview();
+      try {
+        await app.suspendTerminal(callback);
+      } finally {
+        // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
+        props.store.invalidateToolReview();
+      }
+    });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort]);
+  }, [app, suspendPort, props.store]);
 
   const submit = (message: string, display?: string): void => {
     if (!acceptsInput()) return;
@@ -1751,7 +1761,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         store={props.store}
         size={{ cols: windowSize.columns, rows: windowSize.rows }}
         hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-        clipboard={props.clipboard}
+        clipboard={props.reviewClipboard}
       />
       <ChatView
         hidden={review !== undefined}
@@ -2088,6 +2098,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           suspendPort: ownedMount?.port ?? ctx.suspendPort,
           onSuspend: ctx.onSuspend,
           clipboard: ctx.clipboard,
+          reviewClipboard: ctx.reviewClipboard,
         }),
         {
           ...(workOwner === undefined

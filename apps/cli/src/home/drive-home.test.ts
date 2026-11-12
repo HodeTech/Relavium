@@ -2244,12 +2244,20 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       writeFileSync(cfg, '[preferences]\ncopy_on_select = false\n');
       const props = await captureProps({ global: { ...global, configPath: cfg } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
 
     it('`--no-mouse` withholds it too — there is no selection to copy', async () => {
       // Structural, not a second check: `resolveCopyOnSelect` takes the ALREADY-RESOLVED mouse decision.
       const props = await captureProps({ global: { ...global, noMouse: true } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
+    });
+
+    it('keeps explicit review copy available in inline mode', async () => {
+      const props = await captureProps({ global: { ...global, noAltScreen: true } });
+      expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
 
     it('`copy_on_select = true` with `--no-mouse` STILL withholds it', async () => {
@@ -2257,6 +2265,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       writeFileSync(cfg, '[preferences]\ncopy_on_select = true\n');
       const props = await captureProps({ global: { ...global, configPath: cfg, noMouse: true } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
   });
 

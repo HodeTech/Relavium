@@ -654,6 +654,7 @@ impl Profile for LinuxProfile {
         private_stage: &File,
         temporary_name: &OsStr,
         stage_name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
     ) -> Result<File, NativeFailure> {
         Self::recheck_parent(snapshot, parent, host_mask)?;
         if !temporary_name
@@ -681,17 +682,41 @@ impl Profile for LinuxProfile {
             return Err(failure());
         }
         let file = unsafe { File::from_raw_fd(raw) };
-        let initial = policy(&file, false)?;
-        assert_entry(parent, &temporary, &file)?;
-        let renamed = rename_noreplace(parent, &temporary, private_stage, &destination);
-        if renamed != 0 {
-            // Only a still-bound empty owned entry may be removed. No payload exists.
-            if assert_entry(parent, &temporary, &file).is_ok() {
-                let removed = unsafe { libc::unlinkat(parent.as_raw_fd(), temporary.as_ptr(), 0) };
-                if removed != 0 {
-                    return Err(NativeFailure::Unsupported);
-                }
+        let guard = crate::unix_template_guard::EmptyTemplate::<Self>::new(
+            file,
+            parent,
+            &temporary,
+            private_stage,
+            &destination,
+        )?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-created") {
+                return Err(NativeFailure::Unsupported);
             }
+            let initial = policy(guard.file(), false)?;
+            assert_entry(parent, &temporary, guard.file())?;
+            let renamed = rename_noreplace(parent, &temporary, private_stage, &destination);
+            if renamed != 0 {
+                return Err(NativeFailure::Unsupported);
+            }
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-moved") {
+                return Err(NativeFailure::Unsupported);
+            }
+            adopt(guard.file())?;
+            Ok(initial)
+        })();
+        let initial = match attempt {
+            Ok(initial) => initial,
+            Err(error) => {
+                guard.abort()?;
+                return Err(error);
+            }
+        };
+        let file = guard.transfer();
+        #[cfg(test)]
+        if crate::test_hooks::fail("template-adopted") {
             return Err(NativeFailure::Unsupported);
         }
         assert_entry(private_stage, &destination, &file)?;
@@ -910,6 +935,7 @@ mod tests {
             &stage_parent,
             OsStr::new(".relavium-fs-stage-v1.matrix-template"),
             OsStr::new("payload"),
+            &mut |_| Ok(()),
         )
         .expect("kernel inherited template");
         let direct = OpenOptions::new()
@@ -1025,6 +1051,7 @@ mod tests {
             &stage_parent,
             OsStr::new(".relavium-fs-stage-v1.empty"),
             OsStr::new("payload"),
+            &mut |_| Ok(()),
         )
         .expect("OS inherited empty file");
         let direct = OpenOptions::new()

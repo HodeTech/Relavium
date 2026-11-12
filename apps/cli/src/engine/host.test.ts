@@ -6,6 +6,8 @@ import {
   mkdirSync,
   symlinkSync,
   linkSync,
+  writeFileSync,
+  readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -237,6 +239,58 @@ describe('createCliHost', () => {
         const host = createCliHost(undefined, { operatorHomeDir: base, media: { saveToRoot } });
         await expect(host.mediaWrite?.('out.bin', new Uint8Array([1]))).rejects.toThrow();
         expect(existsSync(saveToRoot)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+    it('protects index locks, records and descendants through the real save_to root alias', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-index-'));
+      const home = join(base, 'home');
+      const project = join(base, 'project');
+      const index = join(home, '.relavium', 'fs-staging-v1');
+      try {
+        mkdirSync(index, { recursive: true, mode: 0o700 });
+        mkdirSync(join(project, '.relavium'), { recursive: true, mode: 0o700 });
+        writeFileSync(join(index, 'inventory.lock'), '', { mode: 0o600 });
+        const saveToRoot = join(project, '.relavium', 'runs');
+        symlinkSync(index, saveToRoot, process.platform === 'win32' ? 'junction' : 'dir');
+        const host = createCliHost(undefined, { operatorHomeDir: home, media: { saveToRoot } });
+        for (const path of ['inventory.lock', `${'a'.repeat(32)}.reserved`, 'new/record'])
+          await expect(host.mediaWrite?.(path, new Uint8Array([7]))).rejects.toBeInstanceOf(
+            MediaWriteError,
+          );
+        expect(readFileSync(join(index, 'inventory.lock'))).toHaveLength(0);
+        expect(readdirSync(index)).toEqual(['inventory.lock']);
+        const ordinary = join(project, 'ordinary');
+        const positive = createCliHost(undefined, {
+          operatorHomeDir: home,
+          media: { saveToRoot: ordinary },
+        });
+        await expect(positive.mediaWrite?.('out.bin', new Uint8Array([7]))).resolves.toEqual({
+          bytesWritten: 1,
+        });
+        expect([...readFileSync(join(ordinary, 'out.bin'))]).toEqual([7]);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+    it('refuses creation of an absent index through a save_to alias to its parent', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-index-absent-'));
+      const home = join(base, 'home');
+      const project = join(base, 'project');
+      const privateParent = join(home, '.relavium');
+      const index = join(privateParent, 'fs-staging-v1');
+      try {
+        mkdirSync(privateParent, { recursive: true, mode: 0o700 });
+        mkdirSync(join(project, '.relavium'), { recursive: true, mode: 0o700 });
+        const saveToRoot = join(project, '.relavium', 'runs');
+        symlinkSync(privateParent, saveToRoot, process.platform === 'win32' ? 'junction' : 'dir');
+        const host = createCliHost(undefined, { operatorHomeDir: home, media: { saveToRoot } });
+        await expect(
+          host.mediaWrite?.('fs-staging-v1/new/record', new Uint8Array([7])),
+        ).rejects.toBeInstanceOf(MediaWriteError);
+        expect(existsSync(index)).toBe(false);
+        expect(readdirSync(privateParent)).toEqual([]);
       } finally {
         rmSync(base, { recursive: true, force: true });
       }

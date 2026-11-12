@@ -38,6 +38,41 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
+it('protects the private index namespace and its opened objects independently of pinned stages', async () => {
+  const lock = join(index, 'inventory.lock');
+  const reservation = join(index, `${'a'.repeat(32)}.reserved`);
+  await writeFile(lock, '', { mode: 0o600 });
+  await writeFile(reservation, '', { mode: 0o600 });
+  const inventory = await captureFsStageInventory(home);
+  for (const path of [index, lock, reservation, join(index, 'uncreated', 'record')])
+    expect(() => inventory.assertPath(path)).toThrow(FsStageInventoryError);
+  for (const path of [index, lock, reservation]) {
+    const identity = await stat(path, { bigint: true });
+    expect(() => inventory.assertIdentity(identity)).toThrow(FsStageInventoryError);
+  }
+  expect(() => inventory.assertPath(`${index}-ordinary/out`)).not.toThrow();
+  expect(() => inventory.assertPath(join(workspace, 'ordinary'))).not.toThrow();
+});
+
+it('protects the canonical index namespace before it exists, including a home alias', async () => {
+  await rm(index, { recursive: true });
+  const alias = join(home, 'operator-home-alias');
+  await symlink(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const inventory = await captureFsStageInventory(alias);
+  for (const path of [index, join(index, 'new'), join(alias, '.relavium', 'fs-staging-v1')])
+    expect(() => inventory.assertPath(path)).toThrow(FsStageInventoryError);
+  expect(await readdir(join(home, '.relavium'))).toEqual([]);
+});
+
+it.runIf(process.platform === 'win32')(
+  'folds Windows index case, trailing-dot and alternate-stream spellings',
+  async () => {
+    const inventory = await captureFsStageInventory(home);
+    for (const path of [index.toUpperCase(), `${index}.`, `${index}:stream`])
+      expect(() => inventory.assertPath(path)).toThrow(FsStageInventoryError);
+  },
+);
+
 it.skipIf(process.platform === 'win32')(
   'rejects an opened hard-link alias to a recorded stage and permits an ordinary file',
   async () => {

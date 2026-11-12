@@ -1,9 +1,7 @@
-/** CLI-private reader for candidate ADR-0125 staging ownership records.
- * This reader is not wired and does not enable named staging by itself.
- */
+/** CLI-private reader and model-access floor for ADR-0125 staging ownership records. */
 import { constants } from 'node:fs';
 import { lstat, open, opendir, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 
 import type { AbortSignalLike } from '@relavium/shared';
 import { HostDeniedError, throwIfAborted } from './errors.js';
@@ -81,6 +79,7 @@ export function normalizeNodeFsIdentity(
   return { dev: identity.dev, ino: BigInt.asUintN(64, identity.ino) };
 }
 export interface FsStageInventory {
+  assertPath(path: string): void;
   assertIdentity(identity: Identity): void;
 }
 export class FsStageInventoryError extends HostDeniedError {
@@ -106,8 +105,26 @@ export async function captureFsStageInventory(
 ): Promise<FsStageInventory> {
   const start = performance.now();
   const identities = new Set<string>();
+  const privateRoots: string[][] = [];
+  const pathParts = (path: string): string[] =>
+    resolve(path)
+      .split(sep)
+      .map((part) =>
+        process.platform === 'win32'
+          ? (part.split(':')[0] ?? '').replace(/[. ]+$/, '').toLowerCase()
+          : part,
+      );
+  const protectIdentity = (identity: Identity): void => {
+    const normalized = normalizeNodeFsIdentity(identity);
+    identities.add(`${normalized.dev}:${normalized.ino}`);
+  };
   const captured = (): FsStageInventory =>
     Object.freeze({
+      assertPath(path: string): void {
+        const parts = pathParts(path);
+        if (privateRoots.some((root) => root.every((part, index) => parts[index] === part)))
+          throw new FsStageInventoryError();
+      },
       assertIdentity(identity: Identity): void {
         const normalized = normalizeNodeFsIdentity(identity);
         if (identities.has(`${normalized.dev}:${normalized.ino}`))
@@ -121,7 +138,13 @@ export async function captureFsStageInventory(
     tick(start, signal);
     const homeInfo = await stat(requestedHome, { bigint: true });
     if (!homeInfo.isDirectory()) throw new FsStageInventoryError();
+    tick(start, signal);
+    const home = await realpath(requestedHome);
     const requestedIndex = join(requestedHome, '.relavium', 'fs-staging-v1');
+    privateRoots.push(
+      pathParts(requestedIndex),
+      pathParts(join(home, '.relavium', 'fs-staging-v1')),
+    );
     let indexInfo;
     try {
       tick(start, signal);
@@ -130,7 +153,11 @@ export async function captureFsStageInventory(
       if (code(error) === 'ENOENT') {
         tick(start, signal);
         const currentHome = await stat(requestedHome, { bigint: true });
-        if (!same(homeInfo, currentHome) || !currentHome.isDirectory())
+        if (
+          !same(homeInfo, currentHome) ||
+          !currentHome.isDirectory() ||
+          (await realpath(requestedHome)) !== home
+        )
           throw new FsStageInventoryError();
         return captured();
       }
@@ -141,7 +168,6 @@ export async function captureFsStageInventory(
     const windows = process.platform === 'win32';
     if (!windows && typeof process.geteuid !== 'function') throw new FsStageInventoryError();
     tick(start, signal);
-    const home = await realpath(requestedHome);
     const parent = join(home, '.relavium');
     const index = join(parent, 'fs-staging-v1');
     const uid = !windows && process.geteuid ? BigInt(process.geteuid()) : undefined;
@@ -159,6 +185,7 @@ export async function captureFsStageInventory(
       (await realpath(index)) !== index
     )
       throw new FsStageInventoryError();
+    protectIdentity(indexInfo);
     tick(start, signal);
     const directory = await opendir(index);
     const nonces = new Set<string>();
@@ -219,6 +246,7 @@ export async function captureFsStageInventory(
           (!transient && observed.ctimeNs !== before.ctimeNs)
         )
           throw new FsStageInventoryError();
+        protectIdentity(before);
         if (transient || entry.name === 'inventory.lock') {
           total += Number(before.size);
           if (
@@ -258,7 +286,7 @@ export async function captureFsStageInventory(
           throw new FsStageInventoryError();
         if (match?.[2] === 'record' && match[1]) {
           for (const pinned of parseRecord(bytes.subarray(0, bytesRead), match[1], uid))
-            identities.add(`${pinned.dev}:${pinned.ino}`);
+            protectIdentity(pinned);
         }
         // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
       } finally {

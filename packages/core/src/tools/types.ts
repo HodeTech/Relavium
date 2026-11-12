@@ -388,6 +388,8 @@ export interface SpilledResult {
 
 /** The injected capability bundle. A sibling seam to ADR-0036's `ExecutionHost` and `ResolverCapabilities`. */
 export interface ToolHost {
+  /** Resolve after a host event-loop turn, allowing input and deadlines to run during bounded work. */
+  readonly yieldControl?: () => Promise<void>;
   readonly fs?: FsCapability;
   readonly process?: ProcessCapability;
   readonly egress?: EgressCapability;

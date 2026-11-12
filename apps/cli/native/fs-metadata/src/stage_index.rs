@@ -220,20 +220,28 @@ impl<P: Profile> Index<P> {
         let home_id = P::identity(&home_file)?;
         let parent_path = home_path.join(".relavium");
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("index-parent-open");
         let parent = private_dir::<P>(&parent_path, create)?;
         tick(start, cancelled)?;
         let parent_id = P::identity(&parent)?;
         if create {
             tick(start, cancelled)?;
+            #[cfg(test)]
+            crate::test_hooks::checkpoint("index-home-flush");
             io(home_file.sync_all())?;
         }
         let path = parent_path.join("fs-staging-v1");
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("index-directory-open");
         let directory = private_dir::<P>(&path, create)?;
         tick(start, cancelled)?;
         let id = P::identity(&directory)?;
         if create {
             tick(start, cancelled)?;
+            #[cfg(test)]
+            crate::test_hooks::checkpoint("index-parent-flush");
             io(parent.sync_all())?;
         }
         let index = Self {
@@ -591,12 +599,20 @@ impl<P: Profile> OwnedStage<P> {
         });
         io(file.write_all(&record.encode()?))?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("pin-record-flush");
         io(file.sync_all())?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("pin-payload-flush");
         io(payload.sync_all())?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("pin-stage-flush");
         io(stage_dir.sync_all())?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("pin-parent-flush");
         io(parent.sync_all())?;
         self.index.recheck_checked(start, cancelled)?;
         tick(start, cancelled)?;
@@ -605,6 +621,8 @@ impl<P: Profile> OwnedStage<P> {
             self.index.path.join(format!("{}.record", self.nonce)),
         ))?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("pin-index-flush");
         io(self.index.directory.sync_all())?;
         // A failed pin never grants permission to write payload. Preserve its evidence.
         self.record = Some(record);

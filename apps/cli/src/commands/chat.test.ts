@@ -1525,6 +1525,48 @@ describe('chatCommand', () => {
     expect(recC.writes).toEqual([]);
   });
 
+  it.each(['preference', 'no-mouse', 'inline'] as const)(
+    'keeps explicit review clipboard wired when selection copy is disabled by %s',
+    async (mode) => {
+      const cfg = join(cwd, 'review-copy.toml');
+      writeFileSync(cfg, '[preferences]\ncopy_on_select = false\n');
+      const rec = recordingHoist();
+      const f = deps([], [textTurn('hi')]);
+      let inspected = false;
+      const code = await chatCommand(
+        { agent: undefined },
+        {
+          ...f.d,
+          ...rec.hoist,
+          io: { ...f.d.io, stdoutIsTty: true },
+          global: {
+            ...globalOptions(cwd),
+            ...(mode === 'preference'
+              ? { configPath: cfg }
+              : mode === 'no-mouse'
+                ? { noMouse: true }
+                : { noAltScreen: true }),
+          },
+          drive: async (ctx) => {
+            expect(ctx.clipboard).toBeUndefined();
+            expect(ctx.reviewClipboard).toBeTypeOf('function');
+            expect(await ctx.reviewClipboard?.('masked review page')).toMatchObject({
+              kind: 'written',
+            });
+            inspected = true;
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            await ctx.processLine('/exit');
+            return { kind: ctx.stopReason() };
+          },
+        },
+      );
+      expect(inspected).toBe(true);
+      expect(code).toBe(EXIT_CODES.chatEnded);
+      expect(rec.writes.join('')).toContain(Buffer.from('masked review page').toString('base64'));
+    },
+  );
+
   it('MOUSE: on by default, and `--no-mouse` reaches the real controller (2.6.F Step 5e, ADR-0068 §e)', async () => {
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();

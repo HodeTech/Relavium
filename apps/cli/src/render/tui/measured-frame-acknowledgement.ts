@@ -77,15 +77,22 @@ export function createMeasuredFrameAcknowledgement<Snapshot>(options: {
       epoch++;
       observed = undefined;
     },
-    visible: (snapshot: Snapshot): boolean =>
-      !disposed &&
-      options.hasCustody() &&
-      options.current() === snapshot &&
-      observed?.snapshot === snapshot &&
-      observed.epoch === epoch &&
-      reviewTerminalFits(options.getSize()) &&
-      sameSize(observed.size, options.getSize()) &&
-      fitsTerminalBounds(observed.node, options.getSize()),
+    visible: (snapshot: Snapshot): boolean => {
+      if (!options.hasCustody()) {
+        epoch++;
+        observed = undefined;
+        return false;
+      }
+      return (
+        !disposed &&
+        options.current() === snapshot &&
+        observed?.snapshot === snapshot &&
+        observed.epoch === epoch &&
+        reviewTerminalFits(options.getSize()) &&
+        sameSize(observed.size, options.getSize()) &&
+        fitsTerminalBounds(observed.node, options.getSize())
+      );
+    },
     commit: (
       snapshot: Snapshot,
       node: DOMElement | null,
@@ -98,11 +105,15 @@ export function createMeasuredFrameAcknowledgement<Snapshot>(options: {
         return false;
       void flush().then(
         () => {
+          if (!options.hasCustody()) {
+            epoch++;
+            observed = undefined;
+            return;
+          }
           if (
             disposed ||
             epoch !== committedEpoch ||
             options.current() !== snapshot ||
-            !options.hasCustody() ||
             !sameSize(size, options.getSize()) ||
             !fitsTerminalBounds(node, options.getSize())
           )

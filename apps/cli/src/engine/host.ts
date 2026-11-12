@@ -123,6 +123,8 @@ function wireSaveToPort(
       assertSaveToActive(signal);
       const guard: CapturedMediaWriteGuard = Object.freeze({
         assertPath(lexical: string, canonical: string): void {
+          inventory.assertPath(lexical);
+          inventory.assertPath(canonical);
           runtimeFloor.assertPath(lexical);
           runtimeFloor.assertPath(canonical);
           if (isFsStagePath(lexical) || isFsStagePath(canonical))

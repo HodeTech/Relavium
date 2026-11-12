@@ -105,6 +105,8 @@ export interface RootAppProps {
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
   readonly clipboard?: ClipboardWriter | undefined;
+  /** Explicit masked review copy; independent of mouse selection preferences. */
+  readonly reviewClipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
   /**
@@ -314,9 +316,17 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const suspendPort = props.suspendPort;
   useEffect(() => {
     if (suspendPort === undefined) return;
-    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    suspendPort.attach(async (callback) => {
+      controller.getSnapshot().session?.store.invalidateToolReview();
+      try {
+        await app.suspendTerminal(callback);
+      } finally {
+        // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
+        controller.getSnapshot().session?.store.invalidateToolReview();
+      }
+    });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort]);
+  }, [app, suspendPort, controller]);
   const [size, setSize] = useState(getSize);
   const [homeFrame] = useState(() =>
     createMeasuredFrameAcknowledgement({
@@ -720,7 +730,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             props.suspendPort?.isSuspended() !== true &&
             props.nativePrompt?.getSnapshot().active !== true
           }
-          reviewClipboard={props.clipboard}
+          reviewClipboard={props.reviewClipboard}
           editor={state.input}
           palette={state.palette}
           search={state.search}

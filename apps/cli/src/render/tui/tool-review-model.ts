@@ -245,7 +245,7 @@ export function toolReviewPage(
       Math.min(
         state.screen === 'card' ? 4 : 200,
         rows -
-          13 -
+          15 -
           (target?.rows.length ?? 0) -
           (state.searching ? 2 : 0) -
           (state.denial === undefined ? 0 : 2) -

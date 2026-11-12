@@ -205,6 +205,12 @@ access and negative active/orphan/alias access through actual model-capability
 consumers. This does not claim sandboxing of an independently authorized OS
 process or a hostile same-user process under ADR-0105.
 
+The index namespace itself is protected before it exists. Reject its lexical
+and canonical paths, descendants and opened directory/record/lock identities,
+including an output `save_to` root that resolves into the index through an alias.
+Reuse that one captured boundary through lazy root creation and publication;
+protecting only payload identities does not protect the ownership evidence.
+
 Bound the inventory to 128 records, each at most 16 KiB, and a recovery pass to
 128 records/2 MiB of record data, eight immediate children per stage and no
 recursive descent. Check cancellation/yield and a two-second cooperative scan
@@ -747,6 +753,15 @@ until real Windows native/ABI/installed-consumer execution and the separate
 security gate pass. A Rust Windows cross-target type check supplies no OS or
 publication receipt. Filesystems, remote shares, reparse objects, multiple hard
 links and unsupported attribute/metadata observations refuse.
+
+Parent-directory handles used for the required index and stage flushes request
+`GENERIC_WRITE` in addition to directory listing and security inspection rights.
+Opening an existing parent performs an access check without changing its bytes
+or namespace; denial or a failed flush refuses. This follows the documented
+[`FlushFileBuffers` access requirement](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+but does not by itself establish that directory flush succeeds or proves
+namespace durability on the selected NTFS profile. Those remain real Windows
+execution and acceptance gates.
 
 The closed caller-visible policy is owner SID, primary-group SID, DACL bytes
 and protection/automatic-inheritance controls. It inspects the caller-readable

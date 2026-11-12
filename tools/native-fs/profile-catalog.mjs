@@ -77,6 +77,11 @@ export function rustPopulation(platform) {
     passed: [
       ...passed,
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
+      ...[
+        'ordinary_template_failures_cleanup_before_next_operation',
+        'template_guard_preserves_hardlinked_and_replaced_objects',
+        'uncertain_template_cleanup_retains_reservation_and_alias',
+      ].map((name) => `common::template_cleanup_tests::${name}`),
     ].sort(),
     ignored: [
       'common::producer_crash_tests::crash_child',

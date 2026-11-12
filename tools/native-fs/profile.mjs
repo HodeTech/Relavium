@@ -66,7 +66,162 @@ export function parseSingleRustResult(text, name) {
   assert.ok(!/^test result: FAILED/mu.test(text), 'NATIVE_FS_RUST_FAILURE');
   return name;
 }
-function command(program, args, options) {
+const PROFILE_PHASES = new Set(['rust-list', 'rust-build', 'rust-case', 'node-lifecycle']);
+const PROFILE_CASES = new Set(
+  ['darwin', 'linux', 'win32'].flatMap((platform) => {
+    const population = rustPopulation(platform);
+    return [...population.passed, ...population.ignored];
+  }),
+);
+export const RUST_CHECKPOINTS = Object.freeze([
+  'child-parent-open',
+  'child-parent-capture',
+  'child-source-open',
+  'child-source-capture',
+  'child-stage-new',
+  'child-stage-existing',
+  'child-stage-error',
+  'stage-recover',
+  'stage-reserve',
+  'index-parent-open',
+  'index-home-flush',
+  'index-directory-open',
+  'index-parent-flush',
+  'stage-directory-create',
+  'stage-file-create',
+  'stage-template-create',
+  'stage-pin',
+  'stage-metadata',
+  'pin-record-flush',
+  'pin-payload-flush',
+  'pin-stage-flush',
+  'pin-parent-flush',
+  'pin-index-flush',
+]);
+function checkpoints(text) {
+  const matches = [...text.matchAll(/^RELAVIUM_NATIVE_DIAGNOSTIC:([^\r\n]{0,1024})\r?$/gmu)];
+  if (matches.length !== 1) return 'unavailable';
+  const codes = matches[0][1] === '' ? [] : matches[0][1].split(',');
+  return codes.length <= 16 && codes.every((code) => RUST_CHECKPOINTS.includes(code))
+    ? codes
+    : 'unavailable';
+}
+const SIGNALS = new Set([
+  'SIGABRT',
+  'SIGSEGV',
+  'SIGBUS',
+  'SIGILL',
+  'SIGKILL',
+  'SIGTERM',
+  'SIGINT',
+  'SIGTRAP',
+  'SIGFPE',
+  'SIGPIPE',
+  'SIGXCPU',
+  'SIGXFSZ',
+  'SIGQUIT',
+  'SIGBREAK',
+]);
+const SPAWN_ERRORS = new Set([
+  'ENOENT',
+  'EACCES',
+  'EPERM',
+  'ETIMEDOUT',
+  'ENOBUFS',
+  'ENOMEM',
+  'E2BIG',
+  'EBADF',
+]);
+function numeric(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
+}
+function boundedOutput(value) {
+  if (typeof value !== 'string') return '';
+  return value.length <= 64 * 1024
+    ? value
+    : value.slice(0, 32 * 1024) + '\n' + value.slice(-32 * 1024);
+}
+/** Only fixed context, counts and native source coordinates leave the failed owned test child. */
+export function profileCommandFailure(result, context) {
+  assert.ok(PROFILE_PHASES.has(context.phase), 'NATIVE_FS_PROFILE_CONTEXT');
+  assert.ok(
+    context.phase === 'rust-case' ? PROFILE_CASES.has(context.case) : context.case === undefined,
+    'NATIVE_FS_PROFILE_CONTEXT',
+  );
+  const text = boundedOutput(result.stdout) + '\n' + boundedOutput(result.stderr);
+  const locations = [];
+  const seen = new Set();
+  if (context.phase === 'rust-case') {
+    for (const match of text.matchAll(
+      /src[\\/](common|linux|windows|lib|stage_index|profile_api|macos|unix_template_guard)\.rs:(\d{1,6}):(\d{1,5})/gu,
+    )) {
+      const location = { file: `${match[1]}.rs`, line: Number(match[2]), column: Number(match[3]) };
+      const key = JSON.stringify(location);
+      if (!seen.has(key) && locations.length < 8) {
+        seen.add(key);
+        locations.push(location);
+      }
+    }
+  }
+  const summaries = [
+    ...text.matchAll(
+      /^test result: (ok|FAILED)\. (\d{1,4}) passed; (\d{1,4}) failed; (\d{1,4}) ignored;/gmu,
+    ),
+  ]
+    .slice(-4)
+    .map((match) => ({
+      result: match[1],
+      passed: Number(match[2]),
+      failed: Number(match[3]),
+      ignored: Number(match[4]),
+    }));
+  const failures = [];
+  for (const match of text.matchAll(/^test ([a-zA-Z0-9_:]+) \.\.\. FAILED\r?$/gmu))
+    if (PROFILE_CASES.has(match[1]) && !failures.includes(match[1]) && failures.length < 8)
+      failures.push(match[1]);
+  const assertions = [
+    ['equal', 'assertion `left == right` failed'],
+    ['not-equal', 'assertion `left != right` failed'],
+    ['assertion', 'assertion failed:'],
+    ['result-unwrap', 'called `Result::unwrap()` on an `Err` value'],
+    ['option-unwrap', 'called `Option::unwrap()` on a `None` value'],
+    ['native-phase-timeout', 'native phase did not arrive'],
+  ]
+    .filter(([, fixed]) => text.includes(fixed))
+    .map(([kind]) => kind);
+  const diagnostic = {
+    version: 1,
+    phase: context.phase,
+    ...(context.case === undefined ? {} : { case: context.case }),
+    exit: numeric(result.status),
+    signal:
+      result.signal === null || result.signal === undefined
+        ? 'none'
+        : SIGNALS.has(result.signal)
+          ? result.signal
+          : 'other',
+    error:
+      result.error === undefined
+        ? 'none'
+        : SPAWN_ERRORS.has(result.error.code)
+          ? result.error.code
+          : 'other',
+    ...(context.phase === 'rust-case'
+      ? {
+          locations,
+          summaries,
+          failures,
+          assertions,
+          ...(context.case ===
+          'common::producer_crash_tests::native_producer_partial_crashes_recover'
+            ? { checkpoints: checkpoints(text) }
+            : {}),
+        }
+      : {}),
+  };
+  return new Error(`NATIVE_FS_PROFILE_COMMAND ${JSON.stringify(diagnostic)}`);
+}
+function command(program, args, options, context) {
   const result = spawnSync(program, args, {
     ...options,
     shell: false,
@@ -75,19 +230,29 @@ function command(program, args, options) {
     maxBuffer: 4 * 1024 * 1024,
   });
   if (result.error !== undefined || result.status !== 0)
-    throw new Error('NATIVE_FS_PROFILE_COMMAND');
+    throw profileCommandFailure(result, context);
   return result.stdout;
 }
 export function validateNativeProfile({ repository, native, target, bytes, environment }) {
   const args = [`+${NATIVE_TOOLCHAIN}`, 'test', '--release', '--locked', '--target', target];
   parseRustListing(
-    command('cargo', [...args, '--', '--list'], { cwd: native, env: environment }),
+    command(
+      'cargo',
+      [...args, '--', '--list'],
+      { cwd: native, env: environment },
+      { phase: 'rust-list' },
+    ),
     process.platform,
   );
-  const build = command('cargo', [...args, '--no-run', '--message-format=json'], {
-    cwd: native,
-    env: environment,
-  });
+  const build = command(
+    'cargo',
+    [...args, '--no-run', '--message-format=json'],
+    {
+      cwd: native,
+      env: environment,
+    },
+    { phase: 'rust-build' },
+  );
   const artifacts = build
     .split(/\r?\n/u)
     .filter(Boolean)
@@ -109,7 +274,12 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
   const rust = rustPopulation(process.platform);
   for (const name of rust.passed)
     parseSingleRustResult(
-      command(executable, ['--exact', name, '--test-threads=1'], { cwd: native, env: environment }),
+      command(
+        executable,
+        ['--exact', name, '--test-threads=1'],
+        { cwd: native, env: environment },
+        { phase: 'rust-case', case: name },
+      ),
       name,
     );
   const directory = mkdtempSync(join(tmpdir(), 'relavium-native-profile-'));
@@ -121,6 +291,7 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
       process.execPath,
       [join(repository, 'tools/native-fs/lifecycle.mjs'), binary],
       { cwd: repository, env: environment },
+      { phase: 'node-lifecycle' },
     );
     lifecycle = JSON.parse(text);
     assert.deepEqual(Object.keys(lifecycle).sort(), [

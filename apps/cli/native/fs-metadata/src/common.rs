@@ -282,8 +282,12 @@ fn stage_existing(
     {
         return Err(NativeFailure::Changed);
     }
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("stage-recover");
     crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)?;
     check()?;
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("stage-reserve");
     let mut owned = crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
         home,
         &prepared.parent,
@@ -294,8 +298,12 @@ fn stage_existing(
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
     let setup = (|| {
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-directory-create");
         let stage_directory = CurrentProfile::create_private_directory(&stage_path)?;
         owned.adopt_directory(&stage_directory)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-file-create");
         let payload =
             CurrentProfile::create_private_file(&stage_directory, std::ffi::OsStr::new("payload"))?;
         owned.adopt_empty(&stage_directory, &payload)?;
@@ -306,7 +314,11 @@ fn stage_existing(
             prepared.operation,
         )?;
         CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-pin");
         owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-metadata");
         CurrentProfile::apply_and_verify_existing(
             &prepared.snapshot,
             &prepared.source,
@@ -742,6 +754,7 @@ mod producer_tests {
             &private,
             std::ffi::OsStr::new(".relavium-fs-stage-v1.template"),
             std::ffi::OsStr::new("payload"),
+            &mut |_| Ok(()),
         )
         .expect("inherited file");
         let expected = direct.metadata().expect("direct metadata");
@@ -802,7 +815,11 @@ fn stage_new(
     {
         return Err(NativeFailure::Changed);
     }
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("stage-recover");
     crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)?;
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("stage-reserve");
     let mut owned = crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
         home,
         &prepared.parent,
@@ -813,9 +830,13 @@ fn stage_new(
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
     let setup = (|| {
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-directory-create");
         let stage_directory = CurrentProfile::create_private_directory(&stage_path)?;
         owned.adopt_directory(&stage_directory)?;
         let template = format!(".relavium-fs-stage-v1.template.{nonce}");
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-template-create");
         let payload = CurrentProfile::create_inherited_empty(
             &prepared.parent,
             &prepared.parent_snapshot,
@@ -823,20 +844,36 @@ fn stage_new(
             &stage_directory,
             std::ffi::OsStr::new(&template),
             std::ffi::OsStr::new("payload"),
+            &mut |payload| {
+                #[cfg(test)]
+                if crate::test_hooks::fail("template-adoption-hardlink") {
+                    std::fs::hard_link(&payload_path, prepared.parent_path.join("fixture-alias"))
+                        .map_err(|_| NativeFailure::Unsupported)?;
+                    return Err(NativeFailure::Changed);
+                }
+                #[cfg(test)]
+                if crate::test_hooks::fail("template-adoption") {
+                    return Err(NativeFailure::Unsupported);
+                }
+                owned.adopt_empty(&stage_directory, payload)
+            },
         )?;
-        owned.adopt_empty(&stage_directory, &payload)?;
         let snapshot = CurrentProfile::capture_inherited_stage(
             &prepared.parent_snapshot,
             &payload,
             &payload_path,
         )?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("stage-pin");
         owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)?;
         Ok((stage_directory, payload, snapshot))
     })();
     let (stage_directory, mut payload, snapshot) = match setup {
         Ok(value) => value,
         Err(error) => {
-            let _ = owned.cleanup();
+            if error != NativeFailure::CleanupUncertain {
+                let _ = owned.cleanup();
+            }
             return Err(error);
         }
     };
@@ -941,6 +978,7 @@ fn native_error(error: crate::profile_api::NativeFailure) -> Error {
     use crate::profile_api::NativeFailure;
     let message = match error {
         NativeFailure::PossiblyPublished => "filesystem publication outcome uncertain",
+        NativeFailure::CleanupUncertain => "filesystem metadata cleanup unavailable",
         NativeFailure::Cancelled => "filesystem operation cancelled",
         NativeFailure::Changed => "filesystem preparation changed",
         NativeFailure::AccessDenied => "filesystem access denied",
@@ -1279,6 +1317,36 @@ mod producer_crash_tests {
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    enum Receipt {
+        Phase(String),
+        Checkpoint(&'static str),
+    }
+    const CHECKPOINTS: &[&str] = &[
+        "child-parent-open",
+        "child-parent-capture",
+        "child-source-open",
+        "child-source-capture",
+        "child-stage-new",
+        "child-stage-existing",
+        "child-stage-error",
+        "stage-recover",
+        "stage-reserve",
+        "index-parent-open",
+        "index-home-flush",
+        "index-directory-open",
+        "index-parent-flush",
+        "stage-directory-create",
+        "stage-file-create",
+        "stage-template-create",
+        "stage-pin",
+        "stage-metadata",
+        "pin-record-flush",
+        "pin-payload-flush",
+        "pin-stage-flush",
+        "pin-parent-flush",
+        "pin-index-flush",
+    ];
+
     struct TestChild(std::process::Child);
     impl Drop for TestChild {
         fn drop(&mut self) {
@@ -1313,7 +1381,9 @@ mod producer_crash_tests {
         };
         #[cfg(not(target_os = "macos"))]
         let mask = None;
+        crate::test_hooks::checkpoint("child-parent-open");
         let parent = CurrentProfile::open_parent(&root).expect("parent");
+        crate::test_hooks::checkpoint("child-parent-capture");
         let parent_snapshot =
             CurrentProfile::capture_parent(&parent, mask).expect("parent snapshot");
         let cancelled = AtomicBool::new(false);
@@ -1325,18 +1395,24 @@ mod producer_crash_tests {
                 parent_snapshot,
                 target: "target".into(),
             };
-            let _stage = stage_new(
+            crate::test_hooks::checkpoint("child-stage-new");
+            let result = stage_new(
                 prepared,
                 &home,
                 &after,
                 "00112233445566778899aabbccddeeff",
                 mask,
                 &cancelled,
-            )
-            .expect("stage new");
+            );
+            if result.is_err() {
+                crate::test_hooks::checkpoint("child-stage-error");
+            }
+            let _stage = result.expect("stage new");
         } else {
+            crate::test_hooks::checkpoint("child-source-open");
             let source = open_source(&target).expect("source");
             let operation = WriteOperation::Replace;
+            crate::test_hooks::checkpoint("child-source-capture");
             let snapshot = CurrentProfile::capture_existing(&source, &target, operation)
                 .expect("source snapshot");
             let identity = CurrentProfile::identity(&source).expect("source identity");
@@ -1350,7 +1426,8 @@ mod producer_crash_tests {
                 parent_path: root.clone(),
                 parent_snapshot,
             };
-            let _stage = stage_existing(
+            crate::test_hooks::checkpoint("child-stage-existing");
+            let result = stage_existing(
                 prepared,
                 &home,
                 b"before",
@@ -1358,8 +1435,11 @@ mod producer_crash_tests {
                 "00112233445566778899aabbccddeeff",
                 mask,
                 &cancelled,
-            )
-            .expect("stage existing");
+            );
+            if result.is_err() {
+                crate::test_hooks::checkpoint("child-stage-error");
+            }
+            let _stage = result.expect("stage existing");
         }
         panic!("configured phase was not reached");
     }
@@ -1455,22 +1535,43 @@ mod producer_crash_tests {
             let reader = std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
-                    if line.contains("RELAVIUM_NATIVE_PHASE:") {
-                        let _ = send.send(line);
+                    if let Some((_, code)) = line.split_once("RELAVIUM_NATIVE_CHECKPOINT:") {
+                        if let Some(known) =
+                            CHECKPOINTS.iter().copied().find(|known| *known == code)
+                        {
+                            let _ = send.send(Receipt::Checkpoint(known));
+                        }
+                    }
+                    if let Some((_, receipt)) = line.split_once("RELAVIUM_NATIVE_PHASE:") {
+                        let _ = send.send(Receipt::Phase(receipt.to_owned()));
                         break;
                     }
                 }
             });
-            let receipt = receive.recv_timeout(Duration::from_secs(15));
-            if receipt.is_err() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let mut checkpoints = Vec::new();
+            let receipt = loop {
+                match receive
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                {
+                    Ok(Receipt::Phase(receipt)) => break Some(receipt),
+                    Ok(Receipt::Checkpoint(code)) => {
+                        if checkpoints.len() == 16 {
+                            checkpoints.remove(0);
+                        }
+                        checkpoints.push(code);
+                    }
+                    Err(_) => break None,
+                }
+            };
+            if receipt.is_none() {
                 let _ = child.0.kill();
                 let _ = child.0.wait();
                 let _ = reader.join();
+                eprintln!("RELAVIUM_NATIVE_DIAGNOSTIC:{}", checkpoints.join(","));
                 panic!("native phase did not arrive");
             }
-            assert!(receipt
-                .expect("phase")
-                .contains(&format!("RELAVIUM_NATIVE_PHASE:{phase}:{pid}")));
+            assert!(receipt.expect("phase").contains(&format!("{phase}:{pid}")));
             let stage = root.join(format!(
                 ".relavium-fs-stage-v1.{pid}.00112233445566778899aabbccddeeff"
             ));
@@ -1495,5 +1596,216 @@ mod producer_crash_tests {
             assert!(!stage.exists());
             std::fs::remove_dir_all(root).expect("fixture cleanup");
         }
+    }
+}
+
+#[cfg(test)]
+mod template_cleanup_tests {
+    use super::*;
+    use crate::profile_api::NativeFailure;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "relavium-template-cleanup-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).expect("fixture root");
+            drop(
+                CurrentProfile::create_private_directory(&root.join("home")).expect("private home"),
+            );
+            Self(root)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct ClearFailure;
+    impl Drop for ClearFailure {
+        fn drop(&mut self) {
+            crate::test_hooks::inject_failure(None);
+        }
+    }
+    fn mask() -> Option<u32> {
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "umask"])
+                .output()
+                .expect("fixture mask");
+            Some(
+                u32::from_str_radix(
+                    std::str::from_utf8(&output.stdout)
+                        .expect("mask text")
+                        .trim(),
+                    8,
+                )
+                .expect("mask"),
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+    fn prepare(root: &Path, mask: Option<u32>) -> PreparedNew {
+        let parent = CurrentProfile::open_parent(root).expect("parent");
+        let parent_snapshot = CurrentProfile::capture_parent(&parent, mask).expect("parent policy");
+        PreparedNew {
+            parent,
+            parent_path: root.to_owned(),
+            parent_snapshot,
+            target: "target".into(),
+        }
+    }
+
+    #[test]
+    fn ordinary_template_failures_cleanup_before_next_operation() {
+        let fixture = Fixture::new();
+        let mask = mask();
+        let cancelled = AtomicBool::new(false);
+        let _reset = ClearFailure;
+        for index in 0..132_u32 {
+            let phase = [
+                "template-created",
+                "template-moved",
+                "template-adoption",
+                "template-adopted",
+            ][(index as usize) % 4];
+            crate::test_hooks::inject_failure(Some(phase));
+            let result = stage_new(
+                prepare(&fixture.0, mask),
+                &fixture.0.join("home"),
+                b"never published",
+                &format!("{index:032x}"),
+                mask,
+                &cancelled,
+            );
+            assert!(matches!(result, Err(NativeFailure::Unsupported)));
+            assert!(!fixture.0.join("target").exists());
+            assert!(!std::fs::read_dir(&fixture.0)
+                .expect("fixture entries")
+                .any(|entry| entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".relavium-fs-stage-v1.")));
+            let index_path = fixture.0.join("home/.relavium/fs-staging-v1");
+            assert!(!std::fs::read_dir(index_path)
+                .expect("inventory")
+                .any(|entry| {
+                    let name = entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned();
+                    name.ends_with(".reserved")
+                        || name.ends_with(".prepare")
+                        || name.ends_with(".record")
+                }));
+        }
+        crate::test_hooks::inject_failure(None);
+        let stage = stage_new(
+            prepare(&fixture.0, mask),
+            &fixture.0.join("home"),
+            b"published",
+            "ffffffffffffffffffffffffffffffff",
+            mask,
+            &cancelled,
+        )
+        .expect("next stage");
+        publish_staged_new(stage, mask, &cancelled).expect("next publication");
+        assert_eq!(
+            std::fs::read(fixture.0.join("target")).expect("target"),
+            b"published"
+        );
+    }
+
+    #[test]
+    fn template_guard_preserves_hardlinked_and_replaced_objects() {
+        let fixture = Fixture::new();
+        let mask = mask();
+        for scenario in ["hardlink", "swap"] {
+            let parent = CurrentProfile::open_parent(&fixture.0).expect("parent");
+            let snapshot = CurrentProfile::capture_parent(&parent, mask).expect("policy");
+            let stage_path = fixture.0.join(format!(".relavium-fs-stage-v1.{scenario}"));
+            let stage = CurrentProfile::create_private_directory(&stage_path).expect("stage");
+            let payload = stage_path.join("payload");
+            let alternate = fixture.0.join(format!("{scenario}-alternate"));
+            let result = CurrentProfile::create_inherited_empty(
+                &parent,
+                &snapshot,
+                mask,
+                &stage,
+                std::ffi::OsStr::new(".relavium-fs-stage-v1.guard-template"),
+                std::ffi::OsStr::new("payload"),
+                &mut |_| {
+                    if scenario == "hardlink" {
+                        std::fs::hard_link(&payload, &alternate).expect("fixture hardlink");
+                    } else {
+                        std::fs::rename(&payload, &alternate).expect("move held object");
+                        std::fs::write(&payload, b"foreign").expect("foreign replacement");
+                    }
+                    Err(NativeFailure::Changed)
+                },
+            );
+            assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+            assert!(alternate.exists());
+            if scenario == "hardlink" {
+                assert_eq!(std::fs::metadata(&payload).expect("payload").len(), 0);
+            } else {
+                assert_eq!(
+                    std::fs::read(&payload).expect("foreign remains"),
+                    b"foreign"
+                );
+            }
+            std::fs::remove_file(&alternate).expect("fixture alternate");
+            std::fs::remove_file(&payload).expect("fixture payload");
+            drop(stage);
+            std::fs::remove_dir(stage_path).expect("fixture stage");
+        }
+    }
+
+    #[test]
+    fn uncertain_template_cleanup_retains_reservation_and_alias() {
+        let fixture = Fixture::new();
+        let mask = mask();
+        let _reset = ClearFailure;
+        crate::test_hooks::inject_failure(Some("template-adoption-hardlink"));
+        let result = stage_new(
+            prepare(&fixture.0, mask),
+            &fixture.0.join("home"),
+            b"never published",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            mask,
+            &AtomicBool::new(false),
+        );
+        assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+        assert!(!fixture.0.join("target").exists());
+        assert!(fixture.0.join("fixture-alias").exists());
+        assert!(fixture
+            .0
+            .join("home/.relavium/fs-staging-v1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.reserved")
+            .exists());
+        assert!(std::fs::read_dir(&fixture.0)
+            .expect("root entries")
+            .any(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".relavium-fs-stage-v1.")
+            }));
     }
 }

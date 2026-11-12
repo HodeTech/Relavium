@@ -91,8 +91,11 @@ is accepted under the maintainer's instruction after verifying the supplied
 reviews: all model file writes require tier-3 durability; new-file policy,
 staging recovery/model isolation and the narrow native host/build exception
 are specified in its canonical contract. Native implementation is active after
-the initial dependency pin/audit; profile, implementation/security and Step 2 acceptance
-remain open. This is no claim that the complete host/native adapter was tested.
+the initial dependency pin/audit. The
+[author checkpoint and first review corrections](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-first-implementation-review-corrections-2026-11-12)
+record bounded local native/workflow evidence and the actual CI limitations;
+complete affected reviews, security, Windows and combined Step 2 acceptance
+remain open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

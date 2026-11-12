@@ -345,7 +345,7 @@ test('required checks keep their branch-protection names and cannot be skipped',
   }
 });
 
-test('Windows cohorts retain fourteen serial filesystem files and media cases', () => {
+test('Windows cohorts retain twenty serial filesystem files and media cases', () => {
   const require = createRequire(new URL('apps/cli/package.json', root));
   const { parse } = require('yaml');
   const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
@@ -374,8 +374,14 @@ test('Windows cohorts retain fourteen serial filesystem files and media cases', 
     'src/engine/tool-host/fs-policy-scratch-composition.test.ts',
     'src/engine/tool-host/fs-rooted-glob.test.ts',
     'src/engine/tool-host/fs-write-floor-contract.test.ts',
+    'src/engine/tool-host/fs-prepared.test.ts',
+    'src/engine/tool-host/fs-creation-mask.test.ts',
+    'src/engine/tool-host/fs-stage-inventory.test.ts',
+    'src/engine/tool-host/fs-stage-namespace.test.ts',
+    'src/engine/tool-host/prepared-replay.e2e.test.ts',
+    'src/engine/host.test.ts',
   ];
-  assert.equal(files.length, 14);
+  assert.equal(files.length, 20);
   for (const file of files) assert.ok(existsSync(new URL(`apps/cli/${file}`, root)), file);
   assert.deepEqual(step.run.trim().split(/\s+/), [
     'pnpm',

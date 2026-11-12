@@ -202,7 +202,9 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
   const pending = new WeakMap<object, ReadEvidence>();
   const scopes = new WeakMap<object, ReadEvidence[]>();
   const staged = new WeakMap<object, ReadEvidence[]>();
-  const inventory = async (signal?: AbortSignalLike): Promise<FsStageInventory> => {
+  const inventory = async (path: string, signal?: AbortSignalLike): Promise<FsStageInventory> => {
+    // Reject raw empty/UNC input before any native lookup, including the trusted inventory scan.
+    lexicalTarget(owned(), path);
     const home = owned().operatorHomeDir;
     if (home === undefined) throw new FsStageInventoryError();
     return captureFsStageInventory(home, signal);
@@ -210,7 +212,7 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
   const capability: FsCapability = {
     readFile: (path, opts, signal) =>
       guarded(async () => {
-        const stage = await inventory(signal);
+        const stage = await inventory(path, signal);
         const result = await readOne(
           owned(),
           maxReadBytes,
@@ -246,15 +248,22 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
     },
     findFiles: (path, opts, signal) =>
       guarded(async () =>
-        discover(owned(), path, opts, undefined, signal, await inventory(signal)),
+        discover(owned(), path, opts, undefined, signal, await inventory(path, signal)),
       ),
     searchFiles: (path, opts, signal) =>
       guarded(async () =>
-        discover(owned(), path, undefined, opts, signal, await inventory(signal)),
+        discover(owned(), path, undefined, opts, signal, await inventory(path, signal)),
       ),
     prepareWrite: (request, signal) =>
       guarded(async () =>
-        prepareWrite(owned(), capability, maxReadBytes, request, signal, await inventory(signal)),
+        prepareWrite(
+          owned(),
+          capability,
+          maxReadBytes,
+          request,
+          signal,
+          await inventory(request.path, signal),
+        ),
       ),
     writeFile: (path, data, opts, signal) =>
       guarded(async () => {
@@ -264,7 +273,7 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
           maxReadBytes,
           { kind: 'write', path, content: data, ...opts },
           signal,
-          await inventory(signal),
+          await inventory(path, signal),
         );
         try {
           return await prepared.execute(signal);
@@ -274,7 +283,7 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
       }),
     listDirectory: (path, opts, signal) =>
       guarded(async () =>
-        listOne(owned(), maxGlobMatches, path, opts, signal, await inventory(signal)),
+        listOne(owned(), maxGlobMatches, path, opts, signal, await inventory(path, signal)),
       ),
   };
   evidenceAccess.set(capability, (scope, path, digest, start, end) => {

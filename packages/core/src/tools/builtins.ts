@@ -457,7 +457,10 @@ async function prepareFile(
       checkCancelled: () => {
         if (ctx.signal?.aborted === true) throw new ToolCancelledError(toolId);
       },
-      yield: () => Promise.resolve(),
+      yield: () => {
+        if (host.yieldControl === undefined) throw new ToolUnavailableError(toolId, 'yieldControl');
+        return host.yieldControl();
+      },
     });
     const preview: ToolPreview = Object.freeze({
       kind: 'operation',

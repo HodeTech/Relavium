@@ -38,7 +38,7 @@ function context(overrides: Partial<ToolDispatchContext> = {}): ToolDispatchCont
     ...overrides,
   };
 }
-function fixture() {
+function fixture(yieldControl?: () => Promise<void>) {
   const execute = vi.fn(async () => {
     await Promise.resolve();
     return { path: 'a', bytesWritten: 3 };
@@ -69,7 +69,10 @@ function fixture() {
       return { entries: [] };
     },
   };
-  const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { fs } });
+  const registry = createToolRegistry({
+    tools: BUILTIN_TOOLS,
+    host: { fs, ...(yieldControl === undefined ? {} : { yieldControl }) },
+  });
   const call = {
     type: 'tool_call',
     id: 'provider-id',
@@ -100,6 +103,75 @@ function port(overrides: Partial<EffectDispatchPort> = {}): EffectDispatchPort {
   };
 }
 describe('prepared filesystem dispatch and retained delivery', () => {
+  it('yields during diff preparation and releases the handle when cancelled', async () => {
+    const controller = createAbortController();
+    const yieldControl = vi.fn(async () => {
+      controller.abort();
+      await Promise.resolve();
+    });
+    const f = fixture(yieldControl);
+    let finishRelease = () => {};
+    let markReleaseStarted = () => {};
+    const releaseStarted = new Promise<void>((resolve) => {
+      markReleaseStarted = resolve;
+    });
+    const releaseFinished = new Promise<void>((resolve) => {
+      finishRelease = resolve;
+    });
+    const release = vi.fn(() => {
+      markReleaseStarted();
+      return releaseFinished;
+    });
+    f.prepareWrite.mockResolvedValue({
+      path: 'a',
+      before: 'a\n'.repeat(5000),
+      after: 'b\n'.repeat(5000),
+      execute: f.execute,
+      release,
+    });
+    const effects = port();
+    const confirm = vi.fn();
+    const dispatch = f.registry.dispatch(
+      f.call,
+      context({ effects, signal: controller.signal, approval: { confirm } }),
+    );
+    let settled = false;
+    void dispatch.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await releaseStarted;
+    expect(settled).toBe(false);
+    finishRelease();
+    await expect(dispatch).rejects.toMatchObject({ code: 'cancelled' });
+    expect(yieldControl).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(effects.prepare).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a chunked diff without a host scheduler and releases preparation', async () => {
+    const f = fixture();
+    f.prepareWrite.mockResolvedValue({
+      path: 'a',
+      before: 'a\n'.repeat(5000),
+      after: 'b\n'.repeat(5000),
+      execute: f.execute,
+      release: f.release,
+    });
+    const effects = port();
+    await expect(f.registry.dispatch(f.call, context({ effects }))).rejects.toMatchObject({
+      code: 'capability_unavailable',
+    });
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(effects.prepare).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
   it('freezes the review before approval, then journals, gates, executes and releases once', async () => {
     const f = fixture();
     const order: string[] = [];

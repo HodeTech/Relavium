@@ -2047,6 +2047,73 @@ asset is not a complete release inventory and cannot pass packing. The existing
 publication guard remains in force. No Step 3 grant or whole-MVP-3 completion
 is implied by this author checkpoint.
 
+### MVP-3 Step 2 first implementation review corrections (2026-11-12)
+
+The author checkpoint is `4ba04e1f`. Fresh Sol/Terra agents reviewed backend,
+native/delivery and UI areas. Their reports are review evidence, not authority;
+root checked the actionable cases against the implementation before changing it.
+The native read did not claim a complete security verdict. The following verified
+issues are corrected together, without changing the three-step plan:
+
+| Finding | Correction and evidence |
+|---|---|
+| Empty inheritance templates could escape ownership on normal pre/post-move or adoption failures | A held-identity guard owns each exclusively created template immediately; a trusted synchronous callback transfers ownership before post-move validation. Exact empty-object cleanup is tested through 132 repeated failures; links, swaps and uncertain cleanup preserve evidence. Three additional parent controls run on every native profile. |
+| Approval cards omitted the governed tool and action | Both shared views measure escaped mandatory identity/action rows, including saved-result delivery, and refuse incomplete identity evidence. Undeclared tools still expose name-only previews, never enumerated arguments. |
+| External suspension could revive prior frame/reveal evidence | Actual suspend entry and reclaim invalidate review state; custody loss discards acknowledged and pending frame evidence. Held-redraw tests exercise both real host wrappers. |
+| Explicit review copy inherited mouse-selection preferences | An independent review clipboard capability remains wired in inline/no-mouse/disabled-selection modes; automatic copy preferences keep their original meaning. |
+| A retained summary was inaccessible after absent/evicted preview | Summary-only details explicitly disclose the unavailable preview and retain masking, bounded selection and truthful outcome/identity. |
+| An output-root alias could write staging index evidence | The captured index boundary now rejects lexical/canonical descendants before creation and opened index/record/lock identities. Actual `createCliHost`/DB writes preserve the lock and refuse new records/directories while ordinary writes succeed. |
+| Diff chunk yields stayed entirely in the microtask queue | A host `yieldControl` capability supplies a real event-loop turn. Missing capability refuses and releases preparation. Actual timer cancellation and joined release tests prove no approval, claim or dispatch occurs after cancellation. |
+
+The first complete coverage run reached all 873 files but failed one existing
+surface-acquisition test: it expected the second close after one `setImmediate`,
+before asynchronous host teardown necessarily joined. An isolated repetition
+failed the same assertion on another surface. The fixture now waits for the exact
+second attempt within its existing wait bound; native-open, owner, signal,
+finite-exit and unsettled-result assertions remain unchanged. All 38 related
+tests pass. A complete final-source coverage run is still required; this failed
+run is not coverage acceptance.
+
+The [author-source CI](https://github.com/HodeTech/Relavium/actions/runs/43142517047)
+executed six macOS/Linux native profiles successfully. Both Windows builds and
+protocol probes succeeded, but the first selected native Rust case failed; its
+exact stage was not retained by that version of the validator. Dependent
+controls did not run, and the required aggregate/coverage/Windows contexts
+correctly failed instead of passing by skip. The validator now emits bounded
+fixed case/checkpoint/source-coordinate diagnostics without raw child output.
+Source inspection separately confirmed a documented access mismatch:
+directory handles later passed to `FlushFileBuffers` lacked its required write
+access. Corrected opens retain inspection rights and request that OS-checked
+access without mutating directories or ignoring failed flushes. A native
+Windows parent test now includes actual flush and denial checks. This correction
+does not establish the cause of the previous failure or prove NTFS durability;
+both actual Windows legs remain required.
+
+The local macOS profile now passes 31 parents plus eleven Node lifecycle cases,
+with three child fixtures exercised by their parents. Non-root Linux GNU/musl
+cleanup controls pass; Windows source cross-checking supplies no runtime proof.
+The Windows source cohort also grows from fourteen to twenty serial files to
+exercise the new prepared writes, mask helper, inventory/namespace guards,
+workflow replay cuts and actual host output guard. Deadlines and old cases are
+unchanged. The permanent usage cohort grows from 452 to 455 solely for three
+explicit-copy command regressions; all 71 native children remain required.
+
+After these corrections, workspace lint/typecheck and all 18,335 tests pass.
+The 23 skips comprise the prior 22 plus the new Windows-only index-spelling
+control on the local macOS run; that control is included in the expanded
+Windows cohort. Build/formatting, 874-file isolation, DB sync, tools
+typecheck/lint and seam/dependency fences pass. The original UNC-before-I/O
+controls also remain strict: raw input is rejected before the newly captured
+trusted-home canonical path is resolved.
+All 1,072 acceptance-tool tests pass on the frozen source. Bundle closure,
+177 compiled bootstrap controls and the real compiled workflow write/journal
+smoke pass with the current-host native artifact. This is source/build evidence,
+not a complete eight-target or installed-tarball acceptance.
+
+Fresh complete affected reviews, the separate security sitting and final
+combined/native/installed-consumer evidence remain open. Step 2 is not accepted,
+and Step 3 grants are not enabled.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

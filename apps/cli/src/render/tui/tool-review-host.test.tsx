@@ -1,4 +1,7 @@
 import { render } from 'ink';
+import { createSuspendPort, type SuspendPort } from '../suspend.js';
+import type { ClipboardWriter } from '../clipboard.js';
+import { toolReviewIdentity } from './tool-review-view.js';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolPreview } from '@relavium/core';
@@ -47,6 +50,7 @@ function fixture(
   alternate: boolean,
   color: boolean,
   output = new OwnedTtyOutput(),
+  ports: { suspendPort?: SuspendPort; reviewClipboard?: ClipboardWriter } = {},
 ) {
   const input = new OwnedTtyInput(),
     stderr = new OwnedTtyOutput();
@@ -92,6 +96,7 @@ function fixture(
           onError: (error) => errors.push(error),
           onModeChange: () => {},
           alternateScreen: alternate,
+          ...ports,
         })
       : createElement(RootApp, {
           controller,
@@ -105,6 +110,7 @@ function fixture(
             };
           },
           alternateScreen: alternate,
+          ...ports,
         });
   const instance = render(tree, {
     stdin: input,
@@ -212,6 +218,100 @@ describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
   );
 });
 
+describe.each(['chat', 'home'] as const)('review identity and explicit copy %s', (host) => {
+  it.each(['notify', 'read_clipboard', 'mcp:server:custom'])(
+    'names undeclared %s without rendering argument values',
+    async (toolId) => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestApproval(
+        {
+          ...request,
+          toolId,
+          preview: { path: 'NEVER_SHOW_ARGUMENTS' },
+          unredactedPreview: { path: 'NEVER_SHOW_ARGUMENTS' },
+        },
+        true,
+      );
+      await vi.waitFor(() => expect(f.text()).toContain(`tool ${toolId}`));
+      expect(f.text()).toContain('action fs_write');
+      expect(f.text()).not.toContain('NEVER_SHOW_ARGUMENTS');
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('a');
+      expect(await answer).toEqual({ outcome: 'approve', scope: 'always' });
+    },
+  );
+  it('fails closed when escaped identity exceeds the mandatory row budget', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    let answered = false;
+    void f.store
+      .requestApproval({ ...request, toolId: 'notify' + '\u202e'.repeat(100) }, true)
+      .then(() => {
+        answered = true;
+      });
+    await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
+    f.input.push('a');
+    f.input.push('y');
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    expect(answered).toBe(false);
+  });
+  it.each([true, false])(
+    'copies masked review explicitly after reveal without selection clipboard, alternate=%s',
+    async (alternate) => {
+      const copied: string[] = [];
+      const f = fixture(host, alternate, false, new OwnedTtyOutput(), {
+        reviewClipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      });
+      await f.ready();
+      void f.store.requestApproval(request, false, undefined, { callId: 'copy', preview });
+      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('v');
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('r');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.reveal).toBe(true));
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('c');
+      await vi.waitFor(() => expect(copied.length).toBe(1));
+      expect(copied[0]).toContain('<MASK:');
+      expect(copied[0]).not.toContain('abcdefghijkl');
+    },
+  );
+  it('opens retained summary-only details with selected identity and outcome', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    f.store.applyToolLiveEvent({ phase: 'started', callId: 'summary', toolId: 'git_status' });
+    f.store.applyToolLiveEvent({
+      phase: 'completed',
+      callId: 'summary',
+      toolId: 'git_status',
+      outcome: 'success',
+      summary: 'Clean worktree',
+    });
+    f.store.openDetails();
+    await vi.waitFor(() => expect(f.text()).toContain('Enter details'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('\r');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+    await vi.waitFor(() => expect(f.text()).toContain('Clean worktree'));
+    expect(f.text()).toContain('tool git_status');
+    expect(f.text()).toContain('outcome success');
+    expect(f.text()).toContain('Preview unavailable');
+    expect(f.text()).not.toContain('Approval includes masked bytes');
+  });
+});
+
+it('escapes controls and literal token delimiters in mandatory tool identity', () => {
+  const identity = toolReviewIdentity('mcp:<x>\u202e', 'action', 'os', 80);
+  expect(identity.valid).toBe(true);
+  expect(identity.rows.join('\n')).toContain('tool mcp:<U+003C>x><U+202E>');
+  expect(toolReviewIdentity('界'.repeat(100), 'action', 'os', 80).valid).toBe(false);
+});
+
 class HeldOutput extends OwnedTtyOutput {
   held = false;
   blockedWrite: (() => void) | undefined;
@@ -250,6 +350,54 @@ class HeldOutput extends OwnedTtyOutput {
   }
 }
 describe.each(['chat', 'home'] as const)('flushed review custody %s', (host) => {
+  it('invalidates external suspend entry and requires a fresh flushed inspection after reclaim', async () => {
+    const output = new HeldOutput();
+    const port = createSuspendPort();
+    const f = fixture(host, true, false, output, { suspendPort: port });
+    await f.ready();
+    let answered = false;
+    void f.store
+      .requestApproval(request, false, undefined, { callId: 'suspend', preview })
+      .then(() => {
+        answered = true;
+      });
+    await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('v');
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('r');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.reveal).toBe(true));
+    await vi.waitFor(() => expect(reviewInspected(f.store.getSnapshot().review!)).toBe(true));
+    let regain: (() => void) | undefined;
+    let entered = false;
+    const suspended = port.current()?.(() => {
+      entered = true;
+      return new Promise<void>((resolve) => {
+        regain = resolve;
+      });
+    });
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(f.store.getSnapshot().review?.reveal).toBe(false);
+    expect(f.store.getSnapshot().review?.inspected).toEqual([]);
+    output.held = true;
+    regain?.();
+    await vi.waitFor(() => expect(output.blockedWrite).toBeDefined());
+    f.store.handleReviewInput('y', {});
+    expect(answered).toBe(false);
+    output.release();
+    await suspended;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    f.input.push('y');
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(answered).toBe(false);
+    expect(f.store.getSnapshot().review?.reveal).toBe(false);
+    f.input.push('r');
+    await vi.waitFor(() => expect(reviewInspected(f.store.getSnapshot().review!)).toBe(true));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('y');
+    await vi.waitFor(() => expect(answered).toBe(true));
+    expect(f.errors).toEqual([]);
+  });
   it('waits for actual stdout completion and rejects a stale card key', async () => {
     const output = new HeldOutput();
     const f = fixture(host, true, false, output);

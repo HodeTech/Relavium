@@ -267,6 +267,72 @@ describe('ephemeral tool display ownership', () => {
   });
 });
 
+it.each(['git_status', 'mcp:server:custom'])(
+  'opens the retained bounded summary of %s without a declared preview',
+  (toolId) => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    store.applyToolLiveEvent({ phase: 'started', callId: 'summary', toolId });
+    store.applyToolLiveEvent({
+      phase: 'completed',
+      callId: 'summary',
+      toolId,
+      outcome: 'failure',
+      summary: 'Bearer sk-proj-abcdefghijklmnopqrstuvw',
+    });
+    store.openDetails();
+    store.bindReviewVisibility(() => true);
+    store.handleReviewInput('', { return: true });
+    const review = store.getSnapshot().review;
+    expect(review?.screen).toBe('full');
+    expect(review?.callId).toBe('summary');
+    expect(review?.document?.preview.target).toBeUndefined();
+    expect(review?.document?.preview.diff).toBeUndefined();
+    const shown =
+      review?.document === undefined
+        ? ''
+        : projectReviewPage(review.document, REVIEW_START, 78, 20).rows.join('\n');
+    expect(shown).toContain('Preview unavailable');
+    expect(shown).toContain('Result summary');
+    expect(shown).not.toContain('abcdefghijkl');
+  },
+);
+
+it('opens the retained summary after the actual aggregate preview budget evicts a document', () => {
+  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+  const full = replacement('a'.repeat(8 * 1024 * 1024), 'b'.repeat(8 * 1024 * 1024));
+  store.applyToolLiveEvent({ phase: 'started', callId: 'evicted', toolId: 'write_file' });
+  store.applyToolLiveEvent({
+    phase: 'preview',
+    callId: 'evicted',
+    toolId: 'write_file',
+    preview: { ...full, target: 'DO_NOT_RECONSTRUCT' },
+  });
+  store.applyToolLiveEvent({
+    phase: 'completed',
+    callId: 'evicted',
+    toolId: 'write_file',
+    outcome: 'success',
+    summary: 'Retained result',
+  });
+  // Two complete 8 MiB before/after snapshots plus targets exceed the real 32 MiB budget.
+  store.applyToolLiveEvent({
+    phase: 'preview',
+    callId: 'newer',
+    toolId: 'write_file',
+    preview: full,
+  });
+  expect(store.getSnapshot().toolDisplays.get('evicted')?.document).toBeUndefined();
+  store.openDetails();
+  store.bindReviewVisibility(() => true);
+  store.handleReviewInput('', { return: true });
+  expect(store.getSnapshot().review?.callId).toBe('evicted');
+  const preview = store.getSnapshot().review?.document?.preview;
+  expect(preview?.target).toBeUndefined();
+  expect(preview?.diff).toBeUndefined();
+  expect(preview?.fields).toContainEqual({ name: 'Result summary', value: 'Retained result' });
+  expect(JSON.stringify(preview)).not.toContain('DO_NOT_RECONSTRUCT');
+});
+
 it('copies only the escaped masked page after reveal, and never leaks raw details through transcript hatches', async () => {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   store.applyToolLiveEvent({ phase: 'started', callId: 'copy', toolId: 'write_file' });

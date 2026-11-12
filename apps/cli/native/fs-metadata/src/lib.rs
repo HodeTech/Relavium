@@ -11,15 +11,32 @@ mod macos;
 mod profile_api;
 #[allow(dead_code)]
 mod stage_index;
+#[cfg(unix)]
+mod unix_template_guard;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(test)]
 mod test_hooks {
     use std::io::Write;
+    thread_local! { static FAILURE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) }; }
+
+    pub(crate) fn inject_failure(phase: Option<&'static str>) {
+        FAILURE.set(phase);
+    }
+    pub(crate) fn fail(phase: &str) -> bool {
+        FAILURE.get() == Some(phase)
+    }
 
     pub(crate) fn selected(phase: &str) -> bool {
         std::env::var("RELAVIUM_TEST_NATIVE_PHASE").ok().as_deref() == Some(phase)
+    }
+
+    pub(crate) fn checkpoint(code: &'static str) {
+        if std::env::var_os("RELAVIUM_TEST_NATIVE_PHASE").is_some() {
+            println!("RELAVIUM_NATIVE_CHECKPOINT:{code}");
+            std::io::stdout().flush().expect("test checkpoint");
+        }
     }
 
     pub(crate) fn hit(phase: &str) {
@@ -717,6 +734,7 @@ mod macos_mechanism_tests {
             &stage_dir,
             std::ffi::OsStr::new(".relavium-fs-stage-v1.template"),
             std::ffi::OsStr::new("payload"),
+            &mut |_| Ok(()),
         )
         .expect("inherited empty");
         let actual_info = file.metadata().expect("stage metadata");

@@ -111,6 +111,7 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   // refuses exactly the arm this host lacks.
   const unwired = unwiredToolArms(opts.profile);
   const host: ToolHost = {
+    yieldControl: () => new Promise<void>((resolve) => setImmediate(resolve)),
     // Strings in committed config cannot grant roots: only the pre-admitted host policy can widen project scope.
     fs: createNodeFsCapability({
       tier,

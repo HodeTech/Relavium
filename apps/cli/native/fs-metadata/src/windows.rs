@@ -738,6 +738,88 @@ fn rename(stage: &File, parent: &File, target: &OsStr, replace: bool) -> Result<
     Ok(())
 }
 
+// This guard owns only a fresh empty inheritance template. Deletion uses the
+// original DELETE-capable handle after both locator and identity proof.
+struct EmptyTemplate {
+    file: Option<File>,
+    temporary: PathBuf,
+    payload: PathBuf,
+    identity: Option<NativeIdentity>,
+}
+impl EmptyTemplate {
+    fn new(file: File, temporary: PathBuf, payload: PathBuf) -> Result<Self, NativeFailure> {
+        let mut guard = Self {
+            file: Some(file),
+            temporary,
+            payload,
+            identity: None,
+        };
+        guard.identity = Some(
+            WindowsProfile::identity(guard.file()).map_err(|_| NativeFailure::CleanupUncertain)?,
+        );
+        Ok(guard)
+    }
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("template guard owns file")
+    }
+    fn transfer(mut self) -> File {
+        self.file.take().expect("template guard owns file")
+    }
+    fn abort(mut self) -> Result<(), NativeFailure> {
+        let outcome =
+            path_for(self.file()).and_then(|path| self.cleanup(self.file()).map(|()| path));
+        self.file.take();
+        let path = outcome.map_err(|_| NativeFailure::CleanupUncertain)?;
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(NativeFailure::CleanupUncertain),
+        }
+    }
+    fn cleanup(&self, file: &File) -> Result<(), NativeFailure> {
+        if Some(WindowsProfile::identity(file)?) != self.identity {
+            return Err(NativeFailure::Changed);
+        }
+        WindowsProfile::verify_owned_file(file)?;
+        let details = info(file)?;
+        if details.nFileSizeLow != 0 || details.nFileSizeHigh != 0 {
+            return Err(NativeFailure::Changed);
+        }
+        let path = path_for(file)?;
+        if path != self.temporary && path != self.payload {
+            return Err(NativeFailure::Changed);
+        }
+        bind(file, &path, false)?;
+        if Some(WindowsProfile::identity(file)?) != self.identity {
+            return Err(NativeFailure::Changed);
+        }
+        WindowsProfile::verify_owned_file(file)?;
+        let details = info(file)?;
+        if details.nFileSizeLow != 0 || details.nFileSizeHigh != 0 {
+            return Err(NativeFailure::Changed);
+        }
+        let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                handle(file),
+                FileDispositionInfo,
+                (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(failure());
+        }
+        Ok(())
+    }
+}
+impl Drop for EmptyTemplate {
+    fn drop(&mut self) {
+        if let Some(file) = &self.file {
+            let _ = self.cleanup(file);
+        }
+    }
+}
+
 impl Profile for WindowsProfile {
     type ExistingSnapshot = ExistingSnapshot;
     type ParentSnapshot = ParentSnapshot;
@@ -788,7 +870,10 @@ impl Profile for WindowsProfile {
     fn open_parent(path: &Path) -> Result<File, NativeFailure> {
         let file = open(
             path,
-            FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | READ_CONTROL_ACCESS,
+            // FlushFileBuffers, used by File::sync_all on these handles, is
+            // documented to require GENERIC_WRITE. This is an access check only;
+            // opening the existing directory does not create or change entries.
+            FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | READ_CONTROL_ACCESS | GENERIC_WRITE,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
             ptr::null(),
@@ -1037,11 +1122,13 @@ impl Profile for WindowsProfile {
         private_stage: &File,
         temporary_name: &OsStr,
         stage_name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
     ) -> Result<File, NativeFailure> {
         Self::recheck_parent(snapshot, parent, None)?;
         let stage_path = path_for(private_stage)?;
         Self::verify_private_directory(&stage_path, private_stage)?;
         let path = child(parent, temporary_name)?;
+        let payload = child(private_stage, stage_name)?;
         let file = open(
             &path,
             FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE_ACCESS,
@@ -1049,15 +1136,40 @@ impl Profile for WindowsProfile {
             0,
             ptr::null(),
         )?;
-        let inherited = policy(&file)?;
-        if info(&file)?.nNumberOfLinks != 1
-            || info(&file)?.nFileSizeLow != 0
-            || info(&file)?.nFileSizeHigh != 0
-        {
+        let guard = EmptyTemplate::new(file, path, payload)?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-created") {
+                return Err(NativeFailure::Unsupported);
+            }
+            let inherited = policy(guard.file())?;
+            if info(guard.file())?.nNumberOfLinks != 1
+                || info(guard.file())?.nFileSizeLow != 0
+                || info(guard.file())?.nFileSizeHigh != 0
+            {
+                return Err(NativeFailure::Unsupported);
+            }
+            Self::recheck_parent(snapshot, parent, None)?;
+            rename(guard.file(), private_stage, stage_name, false)?;
+            #[cfg(test)]
+            if crate::test_hooks::fail("template-moved") {
+                return Err(NativeFailure::Unsupported);
+            }
+            adopt(guard.file())?;
+            Ok(inherited)
+        })();
+        let inherited = match attempt {
+            Ok(policy) => policy,
+            Err(error) => {
+                guard.abort()?;
+                return Err(error);
+            }
+        };
+        let file = guard.transfer();
+        #[cfg(test)]
+        if crate::test_hooks::fail("template-adopted") {
             return Err(NativeFailure::Unsupported);
         }
-        Self::recheck_parent(snapshot, parent, None)?;
-        rename(&file, private_stage, stage_name, false)?;
         if !same_policy(&inherited, &policy(&file)?) {
             return Err(NativeFailure::Changed);
         }
@@ -1370,6 +1482,13 @@ mod tests {
     #[test]
     fn windows_profile_rechecks_metadata_only_changes_and_parent_policy() {
         let fixture = Fixture::new();
+        let flush_parent = WindowsProfile::open_parent(&fixture.path).expect("flushable parent");
+        flush_parent.sync_all().expect("parent directory flush");
+        set_user_acl(&fixture.directory, FILE_ADD_FILE, false);
+        let denied_parent = WindowsProfile::open_parent(&fixture.path);
+        // Restore the fixture ACL before checking the result or performing cleanup.
+        set_user_acl(&fixture.directory, 0, false);
+        assert!(matches!(denied_parent, Err(NativeFailure::AccessDenied)));
         let source = fixture.file("source", b"old");
         let snapshot = WindowsProfile::capture_existing(
             &source,
@@ -1422,6 +1541,7 @@ mod tests {
             &stage_parent,
             OsStr::new("empty-template"),
             OsStr::new("payload"),
+            &mut |_| Ok(()),
         )
         .expect("kernel inherited empty inode moved private");
         let inherited =
