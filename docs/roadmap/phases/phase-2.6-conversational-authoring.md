@@ -3413,6 +3413,45 @@ remains 42 Rust parents, four subprocess helpers and eleven Node lifecycle cases
 Fresh cumulative round 2, the separate security sitting and corrected-head
 complete CI/scanner acceptance remain open; these author receipts do not close them.
 
+#### Correction round 2 and standalone repairs (2026-11-13)
+
+Fresh Terra/high native and Sol/high core/delivery reviewers report no source
+findings at `d382cff0`; they independently pass 74 and 625 focused cases
+respectively, with their named platform skips. A fresh Sol/high CLI reviewer
+passes 480 existing cases but reproduces a high-severity standalone disclosure
+gap: a suspended TTY can hide the notice, and a late producer can send its raw
+warning before alternate-screen restoration. That finding prevents round-two
+acceptance. It does not change the already repaired Home behavior.
+
+The standalone repair shares a command-owned fixed pending notice across fresh,
+resume, clear and reseat. TTY delivery follows actual host join and acknowledged
+terminal restoration. Plain/JSON start a retained, captured stderr write while
+the session is active; final cleanup awaits that same acknowledgement, and a
+later joined turn starts a fresh warning epoch. No durable notice or stdout
+frame is added. All 17 new controls fail on `d382cff0` and pass after repair;
+286 scoped cases pass.
+
+The native security sitting separately reviews `d382cff0` and finds no confirmed
+native/effect/filesystem/delivery issue. Its 281 focused cases pass, with named
+fixture/platform skips. It does not certify standalone delivery or unrun
+platforms. The later CI fixture delta requires a scoped security follow-up:
+namespace numbers may be reused after the producer namespace has ended, so
+identity separation is required while both namespaces are alive. Recovery
+after producer death still requires the real joined death and retained native
+claim proof. Three protocol controls preserve the live separation guard and
+allow a reused dead namespace number; the old script fails that negative
+control. They are synthetic protocol tests, not native platform evidence.
+
+Repair author verification passes 18,651 workspace tests / 24 conditional skips,
+all 1,119 acceptance-tool cases without skips, lint, types, build and formatting.
+The source-bound macOS profile retains 42 Rust parents, four ignored subprocess
+helpers and eleven Node lifecycle cases; 33 focused asset/delivery/checkout and
+protocol controls pass. Complete cohort reconciliation preserves all 254 source
+anchors and witnesses across 72 files / 2,472 cases. The two chat cohorts require
+160 cases; usage requires 476 with its 71 native children, readiness and deadline
+rules unchanged. A new clean cumulative round, separate CLI security sitting,
+the native delta check and final-head complete CI/scanner checks remain open.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
