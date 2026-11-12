@@ -19,6 +19,7 @@ export interface ToolReviewState {
   readonly reveal: boolean;
   readonly numeric: boolean;
   readonly inspected: readonly SourceRange[];
+  readonly requiredTarget: SourceRange | undefined;
   readonly query: string | undefined;
   readonly searching: boolean;
   readonly selected: number;
@@ -40,6 +41,7 @@ export function initialToolReview(
     reveal: false,
     numeric: false,
     inspected: [],
+    requiredTarget: undefined,
     query: undefined,
     searching: false,
     selected: 0,
@@ -48,25 +50,39 @@ export function initialToolReview(
   };
 }
 export function reviewInspected(state: ToolReviewState): boolean {
-  return (
-    state.document?.required.every((required) =>
-      state.inspected.some(
-        (seen) =>
-          seen.field === required.field && seen.start <= required.start && seen.end >= required.end,
-      ),
-    ) ?? true
+  const requirements = [
+    ...(state.document?.required ?? []),
+    ...(state.requiredTarget === undefined ? [] : [state.requiredTarget]),
+  ];
+  return requirements.every((required) =>
+    state.inspected.some(
+      (seen) =>
+        seen.field === required.field && seen.start <= required.start && seen.end >= required.end,
+    ),
   );
 }
 export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage): ToolReviewState {
-  if (!state.reveal || state.screen !== 'full' || !page.valid) return state;
-  const needed = page.shown.flatMap((shown) =>
-    (state.document?.required ?? []).flatMap((required) => {
-      if (shown.field !== required.field) return [];
-      const start = Math.max(shown.start, required.start),
-        end = Math.min(shown.end, required.end);
-      return start < end ? [{ field: shown.field, start, end }] : [];
-    }),
-  );
+  if (!page.valid) return state;
+  const requiredTarget = state.requiredTarget ?? page.requiredTarget;
+  const intersect = (
+    shown: readonly SourceRange[],
+    required: readonly SourceRange[],
+  ): SourceRange[] =>
+    shown.flatMap((source) =>
+      required.flatMap((range) => {
+        if (source.field !== range.field) return [];
+        const start = Math.max(source.start, range.start),
+          end = Math.min(source.end, range.end);
+        return start < end ? [{ field: source.field, start, end }] : [];
+      }),
+    );
+  const needed =
+    state.screen !== 'full'
+      ? []
+      : [
+          ...(state.reveal ? intersect(page.shown, state.document?.required ?? []) : []),
+          ...intersect(page.visibleSource, requiredTarget === undefined ? [] : [requiredTarget]),
+        ];
   const merged = [...state.inspected, ...needed].sort(
     (a, b) => a.field - b.field || a.start - b.start || a.end - b.end,
   );
@@ -78,9 +94,18 @@ export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage):
     else inspected.push(range);
   }
   if (inspected.length > 8192)
-    return { ...state, message: 'Inspection limit exceeded — narrow the change.', inspected: [] };
-  if (JSON.stringify(inspected) === JSON.stringify(state.inspected)) return state;
-  return { ...state, inspected };
+    return {
+      ...state,
+      requiredTarget,
+      message: 'Inspection limit exceeded — narrow the change.',
+      inspected: [],
+    };
+  if (
+    requiredTarget === state.requiredTarget &&
+    JSON.stringify(inspected) === JSON.stringify(state.inspected)
+  )
+    return state;
+  return { ...state, requiredTarget, inspected };
 }
 export type ReviewKeyAction =
   | { readonly kind: 'state'; readonly state: ToolReviewState }
@@ -176,6 +201,8 @@ export function reduceToolReviewKey(
             reveal: false,
             document: undefined,
             callId: undefined,
+            requiredTarget: undefined,
+            inspected: [],
             cursor: REVIEW_START,
             previous: [],
           });
@@ -224,7 +251,7 @@ export function toolReviewTarget(
     target,
     REVIEW_START,
     Math.max(0, columns - 2),
-    Math.max(1, rows - 16),
+    Math.max(1, Math.min(2, rows - 16)),
     false,
     false,
   );
@@ -236,9 +263,14 @@ export function toolReviewPage(
 ): ReviewPage | undefined {
   if (state.document === undefined || state.screen === 'list') return undefined;
   const target = toolReviewTarget(state, columns, rows);
+  const shortenedTarget = target?.next !== undefined || target?.valid === false;
+  const targetLine =
+    state.document.preview.target === undefined ? undefined : state.document.lines[0];
+  const headerRows =
+    state.screen === 'card' ? (target?.rows.length ?? 0) + (shortenedTarget ? 1 : 0) : 0;
   const page = projectReviewPage(
     state.document,
-    state.cursor,
+    state.screen === 'card' && targetLine !== undefined ? { line: 1, offset: 0 } : state.cursor,
     Math.max(0, columns - 2),
     Math.max(
       1,
@@ -246,7 +278,7 @@ export function toolReviewPage(
         state.screen === 'card' ? 4 : 200,
         rows -
           15 -
-          (target?.rows.length ?? 0) -
+          headerRows -
           (state.searching ? 2 : 0) -
           (state.denial === undefined ? 0 : 2) -
           (state.message === '' ? 0 : 2),
@@ -255,5 +287,13 @@ export function toolReviewPage(
     state.reveal,
     state.numeric,
   );
-  return { ...page, valid: page.valid && target?.next === undefined && target?.valid !== false };
+  return {
+    ...page,
+    ...(shortenedTarget && targetLine !== undefined
+      ? {
+          requiredTarget: { field: targetLine.field, start: targetLine.start, end: targetLine.end },
+        }
+      : {}),
+    valid: page.valid && (state.screen !== 'card' || target?.valid !== false),
+  };
 }

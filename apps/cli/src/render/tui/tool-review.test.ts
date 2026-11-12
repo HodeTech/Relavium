@@ -12,6 +12,8 @@ import {
   initialToolReview,
   reduceToolReviewKey,
   reviewInspected,
+  toolReviewPage,
+  toolReviewTarget,
 } from './tool-review-model.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
@@ -356,6 +358,9 @@ it('copies only the escaped masked page after reveal, and never leaks raw detail
   store.bindReviewVisibility(() => true);
   store.handleReviewInput('', { return: true });
   store.handleReviewInput('r', {});
+  const review = store.getSnapshot().review;
+  if (review === undefined) throw new Error('missing review');
+  store.acknowledgeReviewFrame(review, toolReviewPage(review, 80, 24));
   let copied: string | undefined;
   store.bindReviewClipboard((text) => {
     copied = text;
@@ -382,4 +387,113 @@ it('keeps existing denial reasons as an owned view action', () => {
   expect(reduceToolReviewKey(typed.state, '', { return: true }, true, undefined, false, 0)).toEqual(
     { kind: 'deny', reason: 'x' },
   );
+});
+
+it.each([
+  [78, 2],
+  [118, 16],
+])(
+  'keeps revealed numeric copy inside the exact %s-column, %s-row source window',
+  (columns, rows) => {
+    const document = createReviewDocument({
+      kind: 'operation',
+      fields: [{ name: 'value', value: 'sk-proj-' + 'a'.repeat(900) + ' FUTURE_UNSEEN' }],
+    });
+    const mask = document.masks[0];
+    if (mask === undefined) throw new Error('missing test mask');
+    const cursor = { line: 1, offset: mask.start + 30 };
+    const revealed = projectReviewPage(document, cursor, columns, rows, true, true);
+    const independentMasked = projectReviewPage(document, cursor, columns, rows, false, true);
+    expect(revealed.valid).toBe(true);
+    expect(independentMasked.rows.join('\n')).toContain('<U+0046>');
+    const companion = revealed.maskedRows.join('\n');
+    expect(companion).not.toContain('FUTURE_UNSEEN');
+    expect(companion).not.toContain('<U+0046>');
+    expect(companion).not.toContain('aaaa');
+    const maskedBytes = [...companion.matchAll(/<MASK:id=(\d+);bytes=(\d+)>/gu)];
+    expect(maskedBytes.every((match) => Number(match[1]) === mask.id)).toBe(true);
+    expect(maskedBytes.reduce((sum, match) => sum + Number(match[2]), 0)).toBe(
+      revealed.shown.reduce(
+        (sum, range) =>
+          sum + reviewBytes(document.fields[range.field]?.text.slice(range.start, range.end) ?? ''),
+        0,
+      ),
+    );
+  },
+);
+
+it('pages all 4096 admitted target characters without reveal, while requiring acknowledged full-target inspection', () => {
+  const document = createReviewDocument({
+    kind: 'operation',
+    target: 'x'.repeat(4096),
+    fields: [],
+  });
+  let state = initialToolReview('approval', 'long', document);
+  const earlyFull = toolReviewPage({ ...state, screen: 'full' }, 80, 24);
+  expect(earlyFull?.requiredTarget).toEqual({ field: 0, start: 0, end: 4096 });
+  const card = toolReviewPage(state, 80, 24);
+  const header = toolReviewTarget(state, 80, 24);
+  expect(card?.valid).toBe(true);
+  expect(header?.hiddenBytes).toBe(4096 - (header?.next?.offset ?? 0));
+  if (card === undefined) throw new Error('missing card');
+  state = acknowledgeToolReview(state, card);
+  expect(reviewInspected(state)).toBe(false);
+  expect(reduceToolReviewKey(state, 'y', {}, true, card, false, 0).kind).toBe('none');
+  state = { ...state, screen: 'full' };
+  let pages = 0;
+  for (;;) {
+    const page = toolReviewPage(state, 80, 24);
+    if (page === undefined) throw new Error('missing page');
+    expect(page.valid).toBe(true);
+    state = acknowledgeToolReview(state, page);
+    pages++;
+    if (page.next === undefined) break;
+    expect(page.hiddenBytes).toBe(4096 - page.next.offset);
+    state = { ...state, cursor: page.next };
+    expect(pages).toBeLessThan(100);
+  }
+  expect(pages).toBeGreaterThan(1);
+  expect(state.reveal).toBe(false);
+  expect(reviewInspected(state)).toBe(true);
+  expect(
+    reduceToolReviewKey(state, 'y', {}, true, toolReviewPage(state, 80, 24), false, 0),
+  ).toEqual({ kind: 'approve', scope: 'once' });
+  expect(
+    createReviewDocument({ kind: 'operation', target: 'x'.repeat(4097), fields: [] }).valid,
+  ).toBe(false);
+});
+
+it('keeps a short fully visible target eligible for one-key approval on the acknowledged card', () => {
+  const state = initialToolReview(
+    'approval',
+    'short',
+    createReviewDocument({ kind: 'operation', target: 'safe.txt', fields: [] }),
+  );
+  const page = toolReviewPage(state, 80, 24);
+  if (page === undefined) throw new Error('missing short card');
+  const acknowledged = acknowledgeToolReview(state, page);
+  expect(acknowledged.requiredTarget).toBeUndefined();
+  expect(reduceToolReviewKey(acknowledged, 'y', {}, true, page, false, 0)).toEqual({
+    kind: 'approve',
+    scope: 'once',
+  });
+});
+
+it('refuses explicit copy when no source page has been acknowledged', async () => {
+  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+  store.applyToolLiveEvent({
+    phase: 'preview',
+    callId: 'no-frame',
+    toolId: 'git_status',
+    preview: { kind: 'operation', target: 'safe.txt', fields: [] },
+  });
+  store.openDetails();
+  store.bindReviewVisibility(() => true);
+  store.handleReviewInput('', { return: true });
+  const copy = vi.fn(() => Promise.resolve(true));
+  store.bindReviewClipboard(copy);
+  store.handleReviewInput('c', {});
+  await Promise.resolve();
+  expect(copy).not.toHaveBeenCalled();
+  expect(store.getSnapshot().review?.message).toContain('flushed frame');
 });

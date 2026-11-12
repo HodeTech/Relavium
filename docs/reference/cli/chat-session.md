@@ -341,7 +341,12 @@ effective `ask`; direct mode commands cannot create a headless approver.
 The card names the target, exact changed/hidden byte and line counts, mask counts,
 line-ending changes and `[a]`'s tool/session scope. `[v]` opens its full view;
 the full view has bounded paging, search, both diff sides, code-point inspection,
-and an explicit `[r]` reveal action. `[r]` is never an approval key. Any masked
+and an explicit `[r]` reveal action. A compact target header states its exact omitted
+byte count when shortened; the full target remains a paged source field in the
+full view. A shortened target blocks affirmative answers until its complete
+source has actually been displayed there in acknowledged frames. Readable,
+unmasked target bytes need no reveal action; a placeholder never proves visibility
+of its hidden bytes. `[r]` is never an approval key. Any masked
 changed content, or a flagged target/field span, blocks `[y]`/`[a]` until revealed
 deliberately and the required revealed spans have actually been displayed in
 acknowledged frames; an entirely masked changed line is inspectable under that
@@ -363,7 +368,8 @@ Every affirmative input must match the exact current card, owner, geometry and
 actually flushed measured frame. A mere React render or terminal-size check is
 insufficient. Below 80×24, clipped mandatory card content or controls, suspend,
 output backpressure or a stale/mismatched frame disables affirmatives. Intentional
-diff pagination is different: the shortened card may be approved when its target,
+diff pagination is different: the shortened card may be approved when its target
+is fully visible or has completed the required full-view inspection, its
 effect/truncation/mask disclosures and answer controls are fully visible, its
 full view can traverse every admitted change and all required mask inspections
 are acknowledged. Visiting every unmasked diff page is the operator's choice,
@@ -397,7 +403,12 @@ after a live turn and order assistant text segments between calls. Failure,
 denial and unknown have distinct marks/words; missing facts never become success.
 No interrupted-turn persistence is added. Both hosts provide inline and no-color
 parity, scroll/search and explicit copy of the escaped, masked representation
-with truthful clipboard feedback. Revealing does not change that copy projection.
+with truthful clipboard feedback. Copy uses the masked companion of the exact
+acknowledged page's original source intervals and row boundaries, including a
+cursor inside a mask. It never independently projects a larger or differently
+collapsed source window. Partial masked intervals retain their original mask id
+and report only the intersecting byte count. Revealing never copies raw secrets;
+a stale or unacknowledged page cannot be copied.
 Ordinary transcript hatches, `/edit`'s temporary file, `/export`, logs and display
 metadata exclude previews/reveal buffers. No preview-to-disk hatch is introduced.
 

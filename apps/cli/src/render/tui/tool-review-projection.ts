@@ -281,7 +281,12 @@ export function escapeReviewCharacter(char: string, trailing: boolean, numeric =
 }
 export interface ReviewPage {
   readonly rows: readonly string[];
+  /** Masked companion of exactly these emitted rows, never a second viewport projection. */
+  readonly maskedRows: readonly string[];
+  /** Source actually readable in this frame: placeholders do not prove their hidden bytes. */
+  readonly visibleSource: readonly SourceRange[];
   readonly shown: readonly SourceRange[];
+  readonly requiredTarget?: SourceRange;
   readonly next: ReviewCursor | undefined;
   readonly hiddenLines: number;
   readonly hiddenBytes: number;
@@ -298,7 +303,46 @@ export function projectReviewPage(
   numeric = false,
 ): ReviewPage {
   const rows: string[] = [],
+    maskedRows: string[] = [],
+    visibleSource: SourceRange[] = [],
     shown: SourceRange[] = [];
+  const emit = (
+    line: ReviewSourceLine,
+    start: number,
+    end: number,
+    row: string,
+    ending = '',
+  ): void => {
+    const field = document.fields[line.field];
+    if (field === undefined) return;
+    let masked = `${line.label} `;
+    for (let position = start; position < end; ) {
+      const mask = maskAt(field.masks, position);
+      if (mask !== undefined) {
+        const stop = Math.min(end, mask.end);
+        masked += `<MASK:id=${mask.id};bytes=${fieldRangeBytes(field, position, stop)}>`;
+        if (reveal) visibleSource.push({ field: line.field, start: position, end: stop });
+        position = stop;
+      } else {
+        const char = String.fromCodePoint(field.text.codePointAt(position) ?? 0);
+        masked += escapeReviewCharacter(
+          char,
+          line.ending === 'field'
+            ? /^[ \t]*(?:\r?\n|$)/u.test(field.text.slice(position, line.end))
+            : position >= (line.trailingStart ?? line.end),
+          numeric,
+        );
+        const stop = position + char.length;
+        const last = visibleSource.at(-1);
+        if (last !== undefined && last.field === line.field && last.end === position)
+          visibleSource[visibleSource.length - 1] = { ...last, end: stop };
+        else visibleSource.push({ field: line.field, start: position, end: stop });
+        position = stop;
+      }
+    }
+    rows.push(row);
+    maskedRows.push(masked + ending);
+  };
   let lineIndex = cursor.line,
     offset = cursor.offset,
     valid = document.valid && columns >= 32 && rowLimit >= 1;
@@ -332,7 +376,7 @@ export function projectReviewPage(
                 : position >= trailingStart,
               numeric,
             )
-          : `<MASK:id=${mask.id};bytes=${mask.bytes}>`;
+          : `<MASK:id=${mask.id};bytes=${fieldRangeBytes(field, position, Math.min(line.end, mask.end))}>`;
       const tokenWidth = displayWidth(token);
       if (width + tokenWidth > columns) {
         if (position === start) valid = false;
@@ -358,15 +402,18 @@ export function projectReviewPage(
           break;
         }
         // Endings are their own source-backed row when the notation does not fit.
-        rows.push(row);
+        emit(line, start, position, row);
         shown.push({ field: line.field, start, end: position });
         if (rows.length >= rowLimit) {
           offset = position;
           break;
         }
         row = `${line.label} ${ending}`;
-      } else row += ending;
-      rows.push(row);
+        emit(line, position, position, row, ending);
+      } else {
+        row += ending;
+        emit(line, start, position, row, ending);
+      }
       if (reveal)
         shown.push({
           field: line.field,
@@ -375,7 +422,7 @@ export function projectReviewPage(
         });
       offset = 0;
     } else {
-      rows.push(row);
+      emit(line, start, position, row);
       if (reveal) shown.push({ field: line.field, start, end: position });
       offset = position;
       lineIndex--;
@@ -394,6 +441,8 @@ export function projectReviewPage(
         ));
   return {
     rows,
+    maskedRows,
+    visibleSource,
     shown: reveal ? shown : [],
     next,
     hiddenLines: document.lines.length - (next?.line ?? document.lines.length),

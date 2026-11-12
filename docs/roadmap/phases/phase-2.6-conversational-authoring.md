@@ -2114,6 +2114,38 @@ Fresh complete affected reviews, the separate security sitting and final
 combined/native/installed-consumer evidence remain open. Step 2 is not accepted,
 and Step 3 grants are not enabled.
 
+### MVP-3 Step 2 second implementation review (2026-11-12)
+
+New independent Terra/Sol reviewers completed the cumulative backend,
+native/filesystem and delivery partitions at `64509d9f` without a verified new
+finding. The delivery sitting independently passed 342 focused controls. These
+source reviews do not establish Windows runtime or complete artifact acceptance.
+The UI sitting verified two medium findings: copy used a fixed viewport instead
+of the acknowledged page, and an admitted long target could not enter a usable
+full view. Both are corrected: copying uses the exact emitted source window's
+masked companion, while a truncated target pages normally and requires actual
+visible inspection. Existing mask reveal requirements remain separate from
+ordinary target visibility. All 393 focused UI tests, CLI typecheck and targeted
+lint pass; thirteen new regressions leave the 455-case permanent cohort unchanged.
+A new complete affected UI review is required after this material correction.
+
+The `64509d9f` Windows arm64 repetition reached index creation and the
+`index-parent-flush` checkpoint before refusing; that last checkpoint alone does
+not distinguish the flush from the following recheck/allocation-lock work.
+`23449920` adds only test-gated subphase/private-policy checkpoints and the
+matching closed diagnostic vocabulary. No raw child output, SID or ACL is
+forwarded, and the release binary is unchanged. The macOS native profile and
+eight diagnostic controls pass; the Windows cause remains under investigation.
+
+Root's follow-up source audit also found the same early-ownership class in
+private stage directory/payload creation. A real native failure-injection test
+reproduced an empty stage and retained reservation after a normal held-handle
+failure. No payload is written, but repeat failures can consume bounded inventory
+slots. The fix is in progress; a directory whose identity cannot be established
+after creation must remain preserved rather than deleted by name. The earlier
+native review does not cover this subsequent correction. Step 2 and the final
+coverage/security/platform gates remain open.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

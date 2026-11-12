@@ -180,7 +180,10 @@ export function ToolReviewHost(
     );
   const document = review.document,
     diff = document?.preview.diff;
-  const target = toolReviewTarget(review, props.size.cols, props.size.rows);
+  const target =
+    review.screen === 'card'
+      ? toolReviewTarget(review, props.size.cols, props.size.rows)
+      : undefined;
   const calls = [...snapshot.toolDisplays.values()];
   const selectedStart = Math.max(0, review.selected - 3);
   const title =
@@ -216,6 +219,11 @@ export function ToolReviewHost(
           {(target?.rows ?? []).map((row, index) => (
             <Text key={`target-${index}`}>{row}</Text>
           ))}
+          {target?.next !== undefined && (
+            <Text>
+              Target shortened · {target.hiddenBytes} bytes omitted · [v] inspect full target
+            </Text>
+          )}
           <Text>
             {document?.changedLines ?? 0} changed lines · {document?.changedBytes ?? 0} changed
             bytes · {document?.masks.length ?? 0} masked spans
@@ -245,7 +253,7 @@ export function ToolReviewHost(
             <Text>
               {reviewInspected(review)
                 ? 'Inspection requirements met.'
-                : 'Approval disabled — reveal and display required spans.'}
+                : 'Approval disabled — inspect required target / masked spans.'}
             </Text>
           )}
           {review.denial !== undefined && (

@@ -11,7 +11,7 @@ import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
 import { createHomeController } from './home-controller.js';
 import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
-import { reviewInspected } from './tool-review-model.js';
+import { reviewInspected, toolReviewPage } from './tool-review-model.js';
 import { bracketed } from './harness-util.js';
 
 const cleanups: Array<() => void> = [];
@@ -267,7 +267,16 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
         },
       });
       await f.ready();
-      void f.store.requestApproval(request, false, undefined, { callId: 'copy', preview });
+      void f.store.requestApproval(request, false, undefined, {
+        callId: 'copy',
+        preview: {
+          kind: 'operation',
+          target: 'safe.txt',
+          fields: [
+            { name: 'value', value: 'Bearer sk-proj-' + 'a'.repeat(900) + ' FUTURE_UNSEEN' },
+          ],
+        },
+      });
       await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       f.input.push('v');
@@ -275,10 +284,122 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.input.push('r');
       await vi.waitFor(() => expect(f.store.getSnapshot().review?.reveal).toBe(true));
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      const review = f.store.getSnapshot().review;
+      if (review === undefined) throw new Error('missing review');
+      const expected = toolReviewPage(review, 80, 24)?.maskedRows.join('\n');
       f.input.push('c');
       await vi.waitFor(() => expect(copied.length).toBe(1));
+      expect(copied[0]).toBe(expected);
+      expect(copied[0]).not.toContain('FUTURE_UNSEEN');
       expect(copied[0]).toContain('<MASK:');
       expect(copied[0]).not.toContain('abcdefghijkl');
+    },
+  );
+  it.each([true, false])(
+    'copies only the acknowledged page at small/larger geometry after a held resize, alternate=%s',
+    async (alternate) => {
+      const output = new HeldOutput();
+      const copied: string[] = [];
+      const f = fixture(host, alternate, false, output, {
+        reviewClipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      });
+      await f.ready();
+      void f.store.requestApproval(request, false, undefined, {
+        callId: 'geometry',
+        preview: {
+          kind: 'operation',
+          fields: Array.from({ length: 25 }, (_, index) => ({
+            name: `field-${index}`,
+            value: `VISIBLE_SOURCE_${index}`,
+          })),
+        },
+      });
+      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('v');
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      const small = f.store.getSnapshot().review;
+      if (small === undefined) throw new Error('missing small review');
+      const smallPage = toolReviewPage(small, 80, 24);
+      f.input.push('c');
+      await vi.waitFor(() => expect(copied).toHaveLength(1));
+      expect(copied[0]).toBe(smallPage?.maskedRows.join('\n'));
+      await vi.waitFor(() =>
+        expect(f.store.getSnapshot().review?.message).toContain('Masked page sent'),
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      output.held = true;
+      f.resize(120, 40);
+      await vi.waitFor(() => expect(output.blockedWrite).toBeDefined());
+      f.input.push('c');
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      expect(copied).toHaveLength(1);
+      output.release();
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      const large = f.store.getSnapshot().review;
+      if (large === undefined) throw new Error('missing large review');
+      const largePage = toolReviewPage(large, 120, 40);
+      f.input.push('c');
+      await vi.waitFor(() => expect(copied).toHaveLength(2));
+      expect(copied[1]).toBe(largePage?.maskedRows.join('\n'));
+      expect(largePage?.rows.length).toBeGreaterThan(smallPage?.rows.length ?? 0);
+    },
+  );
+  it.each(['plain', 'flagged'] as const)(
+    'makes the full long %s target traversable at 80×24 before approval',
+    async (kind) => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const target =
+        kind === 'plain'
+          ? 'segment/'.repeat(80) + 'a'.repeat(10)
+          : 'segment/'.repeat(80) + 'sk-proj-abcdef\nghijklmnopqrstuvw';
+      let answered = false;
+      const answer = f.store
+        .requestApproval(request, false, undefined, {
+          callId: 'long-target',
+          preview: { kind: 'operation', target, fields: [] },
+        })
+        .then((value) => {
+          answered = true;
+          return value;
+        });
+      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      expect(f.text()).not.toContain('Review unavailable');
+      if (kind === 'plain') expect(f.text()).toContain('Target shortened');
+      f.input.push('y');
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      expect(answered).toBe(false);
+      f.input.push('v');
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      if (kind === 'flagged') {
+        f.input.push('y');
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        expect(answered).toBe(false);
+        f.input.push('r');
+        await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      }
+      let pages = 0;
+      while (!reviewInspected(f.store.getSnapshot().review!)) {
+        const review = f.store.getSnapshot().review;
+        if (review === undefined) throw new Error('missing target review');
+        const page = toolReviewPage(review, 80, 24);
+        expect(page?.valid).toBe(true);
+        expect(page?.next).toBeDefined();
+        f.input.push('\x1b[6~');
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        expect(++pages).toBeLessThan(20);
+      }
+      expect(pages).toBeGreaterThan(0);
+      expect(f.store.getSnapshot().review?.reveal).toBe(kind === 'flagged');
+      expect(f.text()).not.toContain('Review unavailable');
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      f.input.push('y');
+      expect(await answer).toEqual({ outcome: 'approve', scope: 'once' });
     },
   );
   it('opens retained summary-only details with selected identity and outcome', async () => {

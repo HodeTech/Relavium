@@ -5,12 +5,7 @@ import type {
   ToolLiveEvent,
 } from '@relavium/core';
 
-import {
-  createReviewDocument,
-  reviewBytes,
-  projectReviewPage,
-  type ReviewPage,
-} from './tool-review-projection.js';
+import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
 import {
   initialToolReview,
   acknowledgeToolReview,
@@ -404,14 +399,12 @@ export function createChatStore(
             flush();
             break;
           }
-          const masked = projectReviewPage(
-            document,
-            review.cursor,
-            78,
-            11,
-            false,
-            review.numeric,
-          ).rows.join('\n');
+          if (reviewPage?.valid !== true) {
+            review = { ...review, message: 'Review page unavailable — wait for a flushed frame.' };
+            flush();
+            break;
+          }
+          const masked = reviewPage.maskedRows.join('\n');
           void reviewClipboard(masked).then(
             (ok) => {
               if (review !== expected || sealed) return;
