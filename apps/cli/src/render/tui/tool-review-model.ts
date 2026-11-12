@@ -163,20 +163,37 @@ export function reduceToolReviewKey(
           line.start,
           index === state.cursor.line ? state.cursor.offset : 0,
         );
-        const relative = field?.text.slice(searchStart, line.end).indexOf(query) ?? -1;
-        const found = relative < 0 ? -1 : searchStart + relative;
-        if (found < line.start || found >= line.end) continue;
-        if (
-          !state.reveal &&
-          field?.masks.some((mask) => found < mask.end && found + query.length > mask.start)
-        )
-          continue;
-        return change({
-          cursor: { line: index, offset: found },
-          previous: [...state.previous.slice(-4095), state.cursor],
-          searching: false,
-          message: 'Match found',
-        });
+        if (field === undefined) continue;
+        // Search only this line; a field can contain a complete multi-MiB diff side.
+        const source = field.text.slice(searchStart, line.end);
+        let from = 0;
+        while (from <= source.length - query.length) {
+          const relative = source.indexOf(query, from);
+          if (relative < 0) break;
+          const found = searchStart + relative;
+          if (!state.reveal) {
+            // Ordered masks: locate the first that could intersect this candidate.
+            let low = 0,
+              high = field.masks.length;
+            while (low < high) {
+              const middle = Math.floor((low + high) / 2);
+              if ((field.masks[middle]?.end ?? 0) <= found) low = middle + 1;
+              else high = middle;
+            }
+            const mask = field.masks[low];
+            if (mask !== undefined && mask.start < found + query.length) {
+              // Every start before this mask ends still intersects it, including overlaps.
+              from = Math.max(relative + 1, mask.end - searchStart);
+              continue;
+            }
+          }
+          return change({
+            cursor: { line: index, offset: found },
+            previous: [...state.previous.slice(-4095), state.cursor],
+            searching: false,
+            message: 'Match found',
+          });
+        }
       }
       return change({ searching: false, message: 'No later visible match' });
     }

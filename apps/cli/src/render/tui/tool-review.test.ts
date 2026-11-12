@@ -301,7 +301,8 @@ it.each(['git_status', 'mcp:server:custom'])(
 
 it('opens the retained summary after the actual aggregate preview budget evicts a document', () => {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-  const full = replacement('a'.repeat(8 * 1024 * 1024), 'b'.repeat(8 * 1024 * 1024));
+  // Four-byte source preserves the real byte-budget proof with less code-point indexing work.
+  const full = replacement('😀'.repeat(2 * 1024 * 1024), '😎'.repeat(2 * 1024 * 1024));
   store.applyToolLiveEvent({ phase: 'started', callId: 'evicted', toolId: 'write_file' });
   store.applyToolLiveEvent({
     phase: 'preview',
@@ -496,4 +497,124 @@ it('refuses explicit copy when no source page has been acknowledged', async () =
   await Promise.resolve();
   expect(copy).not.toHaveBeenCalled();
   expect(store.getSnapshot().review?.message).toContain('flushed frame');
+});
+
+describe('bounded visible review search', () => {
+  const search = (value: string, query: string, offset = 0, reveal = false) => {
+    const document = createReviewDocument({
+      kind: 'operation',
+      fields: [{ name: 'value', value }],
+    });
+    const state = {
+      ...initialToolReview('details', 'search', document),
+      searching: true,
+      query,
+      reveal,
+      cursor: { line: 1, offset },
+    };
+    const action = reduceToolReviewKey(state, '', { return: true }, true, undefined, false, 0);
+    if (action.kind !== 'state') throw new Error('missing search state');
+    return { state, found: action.state };
+  };
+
+  it('continues after a masked first hit to a visible later hit on the same line', () => {
+    const value = 'sk-proj-testidabcdefghijklmnop testid';
+    const { state, found } = search(value, 'testid');
+    expect(state.document?.masks).not.toHaveLength(0);
+    expect(found.cursor).toEqual({ line: 1, offset: value.lastIndexOf('testid') });
+    expect(found.message).toBe('Match found');
+    expect(found.previous).toEqual([state.cursor]);
+    expect(found.reveal).toBe(false);
+  });
+
+  it('does not distinguish a hidden match from no match, while deliberate reveal can find it', () => {
+    const value = 'sk-proj-testidabcdefghijklmnop';
+    const hidden = search(value, 'testid');
+    const absent = search(value, 'not-present');
+    expect(hidden.found.cursor).toEqual(hidden.state.cursor);
+    expect(hidden.found.previous).toEqual([]);
+    expect(hidden.found.message).toBe('No later visible match');
+    expect(absent.found.message).toBe(hidden.found.message);
+    expect(search(value, 'testid', 0, true).found.cursor).toEqual({
+      line: 1,
+      offset: value.indexOf('testid'),
+    });
+  });
+
+  it('keeps overlapping visible candidates after the blocking mask boundary', () => {
+    const value = 'sk-proj-' + 'a'.repeat(25) + '.a.a';
+    const { state, found } = search(value, 'a.a');
+    const mask = state.document?.masks[0];
+    if (mask === undefined) throw new Error('missing test mask');
+    expect(value.indexOf('a.a')).toBeLessThan(mask.end);
+    expect(value.lastIndexOf('a.a')).toBeLessThan(value.indexOf('a.a') + 3);
+    expect(found.cursor).toEqual({ line: 1, offset: value.lastIndexOf('a.a') });
+  });
+
+  it('honors cursors inside a mask, after an earlier visible hit, and after all hits', () => {
+    const value = 'sk-proj-testidabcdefghijklmnop testid testid';
+    const firstVisible = value.indexOf(' testid') + 1;
+    expect(search(value, 'testid', 10).found.cursor.offset).toBe(firstVisible);
+    expect(search(value, 'testid', firstVisible + 1).found.cursor.offset).toBe(
+      value.lastIndexOf('testid'),
+    );
+    const exhausted = search(value, 'testid', value.lastIndexOf('testid') + 1);
+    expect(exhausted.found.message).toBe('No later visible match');
+    expect(exhausted.found.cursor).toEqual(exhausted.state.cursor);
+  });
+
+  it('never matches across source-line boundaries or searches later source through an earlier line', () => {
+    const lines = ['test', 'id', 'testid'];
+    const after = lines.join('\n') + '\n';
+    let position = 0;
+    const document = createReviewDocument({
+      kind: 'operation',
+      fields: [],
+      diff: {
+        before: '',
+        after,
+        beforeEndings: 'empty',
+        afterEndings: 'lf',
+        stats: { addedLines: 3, removedLines: 0, beforeBytes: 0, afterBytes: reviewBytes(after) },
+        lines: lines.map((text, index) => {
+          const start = position;
+          position += text.length + 1;
+          return {
+            kind: 'added',
+            text,
+            ending: 'lf',
+            after: { line: index + 1, start, end: position },
+          } satisfies ToolFileDiff['lines'][number];
+        }),
+      },
+    });
+    const state = {
+      ...initialToolReview('details', 'lines', document),
+      searching: true,
+      query: 'test\nid',
+    };
+    const across = reduceToolReviewKey(state, '', { return: true }, true, undefined, false, 0);
+    if (across.kind !== 'state') throw new Error('missing cross-line search');
+    expect(across.state.message).toBe('No later visible match');
+    const later = reduceToolReviewKey(
+      { ...state, query: 'testid' },
+      '',
+      { return: true },
+      true,
+      undefined,
+      false,
+      0,
+    );
+    if (later.kind !== 'state') throw new Error('missing later-line search');
+    expect(later.state.cursor).toEqual({ line: 2, offset: 8 });
+  });
+
+  it('passes multiple ordered hidden hits before a visible result within the admitted field bound', () => {
+    const value =
+      Array.from({ length: 80 }, () => 'sk-proj-testidabcdefghijklmnop').join(' ') + ' testid';
+    const { state, found } = search(value, 'testid');
+    expect(state.document?.valid).toBe(true);
+    expect(state.document?.masks).toHaveLength(80);
+    expect(found.cursor).toEqual({ line: 1, offset: value.lastIndexOf('testid') });
+  });
 });

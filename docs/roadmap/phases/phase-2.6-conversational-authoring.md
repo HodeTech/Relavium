@@ -2146,6 +2146,35 @@ after creation must remain preserved rather than deleted by name. The earlier
 native review does not cover this subsequent correction. Step 2 and the final
 coverage/security/platform gates remain open.
 
+### MVP-3 Step 2 affected UI follow-up (2026-11-12)
+
+A new complete cumulative Sol/high UI sitting at `9ffb5a76` verified the exact
+page-copy and long-target corrections, both hosts' visibility/inspection/input
+paths, bounded details, restoration and content-exclusion boundaries. It passed
+115 focused tests but found one medium search defect: rejecting a masked first
+match skipped later visible matches on the same line. The fix exhausts eligible
+same-line candidates using bounded slices and binary mask lookup; hidden and
+absent matches still share the generic no-match response. Six regressions pass,
+including overlapping/cursor/cross-line cases; the focused 81-case model/host
+cohort, typecheck and lint pass. A final new affected review remains due.
+
+The review's tentative uncertainty-label concern was not promoted: a failed call
+and its separate durable-effect uncertainty/remedy are distinct existing facts.
+No retry or error classification was changed for that interpretation question.
+
+The `23449920` Windows proof run localized private-file owner and DACL mismatch
+on the allocation lock. Private Windows artifacts now receive an explicit
+TokenUser owner and protected sole-user descriptor at creation, retaining exact
+readback checks. Ordinary destination files/templates keep their OS-derived
+policy. A separate Sol/high design/security read verified that accepting only
+the same effective token's OS-designated TokenOwner as an alternative payload
+owner fits ADR-0125's concrete profile mandate; private index authority stays
+TokenUser. It requires same-handle/bracketed context checks, actual final-policy
+access evidence, and truthful current-pass recovery limits. It does not approve
+arbitrary owner groups, historical token lineage or weakened private records.
+This implementation/proof is in progress and receives a fresh native review
+and the separate final security sitting before acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
