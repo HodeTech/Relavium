@@ -39,21 +39,33 @@ describe('inferProviderFromModel', () => {
 });
 
 describe('buildDefaultChatAgent', () => {
-  it('builds a valid default agent over a known model, with the read-only tool grant', () => {
+  it('builds a valid default agent over a known model, with the approved editing/search grant', () => {
     const agent = buildDefaultChatAgent(DEFAULT_CHAT_MODEL);
     expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
     expect(agent.provider).toBe('anthropic');
     expect(agent.model).toBe(DEFAULT_CHAT_MODEL);
     expect(agent.system_prompt.length).toBeGreaterThan(0);
     expect(agent.tools).toEqual([...DEFAULT_CHAT_TOOLS]);
-    // Secure-by-default: no write / exec / commit / egress tool in the default grant.
-    for (const dangerous of [
+    expect(agent.tools).toEqual([
+      'read_file',
+      'list_directory',
+      'git_status',
+      'search_files',
+      'find_files',
       'write_file',
+      'edit_file',
+    ]);
+    expect(agent.system_prompt).toContain('same turn');
+    expect(agent.system_prompt).toContain('Writes require approval in accept-edits');
+    // No command / commit / egress / ambient OS grant.
+    for (const dangerous of [
       'run_command',
       'git_commit',
       'http_request',
       'web_search',
       'mcp_call',
+      'read_clipboard',
+      'notify',
     ]) {
       expect(agent.tools).not.toContain(dangerous);
     }

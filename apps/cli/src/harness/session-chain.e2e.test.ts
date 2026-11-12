@@ -33,6 +33,8 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
  */
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

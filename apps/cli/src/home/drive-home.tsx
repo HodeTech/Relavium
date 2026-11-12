@@ -58,6 +58,9 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { createStartingModeRuntime } from '../chat/starting-mode.js';
+import { runModeSettings } from '../chat/mode-settings.js';
+import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { ConfigError } from '../config/errors.js';
 import {
@@ -260,11 +263,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
-  const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = loadResolvedConfig({
+  const initialConfig = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
     ...(deps.homeDir === undefined ? {} : { home: deps.homeDir }),
   });
+  const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = initialConfig;
+  const startingModes = createStartingModeRuntime(initialConfig, true);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const nativePrompt = createNativePromptChannel();
   let lastSavedSessionId: string | undefined;
@@ -774,26 +779,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // the picker. Cheap (a few small file reads) and only called on a picker open / accept, never per keystroke.
     // The EFFECTIVE `[chat]` block (project → workspace → global) — the shared read LOGIC (not a cached instance)
     // behind the model + effort readers, so a bare-Home picker open does up to two cheap reads (currentDefault +
-    // currentEffort), never per-keystroke. A mid-session malformed config degrades to `undefined`, never a crash.
-    const readEffectiveChat = ():
-      | ReturnType<typeof loadResolvedConfig>['config']['chat']
-      | undefined => {
-      try {
-        return applyInvocationDefault(
-          loadResolvedConfig({
-            cwd: deps.global.cwd,
-            home: homeDir,
-            configPath: globalConfigPath,
-          }),
-          invocationDefault,
-        ).config.chat;
-      } catch {
-        return undefined; // a mid-session malformed config must not crash the picker
-      }
-    };
-    const readEffectiveDefault = (): string | undefined => readEffectiveChat()?.defaultModel;
+    // currentEffort), never per-keystroke. A strict reload failure revokes startup auto and is shown by its owner.
+    const readEffectiveChat = (): ReturnType<typeof loadResolvedConfig>['config']['chat'] =>
+      applyInvocationDefault(startingModes.read(deps.global.cwd), invocationDefault).config.chat;
+    const readEffectiveDefault = (): string | undefined => readEffectiveChat().defaultModel;
     const readEffectiveEffort = (): ReasoningEffort | undefined =>
-      readEffectiveChat()?.reasoningEffort;
+      readEffectiveChat().reasoningEffort;
     // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
     // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
     // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
@@ -938,6 +929,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
+          resumeAfterFailedClear,
         } = createChatLineHandler(
           {
             built,
@@ -947,7 +939,30 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             doctorProbes: chatDoctorProbes,
             sendGuard,
           },
-          { ...deps, hatchPorts },
+          {
+            ...deps,
+            hatchPorts,
+            openModeSettings: (currentMode, onCurrentMode, notice) =>
+              runModeSettings({
+                runtime: startingModes,
+                cwd: built.context.workingDir,
+                interactive: true,
+                flow: promptFlow,
+                currentMode,
+                onCurrentMode,
+                notice,
+                assertAdmitting: () => {
+                  assertHomeAdmitting();
+                  built.workOwner?.assertAdmitting();
+                  if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
+                    throw new CliError(
+                      'invalid_invocation',
+                      'This conversation is no longer active.',
+                    );
+                },
+                publish: publishPreference,
+              }),
+          },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
@@ -1017,6 +1032,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }
         };
         return {
+          clear: () => startChat(built),
+          resumeAfterFailedClear,
           store,
           processLine: async (line, display) => {
             try {
@@ -1029,34 +1046,45 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           stopReason,
           sessionId: built.sessionId,
           teardown,
-          ...(opts.open
-            ? {}
-            : {
-                onActivated: (isActive: () => boolean) => {
-                  if (isActive() && persister?.hasSavedTurns === true)
-                    lastSavedSessionId = built.sessionId;
-                  const activate = () =>
-                    reconcileResumedSessionEffects({
-                      io: deps.io,
-                      ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
-                      db: opened.db,
-                      sessionId: built.sessionId,
-                      sanitize: sanitizeInline,
-                      deliverNotice: (text) => store.notice(text),
-                      isActive: () => rendererActive && isActive(),
-                      flushNotice: async (publish) => {
-                        if (flushVisible === undefined)
-                          throw new Error('Home renderer is not ready.');
-                        await flushVisible(publish);
-                      },
-                    });
-                  return built.workOwner === undefined
-                    ? activate()
-                    : built.workOwner.enter(async () => {
-                        await activate();
-                      });
-                },
-              }),
+          onActivated: (isActive: () => boolean) => {
+            if (isActive() && persister?.hasSavedTurns === true)
+              lastSavedSessionId = built.sessionId;
+            const activate = async () => {
+              if (!opts.open)
+                await reconcileResumedSessionEffects({
+                  io: deps.io,
+                  ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
+                  db: opened.db,
+                  sessionId: built.sessionId,
+                  sanitize: sanitizeInline,
+                  deliverNotice: (text) => store.notice(text),
+                  isActive: () => rendererActive && isActive(),
+                  flushNotice: async (publish) => {
+                    if (flushVisible === undefined) throw new Error('Home renderer is not ready.');
+                    await flushVisible(publish);
+                  },
+                });
+              if (built.startingMode !== undefined && flushVisible !== undefined)
+                await activateStartingModeHint({
+                  runtime: startingModes,
+                  cwd: built.context.workingDir,
+                  selection: built.startingMode,
+                  currentMode: () => store.getSnapshot().mode,
+                  notice: (text) => store.notice(text),
+                  flushNotice: flushVisible,
+                  isActive: () => rendererActive && isActive(),
+                  assertAdmitting: () => {
+                    assertHomeAdmitting();
+                    built.workOwner?.assertAdmitting();
+                  },
+                });
+            };
+            return built.workOwner === undefined
+              ? activate()
+              : built.workOwner.enter(async () => {
+                  await activate();
+                });
+          },
           onAbort,
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
@@ -1088,8 +1116,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
     ): Promise<HomeChatSession> =>
       ownership === undefined ? factory() : ownership.hosts.construct(factory);
-    const startChat = (): Promise<HomeChatSession> =>
+    const startChat = (
+      bound?: Pick<BuiltChatSession, 'agent' | 'context' | 'fsPolicy'>,
+    ): Promise<HomeChatSession> =>
       constructChat(async (host) => {
+        const cwd = bound?.context.workingDir ?? deps.global.cwd;
+        const start = startingModes.resolve(cwd);
         // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
         // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
         // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
@@ -1109,9 +1141,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
         // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
         // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
-        // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
+        // startup); only with no fresh model (a genuinely unset default) fall back
         // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
-        const effectiveChat = readEffectiveChat();
+        const effectiveChat = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
         const freshModel = effectiveChat?.defaultModel;
         const [defaultModel, defaultProvider] =
           freshModel !== undefined
@@ -1119,6 +1151,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             : [config.chat.defaultModel, config.chat.defaultProvider];
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
+            startingMode: start.startingMode,
             operatorHomeDir: homeDir,
             ...(deps.outputStoreFactory === undefined
               ? {}
@@ -1138,9 +1171,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     { io: deps.io, global: deps.global, homeDir },
                     workOwner,
                   ),
-            fsPolicy,
+            fsPolicy: bound?.fsPolicy ?? fsPolicy,
             chat: {
               ...config.chat,
+              defaultMode: start.loaded.config.chat.defaultMode,
+              defaultModeSource: start.loaded.config.chat.defaultModeSource,
+              ...(bound === undefined ? {} : { fsScope: bound.context.fsScopeTier }),
               defaultModel,
               defaultProvider,
               reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
@@ -1148,8 +1184,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...(config.maxTokensEstimate === undefined
               ? {}
               : { maxTokensEstimate: config.maxTokensEstimate }),
-            agentRef: undefined, // the built-in default agent (zero-config first run)
-            cwd: deps.global.cwd,
+            ...(bound === undefined ? {} : { agent: bound.agent }),
+            agentRef: undefined,
+            cwd,
             projectConfigDir,
             now,
             uuid,
@@ -1232,6 +1269,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       restoreSignal?: AbortSignal,
     ): Promise<HomeChatSession> =>
       constructRestoredChat(restoreSignal, async (host) => {
+        let start = startingModes.resolve(deps.global.cwd);
         const loaded = preloaded ?? opened.store.loadFull(sessionId);
         if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
           throw new CliError(
@@ -1249,6 +1287,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 target.reasoningEffort,
               );
         const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+        if (record.context.workingDir !== deps.global.cwd)
+          start = startingModes.resolve(record.context.workingDir);
         const resolvePrice = readUserPricingOverlay(opened.db);
         // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
         // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
@@ -1267,13 +1307,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           noteToStore(budgetWarningText(warning));
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildResumedSession ?? buildResumedChatSession)({
+            startingMode: start.startingMode,
             operatorHomeDir: homeDir,
             ...(deps.outputStoreFactory === undefined
               ? {}
               : { outputStoreFactory: deps.outputStoreFactory }),
             ...(workOwner === undefined ? {} : { workOwner }),
             ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-            chat: config.chat,
+            chat: {
+              ...config.chat,
+              defaultMode: start.loaded.config.chat.defaultMode,
+              defaultModeSource: start.loaded.config.chat.defaultModeSource,
+            },
             fsPolicy,
             ...(config.maxTokensEstimate === undefined
               ? {}
@@ -1696,6 +1741,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         homeStore,
         doctorProbes,
         models,
+        openModeSettings: () =>
+          runModeSettings({
+            runtime: startingModes,
+            cwd: deps.global.cwd,
+            interactive: true,
+            flow: promptFlow,
+            notice: (text) => controller?.setProviderState(keyless, text),
+            assertAdmitting: assertHomeAdmitting,
+            publish: publishPreference,
+          }),
         initializeProject: () => {
           if (flushVisible === undefined)
             throw new CliError(

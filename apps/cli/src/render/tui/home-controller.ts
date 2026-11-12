@@ -100,6 +100,9 @@ import { nearestCommandName } from './command-typo.js';
 
 /** The chat session the Home builds + drives on a submit — the imperative pieces `driveHome` wires + tears down. */
 export interface HomeChatSession {
+  /** Fresh instance over this exact bound agent/context; never infer a built-in from its id. */
+  readonly clear?: () => Promise<HomeChatSession>;
+  readonly resumeAfterFailedClear?: () => void;
   /** Called once AFTER active publication; discarded builds must never consume disclosure evidence. */
   readonly onActivated?: (isActive: () => boolean) => void | Promise<void>;
   /** The chat view store the chat region projects (already subscribed to the live stream by `driveHome`). */
@@ -267,6 +270,7 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
+  readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
   readonly pickSession?: () => Promise<string | undefined>;
   readonly resumeChat?: (
@@ -494,9 +498,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // one is swapped in, its transcript opening with the clearedNotice naming the prior (resumable) conversation.
   const clearChat = (old: HomeChatSession): void => {
     if (exiting || tearingDown === old) return; // permanent stop or a double-/clear race
+    if (old.clear === undefined) {
+      old.resumeAfterFailedClear?.();
+      old.store.notice('Starting a fresh conversation is unavailable for this bound agent.');
+      return;
+    }
     const oldId = old.sessionId;
     set({ submitBusy: true }); // re-gate input for the whole swap (the old chat is still live underneath)
-    const build = deps.startChat();
+    const build = old.clear();
     buildInFlight = build;
     void build.then(
       (fresh) => {
@@ -551,6 +560,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // The fresh build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a static,
         // secret-free note in the old chat and un-gate it so the user can keep going or /exit.
         if (state.session === old) {
+          old.resumeAfterFailedClear?.();
           old.store.note('/clear could not start a fresh session — keeping this conversation.');
           set({ submitBusy: false });
         }
@@ -791,6 +801,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const managementCommand = (text: string): boolean => {
+    if (state.session === undefined && /^\/mode(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/mode')
+        set({ notice: 'No conversation is active. Use /mode to set the startup default.' });
+      else if (deps.openModeSettings === undefined)
+        set({ notice: 'Startup mode settings are unavailable here.' });
+      else openNativeAction(deps.openModeSettings, 'Startup mode settings');
+      return true;
+    }
     if (/^\/resume(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/resume') {
@@ -969,9 +988,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // The effort sub-list's opening tier: absent when the sub-step isn't offered; else the LIVE store tier in a chat
     // (reflecting a prior no-reseat /effort change), else the config effort default in the bare Home.
     let currentEffort: ReasoningEffort | undefined;
-    if (effortStep) {
-      currentEffort =
-        active !== undefined ? active.store.getSnapshot().reasoningEffort : port.currentEffort();
+    let currentDefault: string | undefined;
+    try {
+      if (effortStep)
+        currentEffort =
+          active !== undefined ? active.store.getSnapshot().reasoningEffort : port.currentEffort();
+      currentDefault = activeModel ?? port.currentDefault();
+    } catch {
+      const notice =
+        '/models: could not read chat settings. Check the configuration before retrying.';
+      set({ notice });
+      active?.store.note(notice);
+      return;
     }
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
@@ -980,7 +1008,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         filter: '',
         selected: 0,
         loading: false,
-        currentDefault: activeModel ?? port.currentDefault(),
+        currentDefault,
         refreshedAt: view.refreshedAt,
         banner: undefined,
         hint: undefined,
@@ -1035,13 +1063,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     type Result = void | { readonly durability: 'confirmed' | 'unconfirmed' };
     const success = (result: Result): void => {
       if (exiting) return;
+      let effective: string | undefined;
+      try {
+        effective = port.currentDefault();
+      } catch {
+        // Publication already happened. A strict reread refusal must not relabel it as an unsaved choice.
+      }
       const suffix =
         result?.durability === 'unconfirmed' ? ' Crash persistence is unconfirmed.' : '';
       set({
         modelPicker: undefined,
         submitBusy: false,
-        notice:
-          defaultWriteNotice(port.currentDefault(), modelId, displayName, reasoningEffort) + suffix,
+        notice: defaultWriteNotice(effective, modelId, displayName, reasoningEffort) + suffix,
       });
     };
     const failure = (err: unknown): void => {
@@ -1274,7 +1307,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
     openDetails: () => undefined,
-    setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
+    setMode: (argument) => {
+      managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
+    },
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface
     toggleReasoning: () => undefined, // `/thinking` is chat-only (2.5.H); inert in the bare-Home surface (no live session)
     compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface

@@ -1791,4 +1791,68 @@ export const mutations = [
       ...displayRendererWitnesses(displayBoundaryMarker),
     ],
   ),
+  // MVP-3: repository defaults cannot grant auto; old turns and stale save continuations share revocation.
+  control(
+    'startup-repository-auto-refusal',
+    'packages/shared/src/config.ts',
+    "export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto']);",
+    'export const RepositoryChatModeSchema = ChatModeSchema;',
+    ['packages/shared/src/config-chat-mode.test.ts'],
+    16,
+    'refuses repository mode auto',
+    'W2_STARTUP_REPOSITORY_AUTO_REFUSAL',
+  ),
+  control(
+    'startup-auto-final-dispatch',
+    'apps/cli/src/chat/session-host.ts',
+    '          if (opts.startingMode !== undefined)\n' +
+      '            assertStartingModeDispatch(\n' +
+      '              opts.startingMode.authority,\n' +
+      '              ctx.approval?.confirm,\n' +
+      '              toolId,\n' +
+      '              governed,\n' +
+      '            );',
+    '          void governed;',
+    ['apps/cli/src/chat/starting-mode-dispatch.test.ts'],
+    5,
+    'narrower while durable preparation is in flight',
+    'W2_STARTUP_AUTO_FINAL_DISPATCH',
+    ['read-error', 'explicit-next-turn'].map((change) => ({
+      target: `${change} while durable preparation is in flight`,
+      marker: 'W2_STARTUP_AUTO_FINAL_DISPATCH',
+    })),
+  ),
+  control(
+    'startup-default-confirmed-narrowing',
+    'apps/cli/src/chat/mode-settings.ts',
+    '      options.runtime.authority.revoke();',
+    '      void mode;',
+    ['apps/cli/src/chat/mode-settings.test.ts'],
+    19,
+    'confirmed narrowing revokes before failed prepare and does not leak the error',
+    'W2_STARTUP_CONFIRMED_NARROWING',
+    [
+      {
+        target: 'confirmed narrowing revokes before failed publish and does not leak the error',
+        marker: 'W2_STARTUP_CONFIRMED_NARROWING',
+      },
+    ],
+  ),
+  control(
+    'startup-default-stale-auto-admission',
+    'apps/cli/src/chat/starting-mode.ts',
+    '    if (expectedRevision !== this.revision) return false;',
+    '    void expectedRevision;',
+    ['apps/cli/src/chat/mode-settings.test.ts'],
+    19,
+    'a later narrower config observation wins over a pending successful auto publication',
+    'W2_STARTUP_STALE_AUTO_ADMISSION',
+    [
+      {
+        target:
+          'a later invalid config observation wins over a pending successful auto publication',
+        marker: 'W2_STARTUP_STALE_AUTO_ADMISSION',
+      },
+    ],
+  ),
 ];

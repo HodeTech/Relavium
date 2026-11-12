@@ -1,4 +1,4 @@
-import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
+import type { ChatMode, GlobalConfig, ProjectConfig } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 
@@ -22,6 +22,9 @@ type ChatConfig = NonNullable<ProjectConfig['chat']>;
  * host falls back to its engine defaults (e.g. an absent `maxTurns` ⇒ `SessionDeps`'s built-in 50).
  */
 export interface ResolvedChatConfig {
+  /** Strict project > workspace > operator > ask starting preference (ADR-0116). */
+  readonly defaultMode: ChatMode;
+  readonly defaultModeSource: 'project' | 'workspace' | 'global' | 'fallback';
   /** `[chat].default_model` — the model a chat session binds when its agent names none. */
   readonly defaultModel: ChatConfig['default_model'];
   /** `[chat].default_provider` — the provider serving `default_model`, persisted at pick time (ADR-0059) so the
@@ -200,6 +203,15 @@ function resolveChat(
   return {
     defaultModel,
     defaultProvider,
+    defaultMode: p?.default_mode ?? w?.default_mode ?? global?.preferences?.default_mode ?? 'ask',
+    defaultModeSource:
+      p?.default_mode !== undefined
+        ? 'project'
+        : w?.default_mode !== undefined
+          ? 'workspace'
+          : global?.preferences?.default_mode !== undefined
+            ? 'global'
+            : 'fallback',
     fsScope: p?.fs_scope ?? w?.fs_scope,
     extraRoots: p?.extra_roots ?? w?.extra_roots,
     maxTurns: p?.max_turns ?? w?.max_turns,

@@ -82,7 +82,7 @@ and its expanded replay/evidence contracts are accepted after verifying the
 supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
 captures their disposition. [Step 2 is accepted on development](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
 after its independent reviews, separate security sittings and all 26 checkpoint
-CI jobs passed. Step 3 implementation is active: the built-in grant, strict
+CI jobs passed. [Step 3 is implemented and entering independent review](phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-author-checkpoint-2026-11-12): the built-in grant, strict
 startup-mode configuration and shared mode/default UX. Whole-MVP-3 acceptance
 and maintainer PR review remain open; no additional design approval is pending.
 
@@ -103,7 +103,8 @@ integration findings are closed at `bc8c34b2`: all eight native targets,
 Windows integration, all four installed consumers, both filesystem and secrets
 control shards, coverage and final toolchain checks pass. The acceptance record
 owns exact source bindings, review scope and retained-evidence counts. The
-built-in default grant remains read-only until Step 3 is implemented.
+built-in editing/search grant is now implemented by Step 3, after this acceptance;
+Step 3 review/security acceptance and checkpoint CI remain open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

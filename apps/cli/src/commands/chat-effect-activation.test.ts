@@ -109,7 +109,8 @@ beforeEach(async () => {
   renderer.render.mockReset();
   root = mkdtempSync(join(tmpdir(), 'relavium-chat-effect-activation-'));
   const configPath = join(root, 'config.toml');
-  writeFileSync(configPath, '');
+  // This cohort isolates effect disclosure; measured starting-hint delivery has its own controls.
+  writeFileSync(configPath, '[preferences]\ndefault_mode_hint_shown = true\n');
   client = createClient();
   runMigrations(client.db);
   const store = createSessionStore(client.db);

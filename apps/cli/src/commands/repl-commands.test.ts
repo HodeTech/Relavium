@@ -218,6 +218,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       'exit',
       'doctor',
+      'mode',
       'clear',
       'models',
       'providers',

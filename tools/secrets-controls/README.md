@@ -4,9 +4,19 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **130 independent controls and 513 required named assertion witnesses**.
+declares **134 independent controls and 521 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
+
+Four MVP-3 controls additionally remove the repository `auto` exclusion, the
+captured-turn final dispatch admission, immediate confirmed-default narrowing,
+and the revision check on a delayed successful auto save. Their complete files
+contain 16 schema, five actual session dispatch, and 19 picker cases. Eight named
+witnesses require repository refusal, all three revocation races, both failed
+save phases and both later configuration observations. Positive explicit-current
+auto and unchanged admitted-auto dispatch remain in the same cohort. No test
+claim implies that final revocation leaves no durable prepare or guarantees
+discard success; the real final-gate fixture observes preparation and discard.
 
 The thirteen preserved Step 3 controls cover the stdin aggregate/single-chunk cap, mutable
 Buffer ownership, zero-byte retention, awaited iterator cleanup, fixed source-error

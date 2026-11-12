@@ -53,6 +53,8 @@ import type {
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { governedToolIds } from './chat-mode.js';
+import { assertStartingModeDispatch, type ChatModeSelection } from './starting-mode.js';
 import {
   closePreparedMcp,
   connectAgentMcp,
@@ -106,6 +108,8 @@ const SESSION_DURABILITY_FAILURE =
  */
 
 export interface BuildChatSessionOptions {
+  /** CLI-private resolved start; its invocation authority is never persisted in session state. */
+  readonly startingMode?: ChatModeSelection;
   /** Resolved operator home, explicitly supplied by production surfaces. */
   readonly operatorHomeDir?: string;
   /** Explicit resource factory for hermetic embeddings and tests. */
@@ -260,6 +264,7 @@ export interface SessionUsageWriter {
 }
 
 export interface BuiltChatSession {
+  readonly startingMode?: ChatModeSelection;
   /** Private trusted host input for model filesystem guards; never part of SessionContext/history. */
   readonly operatorHomeDir?: string;
   /** Creation owner for surface persistence/teardown; absent in an explicitly unowned embedding. */
@@ -351,6 +356,7 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
+  | 'startingMode'
   | 'chat'
   | 'maxTokensEstimate'
   | 'deadlineTimer'
@@ -511,6 +517,7 @@ function buildSessionRuntime(
       });
   };
   const innerRegistry = createToolRegistry({ tools, host });
+  const governed = governedToolIds(tools);
   const registry: ToolRegistry = {
     ...innerRegistry,
     dispatch: (call, ctx) =>
@@ -519,6 +526,13 @@ function buildSessionRuntime(
         beforeDispatch: (toolId) => {
           ctx.beforeDispatch?.(toolId);
           assertDurableDispatch(toolId);
+          if (opts.startingMode !== undefined)
+            assertStartingModeDispatch(
+              opts.startingMode.authority,
+              ctx.approval?.confirm,
+              toolId,
+              governed,
+            );
         },
       }),
   };
@@ -1116,6 +1130,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
       ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
@@ -1271,6 +1286,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
+  | 'startingMode'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'operatorHomeDir'
@@ -1478,6 +1494,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
       ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),

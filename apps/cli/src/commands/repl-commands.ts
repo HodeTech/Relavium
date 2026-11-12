@@ -213,13 +213,14 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   {
     name: 'mode',
     label: 'Mode',
-    description: 'Switch the chat mode: ask / plan / accept-edits / auto (or Shift+Tab to cycle).',
+    description:
+      'Choose the current mode or explicitly save a startup default. Shift+Tab changes only this chat.',
     effect: 'read',
     // A single positional mode name; the dispatch validates it against these values, so `run` only ever sees a
     // valid mode or an empty arg (the palette's bare `/mode` — which shows the current mode + the options).
     positional: { name: 'mode', values: [...CHAT_MODES] },
     run: (ctx, args) => ctx.setMode(args[0] ?? ''),
-    availableIn: ['chat'],
+    availableIn: ['home', 'chat'],
   },
   {
     name: 'effort',

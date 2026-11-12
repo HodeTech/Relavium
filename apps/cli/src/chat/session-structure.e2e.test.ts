@@ -55,6 +55,8 @@ function capturingResolver(scripts: StreamChunk[][], requests: LlmRequest[]): Pr
 }
 
 const chat: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

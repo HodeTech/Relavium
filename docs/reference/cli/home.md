@@ -180,7 +180,14 @@ The Home and the chat render as **one ink tree with conditional rendering** — 
 | `loading` | the pending message echoed under `Starting chat…` | the deferred `buildChatSession` resolves → `chat`; it rejects → back to `home` with a banner |
 | `chat` | the live chat region ([chat-session.md](chat-session.md)) | the chat ends (`/exit` / `/cancel` / Ctrl-C) → back to a freshly-read `home` |
 
-The chat session is built **after** the ink mount (an explicit loading state), so the strip shows instantly and a slow or failed build degrades to the loading state / a Home banner rather than blocking the entry. A built chat reuses the **built-in default chat agent** over `[chat].default_model` (a zero-config, read-only first run — see [chat-session.md](chat-session.md)); the Home does not bind a custom agent (`relavium chat --agent <ref>` is the path for that).
+The chat session is built **after** the ink mount (an explicit loading state), so the strip shows instantly and a slow or failed build degrades to the loading state / a Home banner rather than blocking the entry. A built chat reuses the **built-in default chat agent** over `[chat].default_model` (the mode-gated editing/search grant — see [chat-session.md](chat-session.md)); the Home does not bind a custom agent (`relavium chat --agent <ref>` is the path for that).
+
+Resume, model reseat and `/clear` retain the exact bound agent grant. `/clear`
+uses that session's private fresh-builder closure, including an authored agent
+named `relavium-chat` or an older read-only snapshot. It never identifies the
+built-in agent by id. Each replacement resolves the current configured start
+at its bound workspace and owns fresh approvals, read evidence and previews.
+
 
 ### Keymap (2.5.B)
 
@@ -189,6 +196,7 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
 | Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
 | Backspace / Delete | erase the char **before** the cursor | erase before the cursor (idle) / ignored mid-turn | ignored |
+| **`/mode`** (MVP-3) | configure the startup default | choose current mode or separately save a startup default | — |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
 | **`[y]`/`[a]`/`[n]`/`[esc]`** (2.5.E) | — | **answer a pending per-tool approval** — `[y]` once · `[a]` always · `[n]` no · `[esc]` abort (the prompt owns the keyboard) | — |

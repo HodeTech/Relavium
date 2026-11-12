@@ -64,6 +64,7 @@ function makeSession(
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
     onSetEffort?: (effort: ReasoningEffort) => void;
+    clear?: () => Promise<HomeChatSession>;
   } = {},
 ): {
   session: HomeChatSession;
@@ -88,6 +89,7 @@ function makeSession(
     },
     shouldStop: opts.stop ?? (() => false),
     stopReason: opts.stopReason ?? (() => 'exit'),
+    ...(opts.clear === undefined ? {} : { clear: opts.clear }),
     ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
@@ -1033,6 +1035,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // the fresh one is ready.
     let stopped = false;
     const old = makeSession({
+      clear: (): Promise<HomeChatSession> => startChat(),
       stop: () => stopped,
       onProcess: () => {
         stopped = true;
@@ -1069,6 +1072,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('/clear keeps the OLD session live when the fresh build fails (build-first, no dead screen)', async () => {
     let stopped = false;
     const old = makeSession({
+      clear: (): Promise<HomeChatSession> => startChat(),
       stop: () => stopped,
       onProcess: () => {
         stopped = true;
@@ -1107,6 +1111,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // state.session === old AND buildInFlight === the fresh build. Hold the fresh build UNRESOLVED to sit in it.
     let stopped = false;
     const old = makeSession({
+      clear: (): Promise<HomeChatSession> => startChat(),
       stop: () => stopped,
       onProcess: () => {
         stopped = true;

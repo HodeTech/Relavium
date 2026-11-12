@@ -74,6 +74,8 @@ import {
 } from './chat.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,
@@ -687,7 +689,7 @@ describe('chatCommand', () => {
     expect(err()).toContain("/doctor: unknown argument '--bogus'");
   });
 
-  it('/mode <name> switches the mode; a bare /mode shows the current mode + options (ADR-0057)', async () => {
+  it('headless /mode explains the options and keeps direct mode changes at ask (ADR-0116)', async () => {
     const { d, err, store, sessionId } = deps(
       ['/mode', '/mode auto', 'hello', '/exit'],
       [textTurn('hi')],
@@ -695,7 +697,8 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     const out = err();
     expect(out).toContain('mode: ask'); // the bare /mode shows the default (ask) + the options
-    expect(out).toContain('mode: auto'); // /mode auto applied
+    expect(out).not.toContain('mode: auto'); // headless cannot create an approver
+    expect(out.match(/mode: ask/g)).toHaveLength(2);
     // /mode is read-only: the session continued and the 'hello' turn persisted (user + assistant = 2).
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });

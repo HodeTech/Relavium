@@ -5,6 +5,11 @@ import type { AgentSession, ToolApprovalRequest, ToolDef, ToolLiveObserver } fro
 import { isProtectedPolicyPath } from '../engine/tool-host/fs.js';
 import type { FsPathPolicy } from '../engine/tool-host/fs-policy.js';
 import {
+  bindStartingModePolicy,
+  type ChatModeSelection,
+  type StartingModeAuthority,
+} from './starting-mode.js';
+import {
   ApprovalCache,
   buildTurnPolicy,
   governedToolIds,
@@ -26,6 +31,8 @@ import {
 
 /** The session-scoped environment a mode is applied against — built once per session. */
 export interface ChatModeEnv {
+  readonly interactive: boolean;
+  readonly startingModeAuthority?: StartingModeAuthority;
   readonly onToolLiveEvent?: ToolLiveObserver;
   /** The live session the mapped turn policy is pushed to. */
   readonly session: Pick<AgentSession, 'setTurnPolicy'>;
@@ -41,6 +48,8 @@ export interface ChatModeEnv {
 }
 
 export interface MakeChatModeEnvOptions {
+  readonly interactive?: boolean;
+  readonly startingModeAuthority?: StartingModeAuthority;
   readonly onToolLiveEvent?: ToolLiveObserver;
   readonly session: Pick<AgentSession, 'setTurnPolicy'>;
   /** The session's granted tool defs (built-ins + discovered MCP) — the governed hide-set is derived from these. */
@@ -55,6 +64,10 @@ export interface MakeChatModeEnvOptions {
 /** Build the session-scoped {@link ChatModeEnv} (pure — no policy is applied until {@link applyChatMode}). */
 export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
   return {
+    interactive: opts.interactive ?? true,
+    ...(opts.startingModeAuthority === undefined
+      ? {}
+      : { startingModeAuthority: opts.startingModeAuthority }),
     session: opts.session,
     ...(opts.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: opts.onToolLiveEvent }),
     governed: governedToolIds(opts.tools),
@@ -87,14 +100,28 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
  * so a governed dispatch always requires a `confirm` decision (fail-closed). Idempotent; call it on session
  * start (the initial mode) and on every mode change.
  */
-export function applyChatMode(env: ChatModeEnv, mode: ChatMode): void {
-  env.session.setTurnPolicy(
-    buildTurnPolicy(mode, {
-      governed: env.governed,
-      ...(env.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: env.onToolLiveEvent }),
-      prompt: env.prompt,
-      cache: env.cache,
-      isProtectedTarget: env.isProtectedTarget,
-    }),
-  );
+export function applyChatMode(
+  env: ChatModeEnv,
+  requested: ChatMode,
+  initial?: ChatModeSelection,
+): void {
+  const interactive = env.interactive && (env.startingModeAuthority?.interactive ?? true);
+  const mode = interactive ? requested : 'ask';
+  const selection =
+    interactive && initial !== undefined ? initial : env.startingModeAuthority?.explicit(mode);
+  if (
+    selection !== undefined &&
+    (selection.authority !== env.startingModeAuthority || selection.mode !== mode)
+  )
+    throw new Error('Chat mode selection does not belong to this host.');
+  const policy = buildTurnPolicy(mode, {
+    governed: env.governed,
+    ...(env.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: env.onToolLiveEvent }),
+    prompt: env.prompt,
+    cache: env.cache,
+    isProtectedTarget: env.isProtectedTarget,
+  });
+  if (selection !== undefined && policy.confirm !== undefined)
+    bindStartingModePolicy(policy.confirm, selection);
+  env.session.setTurnPolicy(policy);
 }

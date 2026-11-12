@@ -8,14 +8,17 @@ import type {
   ToolApprovalLiveContext,
   ToolLiveObserver,
 } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import { CHAT_MODES, type AbortSignalLike, type ChatMode } from '@relavium/shared';
+
+export { CHAT_MODES } from '@relavium/shared';
+export type { ChatMode } from '@relavium/shared';
 
 /**
  * The CLI chat **mode** model (2.5.E Step 4, [ADR-0057](../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)).
  * A mode is a POLICY LAYER on the one session instance — never a reseat: it maps to a
  * {@link SessionTurnPolicy} the host pushes via `AgentSession.setTurnPolicy`, controlling only (a) the
  * model-advertised tool subset and (b) the per-dispatch approval decision. The engine stays mode-agnostic;
- * this module is the single home of the ask / plan / accept-edits / auto vocabulary and its two mappings.
+ * this module maps the shared ask / plan / accept-edits / auto vocabulary to those policies.
  *
  * Two-layer safety (ADR-0057): the advertise-filter is BEST-EFFORT (it keeps a governed tool out of the
  * model's reach), while the `confirm` hook is AUTHORITATIVE — the registry calls it for every governed-class
@@ -24,10 +27,6 @@ import type { AbortSignalLike } from '@relavium/shared';
  * session once/always memory; `auto` auto-approves EXCEPT a protected-path write, which falls back to a prompt
  * (and the fs layer hard-denies protected paths regardless — the floor beneath every mode).
  */
-
-/** The four chat modes, in `Shift+Tab` cycle order (ADR-0057 — `auto` is on the cycle, not hidden). */
-export const CHAT_MODES = ['ask', 'plan', 'accept-edits', 'auto'] as const;
-export type ChatMode = (typeof CHAT_MODES)[number];
 
 /** The default mode: read-only `ask` (secure by default — no governed action without a deliberate mode step). */
 export const DEFAULT_CHAT_MODE: ChatMode = 'ask';
@@ -46,7 +45,7 @@ export const MODE_DESCRIPTION: Record<ChatMode, string> = {
   ask: 'read-only — writes, commands, and network are declined',
   plan: 'read-only — draft a plan before acting',
   'accept-edits': 'prompt before each write / command / network call',
-  auto: 'auto-approve actions (protected paths still prompt; the fs jail still holds)',
+  auto: 'auto-approve granted actions; scope and protected-path rules still apply',
 };
 
 /** The next mode in the `Shift+Tab` cycle: ask → plan → accept-edits → auto → ask. */

@@ -2,6 +2,13 @@ import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
+import { runModeSettings } from '../chat/mode-settings.js';
+import { publishModePreference } from '../chat/mode-preference-publication.js';
+import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
+import {
+  createNativePromptChannel,
+  type NativePromptUi,
+} from '../render/tui/native-prompt-channel.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 import type { SessionHostOwner } from '../chat/session-host-owner.js';
@@ -91,6 +98,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
+import { createStartingModeRuntime, type StartingModeRuntime } from '../chat/starting-mode.js';
 import { runSessionPicker } from '../home/session-picker.js';
 import { runStandaloneNativeFlow } from './standalone-native-flow.js';
 import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
@@ -233,6 +241,10 @@ function buildChatModelsPort(
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
 export interface ChatDriveContext {
+  readonly modePrompt?: {
+    readonly ui: NativePromptUi;
+    readonly ready: (flush: NoticeFlush) => void;
+  };
   /** Actual host lifetime, present on owned production construction paths. */
   readonly workOwner?: SessionWorkOwner;
   /** Join the current native job-control binding before this mount's final unmount. */
@@ -462,6 +474,11 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  readonly openModeSettings?: (
+    currentMode: () => ChatMode,
+    onCurrentMode: (mode: ChatMode) => void,
+    notice: (text: string) => void,
+  ) => Promise<void>;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
   /** The original bootstrap invocation, shared across clear and reseat. */
@@ -631,6 +648,10 @@ async function chatCommandBody(
   });
   const { projectConfigDir, homeDir } = loadedConfig;
   let { config } = loadedConfig;
+  const startingModes = createStartingModeRuntime(
+    loadedConfig,
+    chatIsInteractive(deps.io, deps.global),
+  );
   const consentGate = createConsentGate({
     io: deps.io,
     global: deps.global,
@@ -663,11 +684,7 @@ async function chatCommandBody(
     if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
       const setup = await keys.prepareInteractiveSetup(ownership, earlyOpened?.db);
       loadedConfig = applyStandaloneDefault(
-        loadResolvedConfig({
-          cwd: deps.global.cwd,
-          configPath: loadedConfig.globalConfigPath,
-          home: homeDir,
-        }),
+        startingModes.read(deps.global.cwd),
         setup.ephemeralDefault,
       );
       config = loadedConfig.config;
@@ -689,11 +706,17 @@ async function chatCommandBody(
     // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
     // fail-loud exit-2 CliError, cause stripped) before the session is live.
     const prepare = async (host?: SessionHostOwner) => {
+      const start = startingModes.resolve(deps.global.cwd);
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildSession ?? buildChatSession)({
+          startingMode: start.startingMode,
           operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
-          chat: config.chat,
+          chat: {
+            ...config.chat,
+            defaultMode: start.loaded.config.chat.defaultMode,
+            defaultModeSource: start.loaded.config.chat.defaultModeSource,
+          },
           fsPolicy,
           ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
           ...(config.maxTokensEstimate === undefined
@@ -826,6 +849,7 @@ async function chatCommandBody(
       // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
       // shared with `chat-resume` via createClearRebuild so it cannot drift.
       const rebuild = createClearRebuild({
+        startingModes,
         homeDir,
         ...(ownership === undefined ? {} : { ownership }),
         chat: config.chat,
@@ -854,6 +878,7 @@ async function chatCommandBody(
       // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
       // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
       const reseatRebuild = createReseatRebuild({
+        startingModes,
         homeDir,
         ...(ownership === undefined ? {} : { ownership }),
         chat: config.chat,
@@ -877,6 +902,7 @@ async function chatCommandBody(
 
       return {
         wiring: {
+          startingModes,
           built,
           opened,
           store,
@@ -1042,6 +1068,7 @@ async function chatResumeCommandBody(
     let providers: ProviderResolver;
     let mcpSecretResolver: McpSecretResolver;
     let consentGate: NonNullable<BuildChatSessionOptions['consentGate']>;
+    let startingModes: StartingModeRuntime;
 
     let built: BuiltChatSession;
     // The snapshot's provider when it has no key and the REPL is interactive (MVP-A4, deferred): the session
@@ -1100,6 +1127,10 @@ async function chatResumeCommandBody(
         cwd: originalCwd,
         configPath: deps.global.configPath,
       });
+      startingModes = createStartingModeRuntime(
+        loadedConfig,
+        chatIsInteractive(deps.io, deps.global),
+      );
       ({ config, projectConfigDir } = loadedConfig);
       fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
       deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
@@ -1143,11 +1174,7 @@ async function chatResumeCommandBody(
         await keys.prepareInteractiveSetup(ownership, opened.db);
         assertResumeAdmitting();
         // Resume keeps the saved agent/model. Only current runtime settings are reloaded.
-        loadedConfig = loadResolvedConfig({
-          cwd: originalCwd,
-          configPath: loadedConfig.globalConfigPath,
-          home: homeDir,
-        });
+        loadedConfig = startingModes.read(originalCwd);
         ({ config, projectConfigDir } = loadedConfig);
         fsPolicy = admitChatFsPolicy(grants, originalCwd, loadedConfig.config.chat.extraRoots);
         // Interactive resume retains its existing missing-key host: setup can
@@ -1174,11 +1201,17 @@ async function chatResumeCommandBody(
         homeDir,
         prompt: createConsentPrompter(),
       });
+      const start = startingModes.resolve(originalCwd);
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildResumedSession ?? buildResumedChatSession)({
+          startingMode: start.startingMode,
           operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
-          chat: config.chat,
+          chat: {
+            ...config.chat,
+            defaultMode: start.loaded.config.chat.defaultMode,
+            defaultModeSource: start.loaded.config.chat.defaultModeSource,
+          },
           fsPolicy,
           ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
           ...(config.maxTokensEstimate === undefined
@@ -1281,6 +1314,7 @@ async function chatResumeCommandBody(
     // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
     // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
     const rebuild = createClearRebuild({
+      startingModes,
       homeDir,
       ...(ownership === undefined ? {} : { ownership }),
       chat: config.chat,
@@ -1308,6 +1342,7 @@ async function chatResumeCommandBody(
     // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript, over the SHARED db.
     // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
     const reseatRebuild = createReseatRebuild({
+      startingModes,
       homeDir,
       ...(ownership === undefined ? {} : { ownership }),
       chat: config.chat,
@@ -1333,6 +1368,7 @@ async function chatResumeCommandBody(
     // re-emitting `session:started` would double a lifecycle event. Disclose only once the driver is active.
     return {
       wiring: {
+        startingModes,
         built,
         opened,
         store,
@@ -1409,6 +1445,7 @@ function missingKeyGuard(
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
 interface ReplWiring {
+  readonly startingModes?: StartingModeRuntime;
   readonly built: BuiltChatSession;
   readonly opened: OpenedSessionStore;
   readonly store: ChatStoreController;
@@ -1495,7 +1532,10 @@ export function chatIsInteractive(
 }
 
 export function createChatModeControl(
-  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context' | 'agent' | 'fsPolicy'>,
+  built: Pick<
+    BuiltChatSession,
+    'session' | 'tools' | 'context' | 'agent' | 'fsPolicy' | 'startingMode'
+  >,
   store: ChatStoreController,
   opts?: { readonly interactive?: boolean },
 ): ChatModeControl {
@@ -1504,11 +1544,16 @@ export function createChatModeControl(
   // return an unanswerable promise and DEADLOCK the turn (High 9). So a non-interactive session uses a
   // reject-immediately prompt: a governed dispatch in `accept-edits`/`auto` is denied (never a hang), mirroring
   // the one-shot `agent run`. `interactive` defaults true (the ink REPL + the Home are always a TTY).
-  const interactive = opts?.interactive ?? true;
+  const interactive =
+    (opts?.interactive ?? true) && (built.startingMode?.authority.interactive ?? true);
   const prompt: ApprovalPrompt = interactive
     ? store.requestApproval
     : nonInteractiveApprovalPrompt('on this non-interactive driver');
   const modeEnv = makeChatModeEnv({
+    interactive,
+    ...(built.startingMode === undefined
+      ? {}
+      : { startingModeAuthority: built.startingMode.authority }),
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
@@ -1516,7 +1561,9 @@ export function createChatModeControl(
     prompt,
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
-  applyChatMode(modeEnv, store.getSnapshot().mode);
+  const initialMode = interactive ? (built.startingMode?.mode ?? store.getSnapshot().mode) : 'ask';
+  store.setMode(initialMode);
+  applyChatMode(modeEnv, initialMode, interactive ? built.startingMode : undefined);
   // ADR-0066/0071: seed the footer's effort indicator from the session's initial effective tier (override ??
   // agent), shown only when the bound model actually has a tier to control. Mirrors applyChatMode's seed above.
   //
@@ -1543,8 +1590,9 @@ export function createChatModeControl(
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
     },
     onModeChange: (mode) => {
-      store.setMode(mode);
-      applyChatMode(modeEnv, mode);
+      const effective = interactive ? mode : 'ask';
+      store.setMode(effective);
+      applyChatMode(modeEnv, effective);
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
     // so the footer reflects it only on a reasoning-capable model. The override lives on THIS session instance only
@@ -1563,6 +1611,8 @@ export function createChatModeControl(
 
 /** The slash-aware line handler + the session's cancel/stop state + the mode/abort control (ADR-0057). */
 export interface ChatLineHandler extends ChatModeControl {
+  /** Home retained the live instance after a build-first clear refusal. */
+  readonly resumeAfterFailedClear: () => void;
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
   readonly processLine: (raw: string, display?: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
@@ -1835,9 +1885,17 @@ export function createChatLineHandler(
     // `/mode [name]` (ADR-0057): switch the chat mode, or (bare `/mode`) show the current mode + the options.
     // The dispatch already validated `modeArg` against the mode names, so a non-empty arg parses; still
     // fail-soft. Applying re-pushes the turn policy on the SAME session (no reseat), effective next turn.
-    setMode: (modeArg) => {
+    setMode: async (modeArg) => {
       const requested = modeArg.trim();
       if (requested.length === 0) {
+        if (interactive && deps.openModeSettings !== undefined) {
+          await deps.openModeSettings(
+            () => store.getSnapshot().mode,
+            modeControl.onModeChange,
+            emitOutput,
+          );
+          return;
+        }
         // Bare `/mode`: show the current mode + EXPLAIN each one (a discovery affordance — the palette submits
         // this bare form), listing every mode with its one-line description and marking the active one.
         const current = store.getSnapshot().mode;
@@ -1854,7 +1912,7 @@ export function createChatLineHandler(
         return;
       }
       modeControl.onModeChange(mode);
-      emitOutput(`mode: ${MODE_LABEL[mode]}`);
+      emitOutput(`mode: ${MODE_LABEL[store.getSnapshot().mode]}`);
     },
     // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
     // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
@@ -2068,6 +2126,12 @@ export function createChatLineHandler(
   };
 
   return {
+    resumeAfterFailedClear: () => {
+      if (clearRequested && !cancelled && reseatRequested === undefined) {
+        clearRequested = false;
+        stop = false;
+      }
+    },
     processLine:
       workOwner === undefined
         ? processLine
@@ -2101,6 +2165,7 @@ export function createChatLineHandler(
  * function's to close — the caller's outer {@link runReplLoop} finally owns it across every swap.
  */
 interface FreshChatWiringDeps {
+  readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
@@ -2137,6 +2202,7 @@ async function buildFreshChatWiring(
   intro: string,
   host?: SessionHostOwner,
 ): Promise<ReplWiring> {
+  const start = deps.startingModes.resolve(deps.cwd);
   // Re-read the ADR-0065 §2 user-pricing overlay FRESH from the shared db on each `/clear` rebuild (2.5.G S10) — so
   // a `models pricing` write made in another terminal mid-session takes effect on the very next `/clear` session,
   // the SAME freshness guarantee `readEffectiveDefault()` gives the default model (and the Home already gives
@@ -2144,9 +2210,14 @@ async function buildFreshChatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildSession({
+      startingMode: start.startingMode,
       operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
-      chat: deps.chat,
+      chat: {
+        ...deps.chat,
+        defaultMode: start.loaded.config.chat.defaultMode,
+        defaultModeSource: start.loaded.config.chat.defaultModeSource,
+      },
       ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
       ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
       ...(workOwner === undefined
@@ -2249,6 +2320,7 @@ async function buildFreshChatWiring(
     mcpSkipped: built.mcpSkipped,
   });
   return {
+    startingModes: deps.startingModes,
     built,
     opened: deps.opened,
     store,
@@ -2277,6 +2349,7 @@ async function buildFreshChatWiring(
  * the {@link clearedNotice} naming the prior (still-resumable) session.
  */
 function createClearRebuild(params: {
+  readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly ownership?: SessionChatLifetime;
   readonly chat: BuildChatSessionOptions['chat'];
@@ -2299,6 +2372,7 @@ function createClearRebuild(params: {
   readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
+    startingModes: params.startingModes,
     homeDir: params.homeDir,
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
@@ -2413,6 +2487,7 @@ function seedResumedWiring(
  *  over the SHARED db. Mirrors {@link FreshChatWiringDeps} but RESUMES (carries the transcript) instead of starting
  *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
 interface ReseatWiringDeps {
+  readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
@@ -2460,6 +2535,7 @@ async function buildReseatWiring(
   carriedTranscript: readonly TranscriptEntry[],
   host?: SessionHostOwner,
 ): Promise<ReplWiring> {
+  let start = deps.startingModes.resolve(deps.global.cwd);
   const loaded = deps.opened.store.loadFull(oldSessionId);
   if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
     // The session we just drove is gone / has no snapshot — cannot resume it under a new model. Loud: runReplLoop
@@ -2481,14 +2557,21 @@ async function buildReseatWiring(
   // (The row's own `modelId` FK column stays as-is — per-message/session `modelId` attribution is deferred with
   // the 2.6.C cost breakdown; see persister.ts. `reconstructSessionState` reads only the transcript + cost here.)
   const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+  if (record.context.workingDir !== deps.global.cwd)
+    start = deps.startingModes.resolve(record.context.workingDir);
   // Re-read the user-pricing overlay FRESH from the shared db (mirrors buildFreshChatWiring) so a mid-session
   // `models pricing` write applies to the reseated session. Empty ⇒ omitted (unknown models degrade to allow).
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildResumedSession({
+      startingMode: start.startingMode,
       operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
-      chat: deps.chat,
+      chat: {
+        ...deps.chat,
+        defaultMode: start.loaded.config.chat.defaultMode,
+        defaultModeSource: start.loaded.config.chat.defaultModeSource,
+      },
       ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
       ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
       ...(workOwner === undefined
@@ -2549,6 +2632,7 @@ async function buildReseatWiring(
     mcpSkipped: resumed.mcpSkipped,
   });
   return {
+    startingModes: deps.startingModes,
     built: resumed,
     opened: deps.opened,
     store: seeded.store,
@@ -2593,6 +2677,7 @@ async function buildReseatWiring(
  * under a new-model agent over the SHARED db.
  */
 function createReseatRebuild(params: {
+  readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly ownership?: SessionChatLifetime;
   readonly chat: BuildChatSessionOptions['chat'];
@@ -2617,6 +2702,7 @@ function createReseatRebuild(params: {
   carriedTranscript: readonly TranscriptEntry[],
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
+    startingModes: params.startingModes,
     homeDir: params.homeDir,
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
@@ -2707,6 +2793,45 @@ function finalizeReseatOutcome(
  */
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
+  const interactive = chatIsInteractive(deps.io, deps.global);
+  const runtime = wiring.startingModes;
+  const native = interactive && runtime !== undefined ? createNativePromptChannel() : undefined;
+  let nativeFlush: NoticeFlush | undefined;
+  let modeSettingsActive = true;
+  const assertModeAdmitting = (): void => {
+    built.workOwner?.assertAdmitting();
+    if (!modeSettingsActive) throw new CliError('invalid_invocation', 'The chat is closing.');
+  };
+  const modeDeps: ChatReplDeps = {
+    ...deps,
+    ...(native === undefined || runtime === undefined
+      ? {}
+      : {
+          openModeSettings: (
+            currentMode: () => ChatMode,
+            onCurrentMode: (mode: ChatMode) => void,
+            notice: (text: string) => void,
+          ) =>
+            runModeSettings({
+              runtime,
+              cwd: built.context.workingDir,
+              interactive,
+              flow: native.flow,
+              currentMode,
+              onCurrentMode,
+              notice,
+              assertAdmitting: assertModeAdmitting,
+              publish: (prepared, assertAdmitting) =>
+                publishModePreference({
+                  prepared,
+                  flow: native.flow,
+                  ui: native.ui,
+                  flushVisible: () => nativeFlush,
+                  assertAdmitting,
+                }),
+            }),
+        }),
+  };
   const {
     processLine,
     cancelOnce,
@@ -2717,11 +2842,10 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onAbort,
     onModeChange,
     onSetEffort,
-  } = createChatLineHandler(wiring, deps);
+  } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
   // `stopReason()` can never yield `'reseat'` under `--json`/plain — one machine stream stays one session (ADR-0049).
-  const interactive = chatIsInteractive(deps.io, deps.global);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
   // as the session's tools (a `.ssh`/`.env` entry is never listed nor read). TTY-only; see the helper.
@@ -2746,6 +2870,25 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         }
       : undefined;
     await wiring.onActivated?.(isActive, flushNotice);
+    if (
+      interactive &&
+      runtime !== undefined &&
+      built.startingMode !== undefined &&
+      flushNotice !== undefined
+    )
+      await activateStartingModeHint({
+        runtime,
+        cwd: built.context.workingDir,
+        selection: built.startingMode,
+        currentMode: () => store.getSnapshot().mode,
+        notice: (text) => store.notice(text),
+        flushNotice,
+        isActive,
+        assertAdmitting: () => {
+          built.workOwner?.assertAdmitting();
+          if (!isActive()) throw new CliError('invalid_invocation', 'The chat is closing.');
+        },
+      });
   };
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
@@ -2759,6 +2902,16 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // plain / `--json` drivers the sink stays `undefined` so the warning keeps reaching stderr. Cleared in the finally.
     liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
+      ...(native === undefined
+        ? {}
+        : {
+            modePrompt: {
+              ui: native.ui,
+              ready: (flush: NoticeFlush) => {
+                nativeFlush = flush;
+              },
+            },
+          }),
       ...(deps.chatLifetime === undefined
         ? {}
         : { subscribeInterrupt: deps.chatLifetime.subscribeInterrupt }),
@@ -2826,6 +2979,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     built.workOwner?.failure(cause);
     throw cause;
   } finally {
+    modeSettingsActive = false;
+    native?.ui.dispose();
     liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'

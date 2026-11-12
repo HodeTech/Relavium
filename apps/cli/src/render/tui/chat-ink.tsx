@@ -1,5 +1,6 @@
 import type { ToolDisplay } from './tool-display.js';
 import { ToolReviewHost } from './tool-review-view.js';
+import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
   Box,
@@ -214,6 +215,7 @@ function TranscriptLine(
 }
 
 interface ChatAppProps {
+  readonly modePrompt?: ChatDriveContext['modePrompt'];
   /** Synchronous invocation seal; the tree stays mounted until entered native work joins. */
   readonly inputEnabled?: () => boolean;
   readonly store: ChatStoreController;
@@ -682,6 +684,8 @@ function useRawTerminalColumns(): number | undefined {
   return useSyncExternalStore(subscribe, read, read);
 }
 
+const subscribeNoPrompt = (): (() => void) => () => undefined;
+
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {
@@ -690,7 +694,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       clipboardFeedbackMounted.current = false;
     };
   }, []);
-  const acceptsInput = (): boolean => props.inputEnabled?.() !== false;
+  const nativeActive = useSyncExternalStore(
+    props.modePrompt?.ui.subscribe ?? subscribeNoPrompt,
+    () => props.modePrompt?.ui.getSnapshot().active === true,
+  );
+  const acceptsInput = (): boolean =>
+    props.inputEnabled?.() !== false && props.modePrompt?.ui.getSnapshot().active !== true;
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
@@ -1752,73 +1761,88 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       : undefined;
 
   return (
-    <Box
-      flexDirection="column"
-      width={layoutColumns(windowSize.columns)}
-      {...(viewport === undefined ? {} : { height: viewport.rows })}
-    >
-      <ToolReviewHost
-        store={props.store}
-        size={{ cols: windowSize.columns, rows: windowSize.rows }}
-        hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-        clipboard={props.reviewClipboard}
-      />
-      <ChatView
-        hidden={review !== undefined}
-        toolDisplays={toolDisplays}
-        markdown={markdown}
-        displaySuspended={displaySuspended}
-        acknowledgement={acknowledgement}
-        state={state}
-        tick={tick}
-        nowMs={Date.now()}
-        color={color}
-        editor={editor}
-        running={running || shellBusy || submitBusy}
-        mode={mode}
-        reasoningEffort={reasoningEffort}
-        reasoningVisible={reasoningVisible}
-        approval={approval}
-        attachments={attachments}
-        busyCommand={busyCommand}
-        // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
-        columns={windowSize.columns}
-        viewport={viewport}
-        reasonDraft={reasonDraft}
-        copied={copied}
-        paletteOpen={
-          palette !== undefined ||
-          search !== undefined ||
-          mention !== undefined ||
-          modelPicker !== undefined ||
-          effortPicker !== undefined
-        }
-      />
-      {palette !== undefined && (
-        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
-      )}
-      {search !== undefined && (
-        <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
-      )}
-      {mention !== undefined && <MentionView state={mention} color={color} />}
-      {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
-          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
-      {modelPicker !== undefined && (
-        <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
-      )}
-      {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
-      {effortPicker !== undefined && (
-        <EffortTierList
-          tiers={effortPicker.tiers}
-          model={effortPicker.model}
-          selected={effortPicker.selected}
-          current={effortPicker.current}
-          labelSuffix={effortPicker.model}
-          footer="↑/↓ select · Enter apply · Esc cancel"
+    <>
+      {nativeActive && props.modePrompt !== undefined && (
+        <NativePromptHost
+          ui={props.modePrompt.ui}
           color={color}
+          {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
+          suspendPort={props.suspendPort}
+          ownsSuspendAttachment={false}
+          {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
+          onRendererReady={props.modePrompt.ready}
+          onRendererError={props.onError}
         />
       )}
-    </Box>
+      <Box
+        display={nativeActive ? 'none' : 'flex'}
+        flexDirection="column"
+        width={layoutColumns(windowSize.columns)}
+        {...(viewport === undefined ? {} : { height: viewport.rows })}
+      >
+        <ToolReviewHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+          clipboard={props.reviewClipboard}
+        />
+        <ChatView
+          hidden={review !== undefined}
+          toolDisplays={toolDisplays}
+          markdown={markdown}
+          displaySuspended={displaySuspended}
+          acknowledgement={acknowledgement}
+          state={state}
+          tick={tick}
+          nowMs={Date.now()}
+          color={color}
+          editor={editor}
+          running={running || shellBusy || submitBusy}
+          mode={mode}
+          reasoningEffort={reasoningEffort}
+          reasoningVisible={reasoningVisible}
+          approval={approval}
+          attachments={attachments}
+          busyCommand={busyCommand}
+          // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
+          columns={windowSize.columns}
+          viewport={viewport}
+          reasonDraft={reasonDraft}
+          copied={copied}
+          paletteOpen={
+            palette !== undefined ||
+            search !== undefined ||
+            mention !== undefined ||
+            modelPicker !== undefined ||
+            effortPicker !== undefined
+          }
+        />
+        {palette !== undefined && (
+          <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
+        )}
+        {search !== undefined && (
+          <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
+        )}
+        {mention !== undefined && <MentionView state={mention} color={color} />}
+        {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
+          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
+        {modelPicker !== undefined && (
+          <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
+        )}
+        {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
+        {effortPicker !== undefined && (
+          <EffortTierList
+            tiers={effortPicker.tiers}
+            model={effortPicker.model}
+            selected={effortPicker.selected}
+            current={effortPicker.current}
+            labelSuffix={effortPicker.model}
+            footer="↑/↓ select · Enter apply · Esc cancel"
+            color={color}
+          />
+        )}
+      </Box>
+    </>
   );
 }
 
@@ -2068,6 +2092,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         createElement(ChatApp, {
           inputEnabled: () => active && !driverStopped,
           store: ctx.store,
+          ...(ctx.modePrompt === undefined ? {} : { modePrompt: ctx.modePrompt }),
           onActivated,
           // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
           // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink

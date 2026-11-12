@@ -2824,6 +2824,56 @@ not enable the grant before its implementation. Whole-MVP-3 documentation,
 integrated acceptance and the `development` to `main` PR follow Step 3; maintainer
 PR review, merge and release are not claimed here.
 
+### MVP-3 Step 3 author checkpoint (2026-11-12)
+
+The cohesive final increment implements ADR-0116: the new built-in agent receives
+the seven read/search/find/write/edit tools after Step 2 acceptance. Commands,
+egress and ambient OS tools remain opt-in. Strict global mode/hint preferences,
+repository mode exclusion, precedence and separate closed writers are wired to
+one invocation runtime. Fresh/resumed/cleared/reseated hosts share live startup-auto
+revocation; the exact confirmation hook captured by the engine binds each turn
+to its original mode provenance at the final CLI dispatch gate. Explicit current
+mode choices remain separate, and every headless mode action stays effective `ask`.
+
+Home and standalone chat share the native current/default picker, explicit auto
+confirmation, visible rewrite disclosure and truthful publication outcomes. A
+revocation revision prevents a delayed successful save from restoring authority
+after a newer narrowing, read error, cancellation or owner replacement. The hint
+is acknowledged only after actual visible delivery. Home clear now uses its
+bound agent/context/policy closure, preserving older read-only and authored
+`relavium-chat` snapshots. Failed clear resets only its pending swap request so
+the retained conversation can accept another turn or exit normally. Strict
+model-settings reload refusals remain visible without misreporting a completed
+publication as unsaved.
+
+The author adds 112 cases: sixteen shared schema cases and 96 CLI cases, including
+real captured-turn/durable-prepare races, both-host lifecycle construction,
+owned malformed-config refusal, actual Ink mode/default input custody and
+measured hint delivery/refusal. Full workspace tests pass 18,472 cases with 23
+conditional skips, including 7,753 CLI passes/twelve skips. The passing complete
+run uses `pnpm turbo run test --concurrency=1 -- --maxWorkers=4`, with unchanged
+case/hook bounds and inventories. An earlier run caught strip-only Node source
+syntax and stale fixtures, corrected and verified by 109 focused passes. A
+subsequent default-worker run hit three existing native/markdown deadlines;
+the same final source passes the complete quieter run. Neither failed run is
+acceptance evidence or a claimed underlying scheduling diagnosis.
+
+All seventeen workspace lint/typecheck tasks and six build tasks pass, as do
+format, tooling lint/types, database sync, fence/engine-dependency/bundle-closure
+checks and compiled CLI bootstrap/smoke. Four new physical causal controls pass
+all twelve fixed/removal/restored phases (177 case executions/eight required
+removal witnesses). Independent retained replay verifies named outcomes,
+identical inventories, source/dependency/evaluation/runtime receipts and naturally
+joined processes. Each retained tree has 25 files and 9.76–9.83 MB including its
+export record. These are selected controls, not whole-family acceptance; the
+unchanged full matrix grows from 130/513 to 134 controls/521 named witnesses,
+preserving every previous control and all evidence bounds.
+
+This is the author checkpoint only. The requested first review/fix round, fresh
+second cumulative round, separate security sitting and current-head combined CI
+remain required before whole-MVP-3 acceptance. No new ADR, runtime dependency,
+design approval or backward-compatibility layer is needed.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

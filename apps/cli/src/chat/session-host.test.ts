@@ -171,6 +171,8 @@ function capturingResolver(scripts: StreamChunk[][]): {
 }
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

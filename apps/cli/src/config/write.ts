@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 
 import {
   GlobalConfigSchema,
+  type ChatMode,
   type GlobalConfig,
   type LlmProviderId,
   type ReasoningEffort,
@@ -190,6 +191,30 @@ export function prepareKeychainUnavailableAcknowledged(
 ): PreparedConfigWrite {
   return prepareWrite(
     (existing) => ({ ...existing.preferences, keychain_unavailable_acknowledged: value }),
+    home,
+    targetPath,
+  );
+}
+
+/** Closed operator-only setters; model-preference writers cannot select modes. */
+export function prepareDefaultChatMode(
+  mode: ChatMode,
+  home: string = homedir(),
+  targetPath?: string,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({ ...existing.preferences, default_mode: mode }),
+    home,
+    targetPath,
+  );
+}
+
+export function prepareChatModeHintShown(
+  home: string = homedir(),
+  targetPath?: string,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({ ...existing.preferences, default_mode_hint_shown: true }),
     home,
     targetPath,
   );

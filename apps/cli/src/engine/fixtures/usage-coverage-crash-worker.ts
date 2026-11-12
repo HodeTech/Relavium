@@ -256,6 +256,8 @@ async function runWorkflow() {
 
 async function runSession() {
   const chat: ResolvedChatConfig = {
+    defaultMode: 'ask',
+    defaultModeSource: 'fallback',
     defaultModel: undefined,
     defaultProvider: undefined,
     fsScope: undefined,
