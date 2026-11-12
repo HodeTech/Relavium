@@ -32,7 +32,7 @@ const EnvelopeObjectSchema = z
       ['hasValue', 'value'],
       ['hasMappedValue', 'mapped'],
     ] as const) {
-      const present = Object.prototype.hasOwnProperty.call(value, key);
+      const present = Object.hasOwn(value, key);
       if (value[tag] ? !present || value[key] === undefined : present)
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -52,16 +52,16 @@ function ownDataRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const prototype: unknown = Object.getPrototypeOf(value);
   if (prototype !== null && prototype !== Object.prototype) return false;
-  return Reflect.ownKeys(value).every(
-    (key) =>
-      typeof key === 'string' &&
-      Object.prototype.hasOwnProperty.call(Object.getOwnPropertyDescriptor(value, key), 'value'),
-  );
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== 'string') return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value');
+  });
 }
 export const RetainedEffectEnvelopeSchema = z.preprocess((raw) => {
   if (!ownDataRecord(raw)) return undefined;
   const required = ['v', 'hasValue', 'hasMappedValue', 'truncated', 'summary', 'outputMapping'];
-  if (!required.every((key) => Object.prototype.hasOwnProperty.call(raw, key))) return undefined;
+  if (!required.every((key) => Object.hasOwn(raw, key))) return undefined;
   const mapping = raw['outputMapping'];
   if (mapping !== null && !ownDataRecord(mapping)) return undefined;
   return raw;
