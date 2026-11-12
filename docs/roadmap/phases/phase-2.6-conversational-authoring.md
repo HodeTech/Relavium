@@ -2491,6 +2491,30 @@ build/format tasks. Windows test code cross-compiles; the nine actual Windows
 observations remain pending. Dependency pins, lockfile, release inventory and
 all production guarantees are unchanged.
 
+**Initial descriptor results:** actual `12ad03b0`
+[CI run 43169448108](https://github.com/HodeTech/Relavium/actions/runs/43169448108)
+returns the same nine results on both Windows targets. The component setter
+changes the auto-inherited bit for protected/unprotected policy and DACL bytes
+for inherited policy. Both full-descriptor Nt forms exactly preserve the first
+two cases and preserve inherited DACL bytes, but differ in its auto-inherited
+bit. The ordinary producer now independently reports
+`first-metadata-auto-inherited-changed`. No candidate covers the full profile.
+
+Three additional `nt-request` observations retain the existing nine, using
+the OS control-bit setter on a captured-descriptor clone to request DACL
+auto-inheritance only when the captured auto-inherited bit is set. The Nt call
+then uses only OWNER/GROUP/DACL. Exact owner/group/DACL/protection/inheritance
+readback and source/stage checks remain unchanged. This twelve-row cohort
+remains test-only and cannot accept a production mechanism by itself.
+
+The new complete Terra/high affected review and separate Sol/high security
+sitting are clean on native source SHA-256
+`aa9e8f0f80442c6eeb5770497eafc8c646d2c565edc4d3add3777389b7570353`.
+Both independently pass all eighteen profile-tool controls. Root repeats local
+native 35/eleven Node cases, 249 affected tools and tools/workspace lint,
+typecheck, build and format successfully. Windows test-code compilation passes;
+actual request-bit measurements remain due on both architectures.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

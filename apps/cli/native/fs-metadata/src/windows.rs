@@ -2281,7 +2281,7 @@ pub(crate) mod tests {
             }
         }
         for case in ["protected", "unprotected", "inherited"] {
-            for setter in ["setinfo", "nt-basic", "nt-protection"] {
+            for setter in ["setinfo", "nt-basic", "nt-protection", "nt-request"] {
                 let fixture = Fixture::new();
                 if case == "inherited" {
                     set_inheritable_user_acl(&fixture.directory);
@@ -2325,7 +2325,31 @@ pub(crate) mod tests {
                 };
                 let (_stage_path, _stage_parent, stage) = fixture.stage();
                 let stage_id = WindowsProfile::identity(&stage).expect("stage identity");
-                let sd = source_policy.descriptor.as_ptr().cast_mut().cast();
+                // The request experiment changes only a private clone of the
+                // captured self-relative descriptor, never the source snapshot.
+                let mut request_descriptor = source_policy.descriptor.clone();
+                let sd = if setter == "nt-request" {
+                    request_descriptor.as_mut_ptr().cast()
+                } else {
+                    source_policy.descriptor.as_ptr().cast_mut().cast()
+                };
+                let request_ready = if setter == "nt-request" {
+                    let requested = if source_policy.control & SE_DACL_AUTO_INHERITED != 0 {
+                        SE_DACL_AUTO_INHERIT_REQ
+                    } else {
+                        0
+                    };
+                    if unsafe {
+                        SetSecurityDescriptorControl(sd, SE_DACL_AUTO_INHERIT_REQ, requested)
+                    } == 0
+                    {
+                        Err(error_status(unsafe { GetLastError() }))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Ok(())
+                };
                 let protection = if source_policy.control & SE_DACL_PROTECTED != 0 {
                     PROTECTED_DACL_SECURITY_INFORMATION
                 } else {
@@ -2333,6 +2357,8 @@ pub(crate) mod tests {
                 };
                 let result = if !proper_case {
                     Err("unsupported")
+                } else if let Err(status) = request_ready {
+                    Err(status)
                 } else if setter == "setinfo" {
                     let (mut owner, mut group, mut dacl) =
                         (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());

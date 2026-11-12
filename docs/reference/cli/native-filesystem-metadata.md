@@ -663,7 +663,19 @@ direction. A separate test-only cohort compares `SetSecurityInfo` with the
 documented handle-bound `NtSetSecurityObject` full-descriptor entry, with and
 without a protection-information flag. It uses actual protected, unprotected
 and genuinely parent-inherited private-fixture policies, verifies the inherited
-ACE, and emits nine bounded fixed results. Source bytes/policy and held stage
+ACE. The initial nine bounded fixed results at `12ad03b0` agree on both
+Windows targets: both Nt forms preserve the protected and unprotected cases
+exactly, while the inherited case preserves DACL bytes but differs in the
+automatic-inheritance control bit. The component setter changes that bit in
+both ordinary cases and DACL bytes in the inherited case. These observations
+do not accept either Nt form for production.
+
+The cohort adds one `nt-request` setter variant, for twelve records total:
+clone the bounded captured descriptor, use the OS
+`SetSecurityDescriptorControl` to set its DACL auto-inheritance request bit
+only when the captured auto-inherited bit is set, then call the basic Nt
+form. This is an unproven request to the OS, not a hand-written inheritance
+algorithm or a relaxation of exact readback. Source bytes/policy and held stage
 identity remain checked. No raw descriptor, SID, control value or path enters
 the measurement. No production setter, comparison or permission changes until
 the actual two-target observations justify selecting a mechanism; even exact

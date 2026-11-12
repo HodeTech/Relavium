@@ -557,13 +557,32 @@ test('Windows descriptor probe preserves all prior nineteen parents and remains 
   );
 });
 
-test('Windows descriptor measurements require exactly nine fixed unique records and normalize every closed status', () => {
+test('Windows descriptor measurements require exactly twelve fixed unique records and normalize every closed status', () => {
   const independent = [];
   for (const policy of ['protected', 'unprotected', 'inherited'])
-    for (const setter of ['setinfo', 'nt-basic', 'nt-protection'])
+    for (const setter of ['setinfo', 'nt-basic', 'nt-protection', 'nt-request'])
       independent.push(`${policy}-${setter}`);
   assert.deepEqual(WINDOWS_SECURITY_VARIANTS, independent);
-  assert.equal(new Set(WINDOWS_SECURITY_VARIANTS).size, 9);
+  assert.equal(new Set(WINDOWS_SECURITY_VARIANTS).size, 12);
+  const priorNine = [];
+  for (const policy of ['protected', 'unprotected', 'inherited'])
+    for (const setter of ['setinfo', 'nt-basic', 'nt-protection'])
+      priorNine.push(`${policy}-${setter}`);
+  assert.deepEqual(
+    WINDOWS_SECURITY_VARIANTS.filter((variant) => !variant.endsWith('-nt-request')),
+    priorNine,
+  );
+  assert.deepEqual(
+    WINDOWS_SECURITY_VARIANTS.filter((variant) => variant.endsWith('-nt-request')),
+    ['protected-nt-request', 'unprotected-nt-request', 'inherited-nt-request'],
+  );
+  assert.throws(
+    () =>
+      parseWindowsSecurityProbe(
+        priorNine.map((variant) => `RELAVIUM_NATIVE_SECURITY_PROBE:${variant}:exact`).join('\n'),
+      ),
+    (error) => error.message === 'NATIVE_FS_WINDOWS_SECURITY_PROBE',
+  );
   assert.deepEqual(WINDOWS_SECURITY_STATUSES, [
     'exact',
     'owner-changed',
@@ -605,6 +624,10 @@ test('Windows descriptor measurements refuse missing, duplicated, unknown, raw o
     '',
     valid.slice(1).join('\n'),
     [...valid, valid[0]].join('\n'),
+    [...valid, 'RELAVIUM_NATIVE_SECURITY_PROBE:protected-nt-request:exact'].join('\n'),
+    ['RELAVIUM_NATIVE_SECURITY_PROBE:protected-nt-request-private:exact', ...valid.slice(1)].join(
+      '\n',
+    ),
     ['RELAVIUM_NATIVE_SECURITY_PROBE:private-policy-setinfo:exact', ...valid.slice(1)].join('\n'),
     ['RELAVIUM_NATIVE_SECURITY_PROBE:protected-setinfo:private-SID', ...valid.slice(1)].join('\n'),
     [valid[0] + ':private-payload', ...valid.slice(1)].join('\n'),

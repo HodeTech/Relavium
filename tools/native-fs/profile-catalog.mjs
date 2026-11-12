@@ -111,7 +111,7 @@ export const WINDOWS_SECURITY_PROBE_CASE = 'aaa_windows_security_descriptor_prob
 export const WINDOWS_SECURITY_VARIANTS = Object.freeze(
   cartesianVariants([
     ['protected', 'unprotected', 'inherited'],
-    ['setinfo', 'nt-basic', 'nt-protection'],
+    ['setinfo', 'nt-basic', 'nt-protection', 'nt-request'],
   ]),
 );
 export const WINDOWS_SECURITY_STATUSES = Object.freeze([
