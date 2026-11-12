@@ -635,7 +635,7 @@ const listDirectoryTool = defineBuiltin({
   id: 'list_directory',
   preview: (args) => ({ kind: 'operation', target: args.path, fields: [] }),
   description:
-    'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries: truncated/incomplete results state the entry limit and an unknown omitted-entry count explicitly.',
+    'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries. Results stopped by that cap state the entry limit; results stopped by another traversal bound state their incompleteness without an entry limit. Omitted-entry counts remain unknown.',
   args: z
     .object({
       path: utf8String(4096, 1),
