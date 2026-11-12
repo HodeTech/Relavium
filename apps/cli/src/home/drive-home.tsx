@@ -761,6 +761,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        operatorHomeDir: homeDir,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
@@ -868,6 +869,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const chatDoctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          operatorHomeDir: homeDir,
           ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
           cwd: deps.global.cwd,
           ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
@@ -891,6 +893,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
       const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
       try {
+        view?.acquire(() => () => closeQuietly(deps.io, 'tool previews', store.sealToolPreviews));
         persister = createSessionPersister(
           {
             usageStore: createSessionUsageStore(opened.db),
@@ -972,6 +975,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
           profile: 'chat-read-only',
+          operatorHomeDir: homeDir,
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
           ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
@@ -998,6 +1002,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
           torn = true;
           cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
+          closeQuietly(deps.io, 'tool previews', store.sealToolPreviews);
           clearInterval(frame);
           unsubscribe?.();
           try {
@@ -1060,6 +1065,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           runShellCommand,
         };
       } catch (err) {
+        closeQuietly(deps.io, 'tool previews', store.sealToolPreviews);
         if (built.workOwner !== undefined) {
           built.workOwner.failure(err);
           view?.release();

@@ -1,0 +1,75 @@
+# ADR-0125 adapter evidence only. Existing whole-CLI consumers remain independently required.
+name: Native filesystem assets
+on:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  TURBO_TOKEN: ''
+  TURBO_TEAM: ''
+jobs:
+  native-fs:
+    name: native metadata profile (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            arch: x64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            arch: arm64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            arch: x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            arch: arm64
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            arch: x64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            arch: arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.0.0'
+          architecture: ${{ matrix.arch }}
+      - name: Install the exact native Rust toolchain
+        if: runner.os != 'Linux'
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal --target '${{ matrix.target }}'
+      - name: Build and execute on native macOS or Windows
+        if: runner.os != 'Linux'
+        run: node tools/native-fs/build.mjs --verify-profile
+      - name: Build and execute inside the native baseline Linux image
+        if: runner.os == 'Linux'
+        run: node tools/native-fs/ci-build.mjs '${{ matrix.target }}'
+      - name: Require the exact executed target and source binding
+        env:
+          RELAVIUM_EXPECTED_NATIVE_TARGET: ${{ matrix.target }}
+        run: node tools/native-fs/check-target.mjs
+      - name: Retain source-bound public native assets only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: apps/cli/native/fs-metadata/runtime/*
+          retention-days: 7
+          if-no-files-found: error

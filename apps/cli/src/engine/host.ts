@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
 
 import {
@@ -19,8 +20,13 @@ import {
   fetchMediaBytes,
   streamMediaBytes,
   type Db,
+  MediaWriteError,
+  type CapturedMediaWriteGuard,
 } from '@relavium/db';
-import type { RunLeasePort } from '@relavium/shared';
+import { deepestExistingReal, type RunLeasePort, type AbortSignalLike } from '@relavium/shared';
+import { isFsStagePath } from './tool-host/fs.js';
+import { captureFsStageInventory } from './tool-host/fs-stage-inventory.js';
+import { captureNativeRuntimeWriteFloor } from './tool-host/fs-native-metadata.js';
 
 import { createFileTerminalOutbox } from './terminal-outbox.js';
 
@@ -58,6 +64,8 @@ export interface CliMediaOptions {
 
 /** Options for {@link createCliHost}. */
 export interface CliHostOptions {
+  /** Trusted host-only home for private filesystem staging guards; never authored or persisted. */
+  readonly operatorHomeDir?: string;
   /**
    * The {@link Checkpointer} the engine's `resumeFromCheckpoint` loads from — supplied only on the
    * cross-process gate-resume path (**2.G**), where it must reconstruct from the durable event log (the
@@ -101,12 +109,68 @@ export interface CliHostOptions {
  * `node:fs/promises` pattern `FilesystemMediaStore.put` uses). The CAS root is NOT provisioned here — `FilesystemMediaStore` lazily `mkdir`s its sharded path
  * on `put`.
  */
-function wireSaveToPort(saveToRoot: string): ReturnType<typeof createFilesystemMediaWrite> {
-  const write = createFilesystemMediaWrite(saveToRoot);
+function wireSaveToPort(
+  saveToRoot: string,
+  operatorHomeDir: string | undefined,
+): ReturnType<typeof createFilesystemMediaWrite> {
   return async (relativePath, bytes, signal) => {
-    await mkdir(saveToRoot, { recursive: true });
-    return write(relativePath, bytes, signal);
+    try {
+      assertSaveToActive(signal);
+      if (operatorHomeDir === undefined)
+        throw new MediaWriteError('save_to: trusted operator home is required');
+      const inventory = await captureFsStageInventory(operatorHomeDir, signal);
+      const runtimeFloor = await captureNativeRuntimeWriteFloor();
+      assertSaveToActive(signal);
+      const guard: CapturedMediaWriteGuard = Object.freeze({
+        assertPath(lexical: string, canonical: string): void {
+          runtimeFloor.assertPath(lexical);
+          runtimeFloor.assertPath(canonical);
+          if (isFsStagePath(lexical) || isFsStagePath(canonical))
+            throw new MediaWriteError('save_to: filesystem staging paths are protected');
+        },
+        assertIdentity: (identity: { readonly dev: bigint; readonly ino: bigint }) =>
+          inventory.assertIdentity(identity),
+      });
+      const lexicalRoot = resolve(saveToRoot);
+      guard.assertPath(saveToRoot, lexicalRoot);
+      guard.assertPath(relativePath, resolve(lexicalRoot, relativePath));
+      // Guard the host's lazy root provisioning too, before any mkdir. DB reuses this exact snapshot.
+      const ancestor = await deepestExistingReal(lexicalRoot, {
+        realpath: async (path) => {
+          guard.assertPath(path, path);
+          const canonical = await realpath(path);
+          guard.assertPath(path, canonical);
+          return canonical;
+        },
+        lstat: async (path) => {
+          guard.assertPath(path, path);
+          const info = await lstat(path, { bigint: true });
+          guard.assertIdentity(info);
+          return info;
+        },
+        dirname,
+        isMissing: (error) =>
+          typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT',
+      });
+      guard.assertPath(lexicalRoot, ancestor);
+      guard.assertIdentity(await lstat(ancestor, { bigint: true }));
+      assertSaveToActive(signal);
+      await mkdir(saveToRoot, { recursive: true });
+      assertSaveToActive(signal);
+      const write = createFilesystemMediaWrite(saveToRoot, {
+        capture: () => Promise.resolve(guard),
+      });
+      return await write(relativePath, bytes, signal);
+    } catch (error) {
+      assertSaveToActive(signal);
+      throw error instanceof MediaWriteError
+        ? error
+        : new MediaWriteError('save_to: filesystem staging admission failed');
+    }
   };
+}
+function assertSaveToActive(signal: AbortSignalLike | undefined): void {
+  if (signal?.aborted === true) throw new MediaWriteError('save_to: the write was aborted');
 }
 
 /**
@@ -155,7 +219,10 @@ export function createCliHost(
     media?.referenceDb === undefined
       ? undefined
       : createMediaReferencePort(createMediaReferenceStore(media.referenceDb));
-  const mediaWrite = media?.saveToRoot === undefined ? undefined : wireSaveToPort(media.saveToRoot);
+  const mediaWrite =
+    media?.saveToRoot === undefined
+      ? undefined
+      : wireSaveToPort(media.saveToRoot, options?.operatorHomeDir);
   return {
     clock: { now: () => new Date().toISOString() },
     ids: { newId: () => randomUUID() },

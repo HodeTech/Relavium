@@ -2768,6 +2768,21 @@ class RunExecution {
     // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
     // literals, so it would have been latent until the first class-based one.
     return {
+      inspectReplay: async (...args: Parameters<EffectDispatchPort['inspectReplay']>) => {
+        const refuse = (): never => {
+          throw new EngineStateError(
+            'run_already_terminal',
+            'the run stopped waiting on this dispatch; retained effects cannot be inspected',
+            { runId: this.runId },
+          );
+        };
+        scope.assertActive();
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        const verdict = await scope.enter(() => port.inspectReplay(...args));
+        scope.assertActive();
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        return verdict;
+      },
       settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
         scope.enter(() => port.settle(...args)),
       discard: (...args: Parameters<EffectDispatchPort['discard']>) =>

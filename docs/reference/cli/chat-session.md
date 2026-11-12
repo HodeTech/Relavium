@@ -303,6 +303,7 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F); keep a user boundary even if that retains an extra message. Checks the [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before missing/invalid-bound notices. When permitted, a bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
+| `/details` | **MVP-3 Step 2 draft:** inspect bounded live tool-call details using the [shared interaction contract](#proposed-mvp-3-interaction-contract). Interactive chat-only; a plain/JSON session prints a fixed remedy. It executes no tool, sends no model message and reconstructs no historical preview. |
 | `/scrollback` | Dump the transcript into the terminal's **native scrollback** (to scroll, search, select, copy — Enter returns). One of the three copy-and-search **hatches** described under § [Entry](#entry) — the alt screen has no scrollback of its own. Not available before the first turn. Chat-only. |
 | `/edit` | Open the transcript **read-only** in `$EDITOR` (to search or copy). See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
 | `/copy` | Copy the **whole unwrapped transcript** to the system clipboard over **OSC 52**. See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
@@ -312,11 +313,13 @@ An unrecognized `/…` command — or an **undeclared argument** on a known one 
 
 ## Proposed MVP-3 interaction contract
 
-**Accepted design, unimplemented (2026-11-11):** approved together with
+**Accepted design (2026-11-11); Step 2 implementation in progress:** approved together with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
 and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
-Until implementation, the stable sections below describe the current modes,
-restore projection and command availability.
+Step 2's approval/details and structural restoration are draft implementations
+on `development`, pending complete native-write integration, implementation
+reviews and acceptance. The mode/default picker remains Step 3. The stable
+sections below describe released command and mode availability.
 
 **Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker
 with current-mode selection and a separate `Save startup default` action. Direct
@@ -397,6 +400,24 @@ parity, scroll/search and explicit copy of the escaped, masked representation
 with truthful clipboard feedback. Revealing does not change that copy projection.
 Ordinary transcript hatches, `/edit`'s temporary file, `/export`, logs and display
 metadata exclude previews/reveal buffers. No preview-to-disk hatch is introduced.
+
+**Review resource limits.** Each diff side admits at most 8 MiB of UTF-8 and
+100,000 lines. The in-house line diff caps graph work at 1,000,000 steps,
+retained search trace at 8 MiB and output at 200,000 operations. Source spans
+use UTF-16 offsets; displayed byte counts use UTF-8. These units are not
+interchangeable. A review document also caps target text at 4,096 code units,
+fields at 64 (256 per name, 4,096 per value), and required inspection intervals
+at 8,192. Invalid spans, incomplete diff coverage or inconsistent counts make
+the document unavailable for approval rather than silently dropping changes.
+
+Live detail retention admits 64 calls and 32 MiB of source text per store,
+keeping an active review pinned. Older evicted details are labelled
+unavailable. Navigation retains at most 4,096 back positions, searches accept
+256 code units, and a projected page consumes at most 65,536 source code units
+and 200 display rows. Display targets/summaries have separate 512/2,048-character
+caps and explicit omission counts; these abbreviated labels never replace the
+full approval document. Teardown seals preview retention before joining host
+resources, clears reveal/detail buffers and ignores late preview delivery.
 
 **Restored safe tool groups.** Extend the existing restore projection only with
 content-free call names/engine ids/outcomes already retained for completed turns.

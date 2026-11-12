@@ -25,6 +25,8 @@ import type { ProviderProbeDeps } from './doctor-deep.js';
 const DOCTOR_KEYCHAIN_PROBE = 'doctor:reachability-probe';
 
 export interface DoctorHostInputs {
+  /** Trusted invocation home for private filesystem-artifact guards; never a model/config argument. */
+  readonly operatorHomeDir?: string;
   readonly workOwner?: ProviderProbeDeps['workOwner'];
   readonly cwd: string;
   readonly configPath?: string;
@@ -57,6 +59,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
     // the report is faithful with the safe `sandboxed` default — no dependency on the live session's tier.
     toolHost: assembleToolEnv({
       profile: 'chat-read-only',
+      ...(inputs.operatorHomeDir === undefined ? {} : { operatorHomeDir: inputs.operatorHomeDir }),
       fsScopeTier: 'sandboxed',
       workspaceDir: inputs.cwd,
     }).host,

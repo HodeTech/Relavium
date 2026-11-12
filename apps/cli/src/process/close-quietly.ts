@@ -7,6 +7,7 @@ type ResourceLabel =
   | 'effect journal'
   | 'persister'
   | 'MCP'
+  | 'tool previews'
   | 'output store';
 
 /** A secondary cleanup failure cannot replace the command result or prevent remaining teardown. */
@@ -18,7 +19,10 @@ export function warnTeardown(io: Pick<CliIo, 'writeErr'>, label: ResourceLabel):
   }
 }
 
-/** Synchronous best-effort close, called only after the resource owner's real lifetime joins. */
+/**
+ * Synchronous best-effort cleanup. Persisted resources close after their real owner joins;
+ * ephemeral preview sealing instead ends view admission before that join.
+ */
 export function closeQuietly(
   io: Pick<CliIo, 'writeErr'>,
   label: ResourceLabel,

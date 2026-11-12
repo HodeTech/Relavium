@@ -12,6 +12,9 @@ import {
   type EffectPrepareVerdict,
   type EffectTier,
   byCodeUnit,
+  decodeRetainedEffectEnvelope,
+  deepStructuralEquals,
+  type RetainedEffectEnvelope,
   extractHttpsHost,
   isEffectConflictError,
   type ToolActionClass,
@@ -34,6 +37,7 @@ import {
   ToolDispatchError,
   ToolExecutionError,
   ToolPolicyError,
+  ToolPreparationError,
   UnknownToolError,
 } from './errors.js';
 import { takeMediaAttachment } from './media-attachment.js';
@@ -53,6 +57,10 @@ import {
   type ToolId,
   type ToolResultPart,
   type ToolRegistry,
+  type ToolPreview,
+  type ToolPreparedCall,
+  type ToolApprovalLiveContext,
+  type ToolLiveEvent,
 } from './types.js';
 import { journaledTier } from './effect-predicate.js';
 
@@ -62,112 +70,54 @@ import { journaledTier } from './effect-predicate.js';
  */
 const NOT_REPLAYED: unique symbol = Symbol('not-replayed');
 
-/**
- * What a `committed` row retains, so a replay can RE-DELIVER the original outcome rather than re-derive it
- * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4).
- *
- * `mapped` is present only when the node configured an `output_mapping`; without one it would be the full
- * unbounded result, which must never reach `history.db`.
- */
 interface ReplayEnvelope {
   readonly value: unknown;
   readonly truncated: boolean;
   readonly summary: string;
-  readonly mapped?: unknown;
-  /** Whether an `output_mapping` was configured when the effect ran — a config change refuses the replay. */
-  readonly hadMapping: boolean;
+  readonly mapped: unknown;
+  readonly outputMapping: Readonly<Record<string, string>> | null;
 }
-
-/**
- * The retained envelope AS IT IS STORED — a JSON-safe encoding, which the in-memory shape is not.
- *
- * **`hasValue` exists because `JSON.stringify` DELETES a property whose value is `undefined`.** This file
- * goes out of its way to treat `undefined` as a legitimate tool result — that is what `NOT_REPLAYED` is for
- * — and then handed the envelope to a store that dropped exactly that key. A review reproduced the
- * consequence against real SQLite: `{ value: undefined, truncated: false, summary: '', hadMapping: false }`
- * came back as `{ truncated, summary, hadMapping }`, the reader's `'value' in stored` guard failed, the
- * compatibility fallback treated the whole METADATA OBJECT as an old bare result, and the replayed tool
- * result was that object instead of `undefined`. First run and resumed run produced different values, only
- * after a crash, and only for a tool that returns nothing.
- *
- * `mapped` needs no parallel tag: `hadMapping` already records whether a mapping was CONFIGURED, so a
- * mapping that legitimately projects to `undefined` reads back as an absent `mapped` with `hadMapping: true`
- * — which is the right answer. That distinction was already deliberate here; this one was missed.
- */
-interface StoredReplayEnvelope {
-  /** The encoding version. Absent on rows written before this existed — see {@link asReplayEnvelope}. */
-  readonly v: 1;
-  /** Whether the tool produced a value at all. `false` means it returned `undefined`, deliberately. */
-  readonly hasValue: boolean;
-  readonly value?: unknown;
-  readonly truncated: boolean;
-  readonly summary: string;
-  readonly mapped?: unknown;
-  readonly hadMapping: boolean;
-}
-
-/** Encode for storage: everything JSON keeps, plus the presence bit JSON would otherwise destroy. */
-function toStoredEnvelope(envelope: ReplayEnvelope): StoredReplayEnvelope {
+function toStoredEnvelope(envelope: ReplayEnvelope): RetainedEffectEnvelope {
   return {
-    v: 1,
-    hasValue: envelope.value !== undefined,
-    ...(envelope.value === undefined ? {} : { value: envelope.value }),
+    v: 2,
     truncated: envelope.truncated,
     summary: envelope.summary,
-    ...(envelope.mapped === undefined ? {} : { mapped: envelope.mapped }),
-    hadMapping: envelope.hadMapping,
+    outputMapping: envelope.outputMapping,
+    ...(envelope.value === undefined
+      ? { hasValue: false }
+      : { hasValue: true, value: envelope.value }),
+    ...(envelope.outputMapping === null || envelope.mapped === undefined
+      ? { hasMappedValue: false }
+      : { hasMappedValue: true, mapped: envelope.mapped }),
   };
 }
-
-/**
- * Read a retained result back as an envelope, across all three shapes a row can be in.
- *
- * A stored row crosses a persistence boundary, so it is validated structurally rather than cast, and each
- * fallback is conservative — an unrecognised shape becomes an untruncated value with an empty summary, never
- * a mapped projection it is not.
- *
- * The legacy-envelope arm keeps the pre-`v` ambiguity it inherited: a row written before the presence tag
- * whose value was `undefined` is genuinely indistinguishable from a bare stored value, because the byte that
- * would tell them apart was never written. New rows carry `v: 1` and are unambiguous.
- */
-function asReplayEnvelope(stored: unknown): ReplayEnvelope {
-  if (typeof stored === 'object' && stored !== null && 'v' in stored) {
-    const versioned = stored as StoredReplayEnvelope;
-    if (
-      versioned.v === 1 &&
-      typeof versioned.hasValue === 'boolean' &&
-      typeof versioned.truncated === 'boolean' &&
-      typeof versioned.summary === 'string' &&
-      typeof versioned.hadMapping === 'boolean'
-    ) {
-      return {
-        value: versioned.hasValue ? versioned.value : undefined,
-        truncated: versioned.truncated,
-        summary: versioned.summary,
-        ...('mapped' in versioned ? { mapped: versioned.mapped } : {}),
-        hadMapping: versioned.hadMapping,
-      };
-    }
-    // A `v` this build does not know, or a malformed one: FAIL CLOSED to "cannot re-deliver". Treating an
-    // unreadable versioned row as a bare value would replay its own metadata, which is the defect above.
-    return { value: undefined, truncated: false, summary: '', hadMapping: false };
+function asReplayEnvelope(
+  stored: unknown,
+  mapping: Readonly<Record<string, string>> | null,
+  toolId: string,
+): ReplayEnvelope {
+  const decoded = decodeRetainedEffectEnvelope(stored);
+  if (decoded === undefined || !deepStructuralEquals(decoded.outputMapping, mapping))
+    throw new ToolEffectConflictError(
+      toolId,
+      new Error('Retained effect evidence or mapping is unusable.'),
+    );
+  return {
+    value: decoded.hasValue ? decoded.value : undefined,
+    mapped: decoded.hasMappedValue ? decoded.mapped : undefined,
+    truncated: decoded.truncated,
+    summary: decoded.summary,
+    outputMapping: decoded.outputMapping,
+  };
+}
+let nextLiveCall = 0;
+function observe(ctx: ToolDispatchContext, event: ToolLiveEvent): void {
+  // This display-only observer cannot influence admission, receipts or effect truth.
+  try {
+    ctx.onToolLiveEvent?.(Object.freeze(event));
+  } catch {
+    /* Ephemeral display failure. */
   }
-  if (
-    typeof stored === 'object' &&
-    stored !== null &&
-    'value' in stored &&
-    'truncated' in stored &&
-    'summary' in stored &&
-    typeof (stored as { truncated: unknown }).truncated === 'boolean' &&
-    typeof (stored as { summary: unknown }).summary === 'string'
-  ) {
-    const envelope = stored as ReplayEnvelope;
-    // An older row has no `hadMapping`; infer it conservatively from whether a projection was retained.
-    return typeof envelope.hadMapping === 'boolean'
-      ? envelope
-      : { ...envelope, hadMapping: 'mapped' in envelope };
-  }
-  return { value: stored, truncated: false, summary: '', hadMapping: false };
 }
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
@@ -186,7 +136,35 @@ export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegi
     releaseReadScope: (scope) => host.fs?.releaseReadScope?.(scope),
     has: (id) => tools.has(id),
     list: () => [...tools.keys()].sort(byCodeUnit),
-    dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
+    dispatch: async (toolCall, ctx) => {
+      // Never promote a provider/model supplied id to the engine's live correlation domain.
+      const callId = ctx.effectAttempt?.toolCallId ?? `registry-call:${String(++nextLiveCall)}`;
+      observe(ctx, { phase: 'started', callId, toolId: toolCall.name });
+      try {
+        const result = await dispatch(tools, host, toolCall, ctx, callId);
+        observe(ctx, {
+          phase: 'completed',
+          callId,
+          toolId: toolCall.name,
+          outcome: 'success',
+          summary: result.events.result.outputSummary,
+        });
+        return result;
+      } catch (error) {
+        observe(ctx, {
+          phase: 'completed',
+          callId,
+          toolId: toolCall.name,
+          outcome:
+            error instanceof ToolCancelledError
+              ? 'unknown'
+              : error instanceof ToolDispatchError && error.runErrorCode === 'tool_denied'
+                ? 'denied'
+                : 'failure',
+        });
+        throw error;
+      }
+    },
   };
 }
 
@@ -229,8 +207,8 @@ async function settleCommitted(
   toolId: ToolId,
   bounded: { readonly value: unknown; readonly truncated: boolean; readonly summary: string },
   outputMapped: unknown,
+  outputMapping: Readonly<Record<string, string>> | null,
 ): Promise<void> {
-  const hadMapping = ctx.config.outputMapping !== undefined;
   try {
     // Encoded for storage on the way out (`toStoredEnvelope`), because the in-memory shape is not JSON-safe:
     // a `value` of `undefined` is a legitimate result here and a deleted property there.
@@ -242,13 +220,8 @@ async function settleCommitted(
         value: bounded.value,
         truncated: bounded.truncated,
         summary: bounded.summary,
-        // …the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS the full
-        // result, and persisting that would put unbounded `run_command` stdout into `history.db` — the very
-        // thing settling after bounding exists to avoid. With one, the author chose an extract.
-        ...(hadMapping ? { mapped: outputMapped } : {}),
-        // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects to
-        // `undefined` would otherwise be indistinguishable from no mapping at all.
-        hadMapping,
+        mapped: outputMapped,
+        outputMapping,
       } satisfies ReplayEnvelope),
     );
   } catch (cause) {
@@ -332,41 +305,51 @@ async function settleQuietly(
  * reached a target. A `prepare` that cannot be written REFUSES the dispatch, which is the fail-closed
  * direction: no journal row means no way to tell a resumed run whether the effect happened.
  */
-async function prepareEffect(
+function journalProjection(
   def: ToolDef,
-  tier: EffectTier,
   effective: Readonly<Record<string, unknown>>,
   ctx: ToolDispatchContext,
-): Promise<EffectPrepareVerdict> {
+): unknown {
   const journal = projectInput(def, effective, ctx.secretArgKeys, 'journal');
   if (journal.unsettled.length > 0) {
-    // A value whose redacted projection never settles projects to `[redacted]`, which any other such
-    // value shares, and two member names that project alike leave one member: either way the digest
-    // could replay one call's result for a different call (§4), so the effect is refused before
-    // anything is journaled. The model can correct the argument. An open schema lets the model choose
-    // an argument's name, so the names are masked like any other text.
     const fields = [...new Set(journal.unsettled.map(redactSecretShapedText))];
     throw new ToolArgsInvalidError(
       def.id,
       fields,
-      `tool \`${def.id}\`: credential-shaped text in ${fields.join(
-        ', ',
-      )} has no stable, distinct redacted form, so this effect cannot be given a journal identity`,
+      `tool \`${def.id}\`: credential-shaped text in ${fields.join(', ')} has no stable, distinct redacted form, so this effect cannot be given a journal identity`,
     );
   }
+  return journal.input;
+}
+async function prepareEffect(
+  def: ToolDef,
+  tier: EffectTier,
+  projection: unknown,
+  ctx: ToolDispatchContext,
+): Promise<EffectPrepareVerdict> {
   try {
-    const args = [ctx.effectSlot, def.id, tier, journal.input] as const;
+    const args = [ctx.effectSlot, def.id, tier, projection] as const;
     return await (ctx.effectAttempt === undefined
       ? ctx.effects.prepare(...args)
       : ctx.effects.prepare(...args, undefined, ctx.effectAttempt));
   } catch (cause) {
-    // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect must
-    // not be dispatched — and must not be retried either, because a retry re-collides, burns the whole node
-    // budget and reports the wrong cause. Its siblings `AppendConflictError` and `LeaseFencedError` are
-    // excluded from retry sets for the same reason.
     if (isEffectConflictError(cause)) throw new ToolEffectConflictError(def.id, cause);
-    throw cause; // a store fault: the dispatch is refused, nothing reached a target
+    throw cause;
   }
+}
+function snapshotMapping(
+  def: ToolDef,
+  ctx: ToolDispatchContext,
+): Readonly<Record<string, string>> | null {
+  const mapping = ctx.config.outputMapping;
+  if (mapping === undefined) return null;
+  if (!isPlainRecord(mapping) || Object.values(mapping).some((value) => typeof value !== 'string'))
+    throw new ToolArgsInvalidError(
+      def.id,
+      ['output_mapping'],
+      'Invalid output mapping declaration.',
+    );
+  return Object.freeze({ ...mapping });
 }
 
 /**
@@ -430,213 +413,216 @@ function admitArgs(
   return { effective, args, target };
 }
 
+async function releasePreparation(
+  prepared: ToolPreparedCall,
+  primaryFailure: boolean,
+  toolId: string,
+): Promise<void> {
+  try {
+    await prepared.release();
+  } catch (cause) {
+    // Cleanup preserves user denial/cancellation; a standalone cleanup fault is conservatively fatal.
+    if (!primaryFailure)
+      throw new ToolExecutionError(toolId, 'Prepared operation release failed.', cause, {
+        recoverable: false,
+        retryable: false,
+      });
+  }
+}
+
 async function dispatch(
   tools: ReadonlyMap<ToolId, ToolDef>,
   host: ToolHost,
   toolCall: ToolCallPart,
   ctx: ToolDispatchContext,
+  callId: string,
 ): Promise<ToolDispatchOutcome> {
   throwIfAborted(ctx, undefined);
-
-  // 1. Resolve by exact id, then check the node grant (registered ≠ authorized).
   const def = resolveGrantedTool(tools, toolCall, ctx);
-
-  // 2-4. Assemble, validate and policy-check the EFFECTIVE argument set.
   const { effective, args, target } = admitArgs(def, toolCall, ctx);
-
-  // Whether THIS call must be journaled, decided once from the validated args (ADR-0080 §3). `undefined` ⇒
-  // it mutates nothing external, or its duplicates are benign, and no row is written for it.
   const tier = journaledTier(def, args);
-  // Set once the effect has demonstrably left this process. It is what makes every failure BELOW the
-  // dispatch non-retryable: re-running a node whose effect may already have landed is the duplicate this
-  // whole mechanism exists to prevent, and a post-effect mapping or bounding error is no less dangerous
-  // than a dispatch error (ADR-0080 §7 step 5).
+  const outputMapping = snapshotMapping(def, ctx);
+  // Stable projection is admitted once, before any lookup or preparation, and reused at atomic prepare.
+  const projection = tier === undefined ? undefined : journalProjection(def, effective, ctx);
+  const prepare = def.source === 'builtin' && def.policy.fsWrite === true ? def.prepare : undefined;
   let effectDispatched = false;
-  // A sentinel rather than `undefined`, because `undefined` is a legitimate retained result: a tool whose
-  // result was genuinely nothing would otherwise be re-dispatched on every resume — the duplicate again.
+  let replayHit = false;
   let replayed: ReplayEnvelope | typeof NOT_REPLAYED = NOT_REPLAYED;
-
-  // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
-  // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
-  // `cancelled` (ADR-0036 precedence) and any other tail failure is a classified tool error, never a raw
-  // escape. A `ToolDeniedByUserError` from 4b is a `ToolDispatchError` and passes through the ladder verbatim
-  // — UNLESS the signal is concurrently aborted, in which case the `isAbort` check below takes precedence
-  // (cancel-wins-all, ADR-0036) and the denial becomes `ToolCancelledError`.
+  let prepared: ToolPreparedCall | undefined;
+  let preview: ToolPreview | undefined;
+  let onDispatchSucceeded: (() => void) | undefined;
+  let primaryFailure = false;
   let outputMapped: unknown;
   let bounded: Awaited<ReturnType<typeof boundForModel>>;
-  // Handle-only media the dispatch asks the turn loop to deliver on a synthesized `user` message
-  // (`CR-50` / ADR-0089 §1). Declared at the outcome's scope, split off at the dispatch boundary below.
   let mediaAttachments: readonly DurableMediaPart[] = [];
+  const publish = (value: ToolPreview): ToolApprovalLiveContext => {
+    preview = Object.freeze({
+      ...value,
+      fields: Object.freeze(value.fields.map((field) => Object.freeze({ ...field }))),
+    });
+    observe(ctx, { phase: 'preview', callId, toolId: def.id, preview });
+    return Object.freeze({ callId, preview });
+  };
+  const savedResult = async (result: unknown): Promise<void> => {
+    // Flip before decoder, mapping, preview or approval; no post-hit fault may enable retry.
+    replayHit = true;
+    replayed = asReplayEnvelope(result, outputMapping, def.id);
+    onDispatchSucceeded = undefined;
+    if (prepared !== undefined) {
+      const unused = prepared;
+      prepared = undefined;
+      await unused.release();
+    }
+    const live = publish(Object.freeze({ kind: 'saved-result', fields: Object.freeze([]) }));
+    // Delivery approval never commits mutation authority, even if a hook offers a callback.
+    await confirmDispatch(def, target, ctx, live);
+  };
   try {
-    throwIfAborted(ctx, def.id);
-    // 4b. Per-tool approval (ADR-0057 EA3): under the interactive-approval regime (chat), a governed-class
-    //     dispatch REQUIRES a confirmAction decision before the side effect; the workflow author-trust path
-    //     (no `ctx.approval`) skips it. A denial is a fatal `tool_denied`; an abort while prompting is cancelled.
-    await confirmDispatch(def, target, ctx);
-    // 4c. **PREPARE — durable, and BEFORE the effect leaves the process** (ADR-0080 §7 step 2). Everything
-    //     above this line is a refusal that journals nothing; everything below it may have reached a target.
-    //     A `prepare` that cannot be written refuses the dispatch, which is the fail-closed direction: no
-    //     journal row means no way to tell a resumed run whether the effect happened.
-    if (tier !== undefined) {
-      const verdict = await prepareEffect(def, tier, effective, ctx);
-      // **The flag flips HERE, before the call — not after a successful settle.** This is the line ADR-0080
-      // §7 step 3 draws: past the prepare, the effect MAY have reached the target, so every failure below is
-      // non-retryable. Setting it after the settle instead left a dispatch THROW — the canonical timed-out
-      // POST — reported as `retryable: true`, which is the duplicate this whole mechanism exists to prevent.
-      effectDispatched = true;
-      if (verdict.outcome === 'replay') {
-        // §4's ONE forward path for a resumed node: this exact effect (same identity, same args digest)
-        // already committed with its result retained, so the stored result stands in for the call. The
-        // dispatch is skipped entirely — re-running it is precisely the duplicate the journal prevents —
-        // and no settle follows, because the row is already terminal.
-        //
-        // It still flows through mapping and bounding below: those are pure projections, and a replayed
-        // result must reach the model in the same shape the original would have.
-        replayed = asReplayEnvelope(verdict.result);
-      }
-    }
-    // 4d. Admission belongs at the actual dispatch boundary, independent of effect tier. Approval and
-    // prepare can both yield while the host's durable state fails. A refusal here proves the call never
-    // started, so release its prepared claim rather than recording a possibly-landed effect.
-    if (replayed === NOT_REPLAYED) {
-      try {
-        ctx.beforeDispatch?.(def.id);
-      } catch (cause) {
-        if (tier !== undefined) await discardQuietly(ctx, def.id);
-        throw cause;
-      }
-    }
-    let output: unknown;
-    // Split the attachment off HERE, immediately at the dispatch boundary, so everything downstream —
-    // `output_mapping`, bounding, the tool result, the spill — sees the ordinary descriptor value and never
-    // the envelope. Only `read_media` produces one, and it declares no effect tier, so a replayed value can
-    // never carry an attachment (the journal round-trips JSON, which has no symbol to round-trip).
     try {
-      if (replayed === NOT_REPLAYED) {
-        const dispatched = takeMediaAttachment(await def.dispatch(args, host, ctx));
-        // **A journaled effect and a media attachment have no correct resume semantics, so the combination
-        // is refused rather than commented against.** The journal round-trips JSON, which cannot carry the
-        // envelope's symbol, so a replayed dispatch would restore the descriptor and deliver NO media — the
-        // model reading "attached below" for something it never received, silently, with no error and no
-        // event. `read_media` declares no tier today, but every discovered MCP tool is unconditionally tier
-        // 3, so the next tool that answers with media is one `effect:` away from this. Loud here beats
-        // silent on a resume nobody is watching.
-        if (tier !== undefined && dispatched.media.length > 0) {
-          throw new ToolExecutionError(
-            def.id,
-            `tool \`${def.id}\` returned a media attachment on a journaled dispatch — a replay cannot re-deliver it`,
-            undefined,
-            { recoverable: false, retryable: false },
-          );
+      throwIfAborted(ctx, def.id);
+      if (prepare !== undefined && tier !== undefined) {
+        let inspection;
+        try {
+          inspection = await ctx.effects.inspectReplay(ctx.effectSlot, def.id, projection);
+        } catch (cause) {
+          if (isEffectConflictError(cause)) throw new ToolEffectConflictError(def.id, cause);
+          if (isAbort(cause, ctx)) throw cause;
+          throw new ToolExecutionError(def.id, 'Retained effect inspection failed.', cause, {
+            recoverable: false,
+            retryable: false,
+          });
         }
-        output = dispatched.value;
-        mediaAttachments = dispatched.media;
-      } else {
-        output = replayed.value;
+        throwIfAborted(ctx, def.id);
+        if (inspection.outcome === 'replay') await savedResult(inspection.result);
       }
+      if (!replayHit) {
+        if (prepare !== undefined) {
+          // This is the only cut that can certify a content-free edit correction as pre-effect.
+          try {
+            prepared = await prepare(args, host, ctx);
+          } catch (cause) {
+            if (cause instanceof ToolPreparationError)
+              throw new ToolExecutionError(def.id, cause.message, undefined, {
+                recoverable: true,
+                retryable: false,
+              });
+            throw cause;
+          }
+          throwIfAborted(ctx, def.id);
+          publish(prepared.preview);
+        } else if (def.preview !== undefined && def.source === 'builtin')
+          publish(def.preview(args));
+        const decision = await confirmDispatch(
+          def,
+          target,
+          ctx,
+          preview === undefined ? undefined : Object.freeze({ callId, preview }),
+        );
+        onDispatchSucceeded = decision?.onDispatchSucceeded;
+        if (tier !== undefined) {
+          const verdict = await prepareEffect(def, tier, projection, ctx);
+          effectDispatched = true;
+          if (verdict.outcome === 'replay') await savedResult(verdict.result);
+        }
+      }
+      if (replayed === NOT_REPLAYED) {
+        try {
+          ctx.beforeDispatch?.(def.id);
+        } catch (cause) {
+          if (tier !== undefined) await discardQuietly(ctx, def.id);
+          throw cause;
+        }
+        let output: unknown;
+        try {
+          if (prepared !== undefined) effectDispatched = true;
+          const dispatched = takeMediaAttachment(
+            await (prepared === undefined ? def.dispatch(args, host, ctx) : prepared.dispatch(ctx)),
+          );
+          if (tier !== undefined && dispatched.media.length > 0)
+            throw new ToolExecutionError(
+              def.id,
+              'A journaled tool returned unsupported media.',
+              undefined,
+              { recoverable: false, retryable: false },
+            );
+          output = dispatched.value;
+          mediaAttachments = dispatched.media;
+        } catch (cause) {
+          await journalDispatchFailure(ctx, def.id, tier, true, cause);
+          throw cause;
+        }
+        throwIfAborted(ctx, def.id);
+        outputMapped = applyOutputMapping(output, outputMapping ?? undefined);
+        bounded = await boundForModel(
+          output,
+          ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS,
+          host,
+          ctx.signal,
+        );
+        if (
+          def.source === 'builtin' &&
+          def.id === 'read_file' &&
+          !bounded.truncated &&
+          ctx.readScope
+        )
+          host.fs?.acknowledgeReadResult?.(ctx.readScope, output);
+        if (tier !== undefined)
+          await settleCommitted(ctx, def.id, bounded, outputMapped, outputMapping);
+        throwIfAborted(ctx, def.id);
+        // Provisional always authority is committed only once a real non-replay call succeeds.
+        onDispatchSucceeded?.();
+      } else {
+        const retained: ReplayEnvelope = replayed;
+        outputMapped = retained.outputMapping === null ? retained.value : retained.mapped;
+        bounded = {
+          value: retained.value,
+          truncated: retained.truncated,
+          summary: retained.summary,
+        };
+      }
+      throwIfAborted(ctx, def.id);
+      const toolResult: ToolResultPart = {
+        type: 'tool_result',
+        toolCallId: toolCall.id,
+        result: bounded.value,
+      };
+      return {
+        output: outputMapped,
+        toolResult: markUntrusted(toolResult),
+        mediaAttachments: markUntrusted(mediaAttachments),
+        truncated: bounded.truncated,
+        events: {
+          call: {
+            toolId: def.id,
+            toolInput: sanitizeInput(def, effective, ctx.secretArgKeys, 'display'),
+          },
+          result: { toolId: def.id, success: true, outputSummary: bounded.summary },
+        },
+      };
     } catch (cause) {
-      await journalDispatchFailure(ctx, def.id, tier, replayed === NOT_REPLAYED, cause);
+      primaryFailure = true;
+      throw cause;
+    } finally {
+      if (prepared !== undefined) await releasePreparation(prepared, primaryFailure, def.id);
+    }
+  } catch (cause) {
+    if (cause instanceof ToolCancelledError) throw cause;
+    if (isAbort(cause, ctx)) throw new ToolCancelledError(def.id, cause);
+    if (cause instanceof ToolDispatchError) {
+      if ((effectDispatched || replayHit) && (cause.retryable || cause.recoverable))
+        throw new ToolExecutionError(
+          def.id,
+          'Tool delivery failed after effect admission.',
+          cause,
+          { recoverable: false, retryable: false },
+        );
       throw cause;
     }
-    // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
-    throwIfAborted(ctx, def.id);
-    if (replayed === NOT_REPLAYED) {
-      // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
-      outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
-      // 7. Bound the MODEL-FACING result (the full result is untouched above).
-      bounded = await boundForModel(
-        output,
-        ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS,
-        host,
-        ctx.signal,
-      );
-      // The host recognizes the exact read result by identity. A truncated/serialized preview is not
-      // evidence that the model saw the omitted source; callers must re-read a suitably narrow range.
-      if (def.source === 'builtin' && def.id === 'read_file' && !bounded.truncated && ctx.readScope)
-        host.fs?.acknowledgeReadResult?.(ctx.readScope, output);
-    } else {
-      // A REPLAY restores the recorded projections verbatim — it does not re-derive them. Re-deriving is
-      // what produced the `output_mapping`-over-a-truncation-preview defect; and re-bounding a value that
-      // is already bounded would summarize a summary.
-      // **A config change between the crash and the resume is a refusal, not a silent divergence.** The
-      // envelope records whether a mapping was configured when the effect ran. If the node's YAML was edited
-      // in the crash window, the recorded projection is not what the CURRENT config asks for — replaying it
-      // would put the stale answer into workflow state, which is the same failure class as replaying a
-      // different call's result, reached from a different direction. A review reproduced both directions.
-      if (replayed.hadMapping !== (ctx.config.outputMapping !== undefined)) {
-        throw new ToolEffectConflictError(
-          def.id,
-          new Error(
-            `the recorded effect was produced under a different \`output_mapping\` configuration than this node now declares`,
-          ),
-        );
-      }
-      outputMapped = 'mapped' in replayed ? replayed.mapped : replayed.value;
-      bounded = {
-        value: replayed.value,
-        truncated: replayed.truncated,
-        summary: replayed.summary,
-      };
-    }
-    // 8. **SETTLE — after bounding, and deliberately so.** ADR-0080 §7 said "immediately"; what ships settles
-    //    once the BOUNDED value exists, for two reasons the spec is being corrected to state. First, the
-    //    gate's job is to RE-DELIVER the model-facing result, so the bounded value is the one worth keeping —
-    //    persisting the raw result would put unbounded `run_command` stdout into `history.db` with no cap and
-    //    no sweep. Second, the wider window costs nothing but interruptions: a crash before this leaves the
-    //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
-    if (tier !== undefined && replayed === NOT_REPLAYED) {
-      await settleCommitted(ctx, def.id, bounded, outputMapped);
-    }
-    // An abort that lands during bounding (its async fast path yields a microtask) must still classify
-    // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.
-    throwIfAborted(ctx, def.id);
-  } catch (cause) {
-    if (cause instanceof ToolCancelledError) {
-      throw cause; // already classified (e.g. throwIfAborted) — never double-wrap
-    }
-    // Cancel-wins-all (ADR-0036 cancel precedence): once the run's signal is aborted, any failure on
-    // this path closes the step as `cancelled`, even a typed ToolDispatchError (e.g. a capability gap).
-    // The deterministic error re-surfaces on the next, non-cancelled run; a torn-down run stays cancelled.
-    if (isAbort(cause, ctx)) {
-      throw new ToolCancelledError(def.id, cause);
-    }
-    if (cause instanceof ToolDispatchError) {
-      throw cause; // a typed error from dispatch (e.g. ToolUnavailableError) passes through
-    }
-    // Stamp whether the failure is safe to feed back to the model for a within-turn retry (ADR-0057): ONLY an
-    // IDEMPOTENT tool — one `governedAction` does not classify as a side-effecting fs_write/process/egress/os
-    // action (a read: read_file / list_directory / git_status / invoke_agent / read_media). A governed tool's
-    // failure is non-idempotent (a half-run command, a POST that may have landed), so it is NOT recoverable.
     throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause, {
-      recoverable: governedAction(def, target) === undefined,
-      // **Not node-retryable once the effect has left the process** (ADR-0080 §8, amending ADR-0037). This
-      // covers more than a dispatch throw: a post-dispatch abort, an `output_mapping` error, a bounding or
-      // spill failure — all happen AFTER the target acted, and classifying any of them as retryable would
-      // have the node re-run and re-fire the effect. `recoverable` above is a different axis (within-turn
-      // model recovery); this is the one that gates a fresh node dispatch.
-      ...(effectDispatched ? { retryable: false } : {}),
+      recoverable: !replayHit && !effectDispatched && governedAction(def, target) === undefined,
+      ...(effectDispatched || replayHit ? { retryable: false } : {}),
     });
   }
-
-  // 8. Brand the model-facing result untrusted + shape the sanitized event payloads.
-  const toolResult: ToolResultPart = {
-    type: 'tool_result',
-    toolCallId: toolCall.id,
-    result: bounded.value,
-  };
-  return {
-    output: outputMapped,
-    toolResult: markUntrusted(toolResult),
-    mediaAttachments: markUntrusted(mediaAttachments),
-    truncated: bounded.truncated,
-    events: {
-      call: {
-        toolId: def.id,
-        toolInput: sanitizeInput(def, effective, ctx.secretArgKeys, 'display'),
-      },
-      result: { toolId: def.id, success: true, outputSummary: bounded.summary },
-    },
-  };
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -802,7 +788,8 @@ async function confirmDispatch(
   def: ToolDef,
   target: PolicyTarget,
   ctx: ToolDispatchContext,
-): Promise<void> {
+  live?: ToolApprovalLiveContext,
+): Promise<Extract<ToolApprovalDecision, { outcome: 'approve' }> | undefined> {
   const approval = ctx.approval;
   if (approval === undefined) {
     return; // the workflow author-trust path — governed tools proceed under the enforcePolicy floor above
@@ -844,7 +831,7 @@ async function confirmDispatch(
 
   let decision: ToolApprovalDecision;
   try {
-    decision = await approval.confirm(request, ctx.signal);
+    decision = await approval.confirm(request, ctx.signal, live);
   } catch (cause) {
     // An abort raised WHILE prompting is a cancellation (cancel precedence) — rethrow so the dispatch
     // ladder classifies it as `cancelled`, never a denial. Any OTHER throw is a fault in the consent layer
@@ -871,6 +858,7 @@ async function confirmDispatch(
   // must still cancel: the governed side effect must not run. Mirrors the post-dispatch guard in dispatch()
   // (cancel precedence). Without this, an `approve` that resolves after the signal aborted would proceed.
   throwIfAborted(ctx, def.id);
+  return decision;
 }
 
 /**

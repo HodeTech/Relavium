@@ -699,7 +699,12 @@ describe('session structure through the real CLI host and SQLite', () => {
         ],
         textTurn('recovered'),
       ],
-      { agentRef, cwd: workspace },
+      {
+        agentRef,
+        cwd: workspace,
+        operatorHomeDir: root,
+        outputStoreFactory: () => Promise.resolve(undefined),
+      },
     );
     const persister = attach(built);
     persister.beginUserTurn('read');

@@ -21,6 +21,7 @@ import {
   AppendConflictError,
   CorruptRunEventError,
   blocksResume,
+  decodeRetainedEffectEnvelope,
   type DurableWriteContext,
   EffectConflictError,
   EffectTransitionError,
@@ -770,6 +771,24 @@ export function createInMemoryEffectJournalStore(): {
     for: (correlation) => {
       const scope = effectScope(correlation);
       return {
+        inspectReplay: (slot, toolId, redactedArgs) => {
+          const held = rows.get(key(scope, slot, toolId));
+          if (held === undefined) return Promise.resolve({ outcome: 'miss' });
+          if (
+            correlation.kind === 'run' &&
+            held.state === 'committed' &&
+            held.argsKey === (JSON.stringify(redactedArgs) ?? 'undefined') &&
+            held.resultJson !== undefined
+          ) {
+            try {
+              const result = decodeRetainedEffectEnvelope(JSON.parse(held.resultJson));
+              if (result !== undefined) return Promise.resolve({ outcome: 'replay', result });
+            } catch {
+              /* Same fail-closed result as SQLite. */
+            }
+          }
+          return Promise.reject(new EffectConflictError({ scope, slot, toolId }));
+        },
         prepare: (slot, toolId, tier, redactedArgs, _targetKey, callAttempt) => {
           const held = rows.get(key(scope, slot, toolId));
           const argsKey = JSON.stringify(redactedArgs) ?? 'undefined';
@@ -785,10 +804,13 @@ export function createInMemoryEffectJournalStore(): {
             ) {
               // Parsed back, exactly as the real store does — so a value that does not survive the round
               // trip fails HERE, in core, rather than only against SQLite in `apps/cli`.
-              return Promise.resolve({
-                outcome: 'replay',
-                result: JSON.parse(held.resultJson) as unknown,
-              });
+              let result: unknown;
+              try {
+                result = decodeRetainedEffectEnvelope(JSON.parse(held.resultJson));
+              } catch {
+                result = undefined;
+              }
+              if (result !== undefined) return Promise.resolve({ outcome: 'replay', result });
             }
             return Promise.reject(new EffectConflictError({ scope, slot, toolId }));
           }

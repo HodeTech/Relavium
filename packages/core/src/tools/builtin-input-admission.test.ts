@@ -119,6 +119,22 @@ function harness(
         Promise.resolve({ content: '', mimeType: 'text/plain', sizeBytes: 0, lastModified: 't' }),
       listDirectory: () => Promise.resolve({ entries: [] }),
       writeFile,
+      prepareWrite: (request) =>
+        Promise.resolve({
+          path: request.path,
+          before: null,
+          after: request.kind === 'write' ? request.content : request.newString,
+          execute: (signal) =>
+            writeFile(
+              request.path,
+              request.kind === 'write' ? request.content : request.newString,
+              request.kind === 'write'
+                ? { append: request.append, createDirs: request.createDirs }
+                : {},
+              signal,
+            ),
+          release: () => undefined,
+        }),
     },
     process: { spawn },
     egress: { fetch },
@@ -149,7 +165,12 @@ function harness(
     },
     fsScope: 'sandboxed',
     gateApproved: true,
-    effects: { prepare, settle, discard },
+    effects: {
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
+      prepare,
+      settle,
+      discard,
+    },
     effectSlot: 0,
     approval: { confirm, emitApprovalRequested },
     beforeDispatch,
@@ -346,7 +367,7 @@ describe('built-in bounds at effective-argument admission before money/effects',
     );
   });
 
-  it('[UNJOURNALED-POSITIVES] overwrite and omitted-body GET reach host without effect preparation', async () => {
+  it('[JOURNALED-WRITE-UNJOURNALED-GET] overwrite journals while omitted-body GET does not', async () => {
     const write = RAILS[0];
     const http = RAILS[1];
     if (write === undefined || http === undefined) throw new Error('missing non-effect rails');
@@ -355,8 +376,9 @@ describe('built-in bounds at effective-argument admission before money/effects',
     expect(w.writeFile).toHaveBeenCalledOnce();
     expect(w.beforeDispatch).toHaveBeenCalledOnce();
     expect(w.confirm).toHaveBeenCalledOnce();
-    expect(w.store.rows()).toEqual([]);
-    expect(w.prepare).not.toHaveBeenCalled();
+    expect(w.store.rows()).toHaveLength(1);
+    expect(w.store.rows()[0]).toMatchObject({ toolId: 'write_file', tier: 3, state: 'committed' });
+    expect(w.prepare).toHaveBeenCalledOnce();
     const h = harness(http, { url: 'https://api.example/x' });
     await h.dispatch({ url: 'https://api.example/x' });
     expect(h.fetch.mock.calls[0]?.[0]).toEqual({

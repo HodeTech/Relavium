@@ -186,11 +186,27 @@ describe('the effect journal store', () => {
     // stayed green — only the in-memory reference proved anything, which is the divergence this file's own
     // header says the repo has been bitten by before.
     store.prepare(ID, RUN, ATTEMPT, 3, 'digest-1');
-    store.settle(ID, 'committed', { ok: true });
+    store.settle(ID, 'committed', {
+      v: 2,
+      hasValue: true,
+      value: { ok: true },
+      hasMappedValue: false,
+      outputMapping: null,
+      truncated: false,
+      summary: '',
+    });
 
     expect(store.prepare(ID, RUN, ATTEMPT, 3, 'digest-1')).toEqual({
       outcome: 'replay',
-      result: { ok: true },
+      result: {
+        v: 2,
+        hasValue: true,
+        value: { ok: true },
+        hasMappedValue: false,
+        outputMapping: null,
+        truncated: false,
+        summary: '',
+      },
     });
     // A different digest at the same slot is a DIFFERENT call that landed in the same ordinal — answering it
     // with the old answer would be a silent wrong result, so it refuses.

@@ -333,3 +333,80 @@ describe('safe initial archive display', () => {
     ).toHaveLength(1);
   });
 });
+
+describe('MVP-3 restored structural tool groups', () => {
+  function toolTurn(start: number, turn: number, count: number): SessionMessage[] {
+    return [
+      row(start, 'user', 'private original user'),
+      {
+        ...row(start + 1, 'assistant', 'PRIVATE TOOL PREAMBLE'),
+        content: [
+          { type: 'text', text: 'PRIVATE TOOL PREAMBLE' },
+          ...Array.from({ length: count }, (_, slot) => ({
+            type: 'tool_call' as const,
+            id: `session-tool:${turn}:${slot}`,
+            name: 'write_file',
+            argsBytes: 999,
+          })),
+        ],
+      },
+      {
+        ...row(start + 2, 'tool', ''),
+        content: Array.from({ length: Math.max(0, count - 1) }, (_, slot) => ({
+          type: 'tool_result' as const,
+          toolCallId: `session-tool:${turn}:${slot}`,
+          resultBytes: 123,
+          outcome: slot === 0 ? ('denied' as const) : ('ok' as const),
+        })),
+      },
+      row(start + 3, 'assistant', ''),
+    ];
+  }
+  it('joins ids inside the completed turn, preserves missing outcomes and excludes preambles/results/targets', () => {
+    const messages = toolTurn(0, 1, 3);
+    const entries = restore(messages, new Map([[0, 'safe display']]));
+    const group = entries.find((entry) => entry.role === 'tools');
+    expect(group?.role).toBe('tools');
+    if (group?.role !== 'tools') throw new Error('missing tools');
+    expect(group.calls.map((call) => call.outcome)).toEqual(['denied', 'success', 'unknown']);
+    expect(group.calls.map((call) => call.id)).toEqual([
+      'session-tool:1:0',
+      'session-tool:1:1',
+      'session-tool:1:2',
+    ]);
+    expect(JSON.stringify(entries)).not.toMatch(/PRIVATE|argsBytes|resultBytes|"target"|"diff"/);
+    expect(entries.at(-1)).toEqual({ role: 'assistant', text: '' });
+  });
+  it.each([INLINE_TRANSCRIPT_BOUND, FULLSCREEN_TRANSCRIPT_BOUND] as const)(
+    'reserves collapsed group rows inside the existing cap %s',
+    (transcriptBound) => {
+      const messages = Array.from({ length: 300 }, (_, index) =>
+        toolTurn(index * 4, index + 1, 20),
+      ).flat();
+      const entries = restoreSessionTranscript({
+        messages,
+        memory: undefined,
+        transcriptBound,
+        readDisplay: () =>
+          new Map(
+            messages
+              .filter((message) => message.role === 'user')
+              .map((message) => [message.sequenceNumber, 'safe']),
+          ),
+      });
+      const group = entries.findLast((entry) => entry.role === 'tools');
+      if (group?.role !== 'tools') throw new Error('missing latest tools');
+      expect(group.calls).toHaveLength(16);
+      expect(group.omitted).toBe(4);
+      expect(entryLines(group)).toHaveLength(4);
+      const logical = entries.reduce(
+        (sum, entry) => sum + (entry.role === 'tools' ? entryLines(entry).length : 1),
+        0,
+      );
+      expect(logical).toBeLessThanOrEqual(transcriptBound === INLINE_TRANSCRIPT_BOUND ? 200 : 500);
+      expect(entries.at(-1)).toEqual({ role: 'assistant', text: '' });
+      expect(entries[0]?.text).toContain('omitted tool calls');
+      expect(JSON.stringify(entries)).not.toContain('PRIVATE TOOL PREAMBLE');
+    },
+  );
+});

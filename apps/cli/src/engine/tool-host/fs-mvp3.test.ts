@@ -14,7 +14,12 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 function capability() {
-  return createNodeFsCapability({ tier: 'sandboxed', workspaceDir: root, readOnly: true });
+  return createNodeFsCapability({
+    operatorHomeDir: root,
+    tier: 'sandboxed',
+    workspaceDir: root,
+    readOnly: true,
+  });
 }
 
 it('reads exact line and UTF-8 byte ranges without changing line endings', async () => {
@@ -123,6 +128,7 @@ it('counts only returned text in glob sizeBytes while charging skipped full-sour
   await writeFile(join(root, 'invalid.txt'), content);
   await writeFile(join(root, 'valid.txt'), 'OK');
   const fs = createNodeFsCapability({
+    operatorHomeDir: root,
     tier: 'sandboxed',
     workspaceDir: root,
     readOnly: true,
@@ -170,7 +176,12 @@ it.each(['.gitignore', '.relaviumignore'])(
     await writeFile(join(physical, name), '/ignored.txt\n');
     await writeFile(join(physical, 'ignored.txt'), 'needle\n');
     await writeFile(join(physical, 'allowed.txt'), 'needle\n');
-    const fs = createNodeFsCapability({ tier: 'sandboxed', workspaceDir: alias, readOnly: true });
+    const fs = createNodeFsCapability({
+      operatorHomeDir: root,
+      tier: 'sandboxed',
+      workspaceDir: alias,
+      readOnly: true,
+    });
     const found = await fs.findFiles?.('.', { glob: '*.txt' });
     const searched = await fs.searchFiles?.('.', { pattern: 'needle', glob: '*.txt' });
     expect(found?.files.map((file) => file.path)).toEqual(['allowed.txt']);
@@ -233,6 +244,7 @@ it('inspects admitted extra-root ancestors without inheriting rules above the gr
   await writeFile(join(root, '.gitignore'), 'ignored.txt\n');
   await writeFile(join(extra, 'sub', 'ignored.txt'), 'literal-needle\n');
   const fs = createNodeFsCapability({
+    operatorHomeDir: root,
     tier: 'project',
     workspaceDir: workspace,
     extraRoots: [extra],
@@ -264,6 +276,7 @@ it('keeps a host-issued scratch root usable without inspecting its protected par
   await writeFile(join(anchor, '.gitignore'), 'allowed.txt\n', { mode: 0o600 });
   await writeFile(join(scratchRoot, 'allowed.txt'), 'literal-needle\n');
   const fs = createNodeFsCapability({
+    operatorHomeDir: root,
     tier: 'sandboxed',
     workspaceDir: root,
     scratch: issueHostScratchRoot({ homeDir: root, rootDir: scratchRoot }),
@@ -360,6 +373,7 @@ it('preserves a UTF-8 BOM and seeks a bounded byte range in a large file', async
 it('reports the list cap without fabricating an omitted count', async () => {
   for (let i = 0; i < 3; i++) await writeFile(join(root, `f${i}`), 'x');
   const fs = createNodeFsCapability({
+    operatorHomeDir: root,
     tier: 'sandboxed',
     workspaceDir: root,
     readOnly: true,
@@ -377,6 +391,7 @@ it('allows an exact glob match cap and refuses the next matching file', async ()
   await writeFile(join(root, 'b.txt'), 'b');
   await writeFile(join(root, 'unmatched'), 'x');
   const fs = createNodeFsCapability({
+    operatorHomeDir: root,
     tier: 'sandboxed',
     workspaceDir: root,
     readOnly: true,

@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import type { AgentSession, ToolApprovalRequest, ToolDef } from '@relavium/core';
+import type { AgentSession, ToolApprovalRequest, ToolDef, ToolLiveObserver } from '@relavium/core';
 
 import { isProtectedPolicyPath } from '../engine/tool-host/fs.js';
 import type { FsPathPolicy } from '../engine/tool-host/fs-policy.js';
@@ -26,6 +26,7 @@ import {
 
 /** The session-scoped environment a mode is applied against — built once per session. */
 export interface ChatModeEnv {
+  readonly onToolLiveEvent?: ToolLiveObserver;
   /** The live session the mapped turn policy is pushed to. */
   readonly session: Pick<AgentSession, 'setTurnPolicy'>;
   /** Governed tool ids (the ask/plan advertise hide-set) — derived once from the session's granted defs. */
@@ -40,6 +41,7 @@ export interface ChatModeEnv {
 }
 
 export interface MakeChatModeEnvOptions {
+  readonly onToolLiveEvent?: ToolLiveObserver;
   readonly session: Pick<AgentSession, 'setTurnPolicy'>;
   /** The session's granted tool defs (built-ins + discovered MCP) — the governed hide-set is derived from these. */
   readonly tools: readonly ToolDef[];
@@ -54,6 +56,7 @@ export interface MakeChatModeEnvOptions {
 export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
   return {
     session: opts.session,
+    ...(opts.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: opts.onToolLiveEvent }),
     governed: governedToolIds(opts.tools),
     cache: new ApprovalCache(),
     prompt: opts.prompt,
@@ -88,6 +91,7 @@ export function applyChatMode(env: ChatModeEnv, mode: ChatMode): void {
   env.session.setTurnPolicy(
     buildTurnPolicy(mode, {
       governed: env.governed,
+      ...(env.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: env.onToolLiveEvent }),
       prompt: env.prompt,
       cache: env.cache,
       isProtectedTarget: env.isProtectedTarget,

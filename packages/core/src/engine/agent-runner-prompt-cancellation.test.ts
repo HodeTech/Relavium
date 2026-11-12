@@ -153,7 +153,12 @@ function harness(
     emit: (event) => events.push(event),
     attemptNumber: 1,
     preEgress,
-    effects: { prepare, settle, discard },
+    effects: {
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
+      prepare,
+      settle,
+      discard,
+    },
   };
   const deps: AgentRunnerDeps = {
     resolveProvider: () => provider,

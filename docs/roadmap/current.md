@@ -81,8 +81,8 @@ pre-build security design sitting is complete.
 and its expanded replay/evidence contracts are accepted after verifying the
 supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
 captures their disposition. [Step 2 implementation is active](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-implementation-start-2026-11-12);
-ADR-0124 needs no further design approval. The newly discovered native decision
-below has its own approval gate. Steps 2/3 and whole-MVP-3 acceptance remain open.
+ADR-0124 and the native decision below need no further design approval.
+Steps 2/3 and whole-MVP-3 acceptance remain open.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
@@ -90,8 +90,8 @@ OS/algorithm probes established the mode/uid/gid-only replacement hazard.
 is accepted under the maintainer's instruction after verifying the supplied
 reviews: all model file writes require tier-3 durability; new-file policy,
 staging recovery/model isolation and the narrow native host/build exception
-are specified in its canonical contract. Native implementation proceeds after
-dependency pin/audit; profile, implementation/security and Step 2 acceptance
+are specified in its canonical contract. Native implementation is active after
+the initial dependency pin/audit; profile, implementation/security and Step 2 acceptance
 remain open. This is no claim that the complete host/native adapter was tested.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):

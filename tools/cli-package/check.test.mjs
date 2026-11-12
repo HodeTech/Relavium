@@ -40,6 +40,10 @@ const COPIED = Object.freeze([
   'cli-package/process.mjs',
   'bundle-closure/closure.mjs',
   'bundle-closure/inventory.mjs',
+  'native-fs/assets.mjs',
+  'native-fs/catalog.mjs',
+  'native-fs/profile.mjs',
+  'native-fs/profile-catalog.mjs',
 ]);
 
 /**

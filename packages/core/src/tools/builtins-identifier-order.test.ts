@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const expectedBuiltinIds = [
+  'edit_file',
   'find_files',
   'git_commit',
   'git_status',
@@ -19,12 +20,12 @@ const expectedBuiltinIds = [
 ];
 
 describe('built-in catalog identifier ordering (#259)', () => {
-  it('preserves the fixed fifteen-ID catalog through actual module evaluation', async () => {
+  it('preserves the fixed sixteen-ID catalog through actual module evaluation', async () => {
     const catalog = await import('./builtins.js');
     expect(catalog.BUILTIN_TOOL_IDS, 'fixed built-in catalog preservation').toEqual(
       expectedBuiltinIds,
     );
-    expect(catalog.BUILTIN_TOOLS).toHaveLength(15);
+    expect(catalog.BUILTIN_TOOLS).toHaveLength(16);
     expect(catalog.BUILTIN_TOOLS.every((tool) => tool.source === 'builtin')).toBe(true);
     expect(new Set(catalog.BUILTIN_TOOLS.map((tool) => tool.id))).toEqual(
       new Set(expectedBuiltinIds),

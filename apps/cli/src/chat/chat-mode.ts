@@ -5,6 +5,8 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolDef,
+  ToolApprovalLiveContext,
+  ToolLiveObserver,
 } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
@@ -89,6 +91,7 @@ export type ApprovalPrompt = (
   request: ToolApprovalRequest,
   cacheable: boolean,
   signal?: AbortSignalLike,
+  live?: ToolApprovalLiveContext,
 ) => Promise<ApprovalAnswer>;
 
 /**
@@ -152,6 +155,7 @@ export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
 
 /** The inputs {@link buildTurnPolicy} needs beyond the mode itself — the session-scoped consent machinery. */
 export interface TurnPolicyDeps {
+  readonly onToolLiveEvent?: ToolLiveObserver;
   /** Governed tool ids (from {@link governedToolIds}) — hidden by the `ask`/`plan` advertise-filter. */
   readonly governed: ReadonlySet<string>;
   /** The REPL interactive prompt (accept-edits, and auto's protected-path fallback). */
@@ -180,7 +184,8 @@ export interface TurnPolicyDeps {
 export function buildTurnPolicy(mode: ChatMode, deps: TurnPolicyDeps): SessionTurnPolicy {
   const advertise = advertiseFor(mode, deps.governed);
   const confirm = confirmFor(mode, deps);
-  return advertise === undefined ? { confirm } : { advertise, confirm };
+  const live = deps.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: deps.onToolLiveEvent };
+  return advertise === undefined ? { confirm, ...live } : { advertise, confirm, ...live };
 }
 
 /** The advertise-filter for a mode: `ask`/`plan` offer only non-governed tools; the others offer all. */
@@ -239,7 +244,7 @@ function isInformative(value: string | undefined): boolean {
 
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
-  return async (request, signal): Promise<ToolApprovalDecision> => {
+  return async (request, signal, live): Promise<ToolApprovalDecision> => {
     switch (mode) {
       case 'ask':
       case 'plan':
@@ -251,8 +256,8 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // user nothing to review, so `[a]lways` there would be an unreviewed, session-long blank check over any
         // future server/tool/args (a prompt-injection-after-one-grant hazard, ADR-0057 review). For those the
         // grant is once-only (cacheable=false ⇒ the REPL greys out `[a]` and toDecision never caches).
-        const cacheable = !isBlankPreview(request.preview);
-        const answer = await deps.prompt(request, cacheable, signal);
+        const cacheable = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
+        const answer = await deps.prompt(request, cacheable, signal, live);
         return toDecision(answer, request.toolId, deps.cache, cacheable);
       }
       case 'auto': {
@@ -263,7 +268,7 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
         if (deps.isProtectedTarget?.(request) === true) {
           const cacheable = false;
-          const answer = await deps.prompt(request, cacheable, signal);
+          const answer = await deps.prompt(request, cacheable, signal, live);
           return toDecision(answer, request.toolId, deps.cache, cacheable);
         }
         return { outcome: 'approve' };
@@ -292,6 +297,7 @@ function toDecision(
       ? { outcome: 'reject' }
       : { outcome: 'reject', reason: answer.reason };
   }
-  if (allowAlwaysCache && answer.scope === 'always') cache.rememberAlways(toolId);
-  return { outcome: 'approve' };
+  return allowAlwaysCache && answer.scope === 'always'
+    ? { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlways(toolId) }
+    : { outcome: 'approve' };
 }

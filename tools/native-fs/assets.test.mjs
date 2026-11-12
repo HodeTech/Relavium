@@ -1,0 +1,368 @@
+import assert from 'node:assert/strict';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import {
+  copyNativeAssets,
+  inspectNativeAssets,
+  nativeSourceBinding,
+  NativeAssetError,
+  validateNativeManifest,
+} from './assets.mjs';
+import { syntheticNativeAssets } from './fixture.mjs';
+import { hostTarget, NATIVE_DIRECTORY, NATIVE_TARGETS } from './catalog.mjs';
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-native-assets-')));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+let index = 0;
+function fixture(options) {
+  const root = join(scratch, `case-${index++}`);
+  mkdirSync(root);
+  return { root, ...syntheticNativeAssets(root, options) };
+}
+function refusal(work, code) {
+  assert.throws(work, (error) => error instanceof NativeAssetError && error.code === code);
+}
+
+test('finite target selection covers eight targets and refuses unsupported platforms and unknown libc', () => {
+  assert.equal(NATIVE_TARGETS.length, 8);
+  for (const platform of ['darwin', 'win32', 'linux'])
+    for (const arch of ['x64', 'arm64']) {
+      for (const libc of platform === 'linux' ? ['gnu', 'musl'] : ['none'])
+        assert.ok(NATIVE_TARGETS.includes(hostTarget(platform, arch, libc)));
+    }
+  assert.throws(() => hostTarget('linux', 'x64', undefined));
+  assert.throws(() => hostTarget('freebsd', 'x64', 'none'));
+  assert.throws(() => hostTarget('win32', 'ia32', 'none'));
+});
+
+test('synthetic inventory controls source, lock, target, receipt and exact byte bindings; no native proof claimed', () => {
+  const value = fixture();
+  assert.equal(
+    inspectNativeAssets(value.directory, {
+      complete: true,
+      binding: nativeSourceBinding(value.root),
+    }).files.size,
+    11,
+  );
+  for (const [name, change, code] of [
+    [
+      'partial',
+      (m) => {
+        m.scope = 'development-current';
+        m.assets = m.assets.slice(0, 1);
+      },
+      'INCOMPLETE',
+    ],
+    ['missing', (m) => m.assets.pop(), 'TARGET_INVENTORY'],
+    [
+      'protocol-only release',
+      (m) => {
+        delete m.assets[0].validation;
+      },
+      'PROFILE_REQUIRED',
+    ],
+    [
+      'invalid capability receipt',
+      (m) => {
+        m.assets[0].validation.requiresCreationMaskProbe = 'false';
+      },
+      'PROFILE_EVIDENCE',
+    ],
+    [
+      'imprecise runtime floor',
+      (m) => {
+        m.assets[0].execution.node = 'v22.13.0';
+      },
+      'EXECUTION_RECEIPT',
+    ],
+    [
+      'newer GNU baseline',
+      (m) => {
+        m.assets.find((asset) => asset.target.endsWith('-gnu')).execution.libcVersion = '2.36';
+      },
+      'EXECUTION_RECEIPT',
+    ],
+    [
+      'unknown musl baseline',
+      (m) => {
+        m.assets.find((asset) => asset.target.endsWith('-musl')).execution.libcVersion = '1.2.4';
+      },
+      'EXECUTION_RECEIPT',
+    ],
+    [
+      'duplicate',
+      (m) => {
+        m.assets[1] = m.assets[0];
+      },
+      'TARGET_INVENTORY',
+    ],
+    [
+      'wrong host',
+      (m) => {
+        m.assets[0].execution.arch = 'x64';
+      },
+      'EXECUTION_RECEIPT',
+    ],
+    [
+      'cross compile claim',
+      (m) => {
+        m.assets[0].execution.platform = 'linux';
+      },
+      'PROFILE_EVIDENCE',
+    ],
+    [
+      'toolchain',
+      (m) => {
+        m.toolchain = 'stable';
+      },
+      'MANIFEST',
+    ],
+    [
+      'loader pin',
+      (m) => {
+        m.loaderSha256 = '0'.repeat(64);
+      },
+      'MANIFEST',
+    ],
+    [
+      'oversize',
+      (m) => {
+        m.assets[0].bytes = 8 * 1024 * 1024 + 1;
+      },
+      'EXECUTION_RECEIPT',
+    ],
+  ]) {
+    const copy = JSON.parse(JSON.stringify(value.manifest));
+    change(copy);
+    refusal(() => validateNativeManifest(copy, { complete: true }), code);
+    assert.ok(name);
+  }
+});
+
+test('incomplete local inventory cannot enter a candidate; stale source refuses independently', () => {
+  const local = fixture({ complete: false });
+  refusal(() => copyNativeAssets({ repository: local.root, complete: true }), 'INCOMPLETE');
+  const full = fixture();
+  appendFileSync(join(full.root, 'apps/cli/native/fs-metadata/src/lib.rs'), '\n// changed source');
+  refusal(() => copyNativeAssets({ repository: full.root, complete: true }), 'SOURCE_BINDING');
+});
+
+test('candidate binding is checked against isolated chosen source, not original mutable checkout', () => {
+  const original = fixture();
+  const candidate = fixture();
+  appendFileSync(
+    join(candidate.root, 'apps/cli/native/fs-metadata/build.rs'),
+    '\n// chosen source differs',
+  );
+  refusal(
+    () =>
+      copyNativeAssets({
+        repository: original.root,
+        candidate: candidate.root,
+        destination: join(candidate.root, 'copied'),
+        complete: true,
+      }),
+    'SOURCE_BINDING',
+  );
+});
+
+test('changed shim, binary, extra files and symbolic links each fail closed', () => {
+  for (const [mutate, code] of [
+    [(value) => appendFileSync(join(value.directory, 'loader.cjs'), '\n// mutation'), 'LOADER'],
+    [
+      (value) => appendFileSync(join(value.directory, `${NATIVE_TARGETS[0]}.node`), 'mutation'),
+      'BINARY_BINDING',
+    ],
+    [(value) => writeFileSync(join(value.directory, 'extra.node'), 'x'), 'INVENTORY'],
+    [
+      (value) => {
+        const file = join(value.directory, `${NATIVE_TARGETS[0]}.node`);
+        const bytes = readFileSync(file);
+        rmSync(file);
+        writeFileSync(join(value.root, 'outside'), bytes);
+        symlinkSync(join(value.root, 'outside'), file);
+      },
+      'UNREADABLE',
+    ],
+  ]) {
+    const value = fixture();
+    mutate(value);
+    refusal(() => inspectNativeAssets(value.directory), code);
+  }
+});
+
+test('generated runtime and Cargo target output never enter the source identity', () => {
+  const value = fixture();
+  const before = nativeSourceBinding(value.root);
+  mkdirSync(join(value.root, 'apps/cli/native/fs-metadata/target'));
+  writeFileSync(
+    join(value.root, 'apps/cli/native/fs-metadata/target/untrusted.rs'),
+    'ignored build state',
+  );
+  assert.deepEqual(nativeSourceBinding(value.root), before);
+  assert.ok(value.directory.endsWith(NATIVE_DIRECTORY));
+});
+
+test('runtime shim selects only the literal host asset and refuses tampering before native acquisition (synthetic loader witness)', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const Module = require('node:module');
+  const original = Module._extensions['.node'];
+  const observed = [];
+  // This records acquisition only. No synthetic byte is called native execution evidence.
+  Module._extensions['.node'] = (module, path) => {
+    observed.push(path);
+    module.exports = { synthetic: true };
+  };
+  const previous = process.env.RELAVIUM_FS_METADATA_LIBRARY;
+  process.env.RELAVIUM_FS_METADATA_LIBRARY = join(scratch, 'model-selected.node');
+  try {
+    const good = fixture();
+    const value = require(join(good.directory, 'loader.cjs')).loadFsMetadataAddon();
+    assert.equal(value.synthetic, true);
+    const libc =
+      process.platform === 'linux'
+        ? process.report.getReport().header.glibcVersionRuntime
+          ? 'gnu'
+          : 'musl'
+        : 'none';
+    assert.deepEqual(observed, [
+      join(good.directory, `${hostTarget(process.platform, process.arch, libc)}.node`),
+    ]);
+    for (const mutate of [
+      (value) =>
+        appendFileSync(
+          join(value.directory, `${hostTarget(process.platform, process.arch, libc)}.node`),
+          'changed',
+        ),
+      (value) => {
+        const manifest = JSON.parse(
+          readFileSync(join(value.directory, 'native-assets.json'), 'utf8'),
+        );
+        manifest.assets[0].target = '../../model-selected';
+        writeFileSync(join(value.directory, 'native-assets.json'), JSON.stringify(manifest));
+      },
+      (value) => writeFileSync(join(value.directory, 'unreviewed.node'), 'extra'),
+      (value) => appendFileSync(join(value.directory, 'THIRD_PARTY_NOTICES.txt'), 'changed'),
+    ]) {
+      const value = fixture();
+      mutate(value);
+      observed.length = 0;
+      assert.throws(() => require(join(value.directory, 'loader.cjs')).loadFsMetadataAddon(), {
+        message: 'NATIVE_FS_ASSET_UNAVAILABLE',
+      });
+      assert.deepEqual(observed, []);
+    }
+  } finally {
+    Module._extensions['.node'] = original;
+    if (previous === undefined) delete process.env.RELAVIUM_FS_METADATA_LIBRARY;
+    else process.env.RELAVIUM_FS_METADATA_LIBRARY = previous;
+  }
+});
+
+test('causal staging copies closed native inputs and opaque assets without evaluating the addon', async () => {
+  const { captureCausalNativeAssets, verifyCausalNativeAssets, verifyCausalNativeInputs } =
+    await import('./causal-assets.mjs');
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const value = fixture();
+  const graph = join(scratch, `isolated-${index++}`);
+  const before = new Set(Object.keys(require.cache));
+  const capture = captureCausalNativeAssets(value.root, graph);
+  assert.ok(capture.inputs.some((entry) => entry.path.endsWith('Cargo.lock')));
+  assert.ok(capture.inputs.some((entry) => entry.path.endsWith('fs-native-metadata.ts')));
+  assert.equal(capture.assets.length, 11);
+  assert.ok(capture.assets.some((entry) => entry.path.endsWith('/loader.cjs')));
+  assert.ok(
+    !Object.keys(require.cache).some((path) => !before.has(path) && path.startsWith(graph)),
+  );
+  const { verifyResolved } = await import('../usage-coverage-controls/source-graph.mjs');
+  const state = {
+    files: new Map(capture.inputs.map((entry) => [join(graph, entry.path), entry])),
+    external: new Map(),
+    infrastructure: new Map(capture.assets.map((entry) => [join(graph, entry.path), entry])),
+  };
+  for (const entry of capture.assets)
+    assert.equal(verifyResolved(state, join(graph, entry.path)).owned, false);
+  assert.equal(verifyResolved(state, join(graph, capture.inputs[0].path)).owned, true);
+  verifyCausalNativeAssets(graph, capture);
+  verifyCausalNativeInputs(value.root, capture);
+});
+
+test('causal staging refuses stale native receipts and never overwrites a different chosen helper', async () => {
+  const { captureCausalNativeAssets } = await import('./causal-assets.mjs');
+  const stale = fixture();
+  appendFileSync(
+    join(stale.root, 'apps/cli/native/fs-metadata/src/lib.rs'),
+    '\n// source changed after native receipt',
+  );
+  refusal(
+    () => captureCausalNativeAssets(stale.root, join(scratch, `isolated-${index++}`)),
+    'SOURCE_BINDING',
+  );
+  const value = fixture();
+  const graph = join(scratch, `isolated-${index++}`);
+  const helper = join(graph, 'apps/cli/src/engine/tool-host/fs-native-metadata.ts');
+  mkdirSync(join(graph, 'apps/cli/src/engine/tool-host'), { recursive: true });
+  writeFileSync(helper, 'chosen isolated helper differs');
+  assert.throws(
+    () => captureCausalNativeAssets(value.root, graph),
+    /NATIVE_FS_CAUSAL_CAPTURE_MISMATCH/u,
+  );
+  assert.equal(readFileSync(helper, 'utf8'), 'chosen isolated helper differs');
+});
+
+test('causal phase validation refuses mutated helper/recipe, binary hash and semantically equal swapped manifest; restoration revalidates', async () => {
+  const { captureCausalNativeAssets, verifyCausalNativeAssets } =
+    await import('./causal-assets.mjs');
+  const value = fixture();
+  const graph = join(scratch, `isolated-${index++}`);
+  const capture = captureCausalNativeAssets(value.root, graph);
+  for (const path of [
+    'apps/cli/src/engine/tool-host/fs-native-metadata.ts',
+    'tools/native-fs/build.mjs',
+  ]) {
+    const target = join(graph, path);
+    const bytes = readFileSync(target);
+    appendFileSync(target, '\n// intentional mutation');
+    refusal(() => verifyCausalNativeAssets(graph, capture), 'SOURCE_BINDING');
+    writeFileSync(target, bytes);
+    verifyCausalNativeAssets(graph, capture);
+  }
+  const binary = join(graph, 'apps/cli', NATIVE_DIRECTORY, `${NATIVE_TARGETS[0]}.node`);
+  const original = readFileSync(binary);
+  appendFileSync(binary, 'changed');
+  refusal(() => verifyCausalNativeAssets(graph, capture), 'BINARY_BINDING');
+  writeFileSync(binary, original);
+  verifyCausalNativeAssets(graph, capture);
+  const manifest = join(graph, 'apps/cli', NATIVE_DIRECTORY, 'native-assets.json');
+  const bytes = readFileSync(manifest);
+  writeFileSync(manifest, JSON.stringify(JSON.parse(bytes), null, 4));
+  assert.throws(() => verifyCausalNativeAssets(graph, capture), /NATIVE_FS_CAUSAL_ASSET_CHANGED/u);
+  writeFileSync(manifest, bytes);
+  verifyCausalNativeAssets(graph, capture);
+});
+
+test('causal isolated assets remain independent of a later moving developer input; the final developer check refuses it', async () => {
+  const { captureCausalNativeAssets, verifyCausalNativeAssets, verifyCausalNativeInputs } =
+    await import('./causal-assets.mjs');
+  const value = fixture();
+  const graph = join(scratch, `isolated-${index++}`);
+  const capture = captureCausalNativeAssets(value.root, graph);
+  appendFileSync(join(value.root, 'tools/native-fs/build.mjs'), '\n// moving developer recipe');
+  verifyCausalNativeAssets(graph, capture);
+  assert.throws(
+    () => verifyCausalNativeInputs(value.root, capture),
+    /NATIVE_FS_CAUSAL_SOURCE_CHANGED/u,
+  );
+});

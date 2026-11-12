@@ -40,6 +40,7 @@ import type { DoctorProbes } from '../chat/doctor.js';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import {
   scriptedResolver,
+  stop,
   textTurn,
   toolUseTurn,
   unresolvedResolver,
@@ -712,6 +713,95 @@ describe('chatCommand', () => {
     // (no user turn was sent — only slash commands ran + /exit); the row exists with no messages.
     expect(store.loadFull(sessionId)?.messages ?? []).toHaveLength(0);
   });
+
+  it('/details on a plain driver gives an interactive remedy without sending a turn', async () => {
+    const { d, err, store, sessionId } = deps(['/details', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/details is available in interactive chat.');
+    expect(store.loadFull(sessionId)?.messages ?? []).toHaveLength(0);
+  });
+
+  it.each([false, true])(
+    'wires tool details only into the interactive instance and seals them on exit (interactive=%s)',
+    async (interactive) => {
+      writeFileSync(join(cwd, 'notes.txt'), 'TOOL_DETAILS_READ_RESULT');
+      const { d, err, store, sessionId } = deps(
+        [],
+        [
+          [
+            { type: 'text_delta', text: 'Before the read.' },
+            { type: 'tool_call_start', id: 'provider-call-id', name: 'read_file' },
+            {
+              type: 'tool_call_delta',
+              id: 'provider-call-id',
+              argsJsonDelta: '{"path":"notes.txt"}',
+            },
+            { type: 'tool_call_end', id: 'provider-call-id' },
+            stop('tool_use'),
+          ],
+          textTurn('After the read.'),
+        ],
+      );
+      let viewStore: ChatStoreController | undefined;
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: interactive, stdinIsTty: interactive },
+          drive: async (ctx) => {
+            viewStore = ctx.store;
+            const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
+            try {
+              ctx.startSession();
+              await ctx.onActivated?.(() => !ctx.shouldStop());
+              await ctx.processLine('Read notes.txt');
+              expect(err()).toBe('');
+              expect(
+                ctx.store
+                  .getSnapshot()
+                  .state.transcript.filter((entry) => entry.role === 'notice')
+                  .map((entry) => entry.text),
+              ).toEqual([]);
+              expect(ctx.store.getSnapshot().state.status).toBe('idle');
+              const details = [...ctx.store.getSnapshot().toolDisplays.values()];
+              if (interactive) {
+                expect(details).toHaveLength(1);
+                expect(details[0]).toMatchObject({
+                  toolId: 'read_file',
+                  target: 'notes.txt',
+                  outcome: 'success',
+                });
+                expect(details[0]?.callId).not.toBe('provider-call-id');
+                expect(ctx.store.getSnapshot().state.transcript.map((entry) => entry.role)).toEqual(
+                  ['user', 'assistant', 'tools', 'assistant'],
+                );
+              } else expect(details).toHaveLength(0);
+              await ctx.processLine('/details');
+              expect(ctx.store.getSnapshot().review?.kind).toBe(
+                interactive ? 'details' : undefined,
+              );
+              await ctx.processLine('/exit');
+              return { kind: 'exit' };
+            } finally {
+              off();
+            }
+          },
+        },
+      );
+      expect(store.loadFull(sessionId)?.messages).toHaveLength(4);
+      if (!interactive) expect(err()).toContain('/details is available in interactive chat.');
+      expect(viewStore?.getSnapshot().toolDisplays.size).toBe(0);
+      expect(viewStore?.getSnapshot().review).toBeUndefined();
+      viewStore?.applyToolLiveEvent({
+        phase: 'preview',
+        callId: 'late-call',
+        toolId: 'read_file',
+        preview: { kind: 'operation', target: 'late-target', fields: [] },
+      });
+      expect(viewStore?.getSnapshot().toolDisplays.size).toBe(0);
+    },
+  );
 
   it('rejects an invalid /mode value at the dispatch, LISTING the valid names (a positional not in the mode set)', async () => {
     const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);

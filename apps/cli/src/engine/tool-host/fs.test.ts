@@ -62,6 +62,7 @@ function sandboxed(
   over: Partial<NodeFsCapabilityConfig> = {},
 ): ReturnType<typeof createNodeFsCapability> {
   return createNodeFsCapability({
+    operatorHomeDir: join(workspace, '..'),
     tier: 'sandboxed',
     workspaceDir: workspace,
     readOnly: false,
@@ -201,7 +202,12 @@ describe('createNodeFsCapability — read (jailed)', () => {
     async () => {
       await writeFile(join(outside, 'lib.txt'), 'LIB');
       await link(join(outside, 'lib.txt'), join(workspace, 'lib.txt'));
-      const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+      const fs = createNodeFsCapability({
+        operatorHomeDir: join(workspace, '..'),
+        tier: 'full',
+        workspaceDir: workspace,
+        readOnly: false,
+      });
       expect((await fs.readFile('lib.txt', {})).content).toBe('LIB');
     },
   );
@@ -516,6 +522,7 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
       await writeFile(join(outside, 'target'), 'original');
       await link(join(outside, 'target'), join(workspace, 'alias.txt'));
       const fullTier = createNodeFsCapability({
+        operatorHomeDir: join(workspace, '..'),
         tier: 'full',
         workspaceDir: workspace,
         readOnly: false,
@@ -559,10 +566,8 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     10_000,
   );
 
-  it('cleans up the temp file when the atomic publish fails — no `.relavium-write.*.tmp` orphan', async () => {
-    // Force the rename to fail by pointing the final target at an existing NON-EMPTY directory: `rename(tmp,
-    // dir)` throws (ENOTEMPTY/EISDIR/EEXIST). The write must reject, AND the `finally` must remove the temp it
-    // created — so a failed publish never strands a `.relavium-write.*.tmp` in the workspace.
+  it('refuses an existing directory before creating a temporary file', async () => {
+    // Preparation refuses the non-regular target before publication creates any temporary file.
     await mkdir(join(workspace, 'busy'), { recursive: true });
     await writeFile(join(workspace, 'busy', 'keep.txt'), 'x'); // non-empty ⇒ the rename onto it always fails
     await expect(sandboxed().writeFile('busy', 'data', {})).rejects.toBeInstanceOf(
@@ -698,6 +703,7 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
   it('denies protected paths under the `full` (unjailed) tier too — a tier-independent floor', async () => {
     // ADR-0057: protected paths hold "even where the fs jail would allow them" — `full` is the no-jail case.
     const fullTier = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'full',
       workspaceDir: workspace,
       readOnly: false,
@@ -838,7 +844,12 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
   it('is tier-independent — the full (unjailed) tier still refuses a `.ssh/` read', async () => {
     await mkdir(join(workspace, '.ssh'), { recursive: true });
     await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
-    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
+      tier: 'full',
+      workspaceDir: workspace,
+      readOnly: false,
+    });
     await expect(fs.readFile('.ssh/id_rsa', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
   });
 
@@ -993,13 +1004,19 @@ describe('createNodeFsCapability — tiers', () => {
 
   it('full tier reads outside the workspace (the power-user opt-in)', async () => {
     await writeFile(join(outside, 'anywhere.txt'), 'unjailed');
-    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
+      tier: 'full',
+      workspaceDir: workspace,
+      readOnly: false,
+    });
     expect((await fs.readFile(join(outside, 'anywhere.txt'), {})).content).toBe('unjailed');
   });
 
   it('project tier honours an extraRoots allowlist', async () => {
     await writeFile(join(outside, 'allowed.txt'), 'in-allowlist');
     const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'project',
       workspaceDir: workspace,
       extraRoots: [outside],
@@ -1013,6 +1030,7 @@ describe('createNodeFsCapability — tiers', () => {
     await mkdir(third, { recursive: true });
     await writeFile(join(third, 'secret.txt'), 'NOT ALLOWED');
     const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'project',
       workspaceDir: workspace,
       extraRoots: [outside], // `third` is deliberately NOT in the allowlist

@@ -31,6 +31,7 @@ describe('assembleToolEnv', () => {
     const nativeProcesses = nativeProcessesForInvocation(invocation);
     const exitListeners = process.listenerCount('exit');
     assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'project',
       workspaceDir: workspace,
@@ -45,6 +46,7 @@ describe('assembleToolEnv', () => {
   it('chat-read-only: fs reads a real file but write_file fail-closes as tool_unavailable; process is wired', async () => {
     await writeFile(join(workspace, 'a.txt'), 'hello');
     const { host, policy } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-only',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -58,6 +60,7 @@ describe('assembleToolEnv', () => {
 
   it('workflow-read-write: fs can write', async () => {
     const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'workflow-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -73,6 +76,7 @@ describe('assembleToolEnv', () => {
   it('does NOT wire egress or os for the read-only chat or the workflow-run profile', () => {
     for (const profile of ['chat-read-only', 'workflow-read-write'] as const) {
       const { host } = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile,
         fsScopeTier: 'sandboxed',
         workspaceDir: workspace,
@@ -84,6 +88,7 @@ describe('assembleToolEnv', () => {
 
   it('chat-read-write: the full-capability host wires fs-write + process + egress + os (ADR-0057)', async () => {
     const { host, policy } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -106,6 +111,7 @@ describe('assembleToolEnv', () => {
     await writeFile(join(outside, 'secret.txt'), 'SECRET');
     try {
       const { host } = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'chat-read-write',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -119,6 +125,7 @@ describe('assembleToolEnv', () => {
   it('chat-read-write: threads the egress credentialRef resolver into the egress arm (host-side bearer)', async () => {
     let resolvedRef: string | undefined;
     const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -145,6 +152,7 @@ describe('assembleToolEnv', () => {
       // chat-read-only + full ⇒ clamped to project (workspace-only): the OUTSIDE read is REJECTED, but an
       // IN-workspace read still works (so the clamp landed at project/workspace-only, not something stricter).
       const chat = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'chat-read-only',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -156,6 +164,7 @@ describe('assembleToolEnv', () => {
       expect((await chatFs.readFile('in.txt', {})).content).toBe('INSIDE');
       // workflow-read-write + full ⇒ NOT clamped (author-trusted): the outside read succeeds.
       const run = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'workflow-read-write',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -196,6 +205,7 @@ describe('wiredToolIds (advertise-filter)', () => {
 
   it('keeps egress (http/search) tools on the full-capability chat-read-write host', () => {
     const fullHost: ToolHost = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: '/tmp/relavium-advertise-full',

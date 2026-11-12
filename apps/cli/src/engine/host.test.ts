@@ -1,13 +1,29 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  mkdirSync,
+  symlinkSync,
+  linkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createInMemoryRunLeases } from '@relavium/core';
 import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
-import { createClient, createMediaReferenceStore, runMigrations } from '@relavium/db';
+import {
+  createClient,
+  createMediaReferenceStore,
+  runMigrations,
+  MediaWriteError,
+} from '@relavium/db';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCliHost, type CliMediaOptions } from './host.js';
+import * as stageInventory from './tool-host/fs-stage-inventory.js';
+import { nativeMetadataRuntimeRoot } from './tool-host/fs-native-metadata.js';
+import { createSyntheticPinnedStage } from './tool-host/fs-stage.test-support.js';
 
 /** A stand-in DURABLE store (not the in-memory reference) — what the gate path injects alongside a checkpointer. */
 const durableStore: RunStore = {
@@ -140,7 +156,10 @@ describe('createCliHost', () => {
     it('writes jailed under the saveToRoot and rejects a traversal escape', async () => {
       const root = mkdtempSync(join(tmpdir(), 'relavium-saveto-'));
       try {
-        const { mediaWrite } = createCliHost(undefined, { media: { saveToRoot: root } });
+        const { mediaWrite } = createCliHost(undefined, {
+          operatorHomeDir: root,
+          media: { saveToRoot: root },
+        });
         if (mediaWrite === undefined) {
           throw new Error('createCliHost must wire mediaWrite when a saveToRoot is given');
         }
@@ -161,13 +180,112 @@ describe('createCliHost', () => {
           /must be relative/,
         );
         // A PRE-ABORTED signal short-circuits the write cooperatively (the port's throwIfAborted) — the bytes
-        // never land. (wireSaveToPort's mkdir runs first, so the scope root may exist, but no file is written.)
+        // never land; the host checks cancellation before inventory/provisioning too.
         await expect(
           mediaWrite('aborted.bin', new Uint8Array([9]), AbortSignal.abort()),
         ).rejects.toThrow(/was aborted/);
         expect(existsSync(join(root, 'aborted.bin'))).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('missing trusted home refuses an actual write without provisioning or affecting host construction', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-home-'));
+      const saveToRoot = join(base, 'missing');
+      try {
+        const host = createCliHost(undefined, { media: { saveToRoot } });
+        expect(host.mediaWrite).toBeDefined();
+        expect(existsSync(saveToRoot)).toBe(false);
+        await expect(host.mediaWrite?.('out.bin', new Uint8Array([1]))).rejects.toThrow(
+          'trusted operator home is required',
+        );
+        expect(existsSync(saveToRoot)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+    it('denies permanent staging namespace in lexical and canonical views before lazy mkdir', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-stage-'));
+      try {
+        const reserved = join(base, '.relavium-fs-stage-v1.test');
+        mkdirSync(reserved);
+        const alias = join(base, 'ordinary-alias');
+        symlinkSync(reserved, alias, process.platform === 'win32' ? 'junction' : 'dir');
+        for (const saveToRoot of [join(reserved, 'new'), join(alias, 'new')]) {
+          const host = createCliHost(undefined, { operatorHomeDir: base, media: { saveToRoot } });
+          await expect(host.mediaWrite?.('out.bin', new Uint8Array([1]))).rejects.toThrow();
+          expect(existsSync(join(reserved, 'new'))).toBe(false);
+        }
+        const target = join(base, 'uncreated');
+        const host = createCliHost(undefined, {
+          operatorHomeDir: base,
+          media: { saveToRoot: target },
+        });
+        await expect(
+          host.mediaWrite?.('.relavium-fs-stage-v1.child/out.bin', new Uint8Array([1])),
+        ).rejects.toThrow();
+        expect(existsSync(target)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+    it('denies generated native runtime targets before provisioning or publication', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-runtime-'));
+      const saveToRoot = join(nativeMetadataRuntimeRoot, 'uncreated-save-test');
+      try {
+        const host = createCliHost(undefined, { operatorHomeDir: base, media: { saveToRoot } });
+        await expect(host.mediaWrite?.('out.bin', new Uint8Array([1]))).rejects.toThrow();
+        expect(existsSync(saveToRoot)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+    it.skipIf(process.platform === 'win32')(
+      'denies a hardlink alias from the synthetic POSIX stage inventory before save_to publication',
+      async () => {
+        const base = mkdtempSync(join(tmpdir(), 'relavium-save-alias-'));
+        try {
+          const saveToRoot = join(base, 'out');
+          mkdirSync(saveToRoot);
+          const { payload } = await createSyntheticPinnedStage(base, base);
+          const alias = join(saveToRoot, 'ordinary.bin');
+          linkSync(payload, alias);
+          const host = createCliHost(undefined, {
+            operatorHomeDir: base,
+            media: { saveToRoot },
+          });
+          const error: unknown = await host
+            .mediaWrite?.('ordinary.bin', new Uint8Array([1]))
+            .catch((failure: unknown) => failure);
+          expect(error).toBeInstanceOf(MediaWriteError);
+          if (error instanceof MediaWriteError) {
+            expect(error.message).toBe('save_to: the filesystem write failed');
+            expect(error.message).not.toContain(base);
+          }
+          expect(readFileSync(alias, 'utf8')).toBe('synthetic');
+          expect(readFileSync(payload, 'utf8')).toBe('synthetic');
+        } finally {
+          rmSync(base, { recursive: true, force: true });
+        }
+      },
+    );
+    it('uses one actual inventory snapshot through host provisioning and DB write checks', async () => {
+      const base = mkdtempSync(join(tmpdir(), 'relavium-save-inventory-'));
+      const capture = vi.spyOn(stageInventory, 'captureFsStageInventory');
+      try {
+        const host = createCliHost(undefined, {
+          operatorHomeDir: base,
+          media: { saveToRoot: join(base, 'out') },
+        });
+        expect(capture).not.toHaveBeenCalled();
+        await host.mediaWrite?.('a.bin', new Uint8Array([7]));
+        expect(capture).toHaveBeenCalledOnce();
+        expect(capture).toHaveBeenCalledWith(base, undefined);
+        expect([...readFileSync(join(base, 'out/a.bin'))]).toEqual([7]);
+      } finally {
+        capture.mockRestore();
+        rmSync(base, { recursive: true, force: true });
       }
     });
 
@@ -179,7 +297,10 @@ describe('createCliHost', () => {
       const saveToRoot = join(base, '.relavium', 'runs');
       try {
         expect(existsSync(saveToRoot)).toBe(false);
-        const { mediaWrite } = createCliHost(undefined, { media: { saveToRoot } });
+        const { mediaWrite } = createCliHost(undefined, {
+          operatorHomeDir: base,
+          media: { saveToRoot },
+        });
         if (mediaWrite === undefined) {
           throw new Error('createCliHost must wire mediaWrite when a saveToRoot is given');
         }

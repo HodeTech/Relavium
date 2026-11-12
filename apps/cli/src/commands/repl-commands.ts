@@ -47,6 +47,8 @@ export interface ReplCommandContext {
   /** `/thinking` (2.5.H) — toggle the collapsible reasoning ("thinking") panel's visibility. A pure UI-view flip
    *  (no session/engine effect); chat-only, like `/mode`/`/effort`. The keyboard `Ctrl+T` does the same. */
   readonly toggleReasoning: () => void | Promise<void>;
+  /** Open the interactive, read-only list of this instance's recent tool calls. */
+  readonly openDetails: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -238,6 +240,14 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // streams only in a live turn), like `/mode` / `/effort`.
     effect: 'read',
     run: (ctx) => ctx.toggleReasoning(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'details',
+    label: 'Tool details',
+    description: 'Inspect recent tool calls and their available previews.',
+    effect: 'read',
+    run: (ctx) => ctx.openDetails(),
     availableIn: ['chat'],
   },
   {

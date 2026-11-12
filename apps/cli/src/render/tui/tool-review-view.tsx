@@ -1,0 +1,212 @@
+import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
+import type { ChatStoreController } from './chat-store.js';
+import {
+  createMeasuredFrameAcknowledgement,
+  reviewTerminalFits,
+} from './measured-frame-acknowledgement.js';
+import { reviewInspected, toolReviewPage, toolReviewTarget } from './tool-review-model.js';
+import { escapeReviewCharacter, type ReviewPage } from './tool-review-projection.js';
+import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
+import { sanitizeUntrustedInline } from '../sanitize.js';
+
+const escaped = (text: string): string =>
+  [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+
+function inputDisplay(text: string): string {
+  let output = '',
+    count = 0;
+  const chars = [...text];
+  for (const char of chars) {
+    const token = escapeReviewCharacter(char, false);
+    if (output.length + token.length > 40) break;
+    output += token;
+    count++;
+  }
+  return (
+    output + (count < chars.length ? `… (${chars.length - count} input characters omitted)` : '')
+  );
+}
+
+/** Shared live review overlay. Input stays with the host's existing single owner. */
+export function ToolReviewHost(
+  props: Readonly<{
+    store: ChatStoreController;
+    size: { cols: number; rows: number };
+    hasCustody: () => boolean;
+    clipboard?: ClipboardWriter | undefined;
+  }>,
+): ReactElement | null {
+  const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const review = snapshot.review;
+  const app = useApp();
+  const { stdout } = useStdout();
+  const ref = useRef<DOMElement | null>(null);
+  const latest = useRef(props);
+  latest.current = props;
+  const pageRef = useRef<ReviewPage | undefined>(undefined);
+  const [blocked, setBlocked] = useState<typeof review>(undefined);
+  const [acknowledgement] = useState(() =>
+    createMeasuredFrameAcknowledgement({
+      current: () => props.store.getSnapshot().review,
+      getSize: () => latest.current.size,
+      hasCustody: () =>
+        latest.current.hasCustody() &&
+        stdout.writable &&
+        !stdout.destroyed &&
+        !stdout.writableEnded &&
+        !stdout.errored,
+      onAcknowledge: (current) => {
+        if (current !== undefined) props.store.acknowledgeReviewFrame(current, pageRef.current);
+      },
+    }),
+  );
+  useEffect(() => {
+    props.store.bindReviewVisibility(() =>
+      acknowledgement.visible(props.store.getSnapshot().review),
+    );
+    const clipboard = props.clipboard;
+    props.store.bindReviewClipboard(
+      clipboard === undefined
+        ? undefined
+        : async (text) => (await attemptClipboardWrite(clipboard, text)).kind === 'written',
+    );
+    return () => {
+      props.store.bindReviewVisibility(undefined);
+      props.store.bindReviewClipboard(undefined);
+    };
+  }, [props.store, props.clipboard, acknowledgement]);
+  useEffect(() => () => acknowledgement.dispose(), [acknowledgement]);
+  useLayoutEffect(() => {
+    acknowledgement.invalidate();
+    props.store.invalidateToolReview();
+  }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
+  const page =
+    review === undefined ? undefined : toolReviewPage(review, props.size.cols, props.size.rows);
+  pageRef.current = page;
+  useLayoutEffect(() => {
+    if (blocked !== undefined && blocked !== review) setBlocked(undefined);
+    if (review === undefined) acknowledgement.invalidate();
+    if (
+      review === undefined ||
+      !reviewTerminalFits(props.size) ||
+      blocked === review ||
+      page?.valid === false
+    )
+      return;
+    if (!acknowledgement.commit(review, ref.current, () => app.waitUntilRenderFlush()))
+      setBlocked(review);
+  });
+  if (review === undefined) return null;
+  if (!reviewTerminalFits(props.size))
+    return <Text>Terminal too small — resize to at least 80×24. Esc cancels.</Text>;
+  if (blocked === review || page?.valid === false)
+    return (
+      <Text>
+        Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.
+        Esc cancels.
+      </Text>
+    );
+  const document = review.document,
+    diff = document?.preview.diff;
+  const target = toolReviewTarget(review, props.size.cols, props.size.rows);
+  const calls = [...snapshot.toolDisplays.values()];
+  const selectedStart = Math.max(0, review.selected - 3);
+  const title =
+    review.kind === 'approval'
+      ? document?.preview.kind === 'saved-result'
+        ? 'Deliver saved result — no new filesystem operation'
+        : 'Review tool operation'
+      : 'Tool details';
+  return (
+    <Box ref={ref} flexDirection="column" flexShrink={0}>
+      <Text bold>{title}</Text>
+      {review.screen === 'list' ? (
+        <>
+          {calls.length === 0 && (
+            <Text>No retained live tools. Historical previews are unavailable.</Text>
+          )}
+          {calls
+            .slice(selectedStart, selectedStart + Math.max(1, props.size.rows - 8))
+            .map((call, index) => (
+              <Text key={call.callId}>
+                {review.selected === selectedStart + index ? '> ' : '  '}
+                {sanitizeUntrustedInline(call.toolId)} — {call.outcome}
+                {call.document === undefined ? ' · preview unavailable' : ''}
+              </Text>
+            ))}
+          <Text>↑/↓ choose · Enter details · Esc close</Text>
+        </>
+      ) : (
+        <>
+          {(target?.rows ?? []).map((row, index) => (
+            <Text key={`target-${index}`}>{row}</Text>
+          ))}
+          <Text>
+            {document?.changedLines ?? 0} changed lines · {document?.changedBytes ?? 0} changed
+            bytes · {document?.masks.length ?? 0} masked spans
+          </Text>
+          {diff !== undefined && (
+            <Text>
+              {diff.before === null ? 'New file · ' : ''}
+              {diff.before === '' ? 'Before: empty file · ' : ''}
+              {diff.after === '' ? 'After: empty file · ' : ''}endings {diff.beforeEndings} →{' '}
+              {diff.afterEndings}
+            </Text>
+          )}
+          {document?.masks.length !== 0 && (
+            <Text>
+              Approval includes masked bytes. Changed/flagged masks require [v], [r] and visible
+              inspection.
+            </Text>
+          )}
+          {(page?.rows ?? []).map((row, index) => (
+            <Text key={index}>{row || ' '}</Text>
+          ))}
+          <Text>
+            {page?.hiddenLines ?? 0} hidden lines · {page?.hiddenBytes ?? 0} hidden bytes ·{' '}
+            {review.reveal ? 'REVEALED (view only)' : 'masked view'}
+          </Text>
+          {review.kind === 'approval' && (
+            <Text>
+              {reviewInspected(review)
+                ? 'Inspection requirements met.'
+                : 'Approval disabled — reveal and display required spans.'}
+            </Text>
+          )}
+          {review.denial !== undefined && (
+            <Text>Reason to deny: {inputDisplay(review.denial)}█ · Enter deny · Esc abort</Text>
+          )}
+          {review.searching && (
+            <Text>Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find</Text>
+          )}
+          <Text>
+            {review.screen === 'card'
+              ? '[v] full view · [c] reason to deny'
+              : 'PgUp/PgDn pages · Home start · [r] reveal · [p] code points · / search · [c] copy masked page · [b] back'}
+          </Text>
+          {review.kind === 'approval' ? (
+            <>
+              <Text>
+                {snapshot.approval?.cacheable === true
+                  ? '[y] once · [a] always (this tool, this session) · [n] deny · Esc/Ctrl-C abort'
+                  : '[y] once · [n] deny · Esc/Ctrl-C abort'}
+              </Text>
+              <Text>Approval cannot override protected-path or permission denials.</Text>
+            </>
+          ) : (
+            <Text>Esc/Ctrl-C close · viewing never executes a tool</Text>
+          )}
+        </>
+      )}
+      {review.message !== '' && <Text>{escaped(review.message)}</Text>}
+    </Box>
+  );
+}

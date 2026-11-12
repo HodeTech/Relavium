@@ -12,6 +12,11 @@ interface Shape {
 }
 
 const SHAPES: readonly Shape[] = [
+  {
+    id: 'edit_file',
+    properties: ['path', 'old_string', 'new_string', 'replace_all'],
+    required: ['path', 'old_string', 'new_string'],
+  },
   { id: 'read_file', properties: ['path', 'glob', 'range'], required: ['path'] },
   { id: 'find_files', properties: ['path', 'glob'], required: ['glob'] },
   {

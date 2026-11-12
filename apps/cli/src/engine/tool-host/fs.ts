@@ -1,20 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Dirent } from 'node:fs';
-import {
-  lstat,
-  mkdir,
-  open,
-  opendir,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
   ToolDispatchError,
+  ToolPreparationError,
+  type FsPrepareWriteRequest,
+  type FsPreparedWrite,
+  type ToolHostCallOptions,
   ToolUnavailableError,
   type DirEntry,
   type DirListing,
@@ -24,11 +18,26 @@ import {
   type FsListOpts,
   type FsReadOpts,
   type FsScopeTier,
-  type FsWriteOpts,
 } from '@relavium/core';
 import { deepestExistingReal, type AbortSignalLike } from '@relavium/shared';
 
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../../process/native-process-owner.js';
 import { compileIgnore, parseIgnoreLines } from '../../render/tui/gitignore.js';
+import {
+  captureNativeRuntimeWriteFloor,
+  loadNativeMetadataWriteAdapter,
+} from './fs-native-metadata.js';
+import { captureRequiredCreationMask } from './fs-creation-mask.js';
+import { runNativeStage } from './fs-native-write.js';
+import {
+  captureFsStageInventory,
+  FsStageInventoryError,
+  normalizeNodeFsIdentity,
+  type FsStageInventory,
+} from './fs-stage-inventory.js';
 
 import {
   HostCapabilityError,
@@ -114,6 +123,9 @@ export interface NodeFsCapabilityConfig {
   readonly tier: FsScopeTier;
   /** The session/run working directory (absolute) — the jail anchor and the base for a relative tool path. */
   readonly workspaceDir: string;
+  /** Explicit host-owned operator home for the cross-process staging inventory. */
+  readonly operatorHomeDir?: string;
+  readonly nativeProcesses?: NativeProcessController;
   /** Host-issued exact private scratch descriptor; a plain tmp path cannot bypass a floor. */
   readonly scratch?: HostScratchRoot;
   /** Pre-admitted invocation policy; absent builds a trusted-host policy once at construction. */
@@ -190,10 +202,24 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
   const pending = new WeakMap<object, ReadEvidence>();
   const scopes = new WeakMap<object, ReadEvidence[]>();
   const staged = new WeakMap<object, ReadEvidence[]>();
+  const inventory = async (signal?: AbortSignalLike): Promise<FsStageInventory> => {
+    const home = owned().operatorHomeDir;
+    if (home === undefined) throw new FsStageInventoryError();
+    return captureFsStageInventory(home, signal);
+  };
   const capability: FsCapability = {
     readFile: (path, opts, signal) =>
       guarded(async () => {
-        const result = await readOne(owned(), maxReadBytes, maxGlobMatches, path, opts, signal);
+        const stage = await inventory(signal);
+        const result = await readOne(
+          owned(),
+          maxReadBytes,
+          maxGlobMatches,
+          path,
+          opts,
+          signal,
+          stage,
+        );
         if (result.value.range !== undefined) Object.freeze(result.value.range);
         Object.freeze(result.value);
         if (result.evidence !== undefined) pending.set(result.value, result.evidence);
@@ -219,13 +245,37 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
       staged.delete(scope);
     },
     findFiles: (path, opts, signal) =>
-      guarded(() => discover(owned(), path, opts, undefined, signal)),
+      guarded(async () =>
+        discover(owned(), path, opts, undefined, signal, await inventory(signal)),
+      ),
     searchFiles: (path, opts, signal) =>
-      guarded(() => discover(owned(), path, undefined, opts, signal)),
+      guarded(async () =>
+        discover(owned(), path, undefined, opts, signal, await inventory(signal)),
+      ),
+    prepareWrite: (request, signal) =>
+      guarded(async () =>
+        prepareWrite(owned(), capability, maxReadBytes, request, signal, await inventory(signal)),
+      ),
     writeFile: (path, data, opts, signal) =>
-      guarded(() => writeOne(owned(), path, data, opts, signal)),
+      guarded(async () => {
+        const prepared = await prepareWrite(
+          owned(),
+          capability,
+          maxReadBytes,
+          { kind: 'write', path, content: data, ...opts },
+          signal,
+          await inventory(signal),
+        );
+        try {
+          return await prepared.execute(signal);
+        } finally {
+          await prepared.release();
+        }
+      }),
     listDirectory: (path, opts, signal) =>
-      guarded(() => listOne(owned(), maxGlobMatches, path, opts, signal)),
+      guarded(async () =>
+        listOne(owned(), maxGlobMatches, path, opts, signal, await inventory(signal)),
+      ),
   };
   evidenceAccess.set(capability, (scope, path, digest, start, end) => {
     if (start < 0 || end < start) return false;
@@ -255,7 +305,11 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
     // A typed engine error (ToolUnavailableError = read-only fail-close → tool_unavailable; FsScopeDeniedError
     // = a scope denial → tool_denied) and an already-reason-only FsCapabilityError pass through verbatim. Any
     // RAW Node fs error (whose message/path leaks the absolute path) is replaced with a reason-only one (I3).
-    if (error instanceof ToolDispatchError || error instanceof HostCapabilityError) {
+    if (
+      error instanceof ToolDispatchError ||
+      error instanceof HostCapabilityError ||
+      error instanceof ToolPreparationError
+    ) {
       throw error;
     }
     throw new FsCapabilityError('the filesystem operation failed');
@@ -315,12 +369,13 @@ async function readOne(
   path: string,
   opts: FsReadOpts,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<{ value: FileRead; evidence?: ReadEvidence }> {
   throwIfAborted(signal);
   if (opts.glob === true) {
     if (opts.range !== undefined)
       throw new FsCapabilityError('read_file: range cannot be combined with glob');
-    return { value: await readGlob(config, maxReadBytes, maxGlobMatches, path, signal) };
+    return { value: await readGlob(config, maxReadBytes, maxGlobMatches, path, signal, stage) };
   }
   assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
   const inScope = buildScopeChecker(config);
@@ -337,6 +392,8 @@ async function readOne(
     rejectAliasedRead(config, real),
     opts.range,
     signal,
+    undefined,
+    stage,
   );
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
@@ -396,8 +453,9 @@ async function readGlob(
   maxGlobMatches: number,
   pattern: string,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<FileRead> {
-  const matches = await collectGlobFiles(config, maxGlobMatches, pattern, signal);
+  const matches = await collectGlobFiles(config, maxGlobMatches, pattern, signal, stage);
   if (matches.length === 0) {
     throw new FsCapabilityError('read_file: the glob matched no files');
   }
@@ -418,6 +476,8 @@ async function readGlob(
       rejectAliasedRead(config, m.real),
       undefined,
       signal,
+      undefined,
+      stage,
     );
     if (result.kind === 'binary') {
       sourceBytes += result.fullReadBytes;
@@ -520,6 +580,7 @@ export async function readJailedFile(
   range?: FsReadRange,
   signal?: AbortSignalLike,
   budget?: { remaining: number },
+  stage?: FsStageInventory,
 ): Promise<JailedRead> {
   throwIfAborted(signal);
   // Windows ignores O_NOFOLLOW. Refuse an already-planted final link explicitly there;
@@ -546,6 +607,7 @@ export async function readJailedFile(
     throw error;
   });
   try {
+    stage?.assertIdentity(await handle.stat({ bigint: true }));
     const readChunk = async (
       buffer: Buffer,
       offset: number,
@@ -712,10 +774,24 @@ export async function readJailedFile(
  * `.GIT` variant must not slip through), AND strips trailing dots/spaces — Win32 silently drops those at open
  * time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on the REAL protected target while the
  * unfolded name missed the set. Folding always (not only on win32) over-denies a genuinely-distinct `.git.` or
- * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The realpath re-check in {@link writeOne}
+ * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The canonical target re-check in {@link prepareWrite}
  * additionally canonicalizes a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) of an EXISTING target.
  */
-const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium', '.ssh']);
+/** Permanently reserved for host-owned ADR-0125 staging, including before any stage exists. */
+export const FS_STAGE_DIRECTORY = '.relavium-fs-stage-v1';
+/** A reserved stage component is never model filesystem authority. */
+export function isFsStagePath(path: string): boolean {
+  return path.split(/[\\/]/).some((part) => {
+    const folded = foldPathComponent(part);
+    return folded === FS_STAGE_DIRECTORY || folded.startsWith(`${FS_STAGE_DIRECTORY}.`);
+  });
+}
+const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
+  '.git',
+  '.relavium',
+  '.ssh',
+  FS_STAGE_DIRECTORY,
+]);
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bashrc',
   '.bash_profile',
@@ -796,6 +872,7 @@ function assertNotProtectedPath(absoluteTarget: string, policy?: FsPathPolicy): 
 const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
   '.relavium',
+  FS_STAGE_DIRECTORY,
   '.aws',
   '.kube',
   '.azure',
@@ -834,6 +911,7 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
  * every surface.
  */
 export function isSensitiveReadPath(absoluteTarget: string): boolean {
+  if (isFsStagePath(absoluteTarget)) return true;
   const folded = absoluteTarget.split(/[\\/]/).map(foldPathComponent);
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
@@ -884,120 +962,434 @@ function assertNotSensitiveReadPath(absoluteTarget: string, policy?: FsPathPolic
   }
 }
 
-async function writeOne(
-  config: NodeFsCapabilityConfig,
-  path: string,
-  data: string,
-  opts: FsWriteOpts,
+interface PreparedSnapshot {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly uid: bigint;
+  readonly gid: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly digest: string;
+  readonly text: string;
+}
+
+async function snapshotPrepared(
+  target: string,
+  maxBytes: number,
   signal: AbortSignalLike | undefined,
-): Promise<FileWritten> {
-  if (config.readOnly) {
-    // The 2.5.A chat profile wires fs READ-only; the write arm fail-closes as `tool_unavailable` (EA1) until
-    // ADR-0057/2.5.E lands the per-tool approval floor that makes a write-capable chat host safe.
-    throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
+  stage: FsStageInventory,
+): Promise<PreparedSnapshot | null> {
+  await assertNotSymlink(target);
+  const handle = await open(
+    target,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: unknown) => {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    if (errnoCode(error) === 'ELOOP' || errnoCode(error) === 'ENOTDIR')
+      throw new FsScopeDeniedError('refusing a symlink or unsafe target');
+    throw error;
+  });
+  if (handle === undefined) return null;
+  try {
+    const info = await handle.stat({ bigint: true });
+    stage.assertIdentity(info);
+    if (info.isDirectory()) throw new FsCapabilityError('the target is a directory');
+    if (!info.isFile() || info.nlink !== 1n)
+      throw new FsScopeDeniedError('refusing a non-regular or hard-linked file');
+    if (info.size > BigInt(maxBytes)) throw new ToolPreparationError('diff_limit');
+    const bytes = Buffer.alloc(Number(info.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      throwIfAborted(signal);
+      const result = await handle.read(
+        bytes,
+        offset,
+        Math.min(65536, bytes.length - offset),
+        offset,
+      );
+      if (result.bytesRead === 0) throw new ToolPreparationError('stale_file');
+      offset += result.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      info.dev !== after.dev ||
+      info.ino !== after.ino ||
+      info.size !== after.size ||
+      info.mtimeNs !== after.mtimeNs ||
+      info.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n
+    )
+      throw new ToolPreparationError('stale_file');
+    if (bytes.includes(0)) throw new ToolPreparationError('unsupported_text');
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new ToolPreparationError('unsupported_text');
+    }
+    return {
+      dev: info.dev,
+      ino: info.ino,
+      mode: info.mode,
+      uid: info.uid,
+      gid: info.gid,
+      size: info.size,
+      mtimeNs: info.mtimeNs,
+      ctimeNs: info.ctimeNs,
+      digest: createHash('sha256').update(bytes).digest('hex'),
+      text,
+    };
+  } finally {
+    await handle.close();
   }
+}
+function equalSnapshot(a: PreparedSnapshot | null, b: PreparedSnapshot | null): boolean {
+  return a === null
+    ? b === null
+    : b !== null &&
+        a.dev === b.dev &&
+        a.ino === b.ino &&
+        a.mode === b.mode &&
+        a.uid === b.uid &&
+        a.gid === b.gid &&
+        a.size === b.size &&
+        a.mtimeNs === b.mtimeNs &&
+        a.ctimeNs === b.ctimeNs &&
+        a.digest === b.digest;
+}
+
+async function prepareWrite(
+  config: NodeFsCapabilityConfig,
+  capability: FsCapability,
+  maxBytes: number,
+  request: FsPrepareWriteRequest,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
+): Promise<FsPreparedWrite> {
+  if (config.readOnly)
+    throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
   throwIfAborted(signal);
-  // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
-  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the (realDir-)jailed
-  // finalTarget so a parent symlink cannot resolve INTO a protected directory.
-  assertNotProtectedPath(resolve(config.workspaceDir, path), config.pathPolicy);
+  if (request.path.length > 4096 || Buffer.byteLength(request.path, 'utf8') > 4096)
+    throw new FsCapabilityError('write_file: the target path is too long');
+  if (Buffer.from(request.path, 'utf8').toString('utf8') !== request.path)
+    throw new ToolPreparationError('unsupported_text');
+  const nativeFloor = await captureNativeRuntimeWriteFloor();
+  const lexical = lexicalTarget(config, request.path);
+  nativeFloor.assertPath(lexical);
+  assertNotProtectedPath(lexical, config.pathPolicy);
+  assertNotSensitiveReadPath(lexical, config.pathPolicy);
   const inScope = buildScopeChecker(config);
-  const { realDir, finalTarget } = await jailWriteTarget(
-    config,
-    inScope,
-    path,
-    opts.createDirs === true,
-  );
-  await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
-  assertNotProtectedPath(finalTarget, config.pathPolicy); // re-check the jailed target against the floor
-  // Belt-and-suspenders for Win32 final-component name-aliasing: `finalTarget` keeps the LEXICAL basename
-  // (jailWriteTarget only realpath's the parent). If the target already EXISTS, its realpath is the canonical
-  // long name, so a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) or an NTFS stream path that folds to
-  // a non-protected basename is caught HERE. A not-yet-existing target has no alias, so the checks above suffice.
-  const canonicalTarget = await realpath(finalTarget).catch(() => undefined);
-  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget, config.pathPolicy);
-  throwIfAborted(signal);
-  const bytes = Buffer.from(data, 'utf8');
-  if (opts.append === true) {
-    // Append cannot use the atomic temp+rename (that replaces, never appends). Open with O_NOFOLLOW so the
-    // kernel refuses a final-component symlink AT OPEN TIME — closing the TOCTOU window between the
-    // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of
-    // scope). A symlink there fails ELOOP/ENOTDIR, which we map to the FATAL `tool_denied` (not the retryable
-    // `tool_failed` `guarded` would otherwise assign a raw fs error). NOTE: `O_NOFOLLOW` is `0` on Windows (no
-    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case. `O_NONBLOCK` opens
-    // a FIFO/device WITHOUT blocking — a reader-less FIFO would otherwise hang the write FOREVER (fs.open takes
-    // no AbortSignal, so even the EA7 mid-turn abort could not cancel it), and the fstat below fails it closed.
-    // The write arm now also serves the approval-gated `chat-read-write` profile (ADR-0057), not only the
-    // author-trusted workflow-run path; the residual Windows-only symlink-swap race is flagged for the mandatory
-    // ADR-0057 security review (Step 5) to re-affirm as accepted — the protected-paths floor + fs jail still hold.
-    const handle = await open(
-      finalTarget,
-      constants.O_WRONLY |
-        constants.O_APPEND |
-        constants.O_CREAT |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-    ).catch((error: unknown) => {
-      const code = errnoCode(error);
-      if (code === 'ELOOP' || code === 'ENOTDIR') {
-        throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
-      }
-      if (code === 'ENXIO' || code === 'EOPNOTSUPP' || code === 'ENODEV') {
-        // A non-regular special file that fails the OPEN itself rather than reaching the fstat: O_WRONLY |
-        // O_NONBLOCK on a reader-less FIFO returns ENXIO immediately (instead of blocking forever); a socket
-        // special file returns ENXIO (Linux) or EOPNOTSUPP (macOS); a device with no driver returns ENODEV. All
-        // are targets we refuse anyway — surface the same fatal denial the post-open fstat gives, not a raw
-        // (retryable, path-leaking) fs error.
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
-        );
-      }
+  const parent = dirname(lexical);
+  const deepest = await deepestExistingReal(parent, {
+    realpath,
+    lstat,
+    dirname,
+    isMissing: (error) => errnoCode(error) === 'ENOENT',
+  });
+  nativeFloor.assertPath(deepest);
+  assertInScope(inScope, deepest);
+  assertFsPolicyPath(config.pathPolicy, lexical, deepest);
+  assertNotProtectedPath(deepest, config.pathPolicy);
+  const ancestor = await stat(deepest, { bigint: true });
+  const parentReal = await realpath(parent).catch((error: unknown) => {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (parentReal === undefined && (request.kind === 'edit' || request.createDirs !== true))
+    throw new FsCapabilityError(
+      'write_file: the target directory does not exist (set createDirs to create it)',
+    );
+  const target = parentReal === undefined ? undefined : join(parentReal, basename(lexical));
+  let canonicalTarget: string | undefined;
+  if (target !== undefined) {
+    nativeFloor.assertPath(target);
+    assertInScope(inScope, parentReal!);
+    assertFsPolicyPath(config.pathPolicy, lexical, target);
+    assertNotProtectedPath(target, config.pathPolicy);
+    assertNotSensitiveReadPath(target, config.pathPolicy);
+    canonicalTarget = await realpath(target).catch((error: unknown) => {
+      if (errnoCode(error) === 'ENOENT') return undefined;
       throw error;
     });
-    try {
-      // Race-free guards on the OPENED inode (same fd — no TOCTOU vs. a path re-stat): (1) refuse a NON-REGULAR
-      // target — a reader-less FIFO/device would hang the write forever (O_NONBLOCK above returned the fd so this
-      // fstat can run); (2) refuse a HARD-LINKED regular file (st.nlink > 1) — lstat, realpath, and the
-      // protected-path fold all see only this one in-scope, non-symlink name, but the shared inode may ALSO be a
-      // name outside the jail or a protected file (~/.ssh/authorized_keys), and O_APPEND would write straight
-      // through to it, defeating the protected-paths floor. Both mirror the read-side fd guards (readJailedFile).
-      const st = await handle.stat();
-      if (!st.isFile()) {
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
-        );
-      }
-      if (st.nlink > 1) {
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a hard-linked file (its content may be shared with a file outside the sandbox)',
-        );
-      }
-      await handle.write(bytes);
-    } finally {
-      await handle.close();
+    if (canonicalTarget !== undefined) {
+      nativeFloor.assertPath(canonicalTarget);
+      assertNotProtectedPath(canonicalTarget, config.pathPolicy);
+      assertNotSensitiveReadPath(canonicalTarget, config.pathPolicy);
+      stage.assertIdentity(await stat(canonicalTarget, { bigint: true }));
     }
-    return { path: relWorkspace(config, finalTarget), bytesWritten: bytes.length };
   }
-  // Atomic publish: a unique temp in the same (in-root) dir, then rename — never follows a final-component
-  // symlink, and a partial write never lands at the target (mirrors media-write.ts).
-  const tmp = join(realDir, `.relavium-write.${randomUUID()}.tmp`);
-  let published = false;
+  const proposedText = request.kind === 'write' ? request.content : request.newString;
+  if (Buffer.byteLength(proposedText, 'utf8') > maxBytes)
+    throw new ToolPreparationError('diff_limit');
+  if (Buffer.from(proposedText, 'utf8').toString('utf8') !== proposedText)
+    throw new ToolPreparationError('unsupported_text');
+  if (config.operatorHomeDir === undefined)
+    throw new HostDeniedError('filesystem metadata protection is unavailable');
+  const native = await loadNativeMetadataWriteAdapter();
+  const before =
+    target === undefined ? null : await snapshotPrepared(target, maxBytes, signal, stage);
+  let after: string;
+  if (request.kind === 'edit') {
+    if (before === null || target === undefined || request.readScope === undefined)
+      throw new ToolPreparationError('read_required');
+    if (request.oldString.length === 0) throw new ToolPreparationError('match_not_found');
+    if (
+      Buffer.from(request.oldString, 'utf8').toString('utf8') !== request.oldString ||
+      Buffer.from(request.newString, 'utf8').toString('utf8') !== request.newString
+    )
+      throw new ToolPreparationError('unsupported_text');
+    const positions: number[] = [];
+    let from = 0;
+    while (true) {
+      const found = before.text.indexOf(request.oldString, from);
+      if (found < 0) break;
+      positions.push(found);
+      if (positions.length > 100_000) throw new ToolPreparationError('diff_limit');
+      if (positions.length % 1024 === 0) {
+        throwIfAborted(signal);
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+        throwIfAborted(signal);
+      }
+      from = found + request.oldString.length;
+    }
+    if (positions.length === 0) throw new ToolPreparationError('match_not_found');
+    if (positions.length > 1 && request.replaceAll !== true)
+      throw new ToolPreparationError('match_not_unique');
+    let previousEnd = 0;
+    let byteCursor = 0;
+    let checked = 0;
+    for (const position of positions) {
+      if (++checked % 1024 === 0) {
+        throwIfAborted(signal);
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+        throwIfAborted(signal);
+      }
+      byteCursor += Buffer.byteLength(before.text.slice(previousEnd, position), 'utf8');
+      const start = byteCursor;
+      const end = start + Buffer.byteLength(request.oldString, 'utf8');
+      if (
+        !hasObservedRead(
+          capability,
+          request.readScope,
+          canonicalTarget ?? target,
+          before.digest,
+          start,
+          end,
+        )
+      )
+        throw new ToolPreparationError('unobserved_match');
+      byteCursor = end;
+      previousEnd = position + request.oldString.length;
+    }
+    const finalBytes =
+      Number(before.size) +
+      positions.length *
+        (Buffer.byteLength(request.newString, 'utf8') -
+          Buffer.byteLength(request.oldString, 'utf8'));
+    if (finalBytes > maxBytes) throw new ToolPreparationError('diff_limit');
+    after = before.text.split(request.oldString).join(request.newString);
+  } else after = request.append === true ? (before?.text ?? '') + request.content : request.content;
+  if (Buffer.byteLength(after, 'utf8') > maxBytes) throw new ToolPreparationError('diff_limit');
+  if (after.includes('\0') || Buffer.from(after, 'utf8').toString('utf8') !== after)
+    throw new ToolPreparationError('unsupported_text');
+  const processes = config.nativeProcesses ?? createNativeProcessController();
+  const creationMask = async (maskSignal?: AbortSignalLike): Promise<number | undefined> => {
+    const required = native.requiresCreationMaskProbe();
+    if (typeof required !== 'boolean' || (required && process.platform !== 'darwin'))
+      throw new HostDeniedError('filesystem creation policy unavailable');
+    return captureRequiredCreationMask(processes, required, maskSignal);
+  };
+  const initialMask = await creationMask(signal);
+  let nativePrepared: unknown;
+  let preparationOwned = false;
   try {
-    // O_CREAT|O_EXCL|O_WRONLY (the 'wx' flag) plus O_NOFOLLOW — no-follow PARITY with the append path: the open
-    // refuses to follow a final-component symlink even though the random temp name already makes a pre-placed
-    // symlink there implausible (defense in depth). The residual gap is a PARENT-dir swap between `jailWriteTarget`'s
-    // realpath and this write — not closable in Node (no `openat`); the write arm now also serves the
-    // approval-gated `chat-read-write` profile (ADR-0057), so that Windows-only residual is flagged for the
-    // mandatory ADR-0057 security review (Step 5), with the protected-paths floor + fs jail still in force.
-    await writeFile(tmp, bytes, {
-      flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    });
-    await rename(tmp, finalTarget);
-    published = true;
-  } finally {
-    if (!published) await rm(tmp, { force: true }).catch(() => undefined);
+    const nativeTarget = target ?? join(deepest, `.relavium-fs-stage-v1.prepare.${randomUUID()}`);
+    nativePrepared =
+      before === null
+        ? await native.prepareNewMetadata(nativeTarget, initialMask)
+        : await native.prepareExistingMetadata(
+            nativeTarget,
+            request.kind === 'write' && request.append === true,
+            initialMask,
+          );
+    preparationOwned = true;
+    if (before !== null) {
+      const identity = await native.existingMetadataIdentity(nativePrepared);
+      const observedIdentity = normalizeNodeFsIdentity(before);
+      if (
+        typeof identity !== 'object' ||
+        identity === null ||
+        !('dev' in identity) ||
+        !('ino' in identity) ||
+        identity.dev !== observedIdentity.dev.toString() ||
+        identity.ino !== observedIdentity.ino.toString()
+      ) {
+        throw new ToolPreparationError('stale_file');
+      }
+    }
+  } catch (error) {
+    if (preparationOwned) {
+      try {
+        if (before === null) await native.releaseNewMetadata(nativePrepared);
+        else await native.releaseExistingMetadata(nativePrepared);
+      } catch {
+        throw new HostDeniedError('filesystem metadata cleanup failed');
+      }
+    }
+    if (error instanceof ToolPreparationError) throw error;
+    throw new HostDeniedError('filesystem metadata preparation refused');
   }
-  return { path: relWorkspace(config, finalTarget), bytesWritten: bytes.length };
+  let used = false;
+  let pending: Promise<FileWritten> | undefined;
+  let released = false;
+  const run = async (executeSignal?: AbortSignalLike): Promise<FileWritten> => {
+    throwIfAborted(executeSignal);
+    if (config.operatorHomeDir === undefined) throw new FsStageInventoryError();
+    const executionStage = await captureFsStageInventory(config.operatorHomeDir, executeSignal);
+    const executionNativeFloor = await captureNativeRuntimeWriteFloor();
+    executionNativeFloor.assertPath(lexical);
+    const freshDeepest = await deepestExistingReal(parent, {
+      realpath,
+      lstat,
+      dirname,
+      isMissing: (error) => errnoCode(error) === 'ENOENT',
+    });
+    executionNativeFloor.assertPath(freshDeepest);
+    const freshAncestor = await stat(freshDeepest, { bigint: true });
+    if (
+      freshDeepest !== deepest ||
+      ancestor.dev !== freshAncestor.dev ||
+      ancestor.ino !== freshAncestor.ino
+    )
+      throw new ToolPreparationError('stale_file');
+    const freshParent = await realpath(parent).catch((error: unknown) => {
+      if (errnoCode(error) === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (freshParent !== parentReal) throw new ToolPreparationError('stale_file');
+    if (
+      target !== undefined &&
+      !equalSnapshot(
+        before,
+        await snapshotPrepared(target, maxBytes, executeSignal, executionStage),
+      )
+    )
+      throw new ToolPreparationError('stale_file');
+    if (target === undefined) {
+      const missing: string[] = [];
+      let cursor = parent;
+      while (true) {
+        try {
+          await lstat(cursor);
+          break;
+        } catch (error) {
+          if (errnoCode(error) !== 'ENOENT') throw error;
+          missing.push(cursor);
+          const next = dirname(cursor);
+          if (next === cursor) throw new HostDeniedError('filesystem creation policy unavailable');
+          cursor = next;
+        }
+      }
+      for (const directory of missing.reverse()) {
+        throwIfAborted(executeSignal);
+        const mask = await creationMask(executeSignal);
+        try {
+          await native.recheckNewMetadata(nativePrepared, mask);
+        } catch {
+          throw new HostDeniedError('filesystem creation policy unavailable');
+        }
+        executionNativeFloor.assertPath(directory);
+        assertNotProtectedPath(directory, config.pathPolicy);
+        assertFsPolicyPath(config.pathPolicy, lexical, directory);
+        try {
+          await mkdir(directory, { mode: 0o700 });
+        } catch (error) {
+          if (errnoCode(error) !== 'EEXIST') throw error;
+        }
+        const actual = await realpath(directory);
+        executionNativeFloor.assertPath(actual);
+        assertInScope(inScope, actual);
+        assertNotProtectedPath(actual, config.pathPolicy);
+        assertFsPolicyPath(config.pathPolicy, lexical, actual);
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new ToolPreparationError('stale_file');
+        try {
+          await native.recheckNewMetadata(nativePrepared, mask);
+        } catch {
+          throw new HostDeniedError('filesystem creation policy unavailable');
+        }
+      }
+    }
+    const jailed = await jailWriteTarget(config, inScope, request.path, false);
+    const finalTarget = jailed.finalTarget;
+    executionNativeFloor.assertPath(finalTarget);
+    assertNotProtectedPath(finalTarget, config.pathPolicy);
+    assertNotSensitiveReadPath(finalTarget, config.pathPolicy);
+    await assertNotSymlink(finalTarget);
+    if (target !== undefined && finalTarget !== target)
+      throw new ToolPreparationError('stale_file');
+    if (
+      !equalSnapshot(
+        before,
+        await snapshotPrepared(finalTarget, maxBytes, executeSignal, executionStage),
+      )
+    )
+      throw new ToolPreparationError('stale_file');
+    throwIfAborted(executeSignal);
+    if (target === undefined) {
+      const mask = await creationMask(executeSignal);
+      try {
+        await native.recheckNewMetadata(nativePrepared, mask);
+        await native.releaseNewMetadata(nativePrepared);
+        nativePrepared = await native.prepareNewMetadata(finalTarget, mask);
+      } catch {
+        throw new HostDeniedError('filesystem creation policy unavailable');
+      }
+    }
+    await runNativeStage({
+      adapter: native,
+      prepared: nativePrepared,
+      before: before === null ? null : Buffer.from(before.text, 'utf8'),
+      after: Buffer.from(after, 'utf8'),
+      home: config.operatorHomeDir,
+      nonce: randomUUID().replaceAll('-', ''),
+      creationMask: async () => creationMask(executeSignal),
+      ...(executeSignal === undefined ? {} : { signal: executeSignal }),
+    });
+    return {
+      path: relWorkspace(config, finalTarget),
+      bytesWritten:
+        request.kind === 'write'
+          ? Buffer.byteLength(request.content, 'utf8')
+          : Buffer.byteLength(after, 'utf8'),
+    };
+  };
+  return Object.freeze({
+    path: relWorkspace(config, target ?? lexical),
+    before: before?.text ?? null,
+    after,
+    execute: (executeSignal?: AbortSignalLike, options?: ToolHostCallOptions) => {
+      if (used || released)
+        return Promise.reject(new FsCapabilityError('prepared write is no longer available'));
+      used = true;
+      const producer = (): Promise<FileWritten> => guarded(() => run(executeSignal));
+      pending = options?.retainWork === undefined ? producer() : options.retainWork(producer);
+      return pending;
+    },
+    release: async () => {
+      released = true;
+      await pending?.catch(() => undefined);
+      try {
+        if (before === null) await native.releaseNewMetadata(nativePrepared);
+        else await native.releaseExistingMetadata(nativePrepared);
+      } catch {
+        throw new HostDeniedError('filesystem metadata cleanup failed');
+      }
+    },
+  });
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -1010,6 +1402,7 @@ async function listOne(
   path: string,
   opts: FsListOpts,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<DirListing> {
   throwIfAborted(signal);
   assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
@@ -1020,6 +1413,7 @@ async function listOne(
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   assertNotSensitiveReadPath(realRoot, config.pathPolicy);
   const rootInfo = await stat(realRoot);
+  stage.assertIdentity(await stat(realRoot, { bigint: true }));
   if (!rootInfo.isDirectory()) {
     throw new FsCapabilityError('list_directory: the path is not a directory');
   }
@@ -1047,6 +1441,9 @@ async function listOne(
         return true;
       const info = await lstat(real).catch(() => undefined);
       if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
+      stage.assertIdentity(await lstat(real, { bigint: true }));
+      if (realResolved !== undefined)
+        stage.assertIdentity(await stat(realResolved, { bigint: true }));
       if (entries.length >= cap) {
         truncated = true;
         return false;
@@ -1101,21 +1498,24 @@ async function discover(
   path: string,
   find: FsFindOpts,
   search: undefined,
-  signal?: AbortSignalLike,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<FsFindResult>;
 async function discover(
   config: NodeFsCapabilityConfig,
   path: string,
   find: undefined,
   search: FsSearchOpts,
-  signal?: AbortSignalLike,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<FsSearchResult>;
 async function discover(
   config: NodeFsCapabilityConfig,
   path: string,
   find: FsFindOpts | undefined,
   search: FsSearchOpts | undefined,
-  signal?: AbortSignalLike,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<FsFindResult | FsSearchResult> {
   throwIfAborted(signal);
   const glob = find?.glob ?? search?.glob;
@@ -1130,6 +1530,7 @@ async function discover(
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   const root = await jailExisting(config, inScope, path);
   assertNotSensitiveReadPath(root, config.pathPolicy);
+  stage.assertIdentity(await stat(root, { bigint: true }));
   if (!(await stat(root)).isDirectory())
     throw new FsCapabilityError('discovery: the path is not a directory');
   const stats: {
@@ -1175,6 +1576,8 @@ async function discover(
         rejectAliasedRead(config, real),
         undefined,
         signal,
+        undefined,
+        stage,
       );
       if (read.kind !== 'file') {
         stop('ignore');
@@ -1201,6 +1604,7 @@ async function discover(
       ignoreWork += lines.reduce((sum, line) => sum + line.length + 1, 0);
     } catch (error) {
       throwIfAborted(signal);
+      if (error instanceof FsStageInventoryError) throw error;
       if (present || errnoCode(error) !== 'ENOENT') {
         stats.unreadable++;
         stop('ignore');
@@ -1313,6 +1717,7 @@ async function discover(
           ignored.ignores(workspaceRel, entry.isDirectory())
         )
           continue;
+        stage.assertIdentity(await lstat(candidate, { bigint: true }));
         if (entry.isDirectory()) {
           if (next.depth >= SCAN_DEPTH) {
             stop('depth');
@@ -1330,6 +1735,7 @@ async function discover(
         }
         if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) continue;
         assertFsPolicyPath(config.pathPolicy, candidate, real);
+        stage.assertIdentity(await stat(real, { bigint: true }));
         const info = await stat(real).catch(() => undefined);
         if (info === undefined) {
           stats.unreadable++;
@@ -1353,9 +1759,12 @@ async function discover(
               rejectAliasedRead(config, real),
               undefined,
               signal,
+              undefined,
+              stage,
             );
-          } catch {
+          } catch (error) {
             throwIfAborted(signal);
+            if (error instanceof FsStageInventoryError) throw error;
             stats.unreadable++;
             stats.incomplete = true;
             break;
@@ -1396,9 +1805,11 @@ async function discover(
             undefined,
             signal,
             sourceBudget,
+            stage,
           );
         } catch (error) {
           throwIfAborted(signal);
+          if (error instanceof FsStageInventoryError) throw error;
           if (error instanceof FsReadBudgetError) {
             stop('bytes');
             break;
@@ -1735,6 +2146,7 @@ async function collectGlobFiles(
   maxMatches: number,
   pattern: string,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<{ real: string; rel: string; size: number; mtimeMs: number }[]> {
   // Refuse the original UNC spelling before portable glob separators erase its provenance.
   lexicalTarget(config, pattern);
@@ -1747,6 +2159,7 @@ async function collectGlobFiles(
   assertNotSensitiveReadPath(lexicalTarget(config, prefix), config.pathPolicy);
   const base = await jailExisting(config, inScope, prefix);
   assertNotSensitiveReadPath(base, config.pathPolicy);
+  stage.assertIdentity(await stat(base, { bigint: true }));
   const matcher = compileGlob(slash < 0 ? portablePattern : portablePattern.slice(slash + 1));
   const out: { real: string; rel: string; size: number; mtimeMs: number }[] = [];
   let matchCap = false;
@@ -1773,6 +2186,7 @@ async function collectGlobFiles(
       // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
       const info = await stat(realResolved).catch(() => undefined);
       if (info === undefined || !info.isFile()) return true;
+      stage.assertIdentity(await stat(realResolved, { bigint: true }));
       if (out.length >= maxMatches) {
         matchCap = true;
         return false;

@@ -260,6 +260,8 @@ export interface SessionUsageWriter {
 }
 
 export interface BuiltChatSession {
+  /** Private trusted host input for model filesystem guards; never part of SessionContext/history. */
+  readonly operatorHomeDir?: string;
   /** Creation owner for surface persistence/teardown; absent in an explicitly unowned embedding. */
   readonly hostOwner?: SessionHostOwner;
   readonly workOwner?: SessionWorkOwner;
@@ -355,6 +357,7 @@ type SessionRuntimeOptions = Pick<
   | 'now'
   | 'providers'
   | 'toolHost'
+  | 'operatorHomeDir'
   | 'fsPolicy'
   | 'nativeProcesses'
   | 'workOwner'
@@ -479,6 +482,7 @@ function buildSessionRuntime(
     profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
+    ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
     ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
@@ -696,6 +700,12 @@ function buildSessionRuntime(
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
       return {
+        inspectReplay: async (slot, toolId, redactedArgs) => {
+          // A retained result is admitted only while this instance still owns healthy durability.
+          // The read makes no claim; its Promise still retains the actual journal producer.
+          assertDurableDispatch(toolId);
+          return await (port ?? unwiredEffectJournal()).inspectReplay(slot, toolId, redactedArgs);
+        },
         prepare: async (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
           // A cached idle-command key is not a durability acknowledgement. Check at the actual effect
           // boundary, including when cost persistence failed after this model attempt was admitted.
@@ -1108,6 +1118,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       context,
       ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -1469,6 +1480,7 @@ export async function buildResumedChatSession(
       context,
       ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,

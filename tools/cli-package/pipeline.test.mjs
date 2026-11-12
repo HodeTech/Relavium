@@ -120,5 +120,5 @@ test('the shipped prepack lifecycle is the sole orchestrated build and closure g
     readFileSync(new URL('../../apps/cli/package.json', import.meta.url), 'utf8'),
   );
   assert.equal(metadata.scripts.prepack, 'node ../../tools/cli-package/prepack.mjs');
-  assert.equal(metadata.scripts.build, 'tsup');
+  assert.equal(metadata.scripts.build, 'node ../../tools/native-fs/build.mjs && tsup');
 });

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { readUstar } from './ustar.mjs';
+import { NATIVE_TARGETS } from '../native-fs/catalog.mjs';
 
 // This inspects the pinned pnpm pack dialect, not arbitrary tar archives. There
 // is no extraction and no fallback to a more permissive platform tar executable.
@@ -119,6 +120,13 @@ export function isPublicRuntimeDependency(name, requirement) {
 /** @param {string} path */
 export function assertPublicPackagePath(path) {
   if (
+    path === 'package/dist/native-fs/loader.cjs' ||
+    path === 'package/dist/native-fs/native-assets.json' ||
+    path === 'package/dist/native-fs/THIRD_PARTY_NOTICES.txt' ||
+    NATIVE_TARGETS.some((target) => path === `package/dist/native-fs/${target}.node`)
+  )
+    return;
+  if (
     !/^package\/(?:dist\/[A-Za-z0-9_-]+\.js|drizzle\/[0-9]{4}_[a-z0-9_]+\.sql|drizzle\/meta\/(?:[0-9]{4}_snapshot|_journal)\.json|package\.json|README\.md|CHANGELOG\.md|LICENSE)$/u.test(
       path,
     )
@@ -226,7 +234,7 @@ export function inspectPackageArchive(bytes, { expectedFiles, expectedPackage })
       ) {
         refuse('FILE_DRIFT');
       }
-      if (path.endsWith('.js')) {
+      if (/\.(?:js|cjs)$/u.test(path)) {
         const source = utf8(contents);
         if (
           path === 'package/dist/index.js'

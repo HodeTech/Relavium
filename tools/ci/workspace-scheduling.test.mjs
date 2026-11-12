@@ -203,9 +203,94 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(floorCommand['continue-on-error'], undefined);
 });
 
+const nativeGuard = {
+  name: 'Require all native component execution legs',
+  env: { NATIVE_FS_RESULT: '${{ needs.native-fs-assets.result }}' },
+  run: "node -e \"require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')\"",
+};
+function assertNativePrerequisite(job) {
+  assert.equal(job.if, '${{ always() }}');
+  assert.equal(job.needs, 'native-fs-assets');
+  assert.equal(job.defaults, undefined);
+  assert.equal(job['continue-on-error'], undefined);
+  const guards = job.steps.filter((step) => step.name === nativeGuard.name);
+  assert.deepEqual(guards, [nativeGuard]);
+  const index = job.steps.indexOf(guards[0]);
+  const setup = job.steps.findIndex((step) => step.uses?.startsWith('actions/setup-node@'));
+  const download = job.steps.findIndex((step) =>
+    step.uses?.startsWith('actions/download-artifact@'),
+  );
+  assert.ok(setup >= 0);
+  assert.equal(index, setup + 1, 'Native failure must refuse immediately after Node setup');
+  assert.equal(download, index + 1, 'Artifact-dependent work must follow native admission');
+}
+
+test('required native admission refuses failed, missing and skipped dependency results before asset-dependent work', () => {
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  for (const id of ['coverage', 'windows-concurrency']) {
+    assertNativePrerequisite(workflow.jobs[id]);
+    for (const mutate of [
+      (job) => {
+        delete job.if;
+      },
+      (job) => {
+        job.if = "${{ needs.native-fs-assets.result == 'success' }}";
+      },
+      (job) => {
+        delete job.needs;
+      },
+      (job) => {
+        job['continue-on-error'] = true;
+      },
+      (job) => {
+        job.defaults = { run: { shell: 'true {0}' } };
+      },
+      (job) => {
+        job.steps = job.steps.filter((step) => step.name !== nativeGuard.name);
+      },
+      (job) => {
+        job.steps.find((step) => step.name === nativeGuard.name).if = '${{ success() }}';
+      },
+      (job) => {
+        job.steps.find((step) => step.name === nativeGuard.name)['continue-on-error'] = true;
+      },
+      (job) => {
+        job.steps.find((step) => step.name === nativeGuard.name).run = 'node -e "process.exit(0)"';
+      },
+      (job) => {
+        const index = job.steps.findIndex((step) => step.name === nativeGuard.name);
+        [job.steps[index], job.steps[index + 1]] = [job.steps[index + 1], job.steps[index]];
+      },
+    ]) {
+      const changed = JSON.parse(JSON.stringify(workflow.jobs[id]));
+      mutate(changed);
+      assert.throws(() => assertNativePrerequisite(changed));
+    }
+    const guard = workflow.jobs[id].steps.find((step) => step.name === nativeGuard.name);
+    const program = /^node -e "(.+)"$/u.exec(guard.run)?.[1];
+    assert.equal(typeof program, 'string');
+    for (const result of ['success', 'failure', 'cancelled', 'skipped', 'pending', '', undefined]) {
+      const resultEnv = { ...process.env };
+      delete resultEnv.NATIVE_FS_RESULT;
+      if (result !== undefined) resultEnv.NATIVE_FS_RESULT = result;
+      const execution = spawnSync(process.execPath, ['-e', program], {
+        env: resultEnv,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      assert.equal(execution.error, undefined);
+      assert.equal(execution.signal, null);
+      assert.equal(execution.status, result === 'success' ? 0 : 1);
+      assert.equal(execution.stdout, '');
+    }
+  }
+});
+
 test('required checks keep their branch-protection names and cannot be skipped', () => {
-  // A job-level `if`, or a `needs` whose dependency fails, skips the job, and GitHub counts a skipped required
-  // check as passing; a default or step shell can turn a step into a no-op. A rename leaves the required
+  // An ordinary job-level `if` or failed dependency skips the job, which GitHub counts as passing.
+  // The explicit always() + early native-result assertion keeps these required contexts fail-closed; a default or step shell can turn a step into a no-op. A rename leaves the required
   // context unreported and blocks merges, so the name pin keeps the job and branch protection in step
   // (D64 round-1 and round-3 findings on the PR #96 correction).
   const require = createRequire(new URL('apps/cli/package.json', root));
@@ -217,9 +302,9 @@ test('required checks keep their branch-protection names and cannot be skipped',
   ]) {
     const job = workflow.jobs[id];
     assert.equal(job.name, name, id);
-    assert.equal(job.if, undefined, id);
+    assertNativePrerequisite(job);
     assert.equal(job['continue-on-error'], undefined, id);
-    assert.equal(job.needs, undefined, id);
+    assert.equal(job.needs, 'native-fs-assets', id);
     assert.equal(job.defaults, undefined, id);
   }
   // The aggregate keeps its required context name (its `if: always()` is pinned with its needs).

@@ -1886,6 +1886,41 @@ guard-only correction. Replacement CI is required; the failed repetition is not 
 as green causal or workspace evidence. Step 2 source work continues on
 `development`; whole-MVP-3 acceptance, final combined CI and PR review remain open.
 
+**CI repetition and bounded diagnostics:** the full repetition at `e82a4a95`
+completed with sixteen jobs passing. Filesystem causal shard 2 stopped at
+`invocation-forward`'s mutated phase because the runner reported two unhandled
+errors; the dependent primary job did not run its workspace checks. Intended
+semantic mutation failures alone do not satisfy that control. The retained
+receipt exposed only the error count, so the original Linux/Node 24.22.2 cause
+remains unknown. Isolated fixed/mutated/restored repetitions on macOS and
+Linux/Node 24.22.3 did not reproduce those errors; they are not equivalent to
+the original CI population.
+
+Commit `2d9c3a42` adds bounded allowlisted error kinds and manifest-owned source
+locations to forensic stderr, with no raw message, cause, stack or private
+root. Its synchronous sink cannot leave a late write error after the receipt.
+The strict completion protocol and zero-unhandled gate remain unchanged.
+Invocation fixtures now always terminate and join in `finally`, including
+assertion failures; that verified cleanup gap is not attributed as the cause
+of the original errors. All 194 tool tests and 19 invocation tests pass
+locally. New independent Sol/high and Luna/high reviews and a separate
+Sol/high security sitting found no issue in the six-file increment. The
+[replacement CI](https://github.com/HodeTech/Relavium/actions/runs/43128764609)
+then correctly refused three stale coordinator-test assertions that still
+required empty stderr. Its causal controls did not run. Commit `cbf4f2f4`
+asserts the exact allowlisted diagnostic, fixture-owned source frame and
+absence of raw markers/private fixture prefixes, preserving receipt refusal,
+hash restoration and cleanup assertions. An isolated committed-source copy
+with physically installed frozen dependencies passes all 1,037 acceptance-tool
+tests, with no skips; scoped lint/formatting pass. Fresh independent
+Terra/medium and Luna/high reviews are clean. The
+[new repetition](https://github.com/HodeTech/Relavium/actions/runs/43131456310)
+completed all eighteen jobs successfully at `cbf4f2f4`, including both
+filesystem shards, all causal families, coverage, Windows and the four installed
+consumers. This validates that committed checkpoint, not the later Step 2
+implementation. The original two unhandled-error identities remain unknown;
+the passing repetition does not establish their cause.
+
 ### MVP-3 Step 2 implementation start (2026-11-12)
 
 The three-step boundary stays unchanged. Parallel authors own coherent backend,
@@ -1964,6 +1999,53 @@ profiles/allowlists, pinned/audited inputs, actual native and exact-artifact
 proofs on all enabled targets, two fresh implementation rounds and a separate
 native security sitting remain required. No native component was implemented
 before this design approval.
+
+### MVP-3 Step 2 author checkpoint (2026-11-12)
+
+The implementation now joins prepared edits/writes, strict retained-result
+inspection, native metadata-preserving publication and the shared approval/detail
+views in one increment. Every model `write_file` variant and `edit_file` claims
+tier-3 evidence before directory/stage creation or publication. Resume rejects
+unusable retained results before node execution, and replay binds the exact
+mapping configuration. Saved-result delivery preserves policy/confirmation floors
+without inventing a current diff or granting future mutation approval.
+
+Both chat hosts use engine-call-correlated live rows, preserve assistant text
+between calls and offer the same bounded full-review/details view. Inspection
+tracks original spans and actually flushed frames, including masked-only changes;
+raw/revealed previews remain in process memory and are sealed on departure.
+Restored tool groups retain structural outcomes rather than preview content.
+The new default editing grants and starting-mode work remain Step 3.
+
+The [native metadata contract](../../reference/cli/native-filesystem-metadata.md)
+owns the frozen platform profiles, creation inheritance, staging/index proof,
+operator recovery, dependency audit and evidence limits. Local native execution
+covers macOS arm64/APFS (28 Rust parent cases, three parent-owned child fixtures
+and eleven Node lifecycle cases) and non-root Linux arm64 GNU/musl profile runs.
+The real workflow/SQLite/native regression cohort has 23 cases covering claims,
+publication/settlement cuts, saved results, malformed evidence, identity changes
+and provisional `always` decisions. Native-unit kill cuts separately exercise
+partial metadata and payload; they are not whole-workflow cuts inside the native
+producer. Windows cross-checking is not Windows runtime proof.
+
+Author verification passed workspace lint/typecheck and all 18,303 tests, with
+22 existing skips; build/formatting, test isolation, DB sync, seam/dependency
+fences, bundle closure and compiled CLI/bootstrap/media/overflow/budget smoke
+also passed. The permanent usage cohort grows from 449 to 452 only because
+`chat.test.ts` adds one plain `/details` case and a two-case interactive/plain
+integration table; its 71 native children and deadlines are unchanged.
+Required coverage/Windows contexts explicitly fail when native production fails,
+rather than becoming dependency-skipped successes.
+All 1,068 root acceptance-tool tests pass without skips; final tools typecheck,
+lint and focused formatting checks pass as well.
+
+The source remains unaccepted. The running complete coverage gate, final
+two fresh implementation review rounds, separate native
+security sitting, all eight actual native target receipts and all four exact
+installed-tarball consumers remain to be closed. A current-host development
+asset is not a complete release inventory and cannot pass packing. The existing
+publication guard remains in force. No Step 3 grant or whole-MVP-3 completion
+is implied by this author checkpoint.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

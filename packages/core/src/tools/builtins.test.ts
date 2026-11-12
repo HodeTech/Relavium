@@ -132,9 +132,9 @@ describe('built-in catalog', () => {
     expect(compiled.schema.safeParse(valid).success).toBe(true);
     expect(compiled.schema.safeParse(empty).success).toBe(false);
   });
-  it('registers 15 unique built-ins, all sourced "builtin"', () => {
-    expect(BUILTIN_TOOLS).toHaveLength(15);
-    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(15);
+  it('registers 16 unique built-ins, all sourced "builtin"', () => {
+    expect(BUILTIN_TOOLS).toHaveLength(16);
+    expect(new Set(BUILTIN_TOOL_IDS).size).toBe(16);
     expect(BUILTIN_TOOLS.every((candidate) => candidate.source === 'builtin')).toBe(true);
   });
 
@@ -151,7 +151,38 @@ describe('built-in catalog', () => {
 describe('built-in dispatch', () => {
   it.each(CASES)('$id dispatches through the host capability', async ({ id, args }) => {
     const target = tool(id);
-    const result = await target.dispatch(target.parseArgs(args), fullHost(), ctx);
+    const host = fullHost();
+    const fs = host.fs;
+    const preparedHost: ToolHost =
+      fs === undefined
+        ? host
+        : {
+            ...host,
+            fs: {
+              ...fs,
+              prepareWrite: async (request) => {
+                await Promise.resolve();
+                return {
+                  path: request.path,
+                  before: null,
+                  after: request.kind === 'write' ? request.content : request.newString,
+                  execute: () =>
+                    fs.writeFile(
+                      request.path,
+                      request.kind === 'write' ? request.content : request.newString,
+                      {},
+                    ),
+                  release: () => undefined,
+                };
+              },
+            },
+          };
+    const prepared = await target.prepare?.(target.parseArgs(args), preparedHost, ctx);
+    const result =
+      prepared === undefined
+        ? await target.dispatch(target.parseArgs(args), preparedHost, ctx)
+        : await prepared.dispatch(ctx);
+    await prepared?.release();
     expect(result).toBeDefined();
   });
 
@@ -161,7 +192,11 @@ describe('built-in dispatch', () => {
     '$id fails with a typed ToolUnavailableError when the $cap capability is absent',
     async ({ id, args, cap }) => {
       const target = tool(id);
-      const err = await rejection(() => target.dispatch(target.parseArgs(args), {}, ctx));
+      const err = await rejection(() =>
+        target.prepare === undefined
+          ? target.dispatch(target.parseArgs(args), {}, ctx)
+          : target.prepare(target.parseArgs(args), {}, ctx),
+      );
       expect(err).toBeInstanceOf(ToolUnavailableError);
       expect(err).toMatchObject({ capability: cap });
     },

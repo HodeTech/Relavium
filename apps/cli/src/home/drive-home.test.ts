@@ -25,7 +25,7 @@ import { render as renderInk, type Instance } from 'ink';
 import { createElement, isValidElement } from 'react';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
-import { scriptedResolver, textTurn } from '../chat/test-support.js';
+import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
@@ -800,6 +800,60 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
+  });
+
+  it('keeps live tool details in the Home instance and clears them when returning Home', async () => {
+    writeFileSync(join(cwd, 'notes.txt'), 'HOME_TOOL_DETAILS_READ_RESULT');
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((props) => (captured = props), {
+      providers: scriptedResolver([
+        [
+          { type: 'text_delta', text: 'Before the read.' },
+          { type: 'tool_call_start', id: 'home-provider-call', name: 'read_file' },
+          {
+            type: 'tool_call_delta',
+            id: 'home-provider-call',
+            argsJsonDelta: '{"path":"notes.txt"}',
+          },
+          { type: 'tool_call_end', id: 'home-provider-call' },
+          stop('tool_use'),
+        ],
+        textTurn('After the read.'),
+      ]),
+    });
+    const running = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('Home did not mount.');
+    type(props, 'Read notes.txt');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    const session = props.controller.getSnapshot().session;
+    if (session === undefined) throw new Error('Home did not publish the session.');
+    const details = [...session.store.getSnapshot().toolDisplays.values()];
+    expect(details).toHaveLength(1);
+    expect(details[0]).toMatchObject({
+      toolId: 'read_file',
+      target: 'notes.txt',
+      outcome: 'success',
+    });
+    expect(details[0]?.callId).not.toBe('home-provider-call');
+    await session.processLine('/details');
+    expect(session.store.getSnapshot().review?.kind).toBe('details');
+    session.store.closeDetails();
+    props.controller.handleKey('c', CTRL_C);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+    expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
+    expect(session.store.getSnapshot().review).toBeUndefined();
+    session.store.applyToolLiveEvent({
+      phase: 'preview',
+      callId: 'late-home-call',
+      toolId: 'read_file',
+      preview: { kind: 'operation', target: 'late-home-target', fields: [] },
+    });
+    expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await running).toBe(EXIT_CODES.success);
   });
 
   it('retains both original native reservations when a pending clear build is superseded', async () => {

@@ -1,3 +1,4 @@
+import { decodeRetainedEffectEnvelope } from './retained-effect-envelope.js';
 import { z } from 'zod';
 
 import { RelaviumError } from './relavium-error.js';
@@ -521,7 +522,7 @@ export function blocksResume(record: {
   readonly state: EffectState;
   readonly result?: unknown;
 }): boolean {
-  return record.state !== 'committed' || record.result === undefined;
+  return record.state !== 'committed' || decodeRetainedEffectEnvelope(record.result) === undefined;
 }
 
 /**
@@ -634,7 +635,17 @@ export type EffectPrepareVerdict =
  * **Required, not optional**, on ADR-0078 §4's reasoning: an optional port would mean a host that forgets it
  * silently has no guarantee — a fail-open default inside a fail-closed item, invisible at every call site.
  */
+export type EffectInspectReplayVerdict =
+  | { readonly outcome: 'miss' }
+  | { readonly outcome: 'replay'; readonly result: unknown };
+
 export interface EffectDispatchPort {
+  /** Read only: absence is a miss, every unusable/present session row conflicts. */
+  inspectReplay: (
+    slot: EffectSlot,
+    toolId: string,
+    redactedArgs: unknown,
+  ) => Promise<EffectInspectReplayVerdict>;
   /**
    * Durably record the intent to dispatch, BEFORE the effect leaves the process.
    *
@@ -705,5 +716,5 @@ export function unwiredEffectJournal(): EffectDispatchPort {
         `no effect journal is wired, but ${toolId} (slot ${String(slot)}) is an effect that must be journaled (ADR-0080)`,
       ),
     );
-  return { prepare: fail, settle: fail, discard: fail };
+  return { inspectReplay: fail, prepare: fail, settle: fail, discard: fail };
 }

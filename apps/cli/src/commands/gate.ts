@@ -540,11 +540,13 @@ async function resumeGateOwned(
       // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
       // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
       toolEnv: {
+        operatorHomeDir: homeDir,
         workspaceDir: saveToRoot,
         fsScopeTier: config.fsScope ?? 'sandboxed',
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       },
       host: createCliHost(store, {
+        operatorHomeDir: homeDir,
         checkpointer,
         media: wiring.media,
         // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose

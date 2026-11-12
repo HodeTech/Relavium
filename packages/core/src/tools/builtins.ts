@@ -16,10 +16,18 @@ import {
   mediaModalityOf,
   scopeSetIncludes,
   utf8ByteLength,
+  extractHttpsHost,
 } from '@relavium/shared';
 import { z } from 'zod';
 
-import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import {
+  ToolArgsInvalidError,
+  ToolPolicyError,
+  ToolUnavailableError,
+  ToolPreparationError,
+  ToolCancelledError,
+} from './errors.js';
+import { diffLines, DiffLimitError } from './line-diff.js';
 import { attachMedia, type WithMediaAttachment } from './media-attachment.js';
 import {
   type EgressCapability,
@@ -35,6 +43,9 @@ import {
   type ToolHost,
   type ToolId,
   type ToolPolicyClass,
+  type ToolPreview,
+  type ToolPreparedCall,
+  type FsPrepareWriteRequest,
 } from './types.js';
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -58,6 +69,12 @@ interface BuiltinSpec<A> {
   /** The dispatch-context delegate this tool needs, so a filter can stop advertising it — see `ToolDef`. */
   readonly requiresDelegate?: ToolDelegateName;
   readonly requiresFsMethod?: ToolDef['requiresFsMethod'];
+  readonly preview?: (args: A) => ToolPreview;
+  readonly prepare?: (
+    args: A,
+    host: ToolHost,
+    ctx: ToolDispatchContext,
+  ) => Promise<ToolPreparedCall>;
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
@@ -77,6 +94,8 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
     ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
     ...(spec.requiresFsMethod === undefined ? {} : { requiresFsMethod: spec.requiresFsMethod }),
+    ...(spec.preview === undefined ? {} : { preview: spec.preview }),
+    ...(spec.prepare === undefined ? {} : { prepare: spec.prepare }),
     dispatch: spec.dispatch,
   };
   return def;
@@ -250,6 +269,7 @@ const readRange = z
 
 const readFileTool = defineBuiltin({
   id: 'read_file',
+  preview: (args) => ({ kind: 'operation', target: args.path, fields: [] }),
   description:
     'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing.',
   args: z
@@ -320,6 +340,11 @@ const readFileTool = defineBuiltin({
 
 const findFilesTool = defineBuiltin({
   id: 'find_files',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.path,
+    fields: [{ name: 'glob', value: args.glob }],
+  }),
   description:
     'Find authorized files by a bounded in-house glob, respecting root ignore rules. Results are sorted newest first within the scanned set; incomplete traversal and limits are explicit.',
   args: z.object({ path: utf8String(4096, 1).default('.'), glob: utf8String(4096, 1) }).strict(),
@@ -352,6 +377,11 @@ const findFilesTool = defineBuiltin({
 
 const searchFilesTool = defineBuiltin({
   id: 'search_files',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.path,
+    fields: [{ name: 'pattern', value: args.pattern }],
+  }),
   description:
     'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit; results do not confer read-before-edit evidence.',
   args: z
@@ -412,6 +442,55 @@ const searchFilesTool = defineBuiltin({
   },
 });
 
+async function prepareFile(
+  request: FsPrepareWriteRequest,
+  host: ToolHost,
+  ctx: ToolDispatchContext,
+  toolId: string,
+): Promise<ToolPreparedCall> {
+  const fs = requireFs(host, toolId);
+  if (fs.prepareWrite === undefined) throw new ToolUnavailableError(toolId, 'fs.prepareWrite');
+  const prepared = await fs.prepareWrite(request, ctx.signal);
+  let retained = false;
+  try {
+    const diff = await diffLines(prepared.before, prepared.after, {
+      checkCancelled: () => {
+        if (ctx.signal?.aborted === true) throw new ToolCancelledError(toolId);
+      },
+      yield: () => Promise.resolve(),
+    });
+    const preview: ToolPreview = Object.freeze({
+      kind: 'operation',
+      target: prepared.path,
+      fields: Object.freeze([]),
+      diff: Object.freeze({
+        ...diff,
+        stats: Object.freeze({ ...diff.stats }),
+        lines: Object.freeze(
+          diff.lines.map((line) =>
+            Object.freeze({
+              ...line,
+              ...(line.before === undefined ? {} : { before: Object.freeze({ ...line.before }) }),
+              ...(line.after === undefined ? {} : { after: Object.freeze({ ...line.after }) }),
+            }),
+          ),
+        ),
+      }),
+    });
+    retained = true;
+    return {
+      preview,
+      dispatch: (dispatchCtx) => prepared.execute(dispatchCtx.signal, dispatchCtx.hostCallOptions),
+      release: () => prepared.release(),
+    };
+  } catch (error) {
+    if (error instanceof DiffLimitError) throw new ToolPreparationError('diff_limit');
+    throw error;
+  } finally {
+    if (!retained) await prepared.release();
+  }
+}
+
 const writeFileTool = defineBuiltin({
   id: 'write_file',
   description: 'Write or append content to a file, within the allowed FS scope only.',
@@ -452,21 +531,88 @@ const writeFileTool = defineBuiltin({
   // (ADR-0057 EA3). NOT a guardrail target — `enforcePolicy` reads only `command`/`url`, so this changes no
   // allowlist behavior; it is display-only.
   policyTarget: (args) => ({ path: args.path }),
-  // An APPEND is an effect: appends compose, so a replay doubles the content. A whole-file overwrite is
-  // naturally idempotent — writing the same bytes twice leaves the same file, and the file IS the receipt,
-  // so it needs no journal row (ADR-0080 §3). Local, but "external" means outside this PROCESS.
-  effect: (args) => (args.append === true ? 3 : undefined),
-  dispatch: (args, host, ctx) =>
-    requireFs(host, 'write_file').writeFile(
-      args.path,
-      args.content,
-      { append: args.append, createDirs: args.createDirs },
-      ctx.signal,
+  // ADR-0125: every file publication is tier 3, including new/overwrite/empty/unchanged bytes.
+  // Final bytes are not a receipt for inode/security-metadata publication or intervening changes.
+  effect: () => 3,
+  requiresFsMethod: 'prepareWrite',
+  prepare: (args, host, ctx) =>
+    prepareFile(
+      {
+        kind: 'write',
+        path: args.path,
+        content: args.content,
+        append: args.append,
+        createDirs: args.createDirs,
+      },
+      host,
+      ctx,
+      'write_file',
     ),
+  dispatch: () => Promise.reject(new ToolUnavailableError('write_file', 'fs.prepareWrite')),
+});
+
+const editFileTool = defineBuiltin({
+  id: 'edit_file',
+  description:
+    'Replace exact text in a previously observed unchanged UTF-8 text file; binary files refuse. Re-read or narrow the match after a preparation refusal.',
+  args: z
+    .object({
+      path: z.string().min(1),
+      old_string: utf8String(WRITE_CONTENT_MAX_BYTES, 1),
+      new_string: utf8String(WRITE_CONTENT_MAX_BYTES),
+      replace_all: z.boolean().optional(),
+    })
+    .strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'File within the host-authorized roots, previously read in this tool loop.',
+      },
+      old_string: {
+        type: 'string',
+        minLength: 1,
+        maxLength: WRITE_CONTENT_MAX_BYTES,
+        description: 'Exact observed text to replace; unique unless replace_all.',
+      },
+      new_string: {
+        type: 'string',
+        maxLength: WRITE_CONTENT_MAX_BYTES,
+        description: 'Exact replacement UTF-8 text.',
+      },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace every wholly observed occurrence; defaults to false.',
+      },
+    },
+    required: ['path', 'old_string', 'new_string'],
+    additionalProperties: false,
+  },
+  policy: FS_WRITE_POLICY,
+  policyTarget: (args) => ({ path: args.path }),
+  effect: () => 3,
+  requiresFsMethod: 'prepareWrite',
+  prepare: (args, host, ctx) =>
+    prepareFile(
+      {
+        kind: 'edit',
+        path: args.path,
+        oldString: args.old_string,
+        newString: args.new_string,
+        replaceAll: args.replace_all,
+        readScope: ctx.readScope,
+      },
+      host,
+      ctx,
+      'edit_file',
+    ),
+  dispatch: () => Promise.reject(new ToolUnavailableError('edit_file', 'fs.prepareWrite')),
 });
 
 const listDirectoryTool = defineBuiltin({
   id: 'list_directory',
+  preview: (args) => ({ kind: 'operation', target: args.path, fields: [] }),
   description:
     'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries: truncated/incomplete results state the entry limit and an unknown omitted-entry count explicitly.',
   args: z
@@ -510,6 +656,11 @@ const listDirectoryTool = defineBuiltin({
 
 const runCommandTool = defineBuiltin({
   id: 'run_command',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.command,
+    fields: [{ name: 'args', value: JSON.stringify(args.args ?? []) }],
+  }),
   description:
     'Run an authorized executable directly, without a shell; return its output and exit code.',
   args: z
@@ -664,6 +815,11 @@ const gitCommitTool = defineBuiltin({
 
 const httpRequestTool = defineBuiltin({
   id: 'http_request',
+  preview: (args) => ({
+    kind: 'operation',
+    target: extractHttpsHost(args.url)?.host ?? '',
+    fields: [{ name: 'method', value: args.method ?? 'GET' }],
+  }),
   description:
     'Make an HTTPS request to a configured allowed host, when network access is available.',
   args: z
@@ -999,6 +1155,7 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
   searchFilesTool,
   findFilesTool,
   writeFileTool,
+  editFileTool,
   listDirectoryTool,
   runCommandTool,
   gitStatusTool,

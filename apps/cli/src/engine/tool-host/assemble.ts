@@ -61,6 +61,8 @@ export interface AssembleToolEnvOptions {
   readonly fsScopeTier: FsScopeTier;
   /** The session/run working directory (absolute) — the fs jail anchor and the process spawn cwd. */
   readonly workspaceDir: string;
+  /** Explicit host-owned operator home for the staging inventory. */
+  readonly operatorHomeDir?: string;
   /** Immutable host-only invocation policy; never a project-authored grant. */
   readonly fsPolicy?: FsPathPolicy;
   /** Exact host-issued private scratch descriptor; its producer owns the separate lifetime. */
@@ -113,6 +115,8 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
     fs: createNodeFsCapability({
       tier,
       workspaceDir: opts.workspaceDir,
+      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+      ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
       readOnly,
       ...(opts.fsPolicy === undefined ? {} : { pathPolicy: opts.fsPolicy }),
       ...(opts.scratch === undefined ? {} : { scratch: opts.scratch }),

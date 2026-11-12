@@ -359,6 +359,7 @@ it('resumes current config at the canonical original workspace with fresh grants
   const fs = createNodeFsCapability({
     tier: 'project',
     workspaceDir: workspace,
+    operatorHomeDir: home,
     readOnly: true,
     ...(policy === undefined ? {} : { pathPolicy: policy }),
   });

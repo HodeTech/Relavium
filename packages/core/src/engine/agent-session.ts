@@ -239,6 +239,7 @@ export type SessionEventSink = (event: SessionStreamEvent) => void;
  * regime (the workflow author-trust floor).
  */
 export interface SessionTurnPolicy {
+  readonly onToolLiveEvent?: import('../tools/types.js').ToolLiveObserver;
   /**
    * Which of the agent's granted tools to **advertise** to the model this turn (the mode advertise-filter):
    * `true` keeps the tool in the model-visible set. A tool filtered OUT is never offered, but the `confirm`
@@ -1176,6 +1177,9 @@ export class AgentSession {
       config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
       toolPolicy: this.#deps.toolPolicy ?? {},
       fsScope: this.#context.fsScopeTier,
+      ...(turnPolicy?.onToolLiveEvent === undefined
+        ? {}
+        : { onToolLiveEvent: turnPolicy.onToolLiveEvent }),
       gateApproved: false, // a chat loop provides no human gate — git_commit stays denied (parity with 1.O)
       // ADR-0057: a set mode policy ACTIVATES the interactive-approval regime — a governed (write/process/
       // egress) dispatch then requires the host's `confirm` decision, fail-closed when `confirm` is absent

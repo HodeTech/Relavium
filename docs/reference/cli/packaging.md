@@ -55,6 +55,62 @@ tail wins, offline agent fixture and media no-cache exceptions remain.
 One registry instance passes through the chunk graph; no global-symbol bridge
 silently replaces existing private-module provenance.
 
+### Native filesystem component — MVP-3 Step 2
+
+ADR-0125 adds a third native component beside SQLite and keyring. Its
+[canonical metadata contract](native-filesystem-metadata.md#native-component-and-delivery)
+owns the required targets and filesystem acceptance. Delivery implementation is
+under review; protocol/ABI execution does not enable a filesystem profile or the
+Step 3 grant.
+
+The ESM graph stays flat and mapped as above. Its sole reviewed loader exception
+is the fixed literal dynamic import from `fs-native-metadata.ts`, resolved by a
+narrow build plugin to `./native-fs/loader.cjs`. The byte-equivalent pinned CJS
+shim has eight literal binary requires. No other chunk may acquire a loader,
+declare this edge, choose a library path or search workspace/PATH/configuration.
+Bootstrap witnesses refuse shim evaluation on meta paths. Missing native assets
+leave meta/read-only behavior available and refuse dependent writes.
+
+`dist/native-fs/` has a separate finite inventory: the shim, public
+`native-assets.json`, `THIRD_PARTY_NOTICES.txt` and one binary per required target.
+No Cargo/Rust/TypeScript source, compiler, target tree, private per-source inventory
+or map enters that directory. All public files are ordinary link-free files with
+mode 0644. The archive's existing compressed, expanded, per-file and file-count
+bounds remain unchanged. The manifest binds source, lockfile, pinned toolchain,
+build recipe/image digests, notices, target and actual binary bytes. Notices carry
+the locked native dependency license/copyright texts because these dependencies
+are linked into the adapter rather than installed as external npm packages.
+
+Contributor builds make `development-current`, containing only the current
+host's native protocol receipt. CI's `--verify-profile` build additionally runs
+the declared OS Rust test population and eleven exact-artifact Node lifecycle
+cases. Parent tests own the separately declared ignored subprocess fixtures;
+each selected Rust parent must actually finish with one pass and zero failures
+or ignored tests. The Node cases cover bigint identity, replacement/append,
+destination inheritance, no-clobber, stale bytes, cancellation and live/killed
+producer recovery. These are named mechanism proofs, not blanket profile or
+whole-CLI acceptance. Package production requires `release-complete`, including
+that exact source-bound validation population for every target, and verifies its binding against the
+isolated chosen candidate before the sole final CLI build. It never compiles or
+fetches this component during prepack or installed use. The finalizer accounts for
+native files independently of paired ESM maps; archive inspection, the private
+manifest and post-seal verification retain every native file's exact hash.
+
+Fresh and reused contributor assets also pass a plain-Node ESM import of the
+staged CJS shim and a native protocol call. A `require()`-only probe cannot prove
+the namespace consumed by the TypeScript host. An actual bundled host-helper
+control and the former shorthand-export negative independently guard this edge.
+
+Required CI's native producers execute exact Node 22.0.0 on native CPU runners,
+with digest-pinned Linux baseline images. They feed both package production and
+product map controls; missing, failed or partial target inventories refuse.
+The existing four installed consumers still install one exact tarball and now
+load the metadata protocol, SQLite and keyring together. These component receipts
+do not certify whole-CLI history/keychain behavior across all eight targets.
+The [delivery tooling](../../../tools/native-fs/README.md) records contributor
+commands and baseline limits. The adapter adds no installed compiler or extra
+download requirement; SQLite's existing prebuild/node-gyp behavior is unchanged.
+
 ### Compiled graph implementation boundary — Step 7a
 
 The bootstrap creates one invocation object before guarded imports. That object
@@ -152,7 +208,12 @@ primary outcome. Private worker identity stays outside public receipts.
 Required workflows share one public tarball and a package-test receipt (mode `package_test`
 since Step 9a.2b, `compiled_package_test` before it) with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
 untouched-entry bootstrap controls and actual workflow, gate, budget, chat/resume,
-SQLite, native-load, MCP-version and media-cleanup behavior. Their aggregate checks
+SQLite, native-load, MCP-version and media-cleanup behavior. The existing
+workflow/effects case also requires a real compiled `relavium run` agent workflow
+to publish exact bytes through the native filesystem host and commit its effect
+journal row before terminal retention, using only the source-owned offline SDK
+transport fixture. A parent-owned response barrier permits a read-only database
+observation, then the completed run must sweep its committed row. Their aggregate checks
 all four actual success records and immutable artifact/source/origin identities.
 Only public consumer summaries are uploaded; detailed support logs are excluded.
 The [tooling guide](../../../tools/cli-package/README.md) describes invocation and

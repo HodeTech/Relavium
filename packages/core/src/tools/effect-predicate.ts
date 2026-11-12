@@ -20,9 +20,9 @@ import type { ToolDef } from './types.js';
 /**
  * The tier at which this CALL must be journaled, or `undefined` when it must not be.
  *
- * Two tools answer differently per call rather than per definition — `http_request` by method and
- * `write_file` by whether it appends — which is why the decision takes the validated args and lives on the
- * def rather than in a central switch that would have to guess at arg shapes it does not own.
+ * A tool may answer per call rather than per definition (`http_request` by method), so the decision takes
+ * the validated args and lives on the def rather than a central switch that guesses at arg shapes.
+ * Every built-in file write is tier 3 under ADR-0125, including overwrite and new-file publication.
  */
 export function journaledTier(def: ToolDef, args: unknown): EffectTier | undefined {
   if (def.effect === undefined) return undefined;

@@ -9,7 +9,15 @@ import { nativeProcessesForInvocation } from '../process/native-process-owner.js
 import { catalogModel, DEFAULT_ATTEMPT_TIMEOUT_MS, prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,6 +50,8 @@ import type { ProviderResolver } from '../engine/providers.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
+import { ApprovalCache } from './chat-mode.js';
+import * as nativeMetadata from '../engine/tool-host/fs-native-metadata.js';
 import { isCliError } from '../process/errors.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
@@ -94,6 +104,7 @@ async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
 }
 async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
   const built = await buildRestoredSession(opts);
+  built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
   let invocationOrdinal = 0;
@@ -206,6 +217,17 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('keeps the trusted operator home private while exposing it only on the host result', async () => {
+    const operatorHomeDir = '/private-operator-home-canary';
+    const built = await build({ operatorHomeDir, toolHost: {} });
+    expect(built.operatorHomeDir).toBe(operatorHomeDir);
+    expect(built.context).not.toHaveProperty('operatorHomeDir');
+    built.session.start();
+    await built.session.sendMessage('hello');
+    built.session.cancel();
+    expect(JSON.stringify(await built.recordedEvents)).not.toContain(operatorHomeDir);
+  });
+
   it('spills a real tool result and reads its opaque reference through the next model round', async () => {
     const home = mkdtempSync(join(tmpdir(), 'relavium-output-loop-home-'));
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-loop-workspace-'));
@@ -729,6 +751,8 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     };
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeMcpAgent(), // grants read_file + declares the fs MCP server
       providers: scriptedResolver([
         callWithArgs('c1', 'read_file', { path: 'r.txt' }),
@@ -848,6 +872,24 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
 });
 
 describe('buildResumedChatSession (2.N)', () => {
+  it('takes private operator home from current host options rather than retained context', async () => {
+    const operatorHomeDir = '/private-restored-home-canary';
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record(),
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('continued')]),
+      operatorHomeDir,
+      toolHost: {},
+    });
+    expect(built.operatorHomeDir).toBe(operatorHomeDir);
+    expect(built.context).not.toHaveProperty('operatorHomeDir');
+    await built.session.sendMessage('continue');
+    built.session.cancel();
+    expect(JSON.stringify(await built.recordedEvents)).not.toContain(operatorHomeDir);
+  });
+
   const RESUME_AGENT = buildDefaultChatAgent('claude-sonnet-4-6');
   const ISO = '2026-06-25T00:00:00.000Z';
 
@@ -1600,6 +1642,8 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     writeFileSync(join(workspace, 'note.txt'), 'the file body');
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       providers: scriptedResolver([
         callWithArgs('c1', 'read_file', { path: 'note.txt' }),
         textTurn('done'),
@@ -1748,6 +1792,8 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeAgent(['write_file']),
       providers: scriptedResolver([
         callWithArgs('c1', 'write_file', { path: 'ok.txt', content: 'hi' }),
@@ -1760,10 +1806,10 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     const turn = built.session.sendMessage('write a file');
     // Drive the interactive prompt: wait for the published approval, then approve it.
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    await vi.waitFor(
+      () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+      { timeout: 5000 },
+    );
     store.answerApproval({ outcome: 'approve', scope: 'once' });
     await turn;
     built.session.cancel();
@@ -1781,68 +1827,74 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
-  it('createChatModeControl auto: a PROTECTED-path write FALLS BACK to a prompt (not auto-approved)', async () => {
-    // The most bespoke ADR-0057 branch, end-to-end (real registry + fs host + store): in auto mode a
-    // protected-path target must NOT auto-approve — it publishes a non-cacheable prompt. Rejecting it denies
-    // the write (the fs protected-paths floor would refuse it regardless — this proves the graceful fallback).
-    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
-    const built = await build({
-      cwd: workspace,
-      agentRef: writeAgent(['write_file']),
-      providers: scriptedResolver([
-        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
-      ]),
-    });
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store).onModeChange('auto');
-    built.session.start();
-    const turn = built.session.sendMessage('write a protected file');
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    // auto did NOT auto-approve the protected target — it published a prompt, marked non-cacheable.
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
-    expect(store.getSnapshot().approval?.cacheable).toBe(false);
-    store.answerApproval({ outcome: 'reject' });
-    await turn;
-    built.session.cancel();
-    await built.recordedEvents;
-    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false);
-  });
-
-  it('auto: even an APPROVED protected-path write STILL fails — the fs floor is the true, approval-INDEPENDENT floor', async () => {
-    // The complement of the reject test: prove the fs-layer protected-paths refusal (not the prompt) is the real
-    // floor. Answer the auto fallback prompt with APPROVE and assert the write is STILL denied + never lands —
-    // so a future refactor that coupled the two layers (letting an approval bypass the fs floor) fails here.
-    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
-    const built = await build({
-      cwd: workspace,
-      agentRef: writeAgent(['write_file']),
-      providers: scriptedResolver([
-        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
-      ]),
-    });
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store).onModeChange('auto');
-    built.session.start();
-    const turn = built.session.sendMessage('write a protected file');
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    // The fallback prompt WAS published (non-cacheable) — so the approve below is genuinely consumed, not a
-    // no-op that would let the fs floor pass the test even if auto stopped prompting.
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
-    expect(store.getSnapshot().approval?.cacheable).toBe(false);
-    store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
-    await turn;
-    built.session.cancel();
-    const events = await built.recordedEvents;
-    const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
-    );
-    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false); // never written despite the approval
-  });
+  it.each([false, true])(
+    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure',
+    async (existing) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+      const protectedDir = join(workspace, '.git');
+      const target = join(protectedDir, 'config');
+      if (existing) {
+        // A real existing target must remain byte-for-byte intact too.
+        mkdirSync(protectedDir);
+        writeFileSync(target, 'existing-protected-content');
+      }
+      const remember = vi.spyOn(ApprovalCache.prototype, 'rememberAlways');
+      const native = vi.spyOn(nativeMetadata, 'loadNativeMetadataProtocol');
+      try {
+        const built = await build({
+          cwd: workspace,
+          operatorHomeDir: workspace,
+          outputStoreFactory: () => Promise.resolve(undefined),
+          agentRef: writeAgent(['write_file']),
+          providers: scriptedResolver([
+            callWithArgs('c1', 'write_file', {
+              path: '.git/config',
+              content: 'protected-write-payload-canary',
+            }),
+          ]),
+        });
+        let claims = 0;
+        built.attachEffectJournal((correlation) => {
+          const journal = createInMemoryEffectJournal(correlation);
+          return {
+            ...journal,
+            prepare: (...args) => {
+              claims += 1;
+              return journal.prepare(...args);
+            },
+          };
+        });
+        const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+        const prompt = vi.spyOn(store, 'requestApproval');
+        createChatModeControl(built, store).onModeChange('auto');
+        built.session.start();
+        await built.session.sendMessage('write a protected file');
+        built.session.cancel();
+        const events = await built.recordedEvents;
+        const completed = events.find((event) => event.type === 'session:turn_completed');
+        const failure = completed?.type === 'session:turn_completed' ? completed.error : undefined;
+        expect(failure?.code).toBe('tool_denied');
+        expect(failure?.retryable).toBe(false);
+        expect(failure?.message).toBe(
+          'write_file: refusing to write a protected directory, credential store or shell startup file',
+        );
+        expect(prompt).not.toHaveBeenCalled();
+        expect(store.getSnapshot().approval).toBeUndefined();
+        expect(events.some((event) => event.type === 'agent:approval_requested')).toBe(false);
+        expect(remember).not.toHaveBeenCalled();
+        expect(native).not.toHaveBeenCalled();
+        expect(claims).toBe(0);
+        expect(JSON.stringify(events)).not.toContain('protected-write-payload-canary');
+        expect(JSON.stringify(events)).not.toContain('existing-protected-content');
+        if (existing) expect(readFileSync(target, 'utf8')).toBe('existing-protected-content');
+        else expect(existsSync(protectedDir)).toBe(false);
+      } finally {
+        remember.mockRestore();
+        native.mockRestore();
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));

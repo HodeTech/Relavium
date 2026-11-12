@@ -161,7 +161,17 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
       });
       assertExit(result, 0);
       const evidence = JSON.parse(result.stdout);
-      for (const path of [evidence.keyring, evidence.sqlite, ...evidence.nativeModules]) {
+      assert.equal(
+        evidence.metadataProtocol,
+        1,
+        'Actual metadata protocol must execute with both existing native components',
+      );
+      for (const path of [
+        evidence.keyring,
+        evidence.sqlite,
+        evidence.metadataLoader,
+        ...evidence.nativeModules,
+      ]) {
         assert.equal(within(repository, realpathSync(path)), false);
         assert.equal(within(installedModules, realpathSync(path)), true);
       }

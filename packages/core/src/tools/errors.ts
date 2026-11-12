@@ -8,7 +8,7 @@
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#error-taxonomy) and ADR-0037.
  */
 
-import { byCodeUnit } from '@relavium/shared';
+import { byCodeUnit, RelaviumError } from '@relavium/shared';
 
 import type { ErrorCode } from '@relavium/shared';
 
@@ -233,5 +233,24 @@ export class ToolCancelledError extends ToolDispatchError {
       cause,
     );
     this.name = 'ToolCancelledError';
+  }
+}
+
+/** Only the registry read-only preparation cut may make this refusal correctable. */
+export type ToolPreparationReason =
+  | 'read_required'
+  | 'stale_file'
+  | 'match_not_found'
+  | 'match_not_unique'
+  | 'unobserved_match'
+  | 'unsupported_text'
+  | 'diff_limit';
+export class ToolPreparationError extends RelaviumError {
+  override readonly name = 'ToolPreparationError';
+  readonly code = 'tool_preparation_refused';
+  constructor(readonly reason: ToolPreparationReason) {
+    super(
+      `File preparation refused: ${reason}. Re-read the file, narrow the match or reduce the change.`,
+    );
   }
 }

@@ -198,7 +198,8 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     void store.requestApproval(approvalReq, false).then((a) => {
       answered = a;
     });
-    await waitFor(() => store.getSnapshot().approval !== undefined);
+    await waitFor(() => frame().includes('Review tool operation'));
+    await settleFrames();
     stdin.write('y'); // a genuine keystroke on the `useInput` channel — NOT wrapped as a paste
     await waitFor(() => answered !== undefined);
     expect(answered).toEqual({ outcome: 'approve', scope: 'once' });

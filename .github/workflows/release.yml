@@ -56,7 +56,61 @@ concurrency:
 # Permissions are declared per job (least privilege) rather than workflow-wide.
 
 jobs:
+  native-admission:
+    name: admit source before native release builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      # The ref being released must already be on `main`. Without this, any commit on any branch could be
+      # tagged `v*` and walk the whole pack → smoke → publish chain; the only other gate was that the tag
+      # string matched package.json. Asserted here in `pack` so `smoke` and `publish` inherit it via `needs`.
+      # A commit is its own ancestor, so tagging main's tip passes.
+      # `allow_off_main` is honoured ONLY for a non-tag ref. A `workflow_dispatch` can target a tag just as
+      # easily as a branch, so gating solely on the input would let a dispatch against an off-main `v*` tag
+      # skip this assertion entirely — the override is scoped out of every tag ref for exactly that reason.
+      - name: Release ref is reachable from `main`
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || !inputs.allow_off_main }}
+        shell: bash
+        run: |
+          git fetch --no-tags --quiet origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "✓ $GITHUB_SHA is reachable from origin/main"
+          else
+            echo "::error::Release refs must be reachable from main — $GITHUB_SHA is not."
+            echo "::error::Merge it to main and tag the merged commit, or re-run via workflow_dispatch with allow_off_main=true (build + smoke only, never publishes)."
+            exit 1
+          fi
+      # On a release tag, the tag must equal the CLI's package version — else we'd publish a mismatched
+      # version. Fail fast (before build + the cross-OS smoke). Skipped on a manual dry-run (no tag).
+      - name: Tag matches the CLI package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./apps/cli/package.json').version")"
+          test "$TAG" = "$PKG" || { echo "::error::release tag v$TAG != apps/cli/package.json version $PKG"; exit 1; }
+      - name: Require accepted release policy before native release builds
+        run: node tools/cli-package/native-release-admission.mjs
+
+  native-fs-assets:
+    needs: native-admission
+    uses: ./.github/workflows/native-fs.yml
+    permissions:
+      contents: read
+
   pack:
+    needs: [native-admission, native-fs-assets]
     outputs:
       artifact-name: relavium-tarball-${{ github.run_id }}-${{ github.run_attempt }}
     name: build + pack the tarball
@@ -99,6 +153,13 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           PKG="$(node -p "require('./apps/cli/package.json').version")"
           test "$TAG" = "$PKG" || { echo "::error::release tag v$TAG != apps/cli/package.json version $PKG"; exit 1; }
+      - name: Recheck admitted source before packing
+        env:
+          ADMITTED_SOURCE: ${{ needs.native-admission.outputs.source }}
+        run: |
+          node --input-type=module -e "import assert from 'node:assert/strict'; import { execFileSync } from 'node:child_process'; assert.match(process.env.ADMITTED_SOURCE ?? '', /^[0-9a-f]{40}$/u); assert.equal(process.env.ADMITTED_SOURCE, process.env.GITHUB_SHA); assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), process.env.GITHUB_SHA);"
+      - name: Recheck accepted release policy before packing
+        run: node tools/cli-package/native-release-admission.mjs
       - name: Set up pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - name: Set up Node
@@ -108,6 +169,14 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      - name: Download all eight source-bound native execution artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Require the complete native asset inventory before packing
+        run: node tools/native-fs/assemble.mjs '${{ runner.temp }}/native-fs-assets'
       # The same required package runner owns fresh dependencies and the sole prepack CLI build in an owned
       # candidate tree, where original-TS maps are built, validated, staged privately and discarded (Wave 3
       # Step 9a.1), with the private manifest and the packed-frame symbolication (Step 9a.2a); their

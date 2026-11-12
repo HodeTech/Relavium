@@ -15,6 +15,8 @@ import { isPackageVersion } from './binding.mjs';
 import { ENGINE_PACKAGES, writePrivateFile } from './finalize.mjs';
 import { readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { isolatedGitEnvironment, runCommand } from './process.mjs';
+import { inspectNativeAssets, nativeSourceBinding } from '../native-fs/assets.mjs';
+import { NATIVE_TARGETS } from '../native-fs/catalog.mjs';
 
 export const MANIFEST_FILE = 'manifest.json';
 
@@ -94,7 +96,8 @@ function isRecord(value) {
  *   toolchain: {node: string, pnpm: string, typescript: string, tsup: string, esbuild: string},
  *   inputs: Record<string, string>,
  *   outputs: {path: string, sha256: string, map: {path: string, sha256: string}}[],
- *   sources: Record<string, string>, tarballSha256: string}} PrivateManifest
+ *   sources: Record<string, string>, tarballSha256: string,
+ *   nativeAssets?: {path: string, bytes: number, sha256: string}[]}} PrivateManifest
  */
 
 /**
@@ -118,10 +121,35 @@ export function validateManifest(value) {
       'outputs',
       'sources',
       'tarballSha256',
+      ...(isRecord(value) && Object.hasOwn(value, 'nativeAssets') ? ['nativeAssets'] : []),
     ]) ||
     value.version !== 1
   ) {
     refuse('SHAPE');
+  }
+  if (value.nativeAssets !== undefined) {
+    const nativePaths = [
+      'loader.cjs',
+      'native-assets.json',
+      'THIRD_PARTY_NOTICES.txt',
+      ...NATIVE_TARGETS.map((target) => `${target}.node`),
+    ].sort();
+    if (
+      !Array.isArray(value.nativeAssets) ||
+      !isDeepStrictEqual(
+        value.nativeAssets.map((asset) => asset?.path),
+        nativePaths.map((name) => `dist/native-fs/${name}`),
+      ) ||
+      !value.nativeAssets.every(
+        (asset) =>
+          exact(asset, ['path', 'bytes', 'sha256']) &&
+          Number.isSafeInteger(asset.bytes) &&
+          asset.bytes > 0 &&
+          asset.bytes <= 8 * 1024 * 1024 &&
+          SHA256.test(asset.sha256),
+      )
+    )
+      refuse('SHAPE');
   }
   const { source, toolchain, inputs, outputs, sources } = value;
   if (
@@ -288,6 +316,7 @@ export async function sealPrivateManifest({
     outputs,
     sources,
     tarballSha256: archive.sha256,
+    ...(record.nativeAssets === undefined ? {} : { nativeAssets: record.nativeAssets }),
   });
   writePrivateFile(
     join(staging, MANIFEST_FILE),
@@ -312,8 +341,23 @@ export function verifySealedDist({ candidate, manifest, tarball }) {
   } catch {
     refuse('DIST_DRIFT');
   }
-  const expected = manifest.outputs.map((output) => basename(output.path)).sort(byCodeUnit);
+  const expected = [
+    ...manifest.outputs.map((output) => basename(output.path)),
+    ...(manifest.nativeAssets === undefined ? [] : ['native-fs']),
+  ].sort(byCodeUnit);
   if (!isDeepStrictEqual(names, expected)) refuse('DIST_DRIFT');
+  if (manifest.nativeAssets !== undefined) {
+    const native = inspectNativeAssets(join(cli, 'dist/native-fs'), {
+      complete: true,
+      binding: nativeSourceBinding(candidate),
+    });
+    const actual = [...native.files].map(([name, bytes]) => ({
+      path: `dist/native-fs/${name}`,
+      bytes: bytes.length,
+      sha256: sha256(bytes),
+    }));
+    if (!isDeepStrictEqual(actual, manifest.nativeAssets)) refuse('DIST_DRIFT');
+  }
   for (const output of manifest.outputs) {
     let bytes;
     try {

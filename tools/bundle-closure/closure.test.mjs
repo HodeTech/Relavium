@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -18,6 +19,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BundleClosureError, checkBundleClosure } from './closure.mjs';
 import { emittedInventory } from './inventory.mjs';
+import { NATIVE_HELPER, NATIVE_OUTPUT_IMPORT } from '../native-fs/catalog.mjs';
 
 // Use the exact esbuild installed behind the existing CLI tsup tool, not a new
 // dependency, a copied metadata generator, or the product build. Everything is
@@ -491,6 +493,16 @@ test('thin CLI inventories actual files from its package root and refuses missin
   for (const name of ['check.mjs', 'closure.mjs', 'inventory.mjs']) {
     copyFileSync(fileURLToPath(new URL(name, import.meta.url)), join(tooling, name));
   }
+  for (const path of [
+    'native-fs/catalog.mjs',
+    'native-fs/assets.mjs',
+    'native-fs/profile.mjs',
+    'native-fs/profile-catalog.mjs',
+    'cli-package/files.mjs',
+  ]) {
+    mkdirSync(dirname(join(root, 'tools', path)), { recursive: true });
+    copyFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), join(root, 'tools', path));
+  }
   writeFileSync(join(pkg, 'package.json'), JSON.stringify(original.manifest));
   writeFileSync(join(pkg, 'dist/metafile-esm.json'), JSON.stringify(original.metafile));
   for (const [path, file] of Object.entries(original.files)) {
@@ -722,3 +734,68 @@ test(
     assert.equal(emittedInventory(pkg)['dist/index.js'].mode, 0o4755);
   },
 );
+
+function nativeCandidate() {
+  const value = candidate();
+  const path = lazyFile(value);
+  const loader = readFileSync(new URL('../native-fs/loader.cjs', import.meta.url), 'utf8');
+  value.files['dist/native-fs/loader.cjs'] = { contents: loader, kind: 'file', mode: 0o644 };
+  value.metafile.inputs[NATIVE_HELPER] = {
+    bytes: 1,
+    format: 'esm',
+    imports: [{ path: NATIVE_OUTPUT_IMPORT, kind: 'dynamic-import', external: true }],
+  };
+  value.metafile.outputs[path].inputs[NATIVE_HELPER] = { bytesInOutput: 1 };
+  value.metafile.outputs[path].imports.push({
+    path: NATIVE_OUTPUT_IMPORT,
+    kind: 'dynamic-import',
+    external: true,
+  });
+  value.files[path].contents +=
+    `\nexport const metadata = () => import('${NATIVE_OUTPUT_IMPORT}');`;
+  value.metafile.outputs[path].bytes = Buffer.byteLength(value.files[path].contents);
+  return value;
+}
+
+test('native shim exception requires byte-equivalent pinned loader and one trusted lazy source edge', () => {
+  assert.ok(checkBundleClosure(nativeCandidate()).outputs.length > 0);
+  for (const change of [
+    (value) => {
+      value.files['dist/native-fs/loader.cjs'].contents += '\n// unreviewed';
+    },
+    (value) => {
+      delete value.files['dist/native-fs/loader.cjs'];
+    },
+    (value) => {
+      value.files['dist/native-fs/loader.cjs'].mode = 0o755;
+    },
+    (value) => {
+      value.metafile.inputs[NATIVE_HELPER].imports[0].kind = 'import-statement';
+    },
+    (value) => {
+      value.metafile.inputs['src/other.ts'] = value.metafile.inputs[NATIVE_HELPER];
+      delete value.metafile.inputs[NATIVE_HELPER];
+    },
+    (value) => {
+      delete value.metafile.outputs[lazyFile(value)].inputs[NATIVE_HELPER];
+    },
+  ]) {
+    const value = nativeCandidate();
+    change(value);
+    refuses(value, 'NATIVE_LOADER');
+  }
+});
+
+test('reviewed native shim does not admit loader acquisition or arbitrary binary imports in ESM', () => {
+  for (const [code, expected] of [
+    ["import {createRequire as other} from 'node:module';", 'UNKNOWN_LOADER'],
+    ["process.dlopen({}, './native-fs/x86_64-apple-darwin.node');", 'UNKNOWN_LOADER'],
+    ["import('./native-fs/other.node');", 'OUTPUT_PATH'],
+  ]) {
+    const value = nativeCandidate();
+    const path = lazyFile(value);
+    value.files[path].contents += code;
+    value.metafile.outputs[path].bytes = Buffer.byteLength(value.files[path].contents);
+    refuses(value, expected);
+  }
+});

@@ -239,13 +239,13 @@ function checkMapControls(workflow) {
   assert.equal(job.defaults, undefined);
   assert.equal(workflow.jobs.ci.defaults, undefined);
   assert.deepEqual(job.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
-  assert.equal(job.needs, undefined);
+  assert.equal(job.needs, 'native-fs-assets');
   assert.equal(job.strategy, undefined);
   assert.equal(job['runs-on'], 'ubuntu-latest');
-  // Checkout, pnpm and Node only: no cache, upload or download action.
+  // The sole download is the source-bound native input; maps, caches and uploads remain absent.
   assert.deepEqual(
     job.steps.filter((step) => step.uses).map((step) => step.uses),
-    [actions.checkout, actions.pnpm, actions.node],
+    [actions.checkout, actions.pnpm, actions.node, actions.download],
   );
   assert.deepEqual(job.steps.find((step) => step.uses === actions.checkout).with, {
     'persist-credentials': false,
@@ -256,8 +256,17 @@ function checkMapControls(workflow) {
   });
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
-    ['pnpm install --frozen-lockfile', mapControlsCommand],
+    [
+      'pnpm install --frozen-lockfile',
+      "node tools/native-fs/assemble.mjs '${{ runner.temp }}/native-fs-assets'",
+      mapControlsCommand,
+    ],
   );
+  assert.deepEqual(job.steps.find((step) => step.uses === actions.download).with, {
+    pattern: 'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*',
+    path: '${{ runner.temp }}/native-fs-assets',
+    'merge-multiple': false,
+  });
   const controls = job.steps.find((step) => step.run === mapControlsCommand);
   assert.deepEqual(Object.keys(controls).sort(), ['env', 'name', 'run']);
   assert.deepEqual(controls.env, { RELAVIUM_PACKAGE_SOURCE_SHA: '${{ github.sha }}' });
@@ -611,6 +620,7 @@ test('every CLI package, closure, bootstrap and CI tooling test runs in test:acc
     'tools/cli-package',
     'tools/cli-package/smoke',
     'tools/bundle-closure',
+    'tools/native-fs',
     'tools/cli-bootstrap',
     'tools/ci',
   ]) {

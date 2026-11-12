@@ -427,7 +427,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       modelPickerOpen: state.modelPicker !== undefined,
       effortPickerOpen: state.effortPicker !== undefined,
       reasonCaptureOpen: state.reasonDraft !== undefined,
-      approvalPending: state.session?.store.getSnapshot().approval !== undefined,
+      approvalPending:
+        state.session?.store.getSnapshot().approval !== undefined ||
+        state.session?.store.getSnapshot().review !== undefined,
     });
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
@@ -1271,6 +1273,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
+    openDetails: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface
     toggleReasoning: () => undefined, // `/thinking` is chat-only (2.5.H); inert in the bare-Home surface (no live session)

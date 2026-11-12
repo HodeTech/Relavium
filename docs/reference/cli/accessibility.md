@@ -81,6 +81,17 @@ default.
 - **Untrusted text is sanitized at the display boundary** (terminal-escape + bidi/Trojan-Source
   stripping), so model / MCP / pasted content can neither forge the UI nor spoof the reading order.
 
+**MVP-3 Step 2 draft, acceptance open:** approval and tool details provide the
+same keyboard and color-independent inspection in inline and alternate-screen
+chat. The [interaction contract](chat-session.md#proposed-mvp-3-interaction-contract)
+owns navigation, explicit reveal, escaped invisible characters, full-view
+coverage and the 80×24 visibility guard. Approval requires the current measured
+frame to have been flushed; resizing or clipped controls require renewed
+visibility. Transcript hatches carry conversation text and safe structural
+tool summaries, while private preview/reveal buffers remain in the live view.
+These properties do not add assistive-technology semantics to the full-screen
+renderer.
+
 ## See also
 
 - [home.md](home.md) · [chat-session.md](chat-session.md) — the two interactive surfaces.

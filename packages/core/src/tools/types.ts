@@ -196,7 +196,92 @@ export interface EgressResponse {
   readonly body: string;
 }
 
+/** A source span in the exact side snapshot; offsets are absolute UTF-16 code units. */
+export interface ToolDiffSourceSpan {
+  readonly line: number;
+  readonly start: number;
+  readonly end: number;
+}
+export interface ToolDiffLine {
+  readonly kind: 'context' | 'added' | 'removed';
+  readonly text: string;
+  readonly ending: 'lf' | 'crlf' | 'none';
+  readonly before?: ToolDiffSourceSpan;
+  readonly after?: ToolDiffSourceSpan;
+}
+export type ToolFileEndings = 'empty' | 'lf' | 'crlf' | 'mixed' | 'none';
+export interface ToolFileDiff {
+  readonly before: string | null;
+  readonly after: string;
+  readonly lines: readonly ToolDiffLine[];
+  readonly beforeEndings: ToolFileEndings;
+  readonly afterEndings: ToolFileEndings;
+  readonly stats: {
+    readonly addedLines: number;
+    readonly removedLines: number;
+    readonly beforeBytes: number;
+    readonly afterBytes: number;
+  };
+}
+/** Rich values are in-process display state only: never events, history, journal or exports. */
+export interface ToolPreview {
+  readonly kind: 'operation' | 'saved-result';
+  readonly target?: string;
+  readonly fields: readonly { readonly name: string; readonly value: string }[];
+  readonly diff?: ToolFileDiff;
+}
+export type FsPrepareWriteRequest =
+  | {
+      readonly kind: 'write';
+      readonly path: string;
+      readonly content: string;
+      readonly append?: boolean | undefined;
+      readonly createDirs?: boolean | undefined;
+    }
+  | {
+      readonly kind: 'edit';
+      readonly path: string;
+      readonly oldString: string;
+      readonly newString: string;
+      readonly replaceAll?: boolean | undefined;
+      readonly readScope?: ToolReadScope | undefined;
+    };
+/** Native authority remains private in the returned closures, never a public token. */
+export interface FsPreparedWrite {
+  readonly path: string;
+  readonly before: string | null;
+  readonly after: string;
+  execute(signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<FileWritten>;
+  release(): void | Promise<void>;
+}
+export interface ToolPreparedCall<Result = unknown> {
+  readonly preview: ToolPreview;
+  dispatch(ctx: ToolDispatchContext): Promise<Result>;
+  release(): void | Promise<void>;
+}
+export interface ToolApprovalLiveContext {
+  readonly callId: string;
+  readonly preview: ToolPreview;
+}
+export type ToolLiveEvent =
+  | { readonly phase: 'started'; readonly callId: string; readonly toolId: string }
+  | {
+      readonly phase: 'preview';
+      readonly callId: string;
+      readonly toolId: string;
+      readonly preview: ToolPreview;
+    }
+  | {
+      readonly phase: 'completed';
+      readonly callId: string;
+      readonly toolId: string;
+      readonly outcome: 'success' | 'failure' | 'denied' | 'unknown';
+      readonly summary?: string;
+    };
+export type ToolLiveObserver = (event: ToolLiveEvent) => void;
+
 export interface FsCapability {
+  prepareWrite?(request: FsPrepareWriteRequest, signal?: AbortSignalLike): Promise<FsPreparedWrite>;
   readFile(path: string, opts: FsReadOpts, signal?: AbortSignalLike): Promise<FileRead>;
   writeFile(
     path: string,
@@ -416,7 +501,12 @@ export interface ToolApprovalRequest {
 
 /** The host's verdict. `reject.reason` is an optional, secret-free, display-safe label echoed in the error. */
 export type ToolApprovalDecision =
-  | { readonly outcome: 'approve' }
+  | {
+      readonly outcome: 'approve';
+      /** Commit a provisional mutation grant only after a real, successful non-replay call.
+       * Saved-result delivery never invokes this callback; previews/observers carry no authority. */
+      readonly onDispatchSucceeded?: () => void;
+    }
   | { readonly outcome: 'reject'; readonly reason?: string };
 
 /**
@@ -427,6 +517,7 @@ export type ToolApprovalDecision =
 export type ConfirmActionHook = (
   request: ToolApprovalRequest,
   signal?: AbortSignalLike,
+  live?: ToolApprovalLiveContext,
 ) => Promise<ToolApprovalDecision>;
 
 /**
@@ -447,6 +538,7 @@ export interface ToolApprovalContext {
 }
 
 export interface ToolDispatchContext {
+  readonly onToolLiveEvent?: ToolLiveObserver;
   /** Fresh per agent tool loop, released on every completion/failure; never persisted. */
   readonly readScope?: ToolReadScope;
   /** Supplied at actual execution; preparation and model-controlled arguments grant none. */
@@ -547,6 +639,14 @@ export function modelVisibleDescription(def: {
 export type ToolDelegateName = 'invokeAgent' | 'mediaRead';
 
 export interface ToolDef<Args = unknown, Result = unknown> {
+  /** Closed pure field selection; absent means name-only, never enumerate effective arguments. */
+  readonly preview?: (args: Args) => ToolPreview;
+  /** Trusted first-party filesystem declaration; invocation is read-only and precedes approval. */
+  readonly prepare?: (
+    args: Args,
+    host: ToolHost,
+    ctx: ToolDispatchContext,
+  ) => Promise<ToolPreparedCall<Result>>;
   readonly id: ToolId;
   readonly source: ToolSource;
   readonly description: string;
@@ -584,16 +684,16 @@ export interface ToolDef<Args = unknown, Result = unknown> {
    */
   readonly requiresDelegate?: ToolDelegateName;
   /** A filesystem sub-capability, checked by advertisement and at dispatch. */
-  readonly requiresFsMethod?: 'findFiles' | 'searchFiles';
+  readonly requiresFsMethod?: 'findFiles' | 'searchFiles' | 'prepareWrite';
   /**
    * Whether THIS call mutates state outside the process, and what the engine can honestly promise about it
    * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);
    * canonical contract in [effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md)).
    *
    * `undefined` ⇒ this call mutates nothing external and is never journaled. Declared per TOOL, and decided
-   * per CALL, because two tools answer differently depending on their args: `http_request` is an effect for
-   * a non-GET method and not for a GET, and `write_file` is one when appending (appends compose) and not
-   * when overwriting (the whole-file write is naturally idempotent — the file IS the receipt).
+   * per CALL: `http_request` is an effect for a non-GET method and not for a GET. Under ADR-0125 every
+   * built-in `write_file` call (new, overwrite, empty/unchanged and append) and `edit_file` is tier 3;
+   * final byte equality is not a receipt for inode/security-metadata publication.
    *
    * A function on the def rather than a central switch, mirroring {@link policyTarget}: a central predicate
    * would have to reach into arg shapes it does not own and guess, which is how it drifts from the tool.

@@ -85,7 +85,12 @@ function fixture(
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
-    effects: { prepare, settle, discard },
+    effects: {
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
+      prepare,
+      settle,
+      discard,
+    },
     effectSlot: 0,
     beforeDispatch,
   };

@@ -5,6 +5,7 @@
  * this module's own location, so a candidate copy cannot be sealed against different files.
  */
 import assert from 'node:assert/strict';
+import { inspectNativeAssets, nativeSourceBinding } from '../native-fs/assets.mjs';
 import { createRequire } from 'node:module';
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
@@ -67,6 +68,14 @@ export function finalizedPublicFiles(root, staging) {
     .filter((path) => !path.endsWith('.map'));
   assert.ok(outputs.length > 0 && outputs.length <= 256);
   const actual = [];
+  const native = Object.hasOwn(graph.inputs, 'src/engine/tool-host/fs-native-metadata.ts')
+    ? inspectNativeAssets(join(cli, 'dist/native-fs'), {
+        complete: true,
+        binding: nativeSourceBinding(root),
+      })
+    : undefined;
+  if (native !== undefined)
+    for (const [name, bytes] of native.files) files.set(`package/dist/native-fs/${name}`, bytes);
   for (const path of outputs) {
     assert.match(path, /^dist\/[A-Za-z0-9_-]+\.js$/u, 'PACKED_CLI_UNREVIEWED_GRAPH_OUTPUT');
     const bytes = readOrdinaryFile(join(cli, path), 8 * 1024 * 1024);
@@ -75,10 +84,22 @@ export function finalizedPublicFiles(root, staging) {
   }
   assert.deepEqual(
     readdirSync(join(cli, 'dist')).sort(byCodeUnit),
-    outputs.map((path) => basename(path)).sort(byCodeUnit),
+    [...outputs.map((path) => basename(path)), ...(native === undefined ? [] : ['native-fs'])].sort(
+      byCodeUnit,
+    ),
     'PACKED_CLI_EXTRA_FINAL_OUTPUT',
   );
   const record = JSON.parse(readOrdinaryFile(join(staging, 'finalized.json'), 1024 * 1024));
+  if (native !== undefined)
+    assert.deepEqual(
+      record.nativeAssets,
+      [...native.files].map(([name, bytes]) => ({
+        path: `dist/native-fs/${name}`,
+        bytes: bytes.length,
+        sha256: sha256(bytes),
+      })),
+      'PACKED_CLI_NATIVE_RECORD_DRIFT',
+    );
   const byPath = (left, right) => byCodeUnit(left.path, right.path);
   assert.deepEqual(
     [...record.outputs].sort(byPath),

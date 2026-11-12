@@ -18,13 +18,14 @@ For the full package layout this runbook references, see
 |------|-----|-------|
 | Node.js (LTS) | Runs the TypeScript engine and all surfaces | Use the version pinned in [tech-stack.md](../tech-stack.md). |
 | pnpm | Monorepo package manager | `corepack enable` is the simplest install path. |
-| Rust toolchain (`rustup`, `cargo`) | Builds the Tauri v2 desktop backend | Only needed to build `apps/desktop`. The engine, CLI, and tests do not need Rust. |
+| Rust toolchain (`rustup`, `cargo`) | Builds the CLI filesystem metadata adapter and Tauri v2 desktop backend | CLI contributors use the exact [native toolchain pin](../../apps/cli/native/fs-metadata/rust-toolchain.toml) and the platform's native linker/build tools. Installed CLI users do not compile this adapter. |
 | Tauri OS prerequisites | Native WebView + build deps | macOS: Xcode Command Line Tools. Windows: WebView2 + MSVC build tools. Linux: WebKitGTK + libsecret dev packages. See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/). |
 | Git | Workflows and agents are git-native YAML | — |
 | GnuPG ≥ 2.2.8 (`gpg`) | The release custody tests (`pnpm run ci`) encrypt synthetic map containers | Required, never skipped: the tests fail without it, and with a system-wide `gpg.conf` or `common.conf` in the directory `gpgconf --list-dirs sysconfdir` names (a global configuration refuses as `GPG_CONFIG`; Homebrew ships only `scdaemon.conf` there, and Debian and Ubuntu ship no such directory). macOS: `brew install gnupg`. Debian/Ubuntu: `apt install gnupg` (the CI Ubuntu runner has it). Windows: run these tests under WSL, since they use POSIX process and permission tools; the CI runs them on Ubuntu only. Release tooling, never a runtime dependency. |
 
-> You can do meaningful work on the engine and CLI **without** the Rust/Tauri
-> toolchain. Install Rust only when you start on `apps/desktop`.
+> The shared TypeScript engine does not require Rust. Building the CLI now builds its
+> current-host adapter asset first; the [native delivery tooling](../../tools/native-fs/README.md)
+> separates that contributor build from complete package production and installed use.
 
 ## 1. Clone and install
 

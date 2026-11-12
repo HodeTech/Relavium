@@ -809,6 +809,7 @@ async function chatCommandBody(
       const doctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          operatorHomeDir: homeDir,
           ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
           cwd: deps.global.cwd,
           ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
@@ -1264,6 +1265,7 @@ async function chatResumeCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        operatorHomeDir: homeDir,
         ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
@@ -1510,6 +1512,7 @@ export function createChatModeControl(
     workspaceDir: built.context.workingDir,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
+    ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
   // ADR-0066/0071: seed the footer's effort indicator from the session's initial effective tier (override ??
@@ -1919,6 +1922,13 @@ export function createChatLineHandler(
       store.toggleReasoning();
       emitOutput(`reasoning panel: ${store.getSnapshot().reasoningVisible ? 'shown' : 'hidden'}`);
     },
+    openDetails: () => {
+      if (!interactive) {
+        emitOutput('/details is available in interactive chat.');
+        return;
+      }
+      if (!noticesStopped()) store.openDetails();
+    },
     // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
@@ -2228,6 +2238,7 @@ async function buildFreshChatWiring(
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    operatorHomeDir: deps.homeDir,
     ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
     cwd: deps.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
@@ -2527,6 +2538,7 @@ async function buildReseatWiring(
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    operatorHomeDir: deps.homeDir,
     ...(resumed.workOwner === undefined ? {} : { workOwner: resumed.workOwner }),
     cwd: deps.global.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
@@ -2662,6 +2674,7 @@ function buildInteractiveMentionReader(
   if (!chatIsInteractive(deps.io, deps.global)) return undefined;
   const fsArm = assembleToolEnv({
     profile: 'chat-read-only',
+    ...(built.operatorHomeDir === undefined ? {} : { operatorHomeDir: built.operatorHomeDir }),
     fsScopeTier: built.context.fsScopeTier,
     workspaceDir: built.context.workingDir,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
@@ -2811,6 +2824,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
+    closeQuietly(deps.io, 'tool previews', store.sealToolPreviews);
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
     // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
     // session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).

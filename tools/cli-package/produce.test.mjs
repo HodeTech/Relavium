@@ -46,6 +46,7 @@ function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
   return {
     seen,
     ports: {
+      nativeAssets: () => {},
       pnpm: async (args, options) => {
         assert.deepEqual(args, ['--version']);
         seen.pnpm = options;
@@ -273,6 +274,7 @@ test(
         environment: {},
         temporary,
         ports: {
+          nativeAssets: () => {},
           pnpm: async () => ({ stdout: '9.12.3\n', stderr: '' }),
           excludesFile: async () => undefined,
           prepare: async () => ({ source: SHA, dirty: false, files: 1 }),
@@ -489,6 +491,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
@@ -711,6 +714,7 @@ try {
     environment: {},
     temporary: ${JSON.stringify(temporary)},
     ports: {
+    nativeAssets: () => {},
       pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
       excludesFile: async () => undefined,
       prepare: async () => { throw new Error('PACKED_CLI_SOURCE_CHANGED_DURING_COPY'); },
@@ -753,6 +757,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
@@ -831,6 +836,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),

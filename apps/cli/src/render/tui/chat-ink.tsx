@@ -1,3 +1,5 @@
+import type { ToolDisplay } from './tool-display.js';
+import { ToolReviewHost } from './tool-review-view.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
   Box,
@@ -182,13 +184,14 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
 function TranscriptLine(
   props: Readonly<{
     entry: TranscriptEntry;
+    displays?: ReadonlyMap<string, ToolDisplay> | undefined;
     color: boolean;
     columns?: number | undefined;
     acknowledgement?: TranscriptAcknowledgement | undefined;
   }>,
 ): ReactElement {
   const { entry, color } = props;
-  const lines = wrapTranscript([entry], props.columns ?? 80, color);
+  const lines = wrapTranscript([entry], props.columns ?? 80, color, props.displays);
   useLayoutEffect(() => {
     if (entry.role === 'notice' && lines.length > 0) props.acknowledgement?.inlineNotice(entry);
   }, [entry, props.acknowledgement, lines.length]);
@@ -272,6 +275,8 @@ interface ChatAppProps {
 }
 
 interface ChatViewProps {
+  readonly toolDisplays?: ReadonlyMap<string, ToolDisplay> | undefined;
+  readonly hidden?: boolean;
   readonly markdown?:
     | Pick<MarkdownStream, 'tail' | 'plainTail' | 'sourceTail' | 'elided'>
     | undefined;
@@ -487,8 +492,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
   const wrappedTranscript = useMemo(
     () =>
-      viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols, color),
-    [viewport?.cols, state.transcript, color],
+      viewport === undefined
+        ? undefined
+        : wrapTranscript(state.transcript, viewport.cols, color, props.toolDisplays),
+    [viewport?.cols, state.transcript, color, props.toolDisplays],
   );
   // Static advances its cursor even when a child paints no rows. Retain its
   // admitted prefix during width suspension, then deliver pending entries once
@@ -504,7 +511,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     ? state.transcript
     : state.transcript.slice(0, admittedInlineCount.current);
   return (
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
+    <Box
+      display={props.hidden === true ? 'none' : 'flex'}
+      flexDirection="column"
+      {...(viewport === undefined ? {} : { flexGrow: 1 })}
+    >
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
@@ -514,6 +525,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             <TranscriptLine
               key={index}
               entry={entry}
+              displays={props.toolDisplays}
               color={color}
               columns={props.columns}
               acknowledgement={props.acknowledgement}
@@ -545,11 +557,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           the honest Esc-to-cancel affordance (Esc aborts the command, keeping the session; Ctrl-C would end it). */}
       {running && (
         <Box flexDirection="column">
-          {state.liveToolCalls.map((call) => (
-            <Text key={call.id} {...colorProps(color, 'yellow')}>
-              {formatToolCall(call)}
-            </Text>
-          ))}
+          {state.liveToolCalls
+            .filter((call) => state.liveObserver !== true || !call.resolved)
+            .map((call) => (
+              <Text key={call.id} {...colorProps(color, 'yellow')}>
+                {formatToolCall(call, props.toolDisplays?.get(call.id))}
+              </Text>
+            ))}
           {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
               body only when expanded. Shown above the busy line whenever the turn streamed reasoning. */}
           {reasoningPanel !== undefined && (
@@ -686,6 +700,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     reasoningEffort,
     reasoningVisible,
     approval,
+    review,
+    toolDisplays,
     markdown,
     displaySuspended,
   } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
@@ -1231,7 +1247,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       modelPickerOpen: modelPickerRef.current !== undefined,
       effortPickerOpen: effortPickerRef.current !== undefined,
       reasonCaptureOpen: reasonDraftRef.current !== undefined,
-      approvalPending: snap.approval !== undefined,
+      approvalPending: snap.approval !== undefined || snap.review !== undefined,
     });
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
@@ -1250,6 +1266,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       windowSize.columns,
       scrollGeomRef.current.height,
       props.store.getSnapshot().color,
+      props.store.getSnapshot().toolDisplays,
     );
 
   const routeSelection = (event: TerminalMouseEvent): void => {
@@ -1299,6 +1316,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.transcript,
       windowSize.columns,
       props.store.getSnapshot().color,
+      props.store.getSnapshot().toolDisplays,
     ).map((line) => line.text);
     const store = props.store;
     void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
@@ -1327,6 +1345,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
     if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
+      props.store.invalidateToolReview();
       props.onSuspend?.();
       return;
     }
@@ -1340,6 +1359,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       if (read.kind !== 'none') {
         const mouse = read.kind === 'event' ? read.event : undefined;
         const overlayOwnsKeyboard =
+          props.store.getSnapshot().review !== undefined ||
           reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
           searchRef.current !== undefined ||
@@ -1359,6 +1379,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         }
         return; // CONSUMED in every state — a mouse report's raw bytes must never type into the prompt
       }
+    }
+    const reviewAction = props.store.handleReviewInput(char, key);
+    if (reviewAction === 'handled') return;
+    if (reviewAction === 'abort') {
+      if (props.onAbort !== undefined) props.onAbort();
+      else props.store.answerApproval({ outcome: 'reject' });
+      return;
     }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
@@ -1720,7 +1747,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       width={layoutColumns(windowSize.columns)}
       {...(viewport === undefined ? {} : { height: viewport.rows })}
     >
+      <ToolReviewHost
+        store={props.store}
+        size={{ cols: windowSize.columns, rows: windowSize.rows }}
+        hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+        clipboard={props.clipboard}
+      />
       <ChatView
+        hidden={review !== undefined}
+        toolDisplays={toolDisplays}
         markdown={markdown}
         displaySuspended={displaySuspended}
         acknowledgement={acknowledgement}

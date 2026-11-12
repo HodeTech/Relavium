@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, statSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertExit, invoke, ndjson, poll } from './process.mjs';
+import { assertExit, invoke, ndjson, poll, startOwned } from './process.mjs';
 
 const workflow = (id, nodes, edges, extra = {}) =>
   JSON.stringify({ schema_version: '1.0', workflow: { id, nodes, edges, ...extra } });
@@ -251,6 +251,109 @@ export async function assertInstalledWorkflows(context) {
     effectRows,
     'Denied effect must not dispatch or create effect journal rows',
   );
+  // Real installed CLI -> compiled AgentNodeExecutor -> native host -> durable effect journal.
+  // Only the already source-owned SDK transport is scripted; no product approval or loader is replaced.
+  const nativeWorkflow = join(home, 'native-write.relavium.yaml');
+  const nativeTarget = join(home, 'native-write-target.txt');
+  const nativePrompt = 'packaged native write prompt';
+  writeFileSync(nativeTarget, 'installed native original bytes\n');
+  if (process.platform !== 'win32') chmodSync(nativeTarget, 0o640);
+  const nativePolicy = statSync(nativeTarget, { bigint: true });
+  writeFileSync(
+    nativeWorkflow,
+    workflow(
+      'packaged-native-write',
+      [
+        {
+          id: 'writer',
+          type: 'agent',
+          agent_ref: 'writer-agent',
+          prompt_template: nativePrompt,
+          max_tokens: 256,
+        },
+      ],
+      [],
+      {
+        agents: [
+          {
+            id: 'writer-agent',
+            provider: 'openai',
+            model: 'gpt-4o-mini',
+            system_prompt: 'Synthetic offline native write fixture.',
+            tools: ['write_file'],
+          },
+        ],
+      },
+    ),
+  );
+  const nativeCallsBefore = calls().length;
+  const barrier = join(home, 'native-sdk-barrier');
+  const ownedNative = startOwned(cli(['run', nativeWorkflow, '--json']), {
+    cwd: home,
+    env: environment(home, {
+      RELAVIUM_OPENAI_API_KEY: 'sk-relavium-synthetic-package-smoke',
+      RELAVIUM_PACKAGE_SMOKE_PROMPT: nativePrompt,
+      RELAVIUM_PACKAGE_SMOKE_REPLY: 'packaged native write complete',
+      RELAVIUM_PACKAGE_SMOKE_WRITE: '1',
+      RELAVIUM_PACKAGE_SMOKE_WRITE_BARRIER: barrier,
+    }),
+  });
+  let nativeCompleted;
+  try {
+    await poll(
+      () => {
+        assert.equal(ownedNative.isSettled(), false, ownedNative.output().stderr);
+        return existsSync(barrier + '.ready');
+      },
+      20_000,
+      'Installed SDK did not reach its post-tool response barrier',
+    );
+    const started = ndjson(ownedNative.output().stdout).find(
+      (event) => event.type === 'run:started',
+    );
+    assert.ok(started?.runId);
+    assert.equal(readFileSync(nativeTarget, 'utf8'), 'installed native reviewed bytes 🙂\n');
+    const nativeAfter = statSync(nativeTarget, { bigint: true });
+    if (process.platform !== 'win32') {
+      for (const field of ['uid', 'gid']) assert.equal(nativeAfter[field], nativePolicy[field]);
+      assert.equal(nativeAfter.mode & 0o7777n, nativePolicy.mode & 0o7777n);
+    }
+    const nativeEffects = query(
+      'SELECT * FROM run_effects WHERE scope = ?',
+      `run:${started.runId}:writer`,
+    );
+    assert.equal(
+      nativeEffects.length,
+      1,
+      'Installed native publication must have one durable effect before terminal retention',
+    );
+    assert.equal(nativeEffects[0].state, 'committed');
+    assert.equal(nativeEffects[0].tool_id, 'write_file');
+    writeFileSync(barrier + '.release', '', { flag: 'wx', mode: 0o600 });
+    ownedNative.child.stdin.end();
+    const result = await ownedNative.result();
+    assertExit(result, 0);
+    nativeCompleted = ndjson(result.stdout).find((event) => event.type === 'run:completed');
+    assert.equal(nativeCompleted?.runId, started.runId);
+    assert.equal(
+      query('SELECT * FROM run_effects WHERE scope = ?', `run:${started.runId}:writer`).length,
+      0,
+      'Terminal non-resumable run must sweep its committed effect',
+    );
+    const observed = calls().slice(nativeCallsBefore);
+    assert.equal(observed.filter((call) => call.operation === 'keyring.Entry').length, 3);
+    assert.equal(
+      observed.filter((call) => call.denied && call.operation !== 'keyring.Entry').length,
+      0,
+    );
+  } finally {
+    await ownedNative.close();
+  }
+  const nativeSdkCalls = calls()
+    .slice(nativeCallsBefore)
+    .filter((call) => call.operation === 'sdk-fetch');
+  assert.equal(nativeSdkCalls.length, 2);
+  assert.equal(nativeSdkCalls[1].body.messages.at(-1).role, 'tool');
   return {
     workflow: {
       terminal: completed,
@@ -274,7 +377,20 @@ export async function assertInstalledWorkflows(context) {
       aborted: true,
       repeatUnchanged: true,
     },
-    effects: { realGovernedWriteRefused: true, targetAbsent: true, journalUnchanged: true },
+    effects: {
+      realGovernedWriteRefused: true,
+      targetAbsent: true,
+      journalUnchanged: true,
+      installedNativeWrite: {
+        runId: nativeCompleted.runId,
+        exactBytes: true,
+        existingMetadataPreserved: process.platform !== 'win32',
+        committedEffectsBeforeTerminal: 1,
+        terminalRetentionSweep: true,
+        sdkFixtureDispatches: 2,
+        realNetworkDispatches: 0,
+      },
+    },
   };
 }
 

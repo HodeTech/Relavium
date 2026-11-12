@@ -20,8 +20,9 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > crate/features and toolchain pins belong in the component's Cargo manifest,
 > committed lockfile and Rust toolchain file, not the npm catalog. Native
 > implementation starts only after those inputs pass the recorded provenance,
-> cooling-window, license/advisory and feature-closure review. The
-> [native contract](reference/cli/native-filesystem-metadata.md) owns the minimal
+> cooling-window, license/advisory and feature-closure review; its initial
+> [dependency audit receipt](reference/cli/native-filesystem-metadata.md#initial-dependency-audit)
+> records that review. The [native contract](reference/cli/native-filesystem-metadata.md) owns the minimal
 > Node-API level, eight-target proof obligation and adapter-specific prebuilt
 > delivery rule; it does not certify the existing SQLite/keyring install paths
 > as download- or compiler-free. No native implementation is accepted yet.

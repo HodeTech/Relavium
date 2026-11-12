@@ -66,6 +66,7 @@ beforeEach(() => {
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 const fs = () =>
   createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,
@@ -98,6 +99,7 @@ it('FS_CAUSAL_LEXICAL_PROVENANCE', async () => {
   const alias = join(base, '.azure');
   symlinkSync(outside, alias, 'junction');
   const host = createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,
@@ -112,6 +114,7 @@ it('FS_CAUSAL_SCRATCH_EXACT', async () => {
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   writeFileSync(join(scratch, 'safe.txt'), 'safe');
   const host = createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'sandboxed',
     workspaceDir: workspace,
     readOnly: false,
