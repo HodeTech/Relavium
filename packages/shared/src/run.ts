@@ -625,6 +625,10 @@ export type EffectPrepareVerdict =
   | { readonly outcome: 'proceed' }
   | { readonly outcome: 'replay'; readonly result: unknown };
 
+export type EffectInspectReplayVerdict =
+  | { readonly outcome: 'miss' }
+  | { readonly outcome: 'replay'; readonly result: unknown };
+
 /**
  * The journal as a DISPATCH sees it (ADR-0080 §7) — the correlation is already closed over, so a dispatch
  * site cannot get it wrong, and the engine stamps it because only the engine knows it.
@@ -635,10 +639,6 @@ export type EffectPrepareVerdict =
  * **Required, not optional**, on ADR-0078 §4's reasoning: an optional port would mean a host that forgets it
  * silently has no guarantee — a fail-open default inside a fail-closed item, invisible at every call site.
  */
-export type EffectInspectReplayVerdict =
-  | { readonly outcome: 'miss' }
-  | { readonly outcome: 'replay'; readonly result: unknown };
-
 export interface EffectDispatchPort {
   /** Read only: absence is a miss, every unusable/present session row conflicts. */
   inspectReplay: (

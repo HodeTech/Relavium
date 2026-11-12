@@ -85,3 +85,10 @@ describe('strict retained effect evidence', () => {
     expect(reads).toBe(0);
   });
 });
+
+it('retains every own mapping key as exact replay evidence', () => {
+  const mapping: unknown = JSON.parse('{"__proto__":"ignored","constructor":"x","safe":"y"}');
+  const decoded = decodeRetainedEffectEnvelope({ ...valid, outputMapping: mapping });
+  expect(Object.keys(decoded?.outputMapping ?? {})).toEqual(['__proto__', 'constructor', 'safe']);
+  expect(Object.hasOwn(decoded?.outputMapping ?? {}, '__proto__')).toBe(true);
+});

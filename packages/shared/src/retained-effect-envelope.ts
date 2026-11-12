@@ -24,7 +24,13 @@ const EnvelopeObjectSchema = z
     mapped: z.unknown().optional(),
     truncated: z.boolean(),
     summary: z.string(),
-    outputMapping: z.record(z.string()).nullable(),
+    outputMapping: z
+      .custom<Record<string, string>>(
+        (value) =>
+          ownDataRecord(value) && Object.values(value).every((item) => typeof item === 'string'),
+      )
+      .transform((value) => Object.fromEntries(Object.entries(value)))
+      .nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
