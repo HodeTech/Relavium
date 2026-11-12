@@ -2944,6 +2944,36 @@ This closes the verified code findings, not Step 3 acceptance. A fresh complete
 cumulative review and separate final-source security sitting remain required,
 followed by current-head combined CI and maintainer PR review.
 
+### MVP-3 Step 3 credential bootstrap correction (2026-11-12)
+
+Two fresh regular reviewers examine cumulative `a751fd4a..e376215e` without
+verified findings. Authority/lifecycle runs 102 focused cases; UX/configuration
+runs 89. The separate Sol/high security sitting runs 129 cases and identifies
+one medium residual: standalone credential bootstrap opened configuration again
+only to obtain `homeDir`, after the starting-mode owner existed. A narrower
+successful observation there could escape sticky revocation if a subsequent
+owned read saw `auto` again. This finding-bearing security sitting is not
+acceptance, and the regular verdicts do not supersede it.
+
+Chat's production resolver now forwards `homeDir` from its already validated
+snapshot through both interactive and headless key construction. The existing
+opened-database branch and other commands' strict loader behavior stay intact;
+no second chat configuration observation occurs merely to locate history.
+Four new actual dispatcher/resolver regressions fail on `e376215e` and pass with
+the correction, across fresh/resumed command routes and both output modes.
+They use a changed invalid source, real in-memory provider storage/custom-endpoint
+binding and a mocked keychain; they assert the exact selected home, joined
+temporary resource and absence of credential reads. All 44 affected dispatcher
+cases pass. This is evidence for eliminating the redundant read, not a runtime
+reproduction of the transient narrowing exploit or a live-keychain test.
+The full workspace rerun passes 18,522 cases with 23 conditional skips,
+including all 489 CLI files and 7,803 CLI passes/twelve skips. All seventeen
+lint/typecheck tasks, six prerequisite build tasks, format and 888-file
+isolation checks pass. Existing causal declarations and their bounds are unchanged.
+
+Fresh complete cumulative and separate security reviews on the corrective
+commit remain required before implementation acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
