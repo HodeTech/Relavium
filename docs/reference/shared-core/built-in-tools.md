@@ -22,8 +22,10 @@ A tool declaration in YAML has a `type` discriminator:
 and its linked plan authorize these additions. Ranges, discovery, observed-read
 bookkeeping and the session spill store are implemented on `development`, with
 the [source-bound local acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
-distinguishing review/security gates from checkpoint CI. Editing/prepared writes remain Step 2 and the
-built-in default grant remains unchanged until Step 3.
+distinguishing review/security gates from checkpoint CI.
+[Step 2 is also accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12),
+including editing/prepared writes and native metadata validation. The built-in
+default grant remains unchanged until Step 3.
 
 - `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
   `replace_all` (default false). A nonunique match without `replace_all`, no

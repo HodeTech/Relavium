@@ -2,7 +2,7 @@
 
 - **Status**: Canonical
 - **Owner ADR**: [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
-- **Replay refinement**: [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md), accepted design; Step 2 implementation in progress, not accepted.
+- **Replay refinement**: [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md), implemented and accepted with MVP-3 Step 2 on development.
 - **Surface**: Shared — the engine (`packages/core`), the run store (`packages/db`), and both dispatch producers.
 
 This is the one canonical home for **what the engine promises about external side effects**, the identities it
@@ -201,7 +201,7 @@ follow-up stays visible.
 
 ### Retained evidence and early inspection — MVP-3
 
-**Accepted design refinement; Step 2 implementation in progress, not accepted (2026-11-12):**
+**Implemented and accepted with Step 2 on development (2026-11-12):**
 [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
 adds one required read-only dispatch operation and closes two inherited replay
 validation gaps. This subsection owns the new protocol; §4's node gate and

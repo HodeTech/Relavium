@@ -2778,6 +2778,52 @@ timeouts remain refused and do not reproduce in this quiet run; no source
 fix or claimed underlying-handle diagnosis is needed. Their 25-file retained
 trees total 10,416,638 / 10,415,042 bytes including `export.json`.
 
+### MVP-3 Step 2 acceptance (2026-11-12)
+
+The Step 2 implementation at `bc8c34b21ff82a7cd9ee2ea4608badb69e763e05`
+is accepted on `development` under the requested review/fix cycle. The preceding
+records preserve each verified finding, correction and source-bound review.
+Complete backend, UI, native and delivery affected rounds and separate security
+sittings are clean after their corrections. No verified finding or new deferral
+remains. Later static sittings are identified as static; they do not claim the
+execution proofs supplied by author runs and actual CI.
+
+[CI run 43188556943](https://github.com/HodeTech/Relavium/actions/runs/43188556943)
+completes successfully with all 26 jobs. This includes all eight actual native
+profiles, Windows database/filesystem/headless integration, all four installed
+consumers and their aggregate, both filesystem and secrets control shards,
+wire/usage and product-map controls, exact Node 22.13.0 floor, enforced coverage
+and the final lint/typecheck/test/build/format/fence/smoke checks. The final
+workspace run passes 18,359 tests with 24 conditional platform/provider skips;
+the Linux CLI portion passes 7,656 with thirteen conditional skips. The author's
+quiet macOS CLI run passes 7,657 with twelve skips. No timeout, coverage floor,
+semantic witness or control population was reduced.
+
+The independent local full filesystem capture matches the committed fixture
+bytes and accepts all 115 controls/345 phases/8,247 case executions. Both retained
+exports replay successfully with exact inventories, named removal witnesses,
+source restoration and naturally joined processes. Their whole retained trees
+are 1,051 files/30,461,044 bytes and 1,033 files/30,091,557 bytes, inside the
+unchanged 2,000-file/64-MiB limits. Quiet Mac and Linux live-export captures also
+complete; earlier refused loaded runs stay refused in the historical record.
+
+Final native bindings are source
+`ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`,
+build `3ffa16b4f3d37ac451fb69c8226f938091d3f93bfeef0cc8041c3cc51e43ff0f`,
+loader `9f234956841c944cdff8024f644fdd08bfcbda7647c0a2359a39ed90ff912b3f`
+and unchanged locked dependencies/notices. Actual Windows success after the
+hardlink fixture ordering correction does not retroactively establish the
+precise cause of the earlier opaque failure.
+
+Step 3 now starts under the already accepted ADR-0116/plan: strict starting-mode
+configuration, shared revocable invocation authority and mode/default UX, frozen
+agent identity across lifecycle rebuilds, and the new built-in grant. Static
+preparation confirms the existing per-turn confirmation-hook identity and CLI
+final-dispatch seam suffice; no additional shared/core dispatch API or ADR is needed. This does
+not enable the grant before its implementation. Whole-MVP-3 documentation,
+integrated acceptance and the `development` to `main` PR follow Step 3; maintainer
+PR review, merge and release are not claimed here.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

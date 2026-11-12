@@ -596,16 +596,17 @@ owned and are not switched to global chat policy.
 
 ## Prepared writes and live previews — MVP-3
 
-**Step 2 implementation in progress, not accepted (2026-11-12):** implements
+**Step 2 accepted on development (2026-11-12):** implements
 accepted [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md),
 [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
 and the [effect-journal protocol](effect-journal.md#retained-evidence-and-early-inspection--mvp-3).
-Shared/core/DB and CLI implementation work is uncommitted; implementation review,
-security and acceptance gates remain open. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+The [source-bound acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+records clean implementation/security reviews and combined CI.
+[ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
 defines the all-write durability and native metadata completion requirements,
-accepted as corrected design after maintainer review. The interfaces below describe the current
-Step 2 source; the durability/metadata requirements describe its required final
-behavior, not accepted native support. Existing event and secret-provenance
+accepted as corrected design after maintainer review. The interfaces below
+describe the accepted Step 2 implementation, including its validated native
+target matrix. Existing event and secret-provenance
 contracts remain in force.
 
 The engine-side `ToolDef` gains an optional pure preview declaration, separate

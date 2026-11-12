@@ -1,12 +1,14 @@
 # Native filesystem security metadata
 
-- **Status**: Accepted design; native implementation in progress, acceptance open.
+- **Status**: Implemented and accepted on development with MVP-3 Step 2 (2026-11-12).
 - **Owner ADR**: [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md).
 - **Surface**: CLI host only; [prepared writes](../shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3) and [packaging](packaging.md).
 
 This is the canonical accepted metadata boundary for prepared replace, append
 and edit. It does not certify the historical mode/uid/gid-only prototype. The maintainer authorized the corrected decision after supplied review
-findings were verified; native implementation/profile acceptance remains open.
+findings were verified. The [Step 2 acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+records the implemented boundary, eight actual target profiles and installed
+consumer proofs. Dated probe records below retain their original acceptance state.
 
 ## Authority and lifetime
 

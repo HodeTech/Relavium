@@ -303,7 +303,7 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F); keep a user boundary even if that retains an extra message. Checks the [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before missing/invalid-bound notices. When permitted, a bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
-| `/details` | **MVP-3 Step 2 draft:** inspect bounded live tool-call details using the [shared interaction contract](#proposed-mvp-3-interaction-contract). Interactive chat-only; a plain/JSON session prints a fixed remedy. It executes no tool, sends no model message and reconstructs no historical preview. |
+| `/details` | **MVP-3 Step 2 accepted on development:** inspect bounded live tool-call details using the [shared interaction contract](#proposed-mvp-3-interaction-contract). Interactive chat-only; a plain/JSON session prints a fixed remedy. It executes no tool, sends no model message and reconstructs no historical preview. |
 | `/scrollback` | Dump the transcript into the terminal's **native scrollback** (to scroll, search, select, copy — Enter returns). One of the three copy-and-search **hatches** described under § [Entry](#entry) — the alt screen has no scrollback of its own. Not available before the first turn. Chat-only. |
 | `/edit` | Open the transcript **read-only** in `$EDITOR` (to search or copy). See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
 | `/copy` | Copy the **whole unwrapped transcript** to the system clipboard over **OSC 52**. See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
@@ -313,12 +313,13 @@ An unrecognized `/…` command — or an **undeclared argument** on a known one 
 
 ## Proposed MVP-3 interaction contract
 
-**Accepted design (2026-11-11); Step 2 implementation in progress:** approved together with
+**Accepted design (2026-11-11); Step 2 accepted on development (2026-11-12):** approved together with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
 and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
-Step 2's approval/details and structural restoration are draft implementations
-on `development`, pending complete native-write integration, implementation
-reviews and acceptance. The mode/default picker remains Step 3. The stable
+Step 2's approval/details and structural restoration complete native-write
+integration, independent implementation/security reviews and combined CI in the
+[acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+The mode/default picker remains Step 3. The stable
 sections below describe released command and mode availability.
 
 **Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker

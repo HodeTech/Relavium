@@ -80,9 +80,11 @@ pre-build security design sitting is complete.
 [ADR-0124](../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
 and its expanded replay/evidence contracts are accepted after verifying the
 supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
-captures their disposition. [Step 2 implementation is active](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-implementation-start-2026-11-12);
-ADR-0124 and the native decision below need no further design approval.
-Steps 2/3 and whole-MVP-3 acceptance remain open.
+captures their disposition. [Step 2 is accepted on development](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+after its independent reviews, separate security sittings and all 26 checkpoint
+CI jobs passed. Step 3 implementation is active: the built-in grant, strict
+startup-mode configuration and shared mode/default UX. Whole-MVP-3 acceptance
+and maintainer PR review remain open; no additional design approval is pending.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
@@ -90,19 +92,18 @@ OS/algorithm probes established the mode/uid/gid-only replacement hazard.
 is accepted under the maintainer's instruction after verifying the supplied
 reviews: all model file writes require tier-3 durability; new-file policy,
 staging recovery/model isolation and the narrow native host/build exception
-are specified in its canonical contract. Native implementation is active after
-the initial dependency pin/audit. The
+are specified in its canonical contract. The
 [author checkpoint and first review corrections](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-first-implementation-review-corrections-2026-11-12)
 record bounded local native/workflow evidence and the actual CI limitations;
 the [final affected validation record](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-final-affected-validation-2026-11-12)
 records the clean final UI review/security sitting, native ownership/cleanup
 corrections and the runtime-loader refusal fix. Final affected reviews and
-separate UI/backend/native/delivery security sittings are clean. Checkpoint
-`3beeefea` passes enforced coverage and all acceptance-tool tests; actual
-native validation at `c6cbb295` passes all eight targets and the exact packed
-producer. Combined CI still exposes cold-checkout fixture, Windows shared-home
-and installed-consumer integration findings, tracked in that same record.
-Step 2 acceptance remains open.
+separate UI/backend/native/delivery security sittings are clean. The verified
+integration findings are closed at `bc8c34b2`: all eight native targets,
+Windows integration, all four installed consumers, both filesystem and secrets
+control shards, coverage and final toolchain checks pass. The acceptance record
+owns exact source bindings, review scope and retained-evidence counts. The
+built-in default grant remains read-only until Step 3 is implemented.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible

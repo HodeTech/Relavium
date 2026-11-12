@@ -236,7 +236,7 @@ geometry. Esc and Ctrl-C/Ctrl-D cancellation remain available. A resize restores
 existing input and selection. The resize is observed on stdout's cross-platform `resize`
 event (backed by SIGWINCH on POSIX).
 
-**MVP-3 Step 2 draft, acceptance open:** the same minimum and measured input
+**MVP-3 Step 2 accepted on development (2026-11-12):** the same minimum and measured input
 custody also apply inside the Home chat and standalone chat. Prepared-write
 approval and `/details` share the
 [chat interaction contract](chat-session.md#proposed-mvp-3-interaction-contract)
