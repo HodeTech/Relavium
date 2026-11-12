@@ -296,7 +296,9 @@ const readFileTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'File path within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty file path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       glob: {
         type: 'boolean',
@@ -358,7 +360,7 @@ const findFilesTool = defineBuiltin({
       path: {
         type: 'string',
         maxLength: 4096,
-        description: 'Scoped directory; defaults to the workspace.',
+        description: 'Scoped directory, at most 4096 UTF-8 bytes; defaults to the workspace.',
       },
       glob: {
         type: 'string',
@@ -403,7 +405,7 @@ const searchFilesTool = defineBuiltin({
       path: {
         type: 'string',
         maxLength: 4096,
-        description: 'Scoped directory; defaults to the workspace.',
+        description: 'Scoped directory, at most 4096 UTF-8 bytes; defaults to the workspace.',
       },
       pattern: {
         type: 'string',
@@ -421,7 +423,7 @@ const searchFilesTool = defineBuiltin({
       glob: {
         type: 'string',
         maxLength: 4096,
-        description: 'Optional bounded file glob; not a regular expression.',
+        description: 'Optional file glob, at most 4096 UTF-8 bytes; not a regular expression.',
       },
     },
     required: ['pattern'],
@@ -522,7 +524,9 @@ const writeFileTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'Destination file within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty destination path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       content: {
         type: 'string',
@@ -583,7 +587,9 @@ const editFileTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'File within the host-authorized roots, previously read in this tool loop.',
+        maxLength: 4096,
+        description:
+          'Nonempty file path within the host-authorized roots, at most 4096 UTF-8 bytes, previously read in this tool loop.',
       },
       old_string: {
         type: 'string',
@@ -642,7 +648,9 @@ const listDirectoryTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'Directory path within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty directory path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       recursive: {
         type: 'boolean',
@@ -650,7 +658,9 @@ const listDirectoryTool = defineBuiltin({
       },
       glob: {
         type: 'string',
-        description: 'Optional glob pattern used to filter the returned directory entries.',
+        maxLength: 4096,
+        description:
+          'Optional glob pattern, at most 4096 UTF-8 bytes, used to filter the returned directory entries; empty is allowed.',
       },
     },
     required: ['path'],

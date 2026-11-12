@@ -119,9 +119,17 @@ function expectShape(schema: unknown, shape: Shape): void {
 }
 
 const BOUNDED_FIELDS = [
+  { id: 'read_file', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'find_files', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'find_files', field: 'glob', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'search_files', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'search_files', field: 'pattern', cap: 1024, units: /(?:1\s*KiB|1,?024)/i },
+  { id: 'search_files', field: 'glob', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'write_file', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'write_file', field: 'content', cap: 8 * 1024 * 1024, units: /(?:8\s*MiB|8,?388,?608)/i },
+  { id: 'edit_file', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'list_directory', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'list_directory', field: 'glob', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'http_request', field: 'body', cap: 1024 * 1024, units: /(?:1\s*MiB|1,?048,?576)/i },
   { id: 'git_commit', field: 'message', cap: 16 * 1024, units: /(?:16\s*KiB|16,?384)/i },
 ];
@@ -262,5 +270,10 @@ describe('actual built-in model metadata through the public LLM seam', () => {
     const mcp = properties(builtin('mcp_call').llmVisibleParams);
     expect(description(mcp['server'])).toMatch(/configur/i);
     expect(description(mcp['tool'])).toMatch(/name|identif/i);
+  });
+
+  it('[MODEL-EMPTY-GLOB] list_directory preserves its optional empty glob behavior', () => {
+    const glob = properties(builtin('list_directory').llmVisibleParams)['glob'];
+    expect(description(glob)).toMatch(/empty is allowed/i);
   });
 });
