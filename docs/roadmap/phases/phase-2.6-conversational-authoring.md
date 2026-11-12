@@ -3281,6 +3281,47 @@ mutation, witness, timeout, evidence bound or runtime source changes. The failed
 PR run and superseded push retry remain historical evidence; the corrected head
 must pass fresh complete scanner/platform checks before merge.
 
+### PR #99 correction plan (2026-11-13)
+
+**Status: triage and design review; implementation acceptance remains open.**
+The maintainer supplied additional independent reviews against `80e8cd88`.
+Their claims are checked against current code and accepted contracts, with
+focused reproductions where needed. The review-owned Home catch is rejected:
+it silences an existing visible configuration error and fails its regression;
+restoring the existing owner catch makes both affected cases pass. Approximate
+finding counts and grep-only coverage claims are not accepted as defect proof.
+
+Keep the verified corrections in **one cohesive increment**, with package-scoped
+commits, instead of creating a review cycle for each small finding:
+
+- Runtime correctness, privacy and UX: output-reference projections, source/diff
+  admission, current approval/notice visibility, protected aliases, discovery
+  work and ignore roots, owned teardown and truthful uncertain-write outcomes.
+- Native ownership and proof: source admission, producer custody and recovery
+  completion under proposed [ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md).
+  These dependent changes wait for explicit maintainer approval. Preserve
+  existing atomic publication, security policy and evidence on uncertainty.
+- Verification and delivery: targeted real boundary/negative tests, byte-pin
+  checkout rules, source-bound artifact retry behavior, measured outer CI
+  scheduling and current reference/runbook status. Keep every case, witness,
+  internal deadline and release gate unless separately justified and approved.
+
+The detailed disposition register belongs in ignored `docs/reviews/`, with an
+individual outcome for each supplied claim and evidence for confirmed fixes or
+rejections. Existing accepted limitations remain explicit; no issue is moved to
+a future milestone merely to close this increment. ADR-0121 is not accepted,
+filesystem containment is not relaxed and symlinked private storage is not
+silently enabled by following a reviewer suggestion.
+
+After implementation, run the appropriate complete toolchain and actual native
+profiles, two fresh independent cumulative review rounds and a separate native
+security sitting. Fix verified findings and commit them, then obtain fresh
+source-bound complete CI and Sonar results on the final PR head. The passing
+`80e8cd88` PR run (26/26) is historical evidence, not acceptance of later fixes.
+Its push retry's cancelled Node-22 advisory job completed typecheck, tests and
+build before the outer watchdog, but is not counted as a successful check.
+Maintainer review and merge remain separate.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

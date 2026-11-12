@@ -93,7 +93,8 @@ gaps are fixed; fresh complete cumulative and separate final-source security
 reviews are clean. Its external-review correction at `7af8e05a` passes full local
 verification with 18,541 cases and 24 conditional skips. The checkpoint PR carries
 current-head combined CI and maintainer review;
-no additional MVP-3 design approval or confirmed deferred finding remains.
+at that checkpoint, no additional MVP-3 design approval or confirmed deferred
+finding remained. The 2026-11-13 correction increment below is now active.
 
 **External review follow-up (2026-11-12):** both `4e337553` GitHub Actions runs
 pass 26/26 jobs. The two verified quadratic preprocessing stalls are corrected.
@@ -110,8 +111,19 @@ workspace/build verification, a new clean complete cumulative review and a
 clean focused corrective security sitting bind that final implementation.
 PR #99's final-head scanner and combined platform checks remain the merge gate;
 the local macOS profile does not replace eight native targets or four installed
-consumers. No new ADR or design approval is needed; maintainer review and merge
-remain separate.
+consumers. That Sonar-only increment needed no new ADR; maintainer review and
+merge remained separate.
+
+**Additional PR #99 review (2026-11-13):** the supplied reports at `80e8cd88`
+are being reconciled against actual code, contracts and focused probes. Verified
+runtime/UX, native lifetime and delivery corrections remain open. The
+[correction plan](phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+keeps them in one cohesive increment with fresh cumulative reviews, a separate
+security sitting and final-head CI/Sonar acceptance.
+[ADR-0126](../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+proposes explicit native source-admission and recovery-lifetime changes; those
+changes await maintainer approval. ADR-0121 and other pending MVP-4/release
+decisions are not implicitly accepted by this correction work.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.

@@ -65,6 +65,12 @@ and maintainer review.
 The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 owns exact evidence and limits. MVP-4 is the next implementation milestone;
 its pending ADR approvals remain required. No merge or npm publication is claimed.
+**PR #99 review follow-up (2026-11-13) is active.** New verified runtime/UX,
+native lifetime and delivery findings require correction and fresh acceptance.
+[ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+is Proposed; its source-admission and recovery changes require maintainer
+approval before implementation. Earlier clean review/CI receipts retain their
+scoped historical meaning; they do not close this new correction increment.
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

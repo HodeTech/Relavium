@@ -169,6 +169,7 @@ flowchart TD
 | 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
 | 0124 | [Inspect retained run effects before file preparation](0124-inspect-retained-run-effects-before-file-preparation.md) | Accepted | 2026-11-11 |
 | 0125 | [File writes preserve security metadata through a native host adapter](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md) | Accepted | 2026-11-12 |
+| 0126 | [Native write admission and recovery keep explicit lifetime proof](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md) | Proposed | 2026-11-13 |
 
 ## Creating a new ADR
 
