@@ -135,6 +135,19 @@ it.runIf(process.platform === 'win32')(
   },
 );
 
+it.runIf(process.platform === 'win32')(
+  'bounds raw Windows component admission before an OS path lookup',
+  async () => {
+    const inventory = await captureFsStageInventory(home);
+    for (const fill of [' ', '.']) {
+      const target = join(workspace, `${fill.repeat(64 * 1024 - 1)}X`);
+      const start = performance.now();
+      expect(() => inventory.assertPath(target)).not.toThrow();
+      expect(performance.now() - start, 'MVP3_WINDOWS_STAGE_ADMISSION_LINEAR').toBeLessThan(500);
+    }
+  },
+);
+
 it.skipIf(process.platform === 'win32')(
   'rejects an opened hard-link alias to a recorded stage and permits an ordinary file',
   async () => {

@@ -3026,6 +3026,62 @@ approvals. The published npm version remains `0.1.1`, and the release guard is
 unchanged. Physical-terminal/live-provider manual testing complements the
 automated evidence; it is not claimed by source or mounted-terminal tests.
 
+### MVP-3 SonarCloud follow-up (2026-11-12)
+
+At `49f340e3`, both push and PR #99 GitHub Actions runs complete all 26 jobs
+successfully, including the full filesystem/secrets matrices, eight native
+profiles, Windows integration and four installed consumers. The separate
+SonarCloud application check fails its new-code reliability/security ratings.
+Its complete public API catalog has 209 issues: 183 code smells, nineteen
+bugs and seven vulnerabilities; GitHub annotations expose only fifty.
+
+Fresh Terra/high triage of all 26 bug/vulnerability reports finds no demonstrated
+application vulnerability or correctness defect in their observed call paths.
+The nineteen sorting reports concern deliberately ordinal string equality,
+catalogs and source-bound inventories; locale-sensitive sorting would change
+the contract. Three traversal reports treat explicit contributor/test argv as
+LLM input. Two PATH reports concern the existing trusted contributor/CI
+toolchain boundary, not installed runtime lookup. The GNU download verifies a
+hard-coded per-architecture SHA-256 before extraction; this proves integrity,
+not absence of public-request exposure or denial of service on downgraded
+transport. The Docker producer overrides the image default with nonzero
+UID:GID, dropped capabilities and no-new-privileges. These are source-context
+dispositions, not a remote Sonar classification or a claim that its gate passed.
+
+Fresh Sol/high source triage covers all 183 code smells across forty files and
+33 language-qualified rules. It verifies two medium responsiveness problems:
+root ignore preprocessing uses an unanchored repeated whitespace suffix regex,
+and Windows private-stage path folding uses an equivalent repeated dot/space
+suffix regex before OS path rejection. Admitted adversarial input exhibits
+quadratic work: 64 KiB ignore lines stall for roughly 1.7–2.2 seconds, and raw
+Windows `save_to` components can reach normalization without an OS component
+length bound. The remaining 181 reports are optional readability/style choices
+or inapplicable suggestions; no extra mandatory defective branch is established.
+In particular, ordered awaits, code-unit surrogate checks, own-property checks,
+the undeclared bundler define, and digest-pinned image tags keep their intended
+semantics. No quality-profile suppression or remote issue closure is made.
+
+The correction removes only the unnecessary repetition from the boolean ignore
+suffix check and reuses the already-linear filesystem component fold in one
+CLI-private pure helper. Stream-prefix, case, trailing ASCII dot/space and
+protected-namespace semantics remain. Differential local verification matches
+4,681 short mixed/Unicode/control inputs against the prior stage expression.
+Six named performance assertions fail on the preserved prior algorithms,
+while thirteen semantic controls pass; all nineteen pass after correction.
+The production discovery regressions cover both tools and both root ignore
+files, with separate CRLF/blank/comment/trailing-whitespace controls.
+
+The complete passing workspace run has 18,541 cases, 23 conditional skips and
+491 CLI files (7,822 CLI passes/twelve skips), with the corrected production
+bytes. The subsequent test-only Windows guard addition is a declared extra
+POSIX skip; its final focused cohort passes 32 cases with two Windows-only
+skips on macOS. Windows CI now explicitly includes the new two files and the
+actual inventory guard's long raw-component regression. Seventeen lint/typecheck
+tasks, six prerequisite builds, formatting, 890-file isolation and causal
+declaration provenance pass. Native Rust/build/loader inputs and the 139/549
+secrets declarations remain unchanged. Fresh corrective cumulative/security
+reviews and new current-head CI precede renewed PR readiness.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

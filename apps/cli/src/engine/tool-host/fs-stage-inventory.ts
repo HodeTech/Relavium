@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 
 import type { AbortSignalLike } from '@relavium/shared';
 import { HostDeniedError, throwIfAborted } from './errors.js';
+import { foldPathComponent } from './fs-path-component.js';
 
 const MAX_RECORDS = 128;
 const MAX_RECORD_BYTES = 16 * 1024;
@@ -168,11 +169,7 @@ export async function captureFsStageInventory(
   const pathParts = (path: string): string[] =>
     resolve(path)
       .split(sep)
-      .map((part) =>
-        process.platform === 'win32'
-          ? (part.split(':')[0] ?? '').replace(/[. ]+$/, '').toLowerCase()
-          : part,
-      );
+      .map((part) => (process.platform === 'win32' ? foldPathComponent(part) : part));
   const protectIdentity = (identity: Identity): void => {
     const normalized = normalizeNodeFsIdentity(identity);
     identities.add(`${normalized.dev}:${normalized.ino}`);

@@ -94,6 +94,15 @@ reviews are clean. Full local verification passes 18,522 cases with 23 condition
 skips. The checkpoint PR carries current-head combined CI and maintainer review;
 no additional MVP-3 design approval or confirmed deferred finding remains.
 
+**External review follow-up (2026-11-12):** both `49f340e3` GitHub Actions runs
+pass 26/26 jobs. Separate SonarCloud catalog triage verifies two quadratic
+preprocessing stalls, now corrected with regression evidence; its remaining
+reports have explicit source-context dispositions. The
+[follow-up record](phases/phase-2.6-conversational-authoring.md#mvp-3-sonarcloud-follow-up-2026-11-12)
+distinguishes these fixes from optional style recommendations and contextual
+security reports. PR #99 is temporarily draft while fresh corrective review and
+current-head CI run; no new ADR or design approval is needed.
+
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
 [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)

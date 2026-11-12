@@ -32,6 +32,7 @@ import {
 } from './fs-native-metadata.js';
 import { captureRequiredCreationMask } from './fs-creation-mask.js';
 import { runNativeStage } from './fs-native-write.js';
+import { foldPathComponent } from './fs-path-component.js';
 import {
   captureFsStageInventory,
   FsStageInventoryError,
@@ -832,19 +833,6 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   'microsoft.powershell_profile.ps1', // PowerShell profiles
 ]);
 
-/** Fold a path component the way a filesystem does for matching: take the pre-`:` part (NTFS `name::$DATA`
- * addresses `name`), lowercase (case-insensitive FS), and strip trailing dots/spaces (Win32 drops those at open
- * time) — so `.BASHRC` / `.bashrc.` / `.git ` / `.gitconfig::$DATA` all fold to the bare protected name. */
-function foldPathComponent(name: string): string {
-  const beforeStream = name.split(':', 1)[0] ?? name; // NTFS Alternate-Data-Stream / drive qualifier
-  const lowered = beforeStream.toLowerCase();
-  // Strip trailing dots/spaces (Win32 drops them at open time) via a linear scan — NOT a `/[. ]+$/` regex, whose
-  // `+$` backtracks (flagged by the static analyzer) and would break this file's no-backtracking-RegExp posture.
-  let end = lowered.length;
-  while (end > 0 && (lowered[end - 1] === '.' || lowered[end - 1] === ' ')) end -= 1;
-  return lowered.slice(0, end);
-}
-
 /**
  * Whether an absolute path is protected — a `.git`/`.relavium`/`.ssh` directory segment, or a startup/config
  * basename. The pure predicate behind {@link assertNotProtectedPath}; exported so a caller (the ADR-0057 chat
@@ -1607,9 +1595,7 @@ async function discover(
           .split('\n')
           .some(
             (line) =>
-              /[ \t]+\r?$/.test(line) &&
-              line.trim().length > 0 &&
-              !line.trimStart().startsWith('#'),
+              /[ \t]\r?$/.test(line) && line.trim().length > 0 && !line.trimStart().startsWith('#'),
           ) ||
         lines.some((line) => line.includes('[') || line.includes(']') || line.includes('\\'))
       ) {
