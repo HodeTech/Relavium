@@ -41,6 +41,7 @@ import {
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
@@ -330,6 +331,29 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
+  // A store update alone is not visibility proof (it may be hidden, scrolled away or replaced).
+  // Keep one content-free terminal fallback until its actual delivery is acknowledged.
+  let effectAttentionPending = false;
+  let effectAttentionDeliveryFailure: CliError | undefined;
+  const noteEffectAttention = (): void => {
+    effectAttentionPending = true;
+    if (!rendererActive || controller === undefined) return;
+    const current = controller.getSnapshot();
+    if (current.mode === 'chat' && current.session !== undefined)
+      current.session.store.notice(ABORTED_EFFECT_ATTENTION_NOTICE);
+    else controller.setProviderState(current.keyless, ABORTED_EFFECT_ATTENTION_NOTICE);
+  };
+  const flushEffectAttention = async (): Promise<void> => {
+    if (!effectAttentionPending) return;
+    try {
+      const deliver = () => deps.io.writeErrAcknowledged(`${ABORTED_EFFECT_ATTENTION_NOTICE}\n`);
+      await (ownership === undefined ? deliver() : ownership.surface.work.work.retainWork(deliver));
+      effectAttentionPending = false;
+    } catch (cause) {
+      effectAttentionDeliveryFailure = new CliError('output_unavailable', '', { cause });
+      ownership?.surface.work.failure(effectAttentionDeliveryFailure);
+    }
+  };
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
   let unsubscribeOnboardingInput: (() => void) | undefined;
@@ -600,6 +624,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const stopProviderSetup = (): void => promptFlow.cancel();
   ownership?.surface.work.signal.addEventListener('abort', stopProviderSetup, { once: true });
 
+  let result: ExitCode;
   try {
     const homeStore = createHomeStore({
       sessions: opened.store,
@@ -1241,7 +1266,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
-            onEffectAttention: (note) => store.notice(note),
+            onEffectAttention: noteEffectAttention,
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
           });
@@ -1388,7 +1413,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
-            onEffectAttention: noteToStore,
+            onEffectAttention: noteEffectAttention,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,
           });
@@ -1733,7 +1758,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       configAltScreen: config.altScreen,
     });
 
-    return await new Promise<ExitCode>((resolve, reject) => {
+    result = await new Promise<ExitCode>((resolve, reject) => {
       stopHomeInput = (): void => {
         if (homeInputSealed) return;
         homeInputSealed = true;
@@ -2000,13 +2025,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       ];
       await Promise.all(closing);
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
+        let restored = false;
         try {
           await controls?.write(DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR);
           await controls?.close();
           setupView?.release();
+          restored = true;
         } catch (cause) {
           ownership.surface.work.cleanupUncertain(cause);
         }
+        // Host close joined every actual producer before this point. The surface's entered
+        // root owns this captured stderr ACK after Ink/input/control restoration, never a host notifier.
+        if (restored) await flushEffectAttention();
       }
     } else {
       rendererActive = false;
@@ -2021,6 +2051,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       disposeJobControl?.();
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+      if (unmounted && pasteDisabled && mouseDisabled) await flushEffectAttention();
       closeDb(); // always close the shared db
     }
     nativePrompt.ui.dispose();
@@ -2036,4 +2067,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     }
   }
+  if (effectAttentionDeliveryFailure !== undefined) throw effectAttentionDeliveryFailure;
+  return result;
 }

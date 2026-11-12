@@ -2423,6 +2423,244 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await driving;
   });
 
+  it.each([
+    { surface: 'fresh', delivery: 'immediate', liveAbort: false },
+    { surface: 'resumed', delivery: 'immediate', liveAbort: false },
+    { surface: 'cleared', delivery: 'immediate', liveAbort: false },
+    { surface: 'reseated', delivery: 'immediate', liveAbort: false },
+    { surface: 'fresh', delivery: 'held', liveAbort: false },
+    { surface: 'fresh', delivery: 'failed', liveAbort: false },
+    { surface: 'fresh', delivery: 'immediate', liveAbort: true },
+  ] as const)(
+    'delivers joined uncertainty after owned $surface Home unmount (delivery=$delivery; liveAbort=$liveAbort)',
+    async ({ surface, delivery, liveAbort }) => {
+      const f = invocationFixture();
+      let captured: RootAppProps | undefined;
+      let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+      let executions = 0;
+      let released = false;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = () => {
+          released = true;
+          resolve();
+        };
+      });
+      const errs: string[] = [],
+        order: string[] = [];
+      let acknowledge = () => {};
+      let deliveryEntered = false;
+      const deliveryAck =
+        delivery === 'held'
+          ? new Promise<void>((resolve) => {
+              acknowledge = resolve;
+            })
+          : Promise.resolve();
+      const toolHost: NonNullable<Parameters<typeof buildChatSession>[0]['toolHost']> = {
+        fs: {
+          readFile: () =>
+            Promise.resolve({
+              content: '',
+              mimeType: 'text/plain',
+              sizeBytes: 0,
+              lastModified: '',
+            }),
+          listDirectory: () => Promise.resolve({ entries: [] }),
+          writeFile: () => Promise.reject(new Error('blind write forbidden')),
+          prepareWrite: () =>
+            Promise.resolve({
+              path: 'private-target',
+              before: 'old',
+              after: 'new',
+              release: () => {},
+              execute: async () => {
+                executions++;
+                await held;
+                return { path: 'private-target', bytesWritten: 3 };
+              },
+            }),
+        },
+      };
+      const made = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          io: {
+            ...io,
+            writeErr: (text) => {
+              errs.push(text);
+              order.push('stderr-sync');
+            },
+            writeErrAcknowledged: async (text) => {
+              expect(order).toContain('restored');
+              deliveryEntered = true;
+              await deliveryAck;
+              if (delivery === 'failed') throw new Error('private-attention-output-failure');
+              errs.push(text);
+              order.push('stderr-ack');
+            },
+            writeOutAcknowledged: (text) => {
+              if (text === DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR)
+                order.push('restored');
+              return Promise.resolve();
+            },
+          },
+          providers: scriptedResolver([
+            textTurn('ready'),
+            [
+              { type: 'tool_call_start', id: 'write', name: 'write_file' },
+              {
+                type: 'tool_call_delta',
+                id: 'write',
+                argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+              },
+              { type: 'tool_call_end', id: 'write' },
+              stop('tool_use'),
+            ],
+          ]),
+          buildSession: async (options) => {
+            built = await buildChatSession({ ...options, toolHost });
+            return built;
+          },
+          buildResumedSession: async (options) => {
+            const resumed = await buildResumedChatSession({ ...options, toolHost });
+            built = resumed;
+            return resumed;
+          },
+        },
+      );
+      const driving = driveHome(made.deps);
+      const completion = driving.then(
+        (value) => ({ value }),
+        (cause: unknown) => ({ cause }),
+      );
+      try {
+        const props = captured;
+        if (props === undefined) throw new Error('Home render missing');
+        type(props, 'hello');
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => {
+          expect(props.controller.getSnapshot().mode).toBe('chat');
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
+        });
+        const first = props.controller.getSnapshot().session;
+        if (surface === 'resumed') {
+          type(props, '/cancel');
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+          props.controller.handleKey('', { downArrow: true });
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => {
+            expect(props.controller.getSnapshot().mode).toBe('chat');
+            expect(props.controller.getSnapshot().session).not.toBe(first);
+          });
+        } else if (surface === 'cleared') {
+          type(props, '/clear');
+          props.controller.handleKey('', { downArrow: true });
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => {
+            expect(props.controller.getSnapshot().session).not.toBe(first);
+            expect(props.controller.getSnapshot().mode).toBe('chat');
+          });
+        } else if (surface === 'reseated') {
+          type(props, '/models');
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined());
+          type(props, 'claude-opus-4-8');
+          props.controller.handleKey('', ENTER);
+          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+            props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first));
+        }
+        if (built === undefined || built.startingMode === undefined)
+          throw new Error('Home host missing');
+        await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+        applyChatMode(
+          makeChatModeEnv({
+            session: built.session,
+            tools: built.tools,
+            workspaceDir: built.context.workingDir,
+            startingModeAuthority: built.startingMode.authority,
+            prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+          }),
+          'accept-edits',
+        );
+        type(props, 'write');
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => expect(executions).toBe(1));
+        const originatingStore = props.controller.getSnapshot().session?.store;
+        if (liveAbort) {
+          built.session.abort();
+          release();
+          await built.whenHostSafeToClose();
+          await vi.waitFor(() =>
+            expect(
+              originatingStore
+                ?.getSnapshot()
+                .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
+            ).toBe(true),
+          );
+        }
+        made.signalHandlers[0]?.(15);
+        await vi.waitFor(() => expect(made.unmount).toHaveBeenCalledOnce());
+        expect(released).toBe(liveAbort);
+        if (!liveAbort) {
+          expect(errs.join('')).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+          expect(f.exit).not.toHaveBeenCalled();
+        }
+        release();
+        await built.whenHostSafeToClose();
+        if (delivery === 'held') {
+          await vi.waitFor(() => expect(deliveryEntered).toBe(true));
+          expect(order).toContain('restored');
+          expect(f.exit).not.toHaveBeenCalled();
+          expect(closeSpy).not.toHaveBeenCalled();
+          acknowledge();
+        }
+        const outcome = await completion;
+        if (delivery === 'failed') {
+          expect('cause' in outcome).toBe(true);
+          expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+        } else {
+          expect('value' in outcome).toBe(true);
+          expect(errs).toContain(ABORTED_EFFECT_ATTENTION_NOTICE + '\n');
+          expect(order.indexOf('stderr-ack')).toBeGreaterThan(order.indexOf('restored'));
+        }
+        expect(order).not.toContain('stderr-sync');
+        expect(
+          originatingStore
+            ?.getSnapshot()
+            .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
+        ).toBe(liveAbort);
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          expect.objectContaining({ state: 'prepared' }),
+        ]);
+        expect(
+          JSON.stringify(client.sqlite.prepare('SELECT content FROM session_messages').all()),
+        ).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(errs.join('')).not.toContain('private-target');
+        expect(errs.join('')).not.toContain('private-attention-output-failure');
+        if (delivery === 'failed') {
+          expect(f.registry.activeOwners).toBe(0);
+          expect(f.exit).not.toHaveBeenCalled();
+          // Infrastructure failure reserves the existing diagnostic interval before its finite backstop.
+          f.advance(3_000);
+        }
+        await vi.waitFor(() =>
+          expect(f.exit).toHaveBeenCalledWith(delivery === 'failed' ? 9 : 143),
+        );
+      } finally {
+        release();
+        acknowledge();
+        made.signalHandlers[0]?.(15);
+        await completion;
+        await f.registry.terminate({ kind: 'normal' });
+      }
+    },
+  );
+
   describe('a budget warning reaches the in-Home chat’s transcript', () => {
     it('routes through the view store, and never to stderr', async () => {
       let captured: RootAppProps | undefined;

@@ -355,22 +355,26 @@ export function createChatStore(
         calls.length,
       );
       switch (action.kind) {
-        case 'state':
+        case 'state': {
+          const previousReview = review;
           review =
             action.state.screen === 'list'
               ? {
                   ...action.state,
                   callId:
-                    review.screen === 'list' ? calls[action.state.selected]?.callId : review.callId,
+                    previousReview.screen === 'list'
+                      ? calls[action.state.selected]?.callId
+                      : previousReview.callId,
                   selected:
-                    review.screen === 'list'
+                    previousReview.screen === 'list'
                       ? action.state.selected
-                      : calls.findIndex((call) => call.callId === review.callId),
+                      : calls.findIndex((call) => call.callId === previousReview.callId),
                 }
               : action.state;
           reviewPage = undefined;
           flush();
           break;
+        }
         case 'abort':
           return 'abort';
         case 'deny':
