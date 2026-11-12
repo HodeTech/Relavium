@@ -54,7 +54,11 @@ const LINUX = [
   'linux_actual_nontruncating_access_denial_preserves_source',
   'linux_stage_alias_and_privilege_bits_refuse_without_publication',
 ].map((name) => `linux::tests::${name}`);
+export const WINDOWS_OWNER_CASE =
+  'windows::tests::windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned';
 const WINDOWS = [
+  'windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned',
+  'windows_token_context_owner_pair_is_closed_and_binds_identity',
   'windows_recovery_ownership_accepts_final_dacl_and_refuses_links_or_directories',
   'windows_profile_preserves_dacl_owner_group_zone_and_exact_bytes',
   'windows_profile_denied_data_write_and_append_leave_source_unchanged',
@@ -77,10 +81,17 @@ export function rustPopulation(platform) {
     passed: [
       ...passed,
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
+      ...(platform === 'win32'
+        ? [
+            'common::template_cleanup_tests::windows_changed_current_token_context_preserves_stage_until_restored',
+          ]
+        : []),
       ...[
         'ordinary_template_failures_cleanup_before_next_operation',
         'template_guard_preserves_hardlinked_and_replaced_objects',
         'uncertain_template_cleanup_retains_reservation_and_alias',
+        'private_creation_opened_handle_failures_leave_no_owned_artifacts',
+        'private_directory_unopened_identity_preserves_reservation',
       ].map((name) => `common::template_cleanup_tests::${name}`),
     ].sort(),
     ignored: [

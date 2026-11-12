@@ -300,13 +300,27 @@ fn stage_existing(
     let setup = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
-        let stage_directory = CurrentProfile::create_private_directory(&stage_path)?;
-        owned.adopt_directory(&stage_directory)?;
+        let stage_directory =
+            CurrentProfile::create_private_directory_owned(&stage_path, &mut |directory| {
+                #[cfg(test)]
+                if crate::test_hooks::fail("private-dir-adoption") {
+                    return Err(NativeFailure::Unsupported);
+                }
+                owned.adopt_directory(directory)
+            })?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-file-create");
-        let payload =
-            CurrentProfile::create_private_file(&stage_directory, std::ffi::OsStr::new("payload"))?;
-        owned.adopt_empty(&stage_directory, &payload)?;
+        let payload = CurrentProfile::create_private_file_owned(
+            &stage_directory,
+            std::ffi::OsStr::new("payload"),
+            &mut |payload| {
+                #[cfg(test)]
+                if crate::test_hooks::fail("private-file-adoption") {
+                    return Err(NativeFailure::Unsupported);
+                }
+                owned.adopt_empty(&stage_directory, payload)
+            },
+        )?;
         CurrentProfile::recheck_existing(
             &prepared.snapshot,
             &prepared.source,
@@ -330,7 +344,9 @@ fn stage_existing(
     let (stage_directory, mut payload) = match setup {
         Ok(value) => value,
         Err(error) => {
-            let _ = owned.cleanup();
+            if error != NativeFailure::CleanupUncertain {
+                let _ = owned.cleanup();
+            }
             return Err(error);
         }
     };
@@ -412,13 +428,18 @@ fn publish_staged_existing(
             .path
             .file_name()
             .ok_or(NativeFailure::Unsupported)?;
+        state.owned.recheck_authority()?;
         CurrentProfile::publish_existing(
             &state.payload,
             &state.stage_directory,
             std::ffi::OsStr::new("payload"),
             &state.prepared.parent,
             target,
-        )
+        )?;
+        state
+            .owned
+            .recheck_authority()
+            .map_err(|_| NativeFailure::PossiblyPublished)
     })();
     let cleanup = state.owned.cleanup();
     match (result, cleanup) {
@@ -832,8 +853,14 @@ fn stage_new(
     let setup = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
-        let stage_directory = CurrentProfile::create_private_directory(&stage_path)?;
-        owned.adopt_directory(&stage_directory)?;
+        let stage_directory =
+            CurrentProfile::create_private_directory_owned(&stage_path, &mut |directory| {
+                #[cfg(test)]
+                if crate::test_hooks::fail("private-dir-adoption") {
+                    return Err(NativeFailure::Unsupported);
+                }
+                owned.adopt_directory(directory)
+            })?;
         let template = format!(".relavium-fs-stage-v1.template.{nonce}");
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-template-create");
@@ -948,13 +975,18 @@ fn publish_staged_new(
             &state.payload,
             &state.owned.stage_path().join("payload"),
         )?;
+        state.owned.recheck_authority()?;
         CurrentProfile::publish_new(
             &state.payload,
             &state.stage_directory,
             std::ffi::OsStr::new("payload"),
             &state.prepared.parent,
             &state.prepared.target,
-        )
+        )?;
+        state
+            .owned
+            .recheck_authority()
+            .map_err(|_| NativeFailure::PossiblyPublished)
     })();
     let cleanup = state.owned.cleanup();
     match (result, cleanup) {
@@ -1693,6 +1725,168 @@ mod template_cleanup_tests {
             parent_snapshot,
             target: "target".into(),
         }
+    }
+
+    #[test]
+    fn private_creation_opened_handle_failures_leave_no_owned_artifacts() {
+        let _reset = ClearFailure;
+        for phase in [
+            "private-dir-open",
+            "private-dir-adoption",
+            "private-file-open",
+            "private-file-adoption",
+            "private-marker-adopted",
+        ] {
+            let fixture = Fixture::new();
+            let mask = mask();
+            let path = fixture.0.join("target");
+            std::fs::write(&path, b"before").expect("fixture source");
+            let source = open_source(&path).expect("source");
+            let operation = WriteOperation::Replace;
+            let snapshot =
+                CurrentProfile::capture_existing(&source, &path, operation).expect("source policy");
+            let identity = CurrentProfile::identity(&source).expect("source identity");
+            let parent = CurrentProfile::open_parent(&fixture.0).expect("parent");
+            let parent_snapshot =
+                CurrentProfile::capture_parent(&parent, mask).expect("parent policy");
+            let prepared = PreparedSource {
+                source,
+                path: path.clone(),
+                operation,
+                snapshot,
+                identity,
+                parent,
+                parent_path: fixture.0.clone(),
+                parent_snapshot,
+            };
+            crate::test_hooks::inject_failure(Some(phase));
+            let result = stage_existing(
+                prepared,
+                &fixture.0.join("home"),
+                b"before",
+                b"never published",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                mask,
+                &AtomicBool::new(false),
+            );
+            assert!(matches!(result, Err(NativeFailure::Unsupported)));
+            assert_eq!(std::fs::read(path).expect("source remains"), b"before");
+            assert!(!std::fs::read_dir(&fixture.0)
+                .expect("root")
+                .any(|entry| entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".relavium-fs-stage-v1.")));
+            let index = fixture.0.join("home/.relavium/fs-staging-v1");
+            assert!(!std::fs::read_dir(index)
+                .expect("inventory")
+                .any(|entry| entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".reserved")));
+        }
+        crate::test_hooks::inject_failure(None);
+        let fixture = Fixture::new();
+        let stage_path = fixture.0.join(".relavium-fs-stage-v1.private-negative");
+        let stage = CurrentProfile::create_private_directory(&stage_path).expect("private stage");
+        for scenario in ["hardlink", "swap"] {
+            let payload = stage_path.join("payload");
+            let alternate = fixture.0.join(format!("private-{scenario}-alternate"));
+            let result = CurrentProfile::create_private_file_owned(
+                &stage,
+                std::ffi::OsStr::new("payload"),
+                &mut |_| {
+                    if scenario == "hardlink" {
+                        std::fs::hard_link(&payload, &alternate).expect("fixture hardlink");
+                    } else {
+                        std::fs::rename(&payload, &alternate).expect("move held file");
+                        std::fs::write(&payload, b"foreign").expect("foreign replacement");
+                    }
+                    Err(NativeFailure::Changed)
+                },
+            );
+            assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+            assert!(alternate.exists());
+            if scenario == "swap" {
+                assert_eq!(std::fs::read(&payload).expect("foreign"), b"foreign");
+            } else {
+                assert_eq!(std::fs::metadata(&payload).expect("payload").len(), 0);
+            }
+            std::fs::remove_file(alternate).expect("alternate cleanup");
+            std::fs::remove_file(payload).expect("payload cleanup");
+        }
+        drop(stage);
+        std::fs::remove_dir(stage_path).expect("stage cleanup");
+        let unknown_directory = fixture.0.join(".relavium-fs-stage-v1.private-child");
+        let result =
+            CurrentProfile::create_private_directory_owned(&unknown_directory, &mut |directory| {
+                drop(CurrentProfile::create_private_file(
+                    directory,
+                    std::ffi::OsStr::new("foreign-child"),
+                )?);
+                Err(NativeFailure::Changed)
+            });
+        assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+        assert!(unknown_directory.join("foreign-child").exists());
+    }
+
+    #[test]
+    fn private_directory_unopened_identity_preserves_reservation() {
+        let fixture = Fixture::new();
+        let _reset = ClearFailure;
+        let mask = mask();
+        crate::test_hooks::inject_failure(Some("private-dir-preopen"));
+        let result = stage_new(
+            prepare(&fixture.0, mask),
+            &fixture.0.join("home"),
+            b"never published",
+            "cccccccccccccccccccccccccccccccc",
+            mask,
+            &AtomicBool::new(false),
+        );
+        assert!(matches!(result, Err(NativeFailure::CleanupUncertain)));
+        assert!(!fixture.0.join("target").exists());
+        assert!(fixture
+            .0
+            .join("home/.relavium/fs-staging-v1/cccccccccccccccccccccccccccccccc.reserved")
+            .exists());
+        assert!(std::fs::read_dir(&fixture.0)
+            .expect("root")
+            .any(|entry| entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".relavium-fs-stage-v1.")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_changed_current_token_context_preserves_stage_until_restored() {
+        let fixture = Fixture::new();
+        let cancelled = AtomicBool::new(false);
+        let _reset = ClearFailure;
+        let mut stage = stage_new(
+            prepare(&fixture.0, None),
+            &fixture.0.join("home"),
+            b"owned payload",
+            "abababababababababababababababab",
+            None,
+            &cancelled,
+        )
+        .expect("stage with current effective token");
+        let stage_path = stage.owned.stage_path().to_owned();
+        crate::test_hooks::inject_failure(Some("changed-token-context"));
+        assert!(stage.owned.cleanup().is_err());
+        assert!(stage_path.join("payload").exists());
+        assert!(!fixture.0.join("target").exists());
+        crate::test_hooks::inject_failure(None);
+        stage
+            .owned
+            .cleanup()
+            .expect("cleanup with unchanged authority restored");
+        assert!(!stage_path.exists());
     }
 
     #[test]

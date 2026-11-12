@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   mkdirSync,
@@ -18,6 +20,8 @@ import {
   nativeSourceBinding,
   NativeAssetError,
   validateNativeManifest,
+  writeNativeAssets,
+  sha256,
 } from './assets.mjs';
 import { syntheticNativeAssets } from './fixture.mjs';
 import { hostTarget, NATIVE_DIRECTORY, NATIVE_TARGETS } from './catalog.mjs';
@@ -240,6 +244,17 @@ test('runtime shim selects only the literal host asset and refuses tampering bef
       join(good.directory, `${hostTarget(process.platform, process.arch, libc)}.node`),
     ]);
     for (const mutate of [
+      ...NATIVE_TARGETS.filter((name) => name.endsWith('-windows-msvc')).map(
+        (target) => (value) => {
+          const manifest = JSON.parse(
+            readFileSync(join(value.directory, 'native-assets.json'), 'utf8'),
+          );
+          const asset = manifest.assets.find((entry) => entry.target === target);
+          asset.execution.platform = 'darwin';
+          delete asset.validation.genuineOwnerContext;
+          writeFileSync(join(value.directory, 'native-assets.json'), JSON.stringify(manifest));
+        },
+      ),
       (value) =>
         appendFileSync(
           join(value.directory, `${hostTarget(process.platform, process.arch, libc)}.node`),
@@ -365,4 +380,100 @@ test('causal isolated assets remain independent of a later moving developer inpu
     () => verifyCausalNativeInputs(value.root, capture),
     /NATIVE_FS_CAUSAL_SOURCE_CHANGED/u,
   );
+});
+
+test('synthetic Windows same-owner receipts cannot pass CI certification or complete eight-target assembly', () => {
+  // All fixture binaries and receipts here are synthetic validator inputs, never native proof.
+  for (const target of NATIVE_TARGETS.filter((name) => name.includes('-windows-'))) {
+    const value = fixture();
+    const asset = value.manifest.assets.find((entry) => entry.target === target);
+    asset.validation.genuineOwnerContext = 'same';
+    const local = { ...value.manifest, scope: 'development-current', assets: [asset] };
+    validateNativeManifest(local);
+    const filesFor = (selected) =>
+      new Map(
+        [...value.files].filter(
+          ([name]) =>
+            name === 'loader.cjs' ||
+            name === 'THIRD_PARTY_NOTICES.txt' ||
+            name === `${selected}.node`,
+        ),
+      );
+    writeNativeAssets(value.directory, local, filesFor(target));
+    const certify = () =>
+      spawnSync(process.execPath, [join(value.root, 'tools/native-fs/check-target.mjs')], {
+        env: { ...process.env, RELAVIUM_EXPECTED_NATIVE_TARGET: target },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+    const refused = certify();
+    assert.equal(refused.error, undefined);
+    assert.equal(refused.status, 1);
+    assert.equal(refused.stdout, '');
+    assert.match(refused.stderr, /NATIVE_FS_WINDOWS_DISTINCT_OWNER_REQUIRED/u);
+    asset.validation.genuineOwnerContext = 'distinct';
+    writeNativeAssets(value.directory, local, filesFor(target));
+    const admitted = certify();
+    assert.equal(admitted.status, 0, admitted.stderr);
+    const original = value.files.get(`${target}.node`);
+    assert.ok(original);
+    const contaminated = Buffer.concat([original, Buffer.from('RELAVIUM_NATIVE_OWNER_CONTEXT')]);
+    value.files.set(`${target}.node`, contaminated);
+    asset.bytes = contaminated.length;
+    asset.sha256 = sha256(contaminated);
+    writeNativeAssets(value.directory, local, filesFor(target));
+    const testBinary = certify();
+    assert.equal(testBinary.status, 1);
+    assert.equal(testBinary.stdout, '');
+    assert.match(testBinary.stderr, /NATIVE_FS_TEST_ONLY_BINARY/u);
+    value.files.set(`${target}.node`, original);
+    asset.bytes = original.length;
+    asset.sha256 = sha256(original);
+    asset.validation.genuineOwnerContext = 'same';
+    const inputs = join(value.root, 'native-producer-fixtures');
+    mkdirSync(inputs);
+    for (const entry of value.manifest.assets)
+      writeNativeAssets(
+        join(inputs, entry.target),
+        { ...value.manifest, scope: 'development-current', assets: [entry] },
+        filesFor(entry.target),
+      );
+    const assembly = spawnSync(
+      process.execPath,
+      [join(value.root, 'tools/native-fs/assemble.mjs'), inputs],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+      },
+    );
+    assert.equal(assembly.error, undefined);
+    assert.equal(assembly.status, 1);
+    assert.equal(assembly.stdout, '');
+    assert.match(assembly.stderr, /NATIVE_FS_WINDOWS_DISTINCT_OWNER_REQUIRED/u);
+    refusal(() => validateNativeManifest(value.manifest), 'PROFILE_EVIDENCE');
+    asset.validation.genuineOwnerContext = 'distinct';
+    writeNativeAssets(
+      join(inputs, target),
+      { ...value.manifest, scope: 'development-current', assets: [asset] },
+      filesFor(target),
+    );
+    const complete = spawnSync(
+      process.execPath,
+      [join(value.root, 'tools/native-fs/assemble.mjs'), inputs],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+      },
+    );
+    assert.equal(complete.status, 0, complete.stderr);
+    const assembled = inspectNativeAssets(value.directory, {
+      complete: true,
+      binding: nativeSourceBinding(value.root),
+    });
+    assert.equal(assembled.manifest.scope, 'release-complete');
+    for (const win of assembled.manifest.assets.filter(
+      (entry) => entry.execution.platform === 'win32',
+    ))
+      assert.equal(win.validation.genuineOwnerContext, 'distinct');
+  }
 });

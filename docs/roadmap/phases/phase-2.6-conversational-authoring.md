@@ -2175,6 +2175,77 @@ arbitrary owner groups, historical token lineage or weakened private records.
 This implementation/proof is in progress and receives a fresh native review
 and the separate final security sitting before acceptance.
 
+### MVP-3 Step 2 final affected validation (2026-11-12)
+
+A fresh complete Terra/high cumulative UI review at `3a04f219` closed the
+same-line search correction with no blocker/high/medium finding and 82 focused
+passes. A separate complete Sol/high UI security sitting passed 318 tests in
+twelve files and found no material issue in consent, visibility, input custody,
+copy/reveal, restoration and ephemeral-content boundaries. These verdicts cover
+the unchanged UI production source, not the later native or delivery changes.
+
+The Windows diagnostic run at `23449920` confirmed that newly created private
+allocation-lock ownership and DACL did not match the required private policy.
+Private files now receive the effective TokenUser's protected descriptor at
+exclusive creation. Destination policy remains OS-derived; supported payload
+ownership is limited to that same effective token's User or designated Owner.
+The same opened token supplies bracketed statistics and owner/user evidence;
+current-operation context is rechecked before destructive work. Recovery makes
+no claim to reconstruct a dead producer's historical token. New-file, stage and
+marker creation retain held identity through adoption; failures that cannot
+prove an exclusively owned empty object preserve the reservation instead of
+deleting by name. A fresh complete Terra/high affected-native source review
+found no blocker/high/medium issue. Actual Windows execution remains required;
+the separate implementation security sitting is recorded below.
+
+The local final native profile passes 33 macOS parent cases and eleven Node
+lifecycle cases; non-root Linux GNU and musl controls pass thirteen parent
+cases each. The full workspace run passes 18,354 tests, with 23 declared
+platform skips; build/format, lint/typecheck and boundary checks pass. These
+results are local evidence, not an eight-target or installed-consumer verdict.
+
+A fresh complete Sol/high affected delivery review found one medium runtime
+loader defect: the Windows owner-proof requirement trusted an unbound receipt
+platform. A synthetic acquisition witness reproduced the bypass before the
+fix. The loader now binds platform, architecture and libc to each finite target
+and derives the owner requirement from that target. Both Windows architectures
+have independent zero-acquisition refusal controls. All 22 profile/asset tests
+pass. Synthetic receipts certify only validator behavior. Actual Windows CI
+and complete assembly require a genuine
+distinct TokenOwner context separately on x64 and arm64; release binaries must
+also be free of the fixed test-hook/checkpoint prefix.
+
+The complete 1,075-case acceptance-tool run first stopped on seven stale native
+source bindings and the root-removal interruption fixture. After refreshing
+the source-bound asset, only the interruption fixture failed. An isolated run
+showed approximately 49 seconds spent constructing its 20,000 files before
+cleanup began, consuming most of the 60-second check-exit bound. The fixture
+now constructs that same tree before spawning the check and atomically adopts
+it into the check root. The shrink-triggered interrupt, exact population,
+60-second exit bound, exit 130 and complete-root-removal assertions remain.
+The targeted case passes; full tool and final coverage repetitions remain due.
+Neither failed run is acceptance evidence. Step 2 and the Step 3 grant remain
+open until all remaining review, security and source-bound platform gates pass.
+
+**Final source-review closure:** a new complete independent Sol/high affected
+delivery review found no blocker/high/medium finding after the loader fix.
+It independently passed all 22 asset/profile tests and twelve additional
+temporary zero-acquisition refusal controls, including each Windows target's
+spoofed platform, owner evidence, architecture and libc. The adjacent cleanup
+fixture correction preserves its original population and assertions; all
+fifteen tests in that file pass. No platform execution is inferred.
+
+Separate final implementation security sittings are clean for backend
+(Terra/high, 170 focused passes), native/filesystem (Sol/high, 59 passes and
+one Windows-only name-folding skip) and delivery (Sol/high, the independent
+controls above), in addition to the earlier UI sitting. The native sitting
+binds source `d6b6f511fb0a1367c589245c802011cc6af8cc4fa440df91fb273a0f60705447`
+and build recipe `de7d5c4bcd688b7aea0595743a23b1f9b05f6af25a3327fb87bfff1aa752832c`;
+both loader pins bind `bed61aeebd3a9533f2770f6d31528d3444f17dc0087dd2a14158ebcb0e54c21b`.
+Each partition completed its production-function/caller ledger. These are
+source/targeted-test verdicts, not final coverage, actual Windows, complete
+eight-target artifacts, installed-consumer or combined CI acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

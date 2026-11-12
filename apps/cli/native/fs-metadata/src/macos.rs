@@ -677,42 +677,75 @@ impl crate::profile_api::Profile for MacosProfile {
         }
         Ok(())
     }
-    fn create_private_directory(
+    fn create_private_directory_owned(
         path: &std::path::Path,
+        adopt: &mut dyn FnMut(&std::fs::File) -> Result<(), crate::profile_api::NativeFailure>,
     ) -> Result<std::fs::File, crate::profile_api::NativeFailure> {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(path)
-            .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?;
-        let directory = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?;
-        // The fresh private directory may inherit a destination ACL. Remove it
-        // using Darwin's documented FILESEC_REMOVE_ACL before any payload, then
-        // prove the resulting owner-only policy with the normal verifier.
-        if capture_acl(directory.as_raw_fd())
-            .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?
-            .is_some()
+        use crate::profile_api::NativeFailure;
+        use std::os::fd::FromRawFd;
+        let parent = Self::open_parent(path.parent().ok_or(NativeFailure::Unsupported)?)?;
+        let name = publication_component(path.file_name().ok_or(NativeFailure::Unsupported)?)?;
+        if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            return Err(NativeFailure::Unsupported);
+        }
+        #[cfg(test)]
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+            && crate::test_hooks::fail("private-dir-preopen")
         {
-            let security = unsafe { filesec_init() };
-            if security.is_null() {
-                return Err(crate::profile_api::NativeFailure::Unsupported);
-            }
-            let security = FileSecurity(security);
-            if unsafe { filesec_set_property(security.0, 5, 1_usize as *const libc::c_void) } != 0
-                || unsafe { fchmodx_np(directory.as_raw_fd(), security.0) } != 0
+            return Err(NativeFailure::CleanupUncertain);
+        }
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(NativeFailure::CleanupUncertain);
+        }
+        let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+        let guard = crate::unix_private_guard::PrivateCreated::<Self>::new(
+            directory, &parent, &name, true,
+        )?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+                && crate::test_hooks::fail("private-dir-open")
             {
-                return Err(crate::profile_api::NativeFailure::Unsupported);
+                return Err(NativeFailure::Unsupported);
             }
+            if capture_acl(guard.file().as_raw_fd())
+                .map_err(|_| NativeFailure::Unsupported)?
+                .is_some()
+            {
+                let security = unsafe { filesec_init() };
+                if security.is_null() {
+                    return Err(NativeFailure::Unsupported);
+                }
+                let security = FileSecurity(security);
+                if unsafe { filesec_set_property(security.0, 5, 1_usize as *const libc::c_void) }
+                    != 0
+                    || unsafe { fchmodx_np(guard.file().as_raw_fd(), security.0) } != 0
+                {
+                    return Err(NativeFailure::Unsupported);
+                }
+            }
+            if unsafe { libc::fchmod(guard.file().as_raw_fd(), 0o700) } != 0 {
+                return Err(NativeFailure::Unsupported);
+            }
+            Self::verify_private_directory(path, guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
         }
-        if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
-            return Err(crate::profile_api::NativeFailure::Unsupported);
-        }
-        Self::verify_private_directory(path, &directory)?;
-        Ok(directory)
+        Ok(guard.transfer())
     }
     fn verify_private_directory(
         path: &std::path::Path,
@@ -733,9 +766,10 @@ impl crate::profile_api::Profile for MacosProfile {
         }
         Ok(())
     }
-    fn create_private_file(
+    fn create_private_file_owned(
         parent: &std::fs::File,
         name: &std::ffi::OsStr,
+        adopt: &mut dyn FnMut(&std::fs::File) -> Result<(), crate::profile_api::NativeFailure>,
     ) -> Result<std::fs::File, crate::profile_api::NativeFailure> {
         use std::os::fd::FromRawFd;
         use std::os::unix::ffi::OsStrExt;
@@ -758,13 +792,25 @@ impl crate::profile_api::Profile for MacosProfile {
         if fd < 0 {
             return Err(crate::profile_api::NativeFailure::Unsupported);
         }
-        // openat returned an owned descriptor, transferred exactly once to File.
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
-            return Err(crate::profile_api::NativeFailure::Unsupported);
+        let guard =
+            crate::unix_private_guard::PrivateCreated::<Self>::new(file, parent, &name, false)?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if name.to_bytes() == b"payload" && crate::test_hooks::fail("private-file-open") {
+                return Err(crate::profile_api::NativeFailure::Unsupported);
+            }
+            if unsafe { libc::fchmod(guard.file().as_raw_fd(), 0o600) } != 0 {
+                return Err(crate::profile_api::NativeFailure::Unsupported);
+            }
+            Self::verify_private_file(guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
         }
-        Self::verify_private_file(&file)?;
-        Ok(file)
+        Ok(guard.transfer())
     }
     fn verify_private_file(file: &std::fs::File) -> Result<(), crate::profile_api::NativeFailure> {
         let info = source_state(file)?;

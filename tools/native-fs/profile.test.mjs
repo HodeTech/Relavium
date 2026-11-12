@@ -9,6 +9,7 @@ import {
   validateProfileEvidence,
   profileCommandFailure,
   RUST_CHECKPOINTS,
+  parseWindowsOwnerContext,
 } from './profile.mjs';
 for (const platform of ['darwin', 'linux', 'win32']) {
   test(`native profile population refuses missing, duplicated, ignored or failed ${platform} cases`, () => {
@@ -40,6 +41,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
       rustIgnored: population.ignored,
       nodeCases: [...NODE_LIFECYCLE_CASES],
       requiresCreationMaskProbe: false,
+      ...(platform === 'win32' ? { genuineOwnerContext: 'distinct' } : {}),
     };
     validateProfileEvidence(evidence, platform);
     for (const mutate of [
@@ -199,6 +201,7 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
   assert.deepEqual(
     [...definition.matchAll(/"([a-z-]+)"/gu)].map((match) => match[1]),
     RUST_CHECKPOINTS,
+    parseWindowsOwnerContext,
   );
   const name = rustPopulation('win32').passed[0];
   const diagnose = (text) =>
@@ -225,4 +228,61 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
     assert.equal(result.checkpoints, 'unavailable');
     assert.equal(JSON.stringify(result).includes('private'), false);
   }
+});
+
+test('Windows owner marker has exactly one closed value without exposing private payloads', () => {
+  for (const value of ['same', 'distinct']) {
+    assert.equal(parseWindowsOwnerContext(`RELAVIUM_NATIVE_OWNER_CONTEXT:${value}\n`), value);
+    assert.equal(
+      parseWindowsOwnerContext(`successes:\r\nRELAVIUM_NATIVE_OWNER_CONTEXT:${value}\r\n`),
+      value,
+    );
+  }
+  for (const text of [
+    '',
+    'RELAVIUM_NATIVE_OWNER_CONTEXT:',
+    'RELAVIUM_NATIVE_OWNER_CONTEXT:private-SID',
+    'RELAVIUM_NATIVE_OWNER_CONTEXT:distinct trailing-private-payload',
+    'prefix RELAVIUM_NATIVE_OWNER_CONTEXT:distinct',
+    'RELAVIUM_NATIVE_OWNER_CONTEXT:distinct\nRELAVIUM_NATIVE_OWNER_CONTEXT:distinct\n',
+    'RELAVIUM_NATIVE_OWNER_CONTEXT:same\nRELAVIUM_NATIVE_OWNER_CONTEXT:private-SID\n',
+  ]) {
+    assert.throws(
+      () => parseWindowsOwnerContext(text),
+      (error) =>
+        error.message === 'NATIVE_FS_WINDOWS_OWNER_CONTEXT' && !String(error).includes('private'),
+    );
+  }
+});
+
+test('Windows local same-owner evidence is truthful but cannot certify distinct-owner CI or complete delivery', () => {
+  const population = rustPopulation('win32');
+  const value = {
+    version: 1,
+    rustPassed: population.passed,
+    rustIgnored: population.ignored,
+    nodeCases: [...NODE_LIFECYCLE_CASES],
+    requiresCreationMaskProbe: false,
+    genuineOwnerContext: 'same',
+  };
+  assert.equal(validateProfileEvidence(value, 'win32').genuineOwnerContext, 'same');
+  assert.throws(
+    () => validateProfileEvidence(value, 'win32', { requireDistinctOwner: true }),
+    /NATIVE_FS_WINDOWS_DISTINCT_OWNER_REQUIRED/u,
+  );
+  validateProfileEvidence({ ...value, genuineOwnerContext: 'distinct' }, 'win32', {
+    requireDistinctOwner: true,
+  });
+  for (const change of [undefined, null, true, 'DISTINCT', 'distinct private']) {
+    const altered = { ...value, genuineOwnerContext: change };
+    if (change === undefined) delete altered.genuineOwnerContext;
+    assert.throws(() => validateProfileEvidence(altered, 'win32'));
+  }
+  const mac = rustPopulation('darwin');
+  assert.throws(() =>
+    validateProfileEvidence(
+      { ...value, rustPassed: mac.passed, rustIgnored: mac.ignored },
+      'darwin',
+    ),
+  );
 });

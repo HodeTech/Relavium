@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectNativeAssets, nativeSourceBinding, writeNativeAssets } from './assets.mjs';
+import { validateProfileEvidence } from './profile.mjs';
 import { NATIVE_DIRECTORY, NATIVE_TARGETS } from './catalog.mjs';
 if (process.argv.length !== 3) throw new Error('NATIVE_FS_ASSEMBLY_ARGUMENTS');
 const repository = fileURLToPath(new URL('../..', import.meta.url));
@@ -18,6 +19,9 @@ for (const name of readdirSync(inputs).sort()) {
   const asset = checked.manifest.assets[0];
   if (assets.some((present) => present.target === asset.target))
     throw new Error('NATIVE_FS_ASSEMBLY_DUPLICATE');
+  validateProfileEvidence(asset.validation, asset.execution.platform, {
+    requireDistinctOwner: true,
+  });
   assets.push(asset);
   for (const [path, bytes] of checked.files)
     if (path !== 'native-assets.json') files.set(path, bytes);

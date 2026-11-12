@@ -71,6 +71,7 @@ export function syntheticNativeAssets(repository, { complete = true } = {}) {
         ).ignored,
         nodeCases: [...NODE_LIFECYCLE_CASES],
         requiresCreationMaskProbe: false,
+        ...(target.includes('-windows-') ? { genuineOwnerContext: 'distinct' } : {}),
       },
       execution: {
         node: 'v22.0.0',

@@ -44,7 +44,7 @@ export const NATIVE_LIMITS = Object.freeze({
 });
 // Reviewed shim bytes; a loader change requires a deliberate inventory-pin change too.
 export const NATIVE_LOADER_SHA256 =
-  '545295295a7d3a23fde5d3cb493c79800fede7efebd73bfe203def4d5afb4bb8';
+  'bed61aeebd3a9533f2770f6d31528d3444f17dc0087dd2a14158ebcb0e54c21b';
 
 export function hostTarget(platform = process.platform, arch = process.arch, libc) {
   const cpu = arch === 'x64' ? 'x86_64' : arch === 'arm64' ? 'aarch64' : undefined;

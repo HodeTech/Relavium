@@ -187,6 +187,7 @@ impl Record {
 }
 
 struct Index<P: Profile> {
+    context: Vec<u8>,
     requested_home: PathBuf,
     home_path: PathBuf,
     home: File,
@@ -209,6 +210,7 @@ impl<P: Profile> Index<P> {
         start: Instant,
         cancelled: Option<&AtomicBool>,
     ) -> Result<Self, NativeFailure> {
+        let context = P::operation_context()?;
         if !home.is_absolute() {
             return refused();
         }
@@ -247,6 +249,7 @@ impl<P: Profile> Index<P> {
             crate::test_hooks::checkpoint("index-parent-flush-done");
         }
         let index = Self {
+            context,
             requested_home: home.to_owned(),
             home_path,
             home: home_file,
@@ -266,6 +269,12 @@ impl<P: Profile> Index<P> {
         crate::test_hooks::checkpoint("index-first-recheck-done");
         Ok(index)
     }
+    fn ensure_context(&self) -> Result<(), NativeFailure> {
+        if P::operation_context()? != self.context {
+            return Err(NativeFailure::Changed);
+        }
+        Ok(())
+    }
     fn recheck(&self) -> Result<(), NativeFailure> {
         self.recheck_checked(Instant::now(), None)
     }
@@ -274,6 +283,7 @@ impl<P: Profile> Index<P> {
         start: Instant,
         cancelled: Option<&AtomicBool>,
     ) -> Result<(), NativeFailure> {
+        self.ensure_context()?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-home-path");
@@ -307,7 +317,8 @@ impl<P: Profile> Index<P> {
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("recheck-index-private");
-        P::verify_private_directory(&self.path, &self.directory)
+        P::verify_private_directory(&self.path, &self.directory)?;
+        self.ensure_context()
     }
     fn entries(
         &self,
@@ -448,6 +459,9 @@ pub(crate) struct OwnedStage<P: Profile> {
     pending_file: Option<EphemeralArtifact>,
 }
 impl<P: Profile> OwnedStage<P> {
+    pub(crate) fn recheck_authority(&self) -> Result<(), NativeFailure> {
+        self.index.recheck()
+    }
     pub(crate) fn reserve(
         home: &Path,
         destination_parent: &File,
@@ -623,16 +637,24 @@ impl<P: Profile> OwnedStage<P> {
             return refused();
         }
         tick(start, cancelled)?;
-        let mut file = P::create_private_file(
+        self.pending_record = Some(record.clone());
+        let pending_file = &mut self.pending_file;
+        let mut file = P::create_private_file_owned(
             &self.index.directory,
             OsStr::new(&format!("{}.prepare", self.nonce)),
+            &mut |file| {
+                *pending_file = Some(EphemeralArtifact {
+                    identity: P::identity(file)?,
+                    file: io(file.try_clone())?,
+                });
+                Ok(())
+            },
         )?;
+        #[cfg(test)]
+        if crate::test_hooks::fail("private-marker-adopted") {
+            return Err(NativeFailure::Unsupported);
+        }
         tick(start, cancelled)?;
-        self.pending_record = Some(record.clone());
-        self.pending_file = Some(EphemeralArtifact {
-            identity: P::identity(&file)?,
-            file: io(file.try_clone())?,
-        });
         io(file.write_all(&record.encode()?))?;
         tick(start, cancelled)?;
         #[cfg(test)]
@@ -664,9 +686,11 @@ impl<P: Profile> OwnedStage<P> {
         self.record = Some(record);
         self.pinned_file = Some(file);
         tick(start, cancelled)?;
+        self.index.ensure_context()?;
         io(fs::remove_file(
             self.index.path.join(format!("{}.reserved", self.nonce)),
         ))?;
+        self.index.ensure_context()?;
         tick(start, cancelled)?;
         io(self.index.directory.sync_all())?;
         Ok(())
@@ -692,7 +716,9 @@ impl<P: Profile> OwnedStage<P> {
                 {
                     return refused();
                 }
+                self.index.ensure_context()?;
                 io(fs::remove_file(&reservation_path))?;
+                self.index.ensure_context()?;
                 io(self.index.directory.sync_all())?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -811,12 +837,16 @@ impl<P: Profile> OwnedStage<P> {
                 {
                     return refused();
                 }
+                self.index.ensure_context()?;
                 io(fs::remove_file(path))?;
+                self.index.ensure_context()?;
                 io(directory.file.sync_all())?;
             }
             tick(start, None)?;
             P::verify_private_directory(&self.path, &directory.file)?;
+            self.index.ensure_context()?;
             io(fs::remove_dir(&self.path))?;
+            self.index.ensure_context()?;
             io(P::open_parent(&self.parent_path)?.sync_all())?;
         } else {
             match fs::symlink_metadata(&self.path) {
@@ -833,7 +863,9 @@ impl<P: Profile> OwnedStage<P> {
             if P::identity(&current)? != pending.identity {
                 return refused();
             }
+            self.index.ensure_context()?;
             io(fs::remove_file(path))?;
+            self.index.ensure_context()?;
         }
         let current = open_nofollow(&reservation_path)?;
         P::verify_private_file(&current)?;
@@ -842,7 +874,9 @@ impl<P: Profile> OwnedStage<P> {
         {
             return refused();
         }
+        self.index.ensure_context()?;
         io(fs::remove_file(reservation_path))?;
+        self.index.ensure_context()?;
         io(self.index.directory.sync_all())?;
         self.adopted_directory = None;
         self.adopted_payload = None;
@@ -893,7 +927,9 @@ fn cleanup_empty_reservation<P: Profile>(
     {
         return refused();
     }
+    index.ensure_context()?;
     io(fs::remove_file(path))?;
+    index.ensure_context()?;
     io(index.directory.sync_all())
 }
 
@@ -986,6 +1022,7 @@ fn open_existing_index<P: Profile>(
     start: Instant,
     cancelled: Option<&AtomicBool>,
 ) -> Result<Option<Index<P>>, NativeFailure> {
+    let context = P::operation_context()?;
     if !home.is_absolute() {
         return refused();
     }
@@ -996,6 +1033,9 @@ fn open_existing_index<P: Profile>(
     let home_id = P::identity(&home_handle)?;
     let recheck_home = || -> Result<(), NativeFailure> {
         tick(start, cancelled)?;
+        if P::operation_context()? != context {
+            return Err(NativeFailure::Changed);
+        }
         if io(fs::canonicalize(home))? != canonical
             || P::identity(&P::open_parent(&canonical)?)? != home_id
         {
@@ -1032,7 +1072,7 @@ fn open_existing_index<P: Profile>(
         Ok(_) => {}
     }
     let index = Index::<P>::open_checked(home, false, start, cancelled)?;
-    if index.home_id != home_id || index.parent_id != parent_id {
+    if index.context != context || index.home_id != home_id || index.parent_id != parent_id {
         return refused();
     }
     Ok(Some(index))
@@ -1122,14 +1162,18 @@ fn cleanup_record<P: Profile>(
             return refused();
         }
         tick(start, cancelled)?;
+        index.ensure_context()?;
         io(fs::remove_file(path))?;
+        index.ensure_context()?;
         tick(start, cancelled)?;
         io(stage.sync_all())?;
     }
     tick(start, cancelled)?;
     P::verify_private_directory(&record.stage, &stage)?;
     tick(start, cancelled)?;
+    index.ensure_context()?;
     io(fs::remove_dir(&record.stage))?;
+    index.ensure_context()?;
     tick(start, cancelled)?;
     io(parent.sync_all())?;
     index.recheck_checked(start, cancelled)?;
@@ -1137,7 +1181,9 @@ fn cleanup_record<P: Profile>(
         return refused();
     }
     tick(start, cancelled)?;
+    index.ensure_context()?;
     io(fs::remove_file(marker_path))?;
+    index.ensure_context()?;
     tick(start, cancelled)?;
     io(index.directory.sync_all())?;
     Ok(())

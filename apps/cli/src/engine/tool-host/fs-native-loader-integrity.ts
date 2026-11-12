@@ -1,3 +1,3 @@
 /** Must match the source-bound packaging catalog; never supplied by configuration. */
 export const FS_NATIVE_LOADER_SHA256 =
-  '545295295a7d3a23fde5d3cb493c79800fede7efebd73bfe203def4d5afb4bb8';
+  'bed61aeebd3a9533f2770f6d31528d3444f17dc0087dd2a14158ebcb0e54c21b';

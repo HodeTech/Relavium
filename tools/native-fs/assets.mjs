@@ -210,7 +210,9 @@ export function validateNativeManifest(value, { complete = false, binding } = {}
       refuse('PROFILE_REQUIRED');
     if (asset.validation !== undefined) {
       try {
-        validateProfileEvidence(asset.validation, asset.execution.platform);
+        validateProfileEvidence(asset.validation, asset.execution.platform, {
+          requireDistinctOwner: value.scope === 'release-complete',
+        });
       } catch {
         refuse('PROFILE_EVIDENCE');
       }

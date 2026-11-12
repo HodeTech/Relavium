@@ -318,6 +318,11 @@ Unexpected children, links, changed identities or missing proof preserve the
 artifacts. These ephemeral handles are never persisted: a crash before pinning
 still leaves unproven empty entries for operator recovery, and their names
 alone do not establish cleanup ownership.
+An exclusively created private object remains under its creator's held-identity
+guard through verification and adoption; failed cleanup retains the reservation.
+If directory creation succeeds but no handle or identity can be established,
+the empty directory and reservation are preserved as unproven, never deleted by
+name alone.
 
 Allocation holds an exclusive nonblocking kernel lock on `inventory.lock`;
 recovery also claims the exact pinned record before checking and deleting its
@@ -763,6 +768,25 @@ but does not by itself establish that directory flush succeeds or proves
 namespace durability on the selected NTFS profile. Those remain real Windows
 execution and acceptance gates.
 
+For payload eligibility, the current effective token is opened once and its
+TokenUser, OS-designated TokenOwner and token statistics are read with the
+statistics checked on both sides. The captured owner must equal exactly the
+current TokenUser or TokenOwner; this is an ownership eligibility check, not a
+replacement for the actual OS write-access check. Private index directories,
+locks and records remain strictly TokenUser-owned. The live operation binds
+and rechecks its compound token context, including during cleanup. Recovery
+binds the current recovery operation's context; the record does not contain the
+old producer's token identity and does not establish that it matches. Unknown
+current ownership or changed context preserves unproven artifacts.
+
+The private staging directory's DACL is not a child-access barrier: Windows
+traverse privileges can bypass directory traversal checks. Once the approved
+final metadata has been applied to a payload, the access claim is the exact
+final authorized policy, including its owner, rather than continued sole-user
+payload privacy. The private index and initially private artifacts retain the
+strict TokenUser-only policy, and model filesystem namespace and identity
+exclusions continue to apply throughout.
+
 The closed caller-visible policy is owner SID, primary-group SID, DACL bytes
 and protection/automatic-inheritance controls. It inspects the caller-readable
 mandatory-label descriptor and refuses an explicit label; privileged audit
@@ -796,9 +820,16 @@ Security descriptors are bounded to 64 KiB and normalized native paths to
 32,767 UTF-16 code units. Every failure crossing the host boundary is a fixed
 reason, never a stream name/value, SID/ACL, path-bearing native error or handle.
 
-Staging directories are created with an OS-built, protected sole-current-user
-DACL and verified through their opened identities before payloads exist.
-Private files inherit that sole-user policy and are verified before copying.
+Staging directories and private files are created with an explicit OS-built
+descriptor naming the effective token user as owner and a protected,
+sole-current-user DACL. The private directory ACE is not inheritable: each
+private child receives its own explicit descriptor, and reproducing an
+unprotected destination DACL does not inherit a staging ACE. Opened identities,
+owner, DACL and protection are independently verified before copying; any OS
+transformation that prevents exact destination-policy verification refuses.
+Native Windows controls must also prove exact preservation of genuinely inherited
+destination ACEs and control bits; the non-inheritable staging ACE alone does
+not prove that the OS will retain those destination ACEs when unprotecting.
 For new-file inheritance, Windows creates a fresh empty file directly in the
 actual destination parent with default security attributes, then one
 handle-bound, same-volume rename moves that same empty inode into the private

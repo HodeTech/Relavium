@@ -361,8 +361,7 @@ fn token() -> Result<Handle, NativeFailure> {
     }
     Ok(Handle(result))
 }
-fn token_data(class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u64>, NativeFailure> {
-    let token = token()?;
+fn token_data(token: &Handle, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u64>, NativeFailure> {
     let mut required = 0;
     unsafe {
         GetTokenInformation(token.0, class, ptr::null_mut(), 0, &mut required);
@@ -385,19 +384,70 @@ fn token_data(class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u64>, NativeFailure>
     }
     Ok(value)
 }
-fn credentials() -> Result<Vec<u8>, NativeFailure> {
-    let data = token_data(TokenStatistics)?;
+#[derive(PartialEq, Eq)]
+struct TokenContext {
+    user: Vec<u8>,
+    owner: Vec<u8>,
+    statistics: Vec<u8>,
+}
+fn statistics(token: &Handle) -> Result<Vec<u8>, NativeFailure> {
+    let data = token_data(token, TokenStatistics)?;
     let stats = unsafe { &*data.as_ptr().cast::<TOKEN_STATISTICS>() };
     let mut bytes = Vec::new();
     for luid in [&stats.TokenId, &stats.AuthenticationId, &stats.ModifiedId] {
         bytes.extend_from_slice(&luid.LowPart.to_le_bytes());
         bytes.extend_from_slice(&luid.HighPart.to_le_bytes());
     }
+    bytes.extend_from_slice(&stats.ExpirationTime.to_le_bytes());
+    bytes.extend_from_slice(&stats.TokenType.to_le_bytes());
+    bytes.extend_from_slice(&stats.ImpersonationLevel.to_le_bytes());
+    bytes.extend_from_slice(&stats.DynamicCharged.to_le_bytes());
+    bytes.extend_from_slice(&stats.DynamicAvailable.to_le_bytes());
+    bytes.extend_from_slice(&stats.GroupCount.to_le_bytes());
+    bytes.extend_from_slice(&stats.PrivilegeCount.to_le_bytes());
     Ok(bytes)
 }
+fn token_context() -> Result<TokenContext, NativeFailure> {
+    let token = token()?;
+    let before = statistics(&token)?;
+    let user_data = token_data(&token, TokenUser)?;
+    let user = sid_bytes(unsafe { (*user_data.as_ptr().cast::<TOKEN_USER>()).User.Sid })?;
+    let owner_data = token_data(&token, TokenOwner)?;
+    let owner = sid_bytes(unsafe { (*owner_data.as_ptr().cast::<TOKEN_OWNER>()).Owner })?;
+    if statistics(&token)? != before {
+        return Err(NativeFailure::Changed);
+    }
+    Ok(TokenContext {
+        user,
+        owner,
+        statistics: before,
+    })
+}
+impl TokenContext {
+    fn admits_owner(&self, owner: &[u8]) -> bool {
+        owner == self.user || owner == self.owner
+    }
+    fn encoded(&self) -> Vec<u8> {
+        let mut value = self.statistics.clone();
+        value.extend_from_slice(&(self.user.len() as u32).to_le_bytes());
+        value.extend_from_slice(&self.user);
+        value.extend_from_slice(&(self.owner.len() as u32).to_le_bytes());
+        value.extend_from_slice(&self.owner);
+        value
+    }
+}
+fn credentials() -> Result<Vec<u8>, NativeFailure> {
+    let value = token_context()?.encoded();
+    #[cfg(test)]
+    if crate::test_hooks::fail("changed-token-context") {
+        let mut changed = value;
+        changed[0] ^= 1;
+        return Ok(changed);
+    }
+    Ok(value)
+}
 fn current_sid() -> Result<Vec<u8>, NativeFailure> {
-    let data = token_data(TokenUser)?;
-    sid_bytes(unsafe { (*data.as_ptr().cast::<TOKEN_USER>()).User.Sid })
+    Ok(token_context()?.user)
 }
 
 struct Backup<'a> {
@@ -588,6 +638,7 @@ fn capture(
     path: &Path,
     operation: WriteOperation,
 ) -> Result<ExistingSnapshot, NativeFailure> {
+    let context = token_context()?;
     ntfs(file)?;
     bind(file, path, false)?;
     let value = info(file)?;
@@ -607,17 +658,25 @@ fn capture(
     {
         return Err(failure());
     }
-    Ok(ExistingSnapshot {
+    let source_policy = policy(file)?;
+    if !context.admits_owner(&source_policy.owner) {
+        return Err(NativeFailure::AccessDenied);
+    }
+    let snapshot = ExistingSnapshot {
         identity: identity(file)?,
-        policy: policy(file)?,
+        policy: source_policy,
         attributes: value.dwFileAttributes,
         size: u64::from(value.nFileSizeHigh) << 32 | u64::from(value.nFileSizeLow),
         write_time: u64::from(value.ftLastWriteTime.dwHighDateTime) << 32
             | u64::from(value.ftLastWriteTime.dwLowDateTime),
         change_time: basic.ChangeTime,
         zone: streams(file)?,
-        credentials: credentials()?,
-    })
+        credentials: context.encoded(),
+    };
+    if token_context()? != context {
+        return Err(NativeFailure::Changed);
+    }
+    Ok(snapshot)
 }
 
 fn private_security() -> Result<(SECURITY_DESCRIPTOR, Vec<u64>, Vec<u8>), NativeFailure> {
@@ -628,13 +687,7 @@ fn private_security() -> Result<(SECURITY_DESCRIPTOR, Vec<u64>, Vec<u8>), Native
     let mut descriptor = SECURITY_DESCRIPTOR::default();
     if unsafe { InitializeAcl(acl_ptr, size as u32, ACL_REVISION) } == 0
         || unsafe {
-            AddAccessAllowedAceEx(
-                acl_ptr,
-                ACL_REVISION,
-                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
-                FILE_ALL,
-                sid.as_mut_ptr().cast(),
-            )
+            AddAccessAllowedAceEx(acl_ptr, ACL_REVISION, 0, FILE_ALL, sid.as_mut_ptr().cast())
         } == 0
         || unsafe {
             InitializeSecurityDescriptor(
@@ -683,43 +736,20 @@ fn verify_private(file: &File, directory: bool) -> Result<(), NativeFailure> {
     crate::test_hooks::checkpoint("private-expected-build");
     let (_, mut acl, sid) = private_security()?;
     let raw = acl.as_mut_ptr().cast::<ACL>();
-    if !directory {
-        // Expected one-ACE result for this closed private-directory profile,
-        // constructed using the OS ACL APIs. No permission evaluator is used.
-        if unsafe { InitializeAcl(raw, u32::from((*raw).AclSize), ACL_REVISION) } == 0
-            || unsafe {
-                AddAccessAllowedAceEx(
-                    raw,
-                    ACL_REVISION,
-                    INHERITED_ACE,
-                    FILE_ALL,
-                    sid.as_ptr().cast_mut().cast(),
-                )
-            } == 0
-        {
-            return Err(failure());
-        }
-    }
     let expected = unsafe { std::slice::from_raw_parts(raw.cast::<u8>(), (*raw).AclSize as usize) };
     #[cfg(test)]
     {
         if actual.owner != sid {
             crate::test_hooks::checkpoint("private-owner-mismatch");
         }
-        if (directory && actual.control & SE_DACL_PROTECTED == 0)
-            || (!directory && actual.control & SE_DACL_PROTECTED != 0)
-        {
+        if actual.control & SE_DACL_PROTECTED == 0 {
             crate::test_hooks::checkpoint("private-protection-mismatch");
         }
         if actual.dacl != expected {
             crate::test_hooks::checkpoint("private-dacl-mismatch");
         }
     }
-    if actual.owner != sid
-        || (directory && actual.control & SE_DACL_PROTECTED == 0)
-        || (!directory && actual.control & SE_DACL_PROTECTED != 0)
-        || actual.dacl != expected
-    {
+    if actual.owner != sid || actual.control & SE_DACL_PROTECTED == 0 || actual.dacl != expected {
         return Err(NativeFailure::AccessDenied);
     }
     Ok(())
@@ -838,10 +868,97 @@ impl Drop for EmptyTemplate {
     }
 }
 
+struct PrivateCreated {
+    file: Option<File>,
+    path: PathBuf,
+    identity: Option<NativeIdentity>,
+    directory: bool,
+}
+impl PrivateCreated {
+    fn new(file: File, path: PathBuf, directory: bool) -> Result<Self, NativeFailure> {
+        let mut guard = Self {
+            file: Some(file),
+            path,
+            identity: None,
+            directory,
+        };
+        guard.identity = Some(
+            WindowsProfile::identity(guard.file()).map_err(|_| NativeFailure::CleanupUncertain)?,
+        );
+        Ok(guard)
+    }
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("private guard owns file")
+    }
+    fn transfer(mut self) -> File {
+        self.file.take().expect("private guard owns file")
+    }
+    fn cleanup(&self, file: &File) -> Result<(), NativeFailure> {
+        let details = info(file)?;
+        if Some(WindowsProfile::identity(file)?) != self.identity
+            || (details.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != self.directory
+            || (!self.directory
+                && (details.nNumberOfLinks != 1
+                    || details.nFileSizeLow != 0
+                    || details.nFileSizeHigh != 0))
+            || policy(file)?.owner != current_sid()?
+        {
+            return Err(NativeFailure::Changed);
+        }
+        let observed = open(
+            &self.path,
+            FILE_READ_ATTRIBUTES | READ_CONTROL_ACCESS,
+            OPEN_EXISTING,
+            if self.directory {
+                FILE_FLAG_BACKUP_SEMANTICS
+            } else {
+                0
+            },
+            ptr::null(),
+        )?;
+        if Some(WindowsProfile::identity(&observed)?) != self.identity {
+            return Err(NativeFailure::Changed);
+        }
+        drop(observed);
+        let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                handle(file),
+                FileDispositionInfo,
+                (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(failure());
+        }
+        Ok(())
+    }
+    fn abort(mut self) -> Result<(), NativeFailure> {
+        let outcome = self.cleanup(self.file());
+        self.file.take();
+        outcome.map_err(|_| NativeFailure::CleanupUncertain)?;
+        match std::fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(NativeFailure::CleanupUncertain),
+        }
+    }
+}
+impl Drop for PrivateCreated {
+    fn drop(&mut self) {
+        if let Some(file) = &self.file {
+            let _ = self.cleanup(file);
+        }
+    }
+}
+
 impl Profile for WindowsProfile {
     type ExistingSnapshot = ExistingSnapshot;
     type ParentSnapshot = ParentSnapshot;
     type NewFileSnapshot = ExistingSnapshot;
+    fn operation_context() -> Result<Vec<u8>, NativeFailure> {
+        credentials()
+    }
     fn identity(file: &File) -> Result<NativeIdentity, NativeFailure> {
         ntfs(file)?;
         let mut full = FILE_ID_INFO::default();
@@ -935,6 +1052,9 @@ impl Profile for WindowsProfile {
         stage: &File,
         stage_path: &Path,
     ) -> Result<(), NativeFailure> {
+        if credentials()? != snapshot.credentials {
+            return Err(NativeFailure::Changed);
+        }
         if identity(source)? != snapshot.identity
             || !same_policy(&policy(source)?, &snapshot.policy)
             || streams(source)? != snapshot.zone
@@ -967,11 +1087,11 @@ impl Profile for WindowsProfile {
         let protection = if snapshot.policy.control & SE_DACL_PROTECTED != 0 {
             PROTECTED_DACL_SECURITY_INFORMATION
         } else {
-            0
+            UNPROTECTED_DACL_SECURITY_INFORMATION
         };
-        // Stage files start unprotected, inside a protected private directory.
-        // Omitting UNPROTECTED avoids requesting inheritance from the staging
-        // parent; the captured inherited ACEs themselves are supplied unchanged.
+        // Private objects are protected and their parent has no inheritable
+        // ACEs. Reproduce the target's protection bit and verify the resulting
+        // ACL and control flags exactly; OS transformations refuse.
         let sd = snapshot.policy.descriptor.as_ptr().cast_mut().cast();
         let (mut owner, mut group, mut dacl) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
         let (mut present, mut defaulted) = (0, 0);
@@ -1020,6 +1140,9 @@ impl Profile for WindowsProfile {
             return Err(NativeFailure::Changed);
         }
         bind(stage, stage_path, false)?;
+        if credentials()? != snapshot.credentials {
+            return Err(NativeFailure::Changed);
+        }
         Ok(())
     }
     fn verify_existing_stage(
@@ -1027,6 +1150,9 @@ impl Profile for WindowsProfile {
         stage: &File,
         stage_path: &Path,
     ) -> Result<(), NativeFailure> {
+        if credentials()? != snapshot.credentials {
+            return Err(NativeFailure::Changed);
+        }
         bind(stage, stage_path, false)?;
         if !same_policy(&policy(stage)?, &snapshot.policy)
             || streams(stage)? != snapshot.zone
@@ -1037,7 +1163,10 @@ impl Profile for WindowsProfile {
         }
         Ok(())
     }
-    fn create_private_directory(path: &Path) -> Result<File, NativeFailure> {
+    fn create_private_directory_owned(
+        path: &Path,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure> {
         let (mut descriptor, _acl, _sid) = private_security()?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -1047,6 +1176,14 @@ impl Profile for WindowsProfile {
         let encoded = wide(path.as_os_str())?;
         if unsafe { CreateDirectoryW(encoded.as_ptr(), &attributes) } == 0 {
             return Err(failure());
+        }
+        #[cfg(test)]
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+            && crate::test_hooks::fail("private-dir-preopen")
+        {
+            return Err(NativeFailure::CleanupUncertain);
         }
         let result = open(
             path,
@@ -1058,22 +1195,50 @@ impl Profile for WindowsProfile {
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
             ptr::null(),
-        )?;
-        Self::verify_private_directory(path, &result)?;
-        Ok(result)
+        )
+        .map_err(|_| NativeFailure::CleanupUncertain)?;
+        let guard = PrivateCreated::new(result, path.to_owned(), true)?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+                && crate::test_hooks::fail("private-dir-open")
+            {
+                return Err(NativeFailure::Unsupported);
+            }
+            Self::verify_private_directory(path, guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
+        }
+        Ok(guard.transfer())
     }
     fn verify_private_directory(path: &Path, directory: &File) -> Result<(), NativeFailure> {
         bind(directory, path, true)?;
         verify_private(directory, true)
     }
-    fn create_private_file(parent: &File, name: &OsStr) -> Result<File, NativeFailure> {
+    fn create_private_file_owned(
+        parent: &File,
+        name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure> {
         #[cfg(test)]
         crate::test_hooks::checkpoint("private-file-parent-check");
         Self::verify_private_directory(&path_for(parent)?, parent)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("private-file-open");
+        let path = child(parent, name)?;
+        let (mut descriptor, _acl, _sid) = private_security()?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+            bInheritHandle: 0,
+        };
         let file = open(
-            &child(parent, name)?,
+            &path,
             FILE_GENERIC_READ
                 | FILE_GENERIC_WRITE
                 | DELETE_ACCESS
@@ -1081,17 +1246,30 @@ impl Profile for WindowsProfile {
                 | WRITE_OWNER_ACCESS,
             CREATE_NEW,
             0,
-            ptr::null(),
+            &attributes,
         )?;
-        #[cfg(test)]
-        crate::test_hooks::checkpoint("private-file-verify");
-        Self::verify_private_file(&file)?;
-        Ok(file)
+        let guard = PrivateCreated::new(file, path, false)?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if name == OsStr::new("payload") && crate::test_hooks::fail("private-file-open") {
+                return Err(NativeFailure::Unsupported);
+            }
+            #[cfg(test)]
+            crate::test_hooks::checkpoint("private-file-verify");
+            Self::verify_private_file(guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
+        }
+        Ok(guard.transfer())
     }
     fn verify_private_file(file: &File) -> Result<(), NativeFailure> {
         verify_private(file, false)
     }
     fn verify_owned_file(file: &File) -> Result<(), NativeFailure> {
+        let context = token_context()?;
         ntfs(file)?;
         let observed = info(file)?;
         if observed.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 || observed.nNumberOfLinks != 1
@@ -1100,9 +1278,12 @@ impl Profile for WindowsProfile {
         }
         // Recovery is allowed to see a stage after its final DACL was applied.
         // Ownership is an independent check: neither privacy nor a permissive
-        // final DACL substitutes for the current operator's actual owner SID.
-        if policy(file)?.owner != current_sid()? {
+        // final DACL substitutes for the current effective token's closed owner pair.
+        if !context.admits_owner(&policy(file)?.owner) {
             return Err(NativeFailure::AccessDenied);
+        }
+        if token_context()? != context {
+            return Err(NativeFailure::Changed);
         }
         Ok(())
     }
@@ -1110,6 +1291,7 @@ impl Profile for WindowsProfile {
         parent: &File,
         _host_mask: Option<u32>,
     ) -> Result<ParentSnapshot, NativeFailure> {
+        let context = token_context()?;
         ntfs(parent)?;
         let attributes = info(parent)?.dwFileAttributes;
         if attributes & FILE_ATTRIBUTE_DIRECTORY == 0
@@ -1117,12 +1299,16 @@ impl Profile for WindowsProfile {
         {
             return Err(NativeFailure::Unsupported);
         }
-        Ok(ParentSnapshot {
+        let snapshot = ParentSnapshot {
             identity: identity(parent)?,
             policy: policy(parent)?,
             attributes,
-            credentials: credentials()?,
-        })
+            credentials: context.encoded(),
+        };
+        if token_context()? != context {
+            return Err(NativeFailure::Changed);
+        }
+        Ok(snapshot)
     }
     fn recheck_parent(
         snapshot: &ParentSnapshot,
@@ -1364,9 +1550,69 @@ mod tests {
     }
 
     #[test]
+    fn windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned() {
+        let fixture = Fixture::new();
+        let context = token_context().expect("effective token");
+        println!(
+            "RELAVIUM_NATIVE_OWNER_CONTEXT:{}",
+            if context.owner != context.user {
+                "distinct"
+            } else {
+                "same"
+            }
+        );
+        let path = fixture.path.join("ordinary-default-owner");
+        let file = open(
+            &path,
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE_ACCESS,
+            CREATE_NEW,
+            0,
+            ptr::null(),
+        )
+        .expect("ordinary OS-created file");
+        let actual_owner = policy(&file).expect("ordinary policy").owner;
+        assert_eq!(actual_owner, context.owner);
+        WindowsProfile::verify_owned_file(&file).expect("effective owner eligible");
+        let snapshot = capture(&file, &path, WriteOperation::Replace)
+            .expect("actual OS write admission and eligible owner");
+        assert_eq!(snapshot.credentials, context.encoded());
+        let private = fixture.file("strict-private", b"");
+        assert_eq!(
+            policy(&private).expect("private policy").owner,
+            context.user
+        );
+        WindowsProfile::verify_private_file(&private).expect("user-only private file");
+        if context.owner != context.user {
+            assert!(WindowsProfile::verify_private_file(&file).is_err());
+        }
+    }
+
+    #[test]
+    fn windows_token_context_owner_pair_is_closed_and_binds_identity() {
+        let context = token_context().expect("effective token");
+        assert!(context.admits_owner(&context.user));
+        assert!(context.admits_owner(&context.owner));
+        assert!(!context.admits_owner(&[]));
+        let mut changed = context.encoded();
+        changed[0] ^= 1;
+        assert_ne!(changed, context.encoded());
+    }
+
+    #[test]
     fn windows_recovery_ownership_accepts_final_dacl_and_refuses_links_or_directories() {
         let fixture = Fixture::new();
         let file = fixture.file("source", b"owned stage bytes");
+        let private = policy(&file).expect("private file policy");
+        let (_, mut expected_acl, expected_owner) = private_security().expect("private policy");
+        let expected = expected_acl.as_mut_ptr().cast::<ACL>();
+        let expected_bytes = unsafe {
+            std::slice::from_raw_parts(expected.cast::<u8>(), (*expected).AclSize as usize)
+        };
+        assert!(
+            private.owner == expected_owner
+                && private.dacl == expected_bytes
+                && private.control & SE_DACL_PROTECTED != 0
+        );
         set_user_acl(&file, 0, true);
         assert!(WindowsProfile::verify_private_file(&file).is_err());
         WindowsProfile::verify_owned_file(&file).expect("owned final-policy file");
@@ -1435,6 +1681,56 @@ mod tests {
         ));
         assert!(streams(&final_file).expect("final streams").as_deref() == Some(zone.as_slice()));
         assert!(!stage_path.join("payload").exists());
+
+        // Build an actual unprotected source with an OS-inherited ACE from
+        // the destination parent, then require exact metadata on the stage.
+        let second = Fixture::new();
+        set_user_acl(&second.directory, 0, false);
+        let ordinary = open(
+            &second.path.join("source"),
+            FILE_GENERIC_READ
+                | FILE_GENERIC_WRITE
+                | DELETE_ACCESS
+                | WRITE_DAC_ACCESS
+                | WRITE_OWNER_ACCESS,
+            CREATE_NEW,
+            0,
+            ptr::null(),
+        )
+        .expect("direct inherited source");
+        let original = policy(&ordinary).expect("source descriptor");
+        assert_eq!(original.control & SE_DACL_PROTECTED, 0);
+        let descriptor = original.descriptor.as_ptr().cast_mut().cast();
+        let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            },
+            0
+        );
+        assert_ne!(present, 0);
+        let mut ace: *mut std::ffi::c_void = ptr::null_mut();
+        assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+        let header = unsafe { std::ptr::read_unaligned(ace.cast::<ACE_HEADER>()) };
+        assert_ne!(u32::from(header.AceFlags) & INHERITED_ACE, 0);
+        let ordinary_snapshot = WindowsProfile::capture_existing(
+            &ordinary,
+            &second.path.join("source"),
+            WriteOperation::Replace,
+        )
+        .expect("unprotected snapshot");
+        let (second_path, _second_parent, second_stage) = second.stage();
+        WindowsProfile::apply_and_verify_existing(
+            &ordinary_snapshot,
+            &ordinary,
+            &second_stage,
+            &second_path.join("payload"),
+        )
+        .expect("unprotected metadata copied exactly");
+        assert!(same_policy(
+            &policy(&second_stage).expect("unprotected stage"),
+            &ordinary_snapshot.policy
+        ));
     }
 
     #[test]
@@ -1532,6 +1828,13 @@ mod tests {
         );
         let parent =
             WindowsProfile::capture_parent(&fixture.directory, None).expect("parent snapshot");
+        let mut token_changed = WindowsProfile::capture_parent(&fixture.directory, None)
+            .expect("token-bound parent snapshot");
+        token_changed.credentials[0] ^= 1;
+        assert_eq!(
+            WindowsProfile::recheck_parent(&token_changed, &fixture.directory, None),
+            Err(NativeFailure::Changed)
+        );
         set_user_acl(&fixture.directory, 0, true);
         assert_eq!(
             WindowsProfile::recheck_parent(&parent, &fixture.directory, None),

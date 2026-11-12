@@ -529,14 +529,58 @@ impl Profile for LinuxProfile {
         Ok(())
     }
 
-    fn create_private_directory(path: &Path) -> Result<File, NativeFailure> {
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(path)
-            .map_err(|_| NativeFailure::Unsupported)?;
-        let directory = Self::open_parent(path)?;
-        Self::verify_private_directory(path, &directory)?;
-        Ok(directory)
+    fn create_private_directory_owned(
+        path: &Path,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure> {
+        let parent = Self::open_parent(path.parent().ok_or(NativeFailure::Unsupported)?)?;
+        let name = component(path.file_name().ok_or(NativeFailure::Unsupported)?)?;
+        if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            return Err(failure());
+        }
+        #[cfg(test)]
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+            && crate::test_hooks::fail("private-dir-preopen")
+        {
+            return Err(NativeFailure::CleanupUncertain);
+        }
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC
+                    | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(NativeFailure::CleanupUncertain);
+        }
+        let directory = unsafe { File::from_raw_fd(fd) };
+        let guard = crate::unix_private_guard::PrivateCreated::<Self>::new(
+            directory, &parent, &name, true,
+        )?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".relavium-fs-stage-v1."))
+                && crate::test_hooks::fail("private-dir-open")
+            {
+                return Err(NativeFailure::Unsupported);
+            }
+            Self::verify_private_directory(path, guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
+        }
+        Ok(guard.transfer())
     }
 
     fn verify_private_directory(path: &Path, directory: &File) -> Result<(), NativeFailure> {
@@ -558,7 +602,11 @@ impl Profile for LinuxProfile {
         Ok(())
     }
 
-    fn create_private_file(parent: &File, name: &OsStr) -> Result<File, NativeFailure> {
+    fn create_private_file_owned(
+        parent: &File,
+        name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure> {
         let name = component(name)?;
         let raw = unsafe {
             libc::openat(
@@ -577,11 +625,24 @@ impl Profile for LinuxProfile {
             return Err(failure());
         }
         let file = unsafe { File::from_raw_fd(raw) };
-        if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
-            return Err(NativeFailure::Unsupported);
+        let guard =
+            crate::unix_private_guard::PrivateCreated::<Self>::new(file, parent, &name, false)?;
+        let attempt = (|| {
+            #[cfg(test)]
+            if name.to_bytes() == b"payload" && crate::test_hooks::fail("private-file-open") {
+                return Err(NativeFailure::Unsupported);
+            }
+            if unsafe { libc::fchmod(guard.file().as_raw_fd(), 0o600) } != 0 {
+                return Err(NativeFailure::Unsupported);
+            }
+            Self::verify_private_file(guard.file())?;
+            adopt(guard.file())
+        })();
+        if let Err(error) = attempt {
+            guard.abort()?;
+            return Err(error);
         }
-        Self::verify_private_file(&file)?;
-        Ok(file)
+        Ok(guard.transfer())
     }
 
     fn verify_private_file(file: &File) -> Result<(), NativeFailure> {

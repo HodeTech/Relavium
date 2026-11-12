@@ -119,6 +119,19 @@ function loadFsMetadataAddon() {
         asset.bytes > 8388608 ||
         !/^[0-9a-f]{64}$/.test(asset.sha256) ||
         !exact(asset.execution, ['node', 'platform', 'arch', 'libc', 'libcVersion', 'protocol']) ||
+        asset.execution.platform !==
+          (asset.target.endsWith('-apple-darwin')
+            ? 'darwin'
+            : asset.target.endsWith('-windows-msvc')
+              ? 'win32'
+              : 'linux') ||
+        asset.execution.arch !== (asset.target.startsWith('aarch64-') ? 'arm64' : 'x64') ||
+        asset.execution.libc !==
+          (asset.target.endsWith('-linux-gnu')
+            ? 'gnu'
+            : asset.target.endsWith('-linux-musl')
+              ? 'musl'
+              : 'none') ||
         !/^v(?:22|2[4-9]|[3-9][0-9])\.[0-9]+\.[0-9]+$/.test(asset.execution.node) ||
         asset.execution.protocol !== 1 ||
         !(asset.execution.libc === 'none'
@@ -135,9 +148,14 @@ function loadFsMetadataAddon() {
             'rustIgnored',
             'nodeCases',
             'requiresCreationMaskProbe',
+            ...(asset.target.endsWith('-windows-msvc') ? ['genuineOwnerContext'] : []),
           ]) ||
           asset.validation.version !== 1 ||
           typeof asset.validation.requiresCreationMaskProbe !== 'boolean' ||
+          (asset.target.endsWith('-windows-msvc') &&
+            (!['same', 'distinct'].includes(asset.validation.genuineOwnerContext) ||
+              (manifest.scope === 'release-complete' &&
+                asset.validation.genuineOwnerContext !== 'distinct'))) ||
           !['rustPassed', 'rustIgnored', 'nodeCases'].every(
             (key) =>
               Array.isArray(asset.validation[key]) &&

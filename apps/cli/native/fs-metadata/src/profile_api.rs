@@ -38,6 +38,9 @@ pub(crate) trait Profile {
     type ParentSnapshot: Send;
     type NewFileSnapshot: Send;
 
+    fn operation_context() -> Result<Vec<u8>, NativeFailure> {
+        Ok(Vec::new())
+    }
     fn identity(file: &File) -> Result<NativeIdentity, NativeFailure>;
     fn owner_identity() -> Result<String, NativeFailure>;
     fn open_parent(path: &Path) -> Result<File, NativeFailure>;
@@ -63,9 +66,22 @@ pub(crate) trait Profile {
         stage: &File,
         stage_path: &Path,
     ) -> Result<(), NativeFailure>;
-    fn create_private_directory(path: &Path) -> Result<File, NativeFailure>;
+    fn create_private_directory(path: &Path) -> Result<File, NativeFailure> {
+        Self::create_private_directory_owned(path, &mut |_| Ok(()))
+    }
+    fn create_private_directory_owned(
+        path: &Path,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure>;
     fn verify_private_directory(path: &Path, directory: &File) -> Result<(), NativeFailure>;
-    fn create_private_file(parent: &File, name: &OsStr) -> Result<File, NativeFailure>;
+    fn create_private_file(parent: &File, name: &OsStr) -> Result<File, NativeFailure> {
+        Self::create_private_file_owned(parent, name, &mut |_| Ok(()))
+    }
+    fn create_private_file_owned(
+        parent: &File,
+        name: &OsStr,
+        adopt: &mut dyn FnMut(&File) -> Result<(), NativeFailure>,
+    ) -> Result<File, NativeFailure>;
     fn verify_private_file(file: &File) -> Result<(), NativeFailure>;
     /// Cleanup evidence only: regular, single-link, operator-owned; no private-mode claim.
     fn verify_owned_file(file: &File) -> Result<(), NativeFailure>;

@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { NODE_LIFECYCLE_CASES, rustPopulation } from './profile-catalog.mjs';
+import { NODE_LIFECYCLE_CASES, rustPopulation, WINDOWS_OWNER_CASE } from './profile-catalog.mjs';
 import { NATIVE_TOOLCHAIN } from './catalog.mjs';
 export function parseRustListing(text, platform) {
   const names = [...text.matchAll(/^([a-zA-Z0-9_:]+): test\r?$/gmu)]
@@ -32,12 +32,26 @@ export function parseRustResults(text, platform) {
   assert.ok(!/^test .* \.\.\. (?:FAILED|failed|filtered)/mu.test(text), 'NATIVE_FS_RUST_FAILURE');
   return { passed, ignored };
 }
-export function validateProfileEvidence(value, platform) {
+export function parseWindowsOwnerContext(text) {
+  assert.ok(
+    typeof text === 'string' && text.length <= 4 * 1024 * 1024,
+    'NATIVE_FS_WINDOWS_OWNER_CONTEXT',
+  );
+  const lines = text
+    .split(/\r?\n/u)
+    .filter((line) => line.includes('RELAVIUM_NATIVE_OWNER_CONTEXT:'));
+  assert.ok(lines.length === 1, 'NATIVE_FS_WINDOWS_OWNER_CONTEXT');
+  const matched = /^RELAVIUM_NATIVE_OWNER_CONTEXT:(distinct|same)$/u.exec(lines[0]);
+  assert.ok(matched !== null, 'NATIVE_FS_WINDOWS_OWNER_CONTEXT');
+  return matched[1];
+}
+export function validateProfileEvidence(value, platform, { requireDistinctOwner = false } = {}) {
   const keys = (item) =>
     item !== null && typeof item === 'object' && !Array.isArray(item)
       ? Object.keys(item).sort()
       : [];
   assert.deepEqual(keys(value), [
+    ...(platform === 'win32' ? ['genuineOwnerContext'] : []),
     'nodeCases',
     'requiresCreationMaskProbe',
     'rustIgnored',
@@ -45,6 +59,18 @@ export function validateProfileEvidence(value, platform) {
     'version',
   ]);
   assert.equal(value.version, 1);
+  if (platform === 'win32') {
+    assert.ok(
+      ['distinct', 'same'].includes(value.genuineOwnerContext),
+      'NATIVE_FS_WINDOWS_OWNER_CONTEXT',
+    );
+    if (requireDistinctOwner)
+      assert.equal(
+        value.genuineOwnerContext,
+        'distinct',
+        'NATIVE_FS_WINDOWS_DISTINCT_OWNER_REQUIRED',
+      );
+  }
   assert.equal(typeof value.requiresCreationMaskProbe, 'boolean');
   if (platform !== 'darwin') assert.equal(value.requiresCreationMaskProbe, false);
   const expected = rustPopulation(platform);
@@ -297,16 +323,22 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
     'NATIVE_FS_RUST_TEST_EXECUTABLE',
   );
   const rust = rustPopulation(process.platform);
-  for (const name of rust.passed)
-    parseSingleRustResult(
-      command(
-        executable,
-        ['--exact', name, '--test-threads=1'],
-        { cwd: native, env: environment },
-        { phase: 'rust-case', case: name },
-      ),
-      name,
+  let genuineOwnerContext;
+  for (const name of rust.passed) {
+    const text = command(
+      executable,
+      [
+        '--exact',
+        name,
+        '--test-threads=1',
+        ...(name === WINDOWS_OWNER_CASE ? ['--show-output'] : []),
+      ],
+      { cwd: native, env: environment },
+      { phase: 'rust-case', case: name },
     );
+    parseSingleRustResult(text, name);
+    if (name === WINDOWS_OWNER_CASE) genuineOwnerContext = parseWindowsOwnerContext(text);
+  }
   const directory = mkdtempSync(join(tmpdir(), 'relavium-native-profile-'));
   let lifecycle;
   try {
@@ -340,6 +372,7 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
       rustIgnored: rust.ignored,
       nodeCases: lifecycle.cases,
       requiresCreationMaskProbe: lifecycle.requiresCreationMaskProbe,
+      ...(process.platform === 'win32' ? { genuineOwnerContext } : {}),
     },
     process.platform,
   );

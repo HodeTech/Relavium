@@ -12,6 +12,8 @@ mod profile_api;
 #[allow(dead_code)]
 mod stage_index;
 #[cfg(unix)]
+mod unix_private_guard;
+#[cfg(unix)]
 mod unix_template_guard;
 #[cfg(windows)]
 mod windows;

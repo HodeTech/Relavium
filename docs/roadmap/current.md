@@ -94,8 +94,11 @@ are specified in its canonical contract. Native implementation is active after
 the initial dependency pin/audit. The
 [author checkpoint and first review corrections](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-first-implementation-review-corrections-2026-11-12)
 record bounded local native/workflow evidence and the actual CI limitations;
-complete affected reviews, security, Windows and combined Step 2 acceptance
-remain open.
+the [final affected validation record](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-final-affected-validation-2026-11-12)
+records the clean final UI review/security sitting, native ownership/cleanup
+corrections and the runtime-loader refusal fix. Final affected reviews and
+separate UI/backend/native/delivery security sittings are clean; final coverage,
+actual Windows and combined Step 2 acceptance remain open.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible
