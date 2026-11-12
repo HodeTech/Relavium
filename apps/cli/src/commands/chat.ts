@@ -89,6 +89,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
@@ -485,6 +486,7 @@ interface ChatReplDeps {
   ) => Promise<void>;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
+  readonly effectAttention?: ReturnType<typeof createChatEffectAttention>;
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -622,6 +624,58 @@ function emitLiveNotice(io: CliIo, text: string): void {
   else io.writeErr(`${text}\n`);
 }
 
+/** Required interruption disclosure has a command lifetime, independent of an individual store/frame. */
+function createChatEffectAttention(
+  io: CliIo,
+  interactive: boolean,
+  lifetime?: SessionChatLifetime,
+) {
+  let pending = false;
+  let delivery: Promise<void> | undefined;
+  const flush = (): Promise<void> => {
+    if (delivery !== undefined) return delivery;
+    if (!pending) return Promise.resolve();
+    const deliver = async (): Promise<void> => {
+      try {
+        await io.writeErrAcknowledged(`${ABORTED_EFFECT_ATTENTION_NOTICE}\n`);
+        pending = false;
+        delivery = undefined; // a later joined turn starts a new warning epoch after this ACK
+      } catch (cause) {
+        const failure = new CliError('output_unavailable', '', { cause });
+        lifetime?.surface.work.failure(failure);
+        throw failure;
+      }
+    };
+    try {
+      delivery =
+        lifetime === undefined ? deliver() : lifetime.surface.work.work.retainWork(deliver);
+    } catch (cause) {
+      const failure = new CliError('output_unavailable', '', { cause });
+      lifetime?.surface.work.failure(failure);
+      delivery = Promise.reject(failure);
+    }
+    const entered = delivery;
+    // Failure was observed above and stays cached for the final owner; handle its raw rejection now too.
+    void entered.catch(() => undefined);
+    return entered;
+  };
+  return Object.freeze({
+    note: (): void => {
+      pending = true;
+      // A live store update proves no visibility: geometry, scrolling or a swap can hide it.
+      // Absence of that store never authorizes synchronous stderr inside the hoisted buffer.
+      if (interactive) liveSessionNotice?.(ABORTED_EFFECT_ATTENTION_NOTICE);
+      else {
+        // There is no alternate screen on plain/JSON. Start captured delivery promptly without
+        // making the host notifier await a surface/host join; the surface retains its actual ACK.
+        // Rejection is observed above and remains cached for the final tail, never a floating I/O task.
+        void flush().catch(() => undefined);
+      }
+    },
+    flush,
+  });
+}
+
 /** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites, and
  *  through the in-Home chat's own view store — see `drive-home.tsx`). ONE text, so the two surfaces cannot drift. */
 export function budgetWarningText(warning: ChatBudgetWarning): string {
@@ -639,6 +693,11 @@ async function chatCommandBody(
   deps: ChatCommandDeps,
   ownership?: SessionChatLifetime,
 ): Promise<ExitCode> {
+  const effectAttention = createChatEffectAttention(
+    deps.io,
+    chatIsInteractive(deps.io, deps.global),
+    ownership,
+  );
   const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
@@ -760,7 +819,7 @@ async function chatCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-          onEffectAttention: (note) => emitLiveNotice(deps.io, note),
+          onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
         });
@@ -861,6 +920,7 @@ async function chatCommandBody(
       // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
       // shared with `chat-resume` via createClearRebuild so it cannot drift.
       const rebuild = createClearRebuild({
+        onEffectAttention: effectAttention.note,
         startingModes,
         homeDir,
         ...(ownership === undefined ? {} : { ownership }),
@@ -890,6 +950,7 @@ async function chatCommandBody(
       // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
       // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
       const reseatRebuild = createReseatRebuild({
+        onEffectAttention: effectAttention.note,
         startingModes,
         homeDir,
         ...(ownership === undefined ? {} : { ownership }),
@@ -947,6 +1008,7 @@ async function chatCommandBody(
       prepared.wiring,
       {
         ...deps,
+        effectAttention,
         ...(ownership === undefined ? {} : { chatLifetime: ownership }),
       },
       prepared.rebuild,
@@ -980,6 +1042,11 @@ async function chatResumeCommandBody(
   deps: ChatResumeCommandDeps,
   ownership?: SessionChatLifetime,
 ): Promise<ExitCode> {
+  const effectAttention = createChatEffectAttention(
+    deps.io,
+    chatIsInteractive(deps.io, deps.global),
+    ownership,
+  );
   if (args.continueLatest === true && args.sessionId !== undefined)
     throw new CliError('invalid_invocation', '--continue cannot be combined with a session ID.');
   if (
@@ -1260,7 +1327,7 @@ async function chatResumeCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-          onEffectAttention: (note) => emitLiveNotice(deps.io, note),
+          onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
         });
@@ -1334,6 +1401,7 @@ async function chatResumeCommandBody(
     // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
     // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
     const rebuild = createClearRebuild({
+      onEffectAttention: effectAttention.note,
       startingModes,
       homeDir,
       ...(ownership === undefined ? {} : { ownership }),
@@ -1362,6 +1430,7 @@ async function chatResumeCommandBody(
     // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript, over the SHARED db.
     // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
     const reseatRebuild = createReseatRebuild({
+      onEffectAttention: effectAttention.note,
       startingModes,
       homeDir,
       ...(ownership === undefined ? {} : { ownership }),
@@ -1439,6 +1508,7 @@ async function chatResumeCommandBody(
     prepared.wiring,
     {
       ...deps,
+      effectAttention,
       ...(ownership === undefined ? {} : { chatLifetime: ownership }),
     },
     prepared.rebuild,
@@ -2381,6 +2451,7 @@ async function buildFreshChatWiring(
  * the {@link clearedNotice} naming the prior (still-resumable) session.
  */
 function createClearRebuild(params: {
+  readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
   readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly ownership?: SessionChatLifetime;
@@ -2430,7 +2501,7 @@ function createClearRebuild(params: {
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
     onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
-    onEffectAttention: (note) => emitLiveNotice(params.io, note),
+    onEffectAttention: params.onEffectAttention,
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
@@ -2715,6 +2786,7 @@ async function buildReseatWiring(
  * under a new-model agent over the SHARED db.
  */
 function createReseatRebuild(params: {
+  readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
   readonly startingModes: StartingModeRuntime;
   readonly homeDir: string;
   readonly ownership?: SessionChatLifetime;
@@ -2764,7 +2836,7 @@ function createReseatRebuild(params: {
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
     onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
-    onEffectAttention: (note) => emitLiveNotice(params.io, note),
+    onEffectAttention: params.onEffectAttention,
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId, target, carriedTranscript) =>
@@ -3541,10 +3613,21 @@ export async function runReplLoop(
       else await terminalOwner.publishOut(text);
     }
   } finally {
-    // The shared db closes exactly once, AFTER the alt-exit + summary — never per-swap (that would strand the next
-    // session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
-    if (deps.chatLifetime === undefined)
-      closeQuietly(deps.io, 'session store', () => opened.close());
+    // Join late/pending hosts before final disclosure; this tail belongs to the entered surface root,
+    // never to a host notifier waiting on its own retirement. A failed terminal close grants no stderr authority.
+    try {
+      await deps.chatLifetime?.hosts.close();
+      if (terminalOwner !== undefined) await terminalOwner.close();
+      else {
+        disposeJobControl();
+        altScreenController?.restore();
+      }
+      await deps.effectAttention?.flush();
+    } finally {
+      // The shared db follows actual producer, terminal and required-warning acknowledgements.
+      if (deps.chatLifetime === undefined)
+        closeQuietly(deps.io, 'session store', () => opened.close());
+    }
   }
   // `/exit`, `/cancel`, an input EOF, and a `/clear` whose rebuild failed all END the chat — the canonical code.
   return EXIT_CODES.chatEnded;

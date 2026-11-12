@@ -1218,7 +1218,7 @@ describe('chatCommand', () => {
           .state.transcript.filter((entry) => entry.role === 'notice')
           .map((entry) => entry.text) ?? [];
       expect(notes.includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(tty && !json);
-      expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(!tty || json);
+      expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(true);
       expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
     },
   );
@@ -1325,7 +1325,7 @@ describe('chatCommand', () => {
     ]);
     expect(JSON.stringify(events)).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
     expect(notes.includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(tty && !json);
-    expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(!tty || json);
+    expect(err().includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(true);
     expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
     expect(executions).toBe(1);
     expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
@@ -1335,6 +1335,581 @@ describe('chatCommand', () => {
       ABORTED_EFFECT_ATTENTION_NOTICE,
     );
   });
+
+  it.each([false, true])(
+    'retains required standalone notice through suspended geometry (zeroColumns=%s)',
+    async (zeroColumns) => {
+      const tty = true,
+        json = false;
+      const {
+        d,
+        out,
+        err,
+        store: history,
+        sessionId,
+      } = deps(
+        [],
+        [
+          [
+            { type: 'tool_call_start', id: 'write', name: 'write_file' },
+            {
+              type: 'tool_call_delta',
+              id: 'write',
+              argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+            },
+            { type: 'tool_call_end', id: 'write' },
+            stop('tool_use'),
+          ],
+        ],
+      );
+      let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+      const f = invocationFixture();
+      const stdout = new OwnedTtyOutput();
+      const stdin = new OwnedTtyInput();
+      let app: ReturnType<typeof render> | undefined;
+      let executions = 0;
+      const events: SessionStreamHandleEvent[] = [];
+      let store: ChatStoreController | undefined;
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          invocation: f.invocation,
+          io: {
+            ...d.io,
+            stdoutIsTty: tty,
+            nativeStdout: stdout,
+            nativeStderr: stdout,
+            nativeStdin: stdin,
+          },
+          global: { ...d.global, json },
+          buildSession: async (options) => {
+            expect(options.onEffectAttention).toBeTypeOf('function');
+            built = await buildChatSession({
+              ...options,
+              toolHost: {
+                fs: {
+                  readFile: () =>
+                    Promise.resolve({
+                      content: '',
+                      mimeType: 'text/plain',
+                      sizeBytes: 0,
+                      lastModified: '',
+                    }),
+                  listDirectory: () => Promise.resolve({ entries: [] }),
+                  writeFile: () => Promise.reject(new Error('blind write forbidden')),
+                  prepareWrite: () =>
+                    Promise.resolve({
+                      path: 'private-target',
+                      before: 'old',
+                      after: 'new',
+                      release: () => {},
+                      execute: () => {
+                        executions++;
+                        built?.session.abort();
+                        return Promise.resolve({ path: 'private-target', bytesWritten: 3 });
+                      },
+                    }),
+                },
+              },
+            });
+            built.handle.subscribe((event) => events.push(event));
+            return built;
+          },
+          drive: async (ctx) => {
+            store = ctx.store;
+            ctx.startSession();
+            app = render(
+              createElement(ChatApp, {
+                store: ctx.store,
+                alternateScreen: true,
+                onSubmit: ctx.processLine,
+                shouldStop: ctx.shouldStop,
+                onExit: () => undefined,
+                onError: (error) => {
+                  throw error;
+                },
+                onModeChange: () => undefined,
+              }),
+              {
+                stdout,
+                stdin,
+                stderr: stdout,
+                patchConsole: false,
+                interactive: true,
+                alternateScreen: false,
+                exitOnCtrlC: false,
+              },
+            );
+            await app.waitUntilRenderFlush();
+            stdout.columns = zeroColumns ? 0 : 80;
+            stdout.emit('resize');
+            await app.waitUntilRenderFlush();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            if (built === undefined || built.startingMode === undefined)
+              throw new Error('missing standalone host');
+            applyChatMode(
+              makeChatModeEnv({
+                session: built.session,
+                tools: built.tools,
+                workspaceDir: built.context.workingDir,
+                startingModeAuthority: built.startingMode.authority,
+                prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+              }),
+              'accept-edits',
+            );
+            await ctx.processLine('write');
+            await built?.whenHostSafeToClose();
+            await app.waitUntilRenderFlush();
+            expect(stdout.frames.join('').includes('Some actions could not be confirmed')).toBe(
+              !zeroColumns,
+            );
+            await ctx.processLine('/exit');
+            app.unmount();
+            await app.waitUntilExit();
+            return { kind: 'exit' };
+          },
+        },
+      );
+      const notes =
+        store
+          ?.getSnapshot()
+          .state.transcript.filter((entry) => entry.role === 'notice')
+          .map((entry) => entry.text) ?? [];
+      stdout.destroy();
+      stdin.destroy();
+      expect(executions).toBe(1);
+      expect(events.filter((event) => event.type === 'session:turn_completed')).toEqual([
+        expect.objectContaining({ stopReason: 'aborted' }),
+      ]);
+      expect(JSON.stringify(events)).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+      expect(notes.includes(ABORTED_EFFECT_ATTENTION_NOTICE)).toBe(tty && !json);
+      expect(
+        err().includes(ABORTED_EFFECT_ATTENTION_NOTICE),
+        'required notice must survive missing render proof',
+      ).toBe(true);
+      expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+      expect(executions).toBe(1);
+      expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+        expect.objectContaining({ state: 'prepared' }),
+      ]);
+      expect(JSON.stringify(history.loadFull(sessionId)?.messages)).not.toContain(
+        ABORTED_EFFECT_ATTENTION_NOTICE,
+      );
+    },
+  );
+
+  it.each(['immediate', 'held', 'failed'] as const)(
+    'owns late standalone effect disclosure after alt restoration (delivery=%s)',
+    async (delivery) => {
+      const {
+        d,
+        out,
+        err,
+        store: history,
+        sessionId,
+      } = deps(
+        [],
+        [
+          [
+            { type: 'tool_call_start', id: 'write', name: 'write_file' },
+            {
+              type: 'tool_call_delta',
+              id: 'write',
+              argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+            },
+            { type: 'tool_call_end', id: 'write' },
+            stop('tool_use'),
+          ],
+        ],
+      );
+      const f = invocationFixture(),
+        stdout = new OwnedTtyOutput(),
+        stdin = new OwnedTtyInput();
+      const order: string[] = [],
+        events: SessionStreamHandleEvent[] = [];
+      let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+      let executions = 0,
+        deliveryEntered = false,
+        finished = false;
+      let release = () => {},
+        acknowledge = () => {};
+      const producer = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const acknowledged =
+        delivery === 'held'
+          ? new Promise<void>((resolve) => {
+              acknowledge = resolve;
+            })
+          : Promise.resolve();
+      const closed = vi.fn();
+      const command = chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          invocation: f.invocation,
+          openSessionStore: () => ({ store: history, db: client.db, close: closed }),
+          io: {
+            ...d.io,
+            stdoutIsTty: true,
+            nativeStdout: stdout,
+            nativeStderr: stdout,
+            nativeStdin: stdin,
+            writeErr: (text) => {
+              if (text.includes(ABORTED_EFFECT_ATTENTION_NOTICE)) order.push('notice-sync');
+              d.io.writeErr(text);
+            },
+            writeErrAcknowledged: async (text) => {
+              if (text.includes(ABORTED_EFFECT_ATTENTION_NOTICE)) {
+                deliveryEntered = true;
+                expect(order).toContain('alt-exit-ack');
+                await acknowledged;
+                if (delivery === 'failed') throw new Error('PRIVATE_REQUIRED_NOTICE_SINK');
+                order.push('notice-ack');
+              }
+              await d.io.writeErrAcknowledged(text);
+            },
+            writeOutAcknowledged: async (text) => {
+              await d.io.writeOutAcknowledged(text);
+              if (text.includes(EXIT_ALT_SCREEN)) order.push('alt-exit-ack');
+            },
+          },
+          buildSession: async (options) => {
+            built = await buildChatSession({
+              ...options,
+              toolHost: {
+                fs: {
+                  readFile: () =>
+                    Promise.resolve({
+                      content: '',
+                      mimeType: 'text/plain',
+                      sizeBytes: 0,
+                      lastModified: '',
+                    }),
+                  listDirectory: () => Promise.resolve({ entries: [] }),
+                  writeFile: () => Promise.reject(new Error('blind write forbidden')),
+                  prepareWrite: () =>
+                    Promise.resolve({
+                      path: 'private-target',
+                      before: 'old',
+                      after: 'new',
+                      release: () => {},
+                      execute: async () => {
+                        executions++;
+                        built?.session.abort();
+                        await producer;
+                        return { path: 'private-target', bytesWritten: 3 };
+                      },
+                    }),
+                },
+              },
+            });
+            built.handle.subscribe((event) => events.push(event));
+            return built;
+          },
+          drive: async (ctx) => {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            if (built === undefined || built.startingMode === undefined)
+              throw new Error('missing standalone host');
+            applyChatMode(
+              makeChatModeEnv({
+                session: built.session,
+                tools: built.tools,
+                workspaceDir: built.context.workingDir,
+                startingModeAuthority: built.startingMode.authority,
+                prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+              }),
+              'accept-edits',
+            );
+            const sending = ctx.processLine('write');
+            void sending.catch(() => undefined);
+            await vi.waitFor(() => expect(executions).toBe(1));
+            await ctx.processLine('/exit');
+            expect(order).not.toContain('notice-ack');
+            setImmediate(release);
+            return { kind: 'exit' };
+          },
+        },
+      );
+      const completion = command.then(
+        (value) => {
+          finished = true;
+          return { value };
+        },
+        (cause: unknown) => {
+          finished = true;
+          return { cause };
+        },
+      );
+      try {
+        if (delivery === 'held') {
+          await vi.waitFor(() => expect(deliveryEntered).toBe(true));
+          expect(finished).toBe(false);
+          expect(closed).not.toHaveBeenCalled();
+          expect(f.exit).not.toHaveBeenCalled();
+          acknowledge();
+        }
+        const outcome = await completion;
+        expect(order).not.toContain('notice-sync');
+        if (delivery === 'failed') {
+          expect('cause' in outcome).toBe(true);
+          expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+        } else {
+          expect(outcome).toEqual({ value: EXIT_CODES.chatEnded });
+          expect(order.indexOf('notice-ack')).toBeGreaterThan(order.indexOf('alt-exit-ack'));
+          expect(err()).toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        }
+        expect(closed).toHaveBeenCalledOnce();
+        expect(executions).toBe(1);
+        expect(events.filter((event) => event.type === 'session:cancelled')).toHaveLength(1);
+        expect(events.filter((event) => event.type === 'session:turn_completed')).toHaveLength(0);
+        expect(JSON.stringify(events)).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          expect.objectContaining({ state: 'prepared' }),
+        ]);
+        expect(JSON.stringify(history.loadFull(sessionId)?.messages)).not.toContain(
+          ABORTED_EFFECT_ATTENTION_NOTICE,
+        );
+        expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(err()).not.toContain('PRIVATE_REQUIRED_NOTICE_SINK');
+        expect(err()).not.toContain('private-target');
+      } finally {
+        release();
+        acknowledge();
+        await completion;
+        await f.registry.terminate({ kind: 'normal' });
+        stdout.destroy();
+        stdin.destroy();
+      }
+    },
+  );
+
+  it.each(['fresh', 'resumed', 'cleared', 'reseated'] as const)(
+    'shares one fixed pending disclosure across standalone %s builders',
+    async (surface) => {
+      const { d, err, out, sessionId } = deps([], [textTurn('seed')]);
+      if (surface === 'resumed')
+        await chatCommand({ agent: undefined }, { ...d, drive: linesDriver(['seed', '/exit']) });
+      const f = invocationFixture(),
+        stdout = new OwnedTtyOutput(),
+        stdin = new OwnedTtyInput();
+      const callbacks: NonNullable<Parameters<typeof buildChatSession>[0]['onEffectAttention']>[] =
+        [];
+      let drives = 0;
+      const overrides = {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        io: {
+          ...d.io,
+          stdoutIsTty: true,
+          nativeStdout: stdout,
+          nativeStderr: stdout,
+          nativeStdin: stdin,
+        },
+        buildSession: (options: Parameters<typeof buildChatSession>[0]) => {
+          if (options.onEffectAttention === undefined) throw new Error('missing fresh disclosure');
+          callbacks.push(options.onEffectAttention);
+          return buildChatSession(options);
+        },
+        buildResumedSession: (options: Parameters<typeof buildResumedChatSession>[0]) => {
+          if (options.onEffectAttention === undefined)
+            throw new Error('missing restored disclosure');
+          callbacks.push(options.onEffectAttention);
+          return buildResumedChatSession(options);
+        },
+        drive: async (ctx: ChatDriveContext): Promise<Awaited<ReturnType<ChatDriver>>> => {
+          ctx.startSession();
+          await ctx.onActivated?.(() => !ctx.shouldStop());
+          const first = drives++ === 0;
+          if (first && surface === 'cleared') {
+            await ctx.processLine('/clear');
+            return { kind: 'clear' };
+          }
+          if (first && surface === 'reseated') {
+            ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+            return { kind: 'reseat' };
+          }
+          callbacks.at(-1)?.('PRIVATE_NOTIFICATION_ARGUMENT');
+          expect(err()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      };
+      try {
+        if (surface === 'resumed') await chatResumeCommand({ sessionId }, overrides);
+        else await chatCommand({ agent: undefined }, overrides);
+        expect(callbacks).toHaveLength(surface === 'cleared' || surface === 'reseated' ? 2 : 1);
+        expect(new Set(callbacks).size).toBe(1);
+        expect(err()).toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(err()).not.toContain('PRIVATE_NOTIFICATION_ARGUMENT');
+        expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+      } finally {
+        await f.registry.terminate({ kind: 'normal' });
+        stdout.destroy();
+        stdin.destroy();
+      }
+    },
+  );
+
+  it.each(
+    [false, true].flatMap((json) =>
+      ['immediate', 'held', 'failed'].map((delivery) => ({ json, delivery })),
+    ),
+  )(
+    'delivers required headless notice before exit with owned ACK (json=$json; delivery=$delivery)',
+    async ({ json, delivery }) => {
+      const { d, out, err, store: history } = deps([], []);
+      const f = invocationFixture(),
+        closed = vi.fn();
+      let notify:
+        | NonNullable<Parameters<typeof buildChatSession>[0]['onEffectAttention']>
+        | undefined;
+      let writes = 0,
+        entered = false,
+        finished = false;
+      let release = () => {};
+      const acknowledged =
+        delivery === 'held'
+          ? new Promise<void>((resolve) => {
+              release = resolve;
+            })
+          : Promise.resolve();
+      const command = chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          invocation: f.invocation,
+          global: { ...d.global, json },
+          openSessionStore: () => ({ store: history, db: client.db, close: closed }),
+          io: {
+            ...d.io,
+            writeErrAcknowledged: async (text) => {
+              if (text.includes(ABORTED_EFFECT_ATTENTION_NOTICE)) {
+                writes++;
+                entered = true;
+                await acknowledged;
+                if (delivery === 'failed') throw new Error('PRIVATE_HEADLESS_NOTICE_FAILURE');
+              }
+              await d.io.writeErrAcknowledged(text);
+            },
+          },
+          buildSession: (options) => {
+            notify = options.onEffectAttention;
+            return buildChatSession(options);
+          },
+          drive: async (ctx) => {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            if (notify === undefined) throw new Error('missing headless notice port');
+            notify(ABORTED_EFFECT_ATTENTION_NOTICE);
+            await vi.waitFor(() => expect(entered).toBe(true));
+            if (delivery === 'immediate') {
+              await vi.waitFor(() => expect(err()).toContain(ABORTED_EFFECT_ATTENTION_NOTICE));
+              expect(ctx.shouldStop()).toBe(false);
+            }
+            if (delivery !== 'failed') await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+      const completion = command.then(
+        (value) => {
+          finished = true;
+          return { value };
+        },
+        (cause: unknown) => {
+          finished = true;
+          return { cause };
+        },
+      );
+      try {
+        if (delivery === 'held') {
+          await vi.waitFor(() => expect(entered).toBe(true));
+          expect(finished).toBe(false);
+          expect(closed).not.toHaveBeenCalled();
+          expect(f.exit).not.toHaveBeenCalled();
+          release();
+        }
+        const outcome = await completion;
+        if (delivery === 'failed') {
+          expect('cause' in outcome).toBe(true);
+          expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+        } else {
+          expect(outcome).toEqual({ value: EXIT_CODES.chatEnded });
+          expect(err()).toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        }
+        expect(writes).toBe(1);
+        expect(closed).toHaveBeenCalledOnce();
+        expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(err()).not.toContain('PRIVATE_HEADLESS_NOTICE_FAILURE');
+      } finally {
+        release();
+        await completion;
+        await f.registry.terminate({ kind: 'normal' });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'delivers a later headless warning after the preceding ACK (json=%s)',
+    async (json) => {
+      const { d, err, out } = deps([], []);
+      const f = invocationFixture();
+      let notify:
+        | NonNullable<Parameters<typeof buildChatSession>[0]['onEffectAttention']>
+        | undefined;
+      const receipts: Promise<void>[] = [];
+      try {
+        await chatCommand(
+          { agent: undefined },
+          {
+            ...d,
+            invocation: f.invocation,
+            global: { ...d.global, json },
+            io: {
+              ...d.io,
+              writeErrAcknowledged: (text) => {
+                const raw = d.io.writeErrAcknowledged(text);
+                if (text.includes(ABORTED_EFFECT_ATTENTION_NOTICE)) receipts.push(raw);
+                return raw;
+              },
+            },
+            buildSession: (options) => {
+              notify = options.onEffectAttention;
+              return buildChatSession(options);
+            },
+            drive: async (ctx) => {
+              ctx.startSession();
+              await ctx.onActivated?.(() => !ctx.shouldStop());
+              if (notify === undefined) throw new Error('missing headless notice port');
+              notify(ABORTED_EFFECT_ATTENTION_NOTICE);
+              const first = receipts[0];
+              if (first === undefined) throw new Error('first warning was not entered promptly');
+              await first;
+              expect(ctx.shouldStop()).toBe(false);
+              notify(ABORTED_EFFECT_ATTENTION_NOTICE);
+              const second = receipts[1];
+              if (second === undefined)
+                throw new Error('second warning was not entered after the first ACK');
+              await second;
+              await ctx.processLine('/exit');
+              return { kind: 'exit' };
+            },
+          },
+        );
+        expect(receipts).toHaveLength(2);
+        expect(err().split(ABORTED_EFFECT_ATTENTION_NOTICE).length - 1).toBe(2);
+        expect(out()).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+      } finally {
+        await f.registry.terminate({ kind: 'normal' });
+      }
+    },
+  );
 
   it('a NON-interactive (plain / --json) session keeps the budget warning on STDERR — those drivers never render the store', async () => {
     // Regression: the live-notice sink must NOT be installed for drivePlain/driveJson, which stream to `io` and never
