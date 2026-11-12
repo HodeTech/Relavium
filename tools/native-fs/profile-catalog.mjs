@@ -63,15 +63,25 @@ const RENAME_DIMENSIONS = [
   ['same', 'cross'],
   ['new', 'replace'],
 ];
-export const WINDOWS_RENAME_VARIANTS = Object.freeze(
-  RENAME_DIMENSIONS.reduce(
+const NT_RENAME_DIMENSIONS = [
+  ['nt'],
+  ['minimal', 'nul', 'padded'],
+  ['relative'],
+  ['same', 'cross'],
+  ['new', 'replace'],
+];
+const cartesianVariants = (dimensions) =>
+  dimensions.reduce(
     (prefixes, dimension) =>
       prefixes.flatMap((prefix) =>
         dimension.map((suffix) => (prefix === '' ? suffix : `${prefix}-${suffix}`)),
       ),
     [''],
-  ),
-);
+  );
+export const WINDOWS_RENAME_VARIANTS = Object.freeze([
+  ...cartesianVariants(RENAME_DIMENSIONS),
+  ...cartesianVariants(NT_RENAME_DIMENSIONS),
+]);
 export const WINDOWS_RENAME_STATUSES = Object.freeze([
   'ok',
   'invalid-parameter',
@@ -86,6 +96,7 @@ export const WINDOWS_RENAME_STATUSES = Object.freeze([
   'privilege-not-held',
   'other',
   'mutation',
+  'pending',
 ]);
 export const WINDOWS_OWNER_CASE =
   'windows::tests::windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned';

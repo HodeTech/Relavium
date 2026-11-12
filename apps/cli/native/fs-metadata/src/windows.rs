@@ -1560,6 +1560,10 @@ impl Profile for WindowsProfile {
 pub(crate) fn rename_parameter_probe() {
     use std::io::{Read, Seek, SeekFrom};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformationEx, NtSetInformationFile, FILE_RENAME_INFORMATION,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
     struct ProbeCleanup {
         root: PathBuf,
@@ -1623,11 +1627,11 @@ pub(crate) fn rename_parameter_probe() {
         file: &File,
         parent: &File,
         name: &str,
-        extended: bool,
+        class_kind: u8,
         size_mode: u8,
         absolute: bool,
         replace: bool,
-    ) -> Result<(), &'static str> {
+    ) -> (Result<(), &'static str>, bool) {
         let name = if absolute {
             child(parent, OsStr::new(name))
                 .expect("absolute probe target")
@@ -1637,16 +1641,72 @@ pub(crate) fn rename_parameter_probe() {
         };
         let name: Vec<u16> = name.encode_wide().collect();
         let name_bytes = name.len() * size_of::<u16>();
-        let offset = offset_of!(FILE_RENAME_INFO, FileName);
+        let offset = if class_kind == 2 {
+            offset_of!(FILE_RENAME_INFORMATION, FileName)
+        } else {
+            offset_of!(FILE_RENAME_INFO, FileName)
+        };
+        let base_size = if class_kind == 2 {
+            size_of::<FILE_RENAME_INFORMATION>()
+        } else {
+            size_of::<FILE_RENAME_INFO>()
+        };
         let length = match size_mode {
             0 => offset + name_bytes,
             1 => offset + name_bytes + size_of::<u16>(),
-            _ => size_of::<FILE_RENAME_INFO>() + name_bytes + size_of::<u16>(),
+            _ => base_size + name_bytes + size_of::<u16>(),
         };
         let mut storage = vec![0u64; length.div_ceil(size_of::<u64>())];
+        if class_kind == 2 {
+            let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+            unsafe {
+                (*info).Anonymous.Flags = if replace {
+                    RENAME_REPLACE | RENAME_POSIX
+                } else {
+                    0
+                };
+                (*info).RootDirectory = handle(parent);
+                (*info).FileNameLength = name_bytes as u32;
+                ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+            }
+            let mut iosb = IO_STATUS_BLOCK::default();
+            iosb.Anonymous.Status = STATUS_PENDING;
+            let initial = unsafe {
+                NtSetInformationFile(
+                    handle(file),
+                    &mut iosb,
+                    info.cast(),
+                    length as u32,
+                    FileRenameInformationEx,
+                )
+            };
+            let pending = initial == STATUS_PENDING;
+            let result = if pending {
+                // Do not unwind or return while the kernel might still own iosb or storage.
+                if unsafe { WaitForSingleObject(handle(file), 10_000) } != WAIT_OBJECT_0 {
+                    std::process::abort();
+                }
+                let finished =
+                    unsafe { std::ptr::read_volatile(std::ptr::addr_of!(iosb.Anonymous.Status)) };
+                if finished == STATUS_PENDING {
+                    std::process::abort();
+                }
+                finished
+            } else {
+                initial
+            };
+            if result != STATUS_SUCCESS {
+                let code = unsafe { RtlNtStatusToDosError(result) };
+                return (
+                    Err(status(&std::io::Error::from_raw_os_error(code as i32))),
+                    pending,
+                );
+            }
+            return (Ok(()), pending);
+        }
         let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         unsafe {
-            if extended {
+            if class_kind == 1 {
                 (*info).Anonymous.Flags = if replace {
                     RENAME_REPLACE | RENAME_POSIX
                 } else {
@@ -1663,7 +1723,7 @@ pub(crate) fn rename_parameter_probe() {
             (*info).FileNameLength = name_bytes as u32;
             ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
         }
-        let class = if extended {
+        let class = if class_kind == 1 {
             FileRenameInfoEx
         } else {
             FileRenameInfo
@@ -1672,9 +1732,12 @@ pub(crate) fn rename_parameter_probe() {
             == 0
         {
             let code = unsafe { GetLastError() };
-            return Err(status(&std::io::Error::from_raw_os_error(code as i32)));
+            return (
+                Err(status(&std::io::Error::from_raw_os_error(code as i32))),
+                false,
+            );
         }
-        Ok(())
+        (Ok(()), false)
     }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1701,9 +1764,12 @@ pub(crate) fn rename_parameter_probe() {
     let other =
         WindowsProfile::create_private_directory(&other_path).expect("private probe directory");
     let mut row = 0;
-    for (class_label, extended) in [("legacy", false), ("ex", true)] {
+    for (class_label, class_kind) in [("legacy", 0), ("ex", 1), ("nt", 2)] {
         for (size_label, size_mode) in [("minimal", 0), ("nul", 1), ("padded", 2)] {
             for (root_label, absolute) in [("relative", false), ("absolute", true)] {
+                if class_kind == 2 && absolute {
+                    continue;
+                }
                 for (location_label, cross) in [("same", false), ("cross", true)] {
                     for (operation_label, replace) in [("new", false), ("replace", true)] {
                         let source_name = format!("source-{row}");
@@ -1717,11 +1783,11 @@ pub(crate) fn rename_parameter_probe() {
                         } else {
                             None
                         };
-                        let outcome = attempt(
+                        let (outcome, mut pending) = attempt(
                             &source,
                             target_parent,
                             &target_name,
-                            extended,
+                            class_kind,
                             size_mode,
                             absolute,
                             replace,
@@ -1752,15 +1818,16 @@ pub(crate) fn rename_parameter_probe() {
                                         create(&root_handle, &collision_source_name, b"pending");
                                     let collision_target =
                                         create(target_parent, &collision_target_name, b"foreign");
-                                    let collided = attempt(
+                                    let (collided, collision_pending) = attempt(
                                         &collision_source,
                                         target_parent,
                                         &collision_target_name,
-                                        extended,
+                                        class_kind,
                                         size_mode,
                                         absolute,
                                         false,
                                     );
+                                    pending |= collision_pending;
                                     if collided.is_err()
                                         && path_matches(
                                             &root.join(&collision_source_name),
@@ -1794,6 +1861,11 @@ pub(crate) fn rename_parameter_probe() {
                                 }
                             }
                         };
+                        let status = if pending && status != "mutation" {
+                            "pending"
+                        } else {
+                            status
+                        };
                         println!("RELAVIUM_NATIVE_RENAME_PROBE:{class_label}-{size_label}-{root_label}-{location_label}-{operation_label}:{status}");
                         row += 1;
                     }
@@ -1801,7 +1873,7 @@ pub(crate) fn rename_parameter_probe() {
             }
         }
     }
-    assert_eq!(row, 48);
+    assert_eq!(row, 60);
     drop(other);
     drop(root_handle);
     drop(cleanup);

@@ -11,6 +11,7 @@ import {
   WINDOWS_RENAME_STATUSES,
 } from './profile-catalog.mjs';
 import {
+  parseSingleRustResult,
   parseRustListing,
   parseRustResults,
   validateProfileEvidence,
@@ -378,7 +379,7 @@ test('only the Windows parameter measurement and owner observation collect captu
   assert.throws(() => rustCaseArguments('unreviewed::private'), /NATIVE_FS_PROFILE_CONTEXT/u);
 });
 
-test('the Windows rename measurement has exactly the complete 48-variant Cartesian inventory', () => {
+test('the Windows rename measurement has exactly the complete 60-variant inventory while preserving the original 48-row Cartesian set', () => {
   const independent = [];
   for (const api of ['legacy', 'ex'])
     for (const length of ['minimal', 'nul', 'padded'])
@@ -386,8 +387,20 @@ test('the Windows rename measurement has exactly the complete 48-variant Cartesi
         for (const location of ['same', 'cross'])
           for (const operation of ['new', 'replace'])
             independent.push([api, length, name, location, operation].join('-'));
-  assert.deepEqual(WINDOWS_RENAME_VARIANTS, independent);
-  assert.equal(new Set(WINDOWS_RENAME_VARIANTS).size, 48);
+  assert.equal(independent.length, 48);
+  assert.deepEqual(WINDOWS_RENAME_VARIANTS.slice(0, 48), independent);
+  const nt = [];
+  for (const length of ['minimal', 'nul', 'padded'])
+    for (const location of ['same', 'cross'])
+      for (const operation of ['new', 'replace'])
+        nt.push(['nt', length, 'relative', location, operation].join('-'));
+  assert.equal(nt.length, 12);
+  assert.deepEqual(WINDOWS_RENAME_VARIANTS.slice(48), nt);
+  assert.equal(new Set(WINDOWS_RENAME_VARIANTS).size, 60);
+  assert.throws(
+    () => parseWindowsRenameProbe(probeRecords().slice(0, 48).join('\n')),
+    (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
+  );
   for (const status of WINDOWS_RENAME_STATUSES) {
     const records = parseWindowsRenameProbe(
       'successes:\r\n' + probeRecords(status).reverse().join('\r\n') + '\r\n',
@@ -419,6 +432,9 @@ test('Windows rename measurement refuses missing, duplicate, unknown, malformed 
     valid.slice(1),
     [...valid, valid[0]],
     ['RELAVIUM_NATIVE_RENAME_PROBE:private-variant:ok', ...valid.slice(1)],
+    ['RELAVIUM_NATIVE_RENAME_PROBE:nt-minimal-absolute-same-new:ok', ...valid.slice(1)],
+    [...valid.slice(0, 48), ...valid.slice(49)],
+    [...valid, valid[48]],
     [valid[0].replace('invalid-parameter', 'private-status'), ...valid.slice(1)],
     [valid[0] + ':private-payload', ...valid.slice(1)],
     ['prefix ' + valid[0], ...valid.slice(1)],
@@ -447,4 +463,25 @@ test('Windows rename measurement refuses missing, duplicate, unknown, malformed 
       () => parseWindowsRenameProbe(input),
       (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
     );
+});
+
+test('unexpected initial pending is a closed measurement only and cannot replace proven Rust completion', () => {
+  assert.ok(WINDOWS_RENAME_STATUSES.includes('pending'));
+  const pending = probeRecords('pending').join('\n');
+  assert.deepEqual(
+    parseWindowsRenameProbe(pending),
+    WINDOWS_RENAME_VARIANTS.map((variant) => ({ variant, status: 'pending' })),
+  );
+  const summary = JSON.parse(
+    windowsRenameProbeDiagnostic(pending).slice('NATIVE_FS_RENAME_PROBE '.length),
+  );
+  assert.equal(summary.measurementOnly, true);
+  const incomplete =
+    `test ${WINDOWS_RENAME_PROBE_CASE} ... ignored\n` +
+    pending +
+    '\ntest result: ok. 0 passed; 0 failed; 1 ignored; 18 filtered out\n';
+  assert.throws(
+    () => parseSingleRustResult(incomplete, WINDOWS_RENAME_PROBE_CASE),
+    /NATIVE_FS_RUST_SINGLE_COMPLETION/u,
+  );
 });

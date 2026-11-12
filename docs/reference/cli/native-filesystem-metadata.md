@@ -575,6 +575,17 @@ The `windows-sys` threading and security-authorization features were added to
 the reviewed binding set for effective-token, file-security and SID operations;
 they add no crate family or lockfile entry.
 
+The test-only NT rename experiment additionally enables
+`Wdk_Storage_FileSystem` → `Wdk_Storage` → `Wdk` and `Win32_System_IO` →
+`Win32_System` in that same pinned `windows-sys`. Its existing Foundation
+binding exposes the status conversion. The reviewed feature closure adds no
+crate, version, driver or Node-API export; the lockfile and nineteen-package
+registry inventory remain unchanged. This uses ADR-0125's approved minimal
+feature closure and isolated-mechanism delegation, not a new dependency family.
+The experiment uses the documented user-mode Nt entry and class 65, never the
+access-check-bypass class 66. These binding checks are not Windows behavior or
+production-profile acceptance and do not constitute a fresh advisory query.
+
 All 19 registry entries were unyanked and more than 14 days old at review.
 Their license expressions are MIT, Apache-2.0, ISC and Unicode-3.0 variants;
 the exact expressions and checksums are those reported by crates.io for the
@@ -613,14 +624,22 @@ temporary OS/algorithm experiments; this tracked script supplies reproducibility
 
 ## Acceptance evidence
 
-The Windows test-only rename-parameter cohort measures 48 fixed private-fixture
-combinations of information class, buffer size, relative/absolute target,
+The Windows test-only rename-parameter cohort measures 60 fixed private-fixture
+combinations: 48 Win32 comparisons and twelve relative NT class-65 observations.
+The dimensions cover information class, buffer size, relative/absolute target,
 same/cross directory and creation/replacement. It runs before ordinary native
 parents and emits only bounded, validated fixed records. Its absolute forms are
 diagnostic baselines, not a production fallback. Even successful measurements
 do not certify a candidate: ordinary metadata, inheritance, atomicity, crash,
 identity and installed-consumer controls remain mandatory on both Windows
 architectures. No production behavior changes merely because this cohort runs.
+
+NT probe buffers, status block and held handles stay alive through the call and
+any observed pending completion. Only a signalled owned handle plus a final
+status permits continuation; an initial pending observation remains labelled
+`pending`, never `ok`. An unproved wait/completion aborts the test subprocess
+before unwinding or freeing pending storage and produces no successful receipt.
+This exceptional test-process policy is not a production completion strategy.
 
 - Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
   publication and no pre-approval staging; readable source alone is insufficient.

@@ -2378,6 +2378,33 @@ cleanup, not a replacement for production full-identity recovery. Local
 macOS native/Node, 131 affected tools, lint/typecheck and build/format pass;
 Windows measurement and ordinary-profile acceptance remain due.
 
+**NT measurement scope:** actual `14404c19` observations show all 24 Win32
+held-parent relative variants returning `invalid-parameter` on both targets,
+irrespective of the three buffer sizes. ARM64 has eighteen successful absolute
+observations; x64's 24 absolute observations return `sharing-violation`.
+Neither target reports a mutation in the cohort. These observations do not
+authorize an absolute-path production fallback.
+
+A separate Sol/high architectural scope audit verified that the existing
+ADR-0125 approval delegates minimal `windows-sys` feature closure and isolated
+mechanism experiments. Testing the documented user-mode Nt entry within those
+same guarantees needs no new ADR or renewed permission. A new decision would
+still be required for weaker atomicity/target authority, bypass checks, a new
+dependency family or changed support commitments.
+
+The test-only cohort now includes twelve held-parent relative Nt class-65
+observations, for sixty rows total. Class 66 is excluded. Only two necessary
+SDK features are added in the existing locked crate, with no crate/version or
+lockfile graph change. Pending handling retains native storage and handles
+through proven completion; an unproved wait aborts only the test subprocess
+before unwind and produces no successful receipt. Observed pending stays
+labelled `pending`. This is measurement, not production adoption or a production
+exception policy. All previous postconditions, ordinary parents, owner proof,
+Node cases and parser bounds remain. Complete independent Sol/high affected
+review and separate Terra/high security inspection are clean; local native/
+Node, 132 affected tools and lint/typecheck/build/format pass. Actual Windows
+NT measurements and the original production acceptance gates remain open.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
