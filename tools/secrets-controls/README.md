@@ -149,7 +149,7 @@ transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
 live `/export` notice sites. Each requires named human and JSON witnesses in
-the complete 18-case command-export or 143-case chat file. The live control also
+the complete 18-case command-export or 160-case chat file. The live control also
 requires its actual interactive transcript/Ink-frame witness. A third control
 restores raw stderr delivery only for the live notice: human/JSON positive cases
 still pass, while the interactive witness must fail with its named assertion marker.

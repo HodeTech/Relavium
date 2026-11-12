@@ -51,8 +51,10 @@ if (mode === '--producer') {
   const addon = createRequire(import.meta.url)('/addon.node');
   const { pid, namespace } = JSON.parse(readFileSync(ready, 'utf8'));
   assert.ok(Number.isInteger(pid) && pid >= 128);
-  assert.notEqual(namespace, readlinkSync('/proc/self/ns/pid'));
   if (process.argv[3] === 'live') {
+    // Compare identities only while both namespaces exist. After the producer
+    // has died and joined, its namespace inode can be reused by a new consumer.
+    assert.notEqual(namespace, readlinkSync('/proc/self/ns/pid'));
     assert.throws(
       () => process.kill(pid, 0),
       (error) => error?.code === 'ESRCH',

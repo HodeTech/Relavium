@@ -70,7 +70,7 @@ shared 100,000-case scale files run separately from repeated small mutation coho
 crash, lock, receipt and scale tests remain part of ordinary package CI.
 
 Each ordinary phase retains its five-minute outer watchdog. The one complete permanent
-cohort pins 459 cases and 71 joined native children, including Wave 2's two DB readiness
+cohort pins 476 cases and 71 joined native children, including Wave 2's two DB readiness
 controls. The cohort includes six CLI chat cases for live export notices, refusals
 and transcript rendering, two `logs` cases for its header's one-line floor and
 one for its skipped-row note (PR #97 review); these add no native children.

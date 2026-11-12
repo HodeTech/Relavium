@@ -292,9 +292,9 @@ test('secrets workload corrections retain independent complete-count and reader-
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
     ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
-    // Details/clipboard and four interruption-disclosure cases extend the prior 133.
-    ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 143],
-    ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 143],
+    // Seventeen owned interruption-disclosure cases extend the prior 143.
+    ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 160],
+    ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 160],
   ]) {
     const control = secretsControls.find((entry) => entry.id === id);
     assert.ok(control, `${id}: missing control`);
