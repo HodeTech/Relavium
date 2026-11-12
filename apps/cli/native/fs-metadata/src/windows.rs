@@ -12,11 +12,15 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use windows_sys::Wdk::Storage::FileSystem::{
+    FileRenameInformationEx, NtSetInformationFile, FILE_RENAME_INFORMATION,
+};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::Threading::*;
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 const SECURITY_LIMIT: usize = 64 * 1024;
 const STREAM_LIMIT: usize = 64 * 1024;
@@ -813,6 +817,38 @@ fn verify_private(file: &File, directory: bool) -> Result<(), NativeFailure> {
     Ok(())
 }
 
+// The context remains owned until a pending producer has actually completed.
+fn finish_rename<C>(
+    initial: NTSTATUS,
+    context: C,
+    mut wait: impl FnMut(&C) -> WAIT_EVENT,
+    mut final_status: impl FnMut(&C) -> NTSTATUS,
+    mut backoff: impl FnMut(),
+) -> Result<(), NativeFailure> {
+    if initial == STATUS_PENDING {
+        loop {
+            if wait(&context) == WAIT_OBJECT_0 && final_status(&context) != STATUS_PENDING {
+                break;
+            }
+            backoff();
+        }
+        return Err(NativeFailure::PossiblyPublished);
+    }
+    if initial == STATUS_SUCCESS {
+        Ok(())
+    } else {
+        Err(NativeFailure::PossiblyPublished)
+    }
+}
+
+struct RenameContext<'a> {
+    stage: &'a File,
+    _parent: &'a File,
+    storage: Vec<u64>,
+    // Moving the context into finish_rename must not move a pending IOSB.
+    iosb: Box<IO_STATUS_BLOCK>,
+}
+
 fn rename(stage: &File, parent: &File, target: &OsStr, replace: bool) -> Result<(), NativeFailure> {
     component(target)?;
     ntfs(stage)?;
@@ -821,9 +857,18 @@ fn rename(stage: &File, parent: &File, target: &OsStr, replace: bool) -> Result<
         return Err(NativeFailure::Unsupported);
     }
     let name: Vec<u16> = target.encode_wide().collect();
-    let length = offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
-    let mut storage = vec![0u64; length.div_ceil(8)];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let name_bytes = name.len() * size_of::<u16>();
+    let length = size_of::<FILE_RENAME_INFORMATION>() + name_bytes + size_of::<u16>();
+    let mut context = RenameContext {
+        stage,
+        _parent: parent,
+        storage: vec![0u64; length.div_ceil(size_of::<u64>())],
+        iosb: Box::new(IO_STATUS_BLOCK::default()),
+    };
+    let info = context
+        .storage
+        .as_mut_ptr()
+        .cast::<FILE_RENAME_INFORMATION>();
     unsafe {
         (*info).Anonymous.Flags = if replace {
             RENAME_REPLACE | RENAME_POSIX
@@ -831,28 +876,37 @@ fn rename(stage: &File, parent: &File, target: &OsStr, replace: bool) -> Result<
             0
         };
         (*info).RootDirectory = handle(parent);
-        (*info).FileNameLength = (name.len() * 2) as u32;
+        (*info).FileNameLength = name_bytes as u32;
         ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
     }
-    // One namespace operation; no backup rename, unlink, merge, copy or retry.
-    if unsafe {
-        SetFileInformationByHandle(handle(stage), FileRenameInfoEx, info.cast(), length as u32)
-    } == 0
-    {
-        #[cfg(test)]
-        {
-            // Capture the error before any other API call; emit only its
-            // predefined content-free category through the test receipt.
-            let code = unsafe { GetLastError() };
-            let error = std::io::Error::from_raw_os_error(code as i32);
-            crate::test_hooks::remember_failure(
-                crate::stage_index::rename_error_category(&error),
-                NativeFailure::PossiblyPublished,
-            );
-        }
-        return Err(NativeFailure::PossiblyPublished);
+    context.iosb.Anonymous.Status = STATUS_PENDING;
+    // The documented set-information operation is synchronous. Keep the
+    // exact source, parent, buffer and status block owned through completion.
+    let initial = unsafe {
+        NtSetInformationFile(
+            handle(stage),
+            context.iosb.as_mut(),
+            info.cast(),
+            length as u32,
+            FileRenameInformationEx,
+        )
+    };
+    #[cfg(test)]
+    if initial != STATUS_SUCCESS && initial != STATUS_PENDING {
+        let code = unsafe { RtlNtStatusToDosError(initial) };
+        let error = std::io::Error::from_raw_os_error(code as i32);
+        crate::test_hooks::remember_failure(
+            crate::stage_index::rename_error_category(&error),
+            NativeFailure::PossiblyPublished,
+        );
     }
-    Ok(())
+    finish_rename(
+        initial,
+        context,
+        |owned| unsafe { WaitForSingleObject(handle(owned.stage), INFINITE) },
+        |owned| unsafe { ptr::read_volatile(ptr::addr_of!(owned.iosb.Anonymous.Status)) },
+        || std::thread::sleep(std::time::Duration::from_millis(10)),
+    )
 }
 
 // This guard owns only a fresh empty inheritance template. Deletion uses the
@@ -1334,13 +1388,26 @@ impl Profile for WindowsProfile {
                 return Err(NativeFailure::Unsupported);
             }
             Self::verify_private_directory(path, guard.file())?;
-            adopt(guard.file())
+            let peer = Self::open_parent(path)?;
+            Self::verify_private_directory(path, &peer)?;
+            if Self::identity(&peer)? != Self::identity(guard.file())? {
+                return Err(NativeFailure::Changed);
+            }
+            adopt(&peer)?;
+            Ok(peer)
         })();
-        if let Err(error) = attempt {
-            guard.abort()?;
-            return Err(error);
+        match attempt {
+            Ok(peer) => {
+                // Adoption and the peer identity are pinned before releasing
+                // the rollback handle; no DELETE-capable creator clone escapes.
+                drop(guard.transfer());
+                Ok(peer)
+            }
+            Err(error) => {
+                guard.abort()?;
+                Err(error)
+            }
         }
-        Ok(guard.transfer())
     }
     fn verify_private_directory(path: &Path, directory: &File) -> Result<(), NativeFailure> {
         bind(directory, path, true)?;
@@ -1560,10 +1627,6 @@ impl Profile for WindowsProfile {
 pub(crate) fn rename_parameter_probe() {
     use std::io::{Read, Seek, SeekFrom};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use windows_sys::Wdk::Storage::FileSystem::{
-        FileRenameInformationEx, NtSetInformationFile, FILE_RENAME_INFORMATION,
-    };
-    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
     struct ProbeCleanup {
         root: PathBuf,
@@ -1583,6 +1646,28 @@ pub(crate) fn rename_parameter_probe() {
                 let _ = std::fs::remove_dir_all(&self.root);
             }
         }
+    }
+    // Preserve the original broad-directory baseline despite production's
+    // creator-to-peer handoff. This is a probe-only comparison handle.
+    fn broad_directory(path: &Path, peer: &File) -> File {
+        let broad = open(
+            path,
+            FILE_GENERIC_READ
+                | FILE_GENERIC_WRITE
+                | DELETE_ACCESS
+                | WRITE_DAC_ACCESS
+                | WRITE_OWNER_ACCESS,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null(),
+        )
+        .expect("broad comparison directory");
+        WindowsProfile::verify_private_directory(path, &broad).expect("broad private directory");
+        assert!(
+            WindowsProfile::identity(&broad).expect("broad directory identity")
+                == WindowsProfile::identity(peer).expect("peer directory identity")
+        );
+        broad
     }
     fn create(parent: &File, name: &str, content: &[u8]) -> File {
         let mut file = WindowsProfile::create_private_file(parent, OsStr::new(name))
@@ -1858,7 +1943,9 @@ pub(crate) fn rename_parameter_probe() {
         "relavium-native-rename-probe-{}-{nonce}",
         std::process::id()
     ));
-    let root_handle = WindowsProfile::create_private_directory(&root).expect("private probe root");
+    let root_peer = WindowsProfile::create_private_directory(&root).expect("private probe root");
+    let root_handle = broad_directory(&root, &root_peer);
+    drop(root_peer);
     let root_identity = identity(&root_handle).expect("private probe root identity");
     let mut cleanup = ProbeCleanup {
         root: root.clone(),
@@ -1872,8 +1959,10 @@ pub(crate) fn rename_parameter_probe() {
         .try_clone()
         .expect("clone root");
     let other_path = root.join("other");
-    let other =
+    let other_peer =
         WindowsProfile::create_private_directory(&other_path).expect("private probe directory");
+    let other = broad_directory(&other_path, &other_peer);
+    drop(other_peer);
     let mut row = 0;
     for (class_label, class_kind) in [("legacy", 0), ("ex", 1), ("nt", 2)] {
         for (size_label, size_mode) in [("minimal", 0), ("nul", 1), ("padded", 2)] {
@@ -2097,7 +2186,192 @@ mod tests {
         }
     }
 
+    fn completion_policy_controls() {
+        use std::collections::BTreeSet;
+        use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        struct Witness(&'static str, mpsc::Sender<&'static str>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                let _ = self.1.send(self.0);
+            }
+        }
+        struct FakeContext {
+            _source: Witness,
+            _parent: Witness,
+            _buffer: Witness,
+            _iosb: Witness,
+            status: AtomicI32,
+        }
+        enum Step {
+            WaitFailure,
+            StaleSignal,
+            Final(NTSTATUS),
+        }
+        struct JoinedWorker {
+            control: Option<mpsc::Sender<Step>>,
+            thread: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Drop for JoinedWorker {
+            fn drop(&mut self) {
+                // Disconnecting unblocks the worker even if an assertion fails.
+                self.control.take();
+                if let Some(thread) = self.thread.take() {
+                    let _ = thread.join();
+                }
+            }
+        }
+        let deadline = Duration::from_secs(5);
+        for final_value in [STATUS_SUCCESS, STATUS_ACCESS_DENIED] {
+            let (control_tx, control_rx) = mpsc::channel();
+            let (backoff_tx, backoff_rx) = mpsc::channel();
+            let (drop_tx, drop_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let submits = Arc::new(AtomicUsize::new(0));
+            let observed_reads = Arc::clone(&reads);
+            let observed_submits = Arc::clone(&submits);
+            let worker = std::thread::spawn(move || {
+                let context = FakeContext {
+                    _source: Witness("source", drop_tx.clone()),
+                    _parent: Witness("parent", drop_tx.clone()),
+                    _buffer: Witness("buffer", drop_tx.clone()),
+                    _iosb: Witness("iosb", drop_tx),
+                    status: AtomicI32::new(STATUS_PENDING),
+                };
+                // The helper receives one already-issued operation; it has no retry callback.
+                observed_submits.fetch_add(1, Ordering::SeqCst);
+                let outcome = finish_rename(
+                    STATUS_PENDING,
+                    context,
+                    |owned| match control_rx.recv() {
+                        Ok(Step::WaitFailure) => WAIT_FAILED,
+                        Ok(Step::StaleSignal) => WAIT_OBJECT_0,
+                        Ok(Step::Final(value)) => {
+                            owned.status.store(value, Ordering::SeqCst);
+                            WAIT_OBJECT_0
+                        }
+                        Err(_) => {
+                            owned.status.store(STATUS_ACCESS_DENIED, Ordering::SeqCst);
+                            WAIT_OBJECT_0
+                        }
+                    },
+                    |owned| {
+                        observed_reads.fetch_add(1, Ordering::SeqCst);
+                        owned.status.load(Ordering::SeqCst)
+                    },
+                    || {
+                        let _ = backoff_tx.send(());
+                    },
+                );
+                let _ = result_tx.send(outcome);
+            });
+            let mut worker = JoinedWorker {
+                control: Some(control_tx),
+                thread: Some(worker),
+            };
+            worker
+                .control
+                .as_ref()
+                .expect("control")
+                .send(Step::WaitFailure)
+                .expect("wait failure");
+            backoff_rx.recv_timeout(deadline).expect("failure backoff");
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+            assert!(matches!(
+                result_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            assert!(matches!(drop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            worker
+                .control
+                .as_ref()
+                .expect("control")
+                .send(Step::StaleSignal)
+                .expect("stale signal");
+            backoff_rx.recv_timeout(deadline).expect("stale backoff");
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            assert!(matches!(
+                result_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            assert!(matches!(drop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            worker
+                .control
+                .as_ref()
+                .expect("control")
+                .send(Step::Final(final_value))
+                .expect("final signal");
+            assert_eq!(
+                result_rx.recv_timeout(deadline).expect("joined result"),
+                Err(NativeFailure::PossiblyPublished)
+            );
+            assert_eq!(reads.load(Ordering::SeqCst), 2);
+            assert_eq!(submits.load(Ordering::SeqCst), 1);
+            let mut released = BTreeSet::new();
+            for _ in 0..4 {
+                released.insert(drop_rx.recv_timeout(deadline).expect("released guard"));
+            }
+            assert_eq!(
+                released,
+                BTreeSet::from(["source", "parent", "buffer", "iosb"])
+            );
+            worker.control.take();
+            worker
+                .thread
+                .take()
+                .expect("worker")
+                .join()
+                .expect("worker finished");
+        }
+        for (initial, expected) in [
+            (STATUS_SUCCESS, Ok(())),
+            (STATUS_ACCESS_DENIED, Err(NativeFailure::PossiblyPublished)),
+        ] {
+            let (drop_tx, drop_rx) = mpsc::channel();
+            let result = finish_rename(
+                initial,
+                Witness("immediate", drop_tx),
+                |_| panic!("immediate result must not wait"),
+                |_| panic!("immediate result must not read IOSB"),
+                || panic!("immediate result must not back off"),
+            );
+            assert_eq!(result, expected);
+            assert_eq!(
+                drop_rx.recv_timeout(deadline).expect("immediate release"),
+                "immediate"
+            );
+        }
+    }
+
     fn set_user_acl(file: &File, deny: u32, extra_read: bool) {
+        let directory_peer = if info(file).expect("fixture object info").dwFileAttributes
+            & FILE_ATTRIBUTE_DIRECTORY
+            != 0
+        {
+            let peer = open(
+                &path_for(file).expect("fixture directory path"),
+                WRITE_DAC_ACCESS | READ_CONTROL_ACCESS | FILE_READ_ATTRIBUTES,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                ptr::null(),
+            )
+            .expect("fixture directory DACL peer");
+            assert!(
+                WindowsProfile::identity(&peer).expect("DACL peer identity")
+                    == WindowsProfile::identity(file).expect("fixture directory identity")
+            );
+            assert!(same_policy(
+                &policy(&peer).expect("DACL peer policy"),
+                &policy(file).expect("fixture directory policy"),
+            ));
+            Some(peer)
+        } else {
+            None
+        };
+        let acl_file = directory_peer.as_ref().unwrap_or(file);
         let sid = current_sid().expect("current user SID");
         let mut system = [0u32; 17];
         let mut system_size = (system.len() * 4) as u32;
@@ -2155,7 +2429,7 @@ mod tests {
         assert_eq!(
             unsafe {
                 SetSecurityInfo(
-                    handle(file),
+                    handle(acl_file),
                     SE_FILE_OBJECT,
                     DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                     ptr::null_mut(),
@@ -2208,6 +2482,7 @@ mod tests {
 
     #[test]
     fn windows_token_context_owner_pair_is_closed_and_binds_identity() {
+        completion_policy_controls();
         for (code, category) in [
             (ERROR_ACCESS_DENIED, "rename-access-denied"),
             (ERROR_INVALID_PARAMETER, "rename-invalid-parameter"),
@@ -2234,6 +2509,57 @@ mod tests {
             "rename-other"
         );
         let fixture = Fixture::new();
+        let peer_path = fixture.path.join("peer-handoff");
+        let mut adopted = None;
+        let peer = WindowsProfile::create_private_directory_owned(&peer_path, &mut |file| {
+            adopted = Some(file.try_clone().map_err(|_| NativeFailure::Unsupported)?);
+            Ok(())
+        })
+        .expect("private directory handoff");
+        let adopted = adopted.expect("adopted peer");
+        assert!(
+            WindowsProfile::identity(&peer).expect("peer identity")
+                == WindowsProfile::identity(&adopted).expect("adopted identity")
+        );
+        WindowsProfile::verify_private_directory(&peer_path, &peer).expect("private peer");
+        let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        assert_eq!(
+            unsafe {
+                SetFileInformationByHandle(
+                    handle(&peer),
+                    FileDispositionInfo,
+                    (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
+                    size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            },
+            0,
+            "adopted peer must not possess DELETE access"
+        );
+        assert!(peer_path.is_dir());
+        drop(adopted);
+        drop(peer);
+        std::fs::remove_dir(&peer_path).expect("remove private peer fixture");
+        let rejected_path = fixture.path.join("peer-rejected-after-clone");
+        let mut retained = None;
+        let rejected =
+            WindowsProfile::create_private_directory_owned(&rejected_path, &mut |file| {
+                retained = Some(file.try_clone().map_err(|_| NativeFailure::Unsupported)?);
+                Err(NativeFailure::Changed)
+            });
+        assert!(matches!(
+            rejected,
+            Err(NativeFailure::Changed | NativeFailure::CleanupUncertain)
+        ));
+        let retained = retained.expect("callback retained peer");
+        let retained_id = WindowsProfile::identity(&retained).expect("retained peer identity");
+        drop(retained);
+        if rejected_path.exists() {
+            let current =
+                WindowsProfile::open_parent(&rejected_path).expect("remaining rejected fixture");
+            assert!(WindowsProfile::identity(&current).expect("remaining identity") == retained_id);
+            drop(current);
+            std::fs::remove_dir(&rejected_path).expect("remove rejected fixture");
+        }
         let held = fixture.file("held-prepare", b"held record");
         let held_id = identity(&held).expect("held record identity");
         WindowsProfile::publish_new(

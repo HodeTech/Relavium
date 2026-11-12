@@ -2423,6 +2423,45 @@ separate Sol/high security sitting are clean; local native/Node, 132 affected
 tools and lint/typecheck/build/format pass. The peer rows still require actual
 execution on both Windows architectures before a profile strategy is selected.
 
+**Peer results and production refinement:** at `9f12246a`,
+[CI run 43166086388](https://github.com/HodeTech/Relavium/actions/runs/43166086388)
+returns `ok` for all eight peer observations on x64 and ARM64, with no pending
+or mutation observation. Both read/write and thin peers succeed after retiring
+the broad creator handles. This does not isolate one particular omitted right
+as the cause. The six Linux/macOS native targets pass; ordinary Windows parents
+still stop at the unchanged Win32 relative publication, so combined CI is red
+and no profile or Step 2 acceptance is inferred.
+
+The canonical Windows profile now selects the measured padded, held-parent
+relative Nt class-65 mechanism and a continuous creator-to-read/write-peer
+handoff before private-directory adoption. It retains directory flush rights,
+source DELETE access, full identities, exact metadata and all publication
+postconditions. Production implementation, safe joined completion handling,
+fresh affected reviews and actual Windows ordinary-profile/consumer execution
+remain required before Step 2 closes. Step 3's editing grant remains gated.
+
+**Refinement source validation:** the production implementation now uses that
+single relative request and verified read/write handoff. Its owned completion
+context keeps a stable boxed status block, aligned buffer and both held handles
+through any exceptional pending drain; a pending observation always settles as
+possibly-published after proven completion. Fresh review verified two issues
+and both were corrected: the test-only directory ACL helper now acquires a
+short-lived, full-identity/policy-verified WRITE_DAC peer, and deterministic
+channel-driven controls exercise the actual production completion helper's
+failed wait, stale signal, backoff, final success/error and resource lifetimes.
+The production directory peer was not widened. All existing parent populations
+and sixty-eight parameter observations remain required.
+
+A new complete Terra/high affected code review and separate Sol/high security
+sitting are clean on native source SHA-256
+`7e97d2a4c3d8ede41371401324abd1786a48e389457f8fdfbb16f31857338755`.
+Local macOS native 35/three declared owned children and eleven Node lifecycle
+cases, 246 affected asset/delivery/packaging controls, tools lint/typecheck and
+nineteen workspace lint/typecheck/build/format tasks pass. Windows GNU test-code
+compilation and a standalone execution of the exact extracted completion
+controls pass; neither is actual Windows execution. The next source checkpoint
+must still pass both actual Windows ordinary profiles and all combined gates.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

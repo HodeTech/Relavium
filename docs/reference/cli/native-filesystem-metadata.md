@@ -575,16 +575,16 @@ The `windows-sys` threading and security-authorization features were added to
 the reviewed binding set for effective-token, file-security and SID operations;
 they add no crate family or lockfile entry.
 
-The test-only NT rename experiment additionally enables
+The NT rename mechanism and its test-only parameter experiment enable
 `Wdk_Storage_FileSystem` → `Wdk_Storage` → `Wdk` and `Win32_System_IO` →
 `Win32_System` in that same pinned `windows-sys`. Its existing Foundation
 binding exposes the status conversion. The reviewed feature closure adds no
 crate, version, driver or Node-API export; the lockfile and nineteen-package
 registry inventory remain unchanged. This uses ADR-0125's approved minimal
 feature closure and isolated-mechanism delegation, not a new dependency family.
-The experiment uses the documented user-mode Nt entry and class 65, never the
-access-check-bypass class 66. These binding checks are not Windows behavior or
-production-profile acceptance and do not constitute a fresh advisory query.
+They use the documented user-mode Nt entry and class 65, never the
+access-check-bypass class 66. Feature selection is not Windows behavior or
+production-profile acceptance and does not constitute a fresh advisory query.
 
 All 19 registry entries were unyanked and more than 14 days old at review.
 Their license expressions are MIT, Apache-2.0, ISC and Unicode-3.0 variants;
@@ -649,7 +649,12 @@ identity and private policy before ownership transfers. The cleanup guard is
 transferred before every earlier broad handle closes; read/write peers also
 close before thin observations. File handles retain the DELETE access needed
 for rename. This preserves continuous directory identity while measuring rights;
-it does not alter a production grant or select a production handle strategy.
+it does not alter a production grant. At `9f12246a`, all eight peer observations
+returned `ok` on both actual Windows targets in
+[CI run 43166086388](https://github.com/HodeTech/Relavium/actions/runs/43166086388),
+with no `pending` or `mutation` observation. This supports the bounded handle
+strategy selected below; the ordinary profile still fails the earlier Win32
+relative publication and is not accepted by that measurement.
 
 - Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
   publication and no pre-approval staging; readable source alone is insufficient.
@@ -811,6 +816,18 @@ but does not by itself establish that directory flush succeeds or proves
 namespace durability on the selected NTFS profile. Those remain real Windows
 execution and acceptance gates.
 
+Private-directory creation initially retains a DELETE-capable rollback handle.
+Before adoption, open a read/write peer without DELETE while the creator is
+still held, and verify the private policy plus equal full native identity and
+Node-visible witness. Only that peer is passed to the adoption callback and
+retained by the stage/index. On success the creator guard is disarmed and its
+handle closes; failure keeps the existing creator-bound rollback. No broad
+creator clone survives into publication, and no pathname-only or unpinned
+close/reopen gap is introduced. This preserves the flush rights while avoiding
+the broad-creator-handle interaction measured on x64; the measurement does not
+isolate which omitted right causes the conflict. This does not relax
+source-file DELETE access or final-policy validation.
+
 For payload eligibility, the current effective token is opened once and its
 TokenUser, OS-designated TokenOwner and token statistics are read with the
 statistics checked on both sides. The captured owner must equal exactly the
@@ -899,8 +916,25 @@ recovery ownership before any payload; these hooks alone do not establish the
 cross-process model-authority exclusion or crash-recovery contract.
 
 Publication dispatches exactly one
-`SetFileInformationByHandle(FileRenameInfoEx)` operation, using the pinned
-stage handle, destination-parent handle and a validated single basename.
+user-mode `NtSetInformationFile(FileRenameInformationEx)` operation (class 65),
+using the pinned stage handle, destination-parent handle and a validated single
+basename. The aligned SDK `FILE_RENAME_INFORMATION` buffer includes at least
+the full structure plus the UTF-16 filename bytes and terminator space; the
+declared filename length excludes the terminator. The native relative form
+preserves held-parent authority: the Win32 wrapper's relative form returned
+`invalid-parameter` in the actual two-target parameter measurements. Absolute
+diagnostic forms are not a production fallback. Class 66, which bypasses access
+checks, is never used.
+All source handles use synchronous I/O. The documented set-information
+operation is synchronous even for asynchronous file objects. Its aligned
+buffer, status block and both held handles remain owned through completion.
+An unexpected `STATUS_PENDING` is never success: the same producer remains
+joined until the owned handle is signalled and the status block contains a
+final status, then reports possibly-published regardless of that final status.
+Cancellation or a wait deadline cannot prove kernel completion or release that
+storage. A stuck OS/driver can therefore delay teardown, as it can inside the
+synchronous call itself; the host does not detach, free, abort, retry publication
+or certify completion to satisfy a timer. Failed waits must not busy-spin.
 Existing-file publication uses only replace-if-exists plus POSIX semantics;
 new-file publication sets no replacement flag. There is no `ReplaceFileW`,
 backup-name dance, unlink/copy sequence, ignore-readonly/ignore-ACL flag,
@@ -919,9 +953,12 @@ bytes, unknown/oversized streams, metadata-only and parent-policy changes,
 comparison with direct OS new-file inheritance, no-clobber and selected
 publication failures. On 2026-11-12 its source and test bodies typechecked with
 Rust 1.98.0 for `x86_64-pc-windows-gnu` in an isolated harness using the locked
-`windows-sys` version/features. Those tests have not run on Windows at this
-receipt. The complete addon's local Windows cross check stopped at napi-build's
-required Windows `libnode.dll`; no complete Windows bridge build is claimed.
+`windows-sys` version/features. The complete addon's local cross check requires
+Windows `libnode.dll` and is not a Windows bridge receipt. Actual Windows CI at
+`9f12246a` builds both native architectures and completes the parameter cohort,
+but its first ordinary crash parent fails at the previous Win32 relative
+rename. No complete Windows profile, ABI lifecycle or installed-consumer pass
+is claimed. The refined mechanism must pass those unchanged gates.
 `FILE_ID_INFO` supplies the native 128-bit identity; the separate Node guard
 witness uses the NTFS volume serial and 64-bit file index. Compare it with actual
 Node bigint `stat`/`fstat` on both supported Node floors before enabling it.
@@ -930,6 +967,9 @@ Primary mechanism sources: [file security and creation/inheritance](https://lear
 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo),
 [SetKernelObjectSecurity's filesystem exclusion](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setkernelobjectsecurity),
 [handle-bound rename structure/flags](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
+[user-mode Nt entry](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile),
+[synchronous set-information contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ioisoperationsynchronous),
+[pending status and completion](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_io_status_block),
 [BackupRead](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupread),
 [BackupSeek](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupseek),
 and [libuv's Windows stat assignment](https://github.com/libuv/libuv/blob/v1.52.1/src/win/fs.c).
