@@ -23,6 +23,17 @@ const MAX_LINES = 100_000;
 const MAX_WORK = 1_000_000;
 const MAX_TRACE_BYTES = 8 * 1024 * 1024;
 const MAX_OPERATIONS = 200_000;
+type DiffOptions = { readonly yield?: () => Promise<void>; readonly checkCancelled?: () => void };
+
+function lineEnding(newline: number, crlf: boolean): DiffLine['ending'] {
+  if (newline === -1) return '';
+  return crlf ? '\r\n' : '\n';
+}
+
+function endingLabel(ending: DiffLine['ending']): 'lf' | 'crlf' | 'none' {
+  if (ending === '\n') return 'lf';
+  return ending === '\r\n' ? 'crlf' : 'none';
+}
 
 function lines(source: string): DiffLine[] {
   const result: DiffLine[] = [];
@@ -31,7 +42,7 @@ function lines(source: string): DiffLine[] {
     const newline = source.indexOf('\n', start);
     const end = newline === -1 ? source.length : newline + 1;
     const crlf = newline !== -1 && newline > start && source[newline - 1] === '\r';
-    const ending = newline === -1 ? '' : crlf ? '\r\n' : '\n';
+    const ending = lineEnding(newline, crlf);
     result.push({
       start,
       end,
@@ -51,14 +62,14 @@ function endings(source: readonly DiffLine[]): ToolFileEndings {
   if (source.length === 0) return 'empty';
   const values = new Set(source.map((line) => line.ending));
   if (values.size > 1) return 'mixed';
-  return source[0]!.ending === '\n' ? 'lf' : source[0]!.ending === '\r\n' ? 'crlf' : 'none';
+  return endingLabel(source[0]!.ending);
 }
 function span(line: DiffLine): { line: number; start: number; end: number } {
   return { line: line.line, start: line.start, end: line.end };
 }
 function project(op: LineDiffOperation): ToolDiffLine {
   const line = op.kind === 'insert' ? op.after : op.before;
-  const ending = line.ending === '\n' ? 'lf' : line.ending === '\r\n' ? 'crlf' : 'none';
+  const ending = endingLabel(line.ending);
   if (op.kind === 'equal')
     return {
       kind: 'context',
@@ -72,63 +83,86 @@ function project(op: LineDiffOperation): ToolDiffLine {
   return { kind: 'added', text: line.text, ending, after: span(op.after) };
 }
 
-/** Bounded Myers shortest edit script. Refusal never returns a partial review. */
-export async function diffLines(
-  before: string | null,
-  after: string,
-  options: { readonly yield?: () => Promise<void>; readonly checkCancelled?: () => void } = {},
-): Promise<ToolFileDiff> {
-  options.checkCancelled?.();
-  const beforeBytes = utf8ByteLength(before ?? '');
-  const afterBytes = utf8ByteLength(after);
-  if (beforeBytes > MAX_BYTES || afterBytes > MAX_BYTES) throw new DiffLimitError();
-  const old = lines(before ?? '');
-  const next = lines(after);
-  let work = 0;
-  let traceBytes = 0;
-  const trace: Int32Array[] = [];
-  let previous = new Int32Array(1);
-  let found = false;
-  let distance = 0;
-  for (let d = 0; d <= old.length + next.length && !found; d++) {
-    const width = 2 * d + 1;
-    traceBytes += width * Int32Array.BYTES_PER_ELEMENT;
-    if (traceBytes > MAX_TRACE_BYTES) throw new DiffLimitError();
-    const current = new Int32Array(width);
-    for (let k = -d; k <= d; k += 2) {
-      if (++work > MAX_WORK) throw new DiffLimitError();
-      let x: number;
-      if (d === 0) x = 0;
-      else if (k === -d || (k !== d && previous[k - 1 + d - 1]! < previous[k + 1 + d - 1]!))
-        x = previous[k + 1 + d - 1]!;
-      else x = previous[k - 1 + d - 1]! + 1;
-      let y = x - k;
-      while (x < old.length && y < next.length && same(old[x]!, next[y]!)) {
-        x++;
-        y++;
-        if (++work > MAX_WORK) throw new DiffLimitError();
-        if ((work & 4095) === 0) {
-          options.checkCancelled?.();
-          await options.yield?.();
-          options.checkCancelled?.();
-        }
-      }
-      current[k + d] = x;
-      if ((work & 4095) === 0) {
+function startingX(d: number, k: number, previous: Int32Array): number {
+  if (d === 0) return 0;
+  if (k === -d || (k !== d && previous[k - 1 + d - 1]! < previous[k + 1 + d - 1]!))
+    return previous[k + 1 + d - 1]!;
+  return previous[k - 1 + d - 1]! + 1;
+}
+
+class DiffWork {
+  private work = 0;
+
+  consume(): void {
+    if (++this.work > MAX_WORK) throw new DiffLimitError();
+  }
+
+  shouldYield(): boolean {
+    return (this.work & 4095) === 0;
+  }
+}
+
+async function advanceFrontier(
+  d: number,
+  previous: Int32Array,
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  budget: DiffWork,
+  options: DiffOptions,
+): Promise<{ current: Int32Array; found: boolean }> {
+  const current = new Int32Array(2 * d + 1);
+  for (let k = -d; k <= d; k += 2) {
+    budget.consume();
+    let x = startingX(d, k, previous);
+    let y = x - k;
+    while (x < old.length && y < next.length && same(old[x]!, next[y]!)) {
+      x++;
+      y++;
+      budget.consume();
+      if (budget.shouldYield()) {
         options.checkCancelled?.();
         await options.yield?.();
         options.checkCancelled?.();
       }
-      if (x >= old.length && y >= next.length) {
-        found = true;
-        distance = d;
-        break;
-      }
     }
+    current[k + d] = x;
+    if (budget.shouldYield()) {
+      options.checkCancelled?.();
+      await options.yield?.();
+      options.checkCancelled?.();
+    }
+    if (x >= old.length && y >= next.length) return { current, found: true };
+  }
+  return { current, found: false };
+}
+
+async function shortestPath(
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  options: DiffOptions,
+): Promise<{ trace: readonly Int32Array[]; distance: number }> {
+  const budget = new DiffWork();
+  let traceBytes = 0;
+  const trace: Int32Array[] = [];
+  let previous: Int32Array = new Int32Array(1);
+  for (let d = 0; d <= old.length + next.length; d++) {
+    const width = 2 * d + 1;
+    traceBytes += width * Int32Array.BYTES_PER_ELEMENT;
+    if (traceBytes > MAX_TRACE_BYTES) throw new DiffLimitError();
+    const { current, found } = await advanceFrontier(d, previous, old, next, budget, options);
     trace.push(current);
+    if (found) return { trace, distance: d };
     previous = current;
   }
-  if (!found) throw new DiffLimitError();
+  throw new DiffLimitError();
+}
+
+function backtrack(
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  trace: readonly Int32Array[],
+  distance: number,
+): LineDiffOperation[] {
   let x = old.length;
   let y = next.length;
   const reversed: LineDiffOperation[] = [];
@@ -158,7 +192,24 @@ export async function diffLines(
     reversed.push({ kind: 'equal', before: old[x]!, after: next[y]! });
   }
   if (reversed.length > MAX_OPERATIONS) throw new DiffLimitError();
-  const operations = reversed.reverse();
+  reversed.reverse();
+  return reversed;
+}
+
+/** Bounded Myers shortest edit script. Refusal never returns a partial review. */
+export async function diffLines(
+  before: string | null,
+  after: string,
+  options: { readonly yield?: () => Promise<void>; readonly checkCancelled?: () => void } = {},
+): Promise<ToolFileDiff> {
+  options.checkCancelled?.();
+  const beforeBytes = utf8ByteLength(before ?? '');
+  const afterBytes = utf8ByteLength(after);
+  if (beforeBytes > MAX_BYTES || afterBytes > MAX_BYTES) throw new DiffLimitError();
+  const old = lines(before ?? '');
+  const next = lines(after);
+  const { trace, distance } = await shortestPath(old, next, options);
+  const operations = backtrack(old, next, trace, distance);
   let addedLines = 0;
   let removedLines = 0;
   for (const operation of operations) {

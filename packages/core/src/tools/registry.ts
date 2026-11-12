@@ -120,6 +120,12 @@ function observe(ctx: ToolDispatchContext, event: ToolLiveEvent): void {
   }
 }
 
+function failedLiveOutcome(error: unknown): 'unknown' | 'denied' | 'failure' {
+  if (error instanceof ToolCancelledError) return 'unknown';
+  if (error instanceof ToolDispatchError && error.runErrorCode === 'tool_denied') return 'denied';
+  return 'failure';
+}
+
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegistry {
   const tools = new Map<ToolId, ToolDef>();
@@ -155,12 +161,7 @@ export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegi
           phase: 'completed',
           callId,
           toolId: toolCall.name,
-          outcome:
-            error instanceof ToolCancelledError
-              ? 'unknown'
-              : error instanceof ToolDispatchError && error.runErrorCode === 'tool_denied'
-                ? 'denied'
-                : 'failure',
+          outcome: failedLiveOutcome(error),
         });
         throw error;
       }
