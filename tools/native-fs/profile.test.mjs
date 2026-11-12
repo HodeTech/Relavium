@@ -379,7 +379,7 @@ test('only the Windows parameter measurement and owner observation collect captu
   assert.throws(() => rustCaseArguments('unreviewed::private'), /NATIVE_FS_PROFILE_CONTEXT/u);
 });
 
-test('the Windows rename measurement has exactly the complete 60-variant inventory while preserving the original 48-row Cartesian set', () => {
+test('the Windows rename measurement has exactly the complete 68-variant inventory while preserving the prior 60 rows', () => {
   const independent = [];
   for (const api of ['legacy', 'ex'])
     for (const length of ['minimal', 'nul', 'padded'])
@@ -395,8 +395,19 @@ test('the Windows rename measurement has exactly the complete 60-variant invento
       for (const operation of ['new', 'replace'])
         nt.push(['nt', length, 'relative', location, operation].join('-'));
   assert.equal(nt.length, 12);
-  assert.deepEqual(WINDOWS_RENAME_VARIANTS.slice(48), nt);
-  assert.equal(new Set(WINDOWS_RENAME_VARIANTS).size, 60);
+  assert.deepEqual(WINDOWS_RENAME_VARIANTS.slice(48, 60), nt);
+  const peers = [];
+  for (const rights of ['rw', 'thin'])
+    for (const location of ['same', 'cross'])
+      for (const operation of ['new', 'replace'])
+        peers.push(['nt', 'padded', 'peer', rights, location, operation].join('-'));
+  assert.equal(peers.length, 8);
+  assert.deepEqual(WINDOWS_RENAME_VARIANTS.slice(60), peers);
+  assert.equal(new Set(WINDOWS_RENAME_VARIANTS).size, 68);
+  assert.throws(
+    () => parseWindowsRenameProbe(probeRecords().slice(0, 60).join('\n')),
+    (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
+  );
   assert.throws(
     () => parseWindowsRenameProbe(probeRecords().slice(0, 48).join('\n')),
     (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
@@ -433,6 +444,10 @@ test('Windows rename measurement refuses missing, duplicate, unknown, malformed 
     [...valid, valid[0]],
     ['RELAVIUM_NATIVE_RENAME_PROBE:private-variant:ok', ...valid.slice(1)],
     ['RELAVIUM_NATIVE_RENAME_PROBE:nt-minimal-absolute-same-new:ok', ...valid.slice(1)],
+    ['RELAVIUM_NATIVE_RENAME_PROBE:nt-minimal-peer-rw-same-new:ok', ...valid.slice(1)],
+    ['RELAVIUM_NATIVE_RENAME_PROBE:nt-padded-peer-private-same-new:ok', ...valid.slice(1)],
+    [...valid.slice(0, 60), ...valid.slice(61)],
+    [...valid, valid[60]],
     [...valid.slice(0, 48), ...valid.slice(49)],
     [...valid, valid[48]],
     [valid[0].replace('invalid-parameter', 'private-status'), ...valid.slice(1)],

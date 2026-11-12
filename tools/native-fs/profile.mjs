@@ -40,7 +40,7 @@ export function parseRustResults(text, platform) {
   assert.ok(!/^test .* \.\.\. (?:FAILED|failed|filtered)/mu.test(text), 'NATIVE_FS_RUST_FAILURE');
   return { passed, ignored };
 }
-/** Closed diagnostic records only. Even 60 successful observations do not certify publication. */
+/** Closed diagnostic records only. Even 68 successful observations do not certify publication. */
 export function parseWindowsRenameProbe(text) {
   const refuse = () => {
     throw new Error('NATIVE_FS_WINDOWS_RENAME_PROBE');

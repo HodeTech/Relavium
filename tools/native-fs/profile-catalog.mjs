@@ -70,6 +70,14 @@ const NT_RENAME_DIMENSIONS = [
   ['same', 'cross'],
   ['new', 'replace'],
 ];
+const NT_PEER_DIMENSIONS = [
+  ['nt'],
+  ['padded'],
+  ['peer'],
+  ['rw', 'thin'],
+  ['same', 'cross'],
+  ['new', 'replace'],
+];
 const cartesianVariants = (dimensions) =>
   dimensions.reduce(
     (prefixes, dimension) =>
@@ -81,6 +89,7 @@ const cartesianVariants = (dimensions) =>
 export const WINDOWS_RENAME_VARIANTS = Object.freeze([
   ...cartesianVariants(RENAME_DIMENSIONS),
   ...cartesianVariants(NT_RENAME_DIMENSIONS),
+  ...cartesianVariants(NT_PEER_DIMENSIONS),
 ]);
 export const WINDOWS_RENAME_STATUSES = Object.freeze([
   'ok',

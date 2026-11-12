@@ -624,8 +624,9 @@ temporary OS/algorithm experiments; this tracked script supplies reproducibility
 
 ## Acceptance evidence
 
-The Windows test-only rename-parameter cohort measures 60 fixed private-fixture
-combinations: 48 Win32 comparisons and twelve relative NT class-65 observations.
+The Windows test-only rename-parameter cohort measures 68 fixed private-fixture
+combinations: 48 Win32 comparisons, twelve relative NT class-65 observations
+and eight padded NT observations with narrower held-directory peers.
 The dimensions cover information class, buffer size, relative/absolute target,
 same/cross directory and creation/replacement. It runs before ordinary native
 parents and emits only bounded, validated fixed records. Its absolute forms are
@@ -640,6 +641,15 @@ status permits continuation; an initial pending observation remains labelled
 `pending`, never `ok`. An unproved wait/completion aborts the test subprocess
 before unwinding or freeing pending storage and produces no successful receipt.
 This exceptional test-process policy is not a production completion strategy.
+
+Peer observations compare non-DELETE read/write directory handles with thin
+traverse/read-attributes/read-control/synchronize handles. Each peer is opened
+and checked against the still-held predecessor's full native and Node-visible
+identity and private policy before ownership transfers. The cleanup guard is
+transferred before every earlier broad handle closes; read/write peers also
+close before thin observations. File handles retain the DELETE access needed
+for rename. This preserves continuous directory identity while measuring rights;
+it does not alter a production grant or select a production handle strategy.
 
 - Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
   publication and no pre-approval staging; readable source alone is insufficient.

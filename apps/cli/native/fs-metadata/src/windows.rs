@@ -1739,6 +1739,117 @@ pub(crate) fn rename_parameter_probe() {
         }
         (Ok(()), false)
     }
+    fn peer_rows(
+        peer_label: &str,
+        root_handle: &File,
+        other: &File,
+        root: &Path,
+        other_path: &Path,
+        row: &mut usize,
+    ) {
+        let class_kind = 2;
+        let size_mode = 2;
+        let absolute = false;
+        for (location_label, cross) in [("same", false), ("cross", true)] {
+            for (operation_label, replace) in [("new", false), ("replace", true)] {
+                let source_name = format!("source-{row}");
+                let target_name = format!("target-{row}");
+                let source = create(root_handle, &source_name, b"new");
+                let source_id = identity(&source).expect("source identity");
+                let target_parent = if cross { other } else { root_handle };
+                let target_dir = if cross { other_path } else { root };
+                let prior = if replace {
+                    Some(create(target_parent, &target_name, b"old"))
+                } else {
+                    None
+                };
+                let (outcome, mut pending) = attempt(
+                    &source,
+                    target_parent,
+                    &target_name,
+                    class_kind,
+                    size_mode,
+                    absolute,
+                    replace,
+                );
+                let source_path = root.join(&source_name);
+                let target_path = target_dir.join(&target_name);
+                let status = match outcome {
+                    Ok(()) => {
+                        let opened = open(
+                            &target_path,
+                            FILE_GENERIC_READ,
+                            OPEN_EXISTING,
+                            0,
+                            ptr::null(),
+                        );
+                        let proof = !source_path.exists()
+                            && opened.as_ref().is_ok_and(|f| {
+                                identity(f).is_ok_and(|id| id == source_id) && contents(f) == b"new"
+                            })
+                            && prior.as_ref().is_none_or(|f| contents(f) == b"old");
+                        if !proof {
+                            "mutation"
+                        } else if !replace {
+                            let collision_source_name = format!("collision-source-{row}");
+                            let collision_target_name = format!("collision-target-{row}");
+                            let collision_source =
+                                create(root_handle, &collision_source_name, b"pending");
+                            let collision_target =
+                                create(target_parent, &collision_target_name, b"foreign");
+                            let (collided, collision_pending) = attempt(
+                                &collision_source,
+                                target_parent,
+                                &collision_target_name,
+                                class_kind,
+                                size_mode,
+                                absolute,
+                                false,
+                            );
+                            pending |= collision_pending;
+                            if collided.is_err()
+                                && path_matches(
+                                    &root.join(&collision_source_name),
+                                    &collision_source,
+                                    b"pending",
+                                )
+                                && path_matches(
+                                    &target_dir.join(&collision_target_name),
+                                    &collision_target,
+                                    b"foreign",
+                                )
+                            {
+                                "ok"
+                            } else {
+                                "mutation"
+                            }
+                        } else {
+                            "ok"
+                        }
+                    }
+                    Err(category) => {
+                        if !path_matches(&source_path, &source, b"new")
+                            || prior
+                                .as_ref()
+                                .is_some_and(|f| !path_matches(&target_path, f, b"old"))
+                            || (!replace && target_path.exists())
+                        {
+                            "mutation"
+                        } else {
+                            category
+                        }
+                    }
+                };
+                let status = if pending && status != "mutation" {
+                    "pending"
+                } else {
+                    status
+                };
+                println!("RELAVIUM_NATIVE_RENAME_PROBE:nt-padded-peer-{peer_label}-{location_label}-{operation_label}:{status}");
+                *row += 1;
+            }
+        }
+    }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("probe clock")
@@ -1749,7 +1860,7 @@ pub(crate) fn rename_parameter_probe() {
     ));
     let root_handle = WindowsProfile::create_private_directory(&root).expect("private probe root");
     let root_identity = identity(&root_handle).expect("private probe root identity");
-    let cleanup = ProbeCleanup {
+    let mut cleanup = ProbeCleanup {
         root: root.clone(),
         held: Some(root_handle),
         root_identity,
@@ -1874,8 +1985,67 @@ pub(crate) fn rename_parameter_probe() {
         }
     }
     assert_eq!(row, 60);
-    drop(other);
+    // Pin both ordinary peers while every original creation handle is held.
+    let original_root_id = WindowsProfile::identity(&root_handle).expect("root full identity");
+    let original_other_id = WindowsProfile::identity(&other).expect("other full identity");
+    let rw_root = WindowsProfile::open_parent(&root).expect("read-write root peer");
+    let rw_other = WindowsProfile::open_parent(&other_path).expect("read-write other peer");
+    WindowsProfile::verify_private_directory(&root, &rw_root).expect("root peer privacy");
+    WindowsProfile::verify_private_directory(&other_path, &rw_other).expect("other peer privacy");
+    assert!(
+        WindowsProfile::identity(&rw_root).expect("root peer full identity") == original_root_id
+    );
+    assert!(
+        WindowsProfile::identity(&rw_other).expect("other peer full identity") == original_other_id
+    );
+    let previous = cleanup
+        .held
+        .replace(rw_root.try_clone().expect("pin root peer"));
+    drop(previous);
     drop(root_handle);
+    drop(other);
+    peer_rows("rw", &rw_root, &rw_other, &root, &other_path, &mut row);
+
+    // Open thin handles while the read-write peers remain pinned, then retire
+    // every read-write peer, including the cleanup guard's clone.
+    let thin = |path: &Path| {
+        open(
+            path,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL_ACCESS | SYNCHRONIZE,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null(),
+        )
+        .expect("thin directory peer")
+    };
+    let thin_root = thin(&root);
+    let thin_other = thin(&other_path);
+    WindowsProfile::verify_private_directory(&root, &thin_root).expect("thin root privacy");
+    WindowsProfile::verify_private_directory(&other_path, &thin_other).expect("thin other privacy");
+    assert!(
+        WindowsProfile::identity(&thin_root).expect("thin root full identity") == original_root_id
+    );
+    assert!(
+        WindowsProfile::identity(&thin_other).expect("thin other full identity")
+            == original_other_id
+    );
+    let previous = cleanup
+        .held
+        .replace(thin_root.try_clone().expect("pin thin root"));
+    drop(previous);
+    drop(rw_root);
+    drop(rw_other);
+    peer_rows(
+        "thin",
+        &thin_root,
+        &thin_other,
+        &root,
+        &other_path,
+        &mut row,
+    );
+    assert_eq!(row, 68);
+    drop(thin_other);
+    drop(thin_root);
     drop(cleanup);
 }
 

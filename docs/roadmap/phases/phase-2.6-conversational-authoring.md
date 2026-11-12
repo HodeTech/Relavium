@@ -2405,6 +2405,24 @@ review and separate Terra/high security inspection are clean; local native/
 Node, 132 affected tools and lint/typecheck/build/format pass. Actual Windows
 NT measurements and the original production acceptance gates remain open.
 
+**Directory-rights measurements:** `4c5ee32f` executes all twelve NT relative
+variants successfully on ARM64, with no pending or mutation observation. x64
+still reports sharing violations for all twelve. These results establish
+neither a production strategy nor the source of the cross-target difference.
+The test-only cohort adds eight padded NT observations comparing non-DELETE
+read/write directory peers with thin traverse/read-attributes/read-control/
+synchronize peers. Both directory identities and private policies are checked
+while predecessor handles remain held. Cleanup transfers first, then all prior
+creator or read/write handles retire before the respective observations.
+File DELETE rights, postconditions and pending handling remain unchanged.
+
+The original sixty records remain, and the parser requires all sixty-eight
+fixed unique complete records within the existing caps. No production code,
+grant, ACL or privilege changes. A new complete Sol/high affected review and
+separate Sol/high security sitting are clean; local native/Node, 132 affected
+tools and lint/typecheck/build/format pass. The peer rows still require actual
+execution on both Windows architectures before a profile strategy is selected.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
