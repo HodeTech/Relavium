@@ -153,6 +153,7 @@ test('spawn errors, signals and non-Rust phases use closed diagnostic fields wit
       exit: null,
       signal: 'SIGTERM',
       error: 'ETIMEDOUT',
+      ...(phase === 'node-lifecycle' ? { lifecycleStage: 'unavailable' } : {}),
     });
   }
   const unknown = profileCommandFailure(
@@ -182,6 +183,47 @@ test('spawn errors, signals and non-Rust phases use closed diagnostic fields wit
     () => profileCommandFailure({}, { phase: 'rust-list', case: 'private case' }),
     /NATIVE_FS_PROFILE_CONTEXT/u,
   );
+});
+
+test('node lifecycle substage is fixed, phase-scoped and rejects poisoned evidence', () => {
+  const prefix = 'NATIVE_FS_LIFECYCLE_STAGE:';
+  for (const stage of [
+    'addon-load',
+    'hardlink-create',
+    'hardlink-child',
+    'hardlink-cleanup',
+    ...NODE_LIFECYCLE_CASES,
+  ]) {
+    const result = { status: 1, stderr: `${prefix}${stage}\nprivate/path` };
+    const failure = profileCommandFailure(result, { phase: 'node-lifecycle' });
+    assert.equal(
+      JSON.parse(failure.message.slice('NATIVE_FS_PROFILE_COMMAND '.length)).lifecycleStage,
+      stage,
+    );
+    assert.equal(failure.message.includes('private/path'), false);
+    const other = profileCommandFailure(result, { phase: 'rust-list' });
+    assert.equal(
+      'lifecycleStage' in JSON.parse(other.message.slice('NATIVE_FS_PROFILE_COMMAND '.length)),
+      false,
+    );
+  }
+  for (const stderr of [
+    `${prefix}private/path\n`,
+    `${prefix}hardlink-child-extra\n`,
+    `${prefix}hardlink-create\n${prefix}hardlink-child\n`,
+    `${prefix}${'secret'.repeat(20000)}`,
+    `${prefix}hardlink-create\n${'x'.repeat(40000)}\n${prefix}hardlink-child\n${'x'.repeat(40000)}`,
+    `${'x'.repeat(32768 - `${prefix}hardlink-child`.length - 1)}\n${prefix}hardlink-child-invalid${'x'.repeat(65536)}`,
+    `${prefix}hardlink-child\n${'é'.repeat(40000)}`,
+  ]) {
+    const failure = profileCommandFailure({ status: 1, stderr }, { phase: 'node-lifecycle' });
+    assert.equal(
+      JSON.parse(failure.message.slice('NATIVE_FS_PROFILE_COMMAND '.length)).lifecycleStage,
+      'unavailable',
+    );
+    assert.ok(failure.message.length < 1024);
+    assert.equal(failure.message.includes('private/path'), false);
+  }
 });
 
 test('diagnostic evidence remains bounded under repeated or oversized child failures', () => {

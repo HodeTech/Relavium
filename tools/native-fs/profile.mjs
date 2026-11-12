@@ -407,6 +407,27 @@ export function profileCommandFailure(result, context) {
   ]
     .filter(([, fixed]) => text.includes(fixed))
     .map(([kind]) => kind);
+  const lifecycleStages = new Set([
+    'addon-load',
+    'hardlink-create',
+    'hardlink-child',
+    'hardlink-cleanup',
+    ...NODE_LIFECYCLE_CASES,
+  ]);
+  // Truncation can hide duplicates or manufacture a line break after a partial
+  // marker. Diagnose only the complete, bounded original evidence.
+  const lifecycleEvidence =
+    typeof result.stderr === 'string' &&
+    result.stderr.length <= 64 * 1024 &&
+    Buffer.byteLength(result.stderr, 'utf8') <= 64 * 1024
+      ? result.stderr
+      : '';
+  const lifecycleLines = lifecycleEvidence
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith('NATIVE_FS_LIFECYCLE_STAGE:'));
+  const lifecycleValue =
+    lifecycleLines.length === 1 ? lifecycleLines[0].slice('NATIVE_FS_LIFECYCLE_STAGE:'.length) : '';
+  const lifecycleStage = lifecycleStages.has(lifecycleValue) ? lifecycleValue : 'unavailable';
   const diagnostic = {
     version: 1,
     phase: context.phase,
@@ -424,6 +445,7 @@ export function profileCommandFailure(result, context) {
         : SPAWN_ERRORS.has(result.error.code)
           ? result.error.code
           : 'other',
+    ...(context.phase === 'node-lifecycle' ? { lifecycleStage } : {}),
     ...(context.phase === 'rust-case'
       ? {
           locations,

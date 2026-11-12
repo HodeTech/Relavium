@@ -2706,6 +2706,27 @@ and joins them and correctly refuses certification. Their removal/restored
 proof and the complete Linux CI matrix remain required; no timeout, process
 join, population or semantic assertion is weakened.
 
+**Windows Node probe follow-up:** at `e011cca1`, both Windows Rust
+populations pass before the Node lifecycle command exits nonzero without an
+operation-specific diagnostic. The test now completes its hardlink child and
+removes that fixture before loading the original addon in the parent. This
+avoids overlapping mapped-module lifetime during link creation/cleanup; it
+does not establish that overlap as the observed Windows failure's cause.
+Eleven lifecycle cases, compiled-byte checks and child deadlines remain.
+
+A complete Sol/high affected review finds one medium in the new closed-stage
+diagnostic: truncation can hide a duplicate marker or manufacture a newline
+after a malformed one. Root reproduces it with pure strings; regression
+inputs fail before correction. Lifecycle parsing now accepts only complete
+original stderr within 64 KiB, including its UTF-8 byte size; otherwise the
+stage is unavailable. Other native diagnostics and success receipts are
+unchanged. Fresh macOS native 35/three declared child exclusions, eleven Node
+cases, 43 asset/profile/delivery tests and tools lint/typecheck pass. The
+native source and shim pins remain unchanged; build binding is
+`3ffa16b4f3d37ac451fb69c8226f938091d3f93bfeef0cc8041c3cc51e43ff0f`.
+A fresh complete affected round and separate security sitting follow this
+correction; actual Windows and all-target/consumer CI remain required.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

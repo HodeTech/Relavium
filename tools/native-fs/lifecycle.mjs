@@ -26,6 +26,7 @@ import { NODE_LIFECYCLE_CASES } from './profile-catalog.mjs';
 const require = createRequire(import.meta.url);
 const MASK = process.platform === 'win32' ? undefined : process.umask();
 const nonce = () => randomBytes(16).toString('hex');
+let failureStage = 'addon-load';
 function load(binary) {
   const addon = require(binary);
   for (const method of [
@@ -185,13 +186,15 @@ async function killedProducer(addon, binary, context) {
 }
 export async function runLifecycle(binary) {
   binary = resolve(binary);
-  const addon = load(binary);
+  failureStage = 'hardlink-create';
   // Real package-manager links, using the exact built inventory and actual addon.
   // The sibling fixture remains on the same filesystem and is removed before return.
   const assetDir = dirname(binary);
   const linkedDir = mkdtempSync(join(dirname(assetDir), '.relavium-native-links-'));
+  let primaryFailed = false;
   try {
     for (const name of readdirSync(assetDir)) linkSync(join(assetDir, name), join(linkedDir, name));
+    failureStage = 'hardlink-child';
     const child = spawnSync(
       process.execPath,
       [
@@ -207,12 +210,19 @@ export async function runLifecycle(binary) {
     assert.ok(statSync(join(linkedDir, 'native-assets.json')).nlink > 1);
     assert.ok(statSync(join(linkedDir, 'THIRD_PARTY_NOTICES.txt')).nlink > 1);
     assert.ok(statSync(join(linkedDir, basename(binary))).nlink > 1);
+  } catch (error) {
+    primaryFailed = true;
+    throw error;
   } finally {
+    if (!primaryFailed) failureStage = 'hardlink-cleanup';
     rmSync(linkedDir, { recursive: true, force: true });
   }
+  failureStage = 'addon-load';
+  const addon = load(binary);
   const cases = [];
   const run = async (name, work) => {
     assert.ok(NODE_LIFECYCLE_CASES.includes(name));
+    failureStage = name;
     await fixture(addon, work);
     cases.push(name);
   };
@@ -357,6 +367,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
       console.log(JSON.stringify(await runLifecycle(process.argv[2])));
     else throw new Error('NATIVE_FS_LIFECYCLE_ARGUMENTS');
   } catch {
+    console.error(`NATIVE_FS_LIFECYCLE_STAGE:${failureStage}`);
     console.error('NATIVE_FS_LIFECYCLE_FAILED');
     process.exitCode = 1;
   }
