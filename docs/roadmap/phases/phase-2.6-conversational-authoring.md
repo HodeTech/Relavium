@@ -2515,6 +2515,44 @@ native 35/eleven Node cases, 249 affected tools and tools/workspace lint,
 typecheck, build and format successfully. Windows test-code compilation passes;
 actual request-bit measurements remain due on both architectures.
 
+**Request-form results and production selection:** actual `edee61c1`
+[CI run 43170192486](https://github.com/HodeTech/Relavium/actions/runs/43170192486)
+reports `exact` for all three request-form policies on both Windows targets.
+The production component setter still refuses at the unchanged strict
+auto-inherited-bit check, so this is not a profile or combined-CI pass.
+The canonical Windows profile selects the measured full-descriptor request
+form with basic OWNER/GROUP/DACL flags, using the OS control-bit setter only
+on a bounded captured-descriptor clone. Production and the request experiment
+will share the helper; legacy setters remain test-only diagnostic baselines.
+All source/access/readback, staging, journal and publication gates remain.
+Implementation, fresh affected reviews and the complete ordinary native and
+consumer gates remain required before Step 2 closes.
+
+A separate Sol/high completion-design inspection distinguishes this direct
+security setter from the IOSB-based rename interface. Its input remains owned
+through the actual documented call; only exact success proceeds, and every
+other status is a fatal metadata refusal. No pending protocol, file-signal
+completion inference or indefinitely parked producer is invented for an API
+that exposes none. A blocked OS call still retains its actual producer under
+the existing cooperative cancellation limit.
+
+**Shared production-helper validation:** the measured request form now backs
+production and its probe through one bounded descriptor helper. Existing native
+parents add protected, ordinary unprotected and genuinely inherited production
+copies, exact inherited-AI and unchanged-snapshot assertions. The direct-call
+classifier tests pending/success/denial without simulating an asynchronous OS
+request. There is no parent-population, dependency or lockfile change.
+
+A new complete Sol/high affected code review and separate Sol/high security
+sitting are clean on native source SHA-256
+`094470ea52dadad04c9f11e4c9fe5e0a3aeb09cd9e8347dcbb98e71c5dc49091`.
+Independent profile/assets controls pass 30/30, and both reviewers execute six
+source-extracted one-call/status controls successfully. Root passes local native
+35/eleven Node lifecycle cases, 249 affected tools and tools/workspace lint,
+typecheck, build and format. Windows test code cross-compiles. The actual
+modified production source still requires both ordinary Windows profiles,
+complete combined CI and installed consumers before Step 2 acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

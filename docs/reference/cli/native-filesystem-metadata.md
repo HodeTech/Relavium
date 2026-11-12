@@ -674,7 +674,10 @@ The cohort adds one `nt-request` setter variant, for twelve records total:
 clone the bounded captured descriptor, use the OS
 `SetSecurityDescriptorControl` to set its DACL auto-inheritance request bit
 only when the captured auto-inherited bit is set, then call the basic Nt
-form. This is an unproven request to the OS, not a hand-written inheritance
+form. Actual `edee61c1`
+[CI run 43170192486](https://github.com/HodeTech/Relavium/actions/runs/43170192486)
+reports `exact` for that form on all three policies and both Windows targets.
+This supports the mechanism selection below, not a hand-written inheritance
 algorithm or a relaxation of exact readback. Source bytes/policy and held stage
 identity remain checked. No raw descriptor, SID, control value or path enters
 the measurement. No production setter, comparison or permission changes until
@@ -883,13 +886,32 @@ exclusions continue to apply throughout.
 The closed caller-visible policy is owner SID, primary-group SID, DACL bytes
 and protection/automatic-inheritance controls. It inspects the caller-readable
 mandatory-label descriptor and refuses an explicit label; privileged audit
-SACLs and labels withheld by Windows are outside the preservation claim. It
-uses the filesystem-specific `GetSecurityInfo`/`SetSecurityInfo` APIs, not
-`SetKernelObjectSecurity` (which Microsoft explicitly excludes for filesystem
-objects). A required owner/group assignment that ordinary credentials cannot
-perform refuses. DACL copying must pass exact native policy comparison before
-and after payload copying; unsupported inheritance transformations refuse.
-No ACE permission evaluator or inheritance merger is implemented.
+SACLs and labels withheld by Windows are outside the preservation claim.
+Capture uses filesystem `GetSecurityInfo`. Existing-file policy application
+uses one `NtSetSecurityObject` call with OWNER/GROUP/DACL information and a
+bounded clone of that captured self-relative descriptor. On the clone only,
+`SetSecurityDescriptorControl` sets or clears `SE_DACL_AUTO_INHERIT_REQ` to
+match the captured `SE_DACL_AUTO_INHERITED` bit. Neither protection-information
+flags nor SACL-setting flags are passed. The twelve-row `edee61c1` observations
+show exact protected, unprotected and genuinely inherited policy for this
+request form on both Windows architectures; full profile acceptance remains
+required. The old component setter is a diagnostic baseline, not a fallback.
+`SetKernelObjectSecurity` is excluded for filesystem objects. A required
+owner/group assignment that ordinary credentials cannot perform refuses.
+Application must pass exact native policy comparison before and after payload
+copying; unsupported inheritance transformations refuse. No ACE permission
+evaluator, inheritance merger or privilege change is implemented.
+
+The full-descriptor setter follows its documented direct-call contract. Its
+input clone and held stage remain owned until the actual call returns; only
+`STATUS_SUCCESS` proceeds to exact readback. Every other status, including an
+unexpected `STATUS_PENDING`, is a fixed fatal, non-retryable metadata refusal.
+This API provides no IOSB/event or documented pending-completion protocol, so
+the host does not infer completion from a file signal or invent a wait, parked
+worker, asynchronous drain, abort, detached operation or publication retry.
+This differs from the rename interface, which exposes an IOSB. Cancellation
+is cooperative before/after the direct call; a block inside Windows retains
+the actual joined producer under the existing OS-call limitation.
 
 Supported file attributes are archive, hidden, system, not-content-indexed and
 the normal-file marker. Read-only, compression, encryption, sparse, reparse,
@@ -990,6 +1012,8 @@ Node bigint `stat`/`fstat` on both supported Node floors before enabling it.
 
 Primary mechanism sources: [file security and creation/inheritance](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights),
 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo),
+[full-descriptor Nt setter](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject),
+[OS descriptor control setter](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setsecuritydescriptorcontrol),
 [SetKernelObjectSecurity's filesystem exclusion](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setkernelobjectsecurity),
 [handle-bound rename structure/flags](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
 [user-mode Nt entry](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile),

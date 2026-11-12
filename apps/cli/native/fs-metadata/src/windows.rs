@@ -13,7 +13,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FileRenameInformationEx, NtSetInformationFile, FILE_RENAME_INFORMATION,
+    FileRenameInformationEx, NtSetInformationFile, NtSetSecurityObject, FILE_RENAME_INFORMATION,
 };
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::Authorization::*;
@@ -342,6 +342,36 @@ fn policy(file: &File) -> Result<Policy, NativeFailure> {
         control: control & (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED),
     })
 }
+// The documented security setter is a direct call with no IOSB or asynchronous
+// completion contract. Only its actual synchronous STATUS_SUCCESS is accepted.
+fn security_set_status(status: NTSTATUS) -> Result<(), NativeFailure> {
+    if status == STATUS_SUCCESS {
+        Ok(())
+    } else if status == STATUS_ACCESS_DENIED || status == STATUS_PRIVILEGE_NOT_HELD {
+        Err(NativeFailure::AccessDenied)
+    } else {
+        Err(NativeFailure::Unsupported)
+    }
+}
+fn security_set_once(call: impl FnOnce() -> NTSTATUS) -> Result<(), NativeFailure> {
+    security_set_status(call())
+}
+fn apply_captured_security(source: &Policy, stage: &File) -> Result<(), NativeFailure> {
+    // Preserve the original snapshot: the OS edits only this bounded clone.
+    let mut descriptor = source.descriptor.clone();
+    let sd = descriptor.as_mut_ptr().cast();
+    let requested = if source.control & SE_DACL_AUTO_INHERITED != 0 {
+        SE_DACL_AUTO_INHERIT_REQ
+    } else {
+        0
+    };
+    if unsafe { SetSecurityDescriptorControl(sd, SE_DACL_AUTO_INHERIT_REQ, requested) } == 0 {
+        return Err(failure());
+    }
+    // The descriptor and stage handle remain alive until the actual call returns.
+    security_set_once(|| unsafe { NtSetSecurityObject(handle(stage), POLICY_INFO, sd) })
+}
+
 fn same_policy(left: &Policy, right: &Policy) -> bool {
     left.owner == right.owner
         && left.group == right.group
@@ -1228,43 +1258,10 @@ impl Profile for WindowsProfile {
         }
         #[cfg(test)]
         crate::test_hooks::hit("partial-metadata");
-        let protection = if snapshot.policy.control & SE_DACL_PROTECTED != 0 {
-            PROTECTED_DACL_SECURITY_INFORMATION
-        } else {
-            UNPROTECTED_DACL_SECURITY_INFORMATION
-        };
-        // Private objects are protected and their parent has no inheritable
-        // ACEs. Reproduce the target's protection bit and verify the resulting
-        // ACL and control flags exactly; OS transformations refuse.
-        let sd = snapshot.policy.descriptor.as_ptr().cast_mut().cast();
-        let (mut owner, mut group, mut dacl) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
-        let (mut present, mut defaulted) = (0, 0);
-        if unsafe { GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
-            || unsafe { GetSecurityDescriptorGroup(sd, &mut group, &mut defaulted) } == 0
-            || unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) }
-                == 0
-            || present == 0
-            || dacl.is_null()
-        {
-            return Err(NativeFailure::Unsupported);
-        }
-        let status = unsafe {
-            SetSecurityInfo(
-                handle(stage),
-                SE_FILE_OBJECT,
-                POLICY_INFO | protection,
-                owner,
-                group,
-                dacl,
-                ptr::null(),
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return trace_failure!(
-                "first-metadata-security-set",
-                Err(NativeFailure::AccessDenied)
-            );
-        }
+        trace_failure!(
+            "first-metadata-security-set",
+            apply_captured_security(&snapshot.policy, stage)
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("metadata-security-set");
         let mut basic = FILE_BASIC_INFO {
@@ -2190,8 +2187,6 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn security_descriptor_probe() {
-        use windows_sys::Wdk::Storage::FileSystem::NtSetSecurityObject;
-
         fn has_inherited(policy: &Policy) -> Option<bool> {
             let descriptor = policy.descriptor.as_ptr().cast_mut().cast();
             let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
@@ -2325,31 +2320,7 @@ pub(crate) mod tests {
                 };
                 let (_stage_path, _stage_parent, stage) = fixture.stage();
                 let stage_id = WindowsProfile::identity(&stage).expect("stage identity");
-                // The request experiment changes only a private clone of the
-                // captured self-relative descriptor, never the source snapshot.
-                let mut request_descriptor = source_policy.descriptor.clone();
-                let sd = if setter == "nt-request" {
-                    request_descriptor.as_mut_ptr().cast()
-                } else {
-                    source_policy.descriptor.as_ptr().cast_mut().cast()
-                };
-                let request_ready = if setter == "nt-request" {
-                    let requested = if source_policy.control & SE_DACL_AUTO_INHERITED != 0 {
-                        SE_DACL_AUTO_INHERIT_REQ
-                    } else {
-                        0
-                    };
-                    if unsafe {
-                        SetSecurityDescriptorControl(sd, SE_DACL_AUTO_INHERIT_REQ, requested)
-                    } == 0
-                    {
-                        Err(error_status(unsafe { GetLastError() }))
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    Ok(())
-                };
+                let sd = source_policy.descriptor.as_ptr().cast_mut().cast();
                 let protection = if source_policy.control & SE_DACL_PROTECTED != 0 {
                     PROTECTED_DACL_SECURITY_INFORMATION
                 } else {
@@ -2357,8 +2328,12 @@ pub(crate) mod tests {
                 };
                 let result = if !proper_case {
                     Err("unsupported")
-                } else if let Err(status) = request_ready {
-                    Err(status)
+                } else if setter == "nt-request" {
+                    apply_captured_security(&source_policy, &stage).map_err(|error| match error {
+                        NativeFailure::AccessDenied => "access-denied",
+                        NativeFailure::Unsupported => "unsupported",
+                        _ => "error",
+                    })
                 } else if setter == "setinfo" {
                     let (mut owner, mut group, mut dacl) =
                         (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
@@ -2725,6 +2700,20 @@ pub(crate) mod tests {
     #[test]
     fn windows_token_context_owner_pair_is_closed_and_binds_identity() {
         completion_policy_controls();
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            security_set_once(|| {
+                calls.set(calls.get() + 1);
+                STATUS_PENDING
+            }),
+            Err(NativeFailure::Unsupported)
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(security_set_status(STATUS_SUCCESS), Ok(()));
+        assert_eq!(
+            security_set_status(STATUS_ACCESS_DENIED),
+            Err(NativeFailure::AccessDenied)
+        );
         for (code, category) in [
             (ERROR_ACCESS_DENIED, "rename-access-denied"),
             (ERROR_INVALID_PARAMETER, "rename-invalid-parameter"),
@@ -2923,6 +2912,8 @@ pub(crate) mod tests {
         )
         .expect("ordinary attributed source");
         assert!(snapshot.zone.as_deref() == Some(zone.as_slice()));
+        assert_ne!(snapshot.policy.control & SE_DACL_PROTECTED, 0);
+        let protected_descriptor_before = snapshot.policy.descriptor.clone();
         let empty = fixture.file("empty-primary", b"");
         assert!(streams(&empty).expect("empty inventory").is_none());
         // Synthetic fault controls exercise the no-DATA decision independently
@@ -2991,6 +2982,7 @@ pub(crate) mod tests {
             &stage_path.join("payload"),
         )
         .expect("metadata copied before payload");
+        assert!(snapshot.policy.descriptor == protected_descriptor_before);
         stage
             .write_all(b"reviewed new bytes")
             .expect("reviewed stage");
@@ -3052,6 +3044,8 @@ pub(crate) mod tests {
         assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
         let header = unsafe { std::ptr::read_unaligned(ace.cast::<ACE_HEADER>()) };
         assert_ne!(u32::from(header.AceFlags) & INHERITED_ACE, 0);
+        assert_ne!(original.control & SE_DACL_AUTO_INHERITED, 0);
+        let inherited_descriptor_before = original.descriptor.clone();
         let ordinary_snapshot = WindowsProfile::capture_existing(
             &ordinary,
             &second.path.join("source"),
@@ -3066,10 +3060,49 @@ pub(crate) mod tests {
             &second_path.join("payload"),
         )
         .expect("unprotected metadata copied exactly");
+        assert!(ordinary_snapshot.policy.descriptor == inherited_descriptor_before);
         assert!(same_policy(
             &policy(&second_stage).expect("unprotected stage"),
             &ordinary_snapshot.policy
         ));
+
+        let third = Fixture::new();
+        let mut plain = open(
+            &third.path.join("source"),
+            FILE_GENERIC_READ
+                | FILE_GENERIC_WRITE
+                | DELETE_ACCESS
+                | WRITE_DAC_ACCESS
+                | WRITE_OWNER_ACCESS,
+            CREATE_NEW,
+            0,
+            ptr::null(),
+        )
+        .expect("ordinary unprotected source");
+        plain.write_all(b"ordinary bytes").expect("ordinary bytes");
+        plain.sync_all().expect("ordinary flush");
+        let plain_snapshot = WindowsProfile::capture_existing(
+            &plain,
+            &third.path.join("source"),
+            WriteOperation::Replace,
+        )
+        .expect("ordinary unprotected snapshot");
+        assert_eq!(plain_snapshot.policy.control & SE_DACL_PROTECTED, 0);
+        let plain_descriptor_before = plain_snapshot.policy.descriptor.clone();
+        let (third_path, _third_parent, third_stage) = third.stage();
+        WindowsProfile::apply_and_verify_existing(
+            &plain_snapshot,
+            &plain,
+            &third_stage,
+            &third_path.join("payload"),
+        )
+        .expect("ordinary unprotected metadata copied exactly");
+        assert!(plain_snapshot.policy.descriptor == plain_descriptor_before);
+        assert!(same_policy(
+            &policy(&third_stage).expect("ordinary stage"),
+            &plain_snapshot.policy
+        ));
+        assert_eq!(third.bytes("source"), b"ordinary bytes");
     }
 
     #[test]
