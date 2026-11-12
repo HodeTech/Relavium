@@ -2330,6 +2330,26 @@ Rust/JS diagnostic allowlists match at 125 entries, still admitting at most
 sixteen per bounded receipt. Actual Windows native and artifact acceptance
 remain open after these corrections.
 
+**Held Windows record publication:** the `bc0b145e` repetition confirms a
+sharing violation on x64's private record path rename. Windows now uses the
+existing handle-bound no-replace primitive for `.prepare` to `.record`, keeping
+the source handle, pending full identity and index-directory handle throughout.
+Unix retains its previous rename. A conflicting record is preserved; uncertain
+failure still refuses before payload and does not permit a retry. The Windows
+parent retains both handles through positive identity/content and destination
+collision controls. This is an implementation alternative to the observed
+sharing failure, not proof of which internal reopen conflicted.
+
+ARM64's failure has advanced to metadata verification. Exact owner/group/DACL/
+control, stream, attribute, binding and token-context comparisons remain; new
+fixed field and fixture-phase labels make the next failure distinguishable.
+The error classifier now observes the actual handle-rename primitive in tests
+and still emits only closed categories. Both allowlists match at 142 entries,
+with unchanged receipt and test-population bounds. A new complete affected
+Terra/high review and separate Terra/high security sitting are clean. Local
+native/Node, 127 affected tools, lint/typecheck and build/format pass; actual
+Windows and combined acceptance remain open.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

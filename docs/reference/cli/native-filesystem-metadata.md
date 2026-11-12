@@ -309,6 +309,11 @@ Pinning flushes the empty payload, stage directory and destination parent and
 publishes the flushed prepared record by rename to `.record`, followed by the
 index-directory flush, before any payload copy. Index hierarchy creation also
 flushes its containing directories. The empty reservation can then be removed.
+Windows performs this transition through the already-held private record
+handle and selected handle-bound no-replace primitive, with the same held
+index directory as source and destination. A foreign existing `.record` is
+never replaced. This retains the pending identity through the transition;
+there is no close/reopen gap or retry. Unix keeps its existing path rename.
 During the live operation, the host adopts the exclusively created directory
 and empty payload immediately, retaining their handles and full identities.
 Normal pre-pin cancellation/error cleanup can remove those exact empty

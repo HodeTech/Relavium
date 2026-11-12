@@ -1454,6 +1454,23 @@ mod producer_crash_tests {
         Checkpoint(&'static str),
     }
     const CHECKPOINTS: &[&str] = &[
+        "case-new-payload",
+        "case-existing-metadata",
+        "case-existing-payload",
+        "first-metadata-control-changed",
+        "first-metadata-dacl-changed",
+        "first-metadata-final-attribute-changed",
+        "first-metadata-final-attribute-read",
+        "first-metadata-final-bind",
+        "first-metadata-final-context-changed",
+        "first-metadata-final-credentials",
+        "first-metadata-final-stream-changed",
+        "first-metadata-final-stream-read",
+        "first-metadata-group-changed",
+        "first-metadata-owner-changed",
+        "first-metadata-policy-readback",
+        "first-metadata-security-set",
+        "metadata-security-set",
         "rename-invalid-parameter",
         "rename-not-supported",
         "rename-invalid-name",
@@ -1639,6 +1656,7 @@ mod producer_crash_tests {
                 &cancelled,
             );
             if let Err(error) = &result {
+                crate::test_hooks::checkpoint("case-new-payload");
                 crate::test_hooks::emit_first_failure(*error);
                 crate::test_hooks::checkpoint("child-stage-error");
             }
@@ -1672,6 +1690,11 @@ mod producer_crash_tests {
                 &cancelled,
             );
             if let Err(error) = &result {
+                crate::test_hooks::checkpoint(if crate::test_hooks::selected("partial-metadata") {
+                    "case-existing-metadata"
+                } else {
+                    "case-existing-payload"
+                });
                 crate::test_hooks::emit_first_failure(*error);
                 crate::test_hooks::checkpoint("child-stage-error");
             }

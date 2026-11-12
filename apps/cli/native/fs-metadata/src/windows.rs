@@ -839,6 +839,17 @@ fn rename(stage: &File, parent: &File, target: &OsStr, replace: bool) -> Result<
         SetFileInformationByHandle(handle(stage), FileRenameInfoEx, info.cast(), length as u32)
     } == 0
     {
+        #[cfg(test)]
+        {
+            // Capture the error before any other API call; emit only its
+            // predefined content-free category through the test receipt.
+            let code = unsafe { GetLastError() };
+            let error = std::io::Error::from_raw_os_error(code as i32);
+            crate::test_hooks::remember_failure(
+                crate::stage_index::rename_error_category(&error),
+                NativeFailure::PossiblyPublished,
+            );
+        }
         return Err(NativeFailure::PossiblyPublished);
     }
     Ok(())
@@ -1195,8 +1206,13 @@ impl Profile for WindowsProfile {
             )
         };
         if status != ERROR_SUCCESS {
-            return Err(NativeFailure::AccessDenied);
+            return trace_failure!(
+                "first-metadata-security-set",
+                Err(NativeFailure::AccessDenied)
+            );
         }
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("metadata-security-set");
         let mut basic = FILE_BASIC_INFO {
             FileAttributes: snapshot.attributes,
             ..FILE_BASIC_INFO::default()
@@ -1212,15 +1228,46 @@ impl Profile for WindowsProfile {
         {
             return Err(failure());
         }
-        if !same_policy(&policy(stage)?, &snapshot.policy)
-            || streams(stage)? != snapshot.zone
-            || !same_stage_attributes(info(stage)?.dwFileAttributes, snapshot.attributes)
-        {
+        let actual_policy = trace_failure!("first-metadata-policy-readback", policy(stage))?;
+        if !same_policy(&actual_policy, &snapshot.policy) {
+            #[cfg(test)]
+            {
+                let category = if actual_policy.owner != snapshot.policy.owner {
+                    "first-metadata-owner-changed"
+                } else if actual_policy.group != snapshot.policy.group {
+                    "first-metadata-group-changed"
+                } else if actual_policy.dacl != snapshot.policy.dacl {
+                    "first-metadata-dacl-changed"
+                } else {
+                    "first-metadata-control-changed"
+                };
+                crate::test_hooks::remember_failure(category, NativeFailure::Changed);
+            }
             return Err(NativeFailure::Changed);
         }
-        bind(stage, stage_path, false)?;
-        if credentials()? != snapshot.credentials {
-            return Err(NativeFailure::Changed);
+        if trace_failure!("first-metadata-final-stream-read", streams(stage))? != snapshot.zone {
+            return trace_failure!(
+                "first-metadata-final-stream-changed",
+                Err(NativeFailure::Changed)
+            );
+        }
+        if !same_stage_attributes(
+            trace_failure!("first-metadata-final-attribute-read", info(stage))?.dwFileAttributes,
+            snapshot.attributes,
+        ) {
+            return trace_failure!(
+                "first-metadata-final-attribute-changed",
+                Err(NativeFailure::Changed)
+            );
+        }
+        trace_failure!("first-metadata-final-bind", bind(stage, stage_path, false))?;
+        if trace_failure!("first-metadata-final-credentials", credentials())?
+            != snapshot.credentials
+        {
+            return trace_failure!(
+                "first-metadata-final-context-changed",
+                Err(NativeFailure::Changed)
+            );
         }
         Ok(())
     }
@@ -1693,6 +1740,36 @@ mod tests {
             crate::stage_index::rename_error_category(&std::io::Error::other("test")),
             "rename-other"
         );
+        let fixture = Fixture::new();
+        let held = fixture.file("held-prepare", b"held record");
+        let held_id = identity(&held).expect("held record identity");
+        WindowsProfile::publish_new(
+            &held,
+            &fixture.directory,
+            OsStr::new("held-prepare"),
+            &fixture.directory,
+            OsStr::new("held-record"),
+        )
+        .expect("handle-bound private record rename");
+        assert!(identity(&held).expect("renamed held record identity") == held_id);
+        assert_eq!(fixture.bytes("held-record"), b"held record");
+        assert!(!fixture.path.join("held-prepare").exists());
+        let pending = fixture.file("collision-prepare", b"pending");
+        let foreign = fixture.file("collision-record", b"foreign");
+        let pending_id = identity(&pending).expect("pending identity");
+        let foreign_id = identity(&foreign).expect("foreign identity");
+        assert!(WindowsProfile::publish_new(
+            &pending,
+            &fixture.directory,
+            OsStr::new("collision-prepare"),
+            &fixture.directory,
+            OsStr::new("collision-record"),
+        )
+        .is_err());
+        assert!(identity(&pending).expect("pending retained") == pending_id);
+        assert!(identity(&foreign).expect("foreign retained") == foreign_id);
+        assert_eq!(fixture.bytes("collision-prepare"), b"pending");
+        assert_eq!(fixture.bytes("collision-record"), b"foreign");
         let mut primary = TOKEN_STATISTICS {
             TokenType: TokenPrimary,
             ..TOKEN_STATISTICS::default()

@@ -725,18 +725,25 @@ impl<P: Profile> OwnedStage<P> {
             self.index.recheck_checked(start, cancelled)
         )?;
         trace_failure!("first-pin-postflush-budget", tick(start, cancelled))?;
-        let rename_result = fs::rename(
-            self.index.path.join(format!("{}.prepare", self.nonce)),
-            self.index.path.join(format!("{}.record", self.nonce)),
-        );
-        #[cfg(all(test, windows))]
-        if let Err(error) = &rename_result {
-            crate::test_hooks::remember_failure(
-                rename_error_category(error),
-                NativeFailure::Changed,
-            );
-        }
-        trace_failure!("first-pin-rename", io(rename_result))?;
+        #[cfg(windows)]
+        trace_failure!(
+            "first-pin-rename",
+            P::publish_new(
+                &file,
+                &self.index.directory,
+                OsStr::new(&format!("{}.prepare", self.nonce)),
+                &self.index.directory,
+                OsStr::new(&format!("{}.record", self.nonce)),
+            )
+        )?;
+        #[cfg(not(windows))]
+        trace_failure!(
+            "first-pin-rename",
+            io(fs::rename(
+                self.index.path.join(format!("{}.prepare", self.nonce)),
+                self.index.path.join(format!("{}.record", self.nonce)),
+            ))
+        )?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-index-flush");
