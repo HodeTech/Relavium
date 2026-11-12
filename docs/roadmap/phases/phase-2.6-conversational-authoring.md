@@ -2350,6 +2350,34 @@ Terra/high review and separate Terra/high security sitting are clean. Local
 native/Node, 127 affected tools, lint/typecheck and build/format pass; actual
 Windows and combined acceptance remain open.
 
+**Windows parameter measurements:** the `ec00ff46` repetition fails on both
+architectures with `case-existing-metadata`/`rename-invalid-parameter` before
+metadata application. A Windows/test-only root case now runs first and measures
+48 fixed parameter combinations on fresh private fixtures. Held-parent relative
+forms and absolute diagnostic baselines, two information classes, three buffer
+sizes and creation/replacement are observed independently. Successful rows
+require held identity/content, no-clobber collision or old-open-target checks;
+inconsistent observations are labelled `mutation`. Production remains unchanged
+and fail-closed while these measurements are collected.
+
+Tooling requires exactly 48 unique complete known records within 64 KiB and
+256 bytes per line, then emits only normalized, measurement-only JSON. Both
+the diagnostic probe and owner case still require successful single Rust-test
+completion. Windows now selects nineteen parents, retaining every previous
+eighteen, owner proof and eleven Node cases; other platforms are unchanged.
+This does not weaken artifact certification or select a fallback.
+
+Complete independent Sol/high code and separate Sol/high security reviews are
+clean after one verified cleanup finding was corrected: the private test-root
+guard now suppresses checkpoint I/O only during its proof checks, with scoped
+thread-local restoration, so a broken traced stdout cannot panic in cleanup.
+Normal crash checkpoints remain active. Cleanup validates binding/private
+policy and the probe's volume/file-index witness, closes its handle and removes
+only its owned synthetic tree; unknown proof preserves it. This is test-fixture
+cleanup, not a replacement for production full-identity recovery. Local
+macOS native/Node, 131 affected tools, lint/typecheck and build/format pass;
+Windows measurement and ordinary-profile acceptance remain due.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

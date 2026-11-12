@@ -54,6 +54,39 @@ const LINUX = [
   'linux_actual_nontruncating_access_denial_preserves_source',
   'linux_stage_alias_and_privilege_bits_refuse_without_publication',
 ].map((name) => `linux::tests::${name}`);
+// Diagnostic measurement only; this case does not certify a publication primitive.
+export const WINDOWS_RENAME_PROBE_CASE = 'aaa_windows_rename_parameter_probe';
+const RENAME_DIMENSIONS = [
+  ['legacy', 'ex'],
+  ['minimal', 'nul', 'padded'],
+  ['relative', 'absolute'],
+  ['same', 'cross'],
+  ['new', 'replace'],
+];
+export const WINDOWS_RENAME_VARIANTS = Object.freeze(
+  RENAME_DIMENSIONS.reduce(
+    (prefixes, dimension) =>
+      prefixes.flatMap((prefix) =>
+        dimension.map((suffix) => (prefix === '' ? suffix : `${prefix}-${suffix}`)),
+      ),
+    [''],
+  ),
+);
+export const WINDOWS_RENAME_STATUSES = Object.freeze([
+  'ok',
+  'invalid-parameter',
+  'access-denied',
+  'sharing-violation',
+  'lock-violation',
+  'source-missing',
+  'destination-exists',
+  'invalid-name',
+  'not-supported',
+  'not-same-device',
+  'privilege-not-held',
+  'other',
+  'mutation',
+]);
 export const WINDOWS_OWNER_CASE =
   'windows::tests::windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned';
 const WINDOWS = [
@@ -84,6 +117,7 @@ export function rustPopulation(platform) {
       'test_hooks::first_failure_preserves_primary_and_evaluates_once',
       ...(platform === 'win32'
         ? [
+            WINDOWS_RENAME_PROBE_CASE,
             'common::template_cleanup_tests::windows_changed_current_token_context_preserves_stage_until_restored',
           ]
         : []),

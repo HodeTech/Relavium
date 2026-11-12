@@ -613,6 +613,15 @@ temporary OS/algorithm experiments; this tracked script supplies reproducibility
 
 ## Acceptance evidence
 
+The Windows test-only rename-parameter cohort measures 48 fixed private-fixture
+combinations of information class, buffer size, relative/absolute target,
+same/cross directory and creation/replacement. It runs before ordinary native
+parents and emits only bounded, validated fixed records. Its absolute forms are
+diagnostic baselines, not a production fallback. Even successful measurements
+do not certify a candidate: ordinary metadata, inheritance, atomicity, crash,
+identity and installed-consumer controls remain mandatory on both Windows
+architectures. No production behavior changes merely because this cohort runs.
+
 - Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
   publication and no pre-approval staging; readable source alone is insufficient.
 - Real ACL, quarantine/custom-xattr and supported flag positives on macOS;

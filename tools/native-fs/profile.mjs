@@ -1,11 +1,19 @@
 /** Joined native profile validation; exact populations and artifact bytes are independently pinned. */
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { NODE_LIFECYCLE_CASES, rustPopulation, WINDOWS_OWNER_CASE } from './profile-catalog.mjs';
+import {
+  NODE_LIFECYCLE_CASES,
+  rustPopulation,
+  WINDOWS_OWNER_CASE,
+  WINDOWS_RENAME_PROBE_CASE,
+  WINDOWS_RENAME_VARIANTS,
+  WINDOWS_RENAME_STATUSES,
+} from './profile-catalog.mjs';
 import { NATIVE_TOOLCHAIN } from './catalog.mjs';
 export function parseRustListing(text, platform) {
   const names = [...text.matchAll(/^([a-zA-Z0-9_:]+): test\r?$/gmu)]
@@ -31,6 +39,33 @@ export function parseRustResults(text, platform) {
   assert.deepEqual(ignored, expected.ignored, 'NATIVE_FS_RUST_IGNORED_POPULATION');
   assert.ok(!/^test .* \.\.\. (?:FAILED|failed|filtered)/mu.test(text), 'NATIVE_FS_RUST_FAILURE');
   return { passed, ignored };
+}
+/** Closed diagnostic records only. Even 48 successful observations do not certify publication. */
+export function parseWindowsRenameProbe(text) {
+  const refuse = () => {
+    throw new Error('NATIVE_FS_WINDOWS_RENAME_PROBE');
+  };
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 64 * 1024) refuse();
+  const lines = text.split(/\r?\n/u);
+  if (lines.some((line) => Buffer.byteLength(line, 'utf8') > 256)) refuse();
+  const prefix = 'RELAVIUM_NATIVE_RENAME_PROBE';
+  const records = new Map();
+  for (const line of lines.filter((item) => item.includes(prefix))) {
+    const matched = /^RELAVIUM_NATIVE_RENAME_PROBE:([a-z-]+):([a-z-]+)$/u.exec(line);
+    if (
+      matched === null ||
+      !WINDOWS_RENAME_VARIANTS.includes(matched[1]) ||
+      !WINDOWS_RENAME_STATUSES.includes(matched[2]) ||
+      records.has(matched[1])
+    )
+      refuse();
+    records.set(matched[1], matched[2]);
+  }
+  if (records.size !== WINDOWS_RENAME_VARIANTS.length) refuse();
+  return WINDOWS_RENAME_VARIANTS.map((variant) => ({ variant, status: records.get(variant) }));
+}
+export function windowsRenameProbeDiagnostic(text) {
+  return `NATIVE_FS_RENAME_PROBE ${JSON.stringify({ version: 1, measurementOnly: true, records: parseWindowsRenameProbe(text) })}\n`;
 }
 export function parseWindowsOwnerContext(text) {
   assert.ok(
@@ -99,6 +134,15 @@ const PROFILE_CASES = new Set(
     return [...population.passed, ...population.ignored];
   }),
 );
+export function rustCaseArguments(name) {
+  assert.ok(PROFILE_CASES.has(name), 'NATIVE_FS_PROFILE_CONTEXT');
+  return [
+    '--exact',
+    name,
+    '--test-threads=1',
+    ...([WINDOWS_OWNER_CASE, WINDOWS_RENAME_PROBE_CASE].includes(name) ? ['--show-output'] : []),
+  ];
+}
 export const RUST_CHECKPOINTS = Object.freeze([
   'case-new-payload',
   'case-existing-metadata',
@@ -421,16 +465,13 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
   for (const name of rust.passed) {
     const text = command(
       executable,
-      [
-        '--exact',
-        name,
-        '--test-threads=1',
-        ...(name === WINDOWS_OWNER_CASE ? ['--show-output'] : []),
-      ],
+      rustCaseArguments(name),
       { cwd: native, env: environment },
       { phase: 'rust-case', case: name },
     );
     parseSingleRustResult(text, name);
+    if (name === WINDOWS_RENAME_PROBE_CASE)
+      process.stderr.write(windowsRenameProbeDiagnostic(text));
     if (name === WINDOWS_OWNER_CASE) genuineOwnerContext = parseWindowsOwnerContext(text);
   }
   const directory = mkdtempSync(join(tmpdir(), 'relavium-native-profile-'));

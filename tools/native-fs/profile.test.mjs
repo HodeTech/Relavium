@@ -2,7 +2,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { NODE_LIFECYCLE_CASES, rustPopulation } from './profile-catalog.mjs';
+import {
+  NODE_LIFECYCLE_CASES,
+  rustPopulation,
+  WINDOWS_OWNER_CASE,
+  WINDOWS_RENAME_PROBE_CASE,
+  WINDOWS_RENAME_VARIANTS,
+  WINDOWS_RENAME_STATUSES,
+} from './profile-catalog.mjs';
 import {
   parseRustListing,
   parseRustResults,
@@ -10,6 +17,9 @@ import {
   profileCommandFailure,
   RUST_CHECKPOINTS,
   parseWindowsOwnerContext,
+  parseWindowsRenameProbe,
+  windowsRenameProbeDiagnostic,
+  rustCaseArguments,
 } from './profile.mjs';
 for (const platform of ['darwin', 'linux', 'win32']) {
   test(`native profile population refuses missing, duplicated, ignored or failed ${platform} cases`, () => {
@@ -84,8 +94,8 @@ test('joined Rust parent completion is required even when owned subprocess fixtu
 });
 
 test('failed native commands expose only fixed case context, classifications and bounded Rust coordinates', () => {
-  const name = rustPopulation('win32').passed[0];
-  assert.equal(name, 'common::producer_crash_tests::native_producer_partial_crashes_recover');
+  const name = 'common::producer_crash_tests::native_producer_partial_crashes_recover';
+  assert.ok(rustPopulation('win32').passed.includes(name));
   const error = profileCommandFailure(
     {
       status: 101,
@@ -202,7 +212,7 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
     [...definition.matchAll(/"([a-z-]+)"/gu)].map((match) => match[1]),
     RUST_CHECKPOINTS,
   );
-  const name = rustPopulation('win32').passed[0];
+  const name = 'common::producer_crash_tests::native_producer_partial_crashes_recover';
   const diagnose = (text) =>
     JSON.parse(
       profileCommandFailure(
@@ -291,4 +301,150 @@ test('Windows local same-owner evidence is truthful but cannot certify distinct-
       'darwin',
     ),
   );
+});
+
+const probeRecords = (status = 'invalid-parameter') =>
+  WINDOWS_RENAME_VARIANTS.map((variant) => `RELAVIUM_NATIVE_RENAME_PROBE:${variant}:${status}`);
+
+test('Windows measurement case runs first while all production parents and eleven Node cases remain mandatory', () => {
+  const windows = rustPopulation('win32');
+  assert.equal(windows.passed[0], WINDOWS_RENAME_PROBE_CASE);
+  assert.equal(windows.passed.length, 19);
+  assert.equal(windows.ignored.length, 1);
+  assert.equal(windows.passed.filter((name) => name !== WINDOWS_RENAME_PROBE_CASE).length, 18);
+  assert.ok(
+    windows.passed.includes(
+      'common::producer_crash_tests::native_producer_partial_crashes_recover',
+    ),
+  );
+  assert.ok(windows.passed.includes(WINDOWS_OWNER_CASE));
+  for (const [platform, count, ignored] of [
+    ['darwin', 35, 3],
+    ['linux', 15, 2],
+  ]) {
+    const population = rustPopulation(platform);
+    assert.equal(population.passed.length, count);
+    assert.equal(population.ignored.length, ignored);
+    assert.equal(population.passed.includes(WINDOWS_RENAME_PROBE_CASE), false);
+  }
+  assert.equal(NODE_LIFECYCLE_CASES.length, 11);
+  const oldPopulation = windows.passed.filter((name) => name !== WINDOWS_RENAME_PROBE_CASE);
+  assert.throws(() =>
+    parseRustListing(
+      [...oldPopulation, ...windows.ignored].map((name) => `${name}: test`).join('\n'),
+      'win32',
+    ),
+  );
+  // A successful measurement never excuses a missing production result or grants a new receipt field.
+  assert.throws(() => parseRustResults(`test ${WINDOWS_RENAME_PROBE_CASE} ... ok\n`, 'win32'));
+  const evidence = {
+    version: 1,
+    rustPassed: windows.passed,
+    rustIgnored: windows.ignored,
+    nodeCases: [...NODE_LIFECYCLE_CASES],
+    requiresCreationMaskProbe: false,
+    genuineOwnerContext: 'distinct',
+  };
+  assert.throws(() =>
+    validateProfileEvidence(
+      {
+        ...evidence,
+        rustPassed: windows.passed.filter(
+          (name) =>
+            name !== 'common::producer_crash_tests::native_producer_partial_crashes_recover',
+        ),
+      },
+      'win32',
+    ),
+  );
+  assert.throws(() =>
+    validateProfileEvidence({ ...evidence, nodeCases: evidence.nodeCases.slice(1) }, 'win32'),
+  );
+  assert.throws(() => validateProfileEvidence({ ...evidence, renameProbe: 'ok' }, 'win32'));
+});
+
+test('only the Windows parameter measurement and owner observation collect captured successful output', () => {
+  for (const platform of ['darwin', 'linux', 'win32'])
+    for (const name of rustPopulation(platform).passed) {
+      assert.deepEqual(rustCaseArguments(name), [
+        '--exact',
+        name,
+        '--test-threads=1',
+        ...([WINDOWS_RENAME_PROBE_CASE, WINDOWS_OWNER_CASE].includes(name)
+          ? ['--show-output']
+          : []),
+      ]);
+    }
+  assert.throws(() => rustCaseArguments('unreviewed::private'), /NATIVE_FS_PROFILE_CONTEXT/u);
+});
+
+test('the Windows rename measurement has exactly the complete 48-variant Cartesian inventory', () => {
+  const independent = [];
+  for (const api of ['legacy', 'ex'])
+    for (const length of ['minimal', 'nul', 'padded'])
+      for (const name of ['relative', 'absolute'])
+        for (const location of ['same', 'cross'])
+          for (const operation of ['new', 'replace'])
+            independent.push([api, length, name, location, operation].join('-'));
+  assert.deepEqual(WINDOWS_RENAME_VARIANTS, independent);
+  assert.equal(new Set(WINDOWS_RENAME_VARIANTS).size, 48);
+  for (const status of WINDOWS_RENAME_STATUSES) {
+    const records = parseWindowsRenameProbe(
+      'successes:\r\n' + probeRecords(status).reverse().join('\r\n') + '\r\n',
+    );
+    assert.deepEqual(
+      records,
+      WINDOWS_RENAME_VARIANTS.map((variant) => ({ variant, status })),
+    );
+  }
+  // All refusals, including mutation, remain measurements; they are not publication acceptance.
+  const line = windowsRenameProbeDiagnostic(probeRecords('invalid-parameter').join('\n'));
+  assert.ok(line.startsWith('NATIVE_FS_RENAME_PROBE '));
+  assert.equal(line.split('\n').length, 2);
+  const summary = JSON.parse(line.slice('NATIVE_FS_RENAME_PROBE '.length));
+  assert.deepEqual(summary, {
+    version: 1,
+    measurementOnly: true,
+    records: WINDOWS_RENAME_VARIANTS.map((variant) => ({ variant, status: 'invalid-parameter' })),
+  });
+  assert.ok(
+    windowsRenameProbeDiagnostic(probeRecords('privilege-not-held').join('\n')).length < 8192,
+  );
+});
+
+test('Windows rename measurement refuses missing, duplicate, unknown, malformed or private records without dumping them', () => {
+  const valid = probeRecords();
+  for (const lines of [
+    [],
+    valid.slice(1),
+    [...valid, valid[0]],
+    ['RELAVIUM_NATIVE_RENAME_PROBE:private-variant:ok', ...valid.slice(1)],
+    [valid[0].replace('invalid-parameter', 'private-status'), ...valid.slice(1)],
+    [valid[0] + ':private-payload', ...valid.slice(1)],
+    ['prefix ' + valid[0], ...valid.slice(1)],
+    [valid[0].replace('RENAME_PROBE:', 'RENAME_PROBE'), ...valid.slice(1)],
+    [...valid, 'RELAVIUM_NATIVE_RENAME_PROBE private-payload'],
+    [...valid, 'RELAVIUM_NATIVE_RENAME_PROBE:private-path:123'],
+  ]) {
+    assert.throws(
+      () => parseWindowsRenameProbe(lines.join('\n')),
+      (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
+    );
+    assert.throws(
+      () => windowsRenameProbeDiagnostic(lines.join('\n')),
+      (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
+    );
+  }
+  for (const input of [
+    null,
+    undefined,
+    {},
+    'x'.repeat(257) + '\n' + valid.join('\n'),
+    '\n'.repeat(65537),
+    valid.join('\n').replace('invalid-parameter', 'private-秘密'),
+  ])
+    assert.throws(
+      () => parseWindowsRenameProbe(input),
+      (error) => error.message === 'NATIVE_FS_WINDOWS_RENAME_PROBE',
+    );
 });

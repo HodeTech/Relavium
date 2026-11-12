@@ -19,8 +19,9 @@ test and the eleven fixed Node lifecycle cases against the exact binary, then re
 in the asset's `validation`. Rust child fixtures are declared separately and owned by their parent
 tests. A missing, extra, skipped or failed parent refuses.
 Windows validation additionally records `genuineOwnerContext: same | distinct` from exactly one
-fixed success marker emitted by the actual OS default-owner fixture. Only that selected Rust test
-uses `--show-output`; its normal successful completion is still required. `same` truthfully describes
+fixed success marker emitted by the actual OS default-owner fixture. That fixture and the fixed
+rename-parameter diagnostic cohort use `--show-output`; each normal successful completion is still
+required. `same` truthfully describes
 a local TokenUser-only owner context and is not evidence for the distinct TokenOwner case. Both
 Windows CI target checks and complete eight-target assembly require `distinct` independently for
 x64 and arm64. Missing, duplicate or malformed markers refuse; no SID, path or token bytes enter the
@@ -34,6 +35,13 @@ build/deployment profile, not evidence that the whole CLI's SQLite/keyring closu
 architecture, minimum OS, filesystem or libc. The existing four installed consumers remain required.
 Each native CI check also inspects the actual addon bytes and rejects the fixed
 test-hook/checkpoint prefix, even when all hashes and profile receipt fields otherwise match.
+
+The Windows rename-parameter cohort runs first so an ordinary profile failure cannot hide its
+bounded diagnostic measurements. Only parsed, fixed records reach CI stderr; raw child output is
+never forwarded. These observations, including test-only absolute-path variants, do not select a
+production fallback or certify publication. All ordinary native parents, genuine-owner proof and
+Node lifecycle cases remain required. See the
+[native evidence boundary](../../docs/reference/cli/native-filesystem-metadata.md#acceptance-evidence).
 
 `loader.cjs` is the reviewed source of a byte-equivalent shim in generated runtime and installed
 `dist/native-fs/`. It selects only the eight literal package-relative binaries, after bounded manifest,

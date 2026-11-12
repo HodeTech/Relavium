@@ -32,6 +32,12 @@ mod unix_template_guard;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(all(test, windows))]
+#[test]
+fn aaa_windows_rename_parameter_probe() {
+    windows::rename_parameter_probe();
+}
+
 #[cfg(test)]
 mod test_hooks {
     use std::io::Write;
@@ -70,6 +76,13 @@ mod test_hooks {
         });
         assert!(success.is_ok());
         assert_eq!(evaluations.get(), 1);
+        assert!(!CHECKPOINTS_SUPPRESSED.get());
+        without_checkpoints(|| {
+            assert!(CHECKPOINTS_SUPPRESSED.get());
+            without_checkpoints(|| assert!(CHECKPOINTS_SUPPRESSED.get()));
+            assert!(CHECKPOINTS_SUPPRESSED.get());
+        });
+        assert!(!CHECKPOINTS_SUPPRESSED.get());
         assert_eq!(FIRST_FAILURE.with(|slot| slot.get()), None);
         // An unwrapped setup operation fails before a wrapped cleanup operation.
         let unwrapped_source: Result<(), NativeFailure> = Err(NativeFailure::Changed);
@@ -134,7 +147,24 @@ mod test_hooks {
         std::env::var("RELAVIUM_TEST_NATIVE_PHASE").ok().as_deref() == Some(phase)
     }
 
+    thread_local! { static CHECKPOINTS_SUPPRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn without_checkpoints<T>(operation: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CHECKPOINTS_SUPPRESSED.set(self.0);
+            }
+        }
+        let restore = Restore(CHECKPOINTS_SUPPRESSED.replace(true));
+        let result = operation();
+        drop(restore);
+        result
+    }
     pub(crate) fn checkpoint(code: &'static str) {
+        if CHECKPOINTS_SUPPRESSED.get() {
+            return;
+        }
         if std::env::var_os("RELAVIUM_TEST_NATIVE_PHASE").is_some() {
             println!("RELAVIUM_NATIVE_CHECKPOINT:{code}");
             std::io::stdout().flush().expect("test checkpoint");

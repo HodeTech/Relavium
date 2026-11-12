@@ -1557,6 +1557,257 @@ impl Profile for WindowsProfile {
 }
 
 #[cfg(test)]
+pub(crate) fn rename_parameter_probe() {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct ProbeCleanup {
+        root: PathBuf,
+        held: Option<File>,
+        root_identity: Identity,
+    }
+    impl Drop for ProbeCleanup {
+        fn drop(&mut self) {
+            let proven = crate::test_hooks::without_checkpoints(|| {
+                self.held.as_ref().is_some_and(|held| {
+                    WindowsProfile::verify_private_directory(&self.root, held).is_ok()
+                        && identity(held).is_ok_and(|value| value == self.root_identity)
+                })
+            });
+            if proven {
+                drop(self.held.take());
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+    }
+    fn create(parent: &File, name: &str, content: &[u8]) -> File {
+        let mut file = WindowsProfile::create_private_file(parent, OsStr::new(name))
+            .expect("private probe file");
+        file.write_all(content).expect("probe content");
+        file.sync_all().expect("probe flush");
+        file
+    }
+    fn contents(file: &File) -> Vec<u8> {
+        let mut file = file.try_clone().expect("probe clone");
+        file.seek(SeekFrom::Start(0)).expect("probe seek");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("probe read");
+        bytes
+    }
+    fn path_matches(path: &Path, held: &File, expected: &[u8]) -> bool {
+        let held_identity = match identity(held) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        open(path, FILE_GENERIC_READ, OPEN_EXISTING, 0, ptr::null()).is_ok_and(|current| {
+            identity(&current).is_ok_and(|value| value == held_identity)
+                && contents(&current) == expected
+        })
+    }
+    fn status(error: &std::io::Error) -> &'static str {
+        match crate::stage_index::rename_error_category(error) {
+            "rename-invalid-parameter" => "invalid-parameter",
+            "rename-access-denied" => "access-denied",
+            "rename-sharing-violation" => "sharing-violation",
+            "rename-lock-violation" => "lock-violation",
+            "rename-source-missing" => "source-missing",
+            "rename-destination-exists" => "destination-exists",
+            "rename-invalid-name" => "invalid-name",
+            "rename-not-supported" => "not-supported",
+            "rename-not-same-device" => "not-same-device",
+            "rename-privilege-not-held" => "privilege-not-held",
+            _ => "other",
+        }
+    }
+    fn attempt(
+        file: &File,
+        parent: &File,
+        name: &str,
+        extended: bool,
+        size_mode: u8,
+        absolute: bool,
+        replace: bool,
+    ) -> Result<(), &'static str> {
+        let name = if absolute {
+            child(parent, OsStr::new(name))
+                .expect("absolute probe target")
+                .into_os_string()
+        } else {
+            OsString::from(name)
+        };
+        let name: Vec<u16> = name.encode_wide().collect();
+        let name_bytes = name.len() * size_of::<u16>();
+        let offset = offset_of!(FILE_RENAME_INFO, FileName);
+        let length = match size_mode {
+            0 => offset + name_bytes,
+            1 => offset + name_bytes + size_of::<u16>(),
+            _ => size_of::<FILE_RENAME_INFO>() + name_bytes + size_of::<u16>(),
+        };
+        let mut storage = vec![0u64; length.div_ceil(size_of::<u64>())];
+        let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            if extended {
+                (*info).Anonymous.Flags = if replace {
+                    RENAME_REPLACE | RENAME_POSIX
+                } else {
+                    0
+                };
+            } else {
+                (*info).Anonymous.ReplaceIfExists = replace;
+            }
+            (*info).RootDirectory = if absolute {
+                ptr::null_mut()
+            } else {
+                handle(parent)
+            };
+            (*info).FileNameLength = name_bytes as u32;
+            ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+        }
+        let class = if extended {
+            FileRenameInfoEx
+        } else {
+            FileRenameInfo
+        };
+        if unsafe { SetFileInformationByHandle(handle(file), class, info.cast(), length as u32) }
+            == 0
+        {
+            let code = unsafe { GetLastError() };
+            return Err(status(&std::io::Error::from_raw_os_error(code as i32)));
+        }
+        Ok(())
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("probe clock")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "relavium-native-rename-probe-{}-{nonce}",
+        std::process::id()
+    ));
+    let root_handle = WindowsProfile::create_private_directory(&root).expect("private probe root");
+    let root_identity = identity(&root_handle).expect("private probe root identity");
+    let cleanup = ProbeCleanup {
+        root: root.clone(),
+        held: Some(root_handle),
+        root_identity,
+    };
+    let root_handle = cleanup
+        .held
+        .as_ref()
+        .expect("root handle")
+        .try_clone()
+        .expect("clone root");
+    let other_path = root.join("other");
+    let other =
+        WindowsProfile::create_private_directory(&other_path).expect("private probe directory");
+    let mut row = 0;
+    for (class_label, extended) in [("legacy", false), ("ex", true)] {
+        for (size_label, size_mode) in [("minimal", 0), ("nul", 1), ("padded", 2)] {
+            for (root_label, absolute) in [("relative", false), ("absolute", true)] {
+                for (location_label, cross) in [("same", false), ("cross", true)] {
+                    for (operation_label, replace) in [("new", false), ("replace", true)] {
+                        let source_name = format!("source-{row}");
+                        let target_name = format!("target-{row}");
+                        let source = create(&root_handle, &source_name, b"new");
+                        let source_id = identity(&source).expect("source identity");
+                        let target_parent = if cross { &other } else { &root_handle };
+                        let target_dir = if cross { &other_path } else { &root };
+                        let prior = if replace {
+                            Some(create(target_parent, &target_name, b"old"))
+                        } else {
+                            None
+                        };
+                        let outcome = attempt(
+                            &source,
+                            target_parent,
+                            &target_name,
+                            extended,
+                            size_mode,
+                            absolute,
+                            replace,
+                        );
+                        let source_path = root.join(&source_name);
+                        let target_path = target_dir.join(&target_name);
+                        let status = match outcome {
+                            Ok(()) => {
+                                let opened = open(
+                                    &target_path,
+                                    FILE_GENERIC_READ,
+                                    OPEN_EXISTING,
+                                    0,
+                                    ptr::null(),
+                                );
+                                let proof = !source_path.exists()
+                                    && opened.as_ref().is_ok_and(|f| {
+                                        identity(f).is_ok_and(|id| id == source_id)
+                                            && contents(f) == b"new"
+                                    })
+                                    && prior.as_ref().is_none_or(|f| contents(f) == b"old");
+                                if !proof {
+                                    "mutation"
+                                } else if !replace {
+                                    let collision_source_name = format!("collision-source-{row}");
+                                    let collision_target_name = format!("collision-target-{row}");
+                                    let collision_source =
+                                        create(&root_handle, &collision_source_name, b"pending");
+                                    let collision_target =
+                                        create(target_parent, &collision_target_name, b"foreign");
+                                    let collided = attempt(
+                                        &collision_source,
+                                        target_parent,
+                                        &collision_target_name,
+                                        extended,
+                                        size_mode,
+                                        absolute,
+                                        false,
+                                    );
+                                    if collided.is_err()
+                                        && path_matches(
+                                            &root.join(&collision_source_name),
+                                            &collision_source,
+                                            b"pending",
+                                        )
+                                        && path_matches(
+                                            &target_dir.join(&collision_target_name),
+                                            &collision_target,
+                                            b"foreign",
+                                        )
+                                    {
+                                        "ok"
+                                    } else {
+                                        "mutation"
+                                    }
+                                } else {
+                                    "ok"
+                                }
+                            }
+                            Err(category) => {
+                                if !path_matches(&source_path, &source, b"new")
+                                    || prior
+                                        .as_ref()
+                                        .is_some_and(|f| !path_matches(&target_path, f, b"old"))
+                                    || (!replace && target_path.exists())
+                                {
+                                    "mutation"
+                                } else {
+                                    category
+                                }
+                            }
+                        };
+                        println!("RELAVIUM_NATIVE_RENAME_PROBE:{class_label}-{size_label}-{root_label}-{location_label}-{operation_label}:{status}");
+                        row += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(row, 48);
+    drop(other);
+    drop(root_handle);
+    drop(cleanup);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
