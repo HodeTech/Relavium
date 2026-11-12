@@ -676,7 +676,11 @@ fn verify_private(file: &File, directory: bool) -> Result<(), NativeFailure> {
     {
         return Err(NativeFailure::Unsupported);
     }
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("private-policy-read");
     let actual = policy(file)?;
+    #[cfg(test)]
+    crate::test_hooks::checkpoint("private-expected-build");
     let (_, mut acl, sid) = private_security()?;
     let raw = acl.as_mut_ptr().cast::<ACL>();
     if !directory {
@@ -697,6 +701,20 @@ fn verify_private(file: &File, directory: bool) -> Result<(), NativeFailure> {
         }
     }
     let expected = unsafe { std::slice::from_raw_parts(raw.cast::<u8>(), (*raw).AclSize as usize) };
+    #[cfg(test)]
+    {
+        if actual.owner != sid {
+            crate::test_hooks::checkpoint("private-owner-mismatch");
+        }
+        if (directory && actual.control & SE_DACL_PROTECTED == 0)
+            || (!directory && actual.control & SE_DACL_PROTECTED != 0)
+        {
+            crate::test_hooks::checkpoint("private-protection-mismatch");
+        }
+        if actual.dacl != expected {
+            crate::test_hooks::checkpoint("private-dacl-mismatch");
+        }
+    }
     if actual.owner != sid
         || (directory && actual.control & SE_DACL_PROTECTED == 0)
         || (!directory && actual.control & SE_DACL_PROTECTED != 0)
@@ -1049,7 +1067,11 @@ impl Profile for WindowsProfile {
         verify_private(directory, true)
     }
     fn create_private_file(parent: &File, name: &OsStr) -> Result<File, NativeFailure> {
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("private-file-parent-check");
         Self::verify_private_directory(&path_for(parent)?, parent)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("private-file-open");
         let file = open(
             &child(parent, name)?,
             FILE_GENERIC_READ
@@ -1061,6 +1083,8 @@ impl Profile for WindowsProfile {
             0,
             ptr::null(),
         )?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("private-file-verify");
         Self::verify_private_file(&file)?;
         Ok(file)
     }

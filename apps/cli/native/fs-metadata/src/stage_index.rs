@@ -243,6 +243,8 @@ impl<P: Profile> Index<P> {
             #[cfg(test)]
             crate::test_hooks::checkpoint("index-parent-flush");
             io(parent.sync_all())?;
+            #[cfg(test)]
+            crate::test_hooks::checkpoint("index-parent-flush-done");
         }
         let index = Self {
             requested_home: home.to_owned(),
@@ -257,7 +259,11 @@ impl<P: Profile> Index<P> {
             id,
             _profile: PhantomData,
         };
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("index-first-recheck");
         index.recheck_checked(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("index-first-recheck-done");
         Ok(index)
     }
     fn recheck(&self) -> Result<(), NativeFailure> {
@@ -269,9 +275,13 @@ impl<P: Profile> Index<P> {
         cancelled: Option<&AtomicBool>,
     ) -> Result<(), NativeFailure> {
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("recheck-home-path");
         if io(fs::canonicalize(&self.requested_home))? != self.home_path {
             return refused();
         }
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("recheck-held-identities");
         for (file, expected) in [
             (&self.home, self.home_id),
             (&self.parent, self.parent_id),
@@ -283,14 +293,20 @@ impl<P: Profile> Index<P> {
             }
         }
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("recheck-home-reopen");
         let current_home = P::open_parent(&self.home_path)?;
         tick(start, cancelled)?;
         if P::identity(&current_home)? != self.home_id {
             return refused();
         }
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("recheck-parent-private");
         P::verify_private_directory(&self.parent_path, &self.parent)?;
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("recheck-index-private");
         P::verify_private_directory(&self.path, &self.directory)
     }
     fn entries(
@@ -366,20 +382,36 @@ impl<P: Profile> Index<P> {
     ) -> Result<File, NativeFailure> {
         tick(start, cancelled)?;
         let path = self.path.join("inventory.lock");
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("lock-create");
         let file = match P::create_private_file(&self.directory, OsStr::new("inventory.lock")) {
             Ok(file) => {
+                #[cfg(test)]
+                crate::test_hooks::checkpoint("lock-file-flush");
                 io(file.sync_all())?;
+                #[cfg(test)]
+                crate::test_hooks::checkpoint("lock-directory-flush");
                 io(self.directory.sync_all())?;
                 file
             }
-            Err(_) => open_nofollow(&path)?,
+            Err(_) => {
+                #[cfg(test)]
+                crate::test_hooks::checkpoint("lock-existing-open");
+                open_nofollow(&path)?
+            }
         };
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("lock-private-verify");
         P::verify_private_file(&file)?;
         if io(file.metadata())?.len() != 0 {
             return refused();
         }
         tick(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("lock-acquire");
         lock(&file)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("lock-recheck");
         self.recheck_checked(start, cancelled)?;
         Ok(file)
     }
@@ -452,7 +484,11 @@ impl<P: Profile> OwnedStage<P> {
             return refused();
         }
         let index = Index::<P>::open_checked(home, true, start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("reserve-lock");
         let _claim = index.allocation_lock_checked(start, cancelled)?;
+        #[cfg(test)]
+        crate::test_hooks::checkpoint("reserve-entries");
         let entries = index.entries(start, cancelled)?;
         let nonces: BTreeSet<_> = entries.iter().map(|(_, nonce)| nonce).collect();
         if nonces.len() >= MAX_RECORDS || nonces.iter().any(|entry| entry.as_str() == nonce) {
