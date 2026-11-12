@@ -829,9 +829,10 @@ temporary OS/algorithm experiments; this tracked script supplies reproducibility
 The original MVP-3 profiles and delivery were accepted on `development` at the
 [Step 2 checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
 The following initial mechanism observations retain their historical scope;
-phrases about pending integration describe those probe checkpoints. Later
-source changes, including the proposed ADR-0126 refinement, require their own
-actual platform, package, independent-review and security acceptance.
+phrases about pending integration describe those probe checkpoints. The
+Accepted ADR-0126 refinement authorizes its dependent implementation; later
+source changes require their own actual platform, package, independent-review
+and security acceptance. Current correction and fresh acceptance remain open.
 
 The Windows test-only rename-parameter cohort measures 68 fixed private-fixture
 combinations: 48 Win32 comparisons, twelve relative NT class-65 observations

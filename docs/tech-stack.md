@@ -19,7 +19,7 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > build-only `napi-build`, POSIX `libc` and Windows `windows-sys`. Its exact
 > crate/features and toolchain pins belong in the component's Cargo manifest,
 > committed lockfile and Rust toolchain file, not the npm catalog. Native
-> implementation starts only after those inputs pass the recorded provenance,
+> implementation started after those inputs passed the recorded provenance,
 > cooling-window, license/advisory and feature-closure review; its initial
 > [dependency audit receipt](reference/cli/native-filesystem-metadata.md#initial-dependency-audit)
 > records that review. The [native contract](reference/cli/native-filesystem-metadata.md) owns the minimal
@@ -28,9 +28,10 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > as download- or compiler-free. The native implementation and delivery were
 > independently accepted on `development` with the
 > [MVP-3 Step 2 checkpoint](roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
-> Subsequent PR corrections and final-head acceptance remain separate; proposed
+> Subsequent PR corrections and final-head acceptance remain separate. Accepted
 > [ADR-0126](decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
-> does not yet authorize its dependent implementation.
+> authorizes its dependent implementation; the current correction implementation,
+> fresh review, security sitting and final-head acceptance remain open.
 
 ## Final Stack
 

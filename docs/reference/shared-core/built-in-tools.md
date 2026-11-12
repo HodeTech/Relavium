@@ -240,10 +240,10 @@ an unbound legacy write.
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
-For prepared `write_file` and `edit_file`, `bytesWritten` is the UTF-8 byte size
-of the complete published file. Append includes the retained prefix because
-publication replaces the file with the complete prepared result; the field is
-not the appended fragment size or a count of filesystem write syscalls.
+For prepared `write_file`, `bytesWritten` is the UTF-8 byte size of the supplied
+`content` payload. With append, it counts only the appended fragment and excludes
+the retained prefix. For `edit_file`, it is the UTF-8 byte size of the complete
+published file. Neither value counts filesystem write syscalls.
 
 ## Tool input/output mapping
 

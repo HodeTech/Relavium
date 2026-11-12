@@ -3362,6 +3362,57 @@ The supplied review register retains each original claim and its disposition;
 it is not a substitute for the two new cumulative rounds and separate security
 sitting required below this checkpoint.
 
+#### Correction round 1 and repairs (2026-11-13)
+
+Three fresh scoped reviewers examined `80e8cd88..29002276`. Terra/high found no
+native source issue and ran no independent tests. Sol/high's CLI sitting found
+the required interruption notice could reach an already unmounted store, and
+the newly added append byte-count description contradicted the native result;
+476 existing cases and two reproductions passed. A separate Sol/high sitting
+found the required production host/native lower-overlay proof absent, plus
+stale ADR-0126 approval wording and missing model-schema bounds; 444 focused
+cases passed. These findings prevented acceptance of that review round.
+
+The Home repair retains a fixed content-free fallback until acknowledged stderr
+delivery after actual producers and terminal restoration join. Seven real
+fresh/resume/clear/reseat and delivery regressions fail on `29002276` and pass
+after repair. Model schemas now communicate the existing byte floors, and the
+canonical result description preserves `write_file`'s append-fragment count
+and `edit_file`'s complete-file count. ADR-0126's current descriptions say
+Accepted, while final implementation/platform acceptance stays open.
+
+A source-bound contributor bundle drives the actual TypeScript filesystem,
+registry and native addon on image-layer lower files. Unprivileged, networkless
+arm64 GNU and musl runs pass overwrite/append, unchanged preparation evidence,
+stale-source refusal and cancellation before claim, after publication before
+settlement, and after committed settlement. The pre-settlement case observes
+real published bytes while the production in-memory journal is still prepared;
+it then retains that row and cancels delivery. This is not SQLite durability or
+mid-native-call cancellation evidence. An isolated `80e8cd88` source and native
+build genuinely refuses during preparation on the same lower-file mechanism:
+bytes and identity stay unchanged while ctime changes. No loader-pin mismatch
+is used as the negative witness.
+
+The `29002276` CI checkpoint correctly fails two new proof/gate mismatches:
+the test-marker scan also rejected the fixed production error prefix, and a
+small producer PID collided with a consumer's Node worker PID. The corrected
+scan permits only the exact production prefix and continues rejecting other
+test hooks, including markers after it. The namespace fixture advances its own
+PID allocation and independently proves distinct namespaces and `ESRCH` while
+the producer lives. Its complete native recovery proof remains mandatory in CI.
+Linux contributor tooling uses the existing workspace Node floor; the actual
+GNU/musl native profile still executes exact Node 22.0.0 inside pinned images.
+
+Repair validation passes 18,634 workspace tests with 24 conditional skips and
+all 1,116 acceptance-tool cases without skips. The final contributor-only cut
+also passes actual GNU/musl runs and direct CLI types; refreshed native binding,
+30 asset/delivery/checkout tests, build and formatting pass. A late UI author
+edit missed the earlier cached typecheck; a stable state capture and the final
+direct typecheck correct that checkpoint gap. The source-bound macOS population
+remains 42 Rust parents, four subprocess helpers and eleven Node lifecycle cases.
+Fresh cumulative round 2, the separate security sitting and corrected-head
+complete CI/scanner acceptance remain open; these author receipts do not close them.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
