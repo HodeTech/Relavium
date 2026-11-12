@@ -1828,7 +1828,7 @@ export const mutations = [
     '      options.runtime.authority.revoke();',
     '      void mode;',
     ['apps/cli/src/chat/mode-settings.test.ts'],
-    19,
+    23,
     'confirmed narrowing revokes before failed prepare and does not leak the error',
     'W2_STARTUP_CONFIRMED_NARROWING',
     [
@@ -1844,7 +1844,7 @@ export const mutations = [
     '    if (expectedRevision !== this.revision) return false;',
     '    void expectedRevision;',
     ['apps/cli/src/chat/mode-settings.test.ts'],
-    19,
+    23,
     'a later narrower config observation wins over a pending successful auto publication',
     'W2_STARTUP_STALE_AUTO_ADMISSION',
     [
@@ -1854,5 +1854,116 @@ export const mutations = [
         marker: 'W2_STARTUP_STALE_AUTO_ADMISSION',
       },
     ],
+  ),
+  control(
+    'startup-live-config-observation',
+    'apps/cli/src/commands/chat.ts',
+    '    wiring.startingModes?.read(deps.global.cwd) ??\n',
+    '',
+    ['apps/cli/src/commands/chat-starting-mode.test.ts'],
+    21,
+    "revokes configured auto after '/export' observes 'plan', preserving explicit current choice",
+    'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    [
+      ['export', 'invalid'],
+      ['workflows', 'plan'],
+      ['workflows', 'invalid'],
+    ].map(([command, observed]) => ({
+      target: `revokes configured auto after '/${command}' observes '${observed}', preserving explicit current choice`,
+      marker: 'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    })),
+  ),
+  control(
+    'startup-doctor-config-observation',
+    'apps/cli/src/chat/doctor-host.ts',
+    '      if (inputs.readConfig !== undefined) {\n' +
+      '        inputs.readConfig();\n' +
+      '        return;\n' +
+      '      }\n',
+    '',
+    ['apps/cli/src/commands/chat-starting-mode.test.ts', 'apps/cli/src/home/starting-mode.test.ts'],
+    34,
+    "revokes configured auto after '/doctor' observes 'plan', preserving explicit current choice",
+    'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    [
+      {
+        target:
+          "revokes configured auto after '/doctor' observes 'invalid', preserving explicit current choice",
+        marker: 'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+      },
+      ...['plan', 'invalid'].map((observed) => ({
+        target: `live doctor observes ${observed} through the original owned authority`,
+        marker: 'W2_STARTUP_HOME_DOCTOR_OBSERVATION',
+      })),
+    ],
+  ),
+  control(
+    'startup-writer-mode-observation',
+    'apps/cli/src/config/write.ts',
+    "  observer?.observed(existing.preferences?.default_mode ?? 'ask');\n",
+    '',
+    ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
+    46,
+    "'model preferences' source 'ask'",
+    'W2_STARTUP_WRITER_MODE_OBSERVATION',
+    [
+      ...[
+        'model preferences',
+        'standard-key consent',
+        'keychain acknowledgement',
+        'default mode',
+        'hint acknowledgement',
+      ].flatMap((writer) =>
+        ['ask', 'absent']
+          .filter((state) => writer !== 'model preferences' || state !== 'ask')
+          .map((state) => ({
+            target: `'${writer}' source '${state}'`,
+            marker: 'W2_STARTUP_WRITER_MODE_OBSERVATION',
+          })),
+      ),
+      ...['ask', 'plan'].map((state) => ({
+        target: `auto preparation observes a newer ${state} source after confirmation`,
+        marker: 'W2_STARTUP_WRITER_MODE_OBSERVATION',
+      })),
+    ],
+  ),
+  control(
+    'startup-writer-read-failure',
+    'apps/cli/src/config/write.ts',
+    '    observer?.failed();\n',
+    '',
+    ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
+    46,
+    "'model preferences' source 'invalid'",
+    'W2_STARTUP_WRITER_READ_FAILURE',
+    [
+      ...[
+        'standard-key consent',
+        'keychain acknowledgement',
+        'default mode',
+        'hint acknowledgement',
+      ].map((writer) => ({
+        target: `'${writer}' source 'invalid'`,
+        marker: 'W2_STARTUP_WRITER_READ_FAILURE',
+      })),
+      {
+        target: 'directory source inspection revokes before any proposed publication',
+        marker: 'W2_STARTUP_WRITER_INSPECTION_FAILURE',
+      },
+      {
+        target: 'auto preparation observes a newer invalid source after confirmation',
+        marker: 'W2_STARTUP_WRITER_READ_FAILURE',
+      },
+    ],
+  ),
+  control(
+    'startup-writer-inspection-failure',
+    'apps/cli/src/config/write.ts',
+    '    if (!(cause instanceof ConfigWriteRefusedError)) observer?.failed();\n',
+    '    void observer;\n',
+    ['apps/cli/src/config/write-observation.test.ts'],
+    23,
+    'parent replaced by a file revokes at actual source inspection',
+    'W2_STARTUP_WRITER_INSPECTION_FAILURE',
   ),
 ];

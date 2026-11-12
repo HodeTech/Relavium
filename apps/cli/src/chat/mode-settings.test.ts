@@ -240,6 +240,47 @@ describe('shared explicit mode settings', () => {
     expect(JSON.stringify(f.notice.mock.calls)).not.toContain('private');
   });
 
+  it.each(['ask', 'plan', 'invalid'])(
+    'auto preparation observes a newer %s source after confirmation',
+    async (source) => {
+      const f = fixture('auto');
+      const retained = f.runtime.resolve(f.cwd).startingMode;
+      f.answers.push('auto');
+      f.flow.confirm.mockImplementationOnce(() => {
+        writeFileSync(
+          f.configPath,
+          `[preferences]\ndefault_mode="${source === 'invalid' ? 'PRIVATE_INVALID_MODE' : source}"\n`,
+        );
+        return Promise.resolve(true);
+      });
+      await runModeSettings(f.options);
+      expect(
+        () => f.runtime.authority.assertDispatch(retained, 'write_file'),
+        source === 'invalid'
+          ? 'W2_STARTUP_WRITER_READ_FAILURE'
+          : 'W2_STARTUP_WRITER_MODE_OBSERVATION',
+      ).toThrow('revoked');
+      if (source === 'invalid') expect(f.publish).not.toHaveBeenCalled();
+      else {
+        expect(f.publish).toHaveBeenCalledOnce();
+        expect(readFileSync(f.configPath, 'utf8')).toContain('default_mode = "auto"');
+        expect(f.notice).toHaveBeenCalledWith(
+          expect.stringContaining('Startup auto was not re-admitted'),
+        );
+      }
+      expect(JSON.stringify(f.notice.mock.calls)).not.toContain('PRIVATE_INVALID_MODE');
+    },
+  );
+
+  it('a confirmed auto save may replace its unchanged displayed plan baseline', async () => {
+    const f = fixture('plan');
+    f.answers.push('auto');
+    f.confirmations.push(true);
+    await runModeSettings(f.options);
+    expect(f.publish).toHaveBeenCalledOnce();
+    expect(f.runtime.resolve(f.cwd).startingMode.mode).toBe('auto');
+  });
+
   it.each(['narrower', 'invalid'] as const)(
     'a later %s config observation wins over a pending successful auto publication',
     async (observation) => {

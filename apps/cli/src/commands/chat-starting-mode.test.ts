@@ -6,7 +6,9 @@ import type { SessionTurnPolicy } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
-import type { ChatModeSelection } from '../chat/starting-mode.js';
+import { assertStartingModeDispatch, type ChatModeSelection } from '../chat/starting-mode.js';
+import * as osKeychain from '../secrets/os-keychain.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { captureIo } from '../test-support.js';
 import { chatCommand, chatResumeCommand, type ChatCommandDeps, type ChatDriver } from './chat.js';
@@ -103,6 +105,70 @@ describe('standalone starting mode construction', () => {
     };
     return { d, err, freshModes, resumedModes, policies, selections, agentGrants };
   }
+
+  it.each(
+    ['/export', '/workflows', '/doctor'].flatMap((command) =>
+      ['plan', 'invalid', 'auto'].map((observed) => ({ command, observed })),
+    ),
+  )(
+    'revokes configured auto after $command observes $observed, preserving explicit current choice',
+    async ({ command, observed }) => {
+      vi.spyOn(osKeychain, 'createOsKeychainStore').mockReturnValue({
+        get: () => null,
+        set: () => undefined,
+        delete: () => false,
+      });
+      writeGlobal('auto');
+      let retainedFailure: Error | undefined;
+      let explicitFailure: Error | undefined;
+      let stoppedAfterObservation = true;
+      const refusal = (guard: () => void): Error | undefined => {
+        try {
+          guard();
+          return undefined;
+        } catch (cause) {
+          if (cause instanceof Error) return cause;
+          throw new Error('Unexpected non-Error dispatch refusal');
+        }
+      };
+      const f = dependencies(async (ctx) => {
+        ctx.startSession();
+        const selection = f.selections[0];
+        const originalConfirm = f.policies[0]?.()?.confirm;
+        if (selection === undefined || originalConfirm === undefined)
+          throw new Error('Missing actual retained auto policy');
+        const guarded = new Set(['write_file']);
+        const assertOriginal = () =>
+          assertStartingModeDispatch(selection.authority, originalConfirm, 'write_file', guarded);
+        expect(assertOriginal).not.toThrow();
+        writeGlobal(observed);
+        await ctx.processLine(command);
+        stoppedAfterObservation = ctx.shouldStop();
+        retainedFailure = refusal(assertOriginal);
+        ctx.onModeChange?.('auto');
+        const explicitConfirm = f.policies[0]?.()?.confirm;
+        if (explicitConfirm === undefined) throw new Error('Missing explicit current-mode policy');
+        explicitFailure = refusal(() =>
+          assertStartingModeDispatch(selection.authority, explicitConfirm, 'write_file', guarded),
+        );
+        return { kind: 'exit' };
+      });
+      expect(
+        await chatCommand(
+          { agent: undefined },
+          { ...f.d, invocation: invocationFixture().invocation },
+        ),
+      ).toBe(4);
+      // Assert the exact in-host observation after owned teardown; assertion failures are not host faults.
+      expect(stoppedAfterObservation).toBe(false);
+      if (observed === 'auto') expect(retainedFailure).toBeUndefined();
+      else
+        expect(() => {
+          if (retainedFailure !== undefined) throw retainedFailure;
+        }, 'W2_STARTUP_LIVE_CONFIG_OBSERVATION').toThrow('revoked');
+      expect(explicitFailure).toBeUndefined();
+    },
+  );
 
   it('applies the configured mode to the first interactive footer and session policy', async () => {
     writeGlobal('auto');

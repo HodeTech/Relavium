@@ -2892,6 +2892,58 @@ machine or unapproved behavioral restriction is introduced. These comment/refere
 corrections pass format/diff checks; runtime semantics are unchanged. A new
 cumulative second round and separate final-source security sitting follow.
 
+### MVP-3 Step 3 second review corrections (2026-11-12)
+
+The fresh second cumulative round and separate security sitting examine
+`4599b1cb`. UI and authority reviewers report no confirmed finding; the authority
+review executes 89 focused cases. Lifecycle review verifies a high finding:
+live `/export`, `/workflows` and `/doctor` could validate narrower or invalid
+configuration without notifying the shared startup-auto authority. The security
+sitting independently confirms that path and a medium sibling in actual
+preference preparation. Neither finding-bearing sitting is acceptance evidence.
+
+Every live reader now uses the invocation's pinned configuration runtime,
+including both hosts' doctor probes. Model fallback retains repository model
+provenance from the same validated layers instead of reopening them. All five
+closed preference setters report actual validated source mode and source
+inspection/load failures before merging an update. Home model/setup, standalone
+fresh/resumed setup, hint acknowledgement and mode settings pass the same
+authority observer. A deliberate symlink write-only refusal does not invent a
+configuration read failure; unrelated serialization/publication failure does not
+substitute for a source observation.
+
+An explicitly confirmed startup-auto save may replace the identical semantic
+global mode already displayed and revoked on opening the picker. Its revision
+is still captured before preparation: a different newer narrowing, invalid source
+or independent revocation defeats re-admission. Positive known-baseline and
+explicit-current-mode cases remain, alongside changed-after-confirmation,
+five-writer and actual both-host observation regressions. The correction adds
+46 CLI cases; 149 focused cases and all seventeen workspace lint/typecheck tasks
+pass, with tooling lint/types, format and 887-file isolation checks.
+The complete quieter workspace rerun passes 18,518 cases with 23 conditional
+skips, including 7,799 CLI passes/twelve skips across all 488 CLI files. Its first
+run exposed two stale boundary assertions expecting fallback to reopen project
+files. Both existing cases now prove snapshot-only fallback followed by actual
+owned-read global-alias refusal and configured-auto revocation; all fifteen
+boundary/fallback cases pass separately before the complete passing rerun.
+All six workspace build tasks, database sync, engine/fence/bundle closure and
+compiled bootstrap/CLI smoke checks pass on the corrected production source.
+
+All nine startup controls pass 27 physical fixed/removal/restored phases,
+711 case executions and 36 required named removal witnesses. An independent
+replay rechecks retained stdout/stderr, exact named assertion outcomes, complete
+inventories, source/dependency/evaluation/runtime receipts and naturally joined
+processes. Each retained tree has 25 files and 9.76–9.97 MB including its export
+record, within unchanged bounds. Earlier selected captures with a misdeclared
+parameterized witness name were refused; matching the actual runner identity
+corrects that declaration without weakening outcome or retention checks. Selected
+evidence remains `complete: false`. The whole manifest now declares 139 controls
+and 549 required witnesses; every original 130 control declaration is preserved.
+
+This closes the verified code findings, not Step 3 acceptance. A fresh complete
+cumulative review and separate final-source security sitting remain required,
+followed by current-head combined CI and maintainer PR review.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

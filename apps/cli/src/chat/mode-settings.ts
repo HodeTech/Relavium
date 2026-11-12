@@ -9,7 +9,11 @@ import {
 import { CliError } from '../process/errors.js';
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 import { CHAT_MODES, MODE_DESCRIPTION } from './chat-mode.js';
-import { startingModePreference, type StartingModeRuntime } from './starting-mode.js';
+import {
+  startingModePreference,
+  startingModeConfigObserver,
+  type StartingModeRuntime,
+} from './starting-mode.js';
 
 export interface ModeSettingsOptions {
   readonly runtime: StartingModeRuntime;
@@ -126,6 +130,18 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
       narrowed = true;
     }
     const confirmationRevision = options.runtime.authority.revocationRevision;
+    const sourceObserver = startingModeConfigObserver(options.runtime.authority);
+    const observer =
+      mode === 'auto'
+        ? {
+            failed: sourceObserver.failed,
+            observed: (sourceMode: ChatMode): void => {
+              // The displayed non-auto baseline was already revoked before this deliberate confirmation.
+              // A different newer source observation still defeats the captured confirmation revision.
+              if (sourceMode !== preference.globalMode) sourceObserver.observed(sourceMode);
+            },
+          }
+        : sourceObserver;
     assertAdmitting();
     const prepared =
       options.prepare?.(mode) ??
@@ -135,6 +151,7 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
         options.runtime.configPath === globalConfigPath(options.runtime.homeDir)
           ? undefined
           : options.runtime.configPath,
+        observer,
       );
     const result = await options.publish(prepared, assertAdmitting);
     published = true;

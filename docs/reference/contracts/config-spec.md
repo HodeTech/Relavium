@@ -46,6 +46,23 @@ that explicit current-mode choice. Read/validation failure is visible. Neither
 the ceiling nor current mode is restored from history. Non-interactive and
 JSON execution always use effective `ask`; config validation still applies.
 
+Live export, workflow discovery and doctor configuration probes use that same
+pinned reader and revocation owner. Ephemeral model fallback uses provenance
+from the already validated layers; it does not reopen a layer after the mode
+observation. This is per-load provenance, not an atomic snapshot of concurrent
+external filesystem changes.
+
+Owned preference preparations report the actual validated global-mode read or
+source inspection/load failure before merging updates. Non-auto/absent global
+mode is sufficient to rule out effective auto at every repository layer. A
+deliberate symlink write-only refusal does not establish that intentional reads
+fail; unrelated serialization/publication errors are not configuration-read
+observations. For a confirmed auto save only, re-observing its already displayed
+non-auto baseline is not a newer narrowing. A different later source mode, any
+read failure or independent revocation still defeats the pre-preparation
+confirmation revision. Provider consent/acknowledgement, model defaults, mode
+defaults and hint-state writers share the same invocation observer.
+
 The [mode/default picker](../cli/chat-session.md#proposed-mvp-3-interaction-contract)
 writes only global preferences through the existing typed writer. A successful
 explicit operator selection can admit `auto` for this invocation; a model write

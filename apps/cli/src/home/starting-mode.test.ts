@@ -15,6 +15,7 @@ import {
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { assertStartingModeDispatch } from '../chat/starting-mode.js';
+import * as osKeychain from '../secrets/os-keychain.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import { CliError } from '../process/errors.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
@@ -363,6 +364,43 @@ async function fixture(
 }
 
 describe('Home configured starting modes and frozen clear binding', () => {
+  it.each(['plan', 'invalid'])(
+    'live doctor observes %s through the original owned authority',
+    async (observed) => {
+      const keychain = vi.spyOn(osKeychain, 'createOsKeychainStore').mockReturnValue({
+        get: () => null,
+        set: () => undefined,
+        delete: () => false,
+      });
+      const f = await fixture({ mode: 'auto', owned: true });
+      try {
+        f.command('first');
+        const prior = await f.ready();
+        const selection = f.fresh[0]?.built.startingMode;
+        const confirm = f.fresh[0]?.policy()?.confirm;
+        if (selection === undefined || confirm === undefined)
+          throw new Error('Missing original auto policy');
+        const guard = () =>
+          assertStartingModeDispatch(
+            selection.authority,
+            confirm,
+            'write_file',
+            new Set(['write_file']),
+          );
+        expect(guard).not.toThrow();
+        if (observed === 'plan') f.writeMode('plan');
+        else writeFileSync(f.configPath, '[preferences]\ndefault_mode="PRIVATE_INVALID_MODE"\n');
+        f.command('/doctor');
+        await f.ready();
+        expect(guard, 'W2_STARTUP_HOME_DOCTOR_OBSERVATION').toThrow('revoked');
+        expect(f.props.controller.getSnapshot().session).toBe(prior);
+        expect(f.stdout.frames.join(' ')).not.toContain('PRIVATE_INVALID_MODE');
+      } finally {
+        await f.close();
+        keychain.mockRestore();
+      }
+    },
+  );
   it('binds first publication/frame and policy together for fresh, clear, resume and reseat', async () => {
     const f = await fixture({ mode: 'auto' });
     try {

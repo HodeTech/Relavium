@@ -8,6 +8,7 @@ import {
 import type { NoticeFlush } from '../engine/effect-retention.js';
 import {
   startingModePreference,
+  startingModeConfigObserver,
   type ChatModeSelection,
   type StartingModeRuntime,
   type StartingModePreference,
@@ -109,6 +110,7 @@ async function deliver(
         prepareChatModeHintShown(
           home,
           configPath === globalConfigPath(home) ? undefined : configPath,
+          startingModeConfigObserver(options.runtime.authority),
         ));
     const prepared = prepare(options.runtime.homeDir, options.runtime.configPath);
     if (prepared.rewriteNeeded) {

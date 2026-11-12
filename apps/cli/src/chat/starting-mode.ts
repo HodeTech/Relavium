@@ -3,6 +3,7 @@ import type { ChatMode } from '@relavium/shared';
 
 import { loadResolvedConfig, type LoadedConfig, type LoadConfigOptions } from '../config/load.js';
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import type { ConfigReadObserver } from '../config/write.js';
 import { CliError } from '../process/errors.js';
 
 export interface StartingModePreference {
@@ -84,6 +85,16 @@ export interface ChatModeSelection {
   readonly mode: ChatMode;
   readonly origin: 'configured' | 'explicit';
   readonly authority: StartingModeAuthority;
+}
+
+/** A non-auto global observation necessarily rules out effective auto at every repository layer. */
+export function startingModeConfigObserver(authority: StartingModeAuthority): ConfigReadObserver {
+  return Object.freeze({
+    observed: (mode: ChatMode) => {
+      if (mode !== 'auto') authority.revoke();
+    },
+    failed: () => authority.revoke(),
+  });
 }
 
 /** One invocation owns this state, including every retained/pending/replacement host. */

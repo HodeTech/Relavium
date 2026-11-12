@@ -445,13 +445,14 @@ function chatKeyResolvers(ctx: DispatchContext, db?: Db, loaded?: LoadedConfig):
   return {
     providers,
     mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-    prepareInteractiveSetup: (lifetime, liveDb) => {
+    prepareInteractiveSetup: (lifetime, liveDb, configReadObserver) => {
       if (lifetime === undefined || liveDb === undefined) throw new CliError('cli_internal', '');
       const store = createProviderStore(liveDb, {
         uuid: () => randomUUID(),
         now: () => Date.now(),
       });
       return runStandaloneProviderSetup({
+        ...(configReadObserver === undefined ? {} : { configReadObserver }),
         lifetime,
         loaded,
         global: ctx.global,

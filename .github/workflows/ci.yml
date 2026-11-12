@@ -325,7 +325,7 @@ jobs:
     needs: native-fs-assets
     name: Wave 2 secrets causal controls (shard ${{ matrix.shard }} of 2)
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # MVP-3 grows the cohort to 134 controls, including four startup authority controls.
+    # MVP-3 grows the cohort to 139 controls, including nine startup authority controls.
     # Each scrubber control runs its heavy file in three phases (about 24 s locally). One export
     # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so two
     # legs each run and export a disjoint round-robin half (`--shard k/2`) under the

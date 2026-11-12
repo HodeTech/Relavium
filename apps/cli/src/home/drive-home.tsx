@@ -58,7 +58,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { createStartingModeRuntime } from '../chat/starting-mode.js';
+import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
 import { runModeSettings } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
@@ -270,6 +270,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   });
   const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = initialConfig;
   const startingModes = createStartingModeRuntime(initialConfig, true);
+  const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const nativePrompt = createNativePromptChannel();
   let lastSavedSessionId: string | undefined;
@@ -684,6 +685,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               },
               homeDir,
               deps.global.configPath === undefined ? undefined : globalConfigPath,
+              configReadObserver,
             ),
             assertAdmitting,
           );
@@ -719,6 +721,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     };
     const providerSetup = createProviderSetupCoordinator({
+      configReadObserver,
       flow: promptFlow,
       resolver: providers,
       policy: keyPolicy,
@@ -766,6 +769,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        readConfig: () => {
+          startingModes.read(deps.global.cwd);
+        },
         operatorHomeDir: homeDir,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         cwd: deps.global.cwd,
@@ -814,6 +820,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             },
             homeDir,
             deps.global.configPath === undefined ? undefined : globalConfigPath,
+            configReadObserver,
           );
           // A plain Home picker write needs the same real disclosure evidence
           // as setup, without adding another confirmation or terminal owner.
@@ -860,6 +867,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const chatDoctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          readConfig: () => {
+            startingModes.read(built.context.workingDir);
+          },
           operatorHomeDir: homeDir,
           ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
           cwd: deps.global.cwd,
@@ -937,6 +947,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             store,
             persister,
             doctorProbes: chatDoctorProbes,
+            startingModes,
             sendGuard,
           },
           {

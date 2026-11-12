@@ -98,7 +98,11 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
-import { createStartingModeRuntime, type StartingModeRuntime } from '../chat/starting-mode.js';
+import {
+  createStartingModeRuntime,
+  startingModeConfigObserver,
+  type StartingModeRuntime,
+} from '../chat/starting-mode.js';
 import { runSessionPicker } from '../home/session-picker.js';
 import { runStandaloneNativeFlow } from './standalone-native-flow.js';
 import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
@@ -682,7 +686,11 @@ async function chatCommandBody(
     const mcpSecretResolver =
       deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
     if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
-      const setup = await keys.prepareInteractiveSetup(ownership, earlyOpened?.db);
+      const setup = await keys.prepareInteractiveSetup(
+        ownership,
+        earlyOpened?.db,
+        startingModeConfigObserver(startingModes.authority),
+      );
       loadedConfig = applyStandaloneDefault(
         startingModes.read(deps.global.cwd),
         setup.ephemeralDefault,
@@ -834,6 +842,9 @@ async function chatCommandBody(
       const doctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          readConfig: () => {
+            startingModes.read(built.context.workingDir);
+          },
           operatorHomeDir: homeDir,
           ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
           cwd: deps.global.cwd,
@@ -1171,7 +1182,11 @@ async function chatResumeCommandBody(
       mcpSecretResolver =
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
       if (chatIsInteractive(deps.io, deps.global) && keys?.prepareInteractiveSetup !== undefined) {
-        await keys.prepareInteractiveSetup(ownership, opened.db);
+        await keys.prepareInteractiveSetup(
+          ownership,
+          opened.db,
+          startingModeConfigObserver(startingModes.authority),
+        );
         assertResumeAdmitting();
         // Resume keeps the saved agent/model. Only current runtime settings are reloaded.
         loadedConfig = startingModes.read(originalCwd);
@@ -1300,6 +1315,9 @@ async function chatResumeCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        readConfig: () => {
+          startingModes.read(built.context.workingDir);
+        },
         operatorHomeDir: homeDir,
         ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
         cwd: deps.global.cwd,
@@ -1672,11 +1690,24 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
 export function createChatLineHandler(
   wiring: Pick<
     ReplWiring,
-    'built' | 'opened' | 'store' | 'persister' | 'doctorProbes' | 'chatMaxMessages' | 'sendGuard'
+    | 'built'
+    | 'opened'
+    | 'store'
+    | 'persister'
+    | 'doctorProbes'
+    | 'chatMaxMessages'
+    | 'sendGuard'
+    | 'startingModes'
   >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
+  const readLiveConfig = () =>
+    wiring.startingModes?.read(deps.global.cwd) ??
+    loadResolvedConfig({
+      cwd: deps.global.cwd,
+      configPath: deps.global.configPath,
+    });
   const workOwner = built.workOwner;
   store.setMemoryPolicy(built.session.memoryPolicy);
   if (Object.hasOwn(built, 'contextWindowTokens'))
@@ -1759,10 +1790,7 @@ export function createChatLineHandler(
       try {
         // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
         // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
-        const { projectConfigDir, homeDir } = loadResolvedConfig({
-          cwd: deps.global.cwd,
-          configPath: deps.global.configPath,
-        });
+        const { projectConfigDir, homeDir } = readLiveConfig();
         const result = exportSessionToProject({
           store: opened.store,
           sessionId: built.sessionId,
@@ -1808,10 +1836,7 @@ export function createChatLineHandler(
       // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
       // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
       try {
-        const { projectConfigDir } = loadResolvedConfig({
-          cwd: deps.global.cwd,
-          configPath: deps.global.configPath,
-        });
+        const { projectConfigDir } = readLiveConfig();
         if (projectConfigDir === undefined) {
           // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
           emitOutput('No .relavium/ project found from the current directory.');
@@ -2311,6 +2336,9 @@ async function buildFreshChatWiring(
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    readConfig: () => {
+      deps.startingModes.read(built.context.workingDir);
+    },
     operatorHomeDir: deps.homeDir,
     ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
     cwd: deps.cwd,
@@ -2623,6 +2651,9 @@ async function buildReseatWiring(
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    readConfig: () => {
+      deps.startingModes.read(resumed.context.workingDir);
+    },
     operatorHomeDir: deps.homeDir,
     ...(resumed.workOwner === undefined ? {} : { workOwner: resumed.workOwner }),
     cwd: deps.global.cwd,

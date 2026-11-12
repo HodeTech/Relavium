@@ -94,6 +94,8 @@ export interface LoadConfigOptions {
 }
 
 export interface LoadedConfig {
+  /** Model provenance from these same validated layers; fallback selection must not reopen them. */
+  readonly hasRepositoryChatModel: boolean;
   readonly config: ResolvedConfig;
   /** Validated operator-owned state, before project/workspace resolution. */
   readonly globalConfig: GlobalConfig | undefined;
@@ -152,6 +154,8 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   }
 
   return {
+    hasRepositoryChatModel:
+      project?.chat?.default_model !== undefined || workspace?.chat?.default_model !== undefined,
     config: resolveConfig({ global, workspace, project }),
     globalConfig: global,
     globalConfigPath: globalFile,

@@ -104,6 +104,12 @@ export interface ConfigWriteResult {
   readonly durability: 'confirmed' | 'unconfirmed';
 }
 
+/** Host-owned evidence from the actual source read, before any preference update or publication. */
+export interface ConfigReadObserver {
+  readonly observed: (mode: ChatMode) => void;
+  readonly failed: () => void;
+}
+
 /** Fixed, path-free refusal for an existing final-component symlink. */
 export class ConfigWriteRefusedError extends CliError {
   readonly reason = 'symlink_target';
@@ -128,6 +134,7 @@ export function prepareGlobalPreferences(
   prefs: GlobalPreferenceWrite,
   home: string = homedir(),
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   // An empty model request performs no I/O; confirmed describes the absence of a pending publication.
   if (
@@ -152,6 +159,7 @@ export function prepareGlobalPreferences(
     }),
     home,
     targetPath,
+    observer,
   );
 }
 
@@ -170,6 +178,7 @@ export function prepareStandardEnvKeyConsent(
   provider: StandardProvider,
   home: string = homedir(),
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   return prepareWrite(
     (existing) => ({
@@ -181,6 +190,7 @@ export function prepareStandardEnvKeyConsent(
     }),
     home,
     targetPath,
+    observer,
   );
 }
 
@@ -188,11 +198,13 @@ export function prepareKeychainUnavailableAcknowledged(
   value: boolean,
   home: string = homedir(),
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   return prepareWrite(
     (existing) => ({ ...existing.preferences, keychain_unavailable_acknowledged: value }),
     home,
     targetPath,
+    observer,
   );
 }
 
@@ -201,22 +213,26 @@ export function prepareDefaultChatMode(
   mode: ChatMode,
   home: string = homedir(),
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   return prepareWrite(
     (existing) => ({ ...existing.preferences, default_mode: mode }),
     home,
     targetPath,
+    observer,
   );
 }
 
 export function prepareChatModeHintShown(
   home: string = homedir(),
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   return prepareWrite(
     (existing) => ({ ...existing.preferences, default_mode_hint_shown: true }),
     home,
     targetPath,
+    observer,
   );
 }
 
@@ -237,12 +253,26 @@ function prepareWrite(
   update: (existing: GlobalConfig) => NonNullable<GlobalConfig['preferences']>,
   home: string,
   targetPath?: string,
+  observer?: ConfigReadObserver,
 ): PreparedConfigWrite {
   const target = targetPath ?? globalConfigPath(home);
   const dir = dirname(target);
   // This precedes the loader and any creation or chmod, including for dangling links.
-  const rewriteNeeded = checkTarget(target);
-  const existing = loadConfigFile<GlobalConfig>(target, GlobalConfigSchema) ?? {};
+  let rewriteNeeded: boolean;
+  try {
+    rewriteNeeded = checkTarget(target);
+  } catch (cause) {
+    if (!(cause instanceof ConfigWriteRefusedError)) observer?.failed();
+    throw cause;
+  }
+  let existing: GlobalConfig;
+  try {
+    existing = loadConfigFile<GlobalConfig>(target, GlobalConfigSchema) ?? {};
+  } catch (cause) {
+    observer?.failed();
+    throw cause;
+  }
+  observer?.observed(existing.preferences?.default_mode ?? 'ask');
   const validated = validateForWrite({ ...existing, preferences: update(existing) }, target);
   const text = stringifyToml(validated);
   verifyRoundTrips(text, target);

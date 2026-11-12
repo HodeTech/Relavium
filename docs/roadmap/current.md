@@ -82,8 +82,11 @@ and its expanded replay/evidence contracts are accepted after verifying the
 supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
 captures their disposition. [Step 2 is accepted on development](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
 after its independent reviews, separate security sittings and all 26 checkpoint
-CI jobs passed. [Step 3 is implemented and entering independent review](phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-author-checkpoint-2026-11-12): the built-in grant, strict
-startup-mode configuration and shared mode/default UX. Whole-MVP-3 acceptance
+CI jobs passed. Step 3 implements the built-in grant, strict startup-mode
+configuration and shared mode/default UX. Its [second review corrections](phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-second-review-corrections-2026-11-12)
+close verified live-reader/preference-writer authority observation gaps; a fresh
+complete cumulative review and separate final-source security sitting follow.
+Whole-MVP-3 acceptance
 and maintainer PR review remain open; no additional design approval is pending.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
