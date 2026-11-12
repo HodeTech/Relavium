@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { assertPhaseOutcome } from './outcome.mjs';
 import {
@@ -17,9 +18,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { digest } from '../usage-coverage-controls/source-graph.mjs';
 import RuntimeReporter from './runtime-reporter.mjs';
+import './runtime-diagnostic.test.mjs';
 import { mutations as secretsControls } from '../secrets-controls/mutations.mjs';
 const mechanism = {
   id: 'boundary',
@@ -586,6 +588,73 @@ test('runtime receipt reads require bounded physical UTF-8 bytes', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const closed of [false, true])
+  test(`unhandled diagnostic uses joined synchronous stderr with closed=${closed}`, () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-reporter-diagnostic-')));
+    try {
+      const sourceRoot = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+      const source = readFileSync(join(sourceRoot, runtimeReporterPath));
+      const manifestPath = join(directory, 'manifest.json');
+      const manifest = JSON.stringify({
+        sourceRoot,
+        files: [
+          { path: runtimeReporterPath, bytes: source.length, sha256: digest(source) },
+          { path: 'apps/cli/src/run.ts', bytes: 1, sha256: 'a'.repeat(64) },
+        ],
+      });
+      writeFileSync(manifestPath, manifest);
+      const runtimePath = join(directory, 'runtime.json');
+      writeFileSync(
+        runtimePath,
+        JSON.stringify({
+          phase: 'mutated',
+          mutationId: mechanism.id,
+          manifestPath,
+          manifestSha256: digest(manifest),
+        }),
+      );
+      const script = `
+      import { closeSync } from 'node:fs';
+      import RuntimeReporter from ${JSON.stringify(pathToFileURL(join(sourceRoot, runtimeReporterPath)).href)};
+      const reporter = new RuntimeReporter();
+      reporter.onInit();
+      reporter.onTestRunStart();
+      if (process.argv[2] === 'closed') closeSync(2);
+      reporter.onTestRunEnd([], [{ name: 'TypeError', type: 'Unhandled Rejection',
+        message: 'secret', stack: 'TypeError: secret\\n    at fn (' + process.argv[1] + '/apps/cli/src/run.ts:42:3)' }], 'failed');
+    `;
+      const child = spawnSync(
+        process.execPath,
+        ['--input-type=module', '--eval', script, sourceRoot, closed ? 'closed' : 'open'],
+        {
+          encoding: 'utf8',
+          env: { RELAVIUM_USAGE_RUNTIME: runtimePath },
+          timeout: 5000,
+          maxBuffer: 65536,
+        },
+      );
+      assert.equal(child.error, undefined);
+      assert.equal(child.status, 0);
+      assert.equal(child.signal, null);
+      const receipt = JSON.parse(readRuntimeReceipt(join(directory, 'runner-completion.receipt')));
+      assert.equal(receipt.unhandledErrors, 1);
+      assert.equal(receipt.complete, true);
+      assert.equal(Object.hasOwn(receipt, 'diagnostic'), false);
+      if (closed) assert.equal(child.stderr, '');
+      else {
+        const diagnostic = JSON.parse(child.stderr);
+        assert.deepEqual(diagnostic.entries[0], {
+          kind: 'TypeError',
+          origin: 'Unhandled Rejection',
+          reportedFrame: { path: 'apps/cli/src/run.ts', line: 42 },
+        });
+        assert.doesNotMatch(child.stderr, /secret|causal-reporter-diagnostic/);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
 for (const defect of [
   'never-started',
