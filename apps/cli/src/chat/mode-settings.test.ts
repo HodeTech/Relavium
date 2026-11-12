@@ -92,6 +92,31 @@ describe('shared explicit mode settings', () => {
     );
   });
 
+  it.each(['cancelled', 'replaced'] as const)(
+    'does not open a new startup prompt after its owner is %s',
+    async (interruption) => {
+      const f = fixture('ask');
+      let active = true;
+      f.flow.note.mockImplementationOnce(() => {
+        queueMicrotask(() => {
+          if (interruption === 'cancelled') f.cancel.abort();
+          else active = false;
+        });
+      });
+      await runModeSettings({
+        ...f.options,
+        assertAdmitting: () => {
+          if (!active) throw new Error('private-stale-owner');
+        },
+      });
+      expect(f.flow.select).not.toHaveBeenCalled();
+      expect(f.publish).not.toHaveBeenCalled();
+      expect(f.flow.end).toHaveBeenCalledOnce();
+      expect(readFileSync(f.configPath, 'utf8')).toContain('default_mode = "ask"');
+      expect(JSON.stringify(f.notice.mock.calls)).not.toContain('private-stale-owner');
+    },
+  );
+
   it('changes only current mode in live chat, without a preference write or auto re-admission', async () => {
     const f = fixture('ask');
     const onCurrentMode = vi.fn<(mode: ChatMode) => void>();

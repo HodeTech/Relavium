@@ -645,27 +645,27 @@ export function formatReasoningPanel(input: {
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
 export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
-  const outcome =
-    display?.outcome ??
-    call.outcome ??
-    (!call.resolved
-      ? 'running'
-      : call.success === true
-        ? 'success'
-        : call.success === false
-          ? 'failure'
-          : 'unknown');
-  const mark =
-    outcome === 'success'
-      ? '✓'
-      : outcome === 'failure'
-        ? '✗ failed'
-        : outcome === 'denied'
-          ? '⊘ denied'
-          : outcome === 'unknown'
-            ? '? outcome unknown'
-            : '…';
-  return `→ ${sanitizeInline(call.toolId)} ${mark}${display?.target === undefined ? '' : ` → ${display.target}`}${display?.stats === undefined ? '' : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`}`;
+  const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
+  const marks = {
+    success: '✓',
+    failure: '✗ failed',
+    denied: '⊘ denied',
+    unknown: '? outcome unknown',
+    running: '…',
+  };
+  const target = display?.target === undefined ? '' : ` → ${display.target}`;
+  const stats =
+    display?.stats === undefined
+      ? ''
+      : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
+  return `→ ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+}
+
+function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
+  if (!call.resolved) return 'running';
+  if (call.success === true) return 'success';
+  if (call.success === false) return 'failure';
+  return 'unknown';
 }
 
 /**

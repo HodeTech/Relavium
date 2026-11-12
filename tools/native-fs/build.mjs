@@ -20,12 +20,9 @@ import {
 } from './catalog.mjs';
 const repository = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const native = join(repository, 'apps/cli/native/fs-metadata');
-const libc =
-  process.platform === 'linux'
-    ? process.report.getReport().header.glibcVersionRuntime
-      ? 'gnu'
-      : 'musl'
-    : 'none';
+let libc = 'none';
+if (process.platform === 'linux')
+  libc = process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl';
 const target = hostTarget(process.platform, process.arch, libc);
 const profileRequested = process.argv.length === 3 && process.argv[2] === '--verify-profile';
 if (!(process.argv.length === 2 || profileRequested)) throw new Error('NATIVE_FS_BUILD_ARGUMENTS');
@@ -60,31 +57,7 @@ function executeProtocol(bytes) {
   }
   return execution;
 }
-function buildCurrent() {
-  const binding = nativeSourceBinding(repository);
-  let present;
-  try {
-    present = inspectNativeAssets(join(repository, 'apps/cli', NATIVE_DIRECTORY), { binding });
-  } catch (error) {
-    if (!(error instanceof NativeAssetError)) throw error;
-  }
-  const existing = present?.manifest.assets.find((asset) => asset.target === target);
-  if (existing !== undefined && !profileRequested) {
-    executeProtocol(present.files.get(`${target}.node`));
-    verifyStagedLoader();
-    if (JSON.stringify(nativeSourceBinding(repository)) !== JSON.stringify(binding))
-      throw new Error('NATIVE_FS_BUILD_SOURCE_CHANGED');
-    console.log(
-      JSON.stringify({
-        target,
-        sha256: existing.sha256,
-        scope: present.manifest.scope,
-        evidence: 'native-protocol-v1-only',
-        build: 'verified-source-bound-reuse',
-      }),
-    );
-    return;
-  }
+function contributorBuildEnvironment() {
   // Cargo also reads ancestor/global configuration. It must not supply an unbound linker,
   // wrapper or source replacement outside this reviewed recipe. No config contents are read.
   const configurationDirectories = new Set([process.env.CARGO_HOME ?? join(homedir(), '.cargo')]);
@@ -115,6 +88,33 @@ function buildCurrent() {
   if (target.endsWith('-musl')) rustFlags.push('-C', 'target-feature=-crt-static');
   buildEnvironment.CARGO_ENCODED_RUSTFLAGS = rustFlags.join('\u001f');
   if (process.platform === 'darwin') buildEnvironment.MACOSX_DEPLOYMENT_TARGET = '11.0';
+  return buildEnvironment;
+}
+function buildCurrent() {
+  const binding = nativeSourceBinding(repository);
+  let present;
+  try {
+    present = inspectNativeAssets(join(repository, 'apps/cli', NATIVE_DIRECTORY), { binding });
+  } catch (error) {
+    if (!(error instanceof NativeAssetError)) throw error;
+  }
+  const existing = present?.manifest.assets.find((asset) => asset.target === target);
+  if (existing !== undefined && !profileRequested) {
+    executeProtocol(present.files.get(`${target}.node`));
+    verifyStagedLoader();
+    verifySourceBinding(binding);
+    console.log(
+      JSON.stringify({
+        target,
+        sha256: existing.sha256,
+        scope: present.manifest.scope,
+        evidence: 'native-protocol-v1-only',
+        build: 'verified-source-bound-reuse',
+      }),
+    );
+    return;
+  }
+  const buildEnvironment = contributorBuildEnvironment();
   const compiler = spawnSync('rustc', [`+${NATIVE_TOOLCHAIN}`, '--version'], {
     cwd: native,
     encoding: 'utf8',
@@ -128,12 +128,9 @@ function buildCurrent() {
     { cwd: native, stdio: 'inherit', shell: false, env: buildEnvironment },
   );
   if (build.status !== 0 || build.error !== undefined) throw new Error('NATIVE_FS_BUILD_FAILED');
-  const library =
-    process.platform === 'win32'
-      ? 'relavium_fs_metadata.dll'
-      : process.platform === 'darwin'
-        ? 'librelavium_fs_metadata.dylib'
-        : 'librelavium_fs_metadata.so';
+  let library = 'librelavium_fs_metadata.so';
+  if (process.platform === 'win32') library = 'relavium_fs_metadata.dll';
+  else if (process.platform === 'darwin') library = 'librelavium_fs_metadata.dylib';
   const bytes = readFileSync(join(native, 'target', target, 'release', library));
   const loader = readFileSync(join(repository, 'tools/native-fs/loader.cjs'));
   const execution = executeProtocol(bytes);
@@ -149,11 +146,8 @@ function buildCurrent() {
         loader,
       })
     : undefined;
-  if (
-    sha256(loader) !== NATIVE_LOADER_SHA256 ||
-    JSON.stringify(nativeSourceBinding(repository)) !== JSON.stringify(binding)
-  )
-    throw new Error('NATIVE_FS_BUILD_SOURCE_CHANGED');
+  if (sha256(loader) !== NATIVE_LOADER_SHA256) throw new Error('NATIVE_FS_BUILD_SOURCE_CHANGED');
+  verifySourceBinding(binding);
   const destination = join(repository, 'apps/cli', NATIVE_DIRECTORY);
   const manifest = {
     version: 1,
@@ -194,6 +188,10 @@ function buildCurrent() {
         : 'native-protocol-v1-only',
     }),
   );
+}
+function verifySourceBinding(binding) {
+  if (JSON.stringify(nativeSourceBinding(repository)) !== JSON.stringify(binding))
+    throw new Error('NATIVE_FS_BUILD_SOURCE_CHANGED');
 }
 function verifyStagedLoader() {
   const result = spawnSync(

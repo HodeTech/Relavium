@@ -29,8 +29,8 @@ export const SESSION_OUTPUT_LIMITS = Object.freeze({
 const CHUNK_BYTES = 64 * 1024;
 const SWEEP_ENTRIES = 128;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
-const DIRECTORY = new RegExp(`^output-v1\\.([1-9][0-9]{0,9})\\.(${UUID})$`);
-const OUTPUT_FILE = new RegExp(`^${UUID}\\.(?:txt|tmp)$`);
+const DIRECTORY = new RegExp(String.raw`^output-v1\.([1-9][0-9]{0,9})\.(${UUID})$`);
+const OUTPUT_FILE = new RegExp(String.raw`^${UUID}\.(?:txt|tmp)$`);
 const REFERENCE = new RegExp(`^output://(${UUID})/(${UUID})$`);
 const MARKER = '.owner.json';
 const ownerSchema = z
@@ -38,8 +38,8 @@ const ownerSchema = z
     version: z.literal(1),
     pid: z.number().int().positive().max(2147483647),
     instance: z.string().uuid(),
-    dev: z.string().regex(/^-?[0-9]{1,20}$/),
-    ino: z.string().regex(/^-?[0-9]{1,20}$/),
+    dev: z.string().regex(/^-?\d{1,20}$/),
+    ino: z.string().regex(/^-?\d{1,20}$/),
   })
   .strict();
 type Owner = z.infer<typeof ownerSchema>;
@@ -281,11 +281,10 @@ async function sweep(
   const entries = await names(roots.parent, SWEEP_ENTRIES);
   let removed = 0;
   let retained = 0;
-  for (const name of entries.names) {
+  async function sweepEntry(name: string): Promise<boolean> {
     const match = DIRECTORY.exec(name);
     if (match?.[1] === undefined || match[2] === undefined) {
-      retained++;
-      continue;
+      return false;
     }
     const root = join(roots.parent, name);
     try {
@@ -304,16 +303,14 @@ async function sweep(
         owner.ino !== rootInfo.ino.toString() ||
         probe(owner.pid) !== 'dead'
       ) {
-        retained++;
-        continue;
+        return false;
       }
       const children = await names(root, SESSION_OUTPUT_LIMITS.files * 2 + 1);
       if (
         children.incomplete ||
         children.names.some((child) => child !== MARKER && !OUTPUT_FILE.test(child))
       ) {
-        retained++;
-        continue;
+        return false;
       }
       const pins = children.names.map((child) => ({ name: child, info: file(join(root, child)) }));
       validate();
@@ -321,8 +318,7 @@ async function sweep(
       // Recheck liveness immediately before destructive work. Missing files from a peer sweep are
       // already reclaimed; every remaining inode still needs current, exact ownership.
       if (probe(owner.pid) !== 'dead') {
-        retained++;
-        continue;
+        return false;
       }
       for (const pin of pins.filter((pin) => pin.name !== MARKER)) {
         validate();
@@ -339,15 +335,39 @@ async function sweep(
       await unlink(join(root, MARKER));
       validate();
       await rmdir(root);
-      removed++;
+      return true;
     } catch {
       // Revoked global roots cannot be represented as successful startup maintenance.
       validateRoots(roots);
-      retained++;
+      return false;
     }
+  }
+  for (const name of entries.names) {
+    if (await sweepEntry(name)) removed++;
+    else retained++;
   }
   validateRoots(roots);
   return Object.freeze({ removed, retained, incomplete: entries.incomplete });
+}
+
+function lineSliceBounds(
+  bytes: Buffer,
+  range: NonNullable<FsReadOpts['range']>,
+): { startByte: number; endByte: number } {
+  if (bytes.length === 0 || range.start < 1 || range.end < range.start) fail('invalid_range');
+  let line = 1;
+  let start: number | undefined = range.start === 1 ? 0 : undefined;
+  let end: number | undefined;
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 10) continue;
+    if (line === range.end) end = i + 1;
+    if (i + 1 < bytes.length) {
+      line++;
+      if (line === range.start) start = i + 1;
+    }
+  }
+  if (start === undefined || range.end > line) fail('invalid_range');
+  return { startByte: start, endByte: end ?? bytes.length };
 }
 
 function slice(bytes: Buffer, opts: FsReadOpts): Pick<FileRead, 'content' | 'range'> {
@@ -369,21 +389,7 @@ function slice(bytes: Buffer, opts: FsReadOpts): Pick<FileRead, 'content' | 'ran
     startByte = range.start;
     endByte = range.end;
   } else if (range.unit === 'lines') {
-    if (bytes.length === 0 || range.start < 1 || range.end < range.start) fail('invalid_range');
-    let line = 1;
-    let start: number | undefined = range.start === 1 ? 0 : undefined;
-    let end: number | undefined;
-    for (let i = 0; i < bytes.length; i++) {
-      if (bytes[i] !== 10) continue;
-      if (line === range.end) end = i + 1;
-      if (i + 1 < bytes.length) {
-        line++;
-        if (line === range.start) start = i + 1;
-      }
-    }
-    if (start === undefined || range.end > line) fail('invalid_range');
-    startByte = start;
-    endByte = end ?? bytes.length;
+    ({ startByte, endByte } = lineSliceBounds(bytes, range));
   } else fail('invalid_range');
   // Empty ranges at the middle of a code point are also refused.
   for (const boundary of [startByte, endByte])
@@ -562,6 +568,26 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
     let identity: BigIntStats | undefined;
     let tempCreated = false;
     let published = false;
+    async function rollback(): Promise<void> {
+      if (!published) {
+        if (tempCreated && identity === undefined) {
+          // Exclusive creation succeeded, but no inode pin was captured. Never guess deletion authority
+          // or reuse its reservations; quarantine this instance and report uncertainty on close.
+          cleanupFailed = true;
+          sealed = true;
+        } else {
+          totalBytes -= length;
+          fileCount--;
+        }
+        if (identity !== undefined)
+          try {
+            await remove(currentName, identity);
+          } catch {
+            cleanupFailed = true;
+            sealed = true;
+          }
+      }
+    }
     try {
       validateOwned();
       const handle = await open(join(root, tempName), WRITE_FLAGS, 0o600);
@@ -570,23 +596,26 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
         identity = await handle.stat({ bigint: true });
         regular(identity);
         owned.set(tempName, { name: tempName, info: identity });
-        const bytes = Buffer.from(text, 'utf8');
-        let offset = 0;
-        while (offset < bytes.length) {
-          abort(signal);
-          await options.testHooks?.beforeWriteChunk?.();
-          abort(signal);
-          validateOwned();
-          file(join(root, tempName), identity);
-          const result = await handle.write(
-            bytes,
-            offset,
-            Math.min(CHUNK_BYTES, bytes.length - offset),
-            offset,
-          );
-          if (result.bytesWritten === 0) fail('io');
-          offset += result.bytesWritten;
+        async function writeChunks(pinned: Identity): Promise<void> {
+          const bytes = Buffer.from(text, 'utf8');
+          let offset = 0;
+          while (offset < bytes.length) {
+            abort(signal);
+            await options.testHooks?.beforeWriteChunk?.();
+            abort(signal);
+            validateOwned();
+            file(join(root, tempName), pinned);
+            const result = await handle.write(
+              bytes,
+              offset,
+              Math.min(CHUNK_BYTES, bytes.length - offset),
+              offset,
+            );
+            if (result.bytesWritten === 0) fail('io');
+            offset += result.bytesWritten;
+          }
         }
+        await writeChunks(identity);
         await handle.sync();
         abort(signal);
         validateOwned();
@@ -624,24 +653,7 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
         ? new SessionOutputStoreError(primary.reason, true)
         : primary;
     } finally {
-      if (!published) {
-        if (tempCreated && identity === undefined) {
-          // Exclusive creation succeeded, but no inode pin was captured. Never guess deletion authority
-          // or reuse its reservations; quarantine this instance and report uncertainty on close.
-          cleanupFailed = true;
-          sealed = true;
-        } else {
-          totalBytes -= length;
-          fileCount--;
-        }
-        if (identity !== undefined)
-          try {
-            await remove(currentName, identity);
-          } catch {
-            cleanupFailed = true;
-            sealed = true;
-          }
-      }
+      if (!published) await rollback();
     }
   }
   async function read(ref: string, opts: FsReadOpts, signal?: AbortSignalLike): Promise<FileRead> {
@@ -676,7 +688,7 @@ async function createStore(options: SessionOutputStoreOptions): Promise<SessionO
     sealed = true;
   }
   async function cleanup(): Promise<void> {
-    await Promise.allSettled([...pending]);
+    await Promise.allSettled(pending);
     try {
       await options.testHooks?.beforeCleanup?.();
       validateOwned();

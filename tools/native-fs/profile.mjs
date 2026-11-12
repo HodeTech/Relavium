@@ -359,6 +359,57 @@ function boundedOutput(value) {
     ? value
     : value.slice(0, 32 * 1024) + '\n' + value.slice(-32 * 1024);
 }
+function sourceLocations(text) {
+  const locations = [];
+  const seen = new Set();
+  for (const match of text.matchAll(
+    /src[\\/](common|linux|windows|lib|stage_index|profile_api|macos|unix_template_guard)\.rs:(\d{1,6}):(\d{1,5})/gu,
+  )) {
+    const location = { file: `${match[1]}.rs`, line: Number(match[2]), column: Number(match[3]) };
+    const key = JSON.stringify(location);
+    if (!seen.has(key) && locations.length < 8) {
+      seen.add(key);
+      locations.push(location);
+    }
+  }
+
+  return locations;
+}
+function rustFailures(text) {
+  const failures = [];
+  for (const match of text.matchAll(/^test ([a-zA-Z0-9_:]+) \.\.\. FAILED\r?$/gmu))
+    if (PROFILE_CASES.has(match[1]) && !failures.includes(match[1]) && failures.length < 8)
+      failures.push(match[1]);
+  return failures;
+}
+function lifecycleFailureStage(stderr) {
+  const lifecycleStages = new Set([
+    'addon-load',
+    'hardlink-create',
+    'hardlink-child',
+    'hardlink-cleanup',
+    ...NODE_LIFECYCLE_CASES,
+  ]);
+  // Truncation can hide duplicates or manufacture a line break after a partial
+  // marker. Diagnose only the complete, bounded original evidence.
+  const lifecycleEvidence =
+    typeof stderr === 'string' &&
+    stderr.length <= 64 * 1024 &&
+    Buffer.byteLength(stderr, 'utf8') <= 64 * 1024
+      ? stderr
+      : '';
+  const lifecycleLines = lifecycleEvidence
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith('NATIVE_FS_LIFECYCLE_STAGE:'));
+  const lifecycleValue =
+    lifecycleLines.length === 1 ? lifecycleLines[0].slice('NATIVE_FS_LIFECYCLE_STAGE:'.length) : '';
+  const lifecycleStage = lifecycleStages.has(lifecycleValue) ? lifecycleValue : 'unavailable';
+  return lifecycleStage;
+}
+function diagnosticEnum(value, allowed, absent = value === null || value === undefined) {
+  if (absent) return 'none';
+  return allowed.has(value) ? value : 'other';
+}
 /** Only fixed context, counts and native source coordinates leave the failed owned test child. */
 export function profileCommandFailure(result, context) {
   assert.ok(PROFILE_PHASES.has(context.phase), 'NATIVE_FS_PROFILE_CONTEXT');
@@ -367,20 +418,7 @@ export function profileCommandFailure(result, context) {
     'NATIVE_FS_PROFILE_CONTEXT',
   );
   const text = boundedOutput(result.stdout) + '\n' + boundedOutput(result.stderr);
-  const locations = [];
-  const seen = new Set();
-  if (context.phase === 'rust-case') {
-    for (const match of text.matchAll(
-      /src[\\/](common|linux|windows|lib|stage_index|profile_api|macos|unix_template_guard)\.rs:(\d{1,6}):(\d{1,5})/gu,
-    )) {
-      const location = { file: `${match[1]}.rs`, line: Number(match[2]), column: Number(match[3]) };
-      const key = JSON.stringify(location);
-      if (!seen.has(key) && locations.length < 8) {
-        seen.add(key);
-        locations.push(location);
-      }
-    }
-  }
+  const locations = context.phase === 'rust-case' ? sourceLocations(text) : [];
   const summaries = [
     ...text.matchAll(
       /^test result: (ok|FAILED)\. (\d{1,4}) passed; (\d{1,4}) failed; (\d{1,4}) ignored;/gmu,
@@ -393,10 +431,7 @@ export function profileCommandFailure(result, context) {
       failed: Number(match[3]),
       ignored: Number(match[4]),
     }));
-  const failures = [];
-  for (const match of text.matchAll(/^test ([a-zA-Z0-9_:]+) \.\.\. FAILED\r?$/gmu))
-    if (PROFILE_CASES.has(match[1]) && !failures.includes(match[1]) && failures.length < 8)
-      failures.push(match[1]);
+  const failures = rustFailures(text);
   const assertions = [
     ['equal', 'assertion `left == right` failed'],
     ['not-equal', 'assertion `left != right` failed'],
@@ -407,44 +442,14 @@ export function profileCommandFailure(result, context) {
   ]
     .filter(([, fixed]) => text.includes(fixed))
     .map(([kind]) => kind);
-  const lifecycleStages = new Set([
-    'addon-load',
-    'hardlink-create',
-    'hardlink-child',
-    'hardlink-cleanup',
-    ...NODE_LIFECYCLE_CASES,
-  ]);
-  // Truncation can hide duplicates or manufacture a line break after a partial
-  // marker. Diagnose only the complete, bounded original evidence.
-  const lifecycleEvidence =
-    typeof result.stderr === 'string' &&
-    result.stderr.length <= 64 * 1024 &&
-    Buffer.byteLength(result.stderr, 'utf8') <= 64 * 1024
-      ? result.stderr
-      : '';
-  const lifecycleLines = lifecycleEvidence
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith('NATIVE_FS_LIFECYCLE_STAGE:'));
-  const lifecycleValue =
-    lifecycleLines.length === 1 ? lifecycleLines[0].slice('NATIVE_FS_LIFECYCLE_STAGE:'.length) : '';
-  const lifecycleStage = lifecycleStages.has(lifecycleValue) ? lifecycleValue : 'unavailable';
+  const lifecycleStage = lifecycleFailureStage(result.stderr);
   const diagnostic = {
     version: 1,
     phase: context.phase,
     ...(context.case === undefined ? {} : { case: context.case }),
     exit: numeric(result.status),
-    signal:
-      result.signal === null || result.signal === undefined
-        ? 'none'
-        : SIGNALS.has(result.signal)
-          ? result.signal
-          : 'other',
-    error:
-      result.error === undefined
-        ? 'none'
-        : SPAWN_ERRORS.has(result.error.code)
-          ? result.error.code
-          : 'other',
+    signal: diagnosticEnum(result.signal, SIGNALS),
+    error: diagnosticEnum(result.error?.code, SPAWN_ERRORS, result.error === undefined),
     ...(context.phase === 'node-lifecycle' ? { lifecycleStage } : {}),
     ...(context.phase === 'rust-case'
       ? {

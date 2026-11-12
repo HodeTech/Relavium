@@ -35,7 +35,7 @@ export function verifyCausalNativeAssets(candidate, capture) {
     binding: nativeSourceBinding(candidate),
   });
   const inventory = [...checked.files].map(([name, bytes]) => ({
-    path: join('apps/cli', NATIVE_DIRECTORY, name).split('\\').join('/'),
+    path: join('apps/cli', NATIVE_DIRECTORY, name).replaceAll('\\', '/'),
     bytes: bytes.length,
     sha256: sha256(bytes),
   }));
@@ -68,7 +68,7 @@ export function captureCausalNativeAssets(repository, candidate) {
     original,
     inputs: original.files,
     assets: [...checked.files].map(([name, bytes]) => ({
-      path: join('apps/cli', NATIVE_DIRECTORY, name).split('\\').join('/'),
+      path: join('apps/cli', NATIVE_DIRECTORY, name).replaceAll('\\', '/'),
       bytes: bytes.length,
       sha256: sha256(bytes),
     })),

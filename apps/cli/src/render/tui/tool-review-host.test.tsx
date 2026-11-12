@@ -288,7 +288,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       if (review === undefined) throw new Error('missing review');
       const expected = toolReviewPage(review, 80, 24)?.maskedRows.join('\n');
       f.input.push('c');
-      await vi.waitFor(() => expect(copied.length).toBe(1));
+      await vi.waitFor(() => expect(copied).toHaveLength(1));
       expect(copied[0]).toBe(expected);
       expect(copied[0]).not.toContain('FUTURE_UNSEEN');
       expect(copied[0]).toContain('<MASK:');

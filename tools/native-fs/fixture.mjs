@@ -39,23 +39,9 @@ export function syntheticNativeAssets(repository, { complete = true } = {}) {
   ]);
   const targets = complete ? NATIVE_TARGETS : [NATIVE_TARGETS[0]];
   const assets = targets.map((target) => {
-    const bytes = Buffer.alloc(256);
-    bytes.write(`SYNTHETIC VALIDATOR FIXTURE: NOT EXECUTABLE ${target}`, 128);
-    const arm = target.startsWith('aarch64');
-    if (target.includes('-apple-')) {
-      bytes.writeUInt32LE(0xfeedfacf, 0);
-      bytes.writeUInt32LE(arm ? 0x0100000c : 0x01000007, 4);
-    } else if (target.includes('-windows-')) {
-      bytes.write('MZ');
-      bytes.writeUInt32LE(64, 60);
-      bytes.writeUInt32LE(0x00004550, 64);
-      bytes.writeUInt16LE(arm ? 0xaa64 : 0x8664, 68);
-    } else {
-      bytes.writeUInt32BE(0x7f454c46, 0);
-      bytes[4] = 2;
-      bytes[5] = 1;
-      bytes.writeUInt16LE(arm ? 183 : 62, 18);
-    }
+    const bytes = syntheticBinary(target);
+    const { platform, libc, libcVersion } = targetFacts(target);
+    const population = rustPopulation(platform);
     files.set(`${target}.node`, bytes);
     return {
       target,
@@ -63,12 +49,8 @@ export function syntheticNativeAssets(repository, { complete = true } = {}) {
       sha256: sha256(bytes),
       validation: {
         version: 1,
-        rustPassed: rustPopulation(
-          target.includes('-apple-') ? 'darwin' : target.includes('-windows-') ? 'win32' : 'linux',
-        ).passed,
-        rustIgnored: rustPopulation(
-          target.includes('-apple-') ? 'darwin' : target.includes('-windows-') ? 'win32' : 'linux',
-        ).ignored,
+        rustPassed: population.passed,
+        rustIgnored: population.ignored,
         nodeCases: [...NODE_LIFECYCLE_CASES],
         requiresCreationMaskProbe: false,
         ...(target.includes('-windows-') ? { genuineOwnerContext: 'distinct' } : {}),
@@ -76,14 +58,10 @@ export function syntheticNativeAssets(repository, { complete = true } = {}) {
       execution: {
         node: 'v22.0.0',
         protocol: 1,
-        platform: target.includes('apple')
-          ? 'darwin'
-          : target.includes('windows')
-            ? 'win32'
-            : 'linux',
+        platform,
         arch: target.startsWith('aarch64') ? 'arm64' : 'x64',
-        libcVersion: target.endsWith('-gnu') ? '2.28' : target.endsWith('-musl') ? '1.2.5' : 'none',
-        libc: target.endsWith('-gnu') ? 'gnu' : target.endsWith('-musl') ? 'musl' : 'none',
+        libcVersion,
+        libc,
       },
     };
   });
@@ -100,4 +78,40 @@ export function syntheticNativeAssets(repository, { complete = true } = {}) {
   const directory = join(repository, 'apps/cli', NATIVE_DIRECTORY);
   writeNativeAssets(directory, manifest, files);
   return { directory, manifest, files };
+}
+
+function syntheticBinary(target) {
+  const bytes = Buffer.alloc(256);
+  bytes.write(`SYNTHETIC VALIDATOR FIXTURE: NOT EXECUTABLE ${target}`, 128);
+  const arm = target.startsWith('aarch64');
+  if (target.includes('-apple-')) {
+    bytes.writeUInt32LE(0xfeedfacf, 0);
+    bytes.writeUInt32LE(arm ? 0x0100000c : 0x01000007, 4);
+  } else if (target.includes('-windows-')) {
+    bytes.write('MZ');
+    bytes.writeUInt32LE(64, 60);
+    bytes.writeUInt32LE(0x00004550, 64);
+    bytes.writeUInt16LE(arm ? 0xaa64 : 0x8664, 68);
+  } else {
+    bytes.writeUInt32BE(0x7f454c46, 0);
+    bytes[4] = 2;
+    bytes[5] = 1;
+    bytes.writeUInt16LE(arm ? 183 : 62, 18);
+  }
+  return bytes;
+}
+function targetFacts(target) {
+  let platform = 'linux';
+  if (target.includes('-apple-')) platform = 'darwin';
+  else if (target.includes('-windows-')) platform = 'win32';
+  let libc = 'none';
+  let libcVersion = 'none';
+  if (target.endsWith('-gnu')) {
+    libc = 'gnu';
+    libcVersion = '2.28';
+  } else if (target.endsWith('-musl')) {
+    libc = 'musl';
+    libcVersion = '1.2.5';
+  }
+  return { platform, libc, libcVersion };
 }

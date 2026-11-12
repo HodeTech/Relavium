@@ -225,12 +225,7 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   try {
     source = captureSource(repository, graph);
     summary.sourceHead = source.head;
-    for (const file of source.files)
-      assert.equal(
-        realpathSync(join(repository, file.path)),
-        resolve(repository, file.path),
-        'Owned source path redirected',
-      );
+    assertSourcePaths(repository, source.files);
     ownFiles = captureOwnedTools(repository, graph, toolRoots);
     manifest = { ...source, files: mergeFiles(source.files, ownFiles) };
     nativeCapture = captureCausalNativeAssets(repository, graph);
@@ -331,4 +326,13 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   if (primaryFailure) throw primaryFailure;
 
   return summary;
+}
+
+function assertSourcePaths(repository, files) {
+  for (const file of files)
+    assert.equal(
+      realpathSync(join(repository, file.path)),
+      resolve(repository, file.path),
+      'Owned source path redirected',
+    );
 }

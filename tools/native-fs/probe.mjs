@@ -15,16 +15,15 @@ if (loaderMode) {
 } else addon = createRequire(import.meta.url)(process.argv[2]);
 assert.equal(typeof addon.protocolVersion, 'function');
 assert.equal(addon.protocolVersion(), 1);
-const libc =
-  process.platform === 'linux'
-    ? process.report.getReport().header.glibcVersionRuntime
-      ? 'gnu'
-      : 'musl'
-    : 'none';
+let libc = 'none';
+if (process.platform === 'linux')
+  libc = process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl';
 let libcVersion = 'none';
 if (libc === 'gnu') libcVersion = process.report.getReport().header.glibcVersionRuntime;
 if (libc === 'musl') {
-  const cpu = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : undefined;
+  let cpu;
+  if (process.arch === 'arm64') cpu = 'aarch64';
+  else if (process.arch === 'x64') cpu = 'x86_64';
   assert.ok(cpu !== undefined);
   const result = spawnSync(`/lib/ld-musl-${cpu}.so.1`, ['--version'], {
     encoding: 'utf8',

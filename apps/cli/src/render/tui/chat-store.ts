@@ -225,6 +225,39 @@ export function createChatStore(
     dirty = false;
   };
 
+  const copyReviewPage = (): void => {
+    if (review === undefined) return;
+    const expected = review;
+    const document = review.document;
+    if (document === undefined || reviewClipboard === undefined) {
+      review = { ...review, message: 'Clipboard unavailable.' };
+      flush();
+      return;
+    }
+    if (reviewPage?.valid !== true) {
+      review = { ...review, message: 'Review page unavailable — wait for a flushed frame.' };
+      flush();
+      return;
+    }
+    const masked = reviewPage.maskedRows.join('\n');
+    void reviewClipboard(masked).then(
+      (ok) => {
+        if (review !== expected || sealed) return;
+        review = {
+          ...review,
+          message: ok ? 'Masked page sent to terminal clipboard.' : 'Clipboard write failed.',
+        };
+        flush();
+      },
+      () => {
+        if (review === expected && !sealed) {
+          review = { ...review, message: 'Clipboard write failed.' };
+          flush();
+        }
+      },
+    );
+  };
+
   return {
     applyToolLiveEvent: (event) => {
       if (sealed) return;
@@ -233,37 +266,10 @@ export function createChatStore(
         markdown.reset();
         terminal.reset();
       }
-      const previous = toolDisplays.get(event.callId);
-      let next: ToolDisplay = previous ?? {
-        callId: event.callId,
-        toolId: event.toolId,
-        outcome: 'running',
-      };
-      if (event.phase === 'preview') {
-        const document = createReviewDocument(event.preview);
-        if (event.preview.kind === 'saved-result') {
-          const delivery = { ...next };
-          delete delivery.document;
-          delete delivery.stats;
-          next = delivery;
-        }
-        next = {
-          ...next,
-          ...(event.preview.target === undefined
-            ? {}
-            : { target: boundedDisplayText(event.preview.target, 512) }),
-          ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
-          document,
-        };
-      } else if (event.phase === 'completed')
-        next = {
-          ...next,
-          outcome: event.outcome,
-          ...(event.summary === undefined
-            ? {}
-            : { summary: boundedDisplayText(event.summary, 2048) }),
-        };
-      toolDisplays = new Map(toolDisplays).set(event.callId, next);
+      toolDisplays = new Map(toolDisplays).set(
+        event.callId,
+        updateToolDisplay(toolDisplays.get(event.callId), event),
+      );
       // Current consent is pinned. Other full detail snapshots expire under a fixed aggregate budget.
       let bytes =
         (review?.callId === undefined
@@ -370,59 +376,14 @@ export function createChatStore(
         case 'select': {
           const selected = calls[review.selected];
           if (selected !== undefined) {
-            const preview = selected.document?.preview;
-            review = initialToolReview(
-              'details',
-              selected.callId,
-              createReviewDocument({
-                ...(preview ?? { kind: 'operation', fields: [] }),
-                fields: [
-                  ...(preview?.fields ?? []),
-                  ...(preview === undefined
-                    ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
-                    : []),
-                  ...(selected.summary === undefined
-                    ? []
-                    : [{ name: 'Result summary', value: selected.summary }]),
-                ],
-              }),
-            );
+            review = initialToolReview('details', selected.callId, detailsDocument(selected));
             flush();
           }
           break;
         }
-        case 'copy': {
-          const expected = review;
-          const document = review.document;
-          if (document === undefined || reviewClipboard === undefined) {
-            review = { ...review, message: 'Clipboard unavailable.' };
-            flush();
-            break;
-          }
-          if (reviewPage?.valid !== true) {
-            review = { ...review, message: 'Review page unavailable — wait for a flushed frame.' };
-            flush();
-            break;
-          }
-          const masked = reviewPage.maskedRows.join('\n');
-          void reviewClipboard(masked).then(
-            (ok) => {
-              if (review !== expected || sealed) return;
-              review = {
-                ...review,
-                message: ok ? 'Masked page sent to terminal clipboard.' : 'Clipboard write failed.',
-              };
-              flush();
-            },
-            () => {
-              if (review === expected && !sealed) {
-                review = { ...review, message: 'Clipboard write failed.' };
-                flush();
-              }
-            },
-          );
+        case 'copy':
+          copyReviewPage();
           break;
-        }
         case 'none':
           break;
       }
@@ -597,4 +558,51 @@ function boundedDisplayText(source: string, limit: number): string {
   const unit = text.charCodeAt(limit - 1);
   const end = unit >= 0xd800 && unit <= 0xdbff ? limit - 1 : limit;
   return `${text.slice(0, end)} … (${reviewBytes(text.slice(end))} display bytes omitted)`;
+}
+
+function updateToolDisplay(previous: ToolDisplay | undefined, event: ToolLiveEvent): ToolDisplay {
+  let next: ToolDisplay = previous ?? {
+    callId: event.callId,
+    toolId: event.toolId,
+    outcome: 'running',
+  };
+  if (event.phase === 'preview') {
+    const document = createReviewDocument(event.preview);
+    if (event.preview.kind === 'saved-result') {
+      const delivery = { ...next };
+      delete delivery.document;
+      delete delivery.stats;
+      next = delivery;
+    }
+    return {
+      ...next,
+      ...(event.preview.target === undefined
+        ? {}
+        : { target: boundedDisplayText(event.preview.target, 512) }),
+      ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
+      document,
+    };
+  }
+  if (event.phase === 'completed')
+    return {
+      ...next,
+      outcome: event.outcome,
+      ...(event.summary === undefined ? {} : { summary: boundedDisplayText(event.summary, 2048) }),
+    };
+  return next;
+}
+function detailsDocument(selected: ToolDisplay) {
+  const preview = selected.document?.preview;
+  return createReviewDocument({
+    ...(preview ?? { kind: 'operation', fields: [] }),
+    fields: [
+      ...(preview?.fields ?? []),
+      ...(preview === undefined
+        ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
+        : []),
+      ...(selected.summary === undefined
+        ? []
+        : [{ name: 'Result summary', value: selected.summary }]),
+    ],
+  });
 }

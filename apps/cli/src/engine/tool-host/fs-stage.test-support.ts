@@ -32,8 +32,8 @@ export async function createSyntheticPinnedStage(
   owner.copy(record, 56);
   locator.copy(record, 56 + owner.length);
   let offset = 56 + owner.length + locator.length;
-  for (const path of [parent, stage, payload]) {
-    const identity = await id(path);
+  const identities = await Promise.all([parent, stage, payload].map(id));
+  for (const identity of identities) {
     record.writeBigUInt64LE(BigInt(identity.dev), offset);
     record.writeBigUInt64LE(BigInt(identity.ino), offset + 8);
     record.writeBigUInt64LE(BigInt(identity.dev), offset + 24);

@@ -1,5 +1,5 @@
 /** CLI-private reader and model-access floor for ADR-0125 staging ownership records. */
-import { constants } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 
@@ -44,7 +44,7 @@ function parseRecord(bytes: Buffer, nonce: string, uid: bigint | undefined): rea
   const stage = decoder.decode(bytes.subarray(56 + ownerLength, 56 + ownerLength + pathLength));
   if (
     (uid === undefined
-      ? !/^S-1-(?:[0-9]{1,10}-){1,15}[0-9]{1,10}$/.test(owner)
+      ? !/^S-1-(?:\d{1,10}-){1,15}\d{1,10}$/.test(owner)
       : owner !== String(uid)) ||
     !isAbsolute(stage) ||
     resolve(stage) !== stage ||
@@ -116,7 +116,7 @@ async function requireLegacyAbsent(
     )
       throw new FsStageInventoryError();
   };
-  let parentInfo;
+  let parentInfo: BigIntStats;
   try {
     tick(start, signal);
     parentInfo = await lstat(parent, { bigint: true });
@@ -126,8 +126,8 @@ async function requireLegacyAbsent(
     try {
       await lstat(parent);
       throw new FsStageInventoryError();
-    } catch (again) {
-      if (code(again) !== 'ENOENT') throw again;
+    } catch (error_) {
+      if (code(error_) !== 'ENOENT') throw error_;
     }
     await verifyHome();
     return;
@@ -138,6 +138,16 @@ async function requireLegacyAbsent(
     (await realpath(parent)) !== parent
   )
     throw new FsStageInventoryError();
+  async function verifyParent(): Promise<void> {
+    const current = await lstat(parent, { bigint: true });
+    if (
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      !same(parentInfo, current) ||
+      (await realpath(parent)) !== parent
+    )
+      throw new FsStageInventoryError();
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     tick(start, signal);
     try {
@@ -147,14 +157,7 @@ async function requireLegacyAbsent(
       if (code(error) !== 'ENOENT') throw error;
     }
     await verifyHome();
-    const current = await lstat(parent, { bigint: true });
-    if (
-      !current.isDirectory() ||
-      current.isSymbolicLink() ||
-      !same(parentInfo, current) ||
-      (await realpath(parent)) !== parent
-    )
-      throw new FsStageInventoryError();
+    await verifyParent();
   }
 }
 
@@ -210,33 +213,36 @@ export async function captureFsStageInventory(
     const uid = !windows && process.geteuid ? BigInt(process.geteuid()) : undefined;
     const privatePolicy = (info: { readonly uid: bigint; readonly mode: bigint }): boolean =>
       windows || (info.uid === uid && (info.mode & 0o077n) === 0n);
+    async function verifyAbsentIndex(): Promise<void> {
+      tick(start, signal);
+      try {
+        const parentInfo = await lstat(requestedParent, { bigint: true });
+        if (
+          !parentInfo.isDirectory() ||
+          parentInfo.isSymbolicLink() ||
+          !privatePolicy(parentInfo) ||
+          (await realpath(requestedParent)) !== join(home, FS_PRIVATE_INDEX_PARENT)
+        )
+          throw new FsStageInventoryError();
+        protectIdentity(parentInfo);
+      } catch (parentError) {
+        if (code(parentError) !== 'ENOENT') throw parentError;
+      }
+      const currentHome = await stat(requestedHome, { bigint: true });
+      if (
+        !same(homeInfo, currentHome) ||
+        !currentHome.isDirectory() ||
+        (await realpath(requestedHome)) !== home
+      )
+        throw new FsStageInventoryError();
+    }
     let indexInfo;
     try {
       tick(start, signal);
       indexInfo = await lstat(requestedIndex, { bigint: true });
     } catch (error) {
       if (code(error) === 'ENOENT') {
-        tick(start, signal);
-        try {
-          const parentInfo = await lstat(requestedParent, { bigint: true });
-          if (
-            !parentInfo.isDirectory() ||
-            parentInfo.isSymbolicLink() ||
-            !privatePolicy(parentInfo) ||
-            (await realpath(requestedParent)) !== join(home, FS_PRIVATE_INDEX_PARENT)
-          )
-            throw new FsStageInventoryError();
-          protectIdentity(parentInfo);
-        } catch (parentError) {
-          if (code(parentError) !== 'ENOENT') throw parentError;
-        }
-        const currentHome = await stat(requestedHome, { bigint: true });
-        if (
-          !same(homeInfo, currentHome) ||
-          !currentHome.isDirectory() ||
-          (await realpath(requestedHome)) !== home
-        )
-          throw new FsStageInventoryError();
+        await verifyAbsentIndex();
         return captured();
       }
       throw error;
@@ -265,7 +271,7 @@ export async function captureFsStageInventory(
     const nonces = new Set<string>();
     let count = 0;
     let total = 0;
-    for await (const entry of directory) {
+    async function captureEntry(entry: import('node:fs').Dirent): Promise<void> {
       tick(start, signal);
       const match = recordName.exec(entry.name);
       if (
@@ -286,7 +292,7 @@ export async function captureFsStageInventory(
           code(error) === 'ENOENT' &&
           (entry.name.endsWith('.reserved') || entry.name.endsWith('.prepare'))
         )
-          continue;
+          return;
         throw error;
       }
       if (
@@ -306,18 +312,21 @@ export async function captureFsStageInventory(
           constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK,
         );
       } catch (error) {
-        if (transient && code(error) === 'ENOENT') continue;
+        if (transient && code(error) === 'ENOENT') return;
         throw error;
       }
-      try {
+      async function inspectOpened(
+        opened: Awaited<ReturnType<typeof open>>,
+        observedEntry: BigIntStats,
+      ): Promise<void> {
         tick(start, signal);
-        const before = await handle.stat({ bigint: true });
+        const before = await opened.stat({ bigint: true });
         if (
-          !same(observed, before) ||
+          !same(observedEntry, before) ||
           !before.isFile() ||
           before.nlink !== 1n ||
           !privatePolicy(before) ||
-          (!transient && observed.ctimeNs !== before.ctimeNs)
+          (!transient && observedEntry.ctimeNs !== before.ctimeNs)
         )
           throw new FsStageInventoryError();
         protectIdentity(before);
@@ -329,12 +338,12 @@ export async function captureFsStageInventory(
             (match?.[2] !== 'prepare' && before.size !== 0n)
           )
             throw new FsStageInventoryError();
-          continue;
+          return;
         }
         tick(start, signal);
         const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1);
         tick(start, signal);
-        const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        const { bytesRead } = await opened.read(bytes, 0, bytes.length, 0);
         total += bytesRead;
         if (
           bytesRead > MAX_RECORD_BYTES ||
@@ -343,7 +352,7 @@ export async function captureFsStageInventory(
         )
           throw new FsStageInventoryError();
         tick(start, signal);
-        const after = await handle.stat({ bigint: true });
+        const after = await opened.stat({ bigint: true });
         tick(start, signal);
         const current = await lstat(path, { bigint: true });
         if (
@@ -363,10 +372,14 @@ export async function captureFsStageInventory(
             protectIdentity(pinned);
         }
         // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
+      }
+      try {
+        await inspectOpened(handle, observed);
       } finally {
         await handle.close();
       }
     }
+    for await (const entry of directory) await captureEntry(entry);
     tick(start, signal);
     const final = await lstat(index, { bigint: true });
     tick(start, signal);

@@ -470,11 +470,7 @@ export function finalizeCandidate({ repository, staging }) {
       })
     : undefined;
   if (native !== undefined) expectedEntries.push('native-fs');
-  for (const path of runtime) {
-    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY');
-    if (!Object.hasOwn(metafile.outputs, `${path}.map`)) refuse('MAP_PAIRING', `apps/cli/${path}`);
-    expectedEntries.push(basename(path), `${basename(path)}.map`);
-  }
+  addOutputEntries(runtime, metafile.outputs, expectedEntries);
   if (Object.keys(metafile.outputs).length !== runtime.length * 2) refuse('MAP_PAIRING');
   const entries = readdirSync(dist, { withFileTypes: true });
   if (
@@ -589,4 +585,12 @@ export function finalizeCandidate({ repository, staging }) {
     Buffer.from(JSON.stringify(record, null, 2) + '\n'),
   );
   return record;
+}
+
+function addOutputEntries(runtime, outputs, expectedEntries) {
+  for (const path of runtime) {
+    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY');
+    if (!Object.hasOwn(outputs, `${path}.map`)) refuse('MAP_PAIRING', `apps/cli/${path}`);
+    expectedEntries.push(basename(path), `${basename(path)}.map`);
+  }
 }

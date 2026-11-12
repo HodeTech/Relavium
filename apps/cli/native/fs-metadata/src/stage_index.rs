@@ -883,6 +883,17 @@ impl<P: Profile> OwnedStage<P> {
         if P::identity(&P::open_parent(&self.parent_path)?)? != self.parent_id {
             return refused();
         }
+        let marker_paths = self.ephemeral_markers(start)?;
+        self.cleanup_ephemeral_payload(start)?;
+        self.cleanup_ephemeral_markers(start, marker_paths)?;
+        let _current = self.cleanup_ephemeral_reservation(&reservation_path)?;
+        self.adopted_directory = None;
+        self.adopted_payload = None;
+        self.pending_record = None;
+        self.pending_file = None;
+        Ok(())
+    }
+    fn ephemeral_markers(&self, start: Instant) -> Result<Vec<PathBuf>, NativeFailure> {
         let mut marker_paths = Vec::new();
         if let Some(pending) = &self.pending_file {
             P::verify_private_file(&pending.file)?;
@@ -921,43 +932,16 @@ impl<P: Profile> OwnedStage<P> {
                 Err(_) => return refused(),
             }
         }
+        Ok(marker_paths)
+    }
+    fn cleanup_ephemeral_payload(&self, start: Instant) -> Result<(), NativeFailure> {
         if let Some(directory) = &self.adopted_directory {
             tick(start, None)?;
             P::verify_private_directory(&self.path, &directory.file)?;
             if P::identity(&directory.file)? != directory.identity {
                 return refused();
             }
-            let mut payload_path = None;
-            let mut count = 0;
-            for entry in io(fs::read_dir(&self.path))? {
-                tick(start, None)?;
-                count += 1;
-                if count > 8 {
-                    return refused();
-                }
-                let entry = io(entry)?;
-                let payload = self
-                    .adopted_payload
-                    .as_ref()
-                    .ok_or(NativeFailure::Changed)?;
-                if entry.file_name() != "payload" {
-                    return refused();
-                }
-                let current = open_nofollow(&entry.path())?;
-                P::verify_owned_file(&current)?;
-                P::verify_owned_file(&payload.file)?;
-                if P::identity(&current)? != payload.identity
-                    || P::identity(&payload.file)? != payload.identity
-                    || io(current.metadata())?.len() != 0
-                    || io(payload.file.metadata())?.len() != 0
-                {
-                    return refused();
-                }
-                payload_path = Some(entry.path());
-            }
-            if self.adopted_payload.is_some() && payload_path.is_none() {
-                return refused();
-            }
+            let payload_path = self.ephemeral_payload_path(start)?;
             self.index.recheck()?;
             if P::identity(&P::open_parent(&self.parent_path)?)? != self.parent_id {
                 return refused();
@@ -992,6 +976,47 @@ impl<P: Profile> OwnedStage<P> {
                 _ => return refused(),
             }
         }
+        Ok(())
+    }
+    fn ephemeral_payload_path(&self, start: Instant) -> Result<Option<PathBuf>, NativeFailure> {
+        let mut payload_path = None;
+        let mut count = 0;
+        for entry in io(fs::read_dir(&self.path))? {
+            tick(start, None)?;
+            count += 1;
+            if count > 8 {
+                return refused();
+            }
+            let entry = io(entry)?;
+            let payload = self
+                .adopted_payload
+                .as_ref()
+                .ok_or(NativeFailure::Changed)?;
+            if entry.file_name() != "payload" {
+                return refused();
+            }
+            let current = open_nofollow(&entry.path())?;
+            P::verify_owned_file(&current)?;
+            P::verify_owned_file(&payload.file)?;
+            if P::identity(&current)? != payload.identity
+                || P::identity(&payload.file)? != payload.identity
+                || io(current.metadata())?.len() != 0
+                || io(payload.file.metadata())?.len() != 0
+            {
+                return refused();
+            }
+            payload_path = Some(entry.path());
+        }
+        if self.adopted_payload.is_some() && payload_path.is_none() {
+            return refused();
+        }
+        Ok(payload_path)
+    }
+    fn cleanup_ephemeral_markers(
+        &self,
+        start: Instant,
+        marker_paths: Vec<PathBuf>,
+    ) -> Result<(), NativeFailure> {
         self.index.recheck()?;
         for path in marker_paths {
             tick(start, None)?;
@@ -1005,6 +1030,12 @@ impl<P: Profile> OwnedStage<P> {
             io(fs::remove_file(path))?;
             self.index.ensure_context()?;
         }
+        Ok(())
+    }
+    fn cleanup_ephemeral_reservation(
+        &self,
+        reservation_path: &Path,
+    ) -> Result<File, NativeFailure> {
         let current = open_nofollow(&reservation_path)?;
         P::verify_private_file(&current)?;
         if P::identity(&current)? != P::identity(&self.reservation)?
@@ -1016,11 +1047,7 @@ impl<P: Profile> OwnedStage<P> {
         io(fs::remove_file(reservation_path))?;
         self.index.ensure_context()?;
         io(self.index.directory.sync_all())?;
-        self.adopted_directory = None;
-        self.adopted_payload = None;
-        self.pending_record = None;
-        self.pending_file = None;
-        Ok(())
+        Ok(current)
     }
 }
 

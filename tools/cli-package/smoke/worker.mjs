@@ -103,21 +103,24 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
       const evidence = await operation();
       report.cases.push({ id: name, passed: true, elapsedMs: Date.now() - started, evidence });
     } catch (error) {
+      let errorDetail;
+      let failureEvidence = {};
+      if (error instanceof InstalledNativeControlError) {
+        errorDetail = error.primaryFailure;
+        failureEvidence = { evidence: error.evidence };
+      } else {
+        errorDetail = String(error.stack ?? error);
+        if (name === 'native-addon-load-only')
+          failureEvidence = { evidence: { diagnostic: nativeLoadDiagnostic } };
+        else if (name === 'workflow-gate-budget-effects')
+          failureEvidence = { evidence: { diagnostic: { stage: workflowStage } } };
+      }
       report.cases.push({
         id: name,
         passed: false,
         elapsedMs: Date.now() - started,
-        error:
-          error instanceof InstalledNativeControlError
-            ? error.primaryFailure
-            : String(error.stack ?? error),
-        ...(error instanceof InstalledNativeControlError
-          ? { evidence: error.evidence }
-          : name === 'native-addon-load-only'
-            ? { evidence: { diagnostic: nativeLoadDiagnostic } }
-            : name === 'workflow-gate-budget-effects'
-              ? { evidence: { diagnostic: { stage: workflowStage } } }
-              : {}),
+        error: errorDetail,
+        ...failureEvidence,
       });
     }
   }

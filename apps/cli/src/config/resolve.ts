@@ -204,14 +204,7 @@ function resolveChat(
     defaultModel,
     defaultProvider,
     defaultMode: p?.default_mode ?? w?.default_mode ?? global?.preferences?.default_mode ?? 'ask',
-    defaultModeSource:
-      p?.default_mode !== undefined
-        ? 'project'
-        : w?.default_mode !== undefined
-          ? 'workspace'
-          : global?.preferences?.default_mode !== undefined
-            ? 'global'
-            : 'fallback',
+    defaultModeSource: startingModeSource(p, w, global),
     fsScope: p?.fs_scope ?? w?.fs_scope,
     extraRoots: p?.extra_roots ?? w?.extra_roots,
     maxTurns: p?.max_turns ?? w?.max_turns,
@@ -276,4 +269,15 @@ function mergeMcpServers(
     }
   });
   return [...byName.values()];
+}
+
+function startingModeSource(
+  project: ChatConfig | undefined,
+  workspace: ChatConfig | undefined,
+  global: GlobalConfig | undefined,
+): ResolvedChatConfig['defaultModeSource'] {
+  if (project?.default_mode !== undefined) return 'project';
+  if (workspace?.default_mode !== undefined) return 'workspace';
+  if (global?.preferences?.default_mode !== undefined) return 'global';
+  return 'fallback';
 }

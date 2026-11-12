@@ -37,34 +37,41 @@ function refuse(code) {
 /** Format/CPU identity is independent of the execution receipt; libc still needs native execution. */
 export function assertNativeBinary(bytes, target) {
   const arm = target.startsWith('aarch64');
-  if (target.includes('-apple-')) {
-    if (
-      bytes.length < 32 ||
-      bytes.readUInt32LE(0) !== 0xfeedfacf ||
-      bytes.readUInt32LE(4) !== (arm ? 0x0100000c : 0x01000007)
-    )
-      refuse('BINARY_TARGET');
-  } else if (target.includes('-windows-')) {
-    if (bytes.length < 64 || bytes.toString('ascii', 0, 2) !== 'MZ') refuse('BINARY_TARGET');
-    const offset = bytes.readUInt32LE(60);
-    if (
-      offset < 64 ||
-      offset + 24 > bytes.length ||
-      bytes.readUInt32LE(offset) !== 0x00004550 ||
-      bytes.readUInt16LE(offset + 4) !== (arm ? 0xaa64 : 0x8664)
-    )
-      refuse('BINARY_TARGET');
-  } else if (target.includes('-linux-')) {
-    if (
-      bytes.length < 64 ||
-      bytes.readUInt32BE(0) !== 0x7f454c46 ||
-      bytes[4] !== 2 ||
-      bytes[5] !== 1 ||
-      bytes.readUInt16LE(18) !== (arm ? 183 : 62)
-    )
-      refuse('BINARY_TARGET');
-  } else refuse('BINARY_TARGET');
+  if (target.includes('-apple-')) assertMachBinary(bytes, arm);
+  else if (target.includes('-windows-')) assertPeBinary(bytes, arm);
+  else if (target.includes('-linux-')) assertElfBinary(bytes, arm);
+  else refuse('BINARY_TARGET');
 }
+function assertMachBinary(bytes, arm) {
+  if (
+    bytes.length < 32 ||
+    bytes.readUInt32LE(0) !== 0xfeedfacf ||
+    bytes.readUInt32LE(4) !== (arm ? 0x0100000c : 0x01000007)
+  )
+    refuse('BINARY_TARGET');
+}
+function assertPeBinary(bytes, arm) {
+  if (bytes.length < 64 || bytes.toString('ascii', 0, 2) !== 'MZ') refuse('BINARY_TARGET');
+  const offset = bytes.readUInt32LE(60);
+  if (
+    offset < 64 ||
+    offset + 24 > bytes.length ||
+    bytes.readUInt32LE(offset) !== 0x00004550 ||
+    bytes.readUInt16LE(offset + 4) !== (arm ? 0xaa64 : 0x8664)
+  )
+    refuse('BINARY_TARGET');
+}
+function assertElfBinary(bytes, arm) {
+  if (
+    bytes.length < 64 ||
+    bytes.readUInt32BE(0) !== 0x7f454c46 ||
+    bytes[4] !== 2 ||
+    bytes[5] !== 1 ||
+    bytes.readUInt16LE(18) !== (arm ? 183 : 62)
+  )
+    refuse('BINARY_TARGET');
+}
+
 function read(path, limit) {
   try {
     const stat = lstatSync(path);
@@ -95,7 +102,8 @@ export function captureNativeInputs(repository) {
     }
   }
   visit(join(root, 'src'), 'src');
-  const sourceFiles = names.sort().map((name) => {
+  names.sort();
+  const sourceFiles = names.map((name) => {
     const bytes = read(join(root, name), NATIVE_LIMITS.sourceBytes);
     return {
       path: `apps/cli/native/fs-metadata/${name}`,
@@ -181,55 +189,61 @@ export function validateNativeManifest(value, { complete = false, binding } = {}
       value.noticesSha256 !== binding.noticesSha256)
   )
     refuse('SOURCE_BINDING');
-  for (const asset of value.assets) {
-    if (
-      !exact(asset, [
-        'target',
-        'bytes',
-        'sha256',
-        'execution',
-        ...(Object.hasOwn(asset, 'validation') ? ['validation'] : []),
-      ]) ||
-      !Number.isSafeInteger(asset.bytes) ||
-      asset.bytes < 1 ||
-      asset.bytes > NATIVE_LIMITS.binaryBytes ||
-      !SHA.test(asset.sha256) ||
-      !exact(asset.execution, ['node', 'platform', 'arch', 'libc', 'libcVersion', 'protocol']) ||
-      asset.execution.protocol !== 1 ||
-      !(asset.execution.libc === 'none'
-        ? asset.execution.libcVersion === 'none'
-        : /^\d+\.\d+(?:\.\d+)?$/u.test(asset.execution.libcVersion)) ||
-      (value.scope === 'release-complete' &&
-        (asset.execution.node !== 'v22.0.0' ||
-          (asset.execution.libc === 'gnu' && asset.execution.libcVersion !== '2.28') ||
-          (asset.execution.libc === 'musl' && asset.execution.libcVersion !== '1.2.5'))) ||
-      !/^v(?:22|2[4-9]|[3-9][0-9])\.\d+\.\d+$/u.test(asset.execution.node)
-    )
-      refuse('EXECUTION_RECEIPT');
-    if (value.scope === 'release-complete' && asset.validation === undefined)
-      refuse('PROFILE_REQUIRED');
-    if (asset.validation !== undefined) {
-      try {
-        validateProfileEvidence(asset.validation, asset.execution.platform, {
-          requireDistinctOwner: value.scope === 'release-complete',
-        });
-      } catch {
-        refuse('PROFILE_EVIDENCE');
-      }
-    }
-    let observed;
-    try {
-      observed = hostTarget(asset.execution.platform, asset.execution.arch, asset.execution.libc);
-    } catch {
-      refuse('EXECUTION_RECEIPT');
-    }
-    if (
-      observed !== asset.target ||
-      (asset.execution.platform !== 'linux' && asset.execution.libc !== 'none')
-    )
-      refuse('EXECUTION_RECEIPT');
-  }
+  for (const asset of value.assets) validateNativeAsset(asset, value.scope);
   return value;
+}
+function validateExecutionReceipt(execution, scope) {
+  if (
+    !exact(execution, ['node', 'platform', 'arch', 'libc', 'libcVersion', 'protocol']) ||
+    execution.protocol !== 1 ||
+    !(execution.libc === 'none'
+      ? execution.libcVersion === 'none'
+      : /^\d+\.\d+(?:\.\d+)?$/u.test(execution.libcVersion)) ||
+    (scope === 'release-complete' &&
+      (execution.node !== 'v22.0.0' ||
+        (execution.libc === 'gnu' && execution.libcVersion !== '2.28') ||
+        (execution.libc === 'musl' && execution.libcVersion !== '1.2.5'))) ||
+    !/^v(?:22|2[4-9]|[3-9]\d)\.\d+\.\d+$/u.test(execution.node)
+  )
+    refuse('EXECUTION_RECEIPT');
+}
+function validateNativeAsset(asset, scope) {
+  if (
+    !exact(asset, [
+      'target',
+      'bytes',
+      'sha256',
+      'execution',
+      ...(Object.hasOwn(asset, 'validation') ? ['validation'] : []),
+    ]) ||
+    !Number.isSafeInteger(asset.bytes) ||
+    asset.bytes < 1 ||
+    asset.bytes > NATIVE_LIMITS.binaryBytes ||
+    !SHA.test(asset.sha256)
+  )
+    refuse('EXECUTION_RECEIPT');
+  validateExecutionReceipt(asset.execution, scope);
+  if (scope === 'release-complete' && asset.validation === undefined) refuse('PROFILE_REQUIRED');
+  if (asset.validation !== undefined) {
+    try {
+      validateProfileEvidence(asset.validation, asset.execution.platform, {
+        requireDistinctOwner: scope === 'release-complete',
+      });
+    } catch {
+      refuse('PROFILE_EVIDENCE');
+    }
+  }
+  let observed;
+  try {
+    observed = hostTarget(asset.execution.platform, asset.execution.arch, asset.execution.libc);
+  } catch {
+    refuse('EXECUTION_RECEIPT');
+  }
+  if (
+    observed !== asset.target ||
+    (asset.execution.platform !== 'linux' && asset.execution.libc !== 'none')
+  )
+    refuse('EXECUTION_RECEIPT');
 }
 export function inspectNativeAssets(directory, options = {}) {
   let manifest;
@@ -254,17 +268,7 @@ export function inspectNativeAssets(directory, options = {}) {
   )
     refuse('INVENTORY');
   const files = new Map(
-    expected.map((name) => [
-      name,
-      read(
-        join(directory, name),
-        name.endsWith('.node')
-          ? NATIVE_LIMITS.binaryBytes
-          : name === 'THIRD_PARTY_NOTICES.txt'
-            ? NATIVE_LIMITS.sourceBytes
-            : NATIVE_LIMITS.manifestBytes,
-      ),
-    ]),
+    expected.map((name) => [name, read(join(directory, name), nativeFileLimit(name))]),
   );
   if (sha256(files.get('THIRD_PARTY_NOTICES.txt')) !== manifest.noticesSha256) refuse('NOTICES');
   if (sha256(files.get('loader.cjs')) !== NATIVE_LOADER_SHA256) refuse('LOADER');
@@ -313,4 +317,10 @@ export function copyNativeAssets({
     new Map([...checked.files].filter(([name]) => name !== 'native-assets.json')),
   );
   return checked.manifest;
+}
+
+function nativeFileLimit(name) {
+  if (name.endsWith('.node')) return NATIVE_LIMITS.binaryBytes;
+  if (name === 'THIRD_PARTY_NOTICES.txt') return NATIVE_LIMITS.sourceBytes;
+  return NATIVE_LIMITS.manifestBytes;
 }

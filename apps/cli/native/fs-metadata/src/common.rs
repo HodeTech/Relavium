@@ -1713,150 +1713,155 @@ mod producer_crash_tests {
             ("partial-payload", false),
             ("partial-payload", true),
         ] {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "relavium-native-cut-{}-{nonce}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&root).expect("fixture root");
-            let home = root.join("home");
-            drop(CurrentProfile::create_private_directory(&home).expect("private home"));
-            let target = root.join("target");
-            if !is_new {
-                std::fs::write(&target, b"before").expect("fixture target");
+            native_producer_partial_crash_case(phase, is_new);
+        }
+    }
+
+    fn native_producer_partial_crash_case(phase: &str, is_new: bool) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "relavium-native-cut-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).expect("fixture root");
+        let home = root.join("home");
+        drop(CurrentProfile::create_private_directory(&home).expect("private home"));
+        let target = root.join("target");
+        if !is_new {
+            std::fs::write(&target, b"before").expect("fixture target");
+        }
+        seed_partial_metadata(&root, &target, phase);
+        let mut child = TestChild(
+            std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "common::producer_crash_tests::crash_child",
+                    "--nocapture",
+                ])
+                .env("RELAVIUM_TEST_NATIVE_ROOT", &root)
+                .env("RELAVIUM_TEST_NATIVE_NEW", if is_new { "1" } else { "0" })
+                .env("RELAVIUM_TEST_NATIVE_PHASE", phase)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("fixture child"),
+        );
+        let pid = child.0.id();
+        let stdout = child.0.stdout.take().expect("child stdout");
+        let (send, receive) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Some((_, code)) = line.split_once("RELAVIUM_NATIVE_CHECKPOINT:") {
+                    if let Some(known) = CHECKPOINTS.iter().copied().find(|known| *known == code) {
+                        let _ = send.send(Receipt::Checkpoint(known));
+                    }
+                }
+                if let Some((_, receipt)) = line.split_once("RELAVIUM_NATIVE_PHASE:") {
+                    let _ = send.send(Receipt::Phase(receipt.to_owned()));
+                    break;
+                }
             }
-            #[cfg(target_os = "macos")]
-            if phase == "partial-metadata" {
-                use std::os::fd::AsRawFd;
-                let source = File::open(&target).expect("source");
-                let name = std::ffi::CString::new("com.apple.quarantine").expect("name");
-                let value = b"0081;00000000;RelaviumProbe;";
-                assert_eq!(
-                    unsafe {
-                        libc::fsetxattr(
-                            source.as_raw_fd(),
-                            name.as_ptr(),
-                            value.as_ptr().cast(),
-                            value.len(),
-                            0,
-                            0,
-                        )
-                    },
-                    0
-                );
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut checkpoints = Vec::new();
+        let receipt = loop {
+            match receive
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            {
+                Ok(Receipt::Phase(receipt)) => break Some(receipt),
+                Ok(Receipt::Checkpoint(code)) => {
+                    if checkpoints.len() == 16 {
+                        checkpoints.remove(0);
+                    }
+                    checkpoints.push(code);
+                }
+                Err(_) => break None,
             }
-            #[cfg(target_os = "linux")]
-            if phase == "partial-metadata" {
-                use std::os::fd::AsRawFd;
-                let source = File::open(&target).expect("source");
-                let name = std::ffi::CString::new("user.relavium.fixture").expect("name");
-                let value = b"synthetic";
-                assert_eq!(
-                    unsafe {
-                        libc::fsetxattr(
-                            source.as_raw_fd(),
-                            name.as_ptr(),
-                            value.as_ptr().cast(),
-                            value.len(),
-                            0,
-                        )
-                    },
-                    0
-                );
-            }
-            #[cfg(windows)]
-            if phase == "partial-metadata" {
-                std::fs::write(
-                    root.join("target:Zone.Identifier"),
-                    b"[ZoneTransfer]\r\nZoneId=3\r\n",
-                )
-                .expect("fixture zone");
-            }
-            let mut child = TestChild(
-                std::process::Command::new(std::env::current_exe().expect("test executable"))
-                    .args([
-                        "--ignored",
-                        "--exact",
-                        "common::producer_crash_tests::crash_child",
-                        "--nocapture",
-                    ])
-                    .env("RELAVIUM_TEST_NATIVE_ROOT", &root)
-                    .env("RELAVIUM_TEST_NATIVE_NEW", if is_new { "1" } else { "0" })
-                    .env("RELAVIUM_TEST_NATIVE_PHASE", phase)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .expect("fixture child"),
+        };
+        if receipt.is_none() {
+            let _ = child.0.kill();
+            let _ = child.0.wait();
+            let _ = reader.join();
+            eprintln!("RELAVIUM_NATIVE_DIAGNOSTIC:{}", checkpoints.join(","));
+            panic!("native phase did not arrive");
+        }
+        assert!(receipt.expect("phase").contains(&format!("{phase}:{pid}")));
+        let stage = root.join(format!(
+            ".relavium-fs-stage-v1.{pid}.00112233445566778899aabbccddeeff"
+        ));
+        let length = std::fs::metadata(stage.join("payload"))
+            .expect("pinned payload")
+            .len();
+        if phase == "partial-payload" {
+            assert_eq!(length, 512 * 1024);
+        } else {
+            assert_eq!(length, 0);
+        }
+        child.0.kill().expect("kill child");
+        child.0.wait().expect("join child");
+        reader.join().expect("join receipt reader");
+        if is_new {
+            assert!(!target.exists());
+        } else {
+            assert_eq!(std::fs::read(&target).expect("unchanged target"), b"before");
+        }
+        let recovered = crate::stage_index::recover::<CurrentProfile>(&home).expect("recovery");
+        assert_eq!(recovered.removed, 1);
+        assert!(!stage.exists());
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+    fn seed_partial_metadata(_root: &Path, _target: &Path, phase: &str) {
+        #[cfg(target_os = "macos")]
+        if phase == "partial-metadata" {
+            use std::os::fd::AsRawFd;
+            let source = File::open(_target).expect("source");
+            let name = std::ffi::CString::new("com.apple.quarantine").expect("name");
+            let value = b"0081;00000000;RelaviumProbe;";
+            assert_eq!(
+                unsafe {
+                    libc::fsetxattr(
+                        source.as_raw_fd(),
+                        name.as_ptr(),
+                        value.as_ptr().cast(),
+                        value.len(),
+                        0,
+                        0,
+                    )
+                },
+                0
             );
-            let pid = child.0.id();
-            let stdout = child.0.stdout.take().expect("child stdout");
-            let (send, receive) = mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                for line in BufReader::new(stdout).lines() {
-                    let Ok(line) = line else { break };
-                    if let Some((_, code)) = line.split_once("RELAVIUM_NATIVE_CHECKPOINT:") {
-                        if let Some(known) =
-                            CHECKPOINTS.iter().copied().find(|known| *known == code)
-                        {
-                            let _ = send.send(Receipt::Checkpoint(known));
-                        }
-                    }
-                    if let Some((_, receipt)) = line.split_once("RELAVIUM_NATIVE_PHASE:") {
-                        let _ = send.send(Receipt::Phase(receipt.to_owned()));
-                        break;
-                    }
-                }
-            });
-            let deadline = std::time::Instant::now() + Duration::from_secs(15);
-            let mut checkpoints = Vec::new();
-            let receipt = loop {
-                match receive
-                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                {
-                    Ok(Receipt::Phase(receipt)) => break Some(receipt),
-                    Ok(Receipt::Checkpoint(code)) => {
-                        if checkpoints.len() == 16 {
-                            checkpoints.remove(0);
-                        }
-                        checkpoints.push(code);
-                    }
-                    Err(_) => break None,
-                }
-            };
-            if receipt.is_none() {
-                let _ = child.0.kill();
-                let _ = child.0.wait();
-                let _ = reader.join();
-                eprintln!("RELAVIUM_NATIVE_DIAGNOSTIC:{}", checkpoints.join(","));
-                panic!("native phase did not arrive");
-            }
-            assert!(receipt.expect("phase").contains(&format!("{phase}:{pid}")));
-            let stage = root.join(format!(
-                ".relavium-fs-stage-v1.{pid}.00112233445566778899aabbccddeeff"
-            ));
-            let length = std::fs::metadata(stage.join("payload"))
-                .expect("pinned payload")
-                .len();
-            if phase == "partial-payload" {
-                assert_eq!(length, 512 * 1024);
-            } else {
-                assert_eq!(length, 0);
-            }
-            child.0.kill().expect("kill child");
-            child.0.wait().expect("join child");
-            reader.join().expect("join receipt reader");
-            if is_new {
-                assert!(!target.exists());
-            } else {
-                assert_eq!(std::fs::read(&target).expect("unchanged target"), b"before");
-            }
-            let recovered = crate::stage_index::recover::<CurrentProfile>(&home).expect("recovery");
-            assert_eq!(recovered.removed, 1);
-            assert!(!stage.exists());
-            std::fs::remove_dir_all(root).expect("fixture cleanup");
+        }
+        #[cfg(target_os = "linux")]
+        if phase == "partial-metadata" {
+            use std::os::fd::AsRawFd;
+            let source = File::open(_target).expect("source");
+            let name = std::ffi::CString::new("user.relavium.fixture").expect("name");
+            let value = b"synthetic";
+            assert_eq!(
+                unsafe {
+                    libc::fsetxattr(
+                        source.as_raw_fd(),
+                        name.as_ptr(),
+                        value.as_ptr().cast(),
+                        value.len(),
+                        0,
+                    )
+                },
+                0
+            );
+        }
+        #[cfg(windows)]
+        if phase == "partial-metadata" {
+            std::fs::write(
+                _root.join("target:Zone.Identifier"),
+                b"[ZoneTransfer]\r\nZoneId=3\r\n",
+            )
+            .expect("fixture zone");
         }
     }
 }

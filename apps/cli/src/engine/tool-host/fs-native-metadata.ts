@@ -33,19 +33,27 @@ export interface NativeRuntimeWriteFloor {
 
 /** Capture the generated asset root only for an actual model-selected write. */
 export async function captureNativeRuntimeWriteFloor(): Promise<NativeRuntimeWriteFloor> {
-  const roots: string[] = [];
-  for (const root of nativeMetadataRuntimeRoots) {
-    const lexical = resolve(root);
-    roots.push(lexical);
-    try {
-      roots.push(await realpath(lexical));
-    } catch (error) {
-      if (
-        !(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
-      )
-        throw new HostDeniedError('filesystem metadata protection is unavailable');
-    }
-  }
+  const roots = (
+    await Promise.all(
+      nativeMetadataRuntimeRoots.map(async (root): Promise<string[]> => {
+        const lexical = resolve(root);
+        try {
+          return [lexical, await realpath(lexical)];
+        } catch (error) {
+          if (
+            !(
+              typeof error === 'object' &&
+              error !== null &&
+              'code' in error &&
+              error.code === 'ENOENT'
+            )
+          )
+            throw new HostDeniedError('filesystem metadata protection is unavailable');
+          return [lexical];
+        }
+      }),
+    )
+  ).flat();
   return Object.freeze({
     assertPath(path: string): void {
       const target = resolve(path);

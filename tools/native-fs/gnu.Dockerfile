@@ -7,7 +7,7 @@ COPY --from=rust /usr/local/rustup /usr/local/rustup
 COPY --from=rust /usr/local/cargo /usr/local/cargo
 ARG NODE_ARCH
 ARG NODE_SHA256
-RUN curl --fail --silent --show-error --location "https://nodejs.org/dist/v22.0.0/node-v22.0.0-linux-${NODE_ARCH}.tar.xz" --output /tmp/node.tar.xz && \
+RUN curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location "https://nodejs.org/dist/v22.0.0/node-v22.0.0-linux-${NODE_ARCH}.tar.xz" --output /tmp/node.tar.xz && \
     echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --strict && \
     tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local && rm /tmp/node.tar.xz
 ENV RUSTUP_HOME=/usr/local/rustup

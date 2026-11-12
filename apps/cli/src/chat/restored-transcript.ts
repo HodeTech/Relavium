@@ -35,19 +35,25 @@ function structuralTools(
   const unique = [...new Map(calls.map((call) => [call.id, call])).values()];
   const tools = unique.slice(0, 16).map((call): ToolCallView => {
     const matching = results.filter((result) => result.toolCallId === call.id);
-    const outcome =
-      matching.length !== 1
-        ? 'unknown'
-        : matching[0]?.outcome === 'ok'
-          ? 'success'
-          : matching[0]?.outcome === 'error'
-            ? 'failure'
-            : matching[0]?.outcome === 'denied'
-              ? 'denied'
-              : 'unknown';
+    const outcome = restoredToolOutcome(matching);
     return { id: call.id, toolId: call.name, resolved: true, outcome };
   });
   return { tools, omittedCalls: Math.max(0, unique.length - tools.length) };
+}
+function restoredToolOutcome(
+  matching: readonly { readonly outcome?: string }[],
+): NonNullable<ToolCallView['outcome']> {
+  if (matching.length !== 1) return 'unknown';
+  switch (matching[0]?.outcome) {
+    case 'ok':
+      return 'success';
+    case 'error':
+      return 'failure';
+    case 'denied':
+      return 'denied';
+    default:
+      return 'unknown';
+  }
 }
 type Region = 'summary' | 'trim' | 'retained';
 const textOf = (message: SessionMessage): string =>
@@ -151,9 +157,14 @@ export function restoreSessionTranscript(options: {
   const omitted = total - visible;
   const retained = selected.some((unit) => regionOf(unit) === 'retained');
   const notice = (text: string): TranscriptEntry => ({ role: 'notice', text });
+  const omittedNotice = omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`;
+  const toolNotice =
+    totalCalls === 0
+      ? ''
+      : `${visibleCalls} structural tool calls restored; ${totalCalls - visibleCalls} omitted tool calls. Targets, previews, results and diff statistics are unavailable. `;
   const entries: TranscriptEntry[] = [
     notice(
-      `Restored ${visible} history entries${omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`} ${totalCalls === 0 ? '' : `${visibleCalls} structural tool calls restored; ${totalCalls - visibleCalls} omitted tool calls. Targets, previews, results and diff statistics are unavailable. `}Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
+      `Restored ${visible} history entries${omittedNotice} ${toolNotice}Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
     ),
   ];
   if (policy !== undefined) entries.push(notice(policy));

@@ -8,7 +8,7 @@ import { HostDeniedError } from './errors.js';
 
 // The child inherits the actual kernel mask. Its process.umask() query cannot
 // change the host's mask; no model input is interpolated into this program.
-const MASK_QUERY = "process.stdout.write(process.umask().toString(8).padStart(4,'0')+'\\n')";
+const MASK_QUERY = String.raw`process.stdout.write(process.umask().toString(8).padStart(4,'0')+'\n')`;
 const MASK_QUERY_TIMEOUT_MS = 2_000;
 
 /** Skip the child only when the native profile can query the mask itself. */

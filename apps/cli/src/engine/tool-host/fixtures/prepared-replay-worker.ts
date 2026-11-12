@@ -125,6 +125,29 @@ const tools = BUILTIN_TOOLS.filter((tool) =>
   ['read_file', 'list_directory', 'edit_file', 'write_file'].includes(tool.id),
 );
 const registry = createToolRegistry({ tools, host: { fs } });
+function fixtureCall(
+  read: boolean,
+  changed: string,
+): { name: string; args: Record<string, unknown> } {
+  let call: { name: string; args: Record<string, unknown> };
+  if (read) {
+    call =
+      operation === 'create'
+        ? { name: 'list_directory', args: { path: '.' } }
+        : { name: 'read_file', args: { path: 'target.txt' } };
+  } else if (operation === 'edit') {
+    call = {
+      name: 'edit_file',
+      args: { path: 'target.txt', old_string: 'old', new_string: changed },
+    };
+  } else {
+    const args: Record<string, unknown> = { path: 'target.txt', content: `${changed}\n` };
+    if (operation === 'append') args['append'] = true;
+    if (operation === 'overwrite') args['append'] = false;
+    call = { name: 'write_file', args };
+  }
+  return call;
+}
 const provider: LlmProvider = {
   id: 'openai',
   customEndpoint: true,
@@ -136,27 +159,7 @@ const provider: LlmProvider = {
     if (providerCalls <= 2) {
       const read = providerCalls === 1 && variant !== 'reordered';
       const changed = variant === 'mismatch' ? 'different' : 'new';
-      const call = read
-        ? operation === 'create'
-          ? { name: 'list_directory', args: { path: '.' } }
-          : { name: 'read_file', args: { path: 'target.txt' } }
-        : operation === 'edit'
-          ? {
-              name: 'edit_file',
-              args: { path: 'target.txt', old_string: 'old', new_string: changed },
-            }
-          : {
-              name: 'write_file',
-              args: {
-                path: 'target.txt',
-                content: `${changed}\n`,
-                ...(operation === 'append'
-                  ? { append: true }
-                  : operation === 'overwrite'
-                    ? { append: false }
-                    : {}),
-              },
-            };
+      const call = fixtureCall(read, changed);
       yield { type: 'tool_call_start', id: `provider-${String(providerCalls)}`, name: call.name };
       yield {
         type: 'tool_call_delta',

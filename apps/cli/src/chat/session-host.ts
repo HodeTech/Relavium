@@ -1063,19 +1063,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   try {
     opts.workOwner?.assertAdmitting();
     if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
-      outputStore =
-        opts.outputStoreFactory === undefined
-          ? await createSessionOutputStore({ homeDir: opts.operatorHomeDir })
-          : await opts.outputStoreFactory(opts.operatorHomeDir);
-    if (outputStore?.startupSweep.incomplete === true) {
-      try {
-        opts.onListenerError?.(
-          'Output cleanup scanned a bounded subset; remaining folders were preserved.',
-        );
-      } catch {
-        /* advisory */
-      }
-    }
+      outputStore = await prepareSessionOutputStore(opts.operatorHomeDir, opts.outputStoreFactory);
+    reportOutputStartupSweep(outputStore, opts.onListenerError);
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1130,10 +1119,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
-      ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
-      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
-      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
-      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+      ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -1158,16 +1144,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
-    if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
-      reportOutputCleanupFailure(opts, err);
-    if (outputStore !== undefined) {
-      try {
-        await outputStore.close();
-      } catch (cause) {
-        reportOutputCleanupFailure(opts, cause);
-      }
-    }
-    await releaseFailedBuild(opts.workOwner, mcp, err);
+    await cleanupFailedSessionBuild(opts, outputStore, mcp, err);
     throw err;
   }
 }
@@ -1425,19 +1402,8 @@ export async function buildResumedChatSession(
   try {
     opts.workOwner?.assertAdmitting();
     if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
-      outputStore =
-        opts.outputStoreFactory === undefined
-          ? await createSessionOutputStore({ homeDir: opts.operatorHomeDir })
-          : await opts.outputStoreFactory(opts.operatorHomeDir);
-    if (outputStore?.startupSweep.incomplete === true) {
-      try {
-        opts.onListenerError?.(
-          'Output cleanup scanned a bounded subset; remaining folders were preserved.',
-        );
-      } catch {
-        /* advisory */
-      }
-    }
+      outputStore = await prepareSessionOutputStore(opts.operatorHomeDir, opts.outputStoreFactory);
+    reportOutputStartupSweep(outputStore, opts.onListenerError);
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1494,10 +1460,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
-      ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
-      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
-      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
-      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+      ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -1523,16 +1486,7 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
-    if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
-      reportOutputCleanupFailure(opts, err);
-    if (outputStore !== undefined) {
-      try {
-        await outputStore.close();
-      } catch (cause) {
-        reportOutputCleanupFailure(opts, cause);
-      }
-    }
-    await releaseFailedBuild(opts.workOwner, mcp, err);
+    await cleanupFailedSessionBuild(opts, outputStore, mcp, err);
     throw err;
   }
 }
@@ -1762,4 +1716,55 @@ function sessionContextWindow(agent: AgentDefinition, deps: SessionDeps): number
     // Optional host capacity metadata degrades to unknown; the foreground seam still validates requests.
     return undefined;
   }
+}
+
+/** Keep factory resolution separate from advisories: callers acquire custody before inspecting the store. */
+async function prepareSessionOutputStore(
+  homeDir: string,
+  factory: BuildChatSessionOptions['outputStoreFactory'],
+): Promise<SessionOutputStore | undefined> {
+  return factory === undefined ? createSessionOutputStore({ homeDir }) : factory(homeDir);
+}
+function reportOutputStartupSweep(
+  outputStore: SessionOutputStore | undefined,
+  onListenerError: BuildChatSessionOptions['onListenerError'],
+): void {
+  if (outputStore?.startupSweep.incomplete !== true) return;
+  try {
+    onListenerError?.('Output cleanup scanned a bounded subset; remaining folders were preserved.');
+  } catch {
+    // This advisory never changes output-store custody or the build result.
+  }
+}
+
+async function cleanupFailedSessionBuild(
+  opts: Pick<BuildChatSessionOptions, 'workOwner' | 'onListenerError'>,
+  outputStore: SessionOutputStore | undefined,
+  mcp: McpClient | undefined,
+  err: unknown,
+): Promise<void> {
+  if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
+    reportOutputCleanupFailure(opts, err);
+  if (outputStore !== undefined) {
+    try {
+      await outputStore.close();
+    } catch (cause) {
+      reportOutputCleanupFailure(opts, cause);
+    }
+  }
+  await releaseFailedBuild(opts.workOwner, mcp, err);
+}
+
+function sessionBuildMetadata(
+  opts: Pick<
+    BuildChatSessionOptions,
+    'startingMode' | 'workOwner' | 'fsPolicy' | 'operatorHomeDir'
+  >,
+): Pick<BuiltChatSession, 'startingMode' | 'workOwner' | 'fsPolicy' | 'operatorHomeDir'> {
+  return {
+    ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
+    ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
+    ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+    ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+  };
 }

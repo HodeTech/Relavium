@@ -1624,7 +1624,8 @@ impl Profile for WindowsProfile {
 }
 
 #[cfg(test)]
-pub(crate) fn rename_parameter_probe() {
+mod rename_probe {
+    use super::*;
     use std::io::{Read, Seek, SeekFrom};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1824,6 +1825,29 @@ pub(crate) fn rename_parameter_probe() {
         }
         (Ok(()), false)
     }
+    enum RowLabel<'a> {
+        Matrix {
+            class_label: &'a str,
+            size_label: &'a str,
+            root_label: &'a str,
+        },
+        Peer(&'a str),
+    }
+    struct ProbeRow<'a> {
+        root_handle: &'a File,
+        other: &'a File,
+        root: &'a Path,
+        other_path: &'a Path,
+        row: usize,
+        class_kind: u8,
+        size_mode: u8,
+        absolute: bool,
+        location_label: &'a str,
+        cross: bool,
+        operation_label: &'a str,
+        replace: bool,
+        label: RowLabel<'a>,
+    }
     fn peer_rows(
         peer_label: &str,
         root_handle: &File,
@@ -1832,311 +1856,278 @@ pub(crate) fn rename_parameter_probe() {
         other_path: &Path,
         row: &mut usize,
     ) {
-        let class_kind = 2;
-        let size_mode = 2;
-        let absolute = false;
         for (location_label, cross) in [("same", false), ("cross", true)] {
             for (operation_label, replace) in [("new", false), ("replace", true)] {
-                let source_name = format!("source-{row}");
-                let target_name = format!("target-{row}");
-                let source = create(root_handle, &source_name, b"new");
-                let source_id = identity(&source).expect("source identity");
-                let target_parent = if cross { other } else { root_handle };
-                let target_dir = if cross { other_path } else { root };
-                let prior = if replace {
-                    Some(create(target_parent, &target_name, b"old"))
-                } else {
-                    None
-                };
-                let (outcome, mut pending) = attempt(
-                    &source,
-                    target_parent,
-                    &target_name,
-                    class_kind,
-                    size_mode,
-                    absolute,
+                run_row(ProbeRow {
+                    root_handle,
+                    other,
+                    root,
+                    other_path,
+                    row: *row,
+                    class_kind: 2,
+                    size_mode: 2,
+                    absolute: false,
+                    location_label,
+                    cross,
+                    operation_label,
                     replace,
-                );
-                let source_path = root.join(&source_name);
-                let target_path = target_dir.join(&target_name);
-                let status = match outcome {
-                    Ok(()) => {
-                        let opened = open(
-                            &target_path,
-                            FILE_GENERIC_READ,
-                            OPEN_EXISTING,
-                            0,
-                            ptr::null(),
-                        );
-                        let proof = !source_path.exists()
-                            && opened.as_ref().is_ok_and(|f| {
-                                identity(f).is_ok_and(|id| id == source_id) && contents(f) == b"new"
-                            })
-                            && prior.as_ref().is_none_or(|f| contents(f) == b"old");
-                        if !proof {
-                            "mutation"
-                        } else if !replace {
-                            let collision_source_name = format!("collision-source-{row}");
-                            let collision_target_name = format!("collision-target-{row}");
-                            let collision_source =
-                                create(root_handle, &collision_source_name, b"pending");
-                            let collision_target =
-                                create(target_parent, &collision_target_name, b"foreign");
-                            let (collided, collision_pending) = attempt(
-                                &collision_source,
-                                target_parent,
-                                &collision_target_name,
-                                class_kind,
-                                size_mode,
-                                absolute,
-                                false,
-                            );
-                            pending |= collision_pending;
-                            if collided.is_err()
-                                && path_matches(
-                                    &root.join(&collision_source_name),
-                                    &collision_source,
-                                    b"pending",
-                                )
-                                && path_matches(
-                                    &target_dir.join(&collision_target_name),
-                                    &collision_target,
-                                    b"foreign",
-                                )
-                            {
-                                "ok"
-                            } else {
-                                "mutation"
-                            }
-                        } else {
-                            "ok"
-                        }
-                    }
-                    Err(category) => {
-                        if !path_matches(&source_path, &source, b"new")
-                            || prior
-                                .as_ref()
-                                .is_some_and(|f| !path_matches(&target_path, f, b"old"))
-                            || (!replace && target_path.exists())
-                        {
-                            "mutation"
-                        } else {
-                            category
-                        }
-                    }
-                };
-                let status = if pending && status != "mutation" {
-                    "pending"
-                } else {
-                    status
-                };
-                println!("RELAVIUM_NATIVE_RENAME_PROBE:nt-padded-peer-{peer_label}-{location_label}-{operation_label}:{status}");
+                    label: RowLabel::Peer(peer_label),
+                });
                 *row += 1;
             }
         }
     }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("probe clock")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "relavium-native-rename-probe-{}-{nonce}",
-        std::process::id()
-    ));
-    let root_peer = WindowsProfile::create_private_directory(&root).expect("private probe root");
-    let root_handle = broad_directory(&root, &root_peer);
-    drop(root_peer);
-    let root_identity = identity(&root_handle).expect("private probe root identity");
-    let mut cleanup = ProbeCleanup {
-        root: root.clone(),
-        held: Some(root_handle),
-        root_identity,
-    };
-    let root_handle = cleanup
-        .held
-        .as_ref()
-        .expect("root handle")
-        .try_clone()
-        .expect("clone root");
-    let other_path = root.join("other");
-    let other_peer =
-        WindowsProfile::create_private_directory(&other_path).expect("private probe directory");
-    let other = broad_directory(&other_path, &other_peer);
-    drop(other_peer);
-    let mut row = 0;
-    for (class_label, class_kind) in [("legacy", 0), ("ex", 1), ("nt", 2)] {
-        for (size_label, size_mode) in [("minimal", 0), ("nul", 1), ("padded", 2)] {
-            for (root_label, absolute) in [("relative", false), ("absolute", true)] {
-                if class_kind == 2 && absolute {
-                    continue;
+    fn run_row(
+        ProbeRow {
+            root_handle,
+            other,
+            root,
+            other_path,
+            row,
+            class_kind,
+            size_mode,
+            absolute,
+            location_label,
+            cross,
+            operation_label,
+            replace,
+            label,
+        }: ProbeRow<'_>,
+    ) {
+        let source_name = format!("source-{row}");
+        let target_name = format!("target-{row}");
+        let source = create(root_handle, &source_name, b"new");
+        let source_id = identity(&source).expect("source identity");
+        let target_parent = if cross { other } else { root_handle };
+        let target_dir = if cross { other_path } else { &root };
+        let prior = if replace {
+            Some(create(target_parent, &target_name, b"old"))
+        } else {
+            None
+        };
+        let (outcome, mut pending) = attempt(
+            &source,
+            target_parent,
+            &target_name,
+            class_kind,
+            size_mode,
+            absolute,
+            replace,
+        );
+        let source_path = root.join(&source_name);
+        let target_path = target_dir.join(&target_name);
+        let status = match outcome {
+            Ok(()) => {
+                let opened = open(
+                    &target_path,
+                    FILE_GENERIC_READ,
+                    OPEN_EXISTING,
+                    0,
+                    ptr::null(),
+                );
+                let proof = !source_path.exists()
+                    && opened.as_ref().is_ok_and(|f| {
+                        identity(f).is_ok_and(|id| id == source_id) && contents(f) == b"new"
+                    })
+                    && prior.as_ref().is_none_or(|f| contents(f) == b"old");
+                if !proof {
+                    "mutation"
+                } else if !replace {
+                    let collision_source_name = format!("collision-source-{row}");
+                    let collision_target_name = format!("collision-target-{row}");
+                    let collision_source = create(root_handle, &collision_source_name, b"pending");
+                    let collision_target =
+                        create(target_parent, &collision_target_name, b"foreign");
+                    let (collided, collision_pending) = attempt(
+                        &collision_source,
+                        target_parent,
+                        &collision_target_name,
+                        class_kind,
+                        size_mode,
+                        absolute,
+                        false,
+                    );
+                    pending |= collision_pending;
+                    if collided.is_err()
+                        && path_matches(
+                            &root.join(&collision_source_name),
+                            &collision_source,
+                            b"pending",
+                        )
+                        && path_matches(
+                            &target_dir.join(&collision_target_name),
+                            &collision_target,
+                            b"foreign",
+                        )
+                    {
+                        "ok"
+                    } else {
+                        "mutation"
+                    }
+                } else {
+                    "ok"
                 }
-                for (location_label, cross) in [("same", false), ("cross", true)] {
-                    for (operation_label, replace) in [("new", false), ("replace", true)] {
-                        let source_name = format!("source-{row}");
-                        let target_name = format!("target-{row}");
-                        let source = create(&root_handle, &source_name, b"new");
-                        let source_id = identity(&source).expect("source identity");
-                        let target_parent = if cross { &other } else { &root_handle };
-                        let target_dir = if cross { &other_path } else { &root };
-                        let prior = if replace {
-                            Some(create(target_parent, &target_name, b"old"))
-                        } else {
-                            None
-                        };
-                        let (outcome, mut pending) = attempt(
-                            &source,
-                            target_parent,
-                            &target_name,
-                            class_kind,
-                            size_mode,
-                            absolute,
-                            replace,
-                        );
-                        let source_path = root.join(&source_name);
-                        let target_path = target_dir.join(&target_name);
-                        let status = match outcome {
-                            Ok(()) => {
-                                let opened = open(
-                                    &target_path,
-                                    FILE_GENERIC_READ,
-                                    OPEN_EXISTING,
-                                    0,
-                                    ptr::null(),
-                                );
-                                let proof = !source_path.exists()
-                                    && opened.as_ref().is_ok_and(|f| {
-                                        identity(f).is_ok_and(|id| id == source_id)
-                                            && contents(f) == b"new"
-                                    })
-                                    && prior.as_ref().is_none_or(|f| contents(f) == b"old");
-                                if !proof {
-                                    "mutation"
-                                } else if !replace {
-                                    let collision_source_name = format!("collision-source-{row}");
-                                    let collision_target_name = format!("collision-target-{row}");
-                                    let collision_source =
-                                        create(&root_handle, &collision_source_name, b"pending");
-                                    let collision_target =
-                                        create(target_parent, &collision_target_name, b"foreign");
-                                    let (collided, collision_pending) = attempt(
-                                        &collision_source,
-                                        target_parent,
-                                        &collision_target_name,
-                                        class_kind,
-                                        size_mode,
-                                        absolute,
-                                        false,
-                                    );
-                                    pending |= collision_pending;
-                                    if collided.is_err()
-                                        && path_matches(
-                                            &root.join(&collision_source_name),
-                                            &collision_source,
-                                            b"pending",
-                                        )
-                                        && path_matches(
-                                            &target_dir.join(&collision_target_name),
-                                            &collision_target,
-                                            b"foreign",
-                                        )
-                                    {
-                                        "ok"
-                                    } else {
-                                        "mutation"
-                                    }
-                                } else {
-                                    "ok"
-                                }
-                            }
-                            Err(category) => {
-                                if !path_matches(&source_path, &source, b"new")
-                                    || prior
-                                        .as_ref()
-                                        .is_some_and(|f| !path_matches(&target_path, f, b"old"))
-                                    || (!replace && target_path.exists())
-                                {
-                                    "mutation"
-                                } else {
-                                    category
-                                }
-                            }
-                        };
-                        let status = if pending && status != "mutation" {
-                            "pending"
-                        } else {
-                            status
-                        };
-                        println!("RELAVIUM_NATIVE_RENAME_PROBE:{class_label}-{size_label}-{root_label}-{location_label}-{operation_label}:{status}");
-                        row += 1;
+            }
+            Err(category) => {
+                if !path_matches(&source_path, &source, b"new")
+                    || prior
+                        .as_ref()
+                        .is_some_and(|f| !path_matches(&target_path, f, b"old"))
+                    || (!replace && target_path.exists())
+                {
+                    "mutation"
+                } else {
+                    category
+                }
+            }
+        };
+        let status = if pending && status != "mutation" {
+            "pending"
+        } else {
+            status
+        };
+        match label {
+            RowLabel::Matrix { class_label, size_label, root_label } => println!("RELAVIUM_NATIVE_RENAME_PROBE:{class_label}-{size_label}-{root_label}-{location_label}-{operation_label}:{status}"),
+            RowLabel::Peer(peer_label) => println!("RELAVIUM_NATIVE_RENAME_PROBE:nt-padded-peer-{peer_label}-{location_label}-{operation_label}:{status}"),
+        }
+    }
+    pub(crate) fn rename_parameter_probe() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("probe clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "relavium-native-rename-probe-{}-{nonce}",
+            std::process::id()
+        ));
+        let root_peer =
+            WindowsProfile::create_private_directory(&root).expect("private probe root");
+        let root_handle = broad_directory(&root, &root_peer);
+        drop(root_peer);
+        let root_identity = identity(&root_handle).expect("private probe root identity");
+        let mut cleanup = ProbeCleanup {
+            root: root.clone(),
+            held: Some(root_handle),
+            root_identity,
+        };
+        let root_handle = cleanup
+            .held
+            .as_ref()
+            .expect("root handle")
+            .try_clone()
+            .expect("clone root");
+        let other_path = root.join("other");
+        let other_peer =
+            WindowsProfile::create_private_directory(&other_path).expect("private probe directory");
+        let other = broad_directory(&other_path, &other_peer);
+        drop(other_peer);
+        let mut row = 0;
+        for (class_label, class_kind) in [("legacy", 0), ("ex", 1), ("nt", 2)] {
+            for (size_label, size_mode) in [("minimal", 0), ("nul", 1), ("padded", 2)] {
+                for (root_label, absolute) in [("relative", false), ("absolute", true)] {
+                    if class_kind == 2 && absolute {
+                        continue;
+                    }
+                    for (location_label, cross) in [("same", false), ("cross", true)] {
+                        for (operation_label, replace) in [("new", false), ("replace", true)] {
+                            run_row(ProbeRow {
+                                root_handle: &root_handle,
+                                other: &other,
+                                root: &root,
+                                other_path: &other_path,
+                                row,
+                                class_kind,
+                                size_mode,
+                                absolute,
+                                location_label,
+                                cross,
+                                operation_label,
+                                replace,
+                                label: RowLabel::Matrix {
+                                    class_label,
+                                    size_label,
+                                    root_label,
+                                },
+                            });
+                            row += 1;
+                        }
                     }
                 }
             }
         }
-    }
-    assert_eq!(row, 60);
-    // Pin both ordinary peers while every original creation handle is held.
-    let original_root_id = WindowsProfile::identity(&root_handle).expect("root full identity");
-    let original_other_id = WindowsProfile::identity(&other).expect("other full identity");
-    let rw_root = WindowsProfile::open_parent(&root).expect("read-write root peer");
-    let rw_other = WindowsProfile::open_parent(&other_path).expect("read-write other peer");
-    WindowsProfile::verify_private_directory(&root, &rw_root).expect("root peer privacy");
-    WindowsProfile::verify_private_directory(&other_path, &rw_other).expect("other peer privacy");
-    assert!(
-        WindowsProfile::identity(&rw_root).expect("root peer full identity") == original_root_id
-    );
-    assert!(
-        WindowsProfile::identity(&rw_other).expect("other peer full identity") == original_other_id
-    );
-    let previous = cleanup
-        .held
-        .replace(rw_root.try_clone().expect("pin root peer"));
-    drop(previous);
-    drop(root_handle);
-    drop(other);
-    peer_rows("rw", &rw_root, &rw_other, &root, &other_path, &mut row);
+        assert_eq!(row, 60);
+        // Pin both ordinary peers while every original creation handle is held.
+        let original_root_id = WindowsProfile::identity(&root_handle).expect("root full identity");
+        let original_other_id = WindowsProfile::identity(&other).expect("other full identity");
+        let rw_root = WindowsProfile::open_parent(&root).expect("read-write root peer");
+        let rw_other = WindowsProfile::open_parent(&other_path).expect("read-write other peer");
+        WindowsProfile::verify_private_directory(&root, &rw_root).expect("root peer privacy");
+        WindowsProfile::verify_private_directory(&other_path, &rw_other)
+            .expect("other peer privacy");
+        assert!(
+            WindowsProfile::identity(&rw_root).expect("root peer full identity")
+                == original_root_id
+        );
+        assert!(
+            WindowsProfile::identity(&rw_other).expect("other peer full identity")
+                == original_other_id
+        );
+        let previous = cleanup
+            .held
+            .replace(rw_root.try_clone().expect("pin root peer"));
+        drop(previous);
+        drop(root_handle);
+        drop(other);
+        peer_rows("rw", &rw_root, &rw_other, &root, &other_path, &mut row);
 
-    // Open thin handles while the read-write peers remain pinned, then retire
-    // every read-write peer, including the cleanup guard's clone.
-    let thin = |path: &Path| {
-        open(
-            path,
-            FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL_ACCESS | SYNCHRONIZE,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            ptr::null(),
-        )
-        .expect("thin directory peer")
-    };
-    let thin_root = thin(&root);
-    let thin_other = thin(&other_path);
-    WindowsProfile::verify_private_directory(&root, &thin_root).expect("thin root privacy");
-    WindowsProfile::verify_private_directory(&other_path, &thin_other).expect("thin other privacy");
-    assert!(
-        WindowsProfile::identity(&thin_root).expect("thin root full identity") == original_root_id
-    );
-    assert!(
-        WindowsProfile::identity(&thin_other).expect("thin other full identity")
-            == original_other_id
-    );
-    let previous = cleanup
-        .held
-        .replace(thin_root.try_clone().expect("pin thin root"));
-    drop(previous);
-    drop(rw_root);
-    drop(rw_other);
-    peer_rows(
-        "thin",
-        &thin_root,
-        &thin_other,
-        &root,
-        &other_path,
-        &mut row,
-    );
-    assert_eq!(row, 68);
-    drop(thin_other);
-    drop(thin_root);
-    drop(cleanup);
+        // Open thin handles while the read-write peers remain pinned, then retire
+        // every read-write peer, including the cleanup guard's clone.
+        let thin = |path: &Path| {
+            open(
+                path,
+                FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL_ACCESS | SYNCHRONIZE,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                ptr::null(),
+            )
+            .expect("thin directory peer")
+        };
+        let thin_root = thin(&root);
+        let thin_other = thin(&other_path);
+        WindowsProfile::verify_private_directory(&root, &thin_root).expect("thin root privacy");
+        WindowsProfile::verify_private_directory(&other_path, &thin_other)
+            .expect("thin other privacy");
+        assert!(
+            WindowsProfile::identity(&thin_root).expect("thin root full identity")
+                == original_root_id
+        );
+        assert!(
+            WindowsProfile::identity(&thin_other).expect("thin other full identity")
+                == original_other_id
+        );
+        let previous = cleanup
+            .held
+            .replace(thin_root.try_clone().expect("pin thin root"));
+        drop(previous);
+        drop(rw_root);
+        drop(rw_other);
+        peer_rows(
+            "thin",
+            &thin_root,
+            &thin_other,
+            &root,
+            &other_path,
+            &mut row,
+        );
+        assert_eq!(row, 68);
+        drop(thin_other);
+        drop(thin_root);
+        drop(cleanup);
+    }
 }
+
+#[cfg(test)]
+pub(crate) use rename_probe::rename_parameter_probe;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -2186,7 +2177,8 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn security_descriptor_probe() {
+    mod security_probe {
+        use super::*;
         fn has_inherited(policy: &Policy) -> Option<bool> {
             let descriptor = policy.descriptor.as_ptr().cast_mut().cast();
             let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
@@ -2275,133 +2267,146 @@ pub(crate) mod tests {
                 "exact"
             }
         }
-        for case in ["protected", "unprotected", "inherited"] {
-            for setter in ["setinfo", "nt-basic", "nt-protection", "nt-request"] {
-                let fixture = Fixture::new();
-                if case == "inherited" {
-                    set_inheritable_user_acl(&fixture.directory);
-                }
-                let source = if case == "protected" {
-                    let mut file = WindowsProfile::create_private_file(
-                        &fixture.directory,
-                        OsStr::new("source"),
-                    )
-                    .expect("protected probe source");
-                    assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
-                    assert!(file.sync_all().is_ok(), "source flush");
-                    file
+        fn apply_probe_setter(
+            source_policy: &Policy,
+            stage: &File,
+            proper_case: bool,
+            setter: &str,
+        ) -> Result<(), &'static str> {
+            let sd = source_policy.descriptor.as_ptr().cast_mut().cast();
+            let protection = if source_policy.control & SE_DACL_PROTECTED != 0 {
+                PROTECTED_DACL_SECURITY_INFORMATION
+            } else {
+                UNPROTECTED_DACL_SECURITY_INFORMATION
+            };
+            if !proper_case {
+                Err("unsupported")
+            } else if setter == "nt-request" {
+                apply_captured_security(source_policy, stage).map_err(|error| match error {
+                    NativeFailure::AccessDenied => "access-denied",
+                    NativeFailure::Unsupported => "unsupported",
+                    _ => "error",
+                })
+            } else if setter == "setinfo" {
+                let (mut owner, mut group, mut dacl) =
+                    (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                let (mut present, mut defaulted) = (0, 0);
+                if unsafe { GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
+                    || unsafe { GetSecurityDescriptorGroup(sd, &mut group, &mut defaulted) } == 0
+                    || unsafe {
+                        GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted)
+                    } == 0
+                    || present == 0
+                    || dacl.is_null()
+                {
+                    Err("error")
                 } else {
-                    let mut file = open(
-                        &fixture.path.join("source"),
-                        FILE_GENERIC_READ
-                            | FILE_GENERIC_WRITE
-                            | DELETE_ACCESS
-                            | WRITE_DAC_ACCESS
-                            | WRITE_OWNER_ACCESS,
-                        CREATE_NEW,
-                        0,
-                        ptr::null(),
-                    )
-                    .expect("ordinary probe source");
-                    assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
-                    assert!(file.sync_all().is_ok(), "source flush");
-                    file
-                };
-                let source_policy = policy(&source).expect("source policy");
-                let inherited = has_inherited(&source_policy);
-                let proper_case = match case {
-                    "protected" => {
-                        source_policy.control & SE_DACL_PROTECTED != 0 && inherited.is_some()
-                    }
-                    "unprotected" => {
-                        source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(false)
-                    }
-                    _ => source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(true),
-                };
-                let (_stage_path, _stage_parent, stage) = fixture.stage();
-                let stage_id = WindowsProfile::identity(&stage).expect("stage identity");
-                let sd = source_policy.descriptor.as_ptr().cast_mut().cast();
-                let protection = if source_policy.control & SE_DACL_PROTECTED != 0 {
-                    PROTECTED_DACL_SECURITY_INFORMATION
-                } else {
-                    UNPROTECTED_DACL_SECURITY_INFORMATION
-                };
-                let result = if !proper_case {
-                    Err("unsupported")
-                } else if setter == "nt-request" {
-                    apply_captured_security(&source_policy, &stage).map_err(|error| match error {
-                        NativeFailure::AccessDenied => "access-denied",
-                        NativeFailure::Unsupported => "unsupported",
-                        _ => "error",
-                    })
-                } else if setter == "setinfo" {
-                    let (mut owner, mut group, mut dacl) =
-                        (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
-                    let (mut present, mut defaulted) = (0, 0);
-                    if unsafe { GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
-                        || unsafe { GetSecurityDescriptorGroup(sd, &mut group, &mut defaulted) }
-                            == 0
-                        || unsafe {
-                            GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted)
-                        } == 0
-                        || present == 0
-                        || dacl.is_null()
-                    {
-                        Err("error")
-                    } else {
-                        let code = unsafe {
-                            SetSecurityInfo(
-                                handle(&stage),
-                                SE_FILE_OBJECT,
-                                POLICY_INFO | protection,
-                                owner,
-                                group,
-                                dacl,
-                                ptr::null(),
-                            )
-                        };
-                        if code == ERROR_SUCCESS {
-                            Ok(())
-                        } else {
-                            Err(error_status(code))
-                        }
-                    }
-                } else {
-                    let flags = if setter == "nt-protection" {
-                        POLICY_INFO | protection
-                    } else {
-                        POLICY_INFO
+                    let code = unsafe {
+                        SetSecurityInfo(
+                            handle(stage),
+                            SE_FILE_OBJECT,
+                            POLICY_INFO | protection,
+                            owner,
+                            group,
+                            dacl,
+                            ptr::null(),
+                        )
                     };
-                    let code = unsafe { NtSetSecurityObject(handle(&stage), flags, sd) };
-                    if code == STATUS_PENDING {
-                        std::process::abort();
-                    }
-                    if code == STATUS_SUCCESS {
+                    if code == ERROR_SUCCESS {
                         Ok(())
                     } else {
-                        Err(error_status(unsafe { RtlNtStatusToDosError(code) }))
+                        Err(error_status(code))
                     }
-                };
-                let unchanged = WindowsProfile::identity(&stage).is_ok_and(|id| id == stage_id)
-                    && stage.metadata().is_ok_and(|m| m.len() == 0)
-                    && std::fs::read(fixture.path.join("source"))
-                        .is_ok_and(|bytes| bytes == b"source bytes")
-                    && policy(&source).is_ok_and(|after| same_policy(&after, &source_policy));
-                let status = if !unchanged {
-                    "error"
+                }
+            } else {
+                let flags = if setter == "nt-protection" {
+                    POLICY_INFO | protection
                 } else {
-                    match result {
-                        Ok(()) => match policy(&stage) {
-                            Ok(stage_policy) => difference(&source_policy, &stage_policy),
-                            Err(_) => "error",
-                        },
-                        Err(status) => status,
-                    }
+                    POLICY_INFO
                 };
-                println!("RELAVIUM_NATIVE_SECURITY_PROBE:{case}-{setter}:{status}");
+                let code = unsafe { NtSetSecurityObject(handle(stage), flags, sd) };
+                if code == STATUS_PENDING {
+                    std::process::abort();
+                }
+                if code == STATUS_SUCCESS {
+                    Ok(())
+                } else {
+                    Err(error_status(unsafe { RtlNtStatusToDosError(code) }))
+                }
+            }
+        }
+
+        fn security_descriptor_case(case: &str, setter: &str) {
+            let fixture = Fixture::new();
+            if case == "inherited" {
+                set_inheritable_user_acl(&fixture.directory);
+            }
+            let source = if case == "protected" {
+                let mut file =
+                    WindowsProfile::create_private_file(&fixture.directory, OsStr::new("source"))
+                        .expect("protected probe source");
+                assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
+                assert!(file.sync_all().is_ok(), "source flush");
+                file
+            } else {
+                let mut file = open(
+                    &fixture.path.join("source"),
+                    FILE_GENERIC_READ
+                        | FILE_GENERIC_WRITE
+                        | DELETE_ACCESS
+                        | WRITE_DAC_ACCESS
+                        | WRITE_OWNER_ACCESS,
+                    CREATE_NEW,
+                    0,
+                    ptr::null(),
+                )
+                .expect("ordinary probe source");
+                assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
+                assert!(file.sync_all().is_ok(), "source flush");
+                file
+            };
+            let source_policy = policy(&source).expect("source policy");
+            let inherited = has_inherited(&source_policy);
+            let proper_case = match case {
+                "protected" => {
+                    source_policy.control & SE_DACL_PROTECTED != 0 && inherited.is_some()
+                }
+                "unprotected" => {
+                    source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(false)
+                }
+                _ => source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(true),
+            };
+            let (_stage_path, _stage_parent, stage) = fixture.stage();
+            let stage_id = WindowsProfile::identity(&stage).expect("stage identity");
+            let result = apply_probe_setter(&source_policy, &stage, proper_case, setter);
+            let unchanged = WindowsProfile::identity(&stage).is_ok_and(|id| id == stage_id)
+                && stage.metadata().is_ok_and(|m| m.len() == 0)
+                && std::fs::read(fixture.path.join("source"))
+                    .is_ok_and(|bytes| bytes == b"source bytes")
+                && policy(&source).is_ok_and(|after| same_policy(&after, &source_policy));
+            let status = if !unchanged {
+                "error"
+            } else {
+                match result {
+                    Ok(()) => match policy(&stage) {
+                        Ok(stage_policy) => difference(&source_policy, &stage_policy),
+                        Err(_) => "error",
+                    },
+                    Err(status) => status,
+                }
+            };
+            println!("RELAVIUM_NATIVE_SECURITY_PROBE:{case}-{setter}:{status}");
+        }
+
+        pub(crate) fn security_descriptor_probe() {
+            for case in ["protected", "unprotected", "inherited"] {
+                for setter in ["setinfo", "nt-basic", "nt-protection", "nt-request"] {
+                    security_descriptor_case(case, setter);
+                }
             }
         }
     }
+    pub(crate) use security_probe::security_descriptor_probe;
 
     fn completion_policy_controls() {
         use std::collections::BTreeSet;

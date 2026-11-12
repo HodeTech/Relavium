@@ -7,12 +7,17 @@ import {
   useSyncExternalStore,
   type ReactElement,
 } from 'react';
-import type { ChatStoreController } from './chat-store.js';
+import type { ChatStoreController, ChatStoreSnapshot } from './chat-store.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
-import { reviewInspected, toolReviewPage, toolReviewTarget } from './tool-review-model.js';
+import {
+  reviewInspected,
+  toolReviewPage,
+  toolReviewTarget,
+  type ToolReviewState,
+} from './tool-review-model.js';
 import {
   createReviewDocument,
   escapeReviewCharacter,
@@ -135,24 +140,7 @@ export function ToolReviewHost(
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
   const page =
     review === undefined ? undefined : toolReviewPage(review, props.size.cols, props.size.rows);
-  const selectedCall =
-    review?.callId === undefined ? undefined : snapshot.toolDisplays.get(review.callId);
-  const identity =
-    review === undefined || review.screen === 'list'
-      ? undefined
-      : review.kind === 'approval' && snapshot.approval !== undefined
-        ? toolReviewIdentity(
-            snapshot.approval.request.toolId,
-            'action',
-            snapshot.approval.request.action,
-            props.size.cols,
-          )
-        : toolReviewIdentity(
-            selectedCall?.toolId ?? '',
-            'outcome',
-            selectedCall?.outcome ?? 'unknown',
-            props.size.cols,
-          );
+  const identity = reviewIdentity(snapshot, props.size.cols);
   pageRef.current = page;
   useLayoutEffect(() => {
     if (blocked !== undefined && blocked !== review) setBlocked(undefined);
@@ -178,110 +166,161 @@ export function ToolReviewHost(
         Esc cancels.
       </Text>
     );
-  const document = review.document,
-    diff = document?.preview.diff;
-  const target =
-    review.screen === 'card'
-      ? toolReviewTarget(review, props.size.cols, props.size.rows)
-      : undefined;
-  const calls = [...snapshot.toolDisplays.values()];
-  const selectedStart = Math.max(0, review.selected - 3);
-  const title =
-    review.kind === 'approval'
-      ? document?.preview.kind === 'saved-result'
-        ? 'Deliver saved result — no new filesystem operation'
-        : 'Review tool operation'
-      : 'Tool details';
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
-      <Text bold>{title}</Text>
+      <Text bold>{reviewTitle(review)}</Text>
       {review.screen === 'list' ? (
-        <>
-          {calls.length === 0 && (
-            <Text>No retained live tools. Historical previews are unavailable.</Text>
-          )}
-          {calls
-            .slice(selectedStart, selectedStart + Math.max(1, props.size.rows - 8))
-            .map((call, index) => (
-              <Text key={call.callId}>
-                {review.selected === selectedStart + index ? '> ' : '  '}
-                {inputDisplay(sanitizeUntrustedInline(call.toolId))} — {call.outcome}
-                {call.document === undefined ? ' · preview unavailable' : ''}
-              </Text>
-            ))}
-          <Text>↑/↓ choose · Enter details · Esc close</Text>
-        </>
+        <ReviewCallList snapshot={snapshot} review={review} rows={props.size.rows} />
       ) : (
-        <>
-          {(identity?.rows ?? []).map((row, index) => (
-            <Text key={`identity-${index}`}>{row}</Text>
-          ))}
-          {(target?.rows ?? []).map((row, index) => (
-            <Text key={`target-${index}`}>{row}</Text>
-          ))}
-          {target?.next !== undefined && (
-            <Text>
-              Target shortened · {target.hiddenBytes} bytes omitted · [v] inspect full target
-            </Text>
-          )}
-          <Text>
-            {document?.changedLines ?? 0} changed lines · {document?.changedBytes ?? 0} changed
-            bytes · {document?.masks.length ?? 0} masked spans
-          </Text>
-          {diff !== undefined && (
-            <Text>
-              {diff.before === null ? 'New file · ' : ''}
-              {diff.before === '' ? 'Before: empty file · ' : ''}
-              {diff.after === '' ? 'After: empty file · ' : ''}endings {diff.beforeEndings} →{' '}
-              {diff.afterEndings}
-            </Text>
-          )}
-          {(document?.masks.length ?? 0) !== 0 && (
-            <Text>
-              Approval includes masked bytes. Changed/flagged masks require [v], [r] and visible
-              inspection.
-            </Text>
-          )}
-          {(page?.rows ?? []).map((row, index) => (
-            <Text key={index}>{row || ' '}</Text>
-          ))}
-          <Text>
-            {page?.hiddenLines ?? 0} hidden lines · {page?.hiddenBytes ?? 0} hidden bytes ·{' '}
-            {review.reveal ? 'REVEALED (view only)' : 'masked view'}
-          </Text>
-          {review.kind === 'approval' && (
-            <Text>
-              {reviewInspected(review)
-                ? 'Inspection requirements met.'
-                : 'Approval disabled — inspect required target / masked spans.'}
-            </Text>
-          )}
-          {review.denial !== undefined && (
-            <Text>Reason to deny: {inputDisplay(review.denial)}█ · Enter deny · Esc abort</Text>
-          )}
-          {review.searching && (
-            <Text>Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find</Text>
-          )}
-          <Text>
-            {review.screen === 'card'
-              ? '[v] full view · [c] reason to deny'
-              : 'PgUp/PgDn pages · Home start · [r] reveal · [p] code points · / search · [c] copy masked page · [b] back'}
-          </Text>
-          {review.kind === 'approval' ? (
-            <>
-              <Text>
-                {snapshot.approval?.cacheable === true
-                  ? '[y] once · [a] always for named tool (session) · [n] deny · Esc/Ctrl-C abort'
-                  : '[y] once · [n] deny · Esc/Ctrl-C abort'}
-              </Text>
-              <Text>Approval cannot override protected-path or permission denials.</Text>
-            </>
-          ) : (
-            <Text>Esc/Ctrl-C close · viewing never executes a tool</Text>
-          )}
-        </>
+        <ReviewContent
+          snapshot={snapshot}
+          review={review}
+          page={page}
+          identity={identity}
+          columns={props.size.cols}
+          rows={props.size.rows}
+        />
       )}
       {review.message !== '' && <Text>{escaped(review.message)}</Text>}
     </Box>
+  );
+}
+
+function reviewIdentity(
+  snapshot: ChatStoreSnapshot,
+  columns: number,
+): Pick<ReviewPage, 'rows' | 'valid'> | undefined {
+  const review = snapshot.review;
+  if (review === undefined || review.screen === 'list') return undefined;
+  if (review.kind === 'approval' && snapshot.approval !== undefined)
+    return toolReviewIdentity(
+      snapshot.approval.request.toolId,
+      'action',
+      snapshot.approval.request.action,
+      columns,
+    );
+  const selectedCall =
+    review.callId === undefined ? undefined : snapshot.toolDisplays.get(review.callId);
+  return toolReviewIdentity(
+    selectedCall?.toolId ?? '',
+    'outcome',
+    selectedCall?.outcome ?? 'unknown',
+    columns,
+  );
+}
+function reviewTitle(review: ToolReviewState): string {
+  if (review.kind !== 'approval') return 'Tool details';
+  if (review.document?.preview.kind === 'saved-result')
+    return 'Deliver saved result — no new filesystem operation';
+  return 'Review tool operation';
+}
+function ReviewCallList({
+  snapshot,
+  review,
+  rows,
+}: Readonly<{ snapshot: ChatStoreSnapshot; review: ToolReviewState; rows: number }>): ReactElement {
+  const calls = [...snapshot.toolDisplays.values()];
+  const selectedStart = Math.max(0, review.selected - 3);
+  return (
+    <>
+      {calls.length === 0 && (
+        <Text>No retained live tools. Historical previews are unavailable.</Text>
+      )}
+      {calls.slice(selectedStart, selectedStart + Math.max(1, rows - 8)).map((call, index) => (
+        <Text key={call.callId}>
+          {review.selected === selectedStart + index ? '> ' : '  '}
+          {inputDisplay(sanitizeUntrustedInline(call.toolId))} — {call.outcome}
+          {call.document === undefined ? ' · preview unavailable' : ''}
+        </Text>
+      ))}
+      <Text>↑/↓ choose · Enter details · Esc close</Text>
+    </>
+  );
+}
+function ReviewContent({
+  snapshot,
+  review,
+  page,
+  identity,
+  columns,
+  rows,
+}: Readonly<{
+  snapshot: ChatStoreSnapshot;
+  review: ToolReviewState;
+  page: ReviewPage | undefined;
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
+  columns: number;
+  rows: number;
+}>): ReactElement {
+  const document = review.document,
+    diff = document?.preview.diff;
+  const target = review.screen === 'card' ? toolReviewTarget(review, columns, rows) : undefined;
+  return (
+    <>
+      {(identity?.rows ?? []).map((row, index) => (
+        <Text key={`identity-${index}`}>{row}</Text>
+      ))}
+      {(target?.rows ?? []).map((row, index) => (
+        <Text key={`target-${index}`}>{row}</Text>
+      ))}
+      {target?.next !== undefined && (
+        <Text>Target shortened · {target.hiddenBytes} bytes omitted · [v] inspect full target</Text>
+      )}
+      <Text>
+        {document?.changedLines ?? 0} changed lines · {document?.changedBytes ?? 0} changed bytes ·{' '}
+        {document?.masks.length ?? 0} masked spans
+      </Text>
+      {diff !== undefined && (
+        <Text>
+          {diff.before === null ? 'New file · ' : ''}
+          {diff.before === '' ? 'Before: empty file · ' : ''}
+          {diff.after === '' ? 'After: empty file · ' : ''}endings {diff.beforeEndings} →{' '}
+          {diff.afterEndings}
+        </Text>
+      )}
+      {(document?.masks.length ?? 0) !== 0 && (
+        <Text>
+          Approval includes masked bytes. Changed/flagged masks require [v], [r] and visible
+          inspection.
+        </Text>
+      )}
+      {(page?.rows ?? []).map((row, index) => (
+        <Text key={index}>{row || ' '}</Text>
+      ))}
+      <Text>
+        {page?.hiddenLines ?? 0} hidden lines · {page?.hiddenBytes ?? 0} hidden bytes ·{' '}
+        {review.reveal ? 'REVEALED (view only)' : 'masked view'}
+      </Text>
+      {review.kind === 'approval' && (
+        <Text>
+          {reviewInspected(review)
+            ? 'Inspection requirements met.'
+            : 'Approval disabled — inspect required target / masked spans.'}
+        </Text>
+      )}
+      {review.denial !== undefined && (
+        <Text>Reason to deny: {inputDisplay(review.denial)}█ · Enter deny · Esc abort</Text>
+      )}
+      {review.searching && (
+        <Text>Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find</Text>
+      )}
+      <Text>
+        {review.screen === 'card'
+          ? '[v] full view · [c] reason to deny'
+          : 'PgUp/PgDn pages · Home start · [r] reveal · [p] code points · / search · [c] copy masked page · [b] back'}
+      </Text>
+      {review.kind === 'approval' ? (
+        <>
+          <Text>
+            {snapshot.approval?.cacheable === true
+              ? '[y] once · [a] always for named tool (session) · [n] deny · Esc/Ctrl-C abort'
+              : '[y] once · [n] deny · Esc/Ctrl-C abort'}
+          </Text>
+          <Text>Approval cannot override protected-path or permission denials.</Text>
+        </>
+      ) : (
+        <Text>Esc/Ctrl-C close · viewing never executes a tool</Text>
+      )}
+    </>
   );
 }

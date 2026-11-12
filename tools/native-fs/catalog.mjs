@@ -44,10 +44,12 @@ export const NATIVE_LIMITS = Object.freeze({
 });
 // Reviewed shim bytes; a loader change requires a deliberate inventory-pin change too.
 export const NATIVE_LOADER_SHA256 =
-  '9f234956841c944cdff8024f644fdd08bfcbda7647c0a2359a39ed90ff912b3f';
+  'e7edb7aeb59fdd61fd933dade7d05eae852db6a69b8dff97590a94119e74040a';
 
 export function hostTarget(platform = process.platform, arch = process.arch, libc) {
-  const cpu = arch === 'x64' ? 'x86_64' : arch === 'arm64' ? 'aarch64' : undefined;
+  let cpu;
+  if (arch === 'x64') cpu = 'x86_64';
+  else if (arch === 'arm64') cpu = 'aarch64';
   if (cpu === undefined) throw new Error('NATIVE_FS_UNSUPPORTED_TARGET');
   if (platform === 'darwin') return `${cpu}-apple-darwin`;
   if (platform === 'win32') return `${cpu}-pc-windows-msvc`;

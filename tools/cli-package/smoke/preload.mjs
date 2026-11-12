@@ -61,7 +61,7 @@ child.spawn = (...args) => {
     JSON.stringify(args[1]) ===
       JSON.stringify([
         '-e',
-        "process.stdout.write(process.umask().toString(8).padStart(4,'0')+'\\n')",
+        String.raw`process.stdout.write(process.umask().toString(8).padStart(4,'0')+'\n')`,
       ]) &&
     JSON.stringify(Object.keys(args[2] ?? {}).sort()) ===
       JSON.stringify(['env', 'stdio', 'windowsHide']) &&
@@ -131,16 +131,7 @@ globalThis.fetch = async (input, init) => {
     body,
     synthetic: true,
   });
-  if (secondWriteCall) {
-    const barrier = process.env.RELAVIUM_PACKAGE_SMOKE_WRITE_BARRIER;
-    assert.ok(barrier, 'Explicit owned SDK response barrier required');
-    writeFileSync(barrier + '.ready', '', { flag: 'wx', mode: 0o600 });
-    const deadline = Date.now() + 20_000;
-    while (!existsSync(barrier + '.release')) {
-      assert.ok(Date.now() < deadline, 'Owned SDK response barrier timed out');
-      await sleep(10);
-    }
-  }
+  if (secondWriteCall) await awaitOwnedWriteBarrier();
   const base = {
     id: 'chatcmpl-synthetic-package-smoke',
     object: 'chat.completion.chunk',
@@ -202,3 +193,14 @@ globalThis.fetch = async (input, init) => {
     },
   );
 };
+
+async function awaitOwnedWriteBarrier() {
+  const barrier = process.env.RELAVIUM_PACKAGE_SMOKE_WRITE_BARRIER;
+  assert.ok(barrier, 'Explicit owned SDK response barrier required');
+  writeFileSync(barrier + '.ready', '', { flag: 'wx', mode: 0o600 });
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(barrier + '.release')) {
+    assert.ok(Date.now() < deadline, 'Owned SDK response barrier timed out');
+    await sleep(10);
+  }
+}

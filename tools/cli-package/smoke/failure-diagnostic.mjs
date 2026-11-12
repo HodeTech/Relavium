@@ -113,14 +113,10 @@ export function nativeAssetLinks(packageRoot) {
     Object.entries(ASSETS).map(([key, name]) => {
       try {
         const value = lstatSync(join(packageRoot, 'dist', 'native-fs', name), { bigint: true });
-        return [
-          key,
-          value.isFile() && value.nlink === 1n
-            ? 'one'
-            : value.isFile() && value.nlink > 1n
-              ? 'multiple'
-              : 'unavailable',
-        ];
+        let state = 'unavailable';
+        if (value.isFile() && value.nlink === 1n) state = 'one';
+        else if (value.isFile() && value.nlink > 1n) state = 'multiple';
+        return [key, state];
       } catch {
         return [key, 'unavailable'];
       }

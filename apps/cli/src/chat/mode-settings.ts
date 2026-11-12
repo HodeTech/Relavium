@@ -75,37 +75,8 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
     options.flow.note(
       `Effective startup: ${preference.mode}. Global default: ${preference.globalMode}.${override}`,
     );
-    const current = options.currentMode?.();
-    if (current !== undefined && options.onCurrentMode !== undefined) {
-      const action = await options.flow.select({
-        message: `Current mode: ${current}. Change current mode or save a startup default.`,
-        options: [
-          ...CHAT_MODES.map((mode) => ({ value: mode, label: mode, hint: MODE_DESCRIPTION[mode] })),
-          {
-            value: 'save-startup',
-            label: 'Save startup default',
-            hint: 'Separate global preference',
-          },
-        ],
-        initialValue: current,
-      });
-      assertAdmitting();
-      const mode = selectedMode(action);
-      if (mode !== undefined) {
-        if (mode === 'auto') {
-          const confirmed = await options.flow.confirm(
-            `${AUTO_RISK} Use auto for this session?`,
-            false,
-          );
-          assertAdmitting();
-          if (confirmed !== true) return;
-        }
-        options.onCurrentMode(mode);
-        options.notice(`Current mode: ${mode}. Startup default unchanged.`);
-        return;
-      }
-      if (action !== 'save-startup') return;
-    }
+    if (!(await selectStartupAction(options, assertAdmitting))) return;
+    assertAdmitting();
     const mode = selectedMode(
       await options.flow.select({
         message: 'Choose a global startup default. Selection alone saves nothing.',
@@ -119,8 +90,9 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
     );
     assertAdmitting();
     if (mode === undefined) return;
+    const autoRisk = mode === 'auto' ? `${AUTO_RISK} ` : '';
     const confirmed = await options.flow.confirm(
-      `${mode === 'auto' ? `${AUTO_RISK} ` : ''}Save ${mode} as the global startup default?${override}`,
+      `${autoRisk}Save ${mode} as the global startup default?${override}`,
       false,
     );
     if (confirmed !== true) return;
@@ -130,18 +102,7 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
       narrowed = true;
     }
     const confirmationRevision = options.runtime.authority.revocationRevision;
-    const sourceObserver = startingModeConfigObserver(options.runtime.authority);
-    const observer =
-      mode === 'auto'
-        ? {
-            failed: sourceObserver.failed,
-            observed: (sourceMode: ChatMode): void => {
-              // The displayed non-auto baseline was already revoked before this deliberate confirmation.
-              // A different newer source observation still defeats the captured confirmation revision.
-              if (sourceMode !== preference.globalMode) sourceObserver.observed(sourceMode);
-            },
-          }
-        : sourceObserver;
+    const observer = publicationObserver(options.runtime, mode, preference.globalMode);
     assertAdmitting();
     const prepared =
       options.prepare?.(mode) ??
@@ -167,17 +128,76 @@ export async function runModeSettings(options: ModeSettingsOptions): Promise<voi
     );
   } catch {
     options.notice(
-      published
-        ? publishedMode === 'auto' && !publishedAutoAdmitted
-          ? 'Startup default was published. Startup auto was not re-admitted for this invocation.'
-          : 'Startup default was published; mode settings could not finish.'
-        : narrowed
-          ? 'Startup default was not saved. Startup auto remains revoked for this invocation.'
-          : signal?.aborted === true
-            ? 'Mode settings cancelled. Startup default unchanged.'
-            : 'Mode settings could not be completed. Startup default unchanged.',
+      modeSettingsFailure(published, publishedMode, publishedAutoAdmitted, narrowed, signal),
     );
   } finally {
     if (signal !== undefined) await endModeSettings(options.flow);
   }
+}
+
+/** Current-mode changes finish the flow; only an explicit startup action continues to publication. */
+async function selectStartupAction(
+  options: ModeSettingsOptions,
+  assertAdmitting: () => void,
+): Promise<boolean> {
+  const current = options.currentMode?.();
+  if (current === undefined || options.onCurrentMode === undefined) return true;
+  const action = await options.flow.select({
+    message: `Current mode: ${current}. Change current mode or save a startup default.`,
+    options: [
+      ...CHAT_MODES.map((mode) => ({ value: mode, label: mode, hint: MODE_DESCRIPTION[mode] })),
+      {
+        value: 'save-startup',
+        label: 'Save startup default',
+        hint: 'Separate global preference',
+      },
+    ],
+    initialValue: current,
+  });
+  assertAdmitting();
+  const mode = selectedMode(action);
+  if (mode !== undefined) {
+    if (mode === 'auto') {
+      const confirmed = await options.flow.confirm(
+        `${AUTO_RISK} Use auto for this session?`,
+        false,
+      );
+      assertAdmitting();
+      if (confirmed !== true) return false;
+    }
+    options.onCurrentMode(mode);
+    options.notice(`Current mode: ${mode}. Startup default unchanged.`);
+    return false;
+  }
+  return action === 'save-startup';
+}
+
+function publicationObserver(runtime: StartingModeRuntime, mode: ChatMode, globalMode: ChatMode) {
+  const sourceObserver = startingModeConfigObserver(runtime.authority);
+  if (mode !== 'auto') return sourceObserver;
+  return {
+    failed: sourceObserver.failed,
+    observed: (sourceMode: ChatMode): void => {
+      // The displayed non-auto baseline was revoked before this confirmation. Newer observations still win.
+      if (sourceMode !== globalMode) sourceObserver.observed(sourceMode);
+    },
+  };
+}
+
+function modeSettingsFailure(
+  published: boolean,
+  publishedMode: ChatMode | undefined,
+  publishedAutoAdmitted: boolean,
+  narrowed: boolean,
+  signal: AbortSignal | undefined,
+): string {
+  if (published) {
+    if (publishedMode === 'auto' && !publishedAutoAdmitted)
+      return 'Startup default was published. Startup auto was not re-admitted for this invocation.';
+    return 'Startup default was published; mode settings could not finish.';
+  }
+  if (narrowed)
+    return 'Startup default was not saved. Startup auto remains revoked for this invocation.';
+  if (signal?.aborted === true) return 'Mode settings cancelled. Startup default unchanged.';
+  return 'Mode settings could not be completed. Startup default unchanged.';
 }

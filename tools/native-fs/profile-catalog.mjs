@@ -139,14 +139,17 @@ const WINDOWS = [
   'windows_profile_no_clobber_and_replacement_failure_preserve_old_bytes',
 ].map((name) => `windows::tests::${name}`);
 export function rustPopulation(platform) {
-  const passed =
-    platform === 'darwin'
-      ? MACOS
-      : platform === 'linux'
-        ? LINUX
-        : platform === 'win32'
-          ? WINDOWS
-          : undefined;
+  let passed;
+  if (platform === 'darwin') passed = MACOS;
+  else if (platform === 'linux') passed = LINUX;
+  else if (platform === 'win32') passed = WINDOWS;
+  let platformIgnored = [];
+  if (platform === 'darwin')
+    platformIgnored = [
+      'common::producer_tests::private_umask_child',
+      'stage_index::tests::crash_child',
+    ];
+  else if (platform === 'linux') platformIgnored = ['linux::tests::linux_umask_child'];
   if (passed === undefined) throw new Error('NATIVE_FS_PROFILE_PLATFORM');
   return {
     passed: [
@@ -169,13 +172,6 @@ export function rustPopulation(platform) {
         'private_directory_unopened_identity_preserves_reservation',
       ].map((name) => `common::template_cleanup_tests::${name}`),
     ].sort(),
-    ignored: [
-      'common::producer_crash_tests::crash_child',
-      ...(platform === 'darwin'
-        ? ['common::producer_tests::private_umask_child', 'stage_index::tests::crash_child']
-        : platform === 'linux'
-          ? ['linux::tests::linux_umask_child']
-          : []),
-    ].sort(),
+    ignored: ['common::producer_crash_tests::crash_child', ...platformIgnored].sort(),
   };
 }
