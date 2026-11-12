@@ -3129,6 +3129,38 @@ Its reliability/security gate remains red on the previously documented
 source-context dispositions; no profile suppression or manual remote
 classification is made.
 
+#### Geometry fixture coverage deadline
+
+At `9e6661e9`, the development coverage job passes. The PR coverage
+[job](https://github.com/HodeTech/Relavium/actions/runs/43244826843/job/131280362364)
+finishes 889 files successfully and reports one default-deadline failure:
+`bounds reverse-backtick geometry with 'ZWJ' boundaries` takes 5,023 ms against
+Vitest's default 5,000 ms. Its three siblings take 4,837, 4,842 and 4,958 ms.
+The remaining population is 18,539 passing cases and 25 conditional skips.
+Production markdown, this fixture and coverage orchestration have no change
+from the merged MVP-2 source; this is not a demonstrated MVP-3 runtime defect.
+
+A separate Sol/high investigation inspects the installed Vitest 3.2.6 elapsed
+check after a synchronous callback and the live 4,000-unit projection bound.
+Each fixture preserves three depths (48/96/192), 336 reverse append/draw
+operations, initial/final draws, three full-source parse/layout oracles, nine
+deterministic work bounds per depth and two normalized-work comparisons.
+Independent normal timings are 891–975 ms per kind; focused V8 timings are
+1,466–1,595 ms with every assertion passing. That focused coverage command exits
+nonzero because four CLI cases cannot meet unrelated engine coverage floors;
+it is diagnostic timing evidence, not full coverage acceptance.
+
+`16fad5a2` defines a finite 15,000 ms deadline only for those four cases, matching
+the adjacent 400-draw fixture and the existing causal deadline ceiling. All
+inputs, draws, oracle comparisons and work bounds remain. Root's full-file AST
+comparison, after removing only that deadline and comments, matches `9e6661e9`
+exactly. All 92 stream tests pass with no skips, alongside 77 causal timeout/
+outcome tests, CLI typechecking, focused lint and formatting. Fresh Luna/medium
+and Terra/medium reviews report no finding; Luna independently passes all four
+focused cases. No production source, global deadline, coverage threshold,
+exclusion, dependency or control manifest changes. Corrected-head combined CI
+remains required before PR readiness.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
