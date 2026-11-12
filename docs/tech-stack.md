@@ -25,7 +25,12 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > records that review. The [native contract](reference/cli/native-filesystem-metadata.md) owns the minimal
 > Node-API level, eight-target proof obligation and adapter-specific prebuilt
 > delivery rule; it does not certify the existing SQLite/keyring install paths
-> as download- or compiler-free. No native implementation is accepted yet.
+> as download- or compiler-free. The native implementation and delivery were
+> independently accepted on `development` with the
+> [MVP-3 Step 2 checkpoint](roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+> Subsequent PR corrections and final-head acceptance remain separate; proposed
+> [ADR-0126](decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+> does not yet authorize its dependent implementation.
 
 ## Final Stack
 

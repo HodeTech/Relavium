@@ -486,7 +486,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 
 | Tool | Capability / delegate | Guardrail |
 |------|----------------------|-----------|
-| `read_file` / `write_file` / `list_directory` | `host.fs` | FS scope tier (binary/media ⇒ **durable handle**, not inline base64 — below) |
+| `read_file` / `write_file` / `edit_file` / `list_directory` / `search_files` / `find_files` | `host.fs` (`readFile`, prepared `prepareWrite`, `listDirectory`, `searchFiles`, `findFiles`) | FS scope tier; writes additionally require preparation, approval and durable admission. Binary/media boundary below. |
 | `run_command` | `host.process` | exact `allowedCommands` + host-resolved executable + declared env, `shell:false` |
 | `git_status` | `host.process` | pre-approved git allowlist |
 | `git_commit` | `host.process` | **human-gate approval required** |

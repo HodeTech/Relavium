@@ -174,3 +174,12 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. The shared preference writer refuses an existing final-component symlink before loader/read/chmod side effects, using fixed non-retryable recovery. Reads through intentional links remain supported. Existing-file rewrites disclose comment/order loss and retain schema, permissions and durability guarantees. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

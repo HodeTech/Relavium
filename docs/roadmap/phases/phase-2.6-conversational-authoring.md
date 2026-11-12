@@ -3323,6 +3323,45 @@ Its push retry's cancelled Node-22 advisory job completed typecheck, tests and
 build before the outer watchdog, but is not counted as a successful check.
 Maintainer review and merge remain separate.
 
+#### Correction author checkpoint (2026-11-13)
+
+The verified corrections are implemented on `development`; fresh independent
+review and final-head platform acceptance remain open. ADR-0126 is Accepted,
+including the quiescent upgrade boundary, exact v1/v2 exclusion rules, the
+single Linux source-admission cut, lifetime claims and bounded cleanup tail.
+Native failure facts stay private, and interrupted sessions disclose unresolved
+effects only after actual producers join. No release authority is added.
+
+The author toolchain passes **18,626 workspace tests / 24 conditional skips**,
+lint, types, build, formatting, DB sync, isolation and engine/seam/bundle gates.
+All **1,116 acceptance-tool cases** pass without skips. Compiled bootstrap,
+CLI workflow/cancellation, overflow capture and budget-replay smoke checks pass.
+The source-bound macOS profile passes **42 Rust parents / four subprocess
+helpers ignored** and all eleven Node lifecycle cases. The actual native-record
+TypeScript inventory suite passes 15 cases with two platform-specific skips.
+Windows source and test bodies cross-check with the locked bindings; this is
+not Windows runtime evidence.
+
+Targeted native arm64 GNU and musl controls exercise image-layer overlay files,
+replace/append, exact byte/policy refusal, post-open cancellation/error/crash,
+unavailable `faccessat2`, and effective-versus-real UID ACL denial. The isolated
+ACL worker receives no network or source tree and only its required capabilities.
+The separate PID-namespace harness is mandatory in Linux CI. Its local attempt
+refuses the available Docker Btrfs volume, outside the accepted filesystem
+profile; no namespace proof is inferred from that refusal. All eight native
+targets and four installed consumers must still pass on the corrected head.
+
+The complete filesystem/secrets declarations reconcile 254 controls against
+2,455 collected cases across 72 cohort files; all source anchors remain exact.
+The two chat cohorts now require 143 cases, and the usage permanent cohort
+requires 459 while retaining its 71 native children and timeout/readiness rules.
+No mutation, witness, assertion selection or internal deadline was removed.
+Earlier failed author runs exposed stale inventory pins and a contingent
+artifact-read diagnostic; the frozen-source complete tools run is green.
+The supplied review register retains each original claim and its disposition;
+it is not a substitute for the two new cumulative rounds and separate security
+sitting required below this checkpoint.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

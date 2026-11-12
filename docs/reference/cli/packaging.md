@@ -59,9 +59,12 @@ silently replaces existing private-module provenance.
 
 ADR-0125 adds a third native component beside SQLite and keyring. Its
 [canonical metadata contract](native-filesystem-metadata.md#native-component-and-delivery)
-owns the required targets and filesystem acceptance. Delivery implementation is
-under review; protocol/ABI execution does not enable a filesystem profile or the
-Step 3 grant.
+owns the required targets and filesystem acceptance. Delivery and the declared
+profiles were independently accepted on `development` with the
+[MVP-3 Step 2 checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12);
+the Step 3 grant has its own acceptance record. Protocol/ABI execution alone
+does not enable a filesystem profile. Later PR corrections require fresh
+source-bound acceptance and do not imply merge or release permission.
 
 The ESM graph stays flat and mapped as above. Its sole reviewed loader exception
 is the fixed literal dynamic import from `fs-native-metadata.ts`, resolved by a

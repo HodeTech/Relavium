@@ -352,3 +352,12 @@ owns scope, steps and the remaining implementation/security acceptance gates.
 > authorization, not acceptance of the prototype or native implementation.
 
 > Implementation checkpoint 2026-11-12: the MVP-3 read/search/edit, prepared-write, approval/details and safe restored-tool-group slice is independently accepted on `development`. The [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12) joins the three steps, actual native-target evidence and remaining PR CI/maintainer review. This does not activate later toolbelt milestones or claim a merge/publication.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

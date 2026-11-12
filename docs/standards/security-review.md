@@ -962,7 +962,11 @@ security invariants** a review must confirm are:
 
 ### CLI terminal-render safety + interactive approval (2.5.E / 2.5-close Step 14)
 
-> **Accepted MVP-3 design refinement — 2026-11-11, implementation pending:**
+> **Historical MVP-3 design acceptance — 2026-11-11:** implementation was pending
+> at that design checkpoint. The
+> [MVP-3 implementation receipt](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records subsequent development acceptance; later PR corrections require their
+> own review and security evidence.
 > [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
 > and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
 > extend the earlier shipped whitelist below with view-only diff/details

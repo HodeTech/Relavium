@@ -344,3 +344,12 @@ future feature, deferral or claim of merge-commit execution.
 > that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
 > The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
 > owns review and acceptance; this note claims neither.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

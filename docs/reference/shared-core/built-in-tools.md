@@ -148,10 +148,12 @@ An exhausted ancestor check reports the depth limit rather than a complete scan.
 | UTF-8 bytes per search excerpt | 2,048 |
 | Ordinary directory entries | 200 by default; a host-selected limit cannot exceed 1,000 |
 
-Directory truncation adds `truncated`, `entryLimit` and `omittedEntries: null`
-when the remaining count is unknown; `incomplete` distinguishes an unfinished
-walk. Glob reads refuse an incomplete walk or an observed extra match beyond
-their 200-file default rather than silently dropping matches. Directory streams
+Directory truncation adds `truncated` and `omittedEntries: null` when the
+remaining count is unknown; `incomplete` distinguishes an unfinished walk.
+`entryLimit` is present only when the result-entry cap was reached, not when
+another traversal bound stopped the walk. Glob reads refuse an incomplete walk
+or an observed extra match beyond their 200-file default rather than silently
+dropping matches. Directory streams
 are bounded without materializing huge `readdir` arrays. Cooperative cancellation
 is checked across traversal, matching and chunked fd reads.
 
@@ -170,8 +172,15 @@ creates `~/.relavium/session-outputs-v1/output-v1.<pid>.<uuid>` and an identity
 marker. Model refs use `output://<instance-uuid>/<file-uuid>`, never native paths;
 only that instance's read closure recognizes them. Ordinary filesystem grants
 do not gain the store root or write authority. Limits are 16 MiB per spill,
-64 MiB and 64 files per instance. Startup sweep inspects at most 128 subtrees
-and 129 children per candidate, deletes only a proven dead PID's privately
+64 MiB and 64 files per instance. Spills containing NUL are refused as invalid
+text before reserving bytes/files or creating an artifact; the existing
+preview-only fallback still reports full output unavailable. A no-range
+`output://` read whose complete JSON `FileRead` envelope exceeds the default
+model-result byte/line ceiling refuses with a fixed request for an explicit
+line or byte range. It neither truncates nor creates another spill/reference.
+Small full reads and explicit ranges keep their existing semantics; an
+oversized explicit range remains subject to ordinary result bounding.
+Startup sweep inspects at most 128 subtrees and 129 children per candidate, deletes only a proven dead PID's privately
 owned, matching regular/link-free tree, and preserves live/reused or uncertain
 owners and unmarked/malformed entries. An incomplete scan emits a fixed safe
 notice. Close seals new work, joins actual read/write producers, then validates
@@ -203,6 +212,7 @@ an unbound legacy write.
 | `search_files` | Bounded literal content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
 | `find_files` | Find by bounded glob, newest-first within the scanned set. | `{ files: [{ path, sizeBytes, lastModified }], stats }` | Idempotent; incomplete traversal is explicit. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
+| `edit_file` | Replace exact text in a previously observed unchanged UTF-8 file. | `{ path, bytesWritten }` | Scoped read evidence, exact matching, bounded diff approval and durable effect admission; binary or stale sources refuse. |
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
 | `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
@@ -230,6 +240,11 @@ an unbound legacy write.
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
+For prepared `write_file` and `edit_file`, `bytesWritten` is the UTF-8 byte size
+of the complete published file. Append includes the retained prefix because
+publication replaces the file with the complete prepared result; the field is
+not the appended fragment size or a count of filesystem write syscalls.
+
 ## Tool input/output mapping
 
 A `tool` node (direct tool execution without an LLM) and an agent's tool call both use `input_mapping` / `output_mapping` to wire workflow state into the tool and the result back out. Tool credentials are referenced by id from the secret store and are **never** inlined into the workflow JSON or echoed into event payloads (`agent:tool_call.toolInput` is sanitized; see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
@@ -247,6 +262,8 @@ limits, independent of operating-system command-line capacity.
 | Argument | Maximum |
 | --- | --- |
 | `write_file.content` | 8 MiB (8,388,608 bytes) |
+| `edit_file.old_string` / `edit_file.new_string` | 8 MiB each; `old_string` remains non-empty |
+| Filesystem tool `path` / `root`, and file discovery/list `glob` when supplied | 4,096 UTF-8 bytes; required paths remain non-empty |
 | `http_request.body` | 1 MiB (1,048,576 bytes), when supplied |
 | `git_commit.message` | 16 KiB (16,384 bytes); still non-empty |
 | `run_command.args` | 256 entries, each at most 16 KiB, totaling at most 64 KiB (65,536 bytes) |
@@ -255,6 +272,13 @@ Empty file content, HTTP body and argument entries remain valid; omitted body/ar
 argument vector remain valid. Impossible UTF-16 lengths and argument counts are refused before byte
 scanning; the vector's cheap aggregate check precedes all member byte scans. The existing shared
 byte counter measures plausible values, including multibyte text and unmatched surrogates.
+
+The byte admission ceiling is independent of review complexity. Prepared diffs
+also cap each source at 100,000 lines, emit at most 200,000 operations and bound
+the Myers frontier to 1,000,000 work units and 8 MiB of trace storage. Linear
+empty-side and common-prefix/suffix paths retain line/operation bounds and
+cooperative cancellation. A complex admitted input may still receive
+`diff_limit`; the content bound does not promise reviewability for every diff.
 
 The model-visible properties and array items describe their use, defaults and these limits through
 all supported dialect normalizers. JSON Schema `maxLength` is a necessary character bound, **not**

@@ -116,3 +116,12 @@ historical-content limits. Earlier decision-acceptance notes do not claim this
 later implementation landing. Other Wave 3 decisions and increments remain
 staged; this note does not close ADR-0112 policy work, whole-wave publication or
 merge. No historical ADR body is rewritten.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

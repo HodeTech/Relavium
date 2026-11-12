@@ -209,8 +209,9 @@ claim of isolation from a hostile process running as the same user.
 Within each enabled profile, a new file's final access/security policy must be
 equivalent to the OS creating it directly in the actual destination parent
 under the operation's effective credentials, creation mode and captured umask.
-The default file mode is `0666` before OS inheritance/masking; `createDirs`
-uses the host's documented directory creation mode. Private staging's own
+The default file mode is `0666` before OS inheritance/masking; the CLI's
+`createDirs` requests `0700` for each missing parent, subject to the OS umask
+and inheritance policy. Private staging's own
 parent or a later `chmod` is not evidence of that equivalence. The OS derives
 ACL inheritance; Relavium does not implement its own ACL evaluator/merger.
 
