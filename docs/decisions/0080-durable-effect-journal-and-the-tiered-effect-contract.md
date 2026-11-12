@@ -471,3 +471,21 @@ history and grants no automatic effect retry or whole-wave completion.
 > preserved above as history. The canonical [journal predicate](../reference/shared-core/effect-journal.md#3-what-is-journaled)
 > and metadata contract own the new scope and crash cuts. Implementation and
 > native security acceptance remain open.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.
+
+
+> **Clarified 2026-11-13 by accepted [ADR-0126](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md):**
+> A post-claim native admission or cleanup failure is not proof for discarding
+> a tier-3 effect. Unresolved evidence retains the existing attention/no-retry
+> behavior. Caller cancellation and independent effect-attention disclosure
+> are separate facts; no new tier, session replay or retry authority is added.
+> The [native contract](../reference/cli/native-filesystem-metadata.md#fixed-failure-facts-and-caller-outcomes)
+> owns the fixed host boundary and outcome table.

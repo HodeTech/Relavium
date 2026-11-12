@@ -3283,7 +3283,7 @@ must pass fresh complete scanner/platform checks before merge.
 
 ### PR #99 correction plan (2026-11-13)
 
-**Status: triage and design review; implementation acceptance remains open.**
+**Status: implementation in progress; final acceptance remains open.**
 The maintainer supplied additional independent reviews against `80e8cd88`.
 Their claims are checked against current code and accepted contracts, with
 focused reproductions where needed. The review-owned Home catch is rejected:
@@ -3298,8 +3298,9 @@ commits, instead of creating a review cycle for each small finding:
   admission, current approval/notice visibility, protected aliases, discovery
   work and ignore roots, owned teardown and truthful uncertain-write outcomes.
 - Native ownership and proof: source admission, producer custody and recovery
-  completion under proposed [ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md).
-  These dependent changes wait for explicit maintainer approval. Preserve
+  completion under accepted [ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md).
+  The maintainer authorized implementation after the supplied design findings
+  were checked and required clarifications incorporated. Preserve
   existing atomic publication, security policy and evidence on uncertainty.
 - Verification and delivery: targeted real boundary/negative tests, byte-pin
   checkout rules, source-bound artifact retry behavior, measured outer CI

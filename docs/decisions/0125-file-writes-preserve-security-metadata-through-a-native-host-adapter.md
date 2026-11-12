@@ -216,3 +216,12 @@ These support the available mechanisms, not acceptance of an unimplemented
 adapter or of an untested native target.
 
 > Implementation checkpoint 2026-11-12: the [Step 2 acceptance](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12) records the implemented adapter, actual eight-target execution, Windows integration and four installed-consumer proofs, independent security sittings and passing 26-job checkpoint CI at `bc8c34b2`. The [metadata contract](../reference/cli/native-filesystem-metadata.md) retains the exact supported profiles and refusal limits. The whole-MVP-3 PR requires its own current-head CI and maintainer review; no npm publication is authorized.
+
+
+> **Amended 2026-11-13 by accepted [ADR-0126](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md):**
+> Linux preparation and one admitted overlay source transition, versioned
+> producer lifetime claims, and bounded recovery completion refine this
+> mechanism. Preserve the original atomicity, security-policy, journal and
+> publication gates. Quiescent upgrade, exact proof/failure rules and remaining
+> implementation/platform acceptance belong to the
+> [canonical metadata contract](../reference/cli/native-filesystem-metadata.md).

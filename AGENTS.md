@@ -44,8 +44,9 @@ owns evidence and limits. MVP-4 is next, with its pending ADR approvals preserve
 **PR #99 review follow-up (2026-11-13) is active.** New verified runtime/UX,
 native lifetime and delivery findings require correction and fresh acceptance.
 [ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
-is Proposed; its source-admission and recovery changes require maintainer
-approval before implementation. Earlier clean review/CI receipts retain their
+is Accepted after the supplied design reviews and maintainer approval; its
+source-admission/recovery implementation and fresh acceptance remain open.
+Earlier clean review/CI receipts retain their
 scoped historical meaning; they do not close this new correction increment.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and

@@ -121,8 +121,9 @@ runtime/UX, native lifetime and delivery corrections remain open. The
 keeps them in one cohesive increment with fresh cumulative reviews, a separate
 security sitting and final-head CI/Sonar acceptance.
 [ADR-0126](../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
-proposes explicit native source-admission and recovery-lifetime changes; those
-changes await maintainer approval. ADR-0121 and other pending MVP-4/release
+is accepted after the supplied reviews and maintainer instruction; the native
+source-admission and recovery-lifetime implementation is in progress.
+ADR-0121 and other pending MVP-4/release
 decisions are not implicitly accepted by this correction work.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS

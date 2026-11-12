@@ -59,6 +59,104 @@ history/effects, durable events, export or logs. Native operations remain owned
 by the actual producer until they settle; cancellation cannot detach copying or
 publication. Release is one-shot/idempotent under the owning operation.
 
+### Admitted existing-source handoff (ADR-0126)
+
+[ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+is accepted; implementation and fresh platform acceptance remain required.
+Linux prepared writes require Linux 5.8 or newer with the raw `faccessat2`
+syscall and `AT_EACCESS | AT_EMPTY_PATH` enabled. GNU's existing glibc baseline
+and the recorded musl profile remain unchanged; neither libc nor Node version
+proves kernel/seccomp capability. Query the held ordinary source descriptor
+using an empty path and `W_OK`. An unavailable/filtered syscall, unsupported
+flag, `EACCES`, `EPERM`, `EROFS` or uncertain result refuses before admission;
+there is no emulated mode/ACL or real-UID fallback. This is provisional for both
+replace and append; actual operation-specific write/append access is still
+required in the admitted task. See the
+[combined Linux access/faccessat2 manual](https://man7.org/linux/man-pages/man2/access.2.html).
+
+The host-private Node entrypoint remains
+`stageExistingMetadata(prepared, home, before, after, nonce, creationMask, cancellation)`.
+It is one joined native task, not a model capability. Its admission phase:
+
+1. The host brackets native preparation with strict full `PreparedSnapshot`
+   comparisons so the native policy capture belongs to the originally observed
+   bytes/version, not merely a matching dev/ino. Before execution, approval and
+   the tier-3 claim precede directory/staging/publication work. Resolve required
+   mask queries and other prerequisite awaits before the final strict host
+   target/version check. Queue the native task in that continuation. Awaiting
+   its completion is mandatory; no atomic JS-to-worker scheduling is claimed.
+2. After worker scheduling, the task strictly rechecks the prepared native
+   version, credentials, policy, exact full `before` bytes and named source
+   before its one actual non-truncating access open. Use `O_APPEND` for append;
+   do not truncate or write source data through that descriptor.
+3. On Linux overlayfs only, reopen a no-follow current read descriptor after
+   the access open. Require exact dev and ino across the original, access,
+   fresh read and current named object, plus the full native identity. Reject
+   unstable identity. Do not keep reading a possibly stale lower-layer fd.
+4. Compare full original bytes, regular/single-link type, size, mtime seconds
+   and nanoseconds, mode, uid/gid, supported ACL/xattrs/flags and effective
+   uid/gid/supplementary-group/creation-policy state with the prepared proof.
+   Only source ctime seconds/nanoseconds may differ across this one enabled
+   Linux overlay access cut. A ctime difference does not prove its cause.
+   Non-overlay Linux and other profiles retain their strict version checks.
+5. Bind the fresh reader and snapshot as a single admitted source for all
+   subsequent strict stage/policy/publication checks. Any later host check must
+   consume this same proof, not independently resnapshot or weaken the original
+   equality predicate. No second refresh after await, failure or retry is allowed.
+
+The internal profile operation supplies a fresh descriptor/snapshot together,
+or explicitly retains the existing strictly checked pair on unchanged
+platforms. It cannot change reviewed `before`/`after` bytes. The Linux exception
+does not widen scope, bypass index/runtime-root guards or prove an OS-level
+compare-and-swap against hostile same-user processes.
+
+macOS APFS and Windows NTFS keep their ADR-0125 access mechanisms. macOS still
+uses its effective non-truncating access open and strict source-version checks;
+it does not inherit the Linux ctime exception. Actual APFS tests must pin that
+behavior. Preparation creates no staging payload, application data write or
+publication; do not generalize this to absence of all OS-managed observations.
+For a failed, cancelled or killed Linux attempt after admitted access, original
+content/security and publication can remain unchanged while copy-up/storage
+and ctime have changed. Never call that zero-side-effect or silently roll back
+timestamps to manufacture a no-change receipt.
+
+### Fixed failure facts and caller outcomes
+
+Write-stage/publication/cleanup failures retain closed host-private primary and
+cleanup facts. Primary is one of `none`, `unsupported`, `access_denied`,
+`changed`, `cancelled`, `possibly_published`, `legacy_recovery_required` or
+`unknown`; cleanup is `not_needed`, `proven` or `uncertain`. Keep the original
+primary when cleanup also fails. Native OS text, paths and policy values never
+become these fields. A fixed enum-generated Node-API error token may transport
+the pair as `RELAVIUM_NATIVE_WRITE:<primary>:<cleanup>`, with only the listed
+literal values and a 96-byte maximum. The bridge admits exact allow-listed
+tokens from an own data-string message field only, never invokes error getters,
+and never parses OS
+error text or guesses facts from arbitrary strings. Unknown exceptions map
+conservatively to unconfirmed execution/cleanup. Successful opaque handles and
+their owning operation remain separate from failure facts.
+
+| Cut / evidence | Durable effect state | Caller and user disclosure |
+|---|---|---|
+| Ordinary preparation/policy refusal before a claim | No new row | Existing fixed refusal/correction vocabulary; no write attempt. |
+| Claimed mask/start/access/admission refusal or cancellation before publication | `ambiguous`, or unresolved `prepared` if recording fails | Fatal/non-retryable attention; no post-claim discard inferred from an exception. Copy-up/ctime may already have occurred. |
+| Claimed stage/publication failure or unproven cleanup | `ambiguous`, or unresolved `prepared` if recording fails | Fixed `effect_needs_attention`, never `tool_denied`/switch-mode advice; no automatic repeat. |
+| Native completion followed by cancellation before committed settlement | Unresolved `prepared`/`ambiguous` | Cancellation may remain terminal; separately disclose unconfirmed effects. |
+| Valid committed receipt followed by caller cancellation/delivery failure | Keep committed receipt | Do not relabel the receipt unresolved; actions may already have completed and cannot be rolled back by cancelling the caller. |
+| Recovery marker unlink followed by failed index flush | Cleanup uncertainty; no effect settlement inferred | Report incomplete cleanup, not a claim that the removed marker is retained or that cleanup is durably proven. |
+
+Workflow final effect health already owns unresolved-effect attention/exit
+classification. Sessions keep their own cancellation semantics and do not
+acquire workflow health authority. After joining the actual turn producers,
+the production Home and standalone/non-interactive chat surfaces must emit a
+separate fixed content-free notice when an aborted turn leaves unresolved
+claims, including the native-success/post-dispatch-abort cut. Use the existing
+surface notice/stderr channels; add no durable session event, target path,
+native fact or preview to history. Distinguish unresolved effects from known
+committed actions, preserve cancellation terminal precedence and never silently
+drop the required production notification. A native/bridge error classification
+does not itself settle, discard or retry an effect.
+
 ## Required platform profiles
 
 These are acceptance requirements for the adapter, not statements that every
@@ -224,7 +322,8 @@ protecting only payload identities does not protect the ownership evidence.
 Bound the inventory to 128 records, each at most 16 KiB, and a recovery pass to
 128 records/2 MiB of record data, eight immediate children per stage and no
 recursive descent. Check cancellation/yield and a two-second cooperative scan
-budget between OS operations; retain/join an actual native producer that has
+budget between OS operations, except the explicitly bounded cleanup completion
+section below; retain/join an actual native producer that has
 not settled. Exhaustion or a full/uncertain inventory emits a fixed diagnostic
 and cannot evict evidence or silently allocate untracked named staging.
 
@@ -326,8 +425,8 @@ additional fields are accepted.
 
 | Byte offset | Field |
 |---|---|
-| 0 | Eight ASCII bytes `RVSTG001` |
-| 8 | State byte `1` (pinned), followed by seven zero bytes |
+| 0 | Eight ASCII bytes `RVSTG002` for current lifetime custody, or known legacy `RVSTG001` for exclusion only |
+| 8 | Protocol/state byte `2` paired only with `RVSTG002`, or legacy `1` paired only with `RVSTG001`; followed by seven zero bytes |
 | 16 | Four-byte producer PID, in `1..2147483647` |
 | 20 | Two-byte owner length, in `1..184` |
 | 22 | Two-byte stage-locator length, in `1..4096` |
@@ -343,11 +442,30 @@ uses its separately proven witnesses. Record length is exactly
 `176 + ownerLength + locatorLength`. There are no final-target names, payload
 bytes, policy values or durable handles in this format.
 
+The v2 body and all bounds/identity checks are otherwise identical to v1.
+Rust and TypeScript recognize only those exact magic/byte pairs. TypeScript
+may use valid v1 identities to exclude artifacts, but v2 recovery never grants
+v1 automatic deletion authority. Unknown/mismatched pairs, reserved bytes,
+malformed lengths/UTF-8/owners/locators/identities or unreadable committed
+records fail the entire trusted inventory closed; they are never skipped.
+Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
+uncommitted meanings. Physical v1 directory/stage names are namespace names,
+not evidence of the record protocol. No mutable flag upgrades an old record.
+
+Before activating v2 for an operator home, stop/join every old producer,
+recovery process and inventory/reader, and retire old executable access to that
+home. Rolling coexistence and downgrade are unsupported. Known legacy evidence
+stays protected for operator-assisted recovery; preserving it does not make
+old automatic recovery safe. No local PID scan is claimed to prove all old
+processes are gone across namespaces. Old readers may safely refuse new records;
+this is not a supported mixed-version operating mode.
+
 Allocation and recovery count at most 128 distinct nonces and 385 directory
 entries (three transition entries per nonce plus the allocation lock), at most
 16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
 eight immediate stage children and never descends recursively. Cancellation
-and the two-second cooperative budget are checked between operations; they do
+and the two-second cooperative budget are checked between operations, except
+the bounded cleanup completion section below; they do
 not interrupt an outstanding OS call or authorize detaching its producer.
 
 Pinning flushes the empty payload, stage directory and destination parent and
@@ -375,10 +493,19 @@ the empty directory and reservation are preserved as unproven, never deleted by
 name alone.
 
 Allocation holds an exclusive nonblocking kernel lock on `inventory.lock`;
-recovery also claims the exact pinned record before checking and deleting its
-artifacts. POSIX uses `flock(LOCK_EX | LOCK_NB)`. Windows uses `LockFile` on one
-byte at offset 16385, beyond the bounded record data, so a cleanup claim does
-not lock the reader's record bytes. These are cooperating-process claims, not
+the v2 producer also claims its original prepared-record handle before record
+publication and payload bytes, retaining that same claim through stage,
+publication and joined release. Live-owner cleanup and pending-marker handling
+reuse it, without reacquiring/unlocking via a clone. Recovery opens a separate
+handle and must claim it **and** prove the existing independent PID/identity/
+owner rules; neither a free lock nor PID absence alone suffices.
+POSIX uses `flock(LOCK_EX | LOCK_NB)`. All claim descriptors/duplicates are
+atomically close-on-exec; Windows claim handles are non-inheritable.
+Windows uses `LockFile` on one byte at offset `MAX_RECORD_BYTES + 1 = 16385`.
+Valid contents occupy `[0,16384)`; the reader's maximum read is `[0,16385)`.
+The sentinel must never overlap either range or extend file contents. Real
+independent Windows readers must remain able to read while the producer holds
+the claim. These are cooperating-process claims, not
 protection from independently authorized hostile OS processes. See the
 [Apple flock manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html),
 [Linux flock manual](https://man7.org/linux/man-pages/man2/flock.2.html) and
@@ -386,6 +513,29 @@ protection from independently authorized hostile OS processes. See the
 A dead claimant leaves no persistent claim token to steal; the kernel releases
 its lock. Failure to acquire a claim preserves evidence and does not force
 unlocking or deleting the lock file.
+
+#### Bounded cleanup completion
+
+Keep cancellation/deadline checks throughout discovery, reversible cleanup and
+payload removal. Immediately before removing the proven empty stage, complete
+the final cooperative check and admit this fixed completion checklist in full:
+remove that stage; revalidate context; flush its parent; run the same full
+index/home/parent/private-policy proof without cooperative ticks; reopen and
+compare the unchanged marker identity; revalidate context before and after
+marker unlink; flush the index. These are bounded logical proof/cleanup
+operations, not a promise about the number or latency of underlying syscalls.
+No new scan, allocation, next candidate, payload copy or target publication is
+permitted after the cut. Passing `cancelled = None` to a proof that still checks
+the scan deadline is insufficient: use the shared full proof with an explicit
+tick-free completion policy. Suppress only cooperative cancellation/deadline
+exits; never omit authority, identity, private-policy or I/O checks.
+
+Count a removed record only after that complete sequence succeeds. Before-cut
+uncertain candidates retain evidence normally. After-cut proof/I/O/flush failure
+reports cleanup uncertainty instead of returning a false retained/removed
+count; a marker may already be absent after unlink. A process crash in the
+rmdir-to-durable-evidence gap remains conservative operator recovery. ENOENT
+alone never authorizes discarding a marker or losing a renamed artifact.
 
 ### Explicit operator recovery procedure
 
@@ -675,6 +825,13 @@ temporary OS/algorithm experiments; this tracked script supplies reproducibility
 
 ## Acceptance evidence
 
+The original MVP-3 profiles and delivery were accepted on `development` at the
+[Step 2 checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+The following initial mechanism observations retain their historical scope;
+phrases about pending integration describe those probe checkpoints. Later
+source changes, including the proposed ADR-0126 refinement, require their own
+actual platform, package, independent-review and security acceptance.
+
 The Windows test-only rename-parameter cohort measures 68 fixed private-fixture
 combinations: 48 Win32 comparisons, twelve relative NT class-65 observations
 and eight padded NT observations with narrower held-directory peers.
@@ -758,9 +915,11 @@ measurements still require the complete ordinary profile and consumer gates.
 - Fresh complete affected reviews and a separate native security sitting. A
   successful Rust build, ABI claim or TypeScript mock is not native acceptance.
 
-## macOS local APFS implementation profile — integration acceptance pending
+<a id="macos-local-apfs-implementation-profile--integration-acceptance-pending"></a>
 
-The draft macOS profile admits local APFS volumes whose descriptor-bound volume
+## macOS local APFS implementation profile
+
+The implemented macOS profile admits local APFS volumes whose descriptor-bound volume
 capabilities explicitly report extended-security support. It refuses other
 filesystems and any failed or unsupported inspection. Source access is proved
 with a nontruncating effective `O_WRONLY` or `O_APPEND` open; source identity,
@@ -822,9 +981,11 @@ mid-native whole-workflow crash test. The barriers and their environment
 lookups are excluded from release builds. Windows native execution and the
 remaining platform acceptance matrix remain required.
 
-## Linux local implementation profile — integration acceptance pending
+<a id="linux-local-implementation-profile--integration-acceptance-pending"></a>
 
-The candidate profile in `src/linux.rs` is descriptor-bound and limited to
+## Linux local implementation profile
+
+The implemented profile in `src/linux.rs` is descriptor-bound and limited to
 local ext4, XFS and overlayfs. Network filesystems, unsupported inode-flag
 queries and unknown filesystem types refuse. The interface is internal to the
 native component; this section does not enable a model capability or certify
@@ -877,14 +1038,19 @@ Primary behavior references: [kernel ACL inheritance and mode correspondence](ht
 [non-mutating Linux mask observation](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html)
 and [atomic replacement/no-replace semantics](https://man7.org/linux/man-pages/man2/rename.2.html).
 
-## Windows local NTFS implementation profile — native execution pending
+<a id="windows-local-ntfs-implementation-profile--native-execution-pending"></a>
 
-The first Windows implementation is confined to fixed local NTFS volumes with
-persistent ACLs and named streams. It does not enable a Node-API write profile
-until real Windows native/ABI/installed-consumer execution and the separate
-security gate pass. A Rust Windows cross-target type check supplies no OS or
-publication receipt. Filesystems, remote shares, reparse objects, multiple hard
-links and unsupported attribute/metadata observations refuse.
+## Windows local NTFS implementation profile
+
+The implemented Windows profile is confined to fixed local NTFS volumes with
+persistent ACLs and named streams. Real native/ABI/installed-consumer execution
+and the separate security sitting were recorded at the
+[Step 2 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+The earlier execution-pending observations below are historical. Subsequent
+changes require fresh source-bound platform and security evidence; a Rust
+cross-target type check supplies no OS or publication receipt. Filesystems,
+remote shares, reparse objects, multiple hard links and unsupported
+attribute/metadata observations refuse.
 
 Parent-directory handles used for the required index and stage flushes request
 `GENERIC_WRITE` in addition to directory listing and security inspection rights.

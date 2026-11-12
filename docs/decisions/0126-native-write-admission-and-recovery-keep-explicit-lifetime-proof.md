@@ -1,8 +1,8 @@
 # ADR-0126: Native write admission and recovery keep explicit lifetime proof
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-13
-- **Related**: [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md), [native metadata contract](../reference/cli/native-filesystem-metadata.md), [architectural principles](../standards/architectural-principles.md)
+- **Related**: [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), [ADR-0124](0124-inspect-retained-run-effects-before-file-preparation.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md), [native metadata contract](../reference/cli/native-filesystem-metadata.md), [architectural principles](../standards/architectural-principles.md)
 
 ## Context
 
@@ -13,7 +13,10 @@ rather than exceptions which silently discard evidence or ignore version changes
 First, Linux preparation opens an existing source for non-truncating write
 access. A focused lower-layer overlayfs probe changes its ctime at that open,
 without an application data write. The current snapshot then refuses the
-operation. This probe is not execution of the complete adapter. The kernel's
+operation. The bounded
+[contributor probe](../../tools/native-fs/overlay-access-probe.mjs) makes the
+OS observation reproducible in a cached digest-pinned container with no host
+mounts or network. It is not execution of the complete adapter. The kernel's
 [overlayfs documentation](https://docs.kernel.org/filesystems/overlayfs.html)
 explains copy-up and warns that object identities and open-descriptor views
 depend on the mount configuration. Ordinary preparation must remain read-only;
@@ -38,7 +41,9 @@ The [metadata contract](../reference/cli/native-filesystem-metadata.md) owns
 exact formats, profiles, bounds and platform acceptance. This proposal refines
 ADR-0125's mechanisms without changing atomic publication, content approval,
 the effect journal, filesystem grants or the TypeScript engine boundary. It
-requires maintainer approval before the affected implementation changes.
+received maintainer approval after the supplied review findings were checked
+and the required clarifications below were incorporated. This accepts the
+design, not its still-required implementation/platform evidence.
 
 ## Decision
 
@@ -55,7 +60,11 @@ with effective-credential and empty-path semantics. An unavailable syscall,
 unsupported flags or an unverifiable result refuses the dependent write;
 there is no mode-bit/ACL emulation or real-UID fallback. This query is provisional,
 not proof that the later write operation will succeed. Its kernel capability
-requirement must be explicit in the supported Linux profile and release checks.
+requirement is Linux 5.8 or newer with the syscall and required flags enabled,
+including under seccomp. Actual capability is checked; a kernel version string,
+Node version or libc version does not prove it. Existing GNU/musl deployment
+baselines remain as recorded in the canonical profile. Read/meta behavior stays
+available when the dependent write capability refuses.
 
 Actual non-truncating write/append admission remains after content approval and
 the durable effect claim, before staging payload or publication. At this owned
@@ -67,17 +76,25 @@ read descriptor after possible copy-up; do not trust a held lower-layer reader
 to describe the current upper-layer file. Bind the returned snapshot and all
 later checks to that fresh current source.
 
-Only the OS-managed version change across this explicit admission cut may be
-adopted after the complete proof. A ctime difference alone is never evidence
-of safe copy-up. Changed bytes, required policy, identity or other unsupported
-state refuse; mounts with unstable or unprovable identities remain unsupported.
+Only ctime seconds/nanoseconds may differ across this explicit, enabled Linux
+overlay admission cut. Require exact dev **and** inode equality across the
+original, write and fresh read descriptors and the current named entry; changed
+identity refuses even with equal bytes. Size, mtime seconds/nanoseconds, single
+link/type, mode, uid/gid, supported ACL/xattrs/flags, complete original bytes and
+effective credentials must still match. A ctime difference alone is never
+evidence of safe copy-up. Unsupported or unprovable states refuse.
 After this cut, retain strict version/policy/byte checks through publication.
-No refresh is allowed during read-only preparation, after another await or
-arbitrary failure, or as an automatic retry. This deliberately permits a new
+No second independent refresh is allowed at a later await, after an arbitrary
+failure, or as an automatic retry. This deliberately permits a new
 baseline at this one admitted cut instead of promising rejection of every
 otherwise semantically unchanged version transition.
 
-Make this one coordinated handoff after the last strict TypeScript comparison
+The existing host-private `stageExistingMetadata` entrypoint owns this one
+joined admission/staging operation. Perform prerequisite mask queries before
+the last strict host comparison; calling and awaiting the native task is itself
+required and is not forbidden by this rule. Native scheduling is not atomic:
+the worker must repeat the original byte/version/policy proof before opening.
+Make this coordinated handoff after the last strict TypeScript comparison
 with the original prepared snapshot and before native staging. Pass the exact
 reviewed original bytes and expected identity into the joined native operation;
 the refreshed proof belongs only to that operation and its fresh current
@@ -86,6 +103,19 @@ version check must use that same proven admission result, not independently
 resnapshot or silently relax `equalSnapshot`. If the handoff cannot bind both
 layers' subsequent checks, refuse. Exercise this complete host/native chronology,
 not merely a native-only copy-up probe.
+
+The existing macOS APFS and Windows NTFS permission/admission mechanisms remain
+as specified under ADR-0125, without adopting Linux's ctime exception. macOS
+still performs its effective non-truncating access checks and strict version
+checks; test their APFS behavior rather than claiming that every OS-level open
+has no observable effect. Preparation never performs application data writes,
+creates staging payload or publishes a target. Linux specifically avoids the
+copy-up-triggering write open until the admitted execution cut.
+
+For failure/cancellation after that Linux open, unchanged target means unchanged
+original content, required security policy and publication state, not absence of
+all filesystem observations. Copy-up/storage and ctime may already have changed.
+Do not roll those effects back by rewriting metadata or infer permission to retry.
 
 ### Producer custody
 
@@ -103,6 +133,13 @@ Lock failure, unknown semantics or unsupported storage preserves the evidence.
 This supports only the documented local, lock-coherent profiles; it does not
 advertise cross-host or network-filesystem recovery.
 
+Acquire and retain the original claim without self-relocking it during cleanup,
+pending-marker inspection or handle duplication. Every claim-bearing descriptor
+is atomically close-on-exec on POSIX and non-inheritable on Windows, including
+raw opens and clones. Test descriptor/handle flags, child exec and original/
+duplicate handle behavior. The Windows sentinel is outside bounded record bytes;
+its exact range and reader bounds are frozen in the canonical protocol.
+
 Version the record protocol and update its TypeScript inventory reader together.
 An older record lacking the lifetime-lock witness cannot be treated as if its
 producer followed this protocol. Preserve and report unproven old records for
@@ -114,6 +151,15 @@ Known older records may supply identity evidence for exclusion only, without
 gaining automatic-recovery eligibility. Unknown or unparseable versions must
 fail the trusted inventory closed whenever their protected identities cannot
 be established. Never skip them and thereby expose another producer's payload.
+
+Activation requires a quiescent upgrade for each operator home: stop and join
+all old producers, recovery processes and inventory/readers before enabling the
+new protocol. Rolling coexistence and downgrade on that home are unsupported.
+Keeping old evidence does not make old automatic recovery safe or stop an old
+binary from operating; no new-process probe is claimed to discover every old
+process across namespaces. Do not restart old binaries against the upgraded home.
+Known v1 and new v2 byte layouts, strict recognition and exclusion-only behavior
+belong to the canonical protocol; unknown/mismatched versions fail closed.
 
 The platform proof must account for
 [POSIX open-description lock lifetime](https://man7.org/linux/man-pages/man2/flock.2.html)
@@ -154,6 +200,15 @@ effect-needs-attention presentation instead of a mode/policy denial. Primary
 failure and cleanup uncertainty must both remain represented safely. No raw
 native error, path, policy value or handle enters public events or history.
 
+The canonical failure/outcome table separately specifies claim state, caller
+terminal status and attention disclosure. A post-claim admission, mask or stage
+failure is not a new pre-effect discard proof: leave the tier-3 row ambiguous,
+or prepared if recording the ambiguity fails, without automatic retry. User
+cancellation may remain the caller's aborted terminal state. Workflow final
+effect health and a separate fixed session notice after joined work disclose
+unresolved effects; do not claim that every cancellation terminal itself carries
+an `effect_needs_attention` error. No new durable session-event type is needed.
+
 Considered and rejected: dropping ctime checks globally; write-opening during
 preparation to materialize a lower layer; treating ENOENT as cleanup proof;
 trusting PID absence or a free lock alone; silently grandfathering old records;
@@ -178,6 +233,12 @@ simulated false PID absence and process exit. Test cancellation/deadline and
 process-crash cuts around payload removal, stage removal, record removal and
 flushes, plus I/O/proof failures and old records. Verify unchanged targets,
 bounded work, honest retained/removed counts and no publication/retry authority.
+Here unchanged excludes the explicitly allowed post-claim copy-up/ctime effects;
+test failure, cancellation and process death after the access open and before
+staging/publication, with honest journal and user outcomes. Include mandatory
+stop-old-process rollout, old/new process incompatibility, non-inherited claims,
+no self-relock, Windows reader/sentinel bounds, capability absence and changed
+overlay identity. A probe record alone is not complete adapter acceptance.
 Include mixed old/new/unknown records through the actual TypeScript inventory
 reader, independent Windows reader/producer/recovery processes and real shared
 PID-namespace homes where the enabled lock-coherent profile permits them.
