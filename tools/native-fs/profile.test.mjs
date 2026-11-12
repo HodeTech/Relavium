@@ -201,7 +201,6 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
   assert.deepEqual(
     [...definition.matchAll(/"([a-z-]+)"/gu)].map((match) => match[1]),
     RUST_CHECKPOINTS,
-    parseWindowsOwnerContext,
   );
   const name = rustPopulation('win32').passed[0];
   const diagnose = (text) =>
@@ -215,6 +214,13 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
     diagnose('RELAVIUM_NATIVE_DIAGNOSTIC:child-parent-open,stage-recover,index-home-flush\n')
       .checkpoints,
     ['child-parent-open', 'stage-recover', 'index-home-flush'],
+  );
+  for (const code of RUST_CHECKPOINTS)
+    assert.deepEqual(diagnose(`RELAVIUM_NATIVE_DIAGNOSTIC:${code}\n`).checkpoints, [code]);
+  assert.deepEqual(
+    diagnose('RELAVIUM_NATIVE_DIAGNOSTIC:first-setup,failure-changed,child-stage-error\n')
+      .checkpoints,
+    ['first-setup', 'failure-changed', 'child-stage-error'],
   );
   assert.deepEqual(diagnose('RELAVIUM_NATIVE_DIAGNOSTIC:\n').checkpoints, []);
   for (const text of [

@@ -81,12 +81,14 @@ export function rustPopulation(platform) {
     passed: [
       ...passed,
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
+      'test_hooks::first_failure_preserves_primary_and_evaluates_once',
       ...(platform === 'win32'
         ? [
             'common::template_cleanup_tests::windows_changed_current_token_context_preserves_stage_until_restored',
           ]
         : []),
       ...[
+        'diagnostic_unwrapped_source_error_precedes_cleanup_failure',
         'ordinary_template_failures_cleanup_before_next_operation',
         'template_guard_preserves_hardlinked_and_replaced_objects',
         'uncertain_template_cleanup_retains_reservation_and_alias',

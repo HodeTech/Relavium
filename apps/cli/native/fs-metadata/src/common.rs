@@ -249,11 +249,14 @@ fn stage_existing(
         return Err(NativeFailure::Unsupported);
     }
     check()?;
-    CurrentProfile::recheck_existing(
-        &prepared.snapshot,
-        &prepared.source,
-        &prepared.path,
-        prepared.operation,
+    trace_failure!(
+        "first-source-recheck",
+        CurrentProfile::recheck_existing(
+            &prepared.snapshot,
+            &prepared.source,
+            &prepared.path,
+            prepared.operation,
+        )
     )?;
     let mut source = prepared
         .source
@@ -270,13 +273,19 @@ fn stage_existing(
     if actual != before {
         return Err(NativeFailure::Changed);
     }
-    CurrentProfile::recheck_existing(
-        &prepared.snapshot,
-        &prepared.source,
-        &prepared.path,
-        prepared.operation,
+    trace_failure!(
+        "first-source-recheck",
+        CurrentProfile::recheck_existing(
+            &prepared.snapshot,
+            &prepared.source,
+            &prepared.path,
+            prepared.operation,
+        )
     )?;
-    CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)?;
+    trace_failure!(
+        "first-parent-recheck",
+        CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)
+    )?;
     if CurrentProfile::identity(&CurrentProfile::open_parent(&prepared.parent_path)?)?
         != CurrentProfile::identity(&prepared.parent)?
     {
@@ -284,66 +293,91 @@ fn stage_existing(
     }
     #[cfg(test)]
     crate::test_hooks::checkpoint("stage-recover");
-    crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)?;
+    trace_failure!(
+        "first-recover",
+        crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)
+    )?;
     check()?;
     #[cfg(test)]
     crate::test_hooks::checkpoint("stage-reserve");
-    let mut owned = crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
-        home,
-        &prepared.parent,
-        &prepared.parent_path,
-        nonce,
-        cancelled,
+    let mut owned = trace_failure!(
+        "first-reserve",
+        crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
+            home,
+            &prepared.parent,
+            &prepared.parent_path,
+            nonce,
+            cancelled,
+        )
     )?;
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
     let setup = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
-        let stage_directory =
+        let stage_directory = trace_failure!(
+            "first-stage-directory",
             CurrentProfile::create_private_directory_owned(&stage_path, &mut |directory| {
                 #[cfg(test)]
                 if crate::test_hooks::fail("private-dir-adoption") {
                     return Err(NativeFailure::Unsupported);
                 }
                 owned.adopt_directory(directory)
-            })?;
+            })
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-file-create");
-        let payload = CurrentProfile::create_private_file_owned(
-            &stage_directory,
-            std::ffi::OsStr::new("payload"),
-            &mut |payload| {
-                #[cfg(test)]
-                if crate::test_hooks::fail("private-file-adoption") {
-                    return Err(NativeFailure::Unsupported);
-                }
-                owned.adopt_empty(&stage_directory, payload)
-            },
+        let payload = trace_failure!(
+            "first-stage-payload",
+            CurrentProfile::create_private_file_owned(
+                &stage_directory,
+                std::ffi::OsStr::new("payload"),
+                &mut |payload| {
+                    #[cfg(test)]
+                    if crate::test_hooks::fail("private-file-adoption") {
+                        return Err(NativeFailure::Unsupported);
+                    }
+                    owned.adopt_empty(&stage_directory, payload)
+                },
+            )
         )?;
-        CurrentProfile::recheck_existing(
-            &prepared.snapshot,
-            &prepared.source,
-            &prepared.path,
-            prepared.operation,
+        trace_failure!(
+            "first-source-recheck",
+            CurrentProfile::recheck_existing(
+                &prepared.snapshot,
+                &prepared.source,
+                &prepared.path,
+                prepared.operation,
+            )
         )?;
-        CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)?;
+        trace_failure!(
+            "first-parent-recheck",
+            CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-pin");
-        owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)?;
+        trace_failure!(
+            "first-pin",
+            owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-metadata");
-        CurrentProfile::apply_and_verify_existing(
-            &prepared.snapshot,
-            &prepared.source,
-            &payload,
-            &payload_path,
+        trace_failure!(
+            "first-metadata",
+            CurrentProfile::apply_and_verify_existing(
+                &prepared.snapshot,
+                &prepared.source,
+                &payload,
+                &payload_path,
+            )
         )?;
         Ok((stage_directory, payload))
     })();
     let (stage_directory, mut payload) = match setup {
         Ok(value) => value,
         Err(error) => {
+            #[cfg(test)]
+            crate::test_hooks::remember_failure("first-setup", error);
             if error != NativeFailure::CleanupUncertain {
                 let _ = owned.cleanup();
             }
@@ -355,29 +389,49 @@ fn stage_existing(
         #[cfg(test)]
         if crate::test_hooks::selected("partial-payload") && after.len() > 1 {
             let split = after.len() / 2;
-            payload
-                .write_all(&after[..split])
-                .map_err(|_| NativeFailure::Unsupported)?;
-            payload.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(&after[..split])
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
+            trace_failure!(
+                "first-payload-flush",
+                payload.sync_all().map_err(|_| NativeFailure::Unsupported)
+            )?;
             crate::test_hooks::hit("partial-payload");
-            payload
-                .write_all(&after[split..])
-                .map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(&after[split..])
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
         } else {
-            payload
-                .write_all(after)
-                .map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(after)
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
         }
         #[cfg(not(test))]
         payload
             .write_all(after)
             .map_err(|_| NativeFailure::Unsupported)?;
-        payload.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+        trace_failure!(
+            "first-payload-flush",
+            payload.sync_all().map_err(|_| NativeFailure::Unsupported)
+        )?;
         check()?;
-        CurrentProfile::verify_existing_stage(&prepared.snapshot, &payload, &payload_path)?;
+        trace_failure!(
+            "first-payload-verify",
+            CurrentProfile::verify_existing_stage(&prepared.snapshot, &payload, &payload_path)
+        )?;
         Ok(())
     })();
     if let Err(error) = result {
+        #[cfg(test)]
+        crate::test_hooks::remember_failure("first-payload-result", error);
         let _ = owned.cleanup();
         return Err(error);
     }
@@ -830,7 +884,10 @@ fn stage_new(
     if cancelled.load(Ordering::Acquire) {
         return Err(NativeFailure::Cancelled);
     }
-    CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)?;
+    trace_failure!(
+        "first-parent-recheck",
+        CurrentProfile::recheck_parent(&prepared.parent_snapshot, &prepared.parent, mask)
+    )?;
     if CurrentProfile::identity(&CurrentProfile::open_parent(&prepared.parent_path)?)?
         != CurrentProfile::identity(&prepared.parent)?
     {
@@ -838,53 +895,71 @@ fn stage_new(
     }
     #[cfg(test)]
     crate::test_hooks::checkpoint("stage-recover");
-    crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)?;
+    trace_failure!(
+        "first-recover",
+        crate::stage_index::recover_with_cancel::<CurrentProfile>(home, cancelled)
+    )?;
     #[cfg(test)]
     crate::test_hooks::checkpoint("stage-reserve");
-    let mut owned = crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
-        home,
-        &prepared.parent,
-        &prepared.parent_path,
-        nonce,
-        cancelled,
+    let mut owned = trace_failure!(
+        "first-reserve",
+        crate::stage_index::OwnedStage::<CurrentProfile>::reserve_with_cancel(
+            home,
+            &prepared.parent,
+            &prepared.parent_path,
+            nonce,
+            cancelled,
+        )
     )?;
     let stage_path = owned.stage_path().to_path_buf();
     let payload_path = stage_path.join("payload");
     let setup = (|| {
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-directory-create");
-        let stage_directory =
+        let stage_directory = trace_failure!(
+            "first-stage-directory",
             CurrentProfile::create_private_directory_owned(&stage_path, &mut |directory| {
                 #[cfg(test)]
                 if crate::test_hooks::fail("private-dir-adoption") {
                     return Err(NativeFailure::Unsupported);
                 }
                 owned.adopt_directory(directory)
-            })?;
+            })
+        )?;
         let template = format!(".relavium-fs-stage-v1.template.{nonce}");
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-template-create");
-        let payload = CurrentProfile::create_inherited_empty(
-            &prepared.parent,
-            &prepared.parent_snapshot,
-            mask,
-            &stage_directory,
-            std::ffi::OsStr::new(&template),
-            std::ffi::OsStr::new("payload"),
-            &mut |payload| {
-                #[cfg(test)]
-                if crate::test_hooks::fail("template-adoption-hardlink") {
-                    std::fs::hard_link(&payload_path, prepared.parent_path.join("fixture-alias"))
+        let payload = trace_failure!(
+            "first-template",
+            CurrentProfile::create_inherited_empty(
+                &prepared.parent,
+                &prepared.parent_snapshot,
+                mask,
+                &stage_directory,
+                std::ffi::OsStr::new(&template),
+                std::ffi::OsStr::new("payload"),
+                &mut |payload| {
+                    #[cfg(test)]
+                    if crate::test_hooks::fail("template-adoption-hardlink") {
+                        std::fs::hard_link(
+                            &payload_path,
+                            prepared.parent_path.join("fixture-alias"),
+                        )
                         .map_err(|_| NativeFailure::Unsupported)?;
-                    return Err(NativeFailure::Changed);
-                }
-                #[cfg(test)]
-                if crate::test_hooks::fail("template-adoption") {
-                    return Err(NativeFailure::Unsupported);
-                }
-                owned.adopt_empty(&stage_directory, payload)
-            },
+                        return Err(NativeFailure::Changed);
+                    }
+                    #[cfg(test)]
+                    if crate::test_hooks::fail("template-adoption") {
+                        return Err(NativeFailure::Unsupported);
+                    }
+                    owned.adopt_empty(&stage_directory, payload)
+                },
+            )
         )?;
+        #[cfg(test)]
+        if crate::test_hooks::fail("diagnostic-unwrapped-primary") {
+            return Err(NativeFailure::Changed);
+        }
         let snapshot = CurrentProfile::capture_inherited_stage(
             &prepared.parent_snapshot,
             &payload,
@@ -892,12 +967,17 @@ fn stage_new(
         )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("stage-pin");
-        owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)?;
+        trace_failure!(
+            "first-pin",
+            owned.pin_empty_with_cancel(&stage_directory, &payload, &stage_path, cancelled)
+        )?;
         Ok((stage_directory, payload, snapshot))
     })();
     let (stage_directory, mut payload, snapshot) = match setup {
         Ok(value) => value,
         Err(error) => {
+            #[cfg(test)]
+            crate::test_hooks::remember_failure("first-setup", error);
             if error != NativeFailure::CleanupUncertain {
                 let _ = owned.cleanup();
             }
@@ -911,30 +991,50 @@ fn stage_new(
         #[cfg(test)]
         if crate::test_hooks::selected("partial-payload") && after.len() > 1 {
             let split = after.len() / 2;
-            payload
-                .write_all(&after[..split])
-                .map_err(|_| NativeFailure::Unsupported)?;
-            payload.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(&after[..split])
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
+            trace_failure!(
+                "first-payload-flush",
+                payload.sync_all().map_err(|_| NativeFailure::Unsupported)
+            )?;
             crate::test_hooks::hit("partial-payload");
-            payload
-                .write_all(&after[split..])
-                .map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(&after[split..])
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
         } else {
-            payload
-                .write_all(after)
-                .map_err(|_| NativeFailure::Unsupported)?;
+            trace_failure!(
+                "first-payload-write",
+                payload
+                    .write_all(after)
+                    .map_err(|_| NativeFailure::Unsupported)
+            )?;
         }
         #[cfg(not(test))]
         payload
             .write_all(after)
             .map_err(|_| NativeFailure::Unsupported)?;
-        payload.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+        trace_failure!(
+            "first-payload-flush",
+            payload.sync_all().map_err(|_| NativeFailure::Unsupported)
+        )?;
         if cancelled.load(Ordering::Acquire) {
             return Err(NativeFailure::Cancelled);
         }
-        CurrentProfile::verify_inherited_stage(&snapshot, &payload, &payload_path)
+        trace_failure!(
+            "first-payload-verify",
+            CurrentProfile::verify_inherited_stage(&snapshot, &payload, &payload_path)
+        )
     })();
     if let Err(error) = result {
+        #[cfg(test)]
+        crate::test_hooks::remember_failure("first-payload-result", error);
         let _ = owned.cleanup();
         return Err(error);
     }
@@ -1354,6 +1454,49 @@ mod producer_crash_tests {
         Checkpoint(&'static str),
     }
     const CHECKPOINTS: &[&str] = &[
+        "failure-access-denied",
+        "failure-cancelled",
+        "failure-changed",
+        "failure-cleanup-uncertain",
+        "failure-possibly-published",
+        "failure-unsupported",
+        "first-index-open",
+        "first-lock-acquire",
+        "first-lock-directory-flush",
+        "first-lock-file-flush",
+        "first-lock-open",
+        "first-lock-recheck",
+        "first-lock-verify",
+        "first-metadata",
+        "first-parent-recheck",
+        "first-payload-flush",
+        "first-payload-result",
+        "first-payload-verify",
+        "first-payload-write",
+        "first-pin",
+        "first-pin-directory",
+        "first-pin-directory-flush",
+        "first-pin-index",
+        "first-pin-index-flush",
+        "first-pin-owned-payload",
+        "first-pin-parent-flush",
+        "first-pin-payload-flush",
+        "first-pin-record-create",
+        "first-pin-record-flush",
+        "first-pin-record-write",
+        "first-pin-reservation",
+        "first-recover",
+        "first-reservation-create",
+        "first-reservation-finish",
+        "first-reserve",
+        "first-reserve-entries",
+        "first-reserve-lock",
+        "first-setup",
+        "first-source-recheck",
+        "first-stage-directory",
+        "first-stage-payload",
+        "first-template",
+        "first-unclassified",
         "child-parent-open",
         "child-parent-capture",
         "child-source-open",
@@ -1461,7 +1604,8 @@ mod producer_crash_tests {
                 mask,
                 &cancelled,
             );
-            if result.is_err() {
+            if let Err(error) = &result {
+                crate::test_hooks::emit_first_failure(*error);
                 crate::test_hooks::checkpoint("child-stage-error");
             }
             let _stage = result.expect("stage new");
@@ -1493,7 +1637,8 @@ mod producer_crash_tests {
                 mask,
                 &cancelled,
             );
-            if result.is_err() {
+            if let Err(error) = &result {
+                crate::test_hooks::emit_first_failure(*error);
                 crate::test_hooks::checkpoint("child-stage-error");
             }
             let _stage = result.expect("stage existing");
@@ -1725,6 +1870,31 @@ mod template_cleanup_tests {
             parent_snapshot,
             target: "target".into(),
         }
+    }
+
+    #[test]
+    fn diagnostic_unwrapped_source_error_precedes_cleanup_failure() {
+        let fixture = Fixture::new();
+        let mask = mask();
+        let cancelled = AtomicBool::new(false);
+        let _reset = ClearFailure;
+        crate::test_hooks::clear_first_failure();
+        crate::test_hooks::inject_failure(Some("diagnostic-unwrapped-primary"));
+        let result = stage_new(
+            prepare(&fixture.0, mask),
+            &fixture.0.join("home"),
+            b"never published",
+            "77777777777777777777777777777777",
+            mask,
+            &cancelled,
+        );
+        assert!(matches!(result, Err(NativeFailure::Changed)));
+        assert_eq!(
+            crate::test_hooks::observed_first_failure(),
+            Some(("first-setup", NativeFailure::Changed))
+        );
+        assert!(!fixture.0.join("target").exists());
+        crate::test_hooks::clear_first_failure();
     }
 
     #[test]

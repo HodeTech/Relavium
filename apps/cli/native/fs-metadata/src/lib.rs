@@ -1,5 +1,19 @@
 //! CLI-private filesystem metadata adapter; platform acceptance remains gated.
 
+// First-failure diagnostics are compiled only into native test binaries.
+macro_rules! trace_failure {
+    ($boundary:literal, $operation:expr) => {{
+        #[cfg(test)]
+        {
+            crate::test_hooks::first_failure($boundary, $operation)
+        }
+        #[cfg(not(test))]
+        {
+            $operation
+        }
+    }};
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[allow(dead_code)]
 mod common;
@@ -22,6 +36,92 @@ mod windows;
 mod test_hooks {
     use std::io::Write;
     thread_local! { static FAILURE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) }; }
+
+    thread_local! {
+        static FIRST_FAILURE: std::cell::Cell<Option<(&'static str, crate::profile_api::NativeFailure)>> = const { std::cell::Cell::new(None) };
+    }
+    pub(crate) fn remember_failure(
+        boundary: &'static str,
+        error: crate::profile_api::NativeFailure,
+    ) {
+        FIRST_FAILURE.with(|slot| {
+            if slot.get().is_none() {
+                slot.set(Some((boundary, error)));
+            }
+        });
+    }
+    pub(crate) fn first_failure<T>(
+        boundary: &'static str,
+        result: Result<T, crate::profile_api::NativeFailure>,
+    ) -> Result<T, crate::profile_api::NativeFailure> {
+        if let Err(error) = &result {
+            remember_failure(boundary, *error);
+        }
+        result
+    }
+    #[test]
+    fn first_failure_preserves_primary_and_evaluates_once() {
+        use crate::profile_api::NativeFailure;
+        FIRST_FAILURE.with(|slot| slot.set(None));
+        let evaluations = std::cell::Cell::new(0);
+        let success: Result<(), NativeFailure> = trace_failure!("first-source-recheck", {
+            evaluations.set(evaluations.get() + 1);
+            Ok(())
+        });
+        assert!(success.is_ok());
+        assert_eq!(evaluations.get(), 1);
+        assert_eq!(FIRST_FAILURE.with(|slot| slot.get()), None);
+        // An unwrapped setup operation fails before a wrapped cleanup operation.
+        let unwrapped_source: Result<(), NativeFailure> = Err(NativeFailure::Changed);
+        if let Err(error) = unwrapped_source {
+            remember_failure("first-setup", error);
+            let _: Result<(), NativeFailure> =
+                first_failure("first-lock-acquire", Err(NativeFailure::Unsupported));
+        }
+        assert_eq!(
+            FIRST_FAILURE.with(|slot| slot.get()),
+            Some(("first-setup", NativeFailure::Changed))
+        );
+        FIRST_FAILURE.with(|slot| slot.set(None));
+        let _: Result<(), NativeFailure> =
+            first_failure("first-pin-record-write", Err(NativeFailure::Changed));
+        remember_failure("first-setup", NativeFailure::Unsupported);
+        assert_eq!(
+            FIRST_FAILURE.with(|slot| slot.get()),
+            Some(("first-pin-record-write", NativeFailure::Changed))
+        );
+        FIRST_FAILURE.with(|slot| slot.set(None));
+        remember_failure("first-reservation-finish", NativeFailure::Changed);
+        let _: Result<(), NativeFailure> =
+            first_failure("first-lock-acquire", Err(NativeFailure::Unsupported));
+        assert_eq!(
+            FIRST_FAILURE.with(|slot| slot.get()),
+            Some(("first-reservation-finish", NativeFailure::Changed))
+        );
+        FIRST_FAILURE.with(|slot| slot.set(None));
+    }
+    pub(crate) fn observed_first_failure(
+    ) -> Option<(&'static str, crate::profile_api::NativeFailure)> {
+        FIRST_FAILURE.with(|slot| slot.get())
+    }
+    pub(crate) fn clear_first_failure() {
+        FIRST_FAILURE.with(|slot| slot.set(None));
+    }
+    pub(crate) fn emit_first_failure(returned: crate::profile_api::NativeFailure) {
+        use crate::profile_api::NativeFailure;
+        let (boundary, class) = FIRST_FAILURE
+            .with(|slot| slot.get())
+            .unwrap_or(("first-unclassified", returned));
+        checkpoint(boundary);
+        checkpoint(match class {
+            NativeFailure::Unsupported => "failure-unsupported",
+            NativeFailure::AccessDenied => "failure-access-denied",
+            NativeFailure::Changed => "failure-changed",
+            NativeFailure::Cancelled => "failure-cancelled",
+            NativeFailure::PossiblyPublished => "failure-possibly-published",
+            NativeFailure::CleanupUncertain => "failure-cleanup-uncertain",
+        });
+    }
 
     pub(crate) fn inject_failure(phase: Option<&'static str>) {
         FAILURE.set(phase);

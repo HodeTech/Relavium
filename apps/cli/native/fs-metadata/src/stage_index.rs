@@ -399,31 +399,31 @@ impl<P: Profile> Index<P> {
             Ok(file) => {
                 #[cfg(test)]
                 crate::test_hooks::checkpoint("lock-file-flush");
-                io(file.sync_all())?;
+                trace_failure!("first-lock-file-flush", io(file.sync_all()))?;
                 #[cfg(test)]
                 crate::test_hooks::checkpoint("lock-directory-flush");
-                io(self.directory.sync_all())?;
+                trace_failure!("first-lock-directory-flush", io(self.directory.sync_all()))?;
                 file
             }
             Err(_) => {
                 #[cfg(test)]
                 crate::test_hooks::checkpoint("lock-existing-open");
-                open_nofollow(&path)?
+                trace_failure!("first-lock-open", open_nofollow(&path))?
             }
         };
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-private-verify");
-        P::verify_private_file(&file)?;
+        trace_failure!("first-lock-verify", P::verify_private_file(&file))?;
         if io(file.metadata())?.len() != 0 {
             return refused();
         }
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-acquire");
-        lock(&file)?;
+        trace_failure!("first-lock-acquire", lock(&file))?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-recheck");
-        self.recheck_checked(start, cancelled)?;
+        trace_failure!("first-lock-recheck", self.recheck_checked(start, cancelled))?;
         Ok(file)
     }
 }
@@ -497,13 +497,19 @@ impl<P: Profile> OwnedStage<P> {
         if !valid_nonce(nonce) || !parent_path.is_absolute() {
             return refused();
         }
-        let index = Index::<P>::open_checked(home, true, start, cancelled)?;
+        let index = trace_failure!(
+            "first-index-open",
+            Index::<P>::open_checked(home, true, start, cancelled)
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("reserve-lock");
-        let _claim = index.allocation_lock_checked(start, cancelled)?;
+        let _claim = trace_failure!(
+            "first-reserve-lock",
+            index.allocation_lock_checked(start, cancelled)
+        )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("reserve-entries");
-        let entries = index.entries(start, cancelled)?;
+        let entries = trace_failure!("first-reserve-entries", index.entries(start, cancelled))?;
         let nonces: BTreeSet<_> = entries.iter().map(|(_, nonce)| nonce).collect();
         if nonces.len() >= MAX_RECORDS || nonces.iter().any(|entry| entry.as_str() == nonce) {
             return refused();
@@ -515,9 +521,14 @@ impl<P: Profile> OwnedStage<P> {
             return refused();
         }
         tick(start, cancelled)?;
-        let reservation =
-            P::create_private_file(&index.directory, OsStr::new(&format!("{nonce}.reserved")))?;
-        finish_reservation::<P>(&index, &reservation, nonce, start, cancelled)?;
+        let reservation = trace_failure!(
+            "first-reservation-create",
+            P::create_private_file(&index.directory, OsStr::new(&format!("{nonce}.reserved")))
+        )?;
+        trace_failure!(
+            "first-reservation-finish",
+            finish_reservation::<P>(&index, &reservation, nonce, start, cancelled)
+        )?;
         Ok(Self {
             index,
             parent_path: parent_path.to_owned(),
@@ -610,9 +621,15 @@ impl<P: Profile> OwnedStage<P> {
         if self.record.is_some() || stage_path != self.path || io(payload.metadata())?.len() != 0 {
             return refused();
         }
-        self.index.recheck_checked(start, cancelled)?;
+        trace_failure!(
+            "first-pin-index",
+            self.index.recheck_checked(start, cancelled)
+        )?;
         tick(start, cancelled)?;
-        P::verify_private_file(&self.reservation)?;
+        trace_failure!(
+            "first-pin-reservation",
+            P::verify_private_file(&self.reservation)
+        )?;
         tick(start, cancelled)?;
         let parent = P::open_parent(&self.parent_path)?;
         tick(start, cancelled)?;
@@ -620,9 +637,12 @@ impl<P: Profile> OwnedStage<P> {
             return refused();
         }
         tick(start, cancelled)?;
-        P::verify_private_directory(stage_path, stage_dir)?;
+        trace_failure!(
+            "first-pin-directory",
+            P::verify_private_directory(stage_path, stage_dir)
+        )?;
         tick(start, cancelled)?;
-        P::verify_owned_file(payload)?;
+        trace_failure!("first-pin-owned-payload", P::verify_owned_file(payload))?;
         let record = Record {
             pid: std::process::id(),
             nonce: self.nonce.clone(),
@@ -639,39 +659,45 @@ impl<P: Profile> OwnedStage<P> {
         tick(start, cancelled)?;
         self.pending_record = Some(record.clone());
         let pending_file = &mut self.pending_file;
-        let mut file = P::create_private_file_owned(
-            &self.index.directory,
-            OsStr::new(&format!("{}.prepare", self.nonce)),
-            &mut |file| {
-                *pending_file = Some(EphemeralArtifact {
-                    identity: P::identity(file)?,
-                    file: io(file.try_clone())?,
-                });
-                Ok(())
-            },
+        let mut file = trace_failure!(
+            "first-pin-record-create",
+            P::create_private_file_owned(
+                &self.index.directory,
+                OsStr::new(&format!("{}.prepare", self.nonce)),
+                &mut |file| {
+                    *pending_file = Some(EphemeralArtifact {
+                        identity: P::identity(file)?,
+                        file: io(file.try_clone())?,
+                    });
+                    Ok(())
+                },
+            )
         )?;
         #[cfg(test)]
         if crate::test_hooks::fail("private-marker-adopted") {
             return Err(NativeFailure::Unsupported);
         }
         tick(start, cancelled)?;
-        io(file.write_all(&record.encode()?))?;
+        trace_failure!(
+            "first-pin-record-write",
+            io(file.write_all(&record.encode()?))
+        )?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-record-flush");
-        io(file.sync_all())?;
+        trace_failure!("first-pin-record-flush", io(file.sync_all()))?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-payload-flush");
-        io(payload.sync_all())?;
+        trace_failure!("first-pin-payload-flush", io(payload.sync_all()))?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-stage-flush");
-        io(stage_dir.sync_all())?;
+        trace_failure!("first-pin-directory-flush", io(stage_dir.sync_all()))?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-parent-flush");
-        io(parent.sync_all())?;
+        trace_failure!("first-pin-parent-flush", io(parent.sync_all()))?;
         self.index.recheck_checked(start, cancelled)?;
         tick(start, cancelled)?;
         io(fs::rename(
@@ -681,7 +707,7 @@ impl<P: Profile> OwnedStage<P> {
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-index-flush");
-        io(self.index.directory.sync_all())?;
+        trace_failure!("first-pin-index-flush", io(self.index.directory.sync_all()))?;
         // A failed pin never grants permission to write payload. Preserve its evidence.
         self.record = Some(record);
         self.pinned_file = Some(file);
@@ -696,6 +722,10 @@ impl<P: Profile> OwnedStage<P> {
         Ok(())
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), NativeFailure> {
+        #[cfg(test)]
+        if crate::test_hooks::fail("diagnostic-unwrapped-primary") {
+            return trace_failure!("first-lock-acquire", Err(NativeFailure::Unsupported));
+        }
         if self.record.is_none() {
             return self.cleanup_ephemeral();
         }
@@ -903,6 +933,8 @@ fn finish_reservation<P: Profile>(
         index.recheck_checked(start, cancelled)
     })();
     if let Err(failure) = finish {
+        #[cfg(test)]
+        crate::test_hooks::remember_failure("first-reservation-finish", failure);
         // The allocation claim remains held. Cleanup ignores cancellation but
         // preserves evidence if its identity/private-authority checks fail.
         let _cleanup = cleanup_empty_reservation::<P>(index, reservation, nonce);

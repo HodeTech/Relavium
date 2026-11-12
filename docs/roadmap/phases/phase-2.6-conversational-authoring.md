@@ -2246,6 +2246,43 @@ Each partition completed its production-function/caller ledger. These are
 source/targeted-test verdicts, not final coverage, actual Windows, complete
 eight-target artifacts, installed-consumer or combined CI acceptance.
 
+**Frozen checkpoint validation:** `3beeefea1e6881be46e378f3496708003b998471`
+passes all 1,075 acceptance-tool tests with no skips. Enforced coverage passes
+all 874 files and 18,354 tests with 23 declared platform skips in 1,066.88 seconds,
+retaining the existing llm/mcp thresholds and measured core scope. This closes
+the earlier coverage-fixture failure on these source bytes.
+
+The [checkpoint CI](https://github.com/HodeTech/Relavium/actions/runs/43154464489)
+passes all six Linux/macOS native profiles. Both Windows architectures still
+fail the first producer-crash parent before its requested phase. The previous
+private owner/DACL mismatch no longer appears, but the rolling checkpoint
+suffix is dominated by cleanup and does not identify the original failure.
+No cause is inferred from that suffix. A test-only first-failure diagnostic
+is being reviewed; it must preserve original failure precedence, fixed bounded
+output and release exclusion. The failed CI is not Windows, artifact,
+installed-consumer, causal-control or combined acceptance.
+
+**Test-only first-failure correction:** fixed native boundary/class evidence now
+survives later cleanup checkpoints. An independent Sol/high review caught a
+diagnostic-precedence gap where an unwrapped primary error could still be
+replaced by cleanup evidence. The corrected patch records setup, payload and
+reservation errors before cleanup while preserving earlier deeper evidence.
+A new real `stage_new` control injects both an unwrapped source failure and a
+cleanup failure; a second control verifies nested precedence, successful empty
+state and single evaluation. Neither control reproduces the Windows cause.
+
+The corrected full affected review is clean, followed by a separate Terra/high
+diagnostic/tooling security sitting with no blocker/high/medium finding. Hooks,
+storage and injection compile only into tests; the production macro expands
+to the original operation. The exact allowlist gains 43 fixed tokens while
+retaining the 16-token/1,024-character receipt limit and malformed/unknown
+refusal. Selected parent populations are now macOS 35, Linux 15 and Windows 18;
+owned ignored fixtures and eleven Node lifecycle cases are unchanged. Local
+macOS passes all 35 parents and eleven Node cases; the release binary remains
+byte-identical to the coverage checkpoint, with all 43 tokens, the injected
+phase and test-hook prefix absent. Windows GNU cross-checking is compilation
+evidence only. New actual Windows execution remains required.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
