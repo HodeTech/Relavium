@@ -3161,6 +3161,71 @@ focused cases. No production source, global deadline, coverage threshold,
 exclusion, dependency or control manifest changes. Corrected-head combined CI
 remains required before PR readiness.
 
+#### Authenticated catalog remediation
+
+The historical `4e337553` checkpoint completes both PR and development CI runs
+with 26/26 successful jobs. The maintainer subsequently authorizes authenticated
+SonarCloud issue management and requests action on the complete remaining
+catalog. The following source and remote dispositions supersede the earlier
+read-only triage; the historical failed attempts above remain recorded.
+
+All 207 open baseline keys are individually reconciled, with no missing or
+extra key. The source correction is `42bba7f2` / `5228da6d` / `9f7811ae`:
+
+| Action | Count | Basis |
+|---|---:|---|
+| Implemented correction | 131 | Cohesive private phases for all 36 complexity reports; explicit presentation/validation mappings and equivalent language idioms; two independent fixed-input I/O cohorts parallelized; HTTPS-only download redirects and a nonroot musl image default. Both reviewed loader integrity pins are refreshed. |
+| False Positive | 36 | Nineteen canonical ordinal string sorts; three contributor-owned argv reports; four indirect Error subclasses; four dependent partial reads/writes; intentional UTF-16 operations, undeclared-global detection, hexadecimal grouping and literal string-pair inference. |
+| Accepted intentional behavior | 40 | Thirty dependency/custody/cancellation-ordered awaits; three stateless viewport row keys; two contributor toolchain PATH lookups; two ordered target-tuple defaults; one native-probe boolean, one ordinal tie comparator and one owned-map cleanup snapshot. These are retained designs, not deferred implementation tasks. |
+
+Every False Positive and Accepted transition includes its source rationale and
+is independently read back from the project/PR-scoped API. The immediate catalog
+receipt is 131 OPEN / 40 ACCEPTED / 36 FALSE_POSITIVE / two already FIXED S8786
+reports. Implemented corrections require a fresh source analysis for scanner
+closure; no quality profile, severity, exclusion or suppression is changed.
+Detailed per-key working records remain local under `docs/reviews/` in accordance
+with the documentation standard; tracked acceptance is this register.
+
+The refactors preserve exact read/write offsets, finite diff/discovery budgets,
+policy and ownership checks, native metadata/publication custody, replay
+validation, rendered wording and source-backed masked review. Root's review
+adds an admission check after the extracted asynchronous mode action, before
+opening another prompt. Both cancellation and owner replacement regressions
+fail when that check is removed and pass when restored. The extraction also
+retains discovery error propagation outside `finally`; no validation branch is
+discarded to lower a metric.
+
+Local verification passes 18,543 workspace cases with 24 conditional skips,
+all 17 lint/typecheck tasks, all six builds plus formatting, 1,093 acceptance-tool cases
+without skips, formatting, DB synchronization, isolation and seam/engine/bundle
+closure. The actual macOS profile passes all 35 declared Rust parents and eleven
+Node lifecycle cases. The canonical profile executes fault-injection parents
+individually; a default parallel cargo invocation is not substituted for that
+evidence. Local complete wire and 23-mechanism usage causal controls, compiled
+bootstrap/CLI, media, overflow and budget-replay smoke checks pass. A local
+`development-current` native asset set deliberately refuses complete-platform
+package production; actual eight-target profiles, four installed consumers,
+the full filesystem/secrets matrices and the final combined CI remain the
+current-head PR checks.
+
+The first fresh Sol/high complete cumulative review and Terra/high native,
+delivery and core review report no finding; they independently pass 25 mode and
+ten delivery cases. A separate fresh Sol/high security sitting reports no
+finding after reviewing the complete delta, actual callers and all 207
+dispositions; its independent cohorts pass 386 cases with two Windows-only
+skips. Root verifies its 41 source hashes and per-key reconciliation. The fresh
+second Terra/high complete cumulative and Sol/high CLI/UX/disposition reviews
+also report no finding. Sol independently passes 128 focused cases and compares
+135 documents, 53,258 pages, 466,560 key actions and 121 line-diff pairs against
+the baseline with exact equality. Both rounds and the separate security sitting
+review the same `9f7811ae` implementation; no corrective source follows them.
+
+No runtime/Cargo dependency, public package contract, accepted architectural
+decision or release permission changes. Work stays on `development`; maintainer
+review and merge remain separate. The latest scanner and combined platform
+results are owned by [PR #99's checks](https://github.com/HodeTech/Relavium/pull/99/checks),
+which must match its final head before merge; local checks do not certify them.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

@@ -95,15 +95,19 @@ verification with 18,541 cases and 24 conditional skips. The checkpoint PR carri
 current-head combined CI and maintainer review;
 no additional MVP-3 design approval or confirmed deferred finding remains.
 
-**External review follow-up (2026-11-12):** both `49f340e3` GitHub Actions runs
-pass 26/26 jobs. Separate SonarCloud catalog triage verifies two quadratic
-preprocessing stalls, now corrected with regression evidence; its remaining
-reports have explicit source-context dispositions. The
+**External review follow-up (2026-11-12):** both `4e337553` GitHub Actions runs
+pass 26/26 jobs. The two verified quadratic preprocessing stalls are corrected.
+The authenticated SonarCloud follow-up individually addresses all 207 remaining
+baseline reports: 131 implemented source corrections, 36 verified False Positive
+transitions and 40 documented Accepted intentional patterns. Corrections through
+`9f7811ae` pass 18,543 workspace cases and 1,093 acceptance-tool cases; fresh
+cumulative reviews and a separate security sitting are clean. The
 [follow-up record](phases/phase-2.6-conversational-authoring.md#mvp-3-sonarcloud-follow-up-2026-11-12)
-distinguishes these fixes from optional style recommendations and contextual
-security reports. Fresh corrective cumulative and separate security reviews are
-clean. PR #99 remains draft until corrected-head CI completes; the separate
-SonarCloud gate is not claimed as passing. No new ADR or design approval is needed.
+distinguishes historical evidence, code corrections and remote classifications.
+PR #99's final-head scanner and combined platform checks remain the merge gate;
+the local macOS profile does not replace eight native targets or four installed
+consumers. No new ADR or design approval is needed; maintainer review and merge
+remain separate.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
