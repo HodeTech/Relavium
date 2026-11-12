@@ -21,6 +21,28 @@ fn refused<T>() -> Result<T, NativeFailure> {
 fn io<T>(result: std::io::Result<T>) -> Result<T, NativeFailure> {
     result.map_err(|_| NativeFailure::Changed)
 }
+#[cfg(all(test, windows))]
+pub(crate) fn rename_error_category(error: &std::io::Error) -> &'static str {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
+        ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER, ERROR_LOCK_VIOLATION, ERROR_NOT_SAME_DEVICE,
+        ERROR_NOT_SUPPORTED, ERROR_PATH_NOT_FOUND, ERROR_PRIVILEGE_NOT_HELD,
+        ERROR_SHARING_VIOLATION,
+    };
+    match error.raw_os_error().map(|value| value as u32) {
+        Some(ERROR_ACCESS_DENIED) => "rename-access-denied",
+        Some(ERROR_INVALID_PARAMETER) => "rename-invalid-parameter",
+        Some(ERROR_NOT_SUPPORTED) => "rename-not-supported",
+        Some(ERROR_INVALID_NAME) => "rename-invalid-name",
+        Some(ERROR_NOT_SAME_DEVICE) => "rename-not-same-device",
+        Some(ERROR_PRIVILEGE_NOT_HELD) => "rename-privilege-not-held",
+        Some(ERROR_SHARING_VIOLATION) => "rename-sharing-violation",
+        Some(ERROR_LOCK_VIOLATION) => "rename-lock-violation",
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => "rename-source-missing",
+        Some(ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS) => "rename-destination-exists",
+        _ => "rename-other",
+    }
+}
 fn tick(start: Instant, cancelled: Option<&AtomicBool>) -> Result<(), NativeFailure> {
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return Err(NativeFailure::Cancelled);
@@ -703,13 +725,18 @@ impl<P: Profile> OwnedStage<P> {
             self.index.recheck_checked(start, cancelled)
         )?;
         trace_failure!("first-pin-postflush-budget", tick(start, cancelled))?;
-        trace_failure!(
-            "first-pin-rename",
-            io(fs::rename(
-                self.index.path.join(format!("{}.prepare", self.nonce)),
-                self.index.path.join(format!("{}.record", self.nonce)),
-            ))
-        )?;
+        let rename_result = fs::rename(
+            self.index.path.join(format!("{}.prepare", self.nonce)),
+            self.index.path.join(format!("{}.record", self.nonce)),
+        );
+        #[cfg(all(test, windows))]
+        if let Err(error) = &rename_result {
+            crate::test_hooks::remember_failure(
+                rename_error_category(error),
+                NativeFailure::Changed,
+            );
+        }
+        trace_failure!("first-pin-rename", io(rename_result))?;
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("pin-index-flush");

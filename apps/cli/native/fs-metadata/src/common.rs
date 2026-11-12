@@ -1454,6 +1454,17 @@ mod producer_crash_tests {
         Checkpoint(&'static str),
     }
     const CHECKPOINTS: &[&str] = &[
+        "rename-invalid-parameter",
+        "rename-not-supported",
+        "rename-invalid-name",
+        "rename-not-same-device",
+        "rename-privilege-not-held",
+        "rename-access-denied",
+        "rename-sharing-violation",
+        "rename-lock-violation",
+        "rename-source-missing",
+        "rename-destination-exists",
+        "rename-other",
         "first-metadata-context-changed",
         "first-metadata-credentials",
         "first-metadata-source-changed",

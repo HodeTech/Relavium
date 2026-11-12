@@ -486,6 +486,18 @@ impl Drop for Backup<'_> {
 }
 impl Backup<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> Result<usize, NativeFailure> {
+        #[cfg(test)]
+        {
+            if crate::test_hooks::fail("RELAVIUM_NATIVE_BACKUP_EOF")
+                || crate::test_hooks::fail("RELAVIUM_NATIVE_BACKUP_GROW")
+            {
+                return Ok(0);
+            }
+            if crate::test_hooks::fail("RELAVIUM_NATIVE_BACKUP_TRUNCATE") && !bytes.is_empty() {
+                bytes[0] = 0;
+                return Ok(1);
+            }
+        }
         let mut copied = 0;
         while copied < bytes.len() {
             if self.start == self.end {
@@ -558,6 +570,12 @@ fn streams(file: &File) -> Result<Option<Vec<u8>>, NativeFailure> {
     // metadata as well as ADS. We refuse unknown types rather than equating an
     // empty FindFirstStream inventory with absence of extended metadata.
     let reader = reopen(file, FILE_GENERIC_READ)?;
+    // Capture both held handles before inventory so an omitted BACKUP_DATA
+    // header is accepted only when the kernel's primary stream was empty.
+    let before_file = info(file)?;
+    let before_reader = info(&reader)?;
+    let before_identity = identity(file)?;
+    let reader_identity = identity(&reader)?;
     let mut backup = Backup {
         file: &reader,
         context: ptr::null_mut(),
@@ -571,14 +589,40 @@ fn streams(file: &File) -> Result<Option<Vec<u8>>, NativeFailure> {
         let mut header = [0u8; 20];
         let read = backup.read(&mut header)?;
         if read == 0 {
-            return if data_seen {
-                Ok(zone)
-            } else {
-                trace_failure!(
-                    "first-stream-no-data-header",
-                    Err(NativeFailure::Unsupported)
-                )
+            #[cfg(test)]
+            if crate::test_hooks::fail("RELAVIUM_NATIVE_BACKUP_GROW") {
+                let mut held = file;
+                held.write_all(b"x")
+                    .map_err(|_| NativeFailure::Unsupported)?;
+                held.sync_all().map_err(|_| NativeFailure::Unsupported)?;
+            }
+            if data_seen {
+                return Ok(zone);
+            }
+            let empty_regular = |value: &BY_HANDLE_FILE_INFORMATION| {
+                value.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+                    && value.nFileSizeHigh == 0
+                    && value.nFileSizeLow == 0
             };
+            // BackupRead exhausted successfully. Missing BACKUP_DATA may only
+            // describe an actually empty held unnamed stream; all discovered
+            // alternate streams have already passed the closed parser above.
+            if empty_regular(&before_file)
+                && empty_regular(&before_reader)
+                && before_identity == reader_identity
+                && ntfs(file).is_ok()
+                && ntfs(&reader).is_ok()
+                && empty_regular(&info(file)?)
+                && empty_regular(&info(&reader)?)
+                && identity(file)? == before_identity
+                && identity(&reader)? == before_identity
+            {
+                return Ok(zone);
+            }
+            return trace_failure!(
+                "first-stream-no-data-header",
+                Err(NativeFailure::Unsupported)
+            );
         }
         if read != header.len() {
             return Err(NativeFailure::Changed);
@@ -1624,6 +1668,31 @@ mod tests {
 
     #[test]
     fn windows_token_context_owner_pair_is_closed_and_binds_identity() {
+        for (code, category) in [
+            (ERROR_ACCESS_DENIED, "rename-access-denied"),
+            (ERROR_INVALID_PARAMETER, "rename-invalid-parameter"),
+            (ERROR_NOT_SUPPORTED, "rename-not-supported"),
+            (ERROR_INVALID_NAME, "rename-invalid-name"),
+            (ERROR_NOT_SAME_DEVICE, "rename-not-same-device"),
+            (ERROR_PRIVILEGE_NOT_HELD, "rename-privilege-not-held"),
+            (ERROR_SHARING_VIOLATION, "rename-sharing-violation"),
+            (ERROR_LOCK_VIOLATION, "rename-lock-violation"),
+            (ERROR_FILE_NOT_FOUND, "rename-source-missing"),
+            (ERROR_PATH_NOT_FOUND, "rename-source-missing"),
+            (ERROR_ALREADY_EXISTS, "rename-destination-exists"),
+            (ERROR_FILE_EXISTS, "rename-destination-exists"),
+        ] {
+            assert_eq!(
+                crate::stage_index::rename_error_category(&std::io::Error::from_raw_os_error(
+                    code as i32
+                )),
+                category
+            );
+        }
+        assert_eq!(
+            crate::stage_index::rename_error_category(&std::io::Error::other("test")),
+            "rename-other"
+        );
         let mut primary = TOKEN_STATISTICS {
             TokenType: TokenPrimary,
             ..TOKEN_STATISTICS::default()
@@ -1716,6 +1785,66 @@ mod tests {
         )
         .expect("ordinary attributed source");
         assert!(snapshot.zone.as_deref() == Some(zone.as_slice()));
+        let empty = fixture.file("empty-primary", b"");
+        assert!(streams(&empty).expect("empty inventory").is_none());
+        // Synthetic fault controls exercise the no-DATA decision independently
+        // of the native NTFS inventory shape; ordinary controls remain above.
+        struct ResetBackupFault;
+        impl Drop for ResetBackupFault {
+            fn drop(&mut self) {
+                crate::test_hooks::inject_failure(None);
+            }
+        }
+        let _reset_backup_fault = ResetBackupFault;
+        crate::test_hooks::inject_failure(Some("RELAVIUM_NATIVE_BACKUP_EOF"));
+        assert!(streams(&empty).expect("forced empty EOF").is_none());
+        assert!(matches!(streams(&source), Err(NativeFailure::Unsupported)));
+        crate::test_hooks::inject_failure(Some("RELAVIUM_NATIVE_BACKUP_TRUNCATE"));
+        assert!(matches!(streams(&empty), Err(NativeFailure::Changed)));
+        let grow = fixture.file("growing-primary", b"");
+        crate::test_hooks::inject_failure(Some("RELAVIUM_NATIVE_BACKUP_GROW"));
+        assert!(matches!(streams(&grow), Err(NativeFailure::Unsupported)));
+        assert_eq!(info(&grow).expect("grown fixture").nFileSizeLow, 1);
+        crate::test_hooks::inject_failure(None);
+        let zone_only = fixture.file("zone-only", b"");
+        let mut zone_stream = open(
+            &zone_path(&fixture.path.join("zone-only")),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            CREATE_NEW,
+            0,
+            ptr::null(),
+        )
+        .expect("zone-only stream");
+        zone_stream.write_all(zone).expect("zone-only bytes");
+        zone_stream.sync_all().expect("zone-only flush");
+        drop(zone_stream);
+        assert_eq!(
+            streams(&zone_only).expect("zone-only inventory").as_deref(),
+            Some(zone.as_slice())
+        );
+        let zone_snapshot = WindowsProfile::capture_existing(
+            &zone_only,
+            &fixture.path.join("zone-only"),
+            WriteOperation::Replace,
+        )
+        .expect("zone-only snapshot");
+        let (zone_stage_path, _zone_stage_parent, zone_stage) = fixture.stage();
+        WindowsProfile::apply_and_verify_existing(
+            &zone_snapshot,
+            &zone_only,
+            &zone_stage,
+            &zone_stage_path.join("payload"),
+        )
+        .expect("copy zone-only metadata");
+        assert_eq!(
+            streams(&zone_stage)
+                .expect("copied zone-only inventory")
+                .as_deref(),
+            Some(zone.as_slice())
+        );
+        drop(zone_stage);
+        drop(_zone_stage_parent);
+        std::fs::remove_dir_all(&zone_stage_path).expect("remove completed empty zone stage");
         let (stage_path, stage_parent, mut stage) = fixture.stage();
         WindowsProfile::apply_and_verify_existing(
             &snapshot,

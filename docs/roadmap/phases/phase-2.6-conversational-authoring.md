@@ -2304,6 +2304,32 @@ typecheck, build/format gates pass with an unchanged macOS release binary.
 This fixes a documented contract defect without claiming it caused either
 Windows failure or accepting either Windows profile.
 
+**Empty Windows stream inventory:** actual arm64 execution at `670e58bd`
+reaches `first-stream-no-data-header` after successful BackupRead exhaustion;
+x64 reaches `first-pin-rename`, an I/O failure mapped to `Changed`, not a
+token-context comparison. The empty-primary correction accepts only the
+descriptor-bound case specified in the native contract: both held/reopened
+handles must remain the same regular, non-reparse NTFS file with primary size
+zero before and after the complete bounded inventory. Unknown/duplicate/
+oversized streams and malformed or incomplete data still refuse. The only
+retained alternate stream is the already parsed, bounded Zone.Identifier.
+
+A complete affected Terra/high review identified a medium regression-test
+gap. The corrected existing Windows metadata parent retains actual unforced
+empty/Zone-only and exact-copy controls, and adds explicit test-only forced
+EOF on empty/nonempty files, truncated-header refusal and growth of an owned
+empty fixture before the post-check. These synthetic faults verify rejection
+boundaries, not OS behavior. The final affected review and separate Sol/high
+security sitting are clean. Selected test populations and all receipt bounds
+remain unchanged. Test phases use the scanned release-exclusion prefix.
+
+The x64 rename remains unchanged and unresolved. A Windows-test-only classifier
+maps its error to eleven fixed known categories, without raw codes, messages
+or paths; the original `Changed` result, operation and deadline remain.
+Rust/JS diagnostic allowlists match at 125 entries, still admitting at most
+sixteen per bounded receipt. Actual Windows native and artifact acceptance
+remain open after these corrections.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

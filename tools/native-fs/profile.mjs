@@ -100,6 +100,17 @@ const PROFILE_CASES = new Set(
   }),
 );
 export const RUST_CHECKPOINTS = Object.freeze([
+  'rename-invalid-parameter',
+  'rename-not-supported',
+  'rename-invalid-name',
+  'rename-not-same-device',
+  'rename-privilege-not-held',
+  'rename-access-denied',
+  'rename-sharing-violation',
+  'rename-lock-violation',
+  'rename-source-missing',
+  'rename-destination-exists',
+  'rename-other',
   'first-metadata-context-changed',
   'first-metadata-credentials',
   'first-metadata-source-changed',

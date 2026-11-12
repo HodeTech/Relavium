@@ -824,6 +824,15 @@ ADS, extended-attribute records, object-ID/property/reparse/other backup stream
 types, unsupported stream flags, incomplete enumeration and oversized metadata
 refuse. `Zone.Identifier` bytes are copied exactly to a fresh stream on the
 pinned stage, then enumerated and compared; there is no merge/conflict rule.
+
+An inventory without an unnamed-data header is eligible only after successful
+exhaustion: the held source and reopened inventory handles must identify the
+same regular, non-reparse NTFS file, with unnamed-stream size zero before and
+after the inventory. Only the already parsed permitted Zone.Identifier bytes
+may be returned; a nonempty primary, incomplete inventory or changed evidence
+refuses. This is descriptor-bound empty-file evidence, not an inference from a
+missing stream name.
+
 Security descriptors are bounded to 64 KiB and normalized native paths to
 32,767 UTF-16 code units. Every failure crossing the host boundary is a fixed
 reason, never a stream name/value, SID/ACL, path-bearing native error or handle.
