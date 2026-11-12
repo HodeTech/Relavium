@@ -56,9 +56,10 @@ See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authorin
 MVP-3's three steps are implemented and independently accepted on `development`:
 editing/search tools, trustworthy approval previews and tool-call rendering v2,
 native metadata preservation, the built-in editing grant and startup-mode settings.
-The final Step 3 source is `f6b61474`, with clean cumulative and separate security
-reviews and 18,522 passing workspace tests. Step 2's all-26-job CI checkpoint is
-`bc8c34b2`; the final PR requires combined CI on its own head and maintainer review.
+The final Step 3 source is `f6b61474`; its external-review preprocessing correction
+at `7af8e05a` has clean fresh cumulative and separate security reviews and 18,541
+passing workspace tests. Step 2's all-26-job CI checkpoint is `bc8c34b2`; PR #99
+requires combined CI on its corrected head and maintainer review.
 The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 owns exact evidence and limits. MVP-4 is the next implementation milestone;
 its pending ADR approvals remain required. No merge or npm publication is claimed.

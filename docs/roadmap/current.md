@@ -90,8 +90,9 @@ CI jobs passed. [Step 3 is accepted on development](phases/phase-2.6-conversatio
 at `f6b61474`: the built-in grant, strict startup-mode configuration and shared
 mode/default UX. Verified reader/writer and credential-bootstrap observation
 gaps are fixed; fresh complete cumulative and separate final-source security
-reviews are clean. Full local verification passes 18,522 cases with 23 conditional
-skips. The checkpoint PR carries current-head combined CI and maintainer review;
+reviews are clean. Its external-review correction at `7af8e05a` passes full local
+verification with 18,541 cases and 24 conditional skips. The checkpoint PR carries
+current-head combined CI and maintainer review;
 no additional MVP-3 design approval or confirmed deferred finding remains.
 
 **External review follow-up (2026-11-12):** both `49f340e3` GitHub Actions runs
@@ -100,8 +101,9 @@ preprocessing stalls, now corrected with regression evidence; its remaining
 reports have explicit source-context dispositions. The
 [follow-up record](phases/phase-2.6-conversational-authoring.md#mvp-3-sonarcloud-follow-up-2026-11-12)
 distinguishes these fixes from optional style recommendations and contextual
-security reports. PR #99 is temporarily draft while fresh corrective review and
-current-head CI run; no new ADR or design approval is needed.
+security reports. Fresh corrective cumulative and separate security reviews are
+clean. PR #99 remains draft until corrected-head CI completes; the separate
+SonarCloud gate is not claimed as passing. No new ADR or design approval is needed.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.

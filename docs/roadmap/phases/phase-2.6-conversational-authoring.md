@@ -3082,6 +3082,27 @@ declaration provenance pass. Native Rust/build/loader inputs and the 139/549
 secrets declarations remain unchanged. Fresh corrective cumulative/security
 reviews and new current-head CI precede renewed PR readiness.
 
+#### Corrective source acceptance
+
+The exact corrective source is `7af8e05a`. A fresh Terra/high complete cumulative
+review finds no verified finding and independently passes 32 focused cases with
+two Windows-only skips on macOS. Its exhaustive Unicode scalar/suffix comparison
+finds no normalization difference. A new, separate Sol/high security sitting
+reports no verified finding on the same source, independently passes 108 cases
+with the same two skips, and matches 17,440 additional normalization controls.
+It follows actual ignore input and raw `save_to` admission through production
+callers and checks protected paths, publication ownership and cancellation.
+
+Root's exact-head full workspace run passes 18,541 cases with 24 conditional
+skips across 890 files; CLI contributes 7,822 passes/thirteen skips across 491
+files. All twelve requested test/build tasks complete successfully. The extra
+Windows inventory guard accounts for the additional macOS skip; actual Windows
+execution remains a current-head CI requirement. This locally accepts the
+corrective source without replacing eight-target native, installed-consumer or
+complete causal-matrix CI evidence. PR #99 stays draft for the corrected-head
+run. Browser review access is unavailable, so no remote Sonar issue classification
+is made and its separate quality gate is not claimed as passing.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
