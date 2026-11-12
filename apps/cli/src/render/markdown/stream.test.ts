@@ -117,48 +117,56 @@ describe('incremental markdown stream', () => {
     expect(stream.sourceTail()).toBe(raw);
   });
 
+  // Each kind retains 336 reverse draws across all three scales plus full-source
+  // parse/layout oracles. CI coverage measured 4.84–5.023 s for the complete
+  // callback; keep every draw and work bound within a finite fixture deadline.
   it.each([
     { kind: 'RI', prefix: '🇺', separator: '🇺' },
     { kind: 'ZWJ', prefix: '👩', separator: '\u200d💻' },
     { kind: 'Extend', prefix: 'e', separator: '\u0301' },
     { kind: 'growing cluster', prefix: 'p ', separator: ' ' },
-  ])('bounds reverse-backtick geometry with $kind boundaries', ({ kind, prefix, separator }) => {
-    let previous: { units: number; measured: number } | undefined;
-    for (const depth of [48, 96, 192]) {
-      const runs = Array.from({ length: depth }, (_, index) => '`'.repeat(index + 1));
-      const cluster = kind === 'growing cluster' ? 'e' + '\u0301'.repeat(depth * depth) : 'é👩‍💻';
-      let source = prefix + runs.join(separator) + ' ' + cluster + '\t' + 'x'.repeat(8003) + 'é👩‍💻';
-      const stream = new MarkdownStream();
-      stream.append(source);
-      stream.tail(80, 5);
-      for (const run of runs.toReversed()) {
-        source += ' ' + run;
-        stream.append(' ' + run);
+  ])(
+    'bounds reverse-backtick geometry with $kind boundaries',
+    ({ kind, prefix, separator }) => {
+      let previous: { units: number; measured: number } | undefined;
+      for (const depth of [48, 96, 192]) {
+        const runs = Array.from({ length: depth }, (_, index) => '`'.repeat(index + 1));
+        const cluster = kind === 'growing cluster' ? 'e' + '\u0301'.repeat(depth * depth) : 'é👩‍💻';
+        let source =
+          prefix + runs.join(separator) + ' ' + cluster + '\t' + 'x'.repeat(8003) + 'é👩‍💻';
+        const stream = new MarkdownStream();
+        stream.append(source);
         stream.tail(80, 5);
+        for (const run of runs.toReversed()) {
+          source += ' ' + run;
+          stream.append(' ' + run);
+          stream.tail(80, 5);
+        }
+        source += '\tEND';
+        stream.append('\tEND');
+        const expected = layoutMarkdown(parseMarkdown(source), 1_000_000).at(-1)?.text;
+        const actual = stream.tail(1_000_000, 5).at(-1)?.text;
+        expect(actual?.match(/ +END$/)?.[0]).toBe(expected?.match(/ +END$/)?.[0]);
+        const geometry = stream.geometryWork;
+        const checkpoint = stream.checkpointWork;
+        expect(geometry.measuredUnits).toBeLessThan(source.length * 8);
+        expect(geometry.sourceUnits).toBeLessThan(source.length * 16);
+        expect(geometry.visits).toBeLessThan(source.length * 128);
+        expect(geometry.constructedUnits).toBeLessThan(source.length * 128);
+        expect(geometry.cacheKeyUnits).toBeLessThan(source.length * 64);
+        expect(checkpoint.decisions).toBeLessThan(source.length * 4);
+        expect(checkpoint.indexed).toBeLessThan(source.length * 128);
+        expect(checkpoint.cache).toBeLessThan(source.length * 256);
+        expect(checkpoint.retained).toBeLessThan(depth * 8 + 32);
+        if (previous)
+          expect(geometry.measuredUnits / source.length).toBeLessThan(
+            (previous.measured / previous.units) * 2.5,
+          );
+        previous = { units: source.length, measured: geometry.measuredUnits };
       }
-      source += '\tEND';
-      stream.append('\tEND');
-      const expected = layoutMarkdown(parseMarkdown(source), 1_000_000).at(-1)?.text;
-      const actual = stream.tail(1_000_000, 5).at(-1)?.text;
-      expect(actual?.match(/ +END$/)?.[0]).toBe(expected?.match(/ +END$/)?.[0]);
-      const geometry = stream.geometryWork;
-      const checkpoint = stream.checkpointWork;
-      expect(geometry.measuredUnits).toBeLessThan(source.length * 8);
-      expect(geometry.sourceUnits).toBeLessThan(source.length * 16);
-      expect(geometry.visits).toBeLessThan(source.length * 128);
-      expect(geometry.constructedUnits).toBeLessThan(source.length * 128);
-      expect(geometry.cacheKeyUnits).toBeLessThan(source.length * 64);
-      expect(checkpoint.decisions).toBeLessThan(source.length * 4);
-      expect(checkpoint.indexed).toBeLessThan(source.length * 128);
-      expect(checkpoint.cache).toBeLessThan(source.length * 256);
-      expect(checkpoint.retained).toBeLessThan(depth * 8 + 32);
-      if (previous)
-        expect(geometry.measuredUnits / source.length).toBeLessThan(
-          (previous.measured / previous.units) * 2.5,
-        );
-      previous = { units: source.length, measured: geometry.measuredUnits };
-    }
-  });
+    },
+    15_000,
+  );
 
   it.each(
     [4001, 10001].flatMap((digits) =>
