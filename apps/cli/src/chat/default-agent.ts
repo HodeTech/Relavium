@@ -6,10 +6,10 @@ import { CliError } from '../process/errors.js';
 /**
  * The built-in **default chat agent** (the agent-first decision for 2.M): when `relavium chat` is started
  * without `--agent`, the session binds a synthesized agent over `[chat].default_model` so the REPL is a
- * zero-config first-run demo (chat-session.md, ADR-0024 "chat-mode default applies"). The grant is
- * deliberately a small **read-only, locally-safe** tool set — anything that writes, executes, or egresses
- * requires an explicit `--agent` — and even these are still gated by the session's fs-scope tier + the host
- * capabilities (secure-by-default; the host's `ToolHost` is fail-closed until tool capabilities are wired).
+ * zero-config conversation (chat-session.md, ADR-0024). ADR-0116 grants local reading, discovery and
+ * reviewable editing; the current mode, approval, scope and protected-path floors govern every write.
+ * Command execution, egress and ambient OS tools require an explicitly bound agent. Missing host
+ * capabilities remain fail-closed.
  */
 
 /** The zero-config chat model when neither `--agent` nor `[chat].default_model` names one (config-spec.md). */

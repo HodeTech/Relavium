@@ -454,7 +454,7 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 
 | Mode | Advertised tools | A governed action (write / command / network / clipboard) |
 | --- | --- | --- |
-| `ask` (default) | read-only (`read_file`, `list_directory`, `git_status`) | **denied** |
+| `ask` (default) | granted read-only tools (the built-in agent has read/list/git status/search/find) | **denied** |
 | `plan` | read-only | **denied** |
 | `accept-edits` | all granted | **prompts** each time — `[y]` yes (once) · `[a]` always (this tool, this session) · `[n]` no · `[esc]` abort |
 | `auto` | all granted | **auto-approved** for granted actions; hard protected-path and scope refusals remain |

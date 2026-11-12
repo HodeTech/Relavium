@@ -2874,6 +2874,24 @@ second cumulative round, separate security sitting and current-head combined CI
 remain required before whole-MVP-3 acceptance. No new ADR, runtime dependency,
 design approval or backward-compatibility layer is needed.
 
+### MVP-3 Step 3 first independent review (2026-11-12)
+
+Three fresh Sol/high and Terra/high reviewers inspect `a751fd4a..8eea1eca`
+across authority/configuration/final dispatch, UI/input/visible publication,
+and both-host lifecycle/frozen identity. No confirmed blocker, high or medium
+finding remains. The authority review is static; lifecycle executes 29 focused
+cases, and UI executes 37 actual/shared-flow cases with one worker. Neither
+claims full native-platform or separate security acceptance.
+
+The lifecycle review identifies one stale read-only grant comment; it and adjacent
+starting-mode comments/read-only reference wording are corrected. A suggested
+old-selection generation fence is withdrawn after checking ADR-0116: deliberate
+trusted default-auto action may re-admit the shared authority, whereas explicit
+current-auto actions and stale save continuations cannot do so. No extra state
+machine or unapproved behavioral restriction is introduced. These comment/reference
+corrections pass format/diff checks; runtime semantics are unchanged. A new
+cumulative second round and separate final-source security sitting follow.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

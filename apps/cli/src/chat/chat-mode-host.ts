@@ -25,7 +25,7 @@ import {
  * and applies a mode by pushing the mapped `SessionTurnPolicy` to `session.setTurnPolicy`. The REPL owns the
  * `mode` UI state (footer + Shift+Tab) + the interactive `prompt`; this module owns the mapping so both the
  * fresh and resumed session paths apply modes identically. Creating it does NOT itself change any policy —
- * the caller applies the initial (ask) mode via {@link applyChatMode}, so nothing here has a live effect until
+ * the caller applies the resolved starting mode via {@link applyChatMode}, so nothing here has a live effect until
  * the REPL wires it (keeping the pre-wire state safe).
  */
 

@@ -919,7 +919,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             toolCallId: 'home',
           }),
         );
-        // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
+        // createChatLineHandler owns the mode control (ADR-0057/0116): it applies the resolved starting mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
         const {
           processLine,

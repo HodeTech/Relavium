@@ -1704,8 +1704,8 @@ export function createChatLineHandler(
   const interactive = chatIsInteractive(deps.io, deps.global);
 
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
-  // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
-  // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
+  // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
+  // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
   const modeControl = createChatModeControl(built, store, { interactive });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&
