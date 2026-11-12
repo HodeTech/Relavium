@@ -2727,6 +2727,29 @@ native source and shim pins remain unchanged; build binding is
 A fresh complete affected round and separate security sitting follow this
 correction; actual Windows and all-target/consumer CI remain required.
 
+**Corrected probe review and selected control closure:** a new complete
+Terra/high affected round at `195bb92b` is clean after 33 independent
+profile/asset tests. A new independent Sol/high static security sitting
+also reports zero blocker/high/medium findings for all four committed
+files and callers, without executing tests. Actual `e011cca1` CI passes
+the six non-Windows native targets; its two Windows lifecycle failures
+remain refused evidence, not a claimed mapped-module diagnosis.
+
+The two live-export controls now complete all six physical phases on an
+immutable `e011cca1` Debian ARM64/Node 22.23.2 source candidate: review notice
+is 139 passed / 136 passed plus three named failures / 139 passed; routing
+is 139 / 138 plus one named failure / 139. Every phase naturally exits and
+joins with zero unhandled errors, accepted source/dependency/evaluation/body
+receipts and exact restoration. Independent retained-evidence verification
+passes. Whole retained trees, including `export.json`, are 25 files each and
+8,698,498 / 8,697,572 bytes, within the unchanged limits. Together with the
+four filesystem controls above, all six selected controls/eighteen phases
+are certified. The unchanged Mac inventory retains its actual Darwin/ARM64
+metadata as lazy infrastructure in that Linux candidate; these are Linux
+causal runtime proofs, never Linux native-profile or consumer proofs. The
+earlier Mac post-report timeouts stay refused; a quiet sequential diagnostic
+rerun remains open. Complete current-head CI is still required for acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
