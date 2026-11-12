@@ -2553,6 +2553,26 @@ typecheck, build and format. Windows test code cross-compiles. The actual
 modified production source still requires both ordinary Windows profiles,
 complete combined CI and installed consumers before Step 2 acceptance.
 
+**Windows fixture-order correction:** actual `1015c90a`
+[CI run 43171692315](https://github.com/HodeTech/Relavium/actions/runs/43171692315)
+passes all six Linux/macOS profiles. Both Windows targets complete the first
+sixteen sequential native parents, including the earlier producer/crash and
+exact-metadata cases, then stop in the parent-policy-change test's fixture
+creation. Its deny/restore helper intentionally leaves inheritable ACEs; a
+later private-file helper correctly refuses that non-private parent. Move
+only the source fixture's creation before those ACL changes. Every denial,
+snapshot/change and unchanged-byte assertion remains, and production predicates
+are unchanged. The other ACL-mutating fixture sites were audited for the same
+ordering issue.
+
+Fresh complete Terra/high affected review and separate Sol/high security
+test-gate audit are clean on native source SHA-256
+`1ec69a92837ae0aabcc6d1549c87df1bd921527da6931edefd9c5a883c6f228d`.
+Local native 35/eleven Node cases, thirty profile/asset controls and nineteen
+workspace lint/typecheck/build/format tasks pass; Windows test code compiles.
+The remaining Windows parents, Node lifecycle, combined CI and consumers still
+require actual execution; Step 2 acceptance remains open.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

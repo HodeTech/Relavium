@@ -3174,6 +3174,7 @@ pub(crate) mod tests {
     #[test]
     fn windows_profile_rechecks_metadata_only_changes_and_parent_policy() {
         let fixture = Fixture::new();
+        let source = fixture.file("source", b"old");
         let flush_parent = WindowsProfile::open_parent(&fixture.path).expect("flushable parent");
         flush_parent.sync_all().expect("parent directory flush");
         set_user_acl(&fixture.directory, FILE_ADD_FILE, false);
@@ -3181,7 +3182,6 @@ pub(crate) mod tests {
         // Restore the fixture ACL before checking the result or performing cleanup.
         set_user_acl(&fixture.directory, 0, false);
         assert!(matches!(denied_parent, Err(NativeFailure::AccessDenied)));
-        let source = fixture.file("source", b"old");
         let snapshot = WindowsProfile::capture_existing(
             &source,
             &fixture.path.join("source"),
