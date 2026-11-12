@@ -214,3 +214,5 @@ Primary feasibility references: [Node-API](https://nodejs.org/api/n-api.html),
 and [Microsoft ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew).
 These support the available mechanisms, not acceptance of an unimplemented
 adapter or of an untested native target.
+
+> Implementation checkpoint 2026-11-12: the [Step 2 acceptance](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12) records the implemented adapter, actual eight-target execution, Windows integration and four installed-consumer proofs, independent security sittings and passing 26-job checkpoint CI at `bc8c34b2`. The [metadata contract](../reference/cli/native-filesystem-metadata.md) retains the exact supported profiles and refusal limits. The whole-MVP-3 PR requires its own current-head CI and maintainer review; no npm publication is authorized.

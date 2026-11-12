@@ -218,3 +218,5 @@ Accepted ADRs; this proposal does not silently rewrite their decisions.
 - Some users will set `auto` globally and get approval-free sessions in every
   project. That is an explicit operator choice, visible in the footer, and the
   protected-path prompt still holds.
+
+> Implementation checkpoint 2026-11-12: the MVP-3 built-in filesystem grant, startup-mode authority and shared current/default settings are independently accepted on `development`. The [Step 3 record](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12) binds final source, verified review corrections and separate security evidence. Command execution remains the planned MVP-4 slice; combined checkpoint PR CI and maintainer review govern merge.

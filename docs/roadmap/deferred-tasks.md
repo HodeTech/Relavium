@@ -2097,13 +2097,17 @@ resolved-id notice, `/export`'s "next free id" wording, and the card-ownership c
 - [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
   paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
   closed handle. *(low · apps/cli/src/commands/gate.ts)*
-- [ ] **ADR-0120's approval escape is a starting set; its completeness is for MVP-3's security review.**
+- [x] **ADR-0120's approval escape completeness — closed in MVP-3 on development (2026-11-12).**
   *Maintainer ruling 2026-11-07.* Rounds 2 to 5 each found a further way an approval preview could hide content
   (zero-width and tag runs, U+2028 and U+2029, line-end whitespace and endings, code inside a mask), each rated medium
   against the draft's claim that a preview never hides what it approves. The draft now states its rules as a starting
   set and claims only them; the mandatory security review confirms or extends them before the card is built, and the
   correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
   card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
+  **Closure:** the pre-build design sitting and independent implementation/security
+  reviews verify the escaped, masked, inspectable approval projection. The
+  [MVP-3 checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+  owns actual execution evidence and remaining PR CI/maintainer review.
 
 **D64 round 6 of the correction (2026-11-07, at `2cc865c7`)** found one medium in the correction: commands.md still
 said a losing rejection does not stop later gates, which cbe39064 changed; it now says the run parks on them. It also
@@ -3410,7 +3414,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   D-2; PR #69).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
   `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
   *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
-- [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
+- [x] **Approval-consent-line zero-width hardening — closed in MVP-3 on development (2026-11-12).** The shared render
   floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
   highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
@@ -3422,6 +3426,12 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   earlier 2026-11-04 exclusion is superseded by ADR-0120's mandatory approval-preview
   escaping in MVP-3; see the [accepted plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
   Design acceptance is complete; implementation remains pending and this item is not closed by design approval.
+  **Implementation closure 2026-11-12:** the mandatory ADR-0120 projection escapes
+  default-ignorable/format and other hidden source code points in targets and
+  review fields, with actual inspection/visibility guards on both hosts. The
+  [Step 2 acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+  records implementation tests and separate security sittings; earlier pending
+  wording above is historical. Shared `[c]` extraction below remains separate.
   *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared

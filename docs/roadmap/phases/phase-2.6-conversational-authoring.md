@@ -946,6 +946,13 @@ theming architecture.
 
 ### 2.6.M — The first-class toolbelt: breadth + rendering
 
+**MVP-3 implementation checkpoint (2026-11-12):** its selected filesystem,
+rendering and startup-mode slice is independently accepted on `development`;
+the [checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)
+records delivered steps, review/security evidence and required PR CI/maintainer
+review. The broader toolbelt bullets retain their existing later milestones;
+command permissions are MVP-4 and web activation is MVP-7.
+
 Closing the tool gap against competitor CLIs. Today the registry has 13 built-ins with **no** file
 edit/patch, **no** content search, **no** find, **no** todo, **no** ask-user, and a dormant `web_search`
 (needs an unwired credential resolver). Every addition is engine-pure (Zod args, `llmVisibleParams`,
@@ -2974,6 +2981,51 @@ isolation checks pass. Existing causal declarations and their bounds are unchang
 Fresh complete cumulative and separate security reviews on the corrective
 commit remain required before implementation acceptance.
 
+### MVP-3 Step 3 acceptance (2026-11-12)
+
+The final corrective source is `f6b614746922f53779f6b9674428215255564c92`.
+A fresh Terra/high complete cumulative review of `a751fd4a..f6b61474` reports no
+verified finding and independently passes 54 cases across four focused files.
+A new, separate Sol/high security sitting reviews that exact cumulative source,
+reports no verified finding and independently passes 182 cases across sixteen
+files with one worker. It verifies the removed credential-bootstrap reread,
+all live reader/writer observations, captured-turn dispatch, confirmed-default
+revision checks, native input/publication custody, hints and frozen grants.
+Earlier finding-bearing security verdicts remain historical; they are not
+counted as clean sittings. Interrupted broad reviewer invocations are not
+acceptance runs; the stated counts come from completed bounded reruns.
+
+Root's complete passing workspace run has 18,522 cases and 23 conditional skips;
+CLI contributes 7,803 passes/twelve skips across 489 files. Seventeen lint/typecheck
+tasks, six build tasks, format, 888-file isolation, database sync, engine/fence/
+bundle closure and compiled bootstrap/CLI smoke pass. The latest correction
+repeats the affected full toolchain and compiled checks; unchanged Step 2 native
+profiles retain their separately bound acceptance. No local claim replaces actual
+Windows/eight-target/installed-consumer or full causal-matrix CI execution.
+The nine selected startup controls and independent retained replay are recorded
+in the [second review corrections](#mvp-3-step-3-second-review-corrections-2026-11-12).
+No confirmed MVP-3 finding is deferred, and no new design decision is pending.
+
+### MVP-3 development implementation checkpoint (2026-11-12)
+
+- [x] [Step 1](#mvp-3-step-1-local-acceptance-2026-11-12): ranged reads,
+  bounded discovery/search, observed-read evidence and owned output storage.
+- [x] [Step 2](#mvp-3-step-2-acceptance-2026-11-12): prepared exact writes,
+  inspectable approvals/details, safe restored tool groups, retained workflow
+  replay and native metadata-preserving publication/delivery. All 26 combined
+  checkpoint CI jobs pass at `bc8c34b2`.
+- [x] [Step 3](#mvp-3-step-3-acceptance-2026-11-12): the seven-tool default grant,
+  configurable startup modes, current/default settings, live authority and
+  both-host lifecycle integration, independently reviewed on `f6b61474`.
+
+The development implementation is complete. The `development` to `main` PR
+requires combined CI on its own head and the maintainer's detailed review;
+this record does not claim that future run or a merge. The next implementation
+milestone is MVP-4 under the existing decisions and its still-required ADR
+approvals. The published npm version remains `0.1.1`, and the release guard is
+unchanged. Physical-terminal/live-provider manual testing complements the
+automated evidence; it is not claimed by source or mounted-terminal tests.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
@@ -4113,7 +4165,7 @@ separate backlog.
 | #9 | `/doctor`'s `GLYPH` constants render Unicode check/cross marks unconditionally, with no ASCII-degrade path when `NO_COLOR`/non-ANSI output is active. | 2.6.L |
 | #73, #261, #262, #263 | Onboarding and the Home chrome hand-roll `toLocaleString('en-US')`/relative-time/pluralization strings (~228 unindirected literals) instead of `Intl.NumberFormat`/`Intl.RelativeTimeFormat`/`Intl.PluralRules`, and `[preferences].language` does not exist in config yet; an open design question on cost-formatting-under-locale needs a recorded decision. | 2.6.L |
 | #59, #68, #70, #71, #72 | Five `NO_COLOR`/ASCII-degrade gating gaps in the render layer: `bold` is never gated by the `color` flag at 5 call sites (unlike every other style prop); status/warning glyphs have no ASCII fallback under `NO_COLOR`; an attachment-bar pictographic emoji renders unconditionally; `NO_COLOR=''` (present-but-empty) is treated as absent. | 2.6.L |
-| #305 | `write_file`'s approval card shows no content diff/preview of what will be written, produces no post-write trace event, and is silent end-to-end when running in `auto` accept-edits mode — a blind spot on the highest-consequence built-in tool. | 2.6.M |
+| #305 | Historical missing write diff/trace: **closed on development in MVP-3**, 2026-11-12 ([Step 2 acceptance](#mvp-3-step-2-acceptance-2026-11-12)). | 2.6.M |
 | G30 | `http_request` is advertised to chat agents (`wireEgressOs=true` for `chat-read-write`), but no config path ever populates `allowedDomains` for chat — every call deterministically fails `domain_not_allowed` before the approval prompt renders. | 2.6.M |
 
 ## Milestones
@@ -4328,8 +4380,8 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted** with corrected MVP-3 plan, 2026-11-11; implementation/security gates open. The split of 2026-11-04 is unchanged. | 2.6.M |
-| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Accepted** with corrected MVP-3 plan, 2026-11-11; implementation/security gates open. | 2.6.M |
+| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted**; MVP-3 slice independently implemented/reviewed on `development`, 2026-11-12 ([checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)). Later toolbelt slices retain their milestones. | 2.6.M |
+| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Accepted**; MVP-3 filesystem grant/startup-mode slice independently implemented/reviewed on `development`, 2026-11-12 ([Step 3](#mvp-3-step-3-acceptance-2026-11-12)); command permissions remain MVP-4. | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |

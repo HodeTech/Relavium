@@ -36,10 +36,10 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1 and MVP-2 are complete on `main`** (PR #97 and PR #98). **MVP-3 is active**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1 and MVP-2 are complete on `main`** (PR #97 and PR #98). **MVP-3 is implemented on `development` for checkpoint review**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `0db4c940`: the third `development`→`main` checkpoint, [PR #98](https://github.com/HodeTech/Relavium/pull/98), merged 2026-11-11 after MVP-2. `development` was fast-forwarded to that merge; post-merge documentation continues there. The [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11) records closure; the earlier PR #97 and PR #96 records remain under [History](#history). |
+| Branches | `main` is at `0db4c940`: the third `development`→`main` checkpoint, [PR #98](https://github.com/HodeTech/Relavium/pull/98), merged 2026-11-11 after MVP-2. `development` was fast-forwarded to that merge and now carries the reviewed MVP-3 implementation for its next checkpoint. The [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11) records closure; the earlier PR #97 and PR #96 records remain under [History](#history). |
 
 ### What a CLI user meets today
 
@@ -59,7 +59,11 @@ owns delivered scope and acceptance evidence.
 
 ## Next work — the CLI MVP
 
-**Active: MVP-3 — the agent can edit.** MVP-1 and MVP-2 are complete on `main`.
+**Checkpoint: MVP-3 is implemented on `development`; MVP-4 is next.**
+MVP-1 and MVP-2 are complete on `main`. The
+[MVP-3 implementation checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+closes all three development steps and their review/security corrections;
+combined CI on the checkpoint PR and maintainer review govern its merge.
 The maintainer accepted the corrected
 [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
 and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
@@ -82,12 +86,13 @@ and its expanded replay/evidence contracts are accepted after verifying the
 supplied reviews; the [design acceptance record](phases/phase-2.6-conversational-authoring.md#adr-0124-review-and-design-acceptance-2026-11-12)
 captures their disposition. [Step 2 is accepted on development](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
 after its independent reviews, separate security sittings and all 26 checkpoint
-CI jobs passed. Step 3 implements the built-in grant, strict startup-mode
-configuration and shared mode/default UX. Its [second review corrections](phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-second-review-corrections-2026-11-12)
-close verified live-reader/preference-writer authority observation gaps; a fresh
-complete cumulative review and separate final-source security sitting follow.
-Whole-MVP-3 acceptance
-and maintainer PR review remain open; no additional design approval is pending.
+CI jobs passed. [Step 3 is accepted on development](phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12)
+at `f6b61474`: the built-in grant, strict startup-mode configuration and shared
+mode/default UX. Verified reader/writer and credential-bootstrap observation
+gaps are fixed; fresh complete cumulative and separate final-source security
+reviews are clean. Full local verification passes 18,522 cases with 23 conditional
+skips. The checkpoint PR carries current-head combined CI and maintainer review;
+no additional MVP-3 design approval or confirmed deferred finding remains.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
@@ -106,8 +111,7 @@ integration findings are closed at `bc8c34b2`: all eight native targets,
 Windows integration, all four installed consumers, both filesystem and secrets
 control shards, coverage and final toolchain checks pass. The acceptance record
 owns exact source bindings, review scope and retained-evidence counts. The
-built-in editing/search grant is now implemented by Step 3, after this acceptance;
-Step 3 review/security acceptance and checkpoint CI remain open.
+built-in editing/search grant is accepted by Step 3 after this acceptance.
 
 **The MVP (D58) is `relavium` v0.2.0 on npm** — new global milestone **M3.5** ([README.md](README.md#global-milestone-spine)):
 `apps/cli` plus the core engine (`packages/llm`, `shared`, `db` and `mcp` where they decide user-visible
@@ -183,7 +187,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    retain the decisions; the [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
    closes cumulative reviews, separate security sittings, final source-bound CI
    and maintainer acceptance. No verified MVP-2 finding is deferred.
-3. **MVP-3 — The agent can edit.** ADR row 9 and its mandatory security review; 2.6.M · **`edit_file`**,
+3. **MVP-3 — The agent can edit — implemented on development.**
+   All three steps and their independent review/security gates are complete;
+   the [implementation checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+   records remaining PR/CI merge gates. Delivered scope: ADR row 9; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering
    v2** (sanitized target kept after the turn; assistant text between tool calls kept); 2.6.M · **Default chat
@@ -221,7 +228,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 
 **Execution order (D75, 2026-11-08):** MVP-1, MVP-2, MVP-3, MVP-4, **MVP-8**, MVP-5, MVP-6, MVP-7, MVP-9,
 MVP-10. The milestones keep their numbers, which are cited across the documents.
-MVP-1 and MVP-2 are complete; the remaining queue is **MVP-3 → MVP-4 → MVP-8 → MVP-5 → MVP-6 → MVP-7 → MVP-9 → MVP-10**.
+MVP-1 and MVP-2 are complete on `main`; MVP-3 implementation is complete on
+`development` for checkpoint review. The next implementation queue is
+**MVP-4 → MVP-8 → MVP-5 → MVP-6 → MVP-7 → MVP-9 → MVP-10**.
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);

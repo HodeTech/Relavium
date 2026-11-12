@@ -15,7 +15,9 @@ A tool declaration in YAML has a `type` discriminator:
 | `plugin` | a user-supplied npm package | see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md) |
 | `http` | an arbitrary REST endpoint | configured per call |
 
-## Proposed edit, search and ranged reads — MVP-3
+<a id="proposed-edit-search-and-ranged-reads--mvp-3"></a>
+
+## Edit, search and ranged reads — MVP-3
 
 **Accepted design (2026-11-11); Step 1 locally accepted (2026-11-12):**
 [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
@@ -24,8 +26,11 @@ bookkeeping and the session spill store are implemented on `development`, with
 the [source-bound local acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
 distinguishing review/security gates from checkpoint CI.
 [Step 2 is also accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12),
-including editing/prepared writes and native metadata validation. The built-in
-default grant remains unchanged until Step 3.
+including editing/prepared writes and native metadata validation.
+[Step 3 is accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12):
+fresh built-in conversations receive the read/search/find/write/edit grant.
+Older and authored conversations retain their frozen grants; the
+[chat contract](../cli/chat-session.md) owns the mode and lifecycle behavior.
 
 - `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
   `replace_all` (default false). A nonunique match without `replace_all`, no

@@ -350,3 +350,5 @@ owns scope, steps and the remaining implementation/security acceptance gates.
 > seam stays platform-pure TypeScript. The [metadata contract](../reference/cli/native-filesystem-metadata.md)
 > owns exact profiles, dependency/delivery gates and native proof; this is design
 > authorization, not acceptance of the prototype or native implementation.
+
+> Implementation checkpoint 2026-11-12: the MVP-3 read/search/edit, prepared-write, approval/details and safe restored-tool-group slice is independently accepted on `development`. The [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12) joins the three steps, actual native-target evidence and remaining PR CI/maintainer review. This does not activate later toolbelt milestones or claim a merge/publication.

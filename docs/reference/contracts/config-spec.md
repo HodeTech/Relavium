@@ -8,11 +8,15 @@ Relavium uses a two-level configuration model that mirrors VS Code's **user vs. 
 
 Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself. Numeric range diagnostics identify the field, schema-side bound and inclusive/exclusive operator without displaying the rejected value; loader and preference-writer validation share that formatter.
 
-## Proposed starting chat mode — MVP-3
+<a id="proposed-starting-chat-mode--mvp-3"></a>
 
-**Implemented on development; Step 3 acceptance pending (2026-11-12):** approved with
+## Starting chat mode — MVP-3
+
+**Accepted implementation on development (2026-11-12):** approved with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md).
-The implementation retains the authority and publication rules below.
+The [Step 3 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12)
+records independent reviews and verification; the checkpoint PR carries combined
+CI and maintainer review. The implementation retains the rules below.
 
 | Location | Key | Accepted values |
 |---|---|---|

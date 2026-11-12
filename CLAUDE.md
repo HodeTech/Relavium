@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-11): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-12): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -53,10 +53,15 @@ Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6
 MVP-2 is complete and on `main` through PR #98 (`0db4c940`, merged 2026-11-11), including all four steps,
 review corrections, separate security sittings and passing combined CI.**
 See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
-MVP-3 is active: editing/search tools, trustworthy approval previews and tool-call rendering v2.
-Corrected ADR-0116/0120, their reference designs and the three-step plan were accepted by the maintainer
-on 2026-11-11 after supplied review findings were addressed. Implementation acceptance remains open;
-the pre-build security design sitting precedes the approval card, with separate implementation sittings.
+MVP-3's three steps are implemented and independently accepted on `development`:
+editing/search tools, trustworthy approval previews and tool-call rendering v2,
+native metadata preservation, the built-in editing grant and startup-mode settings.
+The final Step 3 source is `f6b61474`, with clean cumulative and separate security
+reviews and 18,522 passing workspace tests. Step 2's all-26-job CI checkpoint is
+`bc8c34b2`; the final PR requires combined CI on its own head and maintainer review.
+The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+owns exact evidence and limits. MVP-4 is the next implementation milestone;
+its pending ADR approvals remain required. No merge or npm publication is claimed.
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

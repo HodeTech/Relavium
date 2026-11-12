@@ -311,7 +311,9 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 
 An unrecognized `/…` command — or an **undeclared argument** on a known one (`/exit now`) — prints a one-line, secret-free notice and the prompt returns. A command may accept flags (`/doctor --deep`) or a single positional value (`/mode plan`); the `/` palette runs the bare form, so a flag/value is opt-in by typing it. The idle footer surfaces `/ for commands` at an empty prompt (2.5.C S6). In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
-## Proposed MVP-3 interaction contract
+<a id="proposed-mvp-3-interaction-contract"></a>
+
+## MVP-3 interaction contract
 
 **Accepted design (2026-11-11); Step 2 accepted on development (2026-11-12):** approved together with
 [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
@@ -319,8 +321,10 @@ and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-wha
 Step 2's approval/details and structural restoration complete native-write
 integration, independent implementation/security reviews and combined CI in the
 [acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
-Step 3 implements the mode/default picker and new built-in grant on development;
-its independent acceptance remains pending. These contracts describe that implementation.
+Step 3's mode/default picker and new built-in grant are independently
+[accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12).
+The checkpoint PR carries combined CI and maintainer review. These contracts
+describe that implementation.
 
 **Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker
 with current-mode selection and a separate `Save startup default` action. Direct

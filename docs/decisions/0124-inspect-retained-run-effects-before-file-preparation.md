@@ -165,3 +165,5 @@ the current caller requests. A read-only lookup supplies the missing information
 > evidence, current confirmation, conditional model-call identity and session
 > non-replay are unchanged. The canonical [journal predicate](../reference/shared-core/effect-journal.md#3-what-is-journaled)
 > owns the ruling; this note does not claim implementation acceptance.
+
+> Implementation checkpoint 2026-11-12: the [Step 2 acceptance](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12) records implemented early inspection, strict retained-result validation, output-mapping identity and ownership/approval boundaries. Its combined 26-job CI checkpoint passes at `bc8c34b2`; the whole-MVP-3 PR still requires its own current-head CI and maintainer review. Replay remains conditional on matching regenerated identity/arguments; session effects do not replay.
