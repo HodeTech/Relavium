@@ -75,7 +75,6 @@ async function verifyLoader(): Promise<void> {
   if (
     !observed.isFile() ||
     observed.isSymbolicLink() ||
-    observed.nlink !== 1n ||
     observed.size < 1n ||
     observed.size > 65536n
   )
@@ -88,10 +87,10 @@ async function verifyLoader(): Promise<void> {
     const before = await file.stat({ bigint: true });
     if (
       !before.isFile() ||
-      before.nlink !== 1n ||
       before.dev !== observed.dev ||
       before.ino !== observed.ino ||
       before.size !== observed.size ||
+      before.mtimeNs !== observed.mtimeNs ||
       before.ctimeNs !== observed.ctimeNs
     )
       throw new HostDeniedError('filesystem metadata protection is unavailable');
@@ -101,6 +100,7 @@ async function verifyLoader(): Promise<void> {
     const current = await lstat(path, { bigint: true });
     if (
       BigInt(bytesRead) !== before.size ||
+      !after.isFile() ||
       before.dev !== after.dev ||
       before.ino !== after.ino ||
       before.size !== after.size ||
@@ -108,7 +108,10 @@ async function verifyLoader(): Promise<void> {
       before.ctimeNs !== after.ctimeNs ||
       current.dev !== before.dev ||
       current.ino !== before.ino ||
-      current.nlink !== 1n ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      current.size !== before.size ||
+      current.mtimeNs !== before.mtimeNs ||
       current.ctimeNs !== before.ctimeNs ||
       createHash('sha256').update(data.subarray(0, bytesRead)).digest('hex') !==
         FS_NATIVE_LOADER_SHA256

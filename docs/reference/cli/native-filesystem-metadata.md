@@ -591,7 +591,12 @@ inside the source-bound CLI artifact rather than another install-time fetch.
 Workspace
 installation's separate Node 22.13.0 floor must not replace that proof. Bundle trusted
 assets in the CLI artifact, select only from fixed platform identifiers and
-reject missing/mismatched assets. Never search PATH/workspace, honor a model
+reject missing/mismatched assets. Installed package-manager hardlinks are eligible
+when the asset is an ordinary non-symlink file and the fixed inventory, bounded
+reads, hash and descriptor/path identity and stability checks pass. This relies
+on the existing trusted installed-package/store boundary, not protection against
+an authorized concurrent writer. Build and archive custody, staging inventory,
+model data and cleanup retain their separate single-link requirements. Never search PATH/workspace, honor a model
 library path, compile/download at runtime, or silently narrow release support.
 Native contributor setup and CI are distinct from user installation. Extend
 the [packaging contract](packaging.md) on acceptance, including exact-artifact

@@ -39,17 +39,32 @@ function digest(bytes) {
 function ordinary(name, limit) {
   const path = join(__dirname, name);
   const before = lstatSync(path, { bigint: true });
-  if (!before.isFile() || before.nlink !== 1n || before.size < 1n || before.size > BigInt(limit))
+  if (
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    before.size < 1n ||
+    before.size > BigInt(limit)
+  )
     refuse();
+  const same = (left, right) =>
+    right.isFile() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs;
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
   try {
     const opened = fstatSync(fd, { bigint: true });
-    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size)
-      refuse();
+    if (!same(before, opened)) refuse();
     const bytes = readFileSync(fd);
+    const after = fstatSync(fd, { bigint: true });
+    const current = lstatSync(path, { bigint: true });
     if (
       BigInt(bytes.length) !== before.size ||
-      fstatSync(fd, { bigint: true }).size !== before.size
+      !same(before, after) ||
+      current.isSymbolicLink() ||
+      !same(before, current)
     )
       refuse();
     return bytes;

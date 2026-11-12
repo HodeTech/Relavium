@@ -2660,6 +2660,52 @@ refuses; macOS loads but stops at the denied-effect workflow checkpoint.
 These causes and the causal-control integration failures remain open. No
 loader policy is weakened and no installed-consumer success is claimed here.
 
+**Installed-asset and control integration correction:** a separate Sol/high
+design audit distinguishes ordinary package-manager hardlinks from archive,
+build and staging custody. The fixed installed shim/manifest/notices/binary
+paths now admit regular hardlinked files; fixed inventory, bounds, hashes,
+non-symlink checks and descriptor/path identity and stability checks remain.
+The canonical packaging contract records the trusted package/store boundary;
+it does not promise atomic verified-byte loading against a concurrent writer
+with authority over that installation. No store-name exemption, copy-only
+consumer setting or executable cache is introduced. Singleton requirements
+for build/archive custody, model targets and private staging remain intact.
+
+Fresh complete Terra/high affected review covers all seventeen changed files
+and callers with zero blocker/high/medium findings; 44 asset/profile/provenance
+and eighteen preload/diagnostic tests pass independently. A new independent
+Terra/high static security sitting is also clean for that complete scope; it
+performs no execution. Fresh macOS native 35/three declared child exclusions
+and eleven Node cases pass, including a joined actual compiled-addon load
+through genuinely hardlinked assets. All 42 native asset/profile/delivery
+tests, nineteen workspace lint/typecheck/build/format tasks and tools
+lint/typecheck pass. The source binding remains `ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`;
+the build binding is `345c5cd05063e2f35fb8f850f9be1c2f7b8cc68af0857667d2894dbd971195cf`,
+and the shim pin in both owners is `9f234956841c944cdff8024f644fdd08bfcbda7647c0a2359a39ed90ff912b3f`.
+The complete CLI rerun passes 7,657 cases with twelve conditional platform
+skips. An earlier run concurrent with physical control workers had nine
+timeout/readiness failures in three unchanged lifecycle/snapshot files;
+the quiet rerun keeps the same source, cases and timeout limits.
+
+The denied-effect smoke now admits the already exact, owned read-only umask
+query needed by older macOS preparation; generic process and network calls
+stay forbidden. Both actual macOS assets in the earlier complete artifact
+declare that query requirement, while the author machine's newer OS does not.
+The required older-macOS CI consumer remains the acceptance proof.
+
+Four repaired filesystem controls complete all twelve physical fixed/removal/
+restored phases with accepted source/dependency/evaluation/runtime receipts:
+scratch exactness uses a nested sensitive read rather than a write independently
+blocked by another guard; three floor controls now receive their owned host
+home. Two live-export declarations retain the full chat file and move from
+133 to 139 for six already authored details/clipboard cases. Independent
+collection audits all 66 declared files/2,348 cases without count drift. Local
+macOS fixed runs pass all 139 cases with zero unhandled errors, but do not
+naturally exit after reporting; the unchanged ninety-second watchdog kills
+and joins them and correctly refuses certification. Their removal/restored
+proof and the complete Linux CI matrix remain required; no timeout, process
+join, population or semantic assertion is weakened.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

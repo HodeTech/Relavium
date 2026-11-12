@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer';
 /** ADR-0105 bounded causal witnesses. Collected only by the isolated control runner. */
 import { createHash } from 'node:crypto';
 import {
-  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -113,6 +112,9 @@ it('FS_CAUSAL_SCRATCH_EXACT', async () => {
     scratch = join(home, '.relavium', 'tmp', 'parent');
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   writeFileSync(join(scratch, 'safe.txt'), 'safe');
+  const nested = join(scratch, '.relavium', 'history.db');
+  mkdirSync(join(scratch, '.relavium'), { mode: 0o700 });
+  writeFileSync(nested, 'nested-private');
   const host = createNodeFsCapability({
     operatorHomeDir: base,
     tier: 'sandboxed',
@@ -124,11 +126,12 @@ it('FS_CAUSAL_SCRATCH_EXACT', async () => {
     }),
   });
   expect((await host.readFile(join(scratch, 'safe.txt'), {})).content).toBe('safe');
-  await requireRefusal(
-    host.writeFile(join(scratch, '.relavium', 'history.db'), 'private', { createDirs: true }),
+  await requireRefusal(host.readFile(nested, {}), 'FS_CAUSAL_SCRATCH_EXACT');
+  expect(
+    observed.open.mock.calls.map(([path]) => String(path)),
     'FS_CAUSAL_SCRATCH_EXACT',
-  );
-  expect(existsSync(join(scratch, '.relavium'))).toBe(false);
+  ).not.toContain(nested);
+  expect(readFileSync(nested, 'utf8')).toBe('nested-private');
 });
 it.each([
   'KUBECONFIG',

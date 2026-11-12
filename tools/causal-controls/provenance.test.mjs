@@ -292,6 +292,9 @@ test('secrets workload corrections retain independent complete-count and reader-
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
     ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
+    // Three authored /details cases plus three explicit clipboard cases extend the prior 133.
+    ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 139],
+    ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 139],
   ]) {
     const control = secretsControls.find((entry) => entry.id === id);
     assert.ok(control, `${id}: missing control`);

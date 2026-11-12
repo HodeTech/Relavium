@@ -74,8 +74,13 @@ leave meta/read-only behavior available and refuse dependent writes.
 `dist/native-fs/` has a separate finite inventory: the shim, public
 `native-assets.json`, `THIRD_PARTY_NOTICES.txt` and one binary per required target.
 No Cargo/Rust/TypeScript source, compiler, target tree, private per-source inventory
-or map enters that directory. All public files are ordinary link-free files with
-mode 0644. The archive's existing compressed, expanded, per-file and file-count
+or map enters that directory. Build and archive custody require ordinary link-free
+files with mode 0644. An installed package manager may hard-link those files to
+its content store: the fixed loader accepts regular files with multiple links,
+but still checks their fixed paths, bounds, content hashes and opened/path
+identity and stability before native acquisition. This assumes the installed
+package and its store remain under the operator's trusted control; it does not
+claim protection against a concurrent authorized writer. The archive's existing compressed, expanded, per-file and file-count
 bounds remain unchanged. The manifest binds source, lockfile, pinned toolchain,
 build recipe/image digests, notices, target and actual binary bytes. Notices carry
 the locked native dependency license/copyright texts because these dependencies

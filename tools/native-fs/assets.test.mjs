@@ -3,6 +3,9 @@ import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import {
   appendFileSync,
+  linkSync,
+  renameSync,
+  statSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -282,6 +285,76 @@ test('runtime shim selects only the literal host asset and refuses tampering bef
     Module._extensions['.node'] = original;
     if (previous === undefined) delete process.env.RELAVIUM_FS_METADATA_LIBRARY;
     else process.env.RELAVIUM_FS_METADATA_LIBRARY = previous;
+  }
+});
+
+test('installed shim admits hardlinked regular assets while retaining path and content checks', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const Module = require('node:module');
+  const original = Module._extensions['.node'];
+  Module._extensions['.node'] = (module) => {
+    module.exports = { synthetic: true };
+  };
+  try {
+    const value = fixture();
+    const links = join(value.root, 'package-store');
+    mkdirSync(links);
+    for (const name of [
+      'loader.cjs',
+      'native-assets.json',
+      'THIRD_PARTY_NOTICES.txt',
+      ...NATIVE_TARGETS.map((target) => `${target}.node`),
+    ]) {
+      linkSync(join(value.directory, name), join(links, name));
+      assert.ok(statSync(join(value.directory, name)).nlink > 1);
+    }
+    assert.equal(
+      require(join(value.directory, 'loader.cjs')).loadFsMetadataAddon().synthetic,
+      true,
+    );
+    const notices = join(value.directory, 'THIRD_PARTY_NOTICES.txt');
+    appendFileSync(notices, 'changed');
+    assert.throws(() => require(join(value.directory, 'loader.cjs')).loadFsMetadataAddon(), {
+      message: 'NATIVE_FS_ASSET_UNAVAILABLE',
+    });
+    const symlinked = fixture();
+    const manifest = join(symlinked.directory, 'native-assets.json');
+    const moved = join(symlinked.root, 'manifest');
+    renameSync(manifest, moved);
+    symlinkSync(moved, manifest, 'file');
+    assert.throws(() => require(join(symlinked.directory, 'loader.cjs')).loadFsMetadataAddon(), {
+      message: 'NATIVE_FS_ASSET_UNAVAILABLE',
+    });
+  } finally {
+    Module._extensions['.node'] = original;
+  }
+});
+
+test('installed shim refuses an identity swap while its opened manifest is read', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const fs = require('node:fs');
+  const value = fixture();
+  const manifest = join(value.directory, 'native-assets.json');
+  const original = fs.readFileSync;
+  let swapped = false;
+  try {
+    fs.readFileSync = (file, ...options) => {
+      const bytes = original(file, ...options);
+      if (typeof file === 'number' && !swapped) {
+        swapped = true;
+        renameSync(manifest, join(value.root, 'old-manifest'));
+        writeFileSync(manifest, bytes);
+      }
+      return bytes;
+    };
+    assert.throws(() => require(join(value.directory, 'loader.cjs')).loadFsMetadataAddon(), {
+      message: 'NATIVE_FS_ASSET_UNAVAILABLE',
+    });
+    assert.equal(swapped, true);
+  } finally {
+    fs.readFileSync = original;
   }
 });
 

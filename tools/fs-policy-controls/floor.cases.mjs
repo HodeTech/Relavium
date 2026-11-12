@@ -90,7 +90,12 @@ for (const [kind, paths] of [
     mkdirSync(dirname(secret), { recursive: true });
     writeFileSync(secret, 'synthetic-private');
     writeFileSync(join(root, 'safe.txt'), 'safe');
-    const host = createNodeFsCapability({ tier: 'full', workspaceDir: root, readOnly: false });
+    const host = createNodeFsCapability({
+      operatorHomeDir: root,
+      tier: 'full',
+      workspaceDir: root,
+      readOnly: false,
+    });
     await refuse(host.readFile(path, {}), `FS_CAUSAL_CREDENTIAL_${kind}`);
     await refuse(host.writeFile(path, 'replace', {}), `FS_CAUSAL_CREDENTIAL_${kind}`);
     await refuse(createMentionReader(host).read(path), `FS_CAUSAL_CREDENTIAL_${kind}`);
@@ -131,7 +136,12 @@ it.each([
   mkdirSync(dirname(secret), { recursive: true });
   writeFileSync(secret, 'synthetic-worktree-private');
   writeFileSync(join(root, 'config.worktree'), 'ordinary');
-  const host = createNodeFsCapability({ tier: 'full', workspaceDir: root, readOnly: false });
+  const host = createNodeFsCapability({
+    operatorHomeDir: root,
+    tier: 'full',
+    workspaceDir: root,
+    readOnly: false,
+  });
   await refuse(host.readFile(path, {}), 'FS_CAUSAL_GIT_WORKTREE_CONFIG');
   await refuse(createMentionReader(host).read(path), 'FS_CAUSAL_GIT_WORKTREE_CONFIG');
   expect(

@@ -246,6 +246,9 @@ export async function assertInstalledWorkflows(context) {
     ['agent', 'run', agent, '--fixture', cassette, '--json'],
     1,
     'synthetic effect prompt\n',
+    // Read-only preparation on older macOS needs the same exact owned mask query
+    // as the successful write fixture; model process execution remains forbidden.
+    { RELAVIUM_PACKAGE_SMOKE_WRITE: '1' },
   );
   assert.ok(
     ndjson(deniedWrite.stdout).some(

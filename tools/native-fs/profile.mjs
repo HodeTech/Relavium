@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -17,7 +17,8 @@ import {
   WINDOWS_SECURITY_VARIANTS,
   WINDOWS_SECURITY_STATUSES,
 } from './profile-catalog.mjs';
-import { NATIVE_TOOLCHAIN } from './catalog.mjs';
+import { NATIVE_TOOLCHAIN, NATIVE_LOADER_SHA256 } from './catalog.mjs';
+import { sha256, writeNativeAssets } from './assets.mjs';
 export function parseRustListing(text, platform) {
   const names = [...text.matchAll(/^([a-zA-Z0-9_:]+): test\r?$/gmu)]
     .map((match) => match[1])
@@ -450,7 +451,16 @@ function command(program, args, options, context) {
     throw profileCommandFailure(result, context);
   return result.stdout;
 }
-export function validateNativeProfile({ repository, native, target, bytes, environment }) {
+export function validateNativeProfile({
+  repository,
+  native,
+  target,
+  bytes,
+  environment,
+  binding,
+  execution,
+  loader,
+}) {
   const args = [`+${NATIVE_TOOLCHAIN}`, 'test', '--release', '--locked', '--target', target];
   parseRustListing(
     command(
@@ -507,8 +517,27 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
   const directory = mkdtempSync(join(tmpdir(), 'relavium-native-profile-'));
   let lifecycle;
   try {
-    const binary = join(directory, 'metadata.node');
-    writeFileSync(binary, bytes, { flag: 'wx', mode: 0o600 });
+    const assetDirectory = join(directory, 'native-fs');
+    const notices = readFileSync(join(native, 'THIRD_PARTY_NOTICES.txt'));
+    const binary = join(assetDirectory, `${target}.node`);
+    writeNativeAssets(
+      assetDirectory,
+      {
+        version: 1,
+        nodeApi: 8,
+        protocol: 1,
+        toolchain: NATIVE_TOOLCHAIN,
+        scope: 'development-current',
+        ...binding,
+        loaderSha256: NATIVE_LOADER_SHA256,
+        assets: [{ target, bytes: bytes.length, sha256: sha256(bytes), execution }],
+      },
+      new Map([
+        ['loader.cjs', loader],
+        ['THIRD_PARTY_NOTICES.txt', notices],
+        [`${target}.node`, bytes],
+      ]),
+    );
     const text = command(
       process.execPath,
       [join(repository, 'tools/native-fs/lifecycle.mjs'), binary],

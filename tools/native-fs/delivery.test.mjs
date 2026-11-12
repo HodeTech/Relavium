@@ -405,7 +405,18 @@ test('source and bundled host loader pins and path-selection define cannot drift
 });
 
 test('plain Node executes the actual bundled host helper through the staged named CJS export', async () => {
-  const { mkdtempSync, rmSync } = await import('node:fs');
+  const {
+    mkdtempSync,
+    rmSync,
+    mkdirSync,
+    readdirSync,
+    linkSync,
+    statSync,
+    renameSync,
+    symlinkSync,
+    writeFileSync,
+    readFileSync,
+  } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join, resolve, relative, sep } = await import('node:path');
   const { pathToFileURL, fileURLToPath } = await import('node:url');
@@ -416,6 +427,13 @@ test('plain Node executes the actual bundled host helper through the staged name
   const directory = mkdtempSync(join(tmpdir(), 'relavium-plain-node-native-host-'));
   try {
     copyNativeAssets({ repository, destination: join(directory, 'native-fs') });
+    const assetDirectory = join(directory, 'native-fs');
+    const packageStore = join(directory, 'package-store');
+    mkdirSync(packageStore);
+    for (const name of readdirSync(assetDirectory)) {
+      linkSync(join(assetDirectory, name), join(packageStore, name));
+      assert.ok(statSync(join(assetDirectory, name)).nlink > 1);
+    }
     const helper = resolve(repository, 'apps/cli/src/engine/tool-host/fs-native-metadata.ts');
     // These three runtime seams are the complete package imports of this fixture's source graph.
     // Package exports point at dist; acceptance-tool jobs intentionally run before workspace builds.
@@ -511,6 +529,27 @@ test('plain Node executes the actual bundled host helper through the staged name
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, 'native-host-edge-ok');
+    const loader = join(assetDirectory, 'loader.cjs');
+    const held = join(directory, 'held-loader.cjs');
+    renameSync(loader, held);
+    symlinkSync(join(packageStore, 'loader.cjs'), loader, 'file');
+    const symlink = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8',
+      shell: false,
+      timeout: 30_000,
+    });
+    assert.notEqual(symlink.status, 0);
+    rmSync(loader);
+    renameSync(held, loader);
+    const bytes = readFileSync(loader);
+    bytes[0] ^= 1;
+    writeFileSync(loader, bytes);
+    const changed = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8',
+      shell: false,
+      timeout: 30_000,
+    });
+    assert.notEqual(changed.status, 0);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

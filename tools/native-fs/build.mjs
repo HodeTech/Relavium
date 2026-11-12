@@ -138,7 +138,16 @@ function buildCurrent() {
   const loader = readFileSync(join(repository, 'tools/native-fs/loader.cjs'));
   const execution = executeProtocol(bytes);
   const validation = profileRequested
-    ? validateNativeProfile({ repository, native, target, bytes, environment: buildEnvironment })
+    ? validateNativeProfile({
+        repository,
+        native,
+        target,
+        bytes,
+        environment: buildEnvironment,
+        binding,
+        execution,
+        loader,
+      })
     : undefined;
   if (
     sha256(loader) !== NATIVE_LOADER_SHA256 ||

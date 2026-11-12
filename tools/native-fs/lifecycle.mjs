@@ -1,11 +1,12 @@
 /** Fixed-purpose Node-API lifecycle fixtures. Only fresh owned temporary files are mutated. */
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,7 +19,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { clearTimeout, setTimeout, setInterval } from 'node:timers';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NODE_LIFECYCLE_CASES } from './profile-catalog.mjs';
@@ -185,6 +186,30 @@ async function killedProducer(addon, binary, context) {
 export async function runLifecycle(binary) {
   binary = resolve(binary);
   const addon = load(binary);
+  // Real package-manager links, using the exact built inventory and actual addon.
+  // The sibling fixture remains on the same filesystem and is removed before return.
+  const assetDir = dirname(binary);
+  const linkedDir = mkdtempSync(join(dirname(assetDir), '.relavium-native-links-'));
+  try {
+    for (const name of readdirSync(assetDir)) linkSync(join(assetDir, name), join(linkedDir, name));
+    const child = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        'if (require(process.argv[1]).loadFsMetadataAddon().protocolVersion() !== 1) process.exit(1);',
+        join(linkedDir, 'loader.cjs'),
+      ],
+      { shell: false, timeout: 30000, stdio: 'ignore' },
+    );
+    assert.equal(child.error, undefined);
+    assert.equal(child.status, 0);
+    assert.ok(statSync(join(linkedDir, 'loader.cjs')).nlink > 1);
+    assert.ok(statSync(join(linkedDir, 'native-assets.json')).nlink > 1);
+    assert.ok(statSync(join(linkedDir, 'THIRD_PARTY_NOTICES.txt')).nlink > 1);
+    assert.ok(statSync(join(linkedDir, basename(binary))).nlink > 1);
+  } finally {
+    rmSync(linkedDir, { recursive: true, force: true });
+  }
   const cases = [];
   const run = async (name, work) => {
     assert.ok(NODE_LIFECYCLE_CASES.includes(name));
