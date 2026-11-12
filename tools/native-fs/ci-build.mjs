@@ -83,6 +83,10 @@ run('docker', [
   '--verify-profile',
 ]);
 
+// Real production host/registry chronology with the just-built native addon.
+// The contributor bundle is built on the host; baseline execution remains 22.0.0.
+run('node', ['tools/native-fs/lower-host-run.mjs', tag]);
+
 // Compile without capabilities; the later isolated probe receives only the exact
 // Cargo-reported test executable, never the source tree or network access.
 const aclDirectory = mkdtempSync(join(tmpdir(), 'relavium-native-acl-'));

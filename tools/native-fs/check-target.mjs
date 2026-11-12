@@ -28,8 +28,16 @@ export function checkNativeTarget(
   );
   // Test-only environment hooks/checkpoint receipts must never enter the shipped addon.
   const binary = checked.files.get(`${target}.node`);
-  if (binary === undefined || binary.includes(Buffer.from('RELAVIUM_NATIVE_')))
-    throw new Error('NATIVE_FS_TEST_ONLY_BINARY');
+  if (binary === undefined) throw new Error('NATIVE_FS_TEST_ONLY_BINARY');
+  const testPrefix = Buffer.from('RELAVIUM_NATIVE_');
+  // ADR-0126's fixed production failure vocabulary shares the historical prefix.
+  // Admit only that exact literal; continue scanning every subsequent occurrence.
+  const productionPrefix = Buffer.from('RELAVIUM_NATIVE_WRITE:');
+  for (let offset = binary.indexOf(testPrefix); offset !== -1; ) {
+    if (!binary.subarray(offset, offset + productionPrefix.length).equals(productionPrefix))
+      throw new Error('NATIVE_FS_TEST_ONLY_BINARY');
+    offset = binary.indexOf(testPrefix, offset + productionPrefix.length);
+  }
   return checked;
 }
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

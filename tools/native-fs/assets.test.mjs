@@ -491,15 +491,28 @@ test('synthetic Windows same-owner receipts cannot pass CI certification or comp
     assert.equal(admitted.status, 0, admitted.stderr);
     const original = value.files.get(`${target}.node`);
     assert.ok(original);
-    const contaminated = Buffer.concat([original, Buffer.from('RELAVIUM_NATIVE_OWNER_CONTEXT')]);
-    value.files.set(`${target}.node`, contaminated);
-    asset.bytes = contaminated.length;
-    asset.sha256 = sha256(contaminated);
-    writeNativeAssets(value.directory, local, filesFor(target));
-    const testBinary = certify();
-    assert.equal(testBinary.status, 1);
-    assert.equal(testBinary.stdout, '');
-    assert.match(testBinary.stderr, /NATIVE_FS_TEST_ONLY_BINARY/u);
+    for (const [literal, admitted] of [
+      ['RELAVIUM_NATIVE_WRITE::', true],
+      ['RELAVIUM_NATIVE_WRITE:changed:proven', true],
+      ['RELAVIUM_NATIVE_OWNER_CONTEXT', false],
+      ['RELAVIUM_NATIVE_CHECKPOINT:stage-recover', false],
+      ['RELAVIUM_NATIVE_WRITE_DEBUG', false],
+      ['RELAVIUM_NATIVE_WRITE', false],
+      ['RELAVIUM_NATIVE_WRITE:RELAVIUM_NATIVE_OWNER_CONTEXT', false],
+      ['RELAVIUM_NATIVE_OWNER_CONTEXT\0RELAVIUM_NATIVE_WRITE:', false],
+    ]) {
+      const binary = Buffer.concat([original, Buffer.from(literal)]);
+      value.files.set(`${target}.node`, binary);
+      asset.bytes = binary.length;
+      asset.sha256 = sha256(binary);
+      writeNativeAssets(value.directory, local, filesFor(target));
+      const checked = certify();
+      assert.equal(checked.status, admitted ? 0 : 1, literal);
+      if (!admitted) {
+        assert.equal(checked.stdout, '');
+        assert.match(checked.stderr, /NATIVE_FS_TEST_ONLY_BINARY/u);
+      }
+    }
     value.files.set(`${target}.node`, original);
     asset.bytes = original.length;
     asset.sha256 = sha256(original);

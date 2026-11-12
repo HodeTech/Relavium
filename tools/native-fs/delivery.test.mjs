@@ -30,8 +30,23 @@ function checkDelivery(value, ci = parse(read('.github/workflows/ci.yml'))) {
     assert.equal(row.arch, row.target.startsWith('aarch64') ? 'arm64' : 'x64');
   }
   const setup = job.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
-  assert.equal(setup.with['node-version'], '22.0.0');
+  assert.equal(setup.with['node-version'], "${{ runner.os == 'Linux' && '22.13.0' || '22.0.0' }}");
   assert.equal(setup.with.architecture, '${{ matrix.arch }}');
+  const dependencies = job.steps.findIndex(
+    (step) => step.run === 'pnpm install --frozen-lockfile --ignore-scripts',
+  );
+  const linux = job.steps.findIndex(
+    (step) => step.run === "node tools/native-fs/ci-build.mjs '${{ matrix.target }}'",
+  );
+  assert.ok(dependencies >= 0 && dependencies < linux);
+  assert.equal(job.steps[dependencies].if, "runner.os == 'Linux'");
+  assert.ok(
+    job.steps.some(
+      (step) =>
+        step.uses === 'pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320' &&
+        step.if === "runner.os == 'Linux'",
+    ),
+  );
   assert.ok(
     job.steps.some(
       (step) =>
@@ -211,6 +226,9 @@ test('Linux baseline recipes pin images and native architecture rather than sele
     }
   }
   const builder = read('tools/native-fs/ci-build.mjs');
+  assert.match(builder, /run\('node', \['tools\/native-fs\/lower-host-run\.mjs', tag\]\)/u);
+  assert.match(read('tools/native-fs/gnu.Dockerfile'), /node-v22\.0\.0-linux/u);
+  assert.match(read('tools/native-fs/musl.Dockerfile'), /node:22\.0\.0-alpine3\.19/u);
   assert.match(builder, /process\.arch !== selected\.arch/u);
   assert.match(builder, /--cap-drop=ALL/u);
   assert.doesNotMatch(builder, /qemu|--platform/u);

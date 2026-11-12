@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { setInterval } from 'node:timers';
@@ -39,13 +39,19 @@ if (mode === '--producer') {
     });
   assert.ok(stage);
   globalThis.__relaviumCustodyFixture = { stage, prepared, token };
-  writeFileSync(ready, JSON.stringify({ pid: process.pid }), { flag: 'wx', mode: 0o600 });
+  assert.ok(process.pid >= 128, 'producer PID must be outside the consumer startup range');
+  writeFileSync(
+    ready,
+    JSON.stringify({ pid: process.pid, namespace: readlinkSync('/proc/self/ns/pid') }),
+    { flag: 'wx', mode: 0o600 },
+  );
   process.stdout.write('NATIVE_PID_NAMESPACE_READY\n');
   await new Promise(() => setInterval(() => {}, 1000));
 } else if (mode === '--consumer') {
   const addon = createRequire(import.meta.url)('/addon.node');
-  const { pid } = JSON.parse(readFileSync(ready, 'utf8'));
-  assert.ok(Number.isInteger(pid) && pid > 1);
+  const { pid, namespace } = JSON.parse(readFileSync(ready, 'utf8'));
+  assert.ok(Number.isInteger(pid) && pid >= 128);
+  assert.notEqual(namespace, readlinkSync('/proc/self/ns/pid'));
   if (process.argv[3] === 'live') {
     assert.throws(
       () => process.kill(pid, 0),
@@ -108,7 +114,13 @@ if (mode === '--producer') {
   };
   try {
     const producerName = `${prefix}-producer`;
-    createContainer(producerName, ['sh', '-c', 'node /native-stage-probe.mjs --producer & wait']);
+    createContainer(producerName, [
+      'sh',
+      '-c',
+      // Reaped short-lived children advance only this namespace's PID allocator.
+      // Node's consumer worker threads can otherwise reuse a small producer PID.
+      'i=0; while [ "$i" -lt 128 ]; do sh -c ":"; i=$((i+1)); done; node /native-stage-probe.mjs --producer & wait',
+    ]);
     producer = spawn('docker', ['start', '--attach', producerName], {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,

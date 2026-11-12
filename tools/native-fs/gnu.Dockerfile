@@ -18,7 +18,7 @@ ARG FIXTURE_UID=10001
 ARG FIXTURE_GID=10001
 RUN mkdir -p /relavium-native-lower /fixture && \
     chown "${FIXTURE_UID}:${FIXTURE_GID}" /fixture && chmod 700 /fixture && \
-    for name in success append cancel error crash unavailable changed-bytes changed-mode changed-mtime changed-identity changed-xattr changed-nlink changed-ctime; do \
+    for name in success append cancel error crash unavailable changed-bytes changed-mode changed-mtime changed-identity changed-xattr changed-nlink changed-ctime host-success host-append host-changed host-cancel host-publish-cancel host-committed-cancel; do \
       printf 'before' > "/relavium-native-lower/$name"; \
     done && \
     chown -R "${FIXTURE_UID}:${FIXTURE_GID}" /relavium-native-lower && \
