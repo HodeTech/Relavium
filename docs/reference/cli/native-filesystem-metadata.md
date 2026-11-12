@@ -656,6 +656,19 @@ with no `pending` or `mutation` observation. This supports the bounded handle
 strategy selected below; the ordinary profile still fails the earlier Win32
 relative publication and is not accepted by that measurement.
 
+The `f3c266f8` checkpoint passes the earlier relative publication on both
+Windows architectures, then refuses at exact DACL control comparison after
+metadata application. This identifies a control-bit mismatch, not its bit or
+direction. A separate test-only cohort compares `SetSecurityInfo` with the
+documented handle-bound `NtSetSecurityObject` full-descriptor entry, with and
+without a protection-information flag. It uses actual protected, unprotected
+and genuinely parent-inherited private-fixture policies, verifies the inherited
+ACE, and emits nine bounded fixed results. Source bytes/policy and held stage
+identity remain checked. No raw descriptor, SID, control value or path enters
+the measurement. No production setter, comparison or permission changes until
+the actual two-target observations justify selecting a mechanism; even exact
+measurements still require the complete ordinary profile and consumer gates.
+
 - Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
   publication and no pre-approval staging; readable source alone is insufficient.
 - Real ACL, quarantine/custom-xattr and supported flag positives on macOS;

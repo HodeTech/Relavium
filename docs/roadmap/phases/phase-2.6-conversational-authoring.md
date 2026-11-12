@@ -2462,6 +2462,35 @@ compilation and a standalone execution of the exact extracted completion
 controls pass; neither is actual Windows execution. The next source checkpoint
 must still pass both actual Windows ordinary profiles and all combined gates.
 
+**Descriptor-control measurements:** actual `f3c266f8`
+[CI run 43167960381](https://github.com/HodeTech/Relavium/actions/runs/43167960381)
+passes the earlier Windows relative rename and reaches payload staging on
+both architectures. Each refuses at `first-metadata-control-changed`; this
+does not yet identify which compared bit changed or in which direction. The
+exact protection/automatic-inheritance comparison remains mandatory.
+
+A Windows/test-only root case now measures nine fixed combinations of actual
+protected, unprotected and genuinely inherited fixture policy against the
+current component setter and two full-descriptor Nt setter forms. Source
+bytes/policy and held stage identity are checked; only bounded, validated fixed
+categories leave the child. The current production setter remains unchanged.
+This is a mechanism experiment within ADR-0125's delegation, not permission to
+use arbitrary descriptor flags or normalize inheritance. The diagnostic splits
+protection and automatic-inheritance mismatches, while all existing ordinary
+parents, sixty-eight rename observations and owner/Node controls remain.
+Windows selects twenty parents; success of the experiment cannot certify any
+candidate or Step 2.
+
+A fresh complete Terra/high affected review and separate Sol/high security
+sitting are clean on native source SHA-256
+`3f96186e39c0b0372b7652cc51716acd716fbd2bcff2474818cde80ce683bfc0`.
+Both reviewers independently pass the eighteen profile-tool controls. Root
+passes local macOS native 35/three owned children, eleven Node lifecycle cases,
+249 affected tools, tools lint/typecheck and nineteen workspace lint/typecheck/
+build/format tasks. Windows test code cross-compiles; the nine actual Windows
+observations remain pending. Dependency pins, lockfile, release inventory and
+all production guarantees are unchanged.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

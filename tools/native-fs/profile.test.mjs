@@ -9,6 +9,9 @@ import {
   WINDOWS_RENAME_PROBE_CASE,
   WINDOWS_RENAME_VARIANTS,
   WINDOWS_RENAME_STATUSES,
+  WINDOWS_SECURITY_PROBE_CASE,
+  WINDOWS_SECURITY_VARIANTS,
+  WINDOWS_SECURITY_STATUSES,
 } from './profile-catalog.mjs';
 import {
   parseSingleRustResult,
@@ -19,6 +22,8 @@ import {
   RUST_CHECKPOINTS,
   parseWindowsOwnerContext,
   parseWindowsRenameProbe,
+  parseWindowsSecurityProbe,
+  windowsSecurityProbeDiagnostic,
   windowsRenameProbeDiagnostic,
   rustCaseArguments,
 } from './profile.mjs';
@@ -236,6 +241,7 @@ test('native child checkpoints match the source-owned Rust allowlist and redact 
   assert.deepEqual(diagnose('RELAVIUM_NATIVE_DIAGNOSTIC:\n').checkpoints, []);
   for (const text of [
     'RELAVIUM_NATIVE_DIAGNOSTIC:stage-recover,private-checkpoint\n',
+    'RELAVIUM_NATIVE_DIAGNOSTIC:first-metadata-control-changed\n',
     'RELAVIUM_NATIVE_DIAGNOSTIC:' + Array(17).fill('stage-recover').join(','),
     'RELAVIUM_NATIVE_DIAGNOSTIC:stage-recover\nRELAVIUM_NATIVE_DIAGNOSTIC:index-home-flush\n',
     'RELAVIUM_NATIVE_DIAGNOSTIC:' + 'private-value'.repeat(1000),
@@ -310,9 +316,14 @@ const probeRecords = (status = 'invalid-parameter') =>
 test('Windows measurement case runs first while all production parents and eleven Node cases remain mandatory', () => {
   const windows = rustPopulation('win32');
   assert.equal(windows.passed[0], WINDOWS_RENAME_PROBE_CASE);
-  assert.equal(windows.passed.length, 19);
+  assert.equal(windows.passed.length, 20);
   assert.equal(windows.ignored.length, 1);
-  assert.equal(windows.passed.filter((name) => name !== WINDOWS_RENAME_PROBE_CASE).length, 18);
+  assert.equal(
+    windows.passed.filter(
+      (name) => ![WINDOWS_RENAME_PROBE_CASE, WINDOWS_SECURITY_PROBE_CASE].includes(name),
+    ).length,
+    18,
+  );
   assert.ok(
     windows.passed.includes(
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
@@ -364,14 +375,16 @@ test('Windows measurement case runs first while all production parents and eleve
   assert.throws(() => validateProfileEvidence({ ...evidence, renameProbe: 'ok' }, 'win32'));
 });
 
-test('only the Windows parameter measurement and owner observation collect captured successful output', () => {
+test('only the Windows diagnostic measurements and owner observation collect captured successful output', () => {
   for (const platform of ['darwin', 'linux', 'win32'])
     for (const name of rustPopulation(platform).passed) {
       assert.deepEqual(rustCaseArguments(name), [
         '--exact',
         name,
         '--test-threads=1',
-        ...([WINDOWS_RENAME_PROBE_CASE, WINDOWS_OWNER_CASE].includes(name)
+        ...([WINDOWS_RENAME_PROBE_CASE, WINDOWS_SECURITY_PROBE_CASE, WINDOWS_OWNER_CASE].includes(
+          name,
+        )
           ? ['--show-output']
           : []),
       ]);
@@ -499,4 +512,120 @@ test('unexpected initial pending is a closed measurement only and cannot replace
     () => parseSingleRustResult(incomplete, WINDOWS_RENAME_PROBE_CASE),
     /NATIVE_FS_RUST_SINGLE_COMPLETION/u,
   );
+});
+
+const securityRecords = (status = 'error') =>
+  WINDOWS_SECURITY_VARIANTS.map((variant) => `RELAVIUM_NATIVE_SECURITY_PROBE:${variant}:${status}`);
+
+test('Windows descriptor probe preserves all prior nineteen parents and remains a measurement before ordinary work', () => {
+  const windows = rustPopulation('win32');
+  assert.equal(windows.passed.length, 20);
+  assert.equal(windows.ignored.length, 1);
+  assert.equal(windows.passed[0], WINDOWS_RENAME_PROBE_CASE);
+  assert.equal(windows.passed[1], WINDOWS_SECURITY_PROBE_CASE);
+  assert.equal(windows.passed.filter((name) => name !== WINDOWS_SECURITY_PROBE_CASE).length, 19);
+  assert.ok(
+    windows.passed.indexOf(
+      'common::producer_crash_tests::native_producer_partial_crashes_recover',
+    ) > 1,
+  );
+  const withoutProbe = windows.passed.filter((name) => name !== WINDOWS_SECURITY_PROBE_CASE);
+  assert.throws(() =>
+    parseRustListing(
+      [...withoutProbe, ...windows.ignored].map((name) => `${name}: test`).join('\n'),
+      'win32',
+    ),
+  );
+  for (const platform of ['darwin', 'linux'])
+    assert.equal(rustPopulation(platform).passed.includes(WINDOWS_SECURITY_PROBE_CASE), false);
+  const evidence = {
+    version: 1,
+    rustPassed: windows.passed,
+    rustIgnored: windows.ignored,
+    nodeCases: [...NODE_LIFECYCLE_CASES],
+    requiresCreationMaskProbe: false,
+    genuineOwnerContext: 'distinct',
+  };
+  assert.throws(() => validateProfileEvidence({ ...evidence, securityProbe: 'exact' }, 'win32'));
+  const incomplete =
+    `test ${WINDOWS_SECURITY_PROBE_CASE} ... ignored\n` +
+    securityRecords('exact').join('\n') +
+    '\ntest result: ok. 0 passed; 0 failed; 1 ignored; 19 filtered out\n';
+  assert.throws(
+    () => parseSingleRustResult(incomplete, WINDOWS_SECURITY_PROBE_CASE),
+    /NATIVE_FS_RUST_SINGLE_COMPLETION/u,
+  );
+});
+
+test('Windows descriptor measurements require exactly nine fixed unique records and normalize every closed status', () => {
+  const independent = [];
+  for (const policy of ['protected', 'unprotected', 'inherited'])
+    for (const setter of ['setinfo', 'nt-basic', 'nt-protection'])
+      independent.push(`${policy}-${setter}`);
+  assert.deepEqual(WINDOWS_SECURITY_VARIANTS, independent);
+  assert.equal(new Set(WINDOWS_SECURITY_VARIANTS).size, 9);
+  assert.deepEqual(WINDOWS_SECURITY_STATUSES, [
+    'exact',
+    'owner-changed',
+    'group-changed',
+    'dacl-changed',
+    'protected-changed',
+    'auto-inherited-changed',
+    'access-denied',
+    'unsupported',
+    'error',
+  ]);
+  for (const status of WINDOWS_SECURITY_STATUSES)
+    assert.deepEqual(
+      parseWindowsSecurityProbe(
+        'successes:\r\n' + securityRecords(status).reverse().join('\r\n') + '\r\n',
+      ),
+      WINDOWS_SECURITY_VARIANTS.map((variant) => ({ variant, status })),
+    );
+  const line = windowsSecurityProbeDiagnostic(securityRecords('auto-inherited-changed').join('\n'));
+  assert.ok(line.startsWith('NATIVE_FS_SECURITY_PROBE '));
+  assert.equal(line.split('\n').length, 2);
+  assert.ok(line.length < 2048);
+  assert.deepEqual(JSON.parse(line.slice('NATIVE_FS_SECURITY_PROBE '.length)), {
+    version: 1,
+    measurementOnly: true,
+    records: WINDOWS_SECURITY_VARIANTS.map((variant) => ({
+      variant,
+      status: 'auto-inherited-changed',
+    })),
+  });
+});
+
+test('Windows descriptor measurements refuse missing, duplicated, unknown, raw or oversized data with fixed errors', () => {
+  const valid = securityRecords();
+  const inputs = [
+    null,
+    undefined,
+    {},
+    '',
+    valid.slice(1).join('\n'),
+    [...valid, valid[0]].join('\n'),
+    ['RELAVIUM_NATIVE_SECURITY_PROBE:private-policy-setinfo:exact', ...valid.slice(1)].join('\n'),
+    ['RELAVIUM_NATIVE_SECURITY_PROBE:protected-setinfo:private-SID', ...valid.slice(1)].join('\n'),
+    [valid[0] + ':private-payload', ...valid.slice(1)].join('\n'),
+    ['prefix ' + valid[0], ...valid.slice(1)].join('\n'),
+    [...valid, 'RELAVIUM_NATIVE_SECURITY_PROBE private-path'].join('\n'),
+    [...valid, 'RELAVIUM_NATIVE_SECURITY_PROBE:protected-setinfo:5'].join('\n'),
+    'x'.repeat(257) + '\n' + valid.join('\n'),
+    '\n'.repeat(65537),
+  ];
+  for (const input of inputs)
+    for (const parse of [parseWindowsSecurityProbe, windowsSecurityProbeDiagnostic])
+      assert.throws(
+        () => parse(input),
+        (error) =>
+          error.message === 'NATIVE_FS_WINDOWS_SECURITY_PROBE' &&
+          !String(error).includes('private'),
+      );
+  // The common bounded-record helper preserves each protocol's independent inventory and errors.
+  assert.throws(
+    () => parseWindowsSecurityProbe(probeRecords().join('\n')),
+    /NATIVE_FS_WINDOWS_SECURITY_PROBE/u,
+  );
+  assert.throws(() => parseWindowsRenameProbe(valid.join('\n')), /NATIVE_FS_WINDOWS_RENAME_PROBE/u);
 });

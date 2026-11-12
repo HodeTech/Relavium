@@ -38,6 +38,12 @@ fn aaa_windows_rename_parameter_probe() {
     windows::rename_parameter_probe();
 }
 
+#[cfg(all(test, windows))]
+#[test]
+fn aaa_windows_security_descriptor_probe() {
+    windows::tests::security_descriptor_probe();
+}
+
 #[cfg(test)]
 mod test_hooks {
     use std::io::Write;

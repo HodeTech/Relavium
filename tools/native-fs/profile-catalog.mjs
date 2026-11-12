@@ -107,6 +107,24 @@ export const WINDOWS_RENAME_STATUSES = Object.freeze([
   'mutation',
   'pending',
 ]);
+export const WINDOWS_SECURITY_PROBE_CASE = 'aaa_windows_security_descriptor_probe';
+export const WINDOWS_SECURITY_VARIANTS = Object.freeze(
+  cartesianVariants([
+    ['protected', 'unprotected', 'inherited'],
+    ['setinfo', 'nt-basic', 'nt-protection'],
+  ]),
+);
+export const WINDOWS_SECURITY_STATUSES = Object.freeze([
+  'exact',
+  'owner-changed',
+  'group-changed',
+  'dacl-changed',
+  'protected-changed',
+  'auto-inherited-changed',
+  'access-denied',
+  'unsupported',
+  'error',
+]);
 export const WINDOWS_OWNER_CASE =
   'windows::tests::windows_default_owner_payload_uses_effective_token_and_private_files_remain_user_owned';
 const WINDOWS = [
@@ -138,6 +156,7 @@ export function rustPopulation(platform) {
       ...(platform === 'win32'
         ? [
             WINDOWS_RENAME_PROBE_CASE,
+            WINDOWS_SECURITY_PROBE_CASE,
             'common::template_cleanup_tests::windows_changed_current_token_context_preserves_stage_until_restored',
           ]
         : []),

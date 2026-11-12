@@ -13,6 +13,9 @@ import {
   WINDOWS_RENAME_PROBE_CASE,
   WINDOWS_RENAME_VARIANTS,
   WINDOWS_RENAME_STATUSES,
+  WINDOWS_SECURITY_PROBE_CASE,
+  WINDOWS_SECURITY_VARIANTS,
+  WINDOWS_SECURITY_STATUSES,
 } from './profile-catalog.mjs';
 import { NATIVE_TOOLCHAIN } from './catalog.mjs';
 export function parseRustListing(text, platform) {
@@ -40,29 +43,50 @@ export function parseRustResults(text, platform) {
   assert.ok(!/^test .* \.\.\. (?:FAILED|failed|filtered)/mu.test(text), 'NATIVE_FS_RUST_FAILURE');
   return { passed, ignored };
 }
-/** Closed diagnostic records only. Even 68 successful observations do not certify publication. */
-export function parseWindowsRenameProbe(text) {
+/** Closed measurement records only; successful observations do not certify publication. */
+function parseProbeRecords(text, prefix, variants, statuses, errorCode) {
   const refuse = () => {
-    throw new Error('NATIVE_FS_WINDOWS_RENAME_PROBE');
+    throw new Error(errorCode);
   };
   if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 64 * 1024) refuse();
   const lines = text.split(/\r?\n/u);
   if (lines.some((line) => Buffer.byteLength(line, 'utf8') > 256)) refuse();
-  const prefix = 'RELAVIUM_NATIVE_RENAME_PROBE';
   const records = new Map();
   for (const line of lines.filter((item) => item.includes(prefix))) {
-    const matched = /^RELAVIUM_NATIVE_RENAME_PROBE:([a-z-]+):([a-z-]+)$/u.exec(line);
+    const fields = line.split(':');
     if (
-      matched === null ||
-      !WINDOWS_RENAME_VARIANTS.includes(matched[1]) ||
-      !WINDOWS_RENAME_STATUSES.includes(matched[2]) ||
-      records.has(matched[1])
+      fields.length !== 3 ||
+      fields[0] !== prefix ||
+      !variants.includes(fields[1]) ||
+      !statuses.includes(fields[2]) ||
+      records.has(fields[1])
     )
       refuse();
-    records.set(matched[1], matched[2]);
+    records.set(fields[1], fields[2]);
   }
-  if (records.size !== WINDOWS_RENAME_VARIANTS.length) refuse();
-  return WINDOWS_RENAME_VARIANTS.map((variant) => ({ variant, status: records.get(variant) }));
+  if (records.size !== variants.length) refuse();
+  return variants.map((variant) => ({ variant, status: records.get(variant) }));
+}
+export function parseWindowsRenameProbe(text) {
+  return parseProbeRecords(
+    text,
+    'RELAVIUM_NATIVE_RENAME_PROBE',
+    WINDOWS_RENAME_VARIANTS,
+    WINDOWS_RENAME_STATUSES,
+    'NATIVE_FS_WINDOWS_RENAME_PROBE',
+  );
+}
+export function parseWindowsSecurityProbe(text) {
+  return parseProbeRecords(
+    text,
+    'RELAVIUM_NATIVE_SECURITY_PROBE',
+    WINDOWS_SECURITY_VARIANTS,
+    WINDOWS_SECURITY_STATUSES,
+    'NATIVE_FS_WINDOWS_SECURITY_PROBE',
+  );
+}
+export function windowsSecurityProbeDiagnostic(text) {
+  return `NATIVE_FS_SECURITY_PROBE ${JSON.stringify({ version: 1, measurementOnly: true, records: parseWindowsSecurityProbe(text) })}\n`;
 }
 export function windowsRenameProbeDiagnostic(text) {
   return `NATIVE_FS_RENAME_PROBE ${JSON.stringify({ version: 1, measurementOnly: true, records: parseWindowsRenameProbe(text) })}\n`;
@@ -140,14 +164,17 @@ export function rustCaseArguments(name) {
     '--exact',
     name,
     '--test-threads=1',
-    ...([WINDOWS_OWNER_CASE, WINDOWS_RENAME_PROBE_CASE].includes(name) ? ['--show-output'] : []),
+    ...([WINDOWS_OWNER_CASE, WINDOWS_RENAME_PROBE_CASE, WINDOWS_SECURITY_PROBE_CASE].includes(name)
+      ? ['--show-output']
+      : []),
   ];
 }
 export const RUST_CHECKPOINTS = Object.freeze([
   'case-new-payload',
   'case-existing-metadata',
   'case-existing-payload',
-  'first-metadata-control-changed',
+  'first-metadata-protected-changed',
+  'first-metadata-auto-inherited-changed',
   'first-metadata-dacl-changed',
   'first-metadata-final-attribute-changed',
   'first-metadata-final-attribute-read',
@@ -472,6 +499,8 @@ export function validateNativeProfile({ repository, native, target, bytes, envir
     parseSingleRustResult(text, name);
     if (name === WINDOWS_RENAME_PROBE_CASE)
       process.stderr.write(windowsRenameProbeDiagnostic(text));
+    if (name === WINDOWS_SECURITY_PROBE_CASE)
+      process.stderr.write(windowsSecurityProbeDiagnostic(text));
     if (name === WINDOWS_OWNER_CASE) genuineOwnerContext = parseWindowsOwnerContext(text);
   }
   const directory = mkdtempSync(join(tmpdir(), 'relavium-native-profile-'));

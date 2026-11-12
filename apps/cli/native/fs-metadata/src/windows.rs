@@ -1292,8 +1292,11 @@ impl Profile for WindowsProfile {
                     "first-metadata-group-changed"
                 } else if actual_policy.dacl != snapshot.policy.dacl {
                     "first-metadata-dacl-changed"
+                } else if (actual_policy.control ^ snapshot.policy.control) & SE_DACL_PROTECTED != 0
+                {
+                    "first-metadata-protected-changed"
                 } else {
-                    "first-metadata-control-changed"
+                    "first-metadata-auto-inherited-changed"
                 };
                 crate::test_hooks::remember_failure(category, NativeFailure::Changed);
             }
@@ -2139,7 +2142,7 @@ pub(crate) fn rename_parameter_probe() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Read;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2183,6 +2186,219 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub(crate) fn security_descriptor_probe() {
+        use windows_sys::Wdk::Storage::FileSystem::NtSetSecurityObject;
+
+        fn has_inherited(policy: &Policy) -> Option<bool> {
+            let descriptor = policy.descriptor.as_ptr().cast_mut().cast();
+            let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
+            if unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            } == 0
+                || present == 0
+                || dacl.is_null()
+            {
+                return None;
+            }
+            let count = unsafe { (*dacl).AceCount };
+            for index in 0..u32::from(count) {
+                let mut ace: *mut c_void = ptr::null_mut();
+                if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
+                    return None;
+                }
+                let header = unsafe { ptr::read_unaligned(ace.cast::<ACE_HEADER>()) };
+                if u32::from(header.AceFlags) & INHERITED_ACE != 0 {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+        fn set_inheritable_user_acl(directory: &File) {
+            let peer = open(
+                &path_for(directory).expect("fixture directory"),
+                WRITE_DAC_ACCESS | READ_CONTROL_ACCESS | FILE_READ_ATTRIBUTES,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                ptr::null(),
+            )
+            .expect("fixture DACL peer");
+            assert!(
+                WindowsProfile::identity(&peer).expect("peer identity")
+                    == WindowsProfile::identity(directory).expect("directory identity")
+            );
+            let sid = current_sid().expect("fixture user");
+            let mut acl = vec![0u64; 128];
+            let raw = acl.as_mut_ptr().cast();
+            assert!(unsafe { InitializeAcl(raw, (acl.len() * 8) as u32, ACL_REVISION) } != 0);
+            assert!(
+                unsafe {
+                    AddAccessAllowedAceEx(
+                        raw,
+                        ACL_REVISION,
+                        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                        FILE_ALL,
+                        sid.as_ptr().cast_mut().cast(),
+                    )
+                } != 0
+            );
+            assert!(
+                unsafe {
+                    SetSecurityInfo(
+                        handle(&peer),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        raw,
+                        ptr::null(),
+                    )
+                } == ERROR_SUCCESS
+            );
+        }
+        fn error_status(code: u32) -> &'static str {
+            match code {
+                ERROR_ACCESS_DENIED | ERROR_PRIVILEGE_NOT_HELD => "access-denied",
+                ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION => "unsupported",
+                _ => "error",
+            }
+        }
+        fn difference(source: &Policy, stage: &Policy) -> &'static str {
+            if source.owner != stage.owner {
+                "owner-changed"
+            } else if source.group != stage.group {
+                "group-changed"
+            } else if source.dacl != stage.dacl {
+                "dacl-changed"
+            } else if (source.control ^ stage.control) & SE_DACL_PROTECTED != 0 {
+                "protected-changed"
+            } else if (source.control ^ stage.control) & SE_DACL_AUTO_INHERITED != 0 {
+                "auto-inherited-changed"
+            } else {
+                "exact"
+            }
+        }
+        for case in ["protected", "unprotected", "inherited"] {
+            for setter in ["setinfo", "nt-basic", "nt-protection"] {
+                let fixture = Fixture::new();
+                if case == "inherited" {
+                    set_inheritable_user_acl(&fixture.directory);
+                }
+                let source = if case == "protected" {
+                    let mut file = WindowsProfile::create_private_file(
+                        &fixture.directory,
+                        OsStr::new("source"),
+                    )
+                    .expect("protected probe source");
+                    assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
+                    assert!(file.sync_all().is_ok(), "source flush");
+                    file
+                } else {
+                    let mut file = open(
+                        &fixture.path.join("source"),
+                        FILE_GENERIC_READ
+                            | FILE_GENERIC_WRITE
+                            | DELETE_ACCESS
+                            | WRITE_DAC_ACCESS
+                            | WRITE_OWNER_ACCESS,
+                        CREATE_NEW,
+                        0,
+                        ptr::null(),
+                    )
+                    .expect("ordinary probe source");
+                    assert!(file.write_all(b"source bytes").is_ok(), "source bytes");
+                    assert!(file.sync_all().is_ok(), "source flush");
+                    file
+                };
+                let source_policy = policy(&source).expect("source policy");
+                let inherited = has_inherited(&source_policy);
+                let proper_case = match case {
+                    "protected" => {
+                        source_policy.control & SE_DACL_PROTECTED != 0 && inherited.is_some()
+                    }
+                    "unprotected" => {
+                        source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(false)
+                    }
+                    _ => source_policy.control & SE_DACL_PROTECTED == 0 && inherited == Some(true),
+                };
+                let (_stage_path, _stage_parent, stage) = fixture.stage();
+                let stage_id = WindowsProfile::identity(&stage).expect("stage identity");
+                let sd = source_policy.descriptor.as_ptr().cast_mut().cast();
+                let protection = if source_policy.control & SE_DACL_PROTECTED != 0 {
+                    PROTECTED_DACL_SECURITY_INFORMATION
+                } else {
+                    UNPROTECTED_DACL_SECURITY_INFORMATION
+                };
+                let result = if !proper_case {
+                    Err("unsupported")
+                } else if setter == "setinfo" {
+                    let (mut owner, mut group, mut dacl) =
+                        (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                    let (mut present, mut defaulted) = (0, 0);
+                    if unsafe { GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) } == 0
+                        || unsafe { GetSecurityDescriptorGroup(sd, &mut group, &mut defaulted) }
+                            == 0
+                        || unsafe {
+                            GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted)
+                        } == 0
+                        || present == 0
+                        || dacl.is_null()
+                    {
+                        Err("error")
+                    } else {
+                        let code = unsafe {
+                            SetSecurityInfo(
+                                handle(&stage),
+                                SE_FILE_OBJECT,
+                                POLICY_INFO | protection,
+                                owner,
+                                group,
+                                dacl,
+                                ptr::null(),
+                            )
+                        };
+                        if code == ERROR_SUCCESS {
+                            Ok(())
+                        } else {
+                            Err(error_status(code))
+                        }
+                    }
+                } else {
+                    let flags = if setter == "nt-protection" {
+                        POLICY_INFO | protection
+                    } else {
+                        POLICY_INFO
+                    };
+                    let code = unsafe { NtSetSecurityObject(handle(&stage), flags, sd) };
+                    if code == STATUS_PENDING {
+                        std::process::abort();
+                    }
+                    if code == STATUS_SUCCESS {
+                        Ok(())
+                    } else {
+                        Err(error_status(unsafe { RtlNtStatusToDosError(code) }))
+                    }
+                };
+                let unchanged = WindowsProfile::identity(&stage).is_ok_and(|id| id == stage_id)
+                    && stage.metadata().is_ok_and(|m| m.len() == 0)
+                    && std::fs::read(fixture.path.join("source"))
+                        .is_ok_and(|bytes| bytes == b"source bytes")
+                    && policy(&source).is_ok_and(|after| same_policy(&after, &source_policy));
+                let status = if !unchanged {
+                    "error"
+                } else {
+                    match result {
+                        Ok(()) => match policy(&stage) {
+                            Ok(stage_policy) => difference(&source_policy, &stage_policy),
+                            Err(_) => "error",
+                        },
+                        Err(status) => status,
+                    }
+                };
+                println!("RELAVIUM_NATIVE_SECURITY_PROBE:{case}-{setter}:{status}");
+            }
         }
     }
 
