@@ -2750,6 +2750,34 @@ causal runtime proofs, never Linux native-profile or consumer proofs. The
 earlier Mac post-report timeouts stay refused; a quiet sequential diagnostic
 rerun remains open. Complete current-head CI is still required for acceptance.
 
+**Native and installed-package integration — `e163f4cc`:**
+[CI run 43185672320](https://github.com/HodeTech/Relavium/actions/runs/43185672320)
+passes all eight native profiles, Windows database/filesystem/headless
+integration and all four installed CLI consumers, including the exact Node
+floor. This proves the corrected private-parent journey, installed hardlink
+loading and older-macOS denied-effect preparation on their actual platforms;
+it does not make the overall run green. Filesystem control shard 2 identifies
+one remaining fixture integration defect in `ancestor-error`.
+
+The persistent synthetic `EACCES` also reached prepared-write's independent
+parent revalidation, concealing removal of the earlier shared ancestor guard.
+The fixture now injects the error once at that exact path, records its hit and
+delegates later calls to real resolution. It retains both tool/`save_to`
+witnesses, all 21 cases and the no-directory-creation assertion. Independent
+Terra/high code and Sol/high static security reviews are clean; neither
+executes tests in these sittings. Selected physical phases pass 21 / 19 plus
+both named failures / 21, naturally joined with accepted source/dependency/
+evaluation/runtime receipts; independent retained replay passes. The complete
+115-control matrix runs on an immutable source candidate before acceptance.
+No product guard, mutation anchor, population, deadline or evidence rule changes.
+
+The quiet sequential Mac rerun also closes both live-export control cohorts
+at `195bb92b`: all six phases naturally exit and join within unchanged bounds,
+with independently verified retained evidence. The original parallel-run
+timeouts remain refused and do not reproduce in this quiet run; no source
+fix or claimed underlying-handle diagnosis is needed. Their 25-file retained
+trees total 10,416,638 / 10,415,042 bytes including `export.json`.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

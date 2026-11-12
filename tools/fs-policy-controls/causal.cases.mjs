@@ -27,6 +27,7 @@ import {
 import { discoverCatalog } from '../../apps/cli/src/workflows/catalog.js';
 const observed = vi.hoisted(() => ({
   failure: undefined,
+  failureSeen: vi.fn(),
   mkdir: vi.fn(),
   open: vi.fn(),
 }));
@@ -34,12 +35,20 @@ vi.mock('node:fs/promises', async (original) => {
   const native = await original();
   return {
     ...native,
-    realpath: (...args) =>
-      String(args[0]) === observed.failure?.path
-        ? Promise.reject(
-            Object.assign(new Error('private-native-sentinel'), { code: observed.failure.code }),
-          )
-        : native.realpath(...args),
+    realpath: (...args) => {
+      if (
+        String(args[0]) === observed.failure?.path &&
+        observed.failureSeen.mock.calls.length === 0
+      ) {
+        observed.failureSeen(observed.failure.code);
+        // Fail only the ancestor admission. Later independent parent revalidation must
+        // observe the actual missing directory rather than mask removal of this guard.
+        return Promise.reject(
+          Object.assign(new Error('private-native-sentinel'), { code: observed.failure.code }),
+        );
+      }
+      return native.realpath(...args);
+    },
     mkdir: (...args) => {
       observed.mkdir(args[0]);
       return native.mkdir(...args);
@@ -59,6 +68,7 @@ beforeEach(() => {
   mkdirSync(outside);
   writeFileSync(join(outside, 'a.txt'), 'private');
   observed.failure = undefined;
+  observed.failureSeen.mockClear();
   observed.mkdir.mockClear();
   observed.open.mockClear();
 });
@@ -160,6 +170,9 @@ it.each(['tool', 'save_to'])('FS_CAUSAL_ANCESTOR_ERROR %s', async (port) => {
       ? () => fs().writeFile('new/deep/a.txt', 'x', { createDirs: true })
       : () => createFilesystemMediaWrite(workspace)('new/deep/a.txt', Buffer.from('x'));
   await requireRefusal(write(), 'FS_CAUSAL_ANCESTOR_ERROR');
+  expect(observed.failureSeen, 'FS_CAUSAL_ANCESTOR_ERROR').toHaveBeenCalledExactlyOnceWith(
+    'EACCES',
+  );
   expect(observed.mkdir, 'FS_CAUSAL_ANCESTOR_ERROR').not.toHaveBeenCalled();
 });
 it.each(['tool', 'save_to'])('FS_CAUSAL_ANCESTOR_CLIMB %s', async (port) => {
