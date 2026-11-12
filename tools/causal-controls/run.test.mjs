@@ -136,11 +136,31 @@ for (const [kind, background] of [
           ({ control, phase }) => control === contaminated.id && phase === 'mutated',
         );
         assert.ok(streams);
-        assert.equal(
-          streams.stderr,
-          '',
-          'JSON-only runtime diagnostics remain absent; the structured receipt must refuse',
+        const diagnosticPath =
+          kind === 'teardown-rejection' ? 'tools/causal-controls/runtime-error.cases.mjs' : target;
+        const diagnosticSource = readFileSync(join(repository, diagnosticPath), 'utf8').replace(
+          contaminated.before,
+          contaminated.after,
         );
+        const diagnosticLine =
+          diagnosticSource.split('\n').findIndex((line) => line.includes('CAUSAL_BACKGROUND_')) + 1;
+        assert.ok(diagnosticLine > 0, 'The fixture must own the reported source location');
+        assert.deepEqual(JSON.parse(streams.stderr), {
+          version: 1,
+          diagnostic: 'unhandled-runtime-errors',
+          phase: 'mutated',
+          mutationId: contaminated.id,
+          count: 1,
+          truncated: false,
+          entries: [
+            {
+              kind: 'Error',
+              origin: kind === 'exception' ? 'Uncaught Exception' : 'Unhandled Rejection',
+              reportedFrame: { path: diagnosticPath, line: diagnosticLine },
+            },
+          ],
+        });
+        assert.doesNotMatch(streams.stderr, /CAUSAL_BACKGROUND_|causal-runtime-error-/);
         assert.deepEqual(sourceState(repository), before);
         assert.deepEqual(
           ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']),
