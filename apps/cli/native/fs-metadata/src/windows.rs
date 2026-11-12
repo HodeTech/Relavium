@@ -1709,6 +1709,23 @@ mod rename_probe {
             _ => "other",
         }
     }
+    fn rename_buffer_length(class_kind: u8, size_mode: u8, name_bytes: usize) -> usize {
+        let offset = if class_kind == 2 {
+            offset_of!(FILE_RENAME_INFORMATION, FileName)
+        } else {
+            offset_of!(FILE_RENAME_INFO, FileName)
+        };
+        let base_size = if class_kind == 2 {
+            size_of::<FILE_RENAME_INFORMATION>()
+        } else {
+            size_of::<FILE_RENAME_INFO>()
+        };
+        match size_mode {
+            0 => offset + name_bytes,
+            1 => offset + name_bytes + size_of::<u16>(),
+            _ => base_size + name_bytes + size_of::<u16>(),
+        }
+    }
     fn attempt(
         file: &File,
         parent: &File,
@@ -1727,21 +1744,7 @@ mod rename_probe {
         };
         let name: Vec<u16> = name.encode_wide().collect();
         let name_bytes = name.len() * size_of::<u16>();
-        let offset = if class_kind == 2 {
-            offset_of!(FILE_RENAME_INFORMATION, FileName)
-        } else {
-            offset_of!(FILE_RENAME_INFO, FileName)
-        };
-        let base_size = if class_kind == 2 {
-            size_of::<FILE_RENAME_INFORMATION>()
-        } else {
-            size_of::<FILE_RENAME_INFO>()
-        };
-        let length = match size_mode {
-            0 => offset + name_bytes,
-            1 => offset + name_bytes + size_of::<u16>(),
-            _ => base_size + name_bytes + size_of::<u16>(),
-        };
+        let length = rename_buffer_length(class_kind, size_mode, name_bytes);
         let mut storage = vec![0u64; length.div_ceil(size_of::<u64>())];
         if class_kind == 2 {
             let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();

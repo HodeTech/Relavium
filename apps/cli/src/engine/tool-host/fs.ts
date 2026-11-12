@@ -561,7 +561,6 @@ function lineReadBounds(content: Buffer, range: FsReadRange): { from: number; to
   let foundStart = false;
   let foundEnd = false;
   if (content.length > 0 && range.start === 1) {
-    from = 0;
     foundStart = true;
   }
   for (let i = 0; i < content.length; i++) {
