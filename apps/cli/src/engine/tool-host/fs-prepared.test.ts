@@ -12,8 +12,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import type { FileWritten, FsPreparedWrite } from '@relavium/core';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createNodeFsCapability } from './fs.js';
+import * as nativeMetadata from './fs-native-metadata.js';
 
 let root: string;
 beforeEach(async () => {
@@ -53,7 +55,7 @@ it('prepares without filesystem mutation, executes once, and preserves mode and 
   await prepared.release();
 });
 
-it('defers parent creation, and competing new-file publications cannot clobber the winner', async () => {
+it('defers parent creation and refuses a staged new-file publication after a competing winner', async () => {
   const fs = host();
   const delayed = await fs.prepareWrite!({
     kind: 'write',
@@ -65,13 +67,59 @@ it('defers parent creation, and competing new-file publications cannot clobber t
   await delayed.release();
   expect(await readdir(root)).toEqual([]);
   await mkdir(join(root, 'dir'));
-  const one = await fs.prepareWrite!({ kind: 'write', path: 'dir/file', content: 'one' });
-  const two = await fs.prepareWrite!({ kind: 'write', path: 'dir/file', content: 'two' });
-  const outcomes = await Promise.allSettled([one.execute(), two.execute()]);
-  expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
-  expect(['one', 'two']).toContain(await readFile(join(root, 'dir/file'), 'utf8'));
-  expect(await readdir(join(root, 'dir'))).toEqual(['file']);
-  await Promise.all([one.release(), two.release()]);
+  const native = await nativeMetadata.loadNativeMetadataWriteAdapter();
+  let one: FsPreparedWrite | undefined;
+  let two: FsPreparedWrite | undefined;
+  let winner: FileWritten | undefined;
+  let competingStarted = false;
+  const publicationOrder: string[] = [];
+  const loader = vi.spyOn(nativeMetadata, 'loadNativeMetadataWriteAdapter').mockResolvedValue({
+    ...native,
+    publishMetadata: async (stage, mask, cancellation) => {
+      const first = !competingStarted;
+      if (first) {
+        competingStarted = true;
+        publicationOrder.push('first-staged');
+        if (two === undefined) throw new Error('the competing prepared write is missing');
+        // Keep the first real stage alive while the competitor publishes and
+        // joins cleanup. Uncontrolled inventory-lock contention can refuse both
+        // executions; it does not establish whether publication clobbered a file.
+        winner = await two.execute();
+        publicationOrder.push('winner-complete');
+      }
+      publicationOrder.push(first ? 'first-native-publish' : 'winner-native-publish');
+      return native.publishMetadata(stage, mask, cancellation);
+    },
+  });
+  try {
+    one = await fs.prepareWrite!({ kind: 'write', path: 'dir/file', content: 'one' });
+    two = await fs.prepareWrite!({ kind: 'write', path: 'dir/file', content: 'two' });
+    await expect(one.execute()).rejects.toMatchObject({
+      name: 'NativeWriteNeedsAttentionError',
+      code: 'execution_failed',
+      runErrorCode: 'effect_needs_attention',
+      retryable: false,
+    });
+    expect(publicationOrder).toEqual([
+      'first-staged',
+      'winner-native-publish',
+      'winner-complete',
+      'first-native-publish',
+    ]);
+    expect(winner).toEqual({ path: join('dir', 'file'), bytesWritten: 3 });
+    expect(await readFile(join(root, 'dir/file'), 'utf8')).toBe('two');
+    expect(await readdir(join(root, 'dir'))).toEqual(['file']);
+    expect(await readdir(join(root, '.relavium-fs-private-v1', 'fs-staging-v1'))).toEqual([
+      'inventory.lock',
+    ]);
+  } finally {
+    try {
+      const releases = await Promise.allSettled([one?.release(), two?.release()]);
+      expect(releases.map((outcome) => outcome.status)).toEqual(['fulfilled', 'fulfilled']);
+    } finally {
+      loader.mockRestore();
+    }
+  }
 });
 
 it('requires promoted matching evidence for each replacement and refuses stale state', async () => {
