@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -114,15 +114,20 @@ the local macOS profile does not replace eight native targets or four installed
 consumers. That Sonar-only increment needed no new ADR; maintainer review and
 merge remained separate.
 
-**Additional PR #99 review (2026-11-13):** the supplied reports at `80e8cd88`
-are being reconciled against actual code, contracts and focused probes. Verified
-runtime/UX, native lifetime and delivery corrections remain open. The
-[correction plan](phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
-keeps them in one cohesive increment with fresh cumulative reviews, a separate
-security sitting and final-head CI/Sonar acceptance.
+**Additional PR #99 review (2026-11-13): implementation and local review complete.**
+The supplied reports at `80e8cd88` are individually reconciled against actual
+code, contracts and focused probes. Runtime/UX, native lifetime, delivery and
+scanner corrections through `76cf3fda` pass 18,651 workspace cases and 1,129
+acceptance-tool cases. Requested review/fix rounds, a fresh complete cumulative
+round and separate final-source security sitting are clean. The
+[final development source checkpoint](phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
+owns exact review/test evidence and limits. All 43 additional scanner records
+have source fixes or verified remote dispositions; final-head automatic closure,
+quality gate and complete native/consumer/combined CI must pass in current PR
+checks before maintainer merge.
 [ADR-0126](../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
 is accepted after the supplied reviews and maintainer instruction; the native
-source-admission and recovery-lifetime implementation is in progress.
+source-admission and recovery-lifetime implementation is complete.
 ADR-0121 and other pending MVP-4/release
 decisions are not implicitly accepted by this correction work.
 

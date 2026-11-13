@@ -22,7 +22,7 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status (2026-11-12): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
+**Status (2026-11-13): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
 published); Phase 2.6.5 is complete with approved deferrals (49/51, PR #92). Phase 2.5.5's Waves 0–2 and Wave 3
 Steps 1–8 are merged (PR #94, PR #95), and Steps 9a.1–9b.2 and NI are accepted and on `main` since the
 `development`→`main` checkpoint (PR #96, 2026-11-04). On 2026-10-26
@@ -34,20 +34,22 @@ MVP-2 is complete and on `main` through PR #98 (`0db4c940`, 2026-11-11), includi
 review corrections, separate security sittings and passing combined CI
 ([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)).
 MVP-3's three steps are implemented and independently accepted on `development`,
-with clean cumulative reviews and separate security sittings. Sonar remediation
-through `3240fb88` passes 18,543 workspace tests and 1,093 acceptance-tool cases,
-with two fresh clean review rounds and a separate security sitting. All 207
-baseline Sonar reports have source actions or verified remote dispositions;
+with clean cumulative reviews and separate security sittings. The PR #99
+correction source through `76cf3fda` passes 18,651 workspace tests and 1,129
+acceptance-tool cases, with fresh clean cumulative and separate security reviews.
+All 207 baseline Sonar reports and 43 correction follow-ups have individual
+source actions or verified remote dispositions;
 PR #99 requires final-head scanner/platform checks and maintainer review. The
 [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 owns evidence and limits. MVP-4 is next, with its pending ADR approvals preserved.
-**PR #99 review follow-up (2026-11-13) is active.** New verified runtime/UX,
-native lifetime and delivery findings require correction and fresh acceptance.
+**PR #99 review follow-up (2026-11-13): implementation and local review complete.**
+The [final development source checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
+records corrected runtime/UX, native lifetime, delivery and scanner behavior.
+Current PR checks own final CI/scanner acceptance.
 [ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
 is Accepted after the supplied design reviews and maintainer approval; its
-source-admission/recovery implementation and fresh acceptance remain open.
-Earlier clean review/CI receipts retain their
-scoped historical meaning; they do not close this new correction increment.
+source-admission/recovery implementation is complete. Earlier receipts retain
+their scoped historical meaning and do not replace current-head checks.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.

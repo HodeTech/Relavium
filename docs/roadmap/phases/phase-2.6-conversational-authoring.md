@@ -3283,7 +3283,8 @@ must pass fresh complete scanner/platform checks before merge.
 
 ### PR #99 correction plan (2026-11-13)
 
-**Status: implementation in progress; final acceptance remains open.**
+**Status: implementation and local review complete; current-head CI/scanner
+checks and maintainer review govern the merge checkpoint.**
 The maintainer supplied additional independent reviews against `80e8cd88`.
 Their claims are checked against current code and accepted contracts, with
 focused reproductions where needed. The review-owned Home catch is rejected:
@@ -3451,6 +3452,112 @@ anchors and witnesses across 72 files / 2,472 cases. The two chat cohorts requir
 160 cases; usage requires 476 with its 71 native children, readiness and deadline
 rules unchanged. A new clean cumulative round, separate CLI security sitting,
 the native delta check and final-head complete CI/scanner checks remain open.
+
+#### Correction cumulative review and security checkpoint (2026-11-13)
+
+A fresh Sol/high complete cumulative round reviews `80e8cd88..6389cd9b` and
+the exact model-description correction committed at `7f00febd`. It reports zero
+remaining findings and independently passes 1,081 focused cases, with two
+platform skips and one ignored Rust subprocess fixture. The one optional
+directory-description suggestion is corrected and reviewed against the actual
+result contract; it does not change runtime result semantics.
+
+The separate Terra/high CLI/session/sink security sitting at `6389cd9b` reports
+no confirmed issue and independently passes 453 focused cases. A separate
+Sol/high native delta sitting preserves the earlier 281-case native security
+receipt: its three protocol controls pass, and the actual post-death native
+recovery requirement remains intact. These are scoped security receipts, not
+certification of unrun platforms or unrelated unchanged systems.
+
+Both `6389cd9b` CI runs execute all eight native target producers and all four
+installed consumers successfully. Their Windows integration cohort correctly
+rejects two new test-fixture mistakes: a Unix-only expected path separator, and
+a manually created private hierarchy without Windows' required protected DACL.
+The test-only correction at `b3b36169` uses native path separators and lets the
+native adapter create its exact secure hierarchy. All version/identity/privacy
+assertions and the Windows test remain enabled. No ACL or admission floor is
+relaxed. These failed integration runs are not counted as passing combined CI.
+
+#### Correction scanner follow-up source checkpoint (2026-11-13)
+
+The fresh correction scan adds 43 records. Each is checked against source:
+16 receive source fixes, six are verified False Positives and 21 are Accepted
+intentional patterns. All 27 remote transitions include a reason and pass an
+independent read-back. The detailed per-key register stays in ignored
+`docs/reviews/`; no profile, severity or exclusion is changed.
+
+The source fixes through `76cf3fda` name the existing snapshot, discovery,
+display-retention, review-transition and bounded-diff phases without moving
+authority or cleanup checks. Fixture outcomes become explicit statements;
+equivalent numeric patterns, generated probe text and Docker recipe populations
+are preserved. The namespace contributor helper now rejects option-shaped
+images and unencoded Docker mount CSV delimiters before any Docker action.
+Ten real orchestrator admission controls include nine failures on the old
+source; they are argument-boundary evidence, not native platform execution.
+Necessary sequential yields/observations, ordinal evidence sorting and the
+trusted contributor toolchain boundary remain explicit intentional choices.
+
+The unchanged final-source populations pass **18,651 workspace cases / 24
+conditional skips**, including 7,919 CLI cases / 13 skips across 494 files,
+and **1,129 acceptance-tool cases without skips**. Lint, strict types, tooling
+checks, build and formatting pass. The source-bound macOS profile retains
+42 Rust parents, four ignored subprocess fixtures and eleven Node lifecycle
+cases; 71 focused native tool controls pass with refreshed assets.
+
+The first full CLI attempt has two existing child-deadline failures and one
+existing acquisition-wait failure; isolated controls and the unchanged complete
+CLI repeat pass. Their cause is not established and no assertion or deadline
+is changed. An acceptance-tool attempt overlaps the author's commits and
+correctly rejects changed HEAD/index evidence; the frozen-source complete
+repeat passes all 1,129 cases. These failed attempts remain separate receipts.
+
+The final source acceptance below owns the completed review/security receipts.
+Automatic closure of the 16 source-corrected scanner records and corrected-head
+complete CI remain required in current PR checks; historical local or partial
+platform receipts do not supply that merge authority.
+
+#### Correction final development source acceptance (2026-11-13)
+
+The correction's implementation, requested review/fix rounds and separate
+security acceptance are complete on `development` through `76cf3fda`.
+The original supplied review register retains every claim's concrete disposition;
+no confirmed correction finding is deferred to MVP-4. The later 43-record
+scanner follow-up remains individually auditable as described above.
+
+Fresh round-one reviewers inspect the complete `6389cd9b..76cf3fda` delta:
+Sol/high's CLI/core review reports zero findings, independently collects 29
+filesystem passes / two platform skips and verifies 210 exact baseline/current
+diff-output and callback comparisons. Terra/high's native/delivery review reports
+zero findings, independently passes 50 tool controls and verifies generated
+child-program bytes and both recipe populations are unchanged.
+
+A new Terra/high round two examines the complete `80e8cd88..76cf3fda` correction,
+surrounding invariants and pending phase checkpoint. It reports no confirmed
+material finding and independently passes 648 Vitest cases / two platform skips
+plus 33 native delivery/protocol controls. This is a complete cumulative review,
+separate from the earlier clean 1,081-case round and the security sitting.
+
+A fresh Sol/high separate corrective security sitting at `76cf3fda` finds no
+confirmed security issue in its examined cumulative boundaries. Its independent
+checks pass 733 TypeScript cases, 65 Node tooling cases and 18 Rust cases, with
+two Windows skips and two ignored subprocess fixture entry points. It traces
+native admission/custody/recovery, terminal/notice authority, privacy, consent,
+bounded work and source-bound delivery. Unrelated unchanged systems and unrun
+platforms are not recertified.
+
+Final author checks retain the 18,651 workspace and 1,129 acceptance-tool totals,
+893-file isolation, DB sync, engine/seam/bundle gates and the source-bound macOS
+profile. The compiled bootstrap's 177 controls and workflow/cancellation,
+overflow-capture and budget-replay smoke checks pass on the corrected bundle.
+The subsequent documentation-only checkpoint does not change executable source,
+native build inputs, assertions, workloads or deadlines.
+
+The [current PR #99 checks](https://github.com/HodeTech/Relavium/pull/99/checks)
+must still supply successful final-head scanner/quality-gate, all eight actual
+native profiles, Windows integration, four installed consumers and complete
+combined CI before merge. This record claims development source/review
+acceptance; maintainer review, merge and publication are separate. ADR-0121
+remains Proposed and the publication guard remains closed.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 
