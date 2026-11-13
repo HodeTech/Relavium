@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
-import { writeSync } from 'node:fs';
+import { lstatSync, writeSync } from 'node:fs';
+import { join } from 'node:path';
 import { REQUIRED_SMOKE_CASES } from './cases.mjs';
 import { nativeSignalCode } from './native-signal-diagnostic.mjs';
 
@@ -55,6 +56,86 @@ const operations = new Set([
   'native-uncaught-exception-observed',
   'native-signal-diagnostics-complete',
 ]);
+export const NATIVE_LOAD_DIAGNOSTIC_PREFIX = 'RELAVIUM_NATIVE_LOAD_DIAGNOSTIC:';
+export const NATIVE_LOAD_STAGES = new Set([
+  'child-invoke',
+  'keyring-load',
+  'keyring-export',
+  'sqlite-load',
+  'metadata-loader',
+  'metadata-load',
+  'metadata-protocol',
+  'sqlite-open',
+  'sqlite-query',
+  'native-cache',
+  'child-json',
+  'protocol-check',
+  'repository-boundary',
+  'installation-boundary',
+  'complete',
+]);
+export const WORKFLOW_STAGES = new Set([
+  'start',
+  'sequential',
+  'human-gate',
+  'budget-pause',
+  'budget-decisions',
+  'denied-effect',
+  'native-start',
+  'native-barrier',
+  'native-bytes',
+  'native-metadata',
+  'native-journal',
+  'native-release',
+  'native-terminal',
+  'native-sweep',
+  'native-observations',
+  'complete',
+]);
+const ASSETS = Object.freeze({
+  loader: 'loader.cjs',
+  manifest: 'native-assets.json',
+  notices: 'THIRD_PARTY_NOTICES.txt',
+  darwinArm64: 'aarch64-apple-darwin.node',
+  darwinX64: 'x86_64-apple-darwin.node',
+  windowsArm64: 'aarch64-pc-windows-msvc.node',
+  windowsX64: 'x86_64-pc-windows-msvc.node',
+  linuxArm64Gnu: 'aarch64-unknown-linux-gnu.node',
+  linuxX64Gnu: 'x86_64-unknown-linux-gnu.node',
+  linuxArm64Musl: 'aarch64-unknown-linux-musl.node',
+  linuxX64Musl: 'x86_64-unknown-linux-musl.node',
+});
+const linkStates = new Set(['one', 'multiple', 'unavailable']);
+const loaderStates = new Set(['not-attempted', 'success', 'refusal', 'other']);
+/** Fixed package-relative files only; never serialize their paths or link counts. */
+export function nativeAssetLinks(packageRoot) {
+  return Object.fromEntries(
+    Object.entries(ASSETS).map(([key, name]) => {
+      try {
+        const value = lstatSync(join(packageRoot, 'dist', 'native-fs', name), { bigint: true });
+        let state = 'unavailable';
+        if (value.isFile() && value.nlink === 1n) state = 'one';
+        else if (value.isFile() && value.nlink > 1n) state = 'multiple';
+        return [key, state];
+      } catch {
+        return [key, 'unavailable'];
+      }
+    }),
+  );
+}
+/** Read only the owned child's one bounded fixed-prefix receipt; never relay its stderr. */
+export function parseNativeLoadDiagnostic(stderr) {
+  if (typeof stderr !== 'string' || stderr.length > 524288) return undefined;
+  const lines = stderr.split('\n').filter((line) => line.startsWith(NATIVE_LOAD_DIAGNOSTIC_PREFIX));
+  if (lines.length !== 1 || lines[0].length > 2048) return undefined;
+  try {
+    const value = JSON.parse(lines[0].slice(NATIVE_LOAD_DIAGNOSTIC_PREFIX.length));
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    return nativeLoadEvidence(value);
+  } catch {
+    return undefined;
+  }
+}
 const object = (value) => (value !== null && typeof value === 'object' ? value : {});
 const list = (value, maximum) => (Array.isArray(value) ? value.slice(0, maximum) : []);
 const bool = (value) => (typeof value === 'boolean' ? value : undefined);
@@ -116,6 +197,25 @@ function observation(raw) {
         : undefined,
   };
 }
+function nativeLoadEvidence(raw) {
+  const value = object(raw),
+    assets = object(value.assets);
+  return {
+    stage: NATIVE_LOAD_STAGES.has(value.stage) ? value.stage : 'unavailable',
+    loaderOutcome: loaderStates.has(value.loaderOutcome) ? value.loaderOutcome : 'unavailable',
+    assets: Object.fromEntries(
+      Object.keys(ASSETS).map((key) => [
+        key,
+        linkStates.has(assets[key]) ? assets[key] : 'unavailable',
+      ]),
+    ),
+  };
+}
+function workflowEvidence(raw) {
+  const value = object(raw);
+  return { stage: WORKFLOW_STAGES.has(value.stage) ? value.stage : 'unavailable' };
+}
+
 function nativeMode(raw) {
   const value = object(raw),
     cleanup = object(value.cleanup),
@@ -179,6 +279,12 @@ export function formatInstalledWorkerFailure(raw) {
           id,
           status: item === undefined ? 'missing' : 'failed',
           error: privateFailure(item?.error),
+          ...(id === 'native-addon-load-only' && item?.evidence?.diagnostic !== undefined
+            ? { nativeLoad: nativeLoadEvidence(item.evidence.diagnostic) }
+            : {}),
+          ...(id === 'workflow-gate-budget-effects' && item?.evidence?.diagnostic !== undefined
+            ? { workflow: workflowEvidence(item.evidence.diagnostic) }
+            : {}),
           ...(['actual-native-process-owner', 'actual-native-bootstrap-lifecycle'].includes(id)
             ? {
                 native: list(object(item?.evidence).outcomes, 6)

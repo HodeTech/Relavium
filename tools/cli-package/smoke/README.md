@@ -32,7 +32,15 @@ aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
   human gate and resume it in a fresh process. Produce a real budget pause, reject
   four invalid decisions without durable mutation, abort and repeat idempotently.
   A documented `agent run --fixture` cassette drives an actual governed write
-  denial: no target file, dispatch or effect-journal mutation.
+  denial: no target file, dispatch or effect-journal mutation. The same required
+  case also runs an authored agent workflow through actual `relavium run`, the
+  external OpenAI SDK parser, compiled tool executor and native filesystem host.
+  Its fixed offline SDK transport emits one `write_file` and one final reply.
+  Exact changed bytes, existing POSIX mode/owner/group and one committed SQLite
+  effect before terminal retention are mandatory. A parent-owned SDK response
+  barrier permits the read-only journal observation; after release, real terminal
+  cleanup must sweep that committed row. OS-specific ACL/stream policy is checked by the native
+  profile tests. No production provider, approval or loader is substituted.
 - Drive two actual chat turns through the installed OpenAI SDK, inlined adapter,
   AgentSession, JSON printer and SQLite stores. Hold stdin until assistant output
   and its durable row exist, then `/exit` with code 4. Resume the same session and

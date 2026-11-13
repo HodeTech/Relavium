@@ -75,6 +75,14 @@
 > [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md#conversational-memory) and
 > [agent-session-spec.md](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations).
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> interactive `/clear` retains this ADR's same-agent snapshot rule but starts the
+> replacement in the configured mode under live revocable startup-auto authority,
+> with a fresh approval cache, read evidence and spill lifetime. Home's current
+> default-agent reconstruction gap is corrected to that same-agent contract.
+> Implementation is pending; the [chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> owns the exact lifecycle.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`
@@ -495,3 +503,12 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

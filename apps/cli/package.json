@@ -38,7 +38,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node ../../tools/native-fs/build.mjs && tsup",
     "prepack": "node ../../tools/cli-package/prepack.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.config.json --noEmit",
     "lint": "eslint src",

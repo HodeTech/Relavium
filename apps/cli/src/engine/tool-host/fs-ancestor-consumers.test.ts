@@ -60,6 +60,7 @@ describe.each(['tool', 'save_to'] as const)(
     function write(path: string): Promise<unknown> {
       return consumer === 'tool'
         ? createNodeFsCapability({
+            operatorHomeDir: root,
             tier: 'sandboxed',
             workspaceDir: root,
             readOnly: false,

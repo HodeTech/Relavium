@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { test } from 'node:test';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { assertInstalledWorkflows } from './workflows.mjs';
 import { REQUIRED_SMOKE_CASES } from './cases.mjs';
 import { assertExit } from './process.mjs';
 import { InstalledNativeControlError } from './native-process.mjs';
@@ -8,6 +14,9 @@ import {
   emitInstalledWorkerFailure,
   formatInstalledWorkerFailure,
   MAX_WORKER_FAILURE_BYTES,
+  NATIVE_LOAD_DIAGNOSTIC_PREFIX,
+  nativeAssetLinks,
+  parseNativeLoadDiagnostic,
 } from './failure-diagnostic.mjs';
 
 function report() {
@@ -155,6 +164,23 @@ test('oversized Unicode/errors/native observations produce one valid line within
     passed: false,
     error: 'AssertionError: ' + 'x'.repeat(100000),
     evidence: {
+      diagnostic: {
+        stage: 'native-journal',
+        loaderOutcome: 'refusal',
+        assets: {
+          loader: 'multiple',
+          manifest: 'multiple',
+          notices: 'multiple',
+          darwinArm64: 'multiple',
+          darwinX64: 'multiple',
+          windowsArm64: 'multiple',
+          windowsX64: 'multiple',
+          linuxArm64Gnu: 'multiple',
+          linuxX64Gnu: 'multiple',
+          linuxArm64Musl: 'multiple',
+          linuxX64Musl: 'multiple',
+        },
+      },
       outcomes: Array.from({ length: 100 }, () => ({
         mode: 'injected-error',
         gate: 'helper',
@@ -295,5 +321,195 @@ test('every root, case, native reason and cleanup failure keeps arbitrary first-
     assert.equal(mode.observed[0].errno, -1);
     assert.equal(mode.observed[0].target, -40);
     assert.equal(mode.cleanup.cliActualCloseObserved, true);
+  }
+});
+
+test('case-specific diagnostics project only fixed enums and never cross case fences', () => {
+  const failed = report();
+  const secret = 'PRIVATE_DIAGNOSTIC_PAYLOAD';
+  for (const id of [
+    'native-addon-load-only',
+    'workflow-gate-budget-effects',
+    'installed-version',
+  ]) {
+    const item = failed.cases.find((value) => value.id === id);
+    item.passed = false;
+    item.error = secret;
+    item.evidence = {
+      diagnostic: {
+        stage: id === 'workflow-gate-budget-effects' ? 'native-journal' : 'metadata-load',
+        loaderOutcome: 'refusal',
+        assets: { loader: 'multiple', manifest: 'one', notices: secret, extra: secret },
+        path: secret,
+        raw: secret,
+      },
+    };
+  }
+  const line = formatInstalledWorkerFailure(failed);
+  assert.ok(Buffer.byteLength(line) <= MAX_WORKER_FAILURE_BYTES);
+  assert.equal(line.split('\n').length, 2);
+  assert.equal(line.includes(secret), false);
+  const output = JSON.parse(line).cases;
+  const native = output.find((item) => item.id === 'native-addon-load-only');
+  assert.equal(native.nativeLoad.stage, 'metadata-load');
+  assert.equal(native.nativeLoad.loaderOutcome, 'refusal');
+  assert.equal(native.nativeLoad.assets.loader, 'multiple');
+  assert.equal(native.nativeLoad.assets.manifest, 'one');
+  assert.equal(native.nativeLoad.assets.notices, 'unavailable');
+  assert.equal('extra' in native.nativeLoad.assets, false);
+  assert.deepEqual(output.find((item) => item.id === 'workflow-gate-budget-effects').workflow, {
+    stage: 'native-journal',
+  });
+  assert.equal('nativeLoad' in output.find((item) => item.id === 'installed-version'), false);
+  assert.equal('workflow' in output.find((item) => item.id === 'native-addon-load-only'), false);
+});
+
+test('native-load receipt parser bounds multiplicity and scrubs untrusted fields', () => {
+  const secret = 'PRIVATE_CHILD_RECEIPT';
+  const marker =
+    NATIVE_LOAD_DIAGNOSTIC_PREFIX +
+    JSON.stringify({
+      stage: 'metadata-load',
+      loaderOutcome: 'refusal',
+      assets: { loader: 'multiple', manifest: secret },
+      secret,
+    });
+  const parsed = parseNativeLoadDiagnostic('untrusted before\n' + marker + '\nraw private stack');
+  assert.equal(parsed.stage, 'metadata-load');
+  assert.equal(parsed.loaderOutcome, 'refusal');
+  assert.equal(parsed.assets.loader, 'multiple');
+  assert.equal(parsed.assets.manifest, 'unavailable');
+  assert.equal(JSON.stringify(parsed).includes(secret), false);
+  assert.equal(parseNativeLoadDiagnostic(marker + '\n' + marker), undefined);
+  assert.equal(
+    parseNativeLoadDiagnostic(NATIVE_LOAD_DIAGNOSTIC_PREFIX + 'x'.repeat(2049)),
+    undefined,
+  );
+  assert.equal(parseNativeLoadDiagnostic(secret.repeat(600000)), undefined);
+  const poisoned = parseNativeLoadDiagnostic(
+    NATIVE_LOAD_DIAGNOSTIC_PREFIX +
+      JSON.stringify({ stage: secret, loaderOutcome: secret, assets: { loader: secret } }),
+  );
+  assert.equal(poisoned.stage, 'unavailable');
+  assert.equal(poisoned.loaderOutcome, 'unavailable');
+  assert.equal(poisoned.assets.loader, 'unavailable');
+});
+
+test('fixed native asset inventory classifies real hardlinks without exposing paths', () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-native-diag-'));
+  try {
+    const dir = join(root, 'dist', 'native-fs');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'loader.cjs'), 'fixture');
+    linkSync(join(dir, 'loader.cjs'), join(root, 'alias'));
+    writeFileSync(join(dir, 'native-assets.json'), '{}');
+    const assets = nativeAssetLinks(root);
+    assert.equal(assets.loader, 'multiple');
+    assert.equal(assets.manifest, 'one');
+    assert.equal(assets.notices, 'unavailable');
+    assert.equal(JSON.stringify(assets).includes(root), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('real native-load child emits only fixed receipt on missing keyring failure', () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-native-child-diag-'));
+  try {
+    writeFileSync(join(root, 'package.json'), '{"name":"isolated-fixture"}');
+    const child = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./native-load.mjs', import.meta.url)), root],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, NODE_PATH: '' },
+        timeout: 10000,
+      },
+    );
+    assert.notEqual(child.status, 0);
+    assert.equal(child.stdout, '');
+    const evidence = parseNativeLoadDiagnostic(child.stderr);
+    assert.equal(evidence.stage, 'keyring-load');
+    assert.equal(evidence.loaderOutcome, 'not-attempted');
+    assert.equal(JSON.stringify(evidence).includes(root), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('oversized case-specific fields remain bounded and unavailable', () => {
+  const failed = report();
+  const poison = 'PRIVATE_CASE_FIELD'.repeat(100000);
+  for (const id of ['native-addon-load-only', 'workflow-gate-budget-effects']) {
+    const item = failed.cases.find((value) => value.id === id);
+    item.passed = false;
+    item.evidence = {
+      diagnostic: { stage: poison, loaderOutcome: poison, assets: { loader: poison } },
+    };
+  }
+  const line = formatInstalledWorkerFailure(failed);
+  assert.ok(Buffer.byteLength(line) <= MAX_WORKER_FAILURE_BYTES);
+  assert.equal(line.includes('PRIVATE_CASE_FIELD'), false);
+  const output = JSON.parse(line).cases;
+  assert.equal(
+    output.find((item) => item.id === 'native-addon-load-only').nativeLoad.stage,
+    'unavailable',
+  );
+  assert.equal(
+    output.find((item) => item.id === 'workflow-gate-budget-effects').workflow.stage,
+    'unavailable',
+  );
+});
+
+test('real workflow failure retains the last fixed checkpoint', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-workflow-diag-'));
+  let stage = 'unavailable';
+  try {
+    await assert.rejects(
+      assertInstalledWorkflows({
+        root,
+        Database: undefined,
+        cli: () => ['-e', 'process.exit(7)'],
+        environment: () => ({ ...process.env, NODE_PATH: '' }),
+        calls: () => [],
+        workflowCheckpoint: (value) => {
+          stage = value;
+        },
+      }),
+    );
+    assert.equal(stage, 'sequential');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('real native-load child identifies a fixed metadata loader refusal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-native-refusal-diag-'));
+  try {
+    writeFileSync(join(root, 'package.json'), '{"name":"isolated-fixture"}');
+    const keyring = join(root, 'node_modules', '@napi-rs', 'keyring');
+    const sqlite = join(root, 'node_modules', 'better-sqlite3');
+    const native = join(root, 'dist', 'native-fs');
+    for (const dir of [keyring, sqlite, native]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(keyring, 'index.js'), 'module.exports = { Entry: class Entry {} };');
+    writeFileSync(join(sqlite, 'index.js'), 'module.exports = class Database {};');
+    writeFileSync(
+      join(native, 'loader.cjs'),
+      "exports.loadFsMetadataAddon = () => { throw new Error('NATIVE_FS_ASSET_UNAVAILABLE'); };",
+    );
+    const child = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./native-load.mjs', import.meta.url)), root],
+      { encoding: 'utf8', env: { ...process.env, NODE_PATH: '' }, timeout: 10000 },
+    );
+    assert.notEqual(child.status, 0);
+    assert.equal(child.stdout, '');
+    const evidence = parseNativeLoadDiagnostic(child.stderr);
+    assert.equal(evidence.stage, 'metadata-load');
+    assert.equal(evidence.loaderOutcome, 'refusal');
+    assert.equal(evidence.assets.loader, 'one');
+    assert.equal(JSON.stringify(evidence).includes(root), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

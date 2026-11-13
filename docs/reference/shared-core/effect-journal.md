@@ -2,6 +2,7 @@
 
 - **Status**: Canonical
 - **Owner ADR**: [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
+- **Replay refinement**: [ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md), implemented and accepted with MVP-3 Step 2 on development.
 - **Surface**: Shared — the engine (`packages/core`), the run store (`packages/db`), and both dispatch producers.
 
 This is the one canonical home for **what the engine promises about external side effects**, the identities it
@@ -40,6 +41,13 @@ tier 1 may use the words "exactly once".
 
 Tiers 1 and 2 are **reserved and specified, not occupied**. No shipping capability offers a receipt lookup and
 no tool injects an idempotency key. A document that says otherwise is wrong, not aspirational.
+
+MVP-3 Step 2 implementation is in progress on `development`. The shared/core/DB
+replay changes are present in the uncommitted implementation; their review,
+security and acceptance gates remain open. The all-write durability and native
+metadata requirements in [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+remain subject to that decision's design-acceptance gate. This reference states
+the required completion contract, not accepted native support.
 
 ## 2. The five identities, and why none of them is "the key"
 
@@ -109,15 +117,30 @@ Three rules make this precise:
 1. **It is a predicate over the resolved call, not a policy class.** `governedAction` is a *security*
    classification and is deliberately wider — a read-only egress and a clipboard read are governed but mutate
    nothing. Journaling those would put two durable writes on every web search and halt a run on a crashed GET.
-2. **Two tools decide per dispatch, not per definition.** `http_request` is journaled for a non-GET method and
-   not for a GET; `write_file` is journaled when `append: true` (appends compose) and not for a whole-file
-   overwrite (naturally idempotent — the file *is* the receipt).
+2. **The tool declares its effect tier.** `http_request` is journaled for a non-GET method, not for a GET.
+   Every built-in `write_file` call is tier 3: new-file creation, overwrite, append, empty content and
+   byte-identical replacement all require a durable row. `edit_file` is also always tier 3. Final byte
+   equality does not prove a replacement's namespace/security-metadata outcome or authorize overwriting an
+   intervening change. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+   replaces the earlier overwrite exemption; this assignment is part of Step 2's completion contract.
+   Read-only file tools and GET requests remain unjournaled.
 3. **`duplicationBenign` is a trust-bearing declaration and may only be set by first-party code.** It is a
    property of a built-in `ToolDef` in this repository. It may **never** be set from MCP tool metadata, a
    discovered tool descriptor, or any other bytes originating outside the engine — the same rule that keeps MCP
    annotations from raising a tier (§5). Today its only member is `notify`.
 
-Local-filesystem writes are journaled: "external" means outside this process, not outside this machine.
+Built-in model-file writes are journaled: "external" means outside this process, not outside this machine.
+The existing required journal seam applies to overwrite and creation too; an unwired journal refuses the
+call rather than providing an in-memory or native-adapter fallback. This does not journal unrelated
+trusted-host configuration/history writes or give the native adapter a second journal.
+
+Read-only filesystem preparation, metadata admission, diff computation and approval refusal create no
+row. On an admitted new operation, durable preparation precedes directory creation, staging and native
+execution. A process crash after that claim, during publication or before settlement leaves blocking
+evidence even if the current file happens to contain the desired bytes. A valid committed retained
+result takes §4's saved-result path without another native operation. Sessions retain their content-free
+rows and never replay. No migration or manufactured row can recover evidence for an older unjournaled
+write.
 
 ## 4. The resume gate
 
@@ -176,6 +199,106 @@ contract exists to prevent.
 built it" as "proceed" would be the fail-open this contract rejects. The refusal names the tier, so the
 follow-up stays visible.
 
+### Retained evidence and early inspection — MVP-3
+
+**Implemented and accepted with Step 2 on development (2026-11-12):**
+[ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+adds one required read-only dispatch operation and closes two inherited replay
+validation gaps. This subsection owns the new protocol; §4's node gate and
+atomic `prepare` backstop remain separate enforcement points.
+
+```ts
+type EffectInspectReplayVerdict =
+  | { readonly outcome: 'miss' }
+  | { readonly outcome: 'replay'; readonly result: unknown };
+
+// Required on EffectDispatchPort; correlation is closed over by the host.
+inspectReplay: (
+  slot: EffectSlot,
+  toolId: string,
+  redactedArgs: unknown,
+) => Promise<EffectInspectReplayVerdict>;
+```
+
+The host reuses `prepare`'s stable argument digest and exact identity matching.
+Only proven absence is a miss; inspection neither inserts nor reserves a row.
+A matching committed run row with usable retained evidence replays. Every other
+present row conflicts, including unresolved, mismatched or unusable rows.
+For sessions, absence is a miss and an existing identity conflicts; inspect no
+session result column, including legacy/malformed writers. A normal content-free
+session row is not corruption, and cannot authorize replay or repeat dispatch.
+
+**One shared retained-envelope validator.** A new version replaces permissive
+legacy decoding. Its source/type/strict schema belong in `@relavium/shared`,
+with no platform or DB dependency. Core serialization, SQLite replay/inspection,
+`blocksResume` and the in-memory journal use the same validator. Its shape is:
+
+```ts
+type RetainedValuePresence =
+  | { readonly hasValue: false; readonly value?: never }
+  | { readonly hasValue: true; readonly value: unknown };
+type RetainedMappingPresence =
+  | { readonly hasMappedValue: false; readonly mapped?: never }
+  | { readonly hasMappedValue: true; readonly mapped: unknown };
+type RetainedEffectEnvelope = RetainedValuePresence & RetainedMappingPresence & {
+  readonly v: 2;
+  readonly truncated: boolean;
+  readonly summary: string;
+  readonly outputMapping: Readonly<Record<string, string>> | null;
+};
+```
+
+Presence tags require consistent own properties: a true tag needs a retained
+non-`undefined` value; a false tag forbids that property. `null` is a legitimate
+present value. No configured mapping is encoded as `outputMapping: null`, with
+no mapped value; a configured empty mapping is `{}` and remains distinct.
+Configured mappings may explicitly retain an absent mapped value. Unknown
+versions/fields, arrays in place of records, contradictory tags, malformed
+metadata and arbitrary bare JSON are unusable. The existing JSON retention
+semantics for nested result data remain; no legacy/bare-result fallback or
+guessed empty outcome survives. Results lacking exact mapping evidence block
+without migration or an older-binary adapter.
+
+The mapping declaration is copied at admission as unresolved author configuration;
+use that same snapshot for mapping, retention and replay comparison. It carries
+no resolved secret values, arguments or preview bytes. Compare validated mapping
+records with the existing platform-pure structural comparator: member order
+does not matter; changed keys/paths and absent versus empty do. Do not infer
+identity from `hadMapping`, mapped result equality or a truncated preview. This
+requires no host hashing beyond the existing argument digest and no table DDL.
+
+**Gate before model execution.** Every unusable committed run result blocks the
+node as `effect_needs_attention`, even when a regenerated executor/model never
+calls the original tool. SQLite and memory must agree. A valid explicitly absent
+value does not block. The gate tests structural usability; current invocation,
+arguments and mapping are compared when dispatch actually encounters the row.
+Existing frozen-workflow identity checks retain their separate earlier role.
+This does not promise a deterministic model response, call order, universal
+redelivery or logical exactly-once edits when the model chooses different calls.
+
+**Replay entry points and error ladder.** Both early inspection and atomic
+`prepare` replay validate the same envelope and exact current mapping before
+delivering recorded bounded/mapped projections. They never recompute mapping
+from bounded content or settle/discard the terminal row again. A miss leaves
+new-effect admission unchanged; atomic prepare remains authoritative in a race.
+
+- Present/conflicting/unusable evidence uses `EffectConflictError` →
+  `ToolEffectConflictError` (`effect_needs_attention`, no recovery/retry).
+- An inspection storage fault is a fixed-diagnostic `ToolExecutionError` with
+  `recoverable: false` and `retryable: false`; it is not falsely described as a
+  newly completed but unrecorded effect. Do not inherit the current generic
+  pre-prepare retryable default. This rule is scoped to the new inspection path.
+- Mark the retained-effect replay phase before consumption. Post-hit validation,
+  projection or delivery faults cannot become node-retryable through either a
+  generic or a typed error. Existing cancellation, ownership/fence refusal and
+  user/mode-denial precedence remain; a cancellation does not become a conflict.
+
+All wrappers implement/forward the method explicitly: unwired journal, native
+DB port, in-memory reference, engine fence, effect-receipt health and CLI session
+durability, plus test doubles. Inspection gets pre/post-await active ownership
+checks and actual-producer retention/join; a read creates no pending effect
+claim. Never spread away prototype methods or detach storage work on cancellation.
+
 ## 5. Why MCP is permanently tier 3
 
 Discovered MCP tools carry no usable annotations, and any that existed would be attacker-controlled bytes from
@@ -204,6 +327,12 @@ the call would be a second crash window rather than fewer.
 
 ## 7. Ordering, and what happens when each step fails
 
+For MVP-3 prepared filesystem calls, whose Step 2 implementation is in progress,
+the refined ordering and saved-result confirmation are in
+[the registry contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
+The earlier read-only inspection changes no new-effect prepare/settle boundary;
+its replay and inspection-fault classifications are specified in §4 above.
+
 The order is fixed, and every failure after the prepare is kept off the node-retry path — a retryable failure
 after an effect has left the process is the duplicate this document exists to prevent.
 
@@ -212,11 +341,16 @@ after an effect has left the process is the duplicate this document exists to pr
 | 1 | validate args, enforce policy, resolve approval | ordinary refusal; nothing journaled |
 | 2 | **durable prepare** (fenced, its own `BEGIN IMMEDIATE`) | refuse the dispatch; the effect never happens |
 | 3 | dispatch to the target | settle `ambiguous`; **never node-retryable** |
-| 4 | **durable settle** immediately | the row stays `prepared`; the run stops with `needs_attention` — never retried |
-| 5 | output mapping, result bounding, event emission | the effect stands; settle already landed; the node fails **non-retryably** |
+| 4 | output mapping on the full result, then model-facing bounding | the effect stands and the row remains `prepared`; fail **non-retryably** |
+| 5 | **durable settle** immediately after those projections exist | retain bounded model value and configured mapped projection; failure leaves `prepared` and stops with `needs_attention`, never retried |
+| 6 | event/result delivery | the effect stands; settle already landed; the node fails **non-retryably** |
 
-Step 5 matters as much as step 3: a post-dispatch abort, an output-mapping error, a bounding/spill failure or an
-`ActionGuard` receipt error all occur *after* the effect. Classifying any of them as retryable reopens the hole.
+Projection and delivery matter as much as dispatch: a post-dispatch abort, an
+output-mapping error, a bounding/spill failure or an `ActionGuard` receipt error
+occurs after the effect. Classifying any as retryable reopens the hole. This
+states the existing registry order: settle stores the bounded value and
+configured full-result mapping, rather than retaining unbounded raw tool output.
+A crash/failure before that settle leaves a prepared row and blocks resume.
 
 ## 8. `needs_attention`
 

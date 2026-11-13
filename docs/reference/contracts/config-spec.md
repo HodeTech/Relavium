@@ -1,6 +1,6 @@
 # Configuration Specification
 
-- **Status**: Stable reference with explicitly marked accepted, unimplemented additions
+- **Status**: Stable reference with explicitly marked Proposed and accepted, unimplemented additions
 - **Scope**: Where Relavium reads configuration from, and how global and per-project settings are merged.
 - **Related**: [workflow-yaml-spec.md](workflow-yaml-spec.md), [agent-yaml-spec.md](agent-yaml-spec.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../cli/commands.md](../cli/commands.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
@@ -8,11 +8,93 @@ Relavium uses a two-level configuration model that mirrors VS Code's **user vs. 
 
 Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself. Numeric range diagnostics identify the field, schema-side bound and inclusive/exclusive operator without displaying the rejected value; loader and preference-writer validation share that formatter.
 
+<a id="proposed-starting-chat-mode--mvp-3"></a>
+
+## Starting chat mode — MVP-3
+
+**Accepted implementation on development (2026-11-12):** approved with
+[ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md).
+The [Step 3 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12)
+records independent reviews and verification; the checkpoint PR carries combined
+CI and maintainer review. The implementation retains the rules below.
+
+| Location | Key | Accepted values |
+|---|---|---|
+| Operator global `[preferences]` | `default_mode` | `ask`, `plan`, `accept-edits`, `auto` |
+| Workspace/project `[chat]` | `default_mode` | `ask`, `plan`, `accept-edits` |
+| Operator global `[preferences]` | `default_mode_hint_shown` | Boolean; absent means not acknowledged |
+
+No global `[chat]` table, environment override or new CLI flag is introduced.
+Project > workspace > global > `ask` is the mode preference order. A project may
+select `accept-edits` even when the global preference is `ask` or `plan`; a
+fresh per-call approval is still required unless the operator chooses `[a]`.
+Validate every supplied value before resolving: a shadowed workspace `auto`
+is still a strict-config error. Diagnostics name the file and key, never echo
+arbitrary rejected values. Repository files cannot set the hint key.
+
+For interactive invocations, read and admit a live startup-auto authority
+before model/tool work. Old, pending and replacement hosts share its revocation
+state. Clear, reseat and resume resolve the current preference at the session
+workspace. An observed narrower effective start, or read/validation failure,
+revokes startup-auto before building; a failed/stale replacement cannot restore
+it. Confirming a non-auto default revokes it before persistence, including write
+failure; cancel before confirmation changes nothing. A newly read
+`auto` without initial authority or an explicit trusted picker action refuses
+the replacement; it never silently downgrades or reuses a permissive captured
+value. Only a new invocation or confirmed trusted default-auto action can
+re-admit it. Configured-auto hosts check the live admission at final dispatch;
+revocation prevents new effects, without recalling already-dispatched effects.
+Explicit current-session `/mode auto`/Shift+Tab is independent: it does not
+restore startup authority and a default-setting change does not silently revoke
+that explicit current-mode choice. Read/validation failure is visible. Neither
+the ceiling nor current mode is restored from history. Non-interactive and
+JSON execution always use effective `ask`; config validation still applies.
+
+Live export, workflow discovery and doctor configuration probes use that same
+pinned reader and revocation owner. Ephemeral model fallback uses provenance
+from the already validated layers; it does not reopen a layer after the mode
+observation. This is per-load provenance, not an atomic snapshot of concurrent
+external filesystem changes.
+
+Owned preference preparations report the actual validated global-mode read or
+source inspection/load failure before merging updates. Non-auto/absent global
+mode is sufficient to rule out effective auto at every repository layer. A
+deliberate symlink write-only refusal does not establish that intentional reads
+fail; unrelated serialization/publication errors are not configuration-read
+observations. For a confirmed auto save only, re-observing its already displayed
+non-auto baseline is not a newer narrowing. A different later source mode, any
+read failure or independent revocation still defeats the pre-preparation
+confirmation revision. Provider consent/acknowledgement, model defaults, mode
+defaults and hint-state writers share the same invocation observer.
+
+The [mode/default picker](../cli/chat-session.md#proposed-mvp-3-interaction-contract)
+writes only global preferences through the existing typed writer. A successful
+explicit operator selection can admit `auto` for this invocation; a model write
+or a background reload cannot. Cancellation/refusal never widens authority or
+publishes a new default. Confirmed narrowing remains live even if saving fails,
+and the UI distinguishes that from an unsaved preference. A post-rename directory-sync warning is a published
+preference with uncertain durability, not an unsaved choice. Retain the existing
+symlink refusal, schema round-trip, unrelated-value preservation and rewrite
+disclosure. A hint is acknowledged only after actual visible delivery and the
+same honest writer outcomes; failure does not prevent chat.
+
+An auto-save continuation also checks the revision captured at confirmation:
+a later revocation, owner replacement or cancellation cannot restore authority
+after an otherwise successful publication. The saved-file fact remains visible.
+
+No backward-compatibility adapter or older-binary migration is required for this
+development increment (maintainer, 2026-11-11). Strict validation and authority
+checks are security requirements rather than legacy compatibility behavior.
+
 ## Locations
 
 ### Global — `~/.relavium/`
 
 Created on first launch. Holds user-wide preferences and the registry of MCP servers.
+
+Native file-write recovery keeps its separate, native-private sibling under
+the operator home; it does not change this configuration directory's policy.
+See the [staging custody and layout contract](../cli/native-filesystem-metadata.md#crash-staging-ownership-and-recovery).
 
 ```
 ~/.relavium/
@@ -97,6 +179,8 @@ update_channel = "stable"          # stable | beta
 auto_refresh = false
 
 [preferences]
+default_mode = "ask"               # ask | plan | accept-edits | auto; only this operator-owned layer may select auto.
+default_mode_hint_shown = false     # Acknowledged only after the starting-mode hint was visibly delivered.
 default_model = "claude-sonnet-4-6"
 default_provider = "anthropic"     # ADR-0059: the provider serving default_model — anthropic | openai | gemini | deepseek. Persisted by the /models picker + the onboarding wizard at pick time (authoritative there — the live model list is per-provider), so the next chat resolves the provider WITHOUT id inference. Load-bearing for a live-discovered id whose spelling the prefix map cannot place (e.g. chatgpt-4o-latest). Absent ⇒ inference from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).
@@ -154,7 +238,9 @@ A config file is committed to a repository; a grant is not.
 > additionally sets **`[preferences].reasoning_effort`** for a reasoning model — **only** those three `[preferences]`
 > keys for model/effort selection. MVP-2's operator-state writers are implemented
 > and accepted on `development`; they separately admit only `standard_env_key_consent` and
-> `keychain_unavailable_acknowledged`, under the contract below. Both groups use
+> `keychain_unavailable_acknowledged`, under the contract below. MVP-3 separately
+> admits `default_mode` and the true-only `default_mode_hint_shown` through closed
+> setters. These groups use
 > closed **typed setters** (never a generic key/value
 > writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
 > only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)). A partial write leaves
@@ -195,6 +281,7 @@ video = 10                         # assumed video-SECONDS per media-output turn
 focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
+default_mode = "ask"               # ask | plan | accept-edits; auto is a strict error in every repository layer.
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063); absent there too ⇒ a model of the first provider with a key (MVP-A4, chat-session.md)
 default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
@@ -251,7 +338,7 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 >
 > `reasoning_effort` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)) is the normalized reasoning-effort tier — `off | low | medium | high | max` — baked onto the **built-in default chat agent** only (an explicit `--agent` owns its own `reasoning_effort` in its YAML). It resolves per-field project → workspace, and (ADR-0066 §6) — like `default_model` — additionally falls back to the global **`[preferences].reasoning_effort`** below both `[chat]` layers. Each adapter maps the tier to its provider's **native** control; a model with no controllable reasoning tier ignores it (the engine gates on the model's capability). Absent ⇒ no reasoning control (the provider default). Interactively, the `/effort` command and a **live chat**'s `/models` effort sub-step set the tier as a **per-turn session override** (no reseat) without editing config; the **bare-Home** `/models` effort sub-step instead writes the `[preferences].reasoning_effort` default for the next session. The active tier shows in the footer.
 >
-> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) **`default_model` and `reasoning_effort` each have one extra fallback**: absent at both `[chat]` layers, each falls through to its global **`[preferences]`** counterpart (`default_model` per [ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1; `reasoning_effort` per [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md) §6) — the write targets of `/models` (model + its effort sub-step) and the wizard — so a user's "preferred model / effort everywhere" governs chat too, exactly as `[preferences].default_model` already governs a workflow's `[defaults].model`. Full precedence for each: `[chat].<key>` (project → workspace) → `[preferences].<key>` (global). **`default_provider` ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)) also reads the global layer, but COUPLED to `default_model`** — NOT resolved independently: it is taken from the SAME layer that supplied the model (absent there ⇒ id inference), so a lower layer's stale provider can never pair with a higher layer's model (an `openai` provider leaking onto a project's `claude` `default_model` would bind the wrong adapter). No OTHER `[chat]` field reads the global layer. The `!`-shell allowlist is a **second coupled group**: `allowed_commands` (exact) + `allowed_command_globs` (globs) are a **coupled unit**, so a project that sets **either** array owns the **whole** allowlist and does **not** inherit the other array from the workspace. Otherwise a project narrowing `allowed_commands` would silently keep the workspace's broader globs — lock to `git status`, yet still allow `git push` via an inherited `git *`. Only when a project sets **neither** allowlist array do both fall through to the workspace; a present array otherwise REPLACES (never merges) the lower layer's. This is what guarantees a narrower project can never inherit a broader workspace entry.
+> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) **`default_model` and `reasoning_effort` each have one extra fallback**: absent at both `[chat]` layers, each falls through to its global **`[preferences]`** counterpart (`default_model` per [ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1; `reasoning_effort` per [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md) §6) — the write targets of `/models` (model + its effort sub-step) and the wizard — so a user's "preferred model / effort everywhere" governs chat too, exactly as `[preferences].default_model` already governs a workflow's `[defaults].model`. Full precedence for each: `[chat].<key>` (project → workspace) → `[preferences].<key>` (global). **`default_provider` ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)) also reads the global layer, but COUPLED to `default_model`** — NOT resolved independently: it is taken from the SAME layer that supplied the model (absent there ⇒ id inference), so a lower layer's stale provider can never pair with a higher layer's model (an `openai` provider leaking onto a project's `claude` `default_model` would bind the wrong adapter). The separate starting-mode preference also reads operator `[preferences].default_mode` under the authority contract above; no other `[chat]` field reads the global layer. The `!`-shell allowlist is a **second coupled group**: `allowed_commands` (exact) + `allowed_command_globs` (globs) are a **coupled unit**, so a project that sets **either** array owns the **whole** allowlist and does **not** inherit the other array from the workspace. Otherwise a project narrowing `allowed_commands` would silently keep the workspace's broader globs — lock to `git status`, yet still allow `git push` via an inherited `git *`. Only when a project sets **neither** allowlist array do both fall through to the workspace; a present array otherwise REPLACES (never merges) the lower layer's. This is what guarantees a narrower project can never inherit a broader workspace entry.
 >
 > `allowed_commands` / `allowed_command_globs` gate the **`!`-shell escape** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — a chat user typing `!command` runs it through the **one** `run_command` boundary (they map to the engine's camelCase `allowedCommands` / `allowedCommandGlobs`, the SAME allowlist a workflow `run_command` uses). `allowed_commands` is **exact full-command-string** match (`git status`, `ls -la` — `git` never authorizes `git push --force`); `allowed_command_globs` is the opt-in, riskier pattern form. **Both default to EMPTY ⇒ `!`-shell is disabled** — the `empty ⇒ disabled` symmetry [security-review.md](../../standards/security-review.md) pins, with **no chat-specific relaxation** (there is no curated default: `run_command` has no argument/file confidentiality floor, so even a "read-only" default set — `cat`, `grep` — would reopen `!cat .env` → provider). `!`-shell is first-class via a first-class **opt-in** (the user lists commands, or the 2.5.G onboarding offers a reviewed seed), and a non-allowlisted `!cmd` gets an **actionable, secret-free deny hint** naming the exact line to add. `enforcePolicy(allowedCommands)` runs **before** the mode-aware `confirmAction`, so even `auto` mode never runs a command absent from the allowlist. Editing chat `allowed_commands` is a [security-review.md](../../standards/security-review.md) trigger.
 

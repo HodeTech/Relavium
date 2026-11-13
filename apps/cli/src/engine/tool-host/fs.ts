@@ -1,20 +1,14 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Dirent } from 'node:fs';
-import {
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
   ToolDispatchError,
+  ToolPreparationError,
+  type FsPrepareWriteRequest,
+  type FsPreparedWrite,
+  type ToolHostCallOptions,
   ToolUnavailableError,
   type DirEntry,
   type DirListing,
@@ -24,9 +18,28 @@ import {
   type FsListOpts,
   type FsReadOpts,
   type FsScopeTier,
-  type FsWriteOpts,
 } from '@relavium/core';
 import { deepestExistingReal, type AbortSignalLike } from '@relavium/shared';
+
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../../process/native-process-owner.js';
+import { compileIgnore, parseIgnoreLines } from '../../render/tui/gitignore.js';
+import {
+  captureNativeRuntimeWriteFloor,
+  loadNativeMetadataWriteAdapter,
+} from './fs-native-metadata.js';
+import { captureRequiredCreationMask } from './fs-creation-mask.js';
+import { nativeWriteAttentionFailure, runNativeStage } from './fs-native-write.js';
+import { foldPathComponent } from './fs-path-component.js';
+import {
+  captureFsStageInventory,
+  FsStageInventoryError,
+  FS_PRIVATE_INDEX_PARENT,
+  normalizeNodeFsIdentity,
+  type FsStageInventory,
+} from './fs-stage-inventory.js';
 
 import {
   HostCapabilityError,
@@ -60,9 +73,9 @@ import {
  * against the workspace dir.
  *
  * **Read-only by profile (2.5.A).** `relavium chat`'s default profile constructs this with `readOnly: true`,
- * so `write_file` fail-closes with a `ToolUnavailableError` (→ the actionable `tool_unavailable` code, EA1) —
- * the write capability is **not** wired into a chat session until [ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)/2.5.E
- * lands the per-tool approval floor. The workflow-run profile wires it read-write (the workflow-author trust
+ * so `write_file` fail-closes with a `ToolUnavailableError` (→ the actionable `tool_unavailable` code, EA1).
+ * Interactive chat uses the full-capability profile behind ADR-0057's mode-aware approval floor; the
+ * read-only profile remains an independent host restriction. The workflow-run profile wires it read-write (the workflow-author trust
  * model already governs that path). Reads/writes are bounded (`maxReadBytes`, `maxGlobMatches`) so a single
  * tool call can never stream an unbounded amount into engine memory.
  *
@@ -70,6 +83,35 @@ import {
  * rule 6 / the I3 boundary). A raw Node `fs` error (whose `.message`/`.path` carries the absolute path) is
  * caught at the boundary and re-wrapped, so the capability honours its own contract regardless of caller.
  */
+
+type FsReadRange = NonNullable<FsReadOpts['range']>;
+type FsFindOpts = Parameters<NonNullable<FsCapability['findFiles']>>[1];
+type FsFindResult = Awaited<ReturnType<NonNullable<FsCapability['findFiles']>>>;
+type FsSearchOpts = Parameters<NonNullable<FsCapability['searchFiles']>>[1];
+type FsSearchResult = Awaited<ReturnType<NonNullable<FsCapability['searchFiles']>>>;
+type FsScanLimit = NonNullable<FsFindResult['stats']['limit']>;
+
+const evidenceAccess = new WeakMap<
+  FsCapability,
+  (scope: object, path: string, digest: string, start: number, end: number) => boolean
+>();
+/** Host-only eligibility check; callers supply a freshly verified full-source digest and canonical path. */
+export function hasObservedRead(
+  capability: FsCapability,
+  scope: object,
+  path: string,
+  digest: string,
+  start: number,
+  end: number,
+): boolean {
+  return evidenceAccess.get(capability)?.(scope, path, digest, start, end) ?? false;
+}
+interface ReadEvidence {
+  readonly path: string;
+  readonly digest: string;
+  readonly start: number;
+  readonly end: number;
+}
 
 /** Default read ceiling — a single `read_file` never pulls more than this into engine memory (DoS guard). */
 const DEFAULT_MAX_READ_BYTES = 8 * 1024 * 1024;
@@ -83,6 +125,9 @@ export interface NodeFsCapabilityConfig {
   readonly tier: FsScopeTier;
   /** The session/run working directory (absolute) — the jail anchor and the base for a relative tool path. */
   readonly workspaceDir: string;
+  /** Explicit host-owned operator home for the cross-process staging inventory. */
+  readonly operatorHomeDir?: string;
+  readonly nativeProcesses?: NativeProcessController;
   /** Host-issued exact private scratch descriptor; a plain tmp path cannot bypass a floor. */
   readonly scratch?: HostScratchRoot;
   /** Pre-admitted invocation policy; absent builds a trusted-host policy once at construction. */
@@ -102,6 +147,9 @@ export interface NodeFsCapabilityConfig {
  * naming a **reason only** — never a path / the bytes. Maps to `tool_failed` (the shared {@link HostCapabilityError}).
  */
 export class FsCapabilityError extends HostCapabilityError {}
+
+/** Internal discovery ceiling: unlike an I/O failure, return a visibly byte-limited partial scan. */
+class FsReadBudgetError extends HostCapabilityError {}
 
 /**
  * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write through
@@ -148,16 +196,112 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
     if (config === undefined) throw admissionError ?? new FsPolicyError();
     return config;
   };
-  const maxReadBytes = snapshot.maxReadBytes ?? DEFAULT_MAX_READ_BYTES;
+  const maxReadBytes = Math.min(
+    snapshot.maxReadBytes ?? DEFAULT_MAX_READ_BYTES,
+    DEFAULT_MAX_READ_BYTES,
+  );
   const maxGlobMatches = snapshot.maxGlobMatches ?? DEFAULT_MAX_GLOB_MATCHES;
-  return {
-    readFile: (path, opts, signal) =>
-      guarded(() => readOne(owned(), maxReadBytes, maxGlobMatches, path, opts, signal)),
-    writeFile: (path, data, opts, signal) =>
-      guarded(() => writeOne(owned(), path, data, opts, signal)),
-    listDirectory: (path, opts, signal) =>
-      guarded(() => listOne(owned(), maxGlobMatches, path, opts, signal)),
+  const pending = new WeakMap<object, ReadEvidence>();
+  const scopes = new WeakMap<object, ReadEvidence[]>();
+  const staged = new WeakMap<object, ReadEvidence[]>();
+  const inventory = async (path: string, signal?: AbortSignalLike): Promise<FsStageInventory> => {
+    // Reject raw empty/UNC input before any native lookup, including the trusted inventory scan.
+    lexicalTarget(owned(), path);
+    const home = owned().operatorHomeDir;
+    if (home === undefined) throw new FsStageInventoryError();
+    return captureFsStageInventory(home, signal);
   };
+  const capability: FsCapability = {
+    readFile: (path, opts, signal) =>
+      guarded(async () => {
+        const stage = await inventory(path, signal);
+        const result = await readOne(
+          owned(),
+          maxReadBytes,
+          maxGlobMatches,
+          path,
+          opts,
+          signal,
+          stage,
+        );
+        if (result.value.range !== undefined) Object.freeze(result.value.range);
+        Object.freeze(result.value);
+        if (result.evidence !== undefined) pending.set(result.value, result.evidence);
+        return result.value;
+      }),
+    acknowledgeReadResult: (scope, raw) => {
+      if (typeof raw !== 'object' || raw === null) return;
+      const evidence = pending.get(raw);
+      if (evidence === undefined) return;
+      pending.delete(raw);
+      const entries = staged.get(scope) ?? [];
+      entries.push(evidence);
+      if (entries.length > 256) entries.shift();
+      staged.set(scope, entries);
+    },
+    promoteReadScope: (scope) => {
+      const entries = [...(scopes.get(scope) ?? []), ...(staged.get(scope) ?? [])].slice(-256);
+      scopes.set(scope, entries);
+      staged.delete(scope);
+    },
+    releaseReadScope: (scope) => {
+      scopes.delete(scope);
+      staged.delete(scope);
+    },
+    findFiles: (path, opts, signal) =>
+      guarded(async () =>
+        discover(owned(), path, opts, undefined, signal, await inventory(path, signal)),
+      ),
+    searchFiles: (path, opts, signal) =>
+      guarded(async () =>
+        discover(owned(), path, undefined, opts, signal, await inventory(path, signal)),
+      ),
+    prepareWrite: (request, signal) =>
+      guarded(async () =>
+        prepareWrite(
+          owned(),
+          capability,
+          maxReadBytes,
+          request,
+          signal,
+          await inventory(request.path, signal),
+        ),
+      ),
+    writeFile: (path, data, opts, signal) =>
+      guarded(async () => {
+        const prepared = await prepareWrite(
+          owned(),
+          capability,
+          maxReadBytes,
+          { kind: 'write', path, content: data, ...opts },
+          signal,
+          await inventory(path, signal),
+        );
+        try {
+          return await prepared.execute(signal);
+        } finally {
+          await prepared.release();
+        }
+      }),
+    listDirectory: (path, opts, signal) =>
+      guarded(async () =>
+        listOne(owned(), maxGlobMatches, path, opts, signal, await inventory(path, signal)),
+      ),
+  };
+  evidenceAccess.set(capability, (scope, path, digest, start, end) => {
+    if (start < 0 || end < start) return false;
+    const intervals = (scopes.get(scope) ?? [])
+      .filter((e) => e.path === path && e.digest === digest)
+      .sort((a, b) => a.start - b.start);
+    let covered = start;
+    for (const interval of intervals) {
+      if (interval.start > covered) break;
+      covered = Math.max(covered, interval.end);
+      if (covered >= end) return true;
+    }
+    return false;
+  });
+  return capability;
 }
 
 /**
@@ -172,7 +316,11 @@ async function guarded<T>(op: () => Promise<T>): Promise<T> {
     // A typed engine error (ToolUnavailableError = read-only fail-close → tool_unavailable; FsScopeDeniedError
     // = a scope denial → tool_denied) and an already-reason-only FsCapabilityError pass through verbatim. Any
     // RAW Node fs error (whose message/path leaks the absolute path) is replaced with a reason-only one (I3).
-    if (error instanceof ToolDispatchError || error instanceof HostCapabilityError) {
+    if (
+      error instanceof ToolDispatchError ||
+      error instanceof HostCapabilityError ||
+      error instanceof ToolPreparationError
+    ) {
       throw error;
     }
     throw new FsCapabilityError('the filesystem operation failed');
@@ -232,10 +380,13 @@ async function readOne(
   path: string,
   opts: FsReadOpts,
   signal: AbortSignalLike | undefined,
-): Promise<FileRead> {
+  stage: FsStageInventory,
+): Promise<{ value: FileRead; evidence?: ReadEvidence }> {
   throwIfAborted(signal);
   if (opts.glob === true) {
-    return readGlob(config, maxReadBytes, maxGlobMatches, path, signal);
+    if (opts.range !== undefined)
+      throw new FsCapabilityError('read_file: range cannot be combined with glob');
+    return { value: await readGlob(config, maxReadBytes, maxGlobMatches, path, signal, stage) };
   }
   assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
   const inScope = buildScopeChecker(config);
@@ -246,7 +397,15 @@ async function readOne(
   // the protected-paths WRITE floor's mode/tier independence (ADR-0057).
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   assertNotSensitiveReadPath(real, config.pathPolicy);
-  const result = await readJailedFile(real, maxReadBytes, rejectAliasedRead(config, real));
+  const result = await readJailedFile(
+    real,
+    maxReadBytes,
+    rejectAliasedRead(config, real),
+    opts.range,
+    signal,
+    undefined,
+    stage,
+  );
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
   }
@@ -268,11 +427,33 @@ async function readOne(
   if (result.kind === 'oversize') {
     throw new FsCapabilityError(`read_file: the file exceeds the ${maxReadBytes}-byte read limit`);
   }
-  return {
-    content: result.bytes.toString('utf8'),
+  let content: string;
+  try {
+    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.bytes);
+  } catch {
+    throw new FsCapabilityError('read_file: invalid UTF-8 or byte range boundary');
+  }
+  if (result.bytes.includes(0))
+    throw new FsCapabilityError('read_file: binary files are not supported');
+  const value: FileRead = {
+    content,
     mimeType: mimeForPath(real),
     sizeBytes: result.size,
     lastModified: new Date(result.mtimeMs).toISOString(),
+    ...(result.range === undefined ? {} : { range: result.range }),
+  };
+  return {
+    value,
+    ...(result.digest === undefined
+      ? {}
+      : {
+          evidence: {
+            path: real,
+            digest: result.digest,
+            start: result.range?.startByte ?? 0,
+            end: result.range?.endByte ?? result.size,
+          },
+        }),
   };
 }
 
@@ -283,44 +464,57 @@ async function readGlob(
   maxGlobMatches: number,
   pattern: string,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<FileRead> {
-  const matches = await collectGlobFiles(config, maxGlobMatches, pattern, signal);
+  const matches = await collectGlobFiles(config, maxGlobMatches, pattern, signal, stage);
   if (matches.length === 0) {
     throw new FsCapabilityError('read_file: the glob matched no files');
   }
   const parts: string[] = [];
   let totalBytes = 0;
+  let sourceBytes = 0;
   let latest = 0;
   for (const m of matches) {
     throwIfAborted(signal);
     // ONE read fd per match (probe + size + content from the single open) — so a swap after the walk's realpath
     // can neither redirect the read nor make the size charged diverge from the bytes read. The bounded prefix
-    // probe skips a binary match WITHOUT charging the budget or loading it; the budget is enforced against the
-    // fd's own size BEFORE the full read, so an over-budget text file is never loaded just to be rejected.
+    // probe may skip a binary match without a full read. Full-source validation reads (including late binary
+    // failures) consume the aggregate budget independently of returned text bytes. The fd's own size is
+    // admitted BEFORE the full read; prefix-only probes remain bounded by match count × BINARY_PROBE_BYTES.
     const result = await readJailedFile(
       m.real,
-      maxReadBytes - totalBytes,
+      maxReadBytes - sourceBytes,
       rejectAliasedRead(config, m.real),
+      undefined,
+      signal,
+      undefined,
+      stage,
     );
-    // skip a non-text match (dir / special / aliased / binary); never charge the budget. collectGlobFiles
+    if (result.kind === 'binary') {
+      sourceBytes += result.fullReadBytes;
+      continue;
+    }
+    // Skip a match that consumed no full-source read. collectGlobFiles
     // already filters to regular, in-scope, non-sensitive files — but it does NOT check nlink, so the
     // hard-link (`aliased`) skip is enforced HERE by readJailedFile's per-fd guard (the primary aliasing
     // filter for a glob read); `directory`/`special` are the belt-and-suspenders for a post-walk swap.
-    if (
-      result.kind === 'directory' ||
-      result.kind === 'special' ||
-      result.kind === 'aliased' ||
-      result.kind === 'binary'
-    )
+    if (result.kind === 'directory' || result.kind === 'special' || result.kind === 'aliased')
       continue;
     if (result.kind === 'oversize') {
       throw new FsCapabilityError(
         `read_file: the glob result exceeds the ${maxReadBytes}-byte read limit`,
       );
     }
+    sourceBytes += result.size;
     totalBytes += result.size;
     latest = Math.max(latest, result.mtimeMs);
-    parts.push(`===== ${m.rel} =====\n${result.bytes.toString('utf8')}`);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.bytes);
+    } catch {
+      continue;
+    }
+    parts.push(`===== ${m.rel} =====\n${text}`);
   }
   if (parts.length === 0) {
     throw new FsCapabilityError('read_file: the glob matched only binary/media files');
@@ -341,9 +535,58 @@ export type JailedRead =
   | { kind: 'directory' }
   | { kind: 'special' }
   | { kind: 'aliased' }
-  | { kind: 'binary' }
+  | { kind: 'binary'; fullReadBytes: number }
   | { kind: 'oversize'; size: number }
-  | { kind: 'file'; bytes: Buffer; size: number; mtimeMs: number };
+  | {
+      kind: 'file';
+      bytes: Buffer;
+      size: number;
+      mtimeMs: number;
+      range?: {
+        unit: 'lines' | 'bytes';
+        start: number;
+        end: number;
+        startByte: number;
+        endByte: number;
+        omittedBytes: number;
+      };
+      digest?: string;
+    };
+
+function lineReadBounds(content: Buffer, range: FsReadRange): { from: number; to: number } {
+  let from = 0;
+  let to = content.length;
+  let line = 1;
+  let lineStart = 0;
+  let foundStart = false;
+  let foundEnd = false;
+  if (content.length > 0 && range.start === 1) {
+    foundStart = true;
+  }
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== 10) continue;
+    if (line === range.end) {
+      to = i + 1;
+      foundEnd = true;
+      break;
+    }
+    if (i + 1 < content.length) {
+      line++;
+      lineStart = i + 1;
+      if (line === range.start) {
+        from = lineStart;
+        foundStart = true;
+      }
+    }
+  }
+  if (!foundEnd && line === range.end && content.length > 0) {
+    to = content.length;
+    foundEnd = true;
+  }
+  if (!foundStart || !foundEnd)
+    throw new FsCapabilityError('read_file: invalid or out-of-file range');
+  return { from, to };
+}
 
 /**
  * Read an already-jailed canonical path through a **single read fd** — the stat, the bounded binary probe, and
@@ -368,9 +611,9 @@ export type JailedRead =
  * in-scope hard link (e.g. a pnpm content-store link under `node_modules`) is read normally; the jailed tiers
  * refuse it, trading that read for the aliasing-exfiltration guarantee.
  *
- * CAVEAT (binary heuristic): a NUL-free file in a legacy single-byte encoding (Latin-1 / CP1252 / MacRoman)
- * passes as "text" and is decoded as UTF-8, yielding U+FFFD replacements for its high bytes — an accepted v1
- * limitation (the durable-media-handle path that would carry such files faithfully is the deferred follow-up).
+ * Text reads validate UTF-8 without replacement decoding and refuse NUL bytes. A bounded byte seek in a
+ * larger file inspects the binary prefix and requested slice/boundaries only; it makes no claim about the
+ * unscanned bytes and establishes no full-source edit evidence.
  *
  * Exported for direct security testing of the post-jail fd guard (the no-follow / single-fd / no-hard-link
  * properties), which a black-box `readFile` test cannot reach because the jail already resolves any symlink to
@@ -380,15 +623,21 @@ export async function readJailedFile(
   real: string,
   sizeLimit: number,
   rejectAliased = true,
+  range?: FsReadRange,
+  signal?: AbortSignalLike,
+  budget?: { remaining: number },
+  stage?: FsStageInventory,
 ): Promise<JailedRead> {
+  throwIfAborted(signal);
   // Windows ignores O_NOFOLLOW. Refuse an already-planted final link explicitly there;
   // this is a stable-path guard, not a promise to close same-user syscall races.
-  if (process.platform === 'win32') {
+  async function isWindowsDirectory(): Promise<boolean> {
     const entry = await lstat(real);
     if (entry.isSymbolicLink())
       throw new FsScopeDeniedError('read_file: refusing to read through a symlink');
-    if (entry.isDirectory()) return { kind: 'directory' };
+    return entry.isDirectory();
   }
+  if (process.platform === 'win32' && (await isWindowsDirectory())) return { kind: 'directory' };
   const handle = await open(
     real,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -405,6 +654,21 @@ export async function readJailedFile(
     throw error;
   });
   try {
+    stage?.assertIdentity(await handle.stat({ bigint: true }));
+    const readChunk = async (
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<number> => {
+      throwIfAborted(signal);
+      const admitted = budget === undefined ? length : Math.min(length, budget.remaining);
+      if (admitted <= 0) throw new FsReadBudgetError('search_files: source byte budget reached');
+      const { bytesRead } = await handle.read(buffer, offset, admitted, position);
+      if (budget !== undefined) budget.remaining -= bytesRead;
+      return bytesRead;
+    };
+    throwIfAborted(signal);
     const st = await handle.stat();
     if (st.isDirectory()) return { kind: 'directory' };
     // Only a REGULAR file is readable. A FIFO / socket / device fails closed here — and because the open used
@@ -416,23 +680,110 @@ export async function readJailedFile(
     // with a name outside the jail, so a jailed tier refuses it here — race-free on the OPENED fd, before any
     // byte is read. `full` (unjailed) passes `rejectAliased: false` so a benign in-scope hard link still reads.
     if (rejectAliased && st.nlink > 1) return { kind: 'aliased' };
-    const probeLen = Math.min(BINARY_PROBE_BYTES, st.size);
-    if (probeLen > 0) {
-      const probe = Buffer.allocUnsafe(probeLen);
-      const { bytesRead } = await handle.read(probe, 0, probeLen, 0);
-      if (probe.subarray(0, bytesRead).includes(0)) return { kind: 'binary' };
+    const probe = Buffer.allocUnsafe(Math.min(BINARY_PROBE_BYTES, st.size));
+    const probed = probe.length > 0 ? await readChunk(probe, 0, probe.length, 0) : 0;
+    if (probe.subarray(0, probed).includes(0)) return { kind: 'binary', fullReadBytes: 0 };
+    function validateRange(): void {
+      if (
+        range !== undefined &&
+        (!Number.isSafeInteger(range.start) ||
+          !Number.isSafeInteger(range.end) ||
+          range.start < (range.unit === 'lines' ? 1 : 0) ||
+          range.end < range.start ||
+          (range.unit === 'bytes' && range.end > st.size))
+      ) {
+        throw new FsCapabilityError('read_file: invalid or out-of-file range');
+      }
     }
-    if (st.size > sizeLimit) return { kind: 'oversize', size: st.size };
-    // Read from explicit position 0 (not the handle's running offset, which the probe advanced) into a sized
-    // buffer — avoids `FileHandle.readFile()` position ambiguity and keeps content pinned to the fstat'd inode.
-    const content = Buffer.allocUnsafe(st.size);
-    const { bytesRead } = await handle.read(content, 0, st.size, 0);
-    return {
-      kind: 'file',
-      bytes: content.subarray(0, bytesRead),
-      size: st.size,
-      mtimeMs: st.mtimeMs,
-    };
+    validateRange();
+    const seek = range?.unit === 'bytes' && st.size > sizeLimit;
+    if (st.size > sizeLimit && !seek) return { kind: 'oversize', size: st.size };
+    const startByte = seek ? range.start : 0;
+    const length = seek ? range.end - range.start : st.size;
+    if (length > sizeLimit) return { kind: 'oversize', size: length };
+    const content = Buffer.alloc(length);
+    // Whole-file reads reuse the binary prefix, so every source byte is read and charged once.
+    async function readContent(): Promise<void> {
+      let offset = seek ? 0 : probe.copy(content, 0, 0, probed);
+      while (offset < length) {
+        const bytesRead = await readChunk(
+          content,
+          offset,
+          Math.min(length - offset, 64 * 1024),
+          startByte + offset,
+        );
+        if (bytesRead === 0) throw new FsCapabilityError('read_file: file changed during read');
+        offset += bytesRead;
+      }
+    }
+    await readContent();
+    const after = await handle.stat();
+    throwIfAborted(signal);
+    if (
+      st.size !== after.size ||
+      st.mtimeMs !== after.mtimeMs ||
+      st.ctimeMs !== after.ctimeMs ||
+      st.ino !== after.ino
+    )
+      throw new FsCapabilityError('read_file: file changed during read');
+    async function finishRead(): Promise<JailedRead> {
+      let from = startByte;
+      let to = startByte + length;
+      if (range?.unit === 'bytes') {
+        from = range.start;
+        to = range.end;
+      }
+      if (range?.unit === 'lines') ({ from, to } = lineReadBounds(content, range));
+      async function validateSeekBoundaries(from: number, to: number): Promise<void> {
+        for (const boundary of [from, to]) {
+          if (boundary < st.size) {
+            const boundaryProbe = Buffer.alloc(1);
+            const bytesRead = await readChunk(boundaryProbe, 0, 1, boundary);
+            if (bytesRead !== 1 || ((boundaryProbe[0] ?? 0) & 0xc0) === 0x80)
+              throw new FsCapabilityError('read_file: byte range cuts a UTF-8 sequence');
+          }
+        }
+      }
+      async function validateText(from: number, to: number): Promise<boolean> {
+        if (!seek && range?.unit === 'bytes') {
+          for (const boundary of [from, to])
+            if (boundary < content.length && ((content[boundary] ?? 0) & 0xc0) === 0x80)
+              throw new FsCapabilityError('read_file: byte range cuts a UTF-8 sequence');
+        }
+        if (!seek) {
+          try {
+            new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(content);
+          } catch {
+            return false;
+          }
+          if (content.includes(0)) return false;
+        } else {
+          await validateSeekBoundaries(from, to);
+        }
+        return true;
+      }
+      if (!(await validateText(from, to))) return { kind: 'binary', fullReadBytes: st.size };
+      const bytes = seek ? content : content.subarray(from, to);
+      const digest = seek ? undefined : createHash('sha256').update(content).digest('hex');
+      return {
+        kind: 'file',
+        bytes,
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+        ...(range === undefined
+          ? {}
+          : {
+              range: {
+                ...range,
+                startByte: from,
+                endByte: to,
+                omittedBytes: st.size - (to - from),
+              },
+            }),
+        ...(digest === undefined ? {} : { digest }),
+      };
+    }
+    return await finishRead();
   } finally {
     await handle.close();
   }
@@ -454,16 +805,35 @@ export async function readJailedFile(
  * directory-pattern sources (fish `conf.d/*.fish`), OS launch agents (`~/Library/LaunchAgents/*.plist`), or
  * editor auto-run config — those are out of the basename model's reach and rely on the fs jail + approval.
  *
- * {@link foldPathComponent} normalizes each compared name the way a real filesystem folds a component: it
+ * {@link foldPathComponent} conservatively folds policy labels, including Unicode case aliases: it
  * takes the part before the first `:` (Win32 NTFS `name::$DATA` / `name:stream` addresses the SAME default
- * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), lowercases (a case-insensitive FS / a
+ * stream as `name`, so `.gitconfig::$DATA` must fold to `.gitconfig`), closes case equivalence (a case-insensitive FS / a
  * `.GIT` variant must not slip through), AND strips trailing dots/spaces — Win32 silently drops those at open
  * time, so `write_file('.bashrc.')` / `'.git '` would otherwise land on the REAL protected target while the
  * unfolded name missed the set. Folding always (not only on win32) over-denies a genuinely-distinct `.git.` or
- * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The realpath re-check in {@link writeOne}
+ * a POSIX `a:b` on a case-sensitive FS, which is the safe direction. The canonical target re-check in {@link prepareWrite}
  * additionally canonicalizes a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) of an EXISTING target.
  */
-const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set(['.git', '.relavium', '.ssh']);
+/** Permanently reserved for host-owned ADR-0125 staging, including before any stage exists. */
+export const FS_STAGE_DIRECTORY = '.relavium-fs-stage-v1';
+/** A reserved stage component is never model filesystem authority. */
+export function isFsStagePath(path: string): boolean {
+  return path.split(/[\\/]/).some((part) => {
+    const folded = foldPathComponent(part);
+    return (
+      folded === FS_PRIVATE_INDEX_PARENT ||
+      folded === FS_STAGE_DIRECTORY ||
+      folded.startsWith(`${FS_STAGE_DIRECTORY}.`)
+    );
+  });
+}
+const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
+  '.git',
+  '.relavium',
+  '.ssh',
+  FS_STAGE_DIRECTORY,
+  FS_PRIVATE_INDEX_PARENT,
+]);
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bashrc',
   '.bash_profile',
@@ -488,19 +858,6 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   'profile.ps1',
   'microsoft.powershell_profile.ps1', // PowerShell profiles
 ]);
-
-/** Fold a path component the way a filesystem does for matching: take the pre-`:` part (NTFS `name::$DATA`
- * addresses `name`), lowercase (case-insensitive FS), and strip trailing dots/spaces (Win32 drops those at open
- * time) — so `.BASHRC` / `.bashrc.` / `.git ` / `.gitconfig::$DATA` all fold to the bare protected name. */
-function foldPathComponent(name: string): string {
-  const beforeStream = name.split(':', 1)[0] ?? name; // NTFS Alternate-Data-Stream / drive qualifier
-  const lowered = beforeStream.toLowerCase();
-  // Strip trailing dots/spaces (Win32 drops them at open time) via a linear scan — NOT a `/[. ]+$/` regex, whose
-  // `+$` backtracks (flagged by the static analyzer) and would break this file's no-backtracking-RegExp posture.
-  let end = lowered.length;
-  while (end > 0 && (lowered[end - 1] === '.' || lowered[end - 1] === ' ')) end -= 1;
-  return lowered.slice(0, end);
-}
 
 /**
  * Whether an absolute path is protected — a `.git`/`.relavium`/`.ssh` directory segment, or a startup/config
@@ -544,6 +901,8 @@ function assertNotProtectedPath(absoluteTarget: string, policy?: FsPathPolicy): 
 const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
   '.relavium',
+  FS_STAGE_DIRECTORY,
+  FS_PRIVATE_INDEX_PARENT,
   '.aws',
   '.kube',
   '.azure',
@@ -582,6 +941,7 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
  * every surface.
  */
 export function isSensitiveReadPath(absoluteTarget: string): boolean {
+  if (isFsStagePath(absoluteTarget)) return true;
   const folded = absoluteTarget.split(/[\\/]/).map(foldPathComponent);
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
@@ -632,120 +992,479 @@ function assertNotSensitiveReadPath(absoluteTarget: string, policy?: FsPathPolic
   }
 }
 
-async function writeOne(
-  config: NodeFsCapabilityConfig,
-  path: string,
-  data: string,
-  opts: FsWriteOpts,
+interface PreparedSnapshot {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly uid: bigint;
+  readonly gid: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly digest: string;
+  readonly text: string;
+}
+
+async function snapshotPrepared(
+  target: string,
+  maxBytes: number,
   signal: AbortSignalLike | undefined,
-): Promise<FileWritten> {
-  if (config.readOnly) {
-    // The 2.5.A chat profile wires fs READ-only; the write arm fail-closes as `tool_unavailable` (EA1) until
-    // ADR-0057/2.5.E lands the per-tool approval floor that makes a write-capable chat host safe.
-    throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
+  stage: FsStageInventory,
+): Promise<PreparedSnapshot | null> {
+  await assertNotSymlink(target);
+  const handle = await open(
+    target,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: unknown) => {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    if (errnoCode(error) === 'ELOOP' || errnoCode(error) === 'ENOTDIR')
+      throw new FsScopeDeniedError('refusing a symlink or unsafe target');
+    throw error;
+  });
+  if (handle === undefined) return null;
+  try {
+    const info = await handle.stat({ bigint: true });
+    stage.assertIdentity(info);
+    if (info.isDirectory()) throw new FsCapabilityError('the target is a directory');
+    if (!info.isFile() || info.nlink !== 1n)
+      throw new FsScopeDeniedError('refusing a non-regular or hard-linked file');
+    if (info.size > BigInt(maxBytes)) throw new ToolPreparationError('diff_limit');
+    const bytes = Buffer.alloc(Number(info.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      throwIfAborted(signal);
+      const result = await handle.read(
+        bytes,
+        offset,
+        Math.min(65536, bytes.length - offset),
+        offset,
+      );
+      if (result.bytesRead === 0) throw new ToolPreparationError('stale_file');
+      offset += result.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      info.dev !== after.dev ||
+      info.ino !== after.ino ||
+      info.size !== after.size ||
+      info.mtimeNs !== after.mtimeNs ||
+      info.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n
+    )
+      throw new ToolPreparationError('stale_file');
+    if (bytes.includes(0)) throw new ToolPreparationError('unsupported_text');
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new ToolPreparationError('unsupported_text');
+    }
+    return {
+      dev: info.dev,
+      ino: info.ino,
+      mode: info.mode,
+      uid: info.uid,
+      gid: info.gid,
+      size: info.size,
+      mtimeNs: info.mtimeNs,
+      ctimeNs: info.ctimeNs,
+      digest: createHash('sha256').update(bytes).digest('hex'),
+      text,
+    };
+  } finally {
+    await handle.close();
   }
+}
+function equalSnapshot(a: PreparedSnapshot | null, b: PreparedSnapshot | null): boolean {
+  return a === null
+    ? b === null
+    : b !== null &&
+        a.dev === b.dev &&
+        a.ino === b.ino &&
+        a.mode === b.mode &&
+        a.uid === b.uid &&
+        a.gid === b.gid &&
+        a.size === b.size &&
+        a.mtimeNs === b.mtimeNs &&
+        a.ctimeNs === b.ctimeNs &&
+        a.digest === b.digest;
+}
+
+async function prepareWrite(
+  config: NodeFsCapabilityConfig,
+  capability: FsCapability,
+  maxBytes: number,
+  request: FsPrepareWriteRequest,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
+): Promise<FsPreparedWrite> {
+  if (config.readOnly)
+    throw new ToolUnavailableError('write_file', 'fs (read-only in this session)');
   throwIfAborted(signal);
-  // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
-  // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the (realDir-)jailed
-  // finalTarget so a parent symlink cannot resolve INTO a protected directory.
-  assertNotProtectedPath(resolve(config.workspaceDir, path), config.pathPolicy);
+  if (request.path.length > 4096 || Buffer.byteLength(request.path, 'utf8') > 4096)
+    throw new FsCapabilityError('write_file: the target path is too long');
+  if (Buffer.from(request.path, 'utf8').toString('utf8') !== request.path)
+    throw new ToolPreparationError('unsupported_text');
+  const nativeFloor = await captureNativeRuntimeWriteFloor();
+  const lexical = lexicalTarget(config, request.path);
+  nativeFloor.assertPath(lexical);
+  assertNotProtectedPath(lexical, config.pathPolicy);
+  assertNotSensitiveReadPath(lexical, config.pathPolicy);
   const inScope = buildScopeChecker(config);
-  const { realDir, finalTarget } = await jailWriteTarget(
-    config,
-    inScope,
-    path,
-    opts.createDirs === true,
-  );
-  await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
-  assertNotProtectedPath(finalTarget, config.pathPolicy); // re-check the jailed target against the floor
-  // Belt-and-suspenders for Win32 final-component name-aliasing: `finalTarget` keeps the LEXICAL basename
-  // (jailWriteTarget only realpath's the parent). If the target already EXISTS, its realpath is the canonical
-  // long name, so a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) or an NTFS stream path that folds to
-  // a non-protected basename is caught HERE. A not-yet-existing target has no alias, so the checks above suffice.
-  const canonicalTarget = await realpath(finalTarget).catch(() => undefined);
-  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget, config.pathPolicy);
-  throwIfAborted(signal);
-  const bytes = Buffer.from(data, 'utf8');
-  if (opts.append === true) {
-    // Append cannot use the atomic temp+rename (that replaces, never appends). Open with O_NOFOLLOW so the
-    // kernel refuses a final-component symlink AT OPEN TIME — closing the TOCTOU window between the
-    // `assertNotSymlink` lstat above and the write (a swapped-in symlink can't redirect the append out of
-    // scope). A symlink there fails ELOOP/ENOTDIR, which we map to the FATAL `tool_denied` (not the retryable
-    // `tool_failed` `guarded` would otherwise assign a raw fs error). NOTE: `O_NOFOLLOW` is `0` on Windows (no
-    // kernel enforcement); the `assertNotSymlink` lstat above still covers the non-race case. `O_NONBLOCK` opens
-    // a FIFO/device WITHOUT blocking — a reader-less FIFO would otherwise hang the write FOREVER (fs.open takes
-    // no AbortSignal, so even the EA7 mid-turn abort could not cancel it), and the fstat below fails it closed.
-    // The write arm now also serves the approval-gated `chat-read-write` profile (ADR-0057), not only the
-    // author-trusted workflow-run path; the residual Windows-only symlink-swap race is flagged for the mandatory
-    // ADR-0057 security review (Step 5) to re-affirm as accepted — the protected-paths floor + fs jail still hold.
-    const handle = await open(
-      finalTarget,
-      constants.O_WRONLY |
-        constants.O_APPEND |
-        constants.O_CREAT |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-    ).catch((error: unknown) => {
-      const code = errnoCode(error);
-      if (code === 'ELOOP' || code === 'ENOTDIR') {
-        throw new FsScopeDeniedError('write_file: refusing to write through a symlink');
-      }
-      if (code === 'ENXIO' || code === 'EOPNOTSUPP' || code === 'ENODEV') {
-        // A non-regular special file that fails the OPEN itself rather than reaching the fstat: O_WRONLY |
-        // O_NONBLOCK on a reader-less FIFO returns ENXIO immediately (instead of blocking forever); a socket
-        // special file returns ENXIO (Linux) or EOPNOTSUPP (macOS); a device with no driver returns ENODEV. All
-        // are targets we refuse anyway — surface the same fatal denial the post-open fstat gives, not a raw
-        // (retryable, path-leaking) fs error.
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
-        );
-      }
+  const parent = dirname(lexical);
+  const deepest = await deepestExistingReal(parent, {
+    realpath,
+    lstat,
+    dirname,
+    isMissing: (error) => errnoCode(error) === 'ENOENT',
+  });
+  nativeFloor.assertPath(deepest);
+  assertInScope(inScope, deepest);
+  assertFsPolicyPath(config.pathPolicy, lexical, deepest);
+  assertNotProtectedPath(deepest, config.pathPolicy);
+  const ancestor = await stat(deepest, { bigint: true });
+  const parentReal = await realpath(parent).catch((error: unknown) => {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (parentReal === undefined && (request.kind === 'edit' || request.createDirs !== true))
+    throw new FsCapabilityError(
+      'write_file: the target directory does not exist (set createDirs to create it)',
+    );
+  const target = parentReal === undefined ? undefined : join(parentReal, basename(lexical));
+  async function resolveTarget(targetPath: string): Promise<string | undefined> {
+    nativeFloor.assertPath(targetPath);
+    assertInScope(inScope, parentReal!);
+    assertFsPolicyPath(config.pathPolicy, lexical, targetPath);
+    assertNotProtectedPath(targetPath, config.pathPolicy);
+    assertNotSensitiveReadPath(targetPath, config.pathPolicy);
+    const canonicalTarget = await realpath(targetPath).catch((error: unknown) => {
+      if (errnoCode(error) === 'ENOENT') return undefined;
       throw error;
     });
-    try {
-      // Race-free guards on the OPENED inode (same fd — no TOCTOU vs. a path re-stat): (1) refuse a NON-REGULAR
-      // target — a reader-less FIFO/device would hang the write forever (O_NONBLOCK above returned the fd so this
-      // fstat can run); (2) refuse a HARD-LINKED regular file (st.nlink > 1) — lstat, realpath, and the
-      // protected-path fold all see only this one in-scope, non-symlink name, but the shared inode may ALSO be a
-      // name outside the jail or a protected file (~/.ssh/authorized_keys), and O_APPEND would write straight
-      // through to it, defeating the protected-paths floor. Both mirror the read-side fd guards (readJailedFile).
-      const st = await handle.stat();
-      if (!st.isFile()) {
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a non-regular file (a FIFO/device/socket)',
-        );
-      }
-      if (st.nlink > 1) {
-        throw new FsScopeDeniedError(
-          'write_file: refusing to append to a hard-linked file (its content may be shared with a file outside the sandbox)',
-        );
-      }
-      await handle.write(bytes);
-    } finally {
-      await handle.close();
+    if (canonicalTarget !== undefined) {
+      nativeFloor.assertPath(canonicalTarget);
+      assertNotProtectedPath(canonicalTarget, config.pathPolicy);
+      assertNotSensitiveReadPath(canonicalTarget, config.pathPolicy);
+      stage.assertIdentity(await stat(canonicalTarget, { bigint: true }));
     }
-    return { path: relWorkspace(config, finalTarget), bytesWritten: bytes.length };
+    return canonicalTarget;
   }
-  // Atomic publish: a unique temp in the same (in-root) dir, then rename — never follows a final-component
-  // symlink, and a partial write never lands at the target (mirrors media-write.ts).
-  const tmp = join(realDir, `.relavium-write.${randomUUID()}.tmp`);
-  let published = false;
-  try {
-    // O_CREAT|O_EXCL|O_WRONLY (the 'wx' flag) plus O_NOFOLLOW — no-follow PARITY with the append path: the open
-    // refuses to follow a final-component symlink even though the random temp name already makes a pre-placed
-    // symlink there implausible (defense in depth). The residual gap is a PARENT-dir swap between `jailWriteTarget`'s
-    // realpath and this write — not closable in Node (no `openat`); the write arm now also serves the
-    // approval-gated `chat-read-write` profile (ADR-0057), so that Windows-only residual is flagged for the
-    // mandatory ADR-0057 security review (Step 5), with the protected-paths floor + fs jail still in force.
-    await writeFile(tmp, bytes, {
-      flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+  const canonicalTarget = target === undefined ? undefined : await resolveTarget(target);
+  const proposedText = request.kind === 'write' ? request.content : request.newString;
+  if (Buffer.byteLength(proposedText, 'utf8') > maxBytes)
+    throw new ToolPreparationError('diff_limit');
+  if (Buffer.from(proposedText, 'utf8').toString('utf8') !== proposedText)
+    throw new ToolPreparationError('unsupported_text');
+  if (config.operatorHomeDir === undefined)
+    throw new HostDeniedError('filesystem metadata protection is unavailable');
+  const native = await loadNativeMetadataWriteAdapter();
+  const before =
+    target === undefined ? null : await snapshotPrepared(target, maxBytes, signal, stage);
+  async function prepareAfter(): Promise<string> {
+    let after: string;
+    if (request.kind === 'edit') {
+      if (before === null || target === undefined || request.readScope === undefined)
+        throw new ToolPreparationError('read_required');
+      async function prepareEdit(
+        edit: Extract<FsPrepareWriteRequest, { kind: 'edit' }>,
+        snapshot: PreparedSnapshot,
+        targetPath: string,
+        scope: NonNullable<Extract<FsPrepareWriteRequest, { kind: 'edit' }>['readScope']>,
+      ): Promise<string> {
+        if (edit.oldString.length === 0) throw new ToolPreparationError('match_not_found');
+        if (
+          Buffer.from(edit.oldString, 'utf8').toString('utf8') !== edit.oldString ||
+          Buffer.from(edit.newString, 'utf8').toString('utf8') !== edit.newString
+        )
+          throw new ToolPreparationError('unsupported_text');
+        async function findPositions(): Promise<number[]> {
+          const positions: number[] = [];
+          let from = 0;
+          while (true) {
+            const found = snapshot.text.indexOf(edit.oldString, from);
+            if (found < 0) break;
+            positions.push(found);
+            if (positions.length > 100_000) throw new ToolPreparationError('diff_limit');
+            if (positions.length % 1024 === 0) {
+              throwIfAborted(signal);
+              await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+              throwIfAborted(signal);
+            }
+            from = found + edit.oldString.length;
+          }
+          return positions;
+        }
+        const positions = await findPositions();
+        if (positions.length === 0) throw new ToolPreparationError('match_not_found');
+        if (positions.length > 1 && edit.replaceAll !== true)
+          throw new ToolPreparationError('match_not_unique');
+        let previousEnd = 0;
+        let byteCursor = 0;
+        let checked = 0;
+        for (const position of positions) {
+          if (++checked % 1024 === 0) {
+            throwIfAborted(signal);
+            await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+            throwIfAborted(signal);
+          }
+          byteCursor += Buffer.byteLength(snapshot.text.slice(previousEnd, position), 'utf8');
+          const start = byteCursor;
+          const end = start + Buffer.byteLength(edit.oldString, 'utf8');
+          if (
+            !hasObservedRead(
+              capability,
+              scope,
+              canonicalTarget ?? targetPath,
+              snapshot.digest,
+              start,
+              end,
+            )
+          )
+            throw new ToolPreparationError('unobserved_match');
+          byteCursor = end;
+          previousEnd = position + edit.oldString.length;
+        }
+        const finalBytes =
+          Number(snapshot.size) +
+          positions.length *
+            (Buffer.byteLength(edit.newString, 'utf8') - Buffer.byteLength(edit.oldString, 'utf8'));
+        if (finalBytes > maxBytes) throw new ToolPreparationError('diff_limit');
+        return snapshot.text.split(edit.oldString).join(edit.newString);
+      }
+      after = await prepareEdit(request, before, target, request.readScope);
+    } else
+      after = request.append === true ? (before?.text ?? '') + request.content : request.content;
+    if (Buffer.byteLength(after, 'utf8') > maxBytes) throw new ToolPreparationError('diff_limit');
+    if (after.includes('\0') || Buffer.from(after, 'utf8').toString('utf8') !== after)
+      throw new ToolPreparationError('unsupported_text');
+    return after;
+  }
+  const after = await prepareAfter();
+  const processes = config.nativeProcesses ?? createNativeProcessController();
+  const creationMask = async (maskSignal?: AbortSignalLike): Promise<number | undefined> => {
+    const required = native.requiresCreationMaskProbe();
+    if (typeof required !== 'boolean' || (required && process.platform !== 'darwin'))
+      throw new HostDeniedError('filesystem creation policy unavailable');
+    return captureRequiredCreationMask(processes, required, maskSignal);
+  };
+  const initialMask = await creationMask(signal);
+  async function assertPreparedSnapshot(path: string): Promise<void> {
+    if (!equalSnapshot(before, await snapshotPrepared(path, maxBytes, signal, stage)))
+      throw new ToolPreparationError('stale_file');
+  }
+  async function releaseFailedPreparation(prepared: unknown): Promise<void> {
+    try {
+      if (before === null) await native.releaseNewMetadata(prepared);
+      else await native.releaseExistingMetadata(prepared);
+    } catch {
+      throw new HostDeniedError('filesystem metadata cleanup failed');
+    }
+  }
+  async function prepareNative(): Promise<unknown> {
+    if (target !== undefined) await assertPreparedSnapshot(target);
+    let nativePrepared: unknown;
+    let preparationOwned = false;
+    try {
+      const nativeTarget = target ?? join(deepest, `.relavium-fs-stage-v1.prepare.${randomUUID()}`);
+      nativePrepared =
+        before === null
+          ? await native.prepareNewMetadata(nativeTarget, initialMask)
+          : await native.prepareExistingMetadata(
+              nativeTarget,
+              request.kind === 'write' && request.append === true,
+              initialMask,
+            );
+      preparationOwned = true;
+      async function verifyPreparedIdentity(): Promise<void> {
+        if (before !== null) {
+          const identity = await native.existingMetadataIdentity(nativePrepared);
+          const observedIdentity = normalizeNodeFsIdentity(before);
+          if (
+            typeof identity !== 'object' ||
+            identity === null ||
+            !('dev' in identity) ||
+            !('ino' in identity) ||
+            identity.dev !== observedIdentity.dev.toString() ||
+            identity.ino !== observedIdentity.ino.toString()
+          ) {
+            throw new ToolPreparationError('stale_file');
+          }
+        }
+      }
+      await verifyPreparedIdentity();
+      if (target !== undefined) await assertPreparedSnapshot(target);
+    } catch (error) {
+      if (preparationOwned) await releaseFailedPreparation(nativePrepared);
+      if (error instanceof ToolPreparationError) throw error;
+      throw new HostDeniedError('filesystem metadata preparation refused');
+    }
+    return nativePrepared;
+  }
+  let nativePrepared = await prepareNative();
+  let used = false;
+  let pending: Promise<FileWritten> | undefined;
+  let released = false;
+  const run = async (executeSignal?: AbortSignalLike): Promise<FileWritten> => {
+    throwIfAborted(executeSignal);
+    const executionCreationMask = async (): Promise<number | undefined> => {
+      try {
+        return await creationMask(executeSignal);
+      } catch (error) {
+        throw nativeWriteAttentionFailure(error);
+      }
+    };
+    if (config.operatorHomeDir === undefined) throw new FsStageInventoryError();
+    const executionStage = await captureFsStageInventory(config.operatorHomeDir, executeSignal);
+    const executionNativeFloor = await captureNativeRuntimeWriteFloor();
+    executionNativeFloor.assertPath(lexical);
+    const freshDeepest = await deepestExistingReal(parent, {
+      realpath,
+      lstat,
+      dirname,
+      isMissing: (error) => errnoCode(error) === 'ENOENT',
     });
-    await rename(tmp, finalTarget);
-    published = true;
-  } finally {
-    if (!published) await rm(tmp, { force: true }).catch(() => undefined);
-  }
-  return { path: relWorkspace(config, finalTarget), bytesWritten: bytes.length };
+    executionNativeFloor.assertPath(freshDeepest);
+    const freshAncestor = await stat(freshDeepest, { bigint: true });
+    if (
+      freshDeepest !== deepest ||
+      ancestor.dev !== freshAncestor.dev ||
+      ancestor.ino !== freshAncestor.ino
+    )
+      throw new ToolPreparationError('stale_file');
+    const freshParent = await realpath(parent).catch((error: unknown) => {
+      if (errnoCode(error) === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (freshParent !== parentReal) throw new ToolPreparationError('stale_file');
+    if (
+      target !== undefined &&
+      !equalSnapshot(
+        before,
+        await snapshotPrepared(target, maxBytes, executeSignal, executionStage),
+      )
+    )
+      throw new ToolPreparationError('stale_file');
+    async function createParents(): Promise<void> {
+      async function findMissing(): Promise<string[]> {
+        const missing: string[] = [];
+        let cursor = parent;
+        while (true) {
+          try {
+            await lstat(cursor);
+            break;
+          } catch (error) {
+            if (errnoCode(error) !== 'ENOENT') throw error;
+            missing.push(cursor);
+            const next = dirname(cursor);
+            if (next === cursor) throw nativeWriteAttentionFailure();
+            cursor = next;
+          }
+        }
+        return missing;
+      }
+      const missing = await findMissing();
+      for (const directory of missing.reverse()) {
+        throwIfAborted(executeSignal);
+        const mask = await executionCreationMask();
+        try {
+          await native.recheckNewMetadata(nativePrepared, mask);
+        } catch (error) {
+          throw nativeWriteAttentionFailure(error);
+        }
+        executionNativeFloor.assertPath(directory);
+        assertNotProtectedPath(directory, config.pathPolicy);
+        assertFsPolicyPath(config.pathPolicy, lexical, directory);
+        try {
+          await mkdir(directory, { mode: 0o700 });
+        } catch (error) {
+          if (errnoCode(error) !== 'EEXIST') throw error;
+        }
+        const actual = await realpath(directory);
+        executionNativeFloor.assertPath(actual);
+        assertInScope(inScope, actual);
+        assertNotProtectedPath(actual, config.pathPolicy);
+        assertFsPolicyPath(config.pathPolicy, lexical, actual);
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new ToolPreparationError('stale_file');
+        try {
+          await native.recheckNewMetadata(nativePrepared, mask);
+        } catch (error) {
+          throw nativeWriteAttentionFailure(error);
+        }
+      }
+    }
+    if (target === undefined) await createParents();
+    const jailed = await jailWriteTarget(config, inScope, request.path, false);
+    const finalTarget = jailed.finalTarget;
+    executionNativeFloor.assertPath(finalTarget);
+    assertNotProtectedPath(finalTarget, config.pathPolicy);
+    assertNotSensitiveReadPath(finalTarget, config.pathPolicy);
+    await assertNotSymlink(finalTarget);
+    if (target !== undefined && finalTarget !== target)
+      throw new ToolPreparationError('stale_file');
+    const stageMask = await executionCreationMask();
+    if (target === undefined) {
+      try {
+        await native.recheckNewMetadata(nativePrepared, stageMask);
+        await native.releaseNewMetadata(nativePrepared);
+        nativePrepared = await native.prepareNewMetadata(finalTarget, stageMask);
+      } catch (error) {
+        throw nativeWriteAttentionFailure(error);
+      }
+    }
+    if (
+      !equalSnapshot(
+        before,
+        await snapshotPrepared(finalTarget, maxBytes, executeSignal, executionStage),
+      )
+    )
+      throw new ToolPreparationError('stale_file');
+    throwIfAborted(executeSignal);
+    await runNativeStage({
+      stageMask,
+      adapter: native,
+      prepared: nativePrepared,
+      before: before === null ? null : Buffer.from(before.text, 'utf8'),
+      after: Buffer.from(after, 'utf8'),
+      home: config.operatorHomeDir,
+      nonce: randomUUID().replaceAll('-', ''),
+      creationMask: executionCreationMask,
+      ...(executeSignal === undefined ? {} : { signal: executeSignal }),
+    });
+    return {
+      path: relWorkspace(config, finalTarget),
+      bytesWritten:
+        request.kind === 'write'
+          ? Buffer.byteLength(request.content, 'utf8')
+          : Buffer.byteLength(after, 'utf8'),
+    };
+  };
+  return Object.freeze({
+    path: relWorkspace(config, target ?? lexical),
+    before: before?.text ?? null,
+    after,
+    execute: (executeSignal?: AbortSignalLike, options?: ToolHostCallOptions) => {
+      if (used || released)
+        return Promise.reject(new FsCapabilityError('prepared write is no longer available'));
+      used = true;
+      const producer = (): Promise<FileWritten> => guarded(() => run(executeSignal));
+      pending = options?.retainWork === undefined ? producer() : options.retainWork(producer);
+      return pending;
+    },
+    release: async () => {
+      released = true;
+      await pending?.catch(() => undefined);
+      try {
+        if (before === null) await native.releaseNewMetadata(nativePrepared);
+        else await native.releaseExistingMetadata(nativePrepared);
+      } catch {
+        if (used) throw nativeWriteAttentionFailure();
+        throw new HostDeniedError('filesystem metadata cleanup failed');
+      }
+    },
+  });
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -758,6 +1477,7 @@ async function listOne(
   path: string,
   opts: FsListOpts,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<DirListing> {
   throwIfAborted(signal);
   assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
@@ -768,20 +1488,21 @@ async function listOne(
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   assertNotSensitiveReadPath(realRoot, config.pathPolicy);
   const rootInfo = await stat(realRoot);
+  stage.assertIdentity(await stat(realRoot, { bigint: true }));
   if (!rootInfo.isDirectory()) {
     throw new FsCapabilityError('list_directory: the path is not a directory');
   }
   const matcher = opts.glob === undefined ? undefined : compileGlob(opts.glob);
   const cap = Math.min(maxEntries, MAX_LIST_ENTRIES);
   const entries: DirEntry[] = [];
-  await walk(
+  let truncated = false;
+  const complete = await walk(
     realRoot,
     opts.recursive === true,
     signal,
     inScope,
     config.pathPolicy,
     async (real, rel, dirent) => {
-      if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
       if (matcher !== undefined && !matcher(rel)) return true;
       // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
       // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
@@ -795,6 +1516,13 @@ async function listOne(
         return true;
       const info = await lstat(real).catch(() => undefined);
       if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
+      stage.assertIdentity(await lstat(real, { bigint: true }));
+      if (realResolved !== undefined)
+        stage.assertIdentity(await stat(realResolved, { bigint: true }));
+      if (entries.length >= cap) {
+        truncated = true;
+        return false;
+      }
       entries.push({
         name: rel,
         type: dirent.isDirectory() ? 'directory' : 'file',
@@ -804,7 +1532,584 @@ async function listOne(
       return true;
     },
   );
-  return { entries };
+  return {
+    entries,
+    ...(truncated || !complete ? { truncated: true, omittedEntries: null } : {}),
+    ...(truncated ? { entryLimit: cap } : {}),
+    ...(!complete ? { incomplete: true } : {}),
+  };
+}
+
+// Independent traversal and result ceilings. No directory is materialized in full.
+const SCAN_ENTRIES = 10000;
+const SCAN_DIRS = 1000;
+const SCAN_DEPTH = 32;
+const SCAN_IGNORE_ANCESTORS = 32;
+const SCAN_FILES = 1000;
+const SCAN_BYTES = 16 * 1024 * 1024;
+const SCAN_FILE_BYTES = 1024 * 1024;
+const SCAN_MATCHES = 200;
+const SCAN_WORK = 16 * 1024 * 1024;
+const IGNORE_BYTES = 64 * 1024;
+const IGNORE_RULES = 256;
+const LINE_BYTES = 2048;
+const IGNORE_FILES = ['.gitignore', '.relaviumignore'] as const;
+
+/** Presence is enough: nested rules are unsupported, so never read their contents or follow a link. */
+async function hasIgnoreFile(dir: string, signal: AbortSignalLike | undefined): Promise<boolean> {
+  for (const name of IGNORE_FILES) {
+    throwIfAborted(signal);
+    try {
+      await lstat(join(dir, name));
+      return true;
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error;
+    }
+  }
+  return false;
+}
+
+async function discover(
+  config: NodeFsCapabilityConfig,
+  path: string,
+  find: FsFindOpts,
+  search: undefined,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
+): Promise<FsFindResult>;
+async function discover(
+  config: NodeFsCapabilityConfig,
+  path: string,
+  find: undefined,
+  search: FsSearchOpts,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
+): Promise<FsSearchResult>;
+async function discover(
+  config: NodeFsCapabilityConfig,
+  path: string,
+  find: FsFindOpts | undefined,
+  search: FsSearchOpts | undefined,
+  signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
+): Promise<FsFindResult | FsSearchResult> {
+  throwIfAborted(signal);
+  const glob = find?.glob ?? search?.glob;
+  const fits = (value: string, limit: number): boolean =>
+    value.length > 0 && value.length <= limit && Buffer.byteLength(value, 'utf8') <= limit;
+  if (!fits(path, 4096)) throw new FsCapabilityError('discovery: invalid path');
+  if (glob !== undefined && !fits(glob, 4096))
+    throw new FsCapabilityError('discovery: invalid glob');
+  if (search !== undefined && !fits(search.pattern, 1024))
+    throw new FsCapabilityError('search_files: invalid pattern');
+  const inScope = buildScopeChecker(config);
+  assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
+  const root = await jailExisting(config, inScope, path);
+  assertNotSensitiveReadPath(root, config.pathPolicy);
+  stage.assertIdentity(await stat(root, { bigint: true }));
+  if (!(await stat(root)).isDirectory())
+    throw new FsCapabilityError('discovery: the path is not a directory');
+  const stats: {
+    entriesVisited: number;
+    filesScanned: number;
+    bytesScanned: number;
+    skippedBinary: number;
+    skippedOversize: number;
+    unreadable: number;
+    incomplete: boolean;
+    limit?: FsScanLimit;
+  } = {
+    entriesVisited: 0,
+    filesScanned: 0,
+    bytesScanned: 0,
+    skippedBinary: 0,
+    skippedOversize: 0,
+    unreadable: 0,
+    incomplete: false,
+  };
+  const stop = (limit: FsScanLimit): void => {
+    stats.incomplete = true;
+    stats.limit ??= limit;
+  };
+  const sourceBudget = { remaining: SCAN_BYTES };
+  const bodies: string[] = [];
+  const workspaceRoot = fsPolicyWorkspace(config.pathPolicy ?? createFsPathPolicy(config));
+  async function loadIgnore(name: string): Promise<boolean> {
+    const target = join(workspaceRoot, name);
+    let present = false;
+    try {
+      await lstat(target);
+      present = true;
+      const real = await realpath(target);
+      if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) {
+        stop('ignore');
+        return false;
+      }
+      const read = await readJailedFile(
+        real,
+        IGNORE_BYTES,
+        rejectAliasedRead(config, real),
+        undefined,
+        signal,
+        undefined,
+        stage,
+      );
+      if (read.kind !== 'file') {
+        stop('ignore');
+        return false;
+      }
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
+      const lines = parseIgnoreLines(text);
+      if (
+        lines.length > IGNORE_RULES ||
+        text
+          .split('\n')
+          .some(
+            (line) =>
+              /[ \t]\r?$/.test(line) && line.trim().length > 0 && !line.trimStart().startsWith('#'),
+          ) ||
+        lines.some((line) => line.includes('[') || line.includes(']') || line.includes('\\'))
+      ) {
+        stop('ignore');
+        return false;
+      }
+      bodies.push(text);
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof FsStageInventoryError) throw error;
+      if (present || errnoCode(error) !== 'ENOENT') {
+        stats.unreadable++;
+        stop('ignore');
+        return false;
+      }
+    }
+
+    return true;
+  }
+  for (const name of IGNORE_FILES) {
+    if (!(await loadIgnore(name))) break;
+  }
+  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+    if (relative(workspaceRoot, dir) === '') return false;
+    try {
+      const present = await hasIgnoreFile(dir, signal);
+      throwIfAborted(signal);
+      if (!present) return false;
+    } catch {
+      throwIfAborted(signal);
+      stats.unreadable++;
+    }
+    stop('ignore');
+    return true;
+  };
+  // A scoped walk never visits its parents. Inspect only admitted ancestors, with a separate finite
+  // ceiling, so unsupported inherited rules cannot be mistaken for a complete scan. The workspace
+  // root is the supported ignore boundary; a selected extra root never grants its own parents.
+  async function inspectAncestors(): Promise<void> {
+    if (relative(workspaceRoot, root) === '') return;
+    let ancestor = dirname(root);
+    let inspected = 0;
+    while (
+      !stats.incomplete &&
+      relative(workspaceRoot, ancestor) !== '' &&
+      inScope(ancestor) &&
+      !isSensitivePolicyReadPath(ancestor, config.pathPolicy)
+    ) {
+      throwIfAborted(signal);
+      if (++inspected > SCAN_IGNORE_ANCESTORS) {
+        stop('depth');
+        break;
+      }
+      const admitted = await resolveInScope(ancestor, inScope);
+      if (admitted === undefined) {
+        stats.unreadable++;
+        stop('ignore');
+        break;
+      }
+      if (isSensitivePolicyReadPath(admitted, config.pathPolicy)) break;
+      if (await checkNestedIgnore(admitted)) break;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
+  }
+  await inspectAncestors();
+  const ignored = compileIgnore(...bodies);
+  let work = 0;
+  const matcherLimit = new Error('filesystem matcher work limit reached');
+  const consumeMatcherWork = (): void => {
+    if (++work > SCAN_WORK) throw matcherLimit;
+  };
+  const matchesGlob = glob === undefined ? () => true : compileGlob(glob, consumeMatcherWork);
+  const files: { path: string; sizeBytes: number; lastModified: string; mtimeMs: number }[] = [];
+  const matches: { path: string; line: number; content: string; omittedBytes: number }[] = [];
+  const stack = [{ dir: root, depth: 0 }];
+  let directories = 0;
+  function admitDirectory(): boolean {
+    if (++directories <= SCAN_DIRS) return true;
+    stop('directories');
+    return false;
+  }
+  async function walkDirectory(next: { dir: string; depth: number }): Promise<boolean> {
+    if (!admitDirectory()) return false;
+    async function resolveDirectory(path: string): Promise<string | undefined> {
+      const resolved = await resolveInScope(path, inScope);
+      if (resolved === undefined || isSensitivePolicyReadPath(resolved, config.pathPolicy)) {
+        stats.unreadable++;
+        stats.incomplete = true;
+        return undefined;
+      }
+      return resolved;
+    }
+    const resolved = await resolveDirectory(next.dir);
+    if (resolved === undefined) return false;
+    if (await checkNestedIgnore(resolved)) return false;
+    const atWorkspaceRoot = relative(workspaceRoot, resolved) === '';
+    async function openDirectory(path: string) {
+      try {
+        return await opendir(path);
+      } catch {
+        stats.unreadable++;
+        stats.incomplete = true;
+        return undefined;
+      }
+    }
+    const dir = await openDirectory(resolved);
+    if (dir === undefined) return false;
+    try {
+      function matchCandidate(
+        entry: import('node:fs').Dirent,
+        candidate: string,
+        rel: string,
+        workspaceRel: string,
+      ): 'stop' | 'ignored' | 'matched' | 'unmatched' {
+        try {
+          // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
+          work += rel.length + workspaceRel.length + 2;
+          consumeMatcherWork();
+          const ignoredCandidate =
+            isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
+            (isWithinFsRoot(workspaceRoot, candidate) &&
+              ignored.ignores(workspaceRel, entry.isDirectory(), consumeMatcherWork));
+          const matchesCandidate = !ignoredCandidate && (entry.isDirectory() || matchesGlob(rel));
+          if (ignoredCandidate) return 'ignored';
+          return matchesCandidate ? 'matched' : 'unmatched';
+        } catch (cause) {
+          if (cause !== matcherLimit) throw cause;
+          stop('work');
+          return 'stop';
+        }
+      }
+      async function processEntry(
+        entry: import('node:fs').Dirent,
+        currentDir: string,
+        depth: number,
+      ): Promise<'next' | 'stop'> {
+        throwIfAborted(signal);
+        if (++stats.entriesVisited > SCAN_ENTRIES) {
+          stop('entries');
+          return 'stop';
+        }
+        if (!atWorkspaceRoot && (entry.name === '.gitignore' || entry.name === '.relaviumignore')) {
+          stop('ignore');
+          return 'stop';
+        }
+        const candidate = join(currentDir, entry.name);
+        const rel = posixRel(root, candidate);
+        const workspaceRel = posixRel(workspaceRoot, candidate);
+        const match = matchCandidate(entry, candidate, rel, workspaceRel);
+        if (match === 'stop') return 'stop';
+        if (match === 'ignored') return 'next';
+        stage.assertIdentity(await lstat(candidate, { bigint: true }));
+        function queueDirectory(): 'next' | 'stop' {
+          if (depth >= SCAN_DEPTH) {
+            stop('depth');
+            return 'stop';
+          }
+          stack.push({ dir: candidate, depth: depth + 1 });
+          return 'next';
+        }
+        if (entry.isDirectory()) return queueDirectory();
+        if (match === 'unmatched') return 'next';
+        const real = await realpath(candidate).catch(() => undefined);
+        if (real === undefined) {
+          stats.unreadable++;
+          stats.incomplete = true;
+          return 'stop';
+        }
+        if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) return 'next';
+        assertFsPolicyPath(config.pathPolicy, candidate, real);
+        stage.assertIdentity(await stat(real, { bigint: true }));
+        const info = await stat(real).catch(() => undefined);
+        if (info === undefined) {
+          stats.unreadable++;
+          stats.incomplete = true;
+          return 'stop';
+        }
+        if (!info.isFile()) return 'next';
+        if (stats.filesScanned >= SCAN_FILES) {
+          stop('files');
+          return 'stop';
+        }
+        stats.filesScanned++;
+        const display = relWorkspace(config, candidate);
+        const fileReal = real;
+        const fileInfo = info;
+        async function collectFile(): Promise<'next' | 'stop'> {
+          // Open even find results so hard links cannot disclose aliases across the jail.
+          let checked: JailedRead;
+          try {
+            checked = await readJailedFile(
+              fileReal,
+              0,
+              rejectAliasedRead(config, fileReal),
+              undefined,
+              signal,
+              undefined,
+              stage,
+            );
+          } catch (error) {
+            throwIfAborted(signal);
+            if (error instanceof FsStageInventoryError) throw error;
+            stats.unreadable++;
+            stats.incomplete = true;
+            return 'stop';
+          }
+          if (
+            checked.kind === 'aliased' ||
+            checked.kind === 'special' ||
+            checked.kind === 'directory'
+          )
+            return 'next';
+          files.push({
+            path: display,
+            sizeBytes: fileInfo.size,
+            lastModified: fileInfo.mtime.toISOString(),
+            mtimeMs: fileInfo.mtimeMs,
+          });
+          if (files.length >= SCAN_MATCHES) {
+            stop('matches');
+            return 'stop';
+          }
+          return 'next';
+        }
+        if (find !== undefined) return collectFile();
+        if (search === undefined) return 'next';
+        async function searchFile(searchOptions: FsSearchOpts): Promise<'next' | 'stop'> {
+          if (fileInfo.size > SCAN_FILE_BYTES) {
+            stats.skippedOversize++;
+            return 'next';
+          }
+          if (stats.bytesScanned + fileInfo.size > SCAN_BYTES) {
+            stop('bytes');
+            return 'stop';
+          }
+          let result: JailedRead;
+          try {
+            result = await readJailedFile(
+              fileReal,
+              SCAN_FILE_BYTES,
+              rejectAliasedRead(config, fileReal),
+              undefined,
+              signal,
+              sourceBudget,
+              stage,
+            );
+          } catch (error) {
+            throwIfAborted(signal);
+            if (error instanceof FsStageInventoryError) throw error;
+            if (error instanceof FsReadBudgetError) {
+              stop('bytes');
+              return 'stop';
+            }
+            stats.unreadable++;
+            stats.incomplete = true;
+            return 'stop';
+          } finally {
+            // Failed decoding and skipped binary candidates have already consumed real I/O too.
+            stats.bytesScanned = SCAN_BYTES - sourceBudget.remaining;
+          }
+          if (result.kind === 'binary') {
+            stats.skippedBinary++;
+            return 'next';
+          }
+          if (result.kind === 'oversize') stats.skippedOversize++;
+          if (result.kind !== 'file') return 'next';
+          let text: string;
+          try {
+            text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.bytes);
+          } catch {
+            stats.skippedBinary++;
+            return 'next';
+          }
+          if (result.bytes.includes(0)) {
+            stats.skippedBinary++;
+            return 'next';
+          }
+          async function searchLines(text: string): Promise<'next' | 'stop'> {
+            const needle =
+              searchOptions.caseSensitive === false
+                ? foldPattern(searchOptions.pattern)
+                : searchOptions.pattern;
+            const lines = text.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i] ?? '';
+              // Charge the worst-case literal comparisons across all indexOf retries, plus folding.
+              // Each retry resumes at least one folded UTF-16 unit later, so their searched spans do
+              // not cause an uncharged quadratic rescan; the needle multiplier bounds comparisons.
+              work += (line.length * 3 + 1) * (needle.length + 1);
+              if (work > SCAN_WORK) {
+                stop('work');
+                break;
+              }
+              const at = await findLiteral(
+                line,
+                needle,
+                searchOptions.caseSensitive === false,
+                searchOptions.wholeWord === true,
+                signal,
+              );
+              if (at < 0) continue;
+              matches.push({
+                path: display,
+                line: i + 1,
+                ...searchExcerpt(line, at),
+              });
+              if (matches.length >= SCAN_MATCHES) {
+                stop('matches');
+                break;
+              }
+            }
+            if (stats.incomplete) return 'stop';
+
+            return 'next';
+          }
+          return searchLines(text);
+        }
+        return searchFile(search);
+      }
+      for await (const entry of dir) {
+        if ((await processEntry(entry, resolved, next.depth)) === 'stop') break;
+      }
+    } finally {
+      await dir.close().catch(() => undefined);
+    }
+
+    return true;
+  }
+  async function walkDirectories(): Promise<void> {
+    while (stack.length > 0 && !stats.incomplete) {
+      throwIfAborted(signal);
+      const next = stack.pop();
+      if (next === undefined) break;
+      if (!(await walkDirectory(next))) break;
+    }
+  }
+  await walkDirectories();
+  throwIfAborted(signal);
+  if (find !== undefined) {
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    return {
+      files: files.map((file) => ({
+        path: file.path,
+        sizeBytes: file.sizeBytes,
+        lastModified: file.lastModified,
+      })),
+      stats,
+    };
+  }
+  return { matches, stats };
+}
+function searchExcerpt(line: string, at: number): { content: string; omittedBytes: number } {
+  const bytes = Buffer.from(line);
+  let excerptStart = Math.max(0, Buffer.byteLength(line.slice(0, at)) - Math.floor(LINE_BYTES / 2));
+  while (excerptStart < bytes.length && ((bytes[excerptStart] ?? 0) & 0xc0) === 0x80)
+    excerptStart++;
+  let excerpt = bytes.subarray(excerptStart, excerptStart + LINE_BYTES);
+  while (excerpt.length > 0 && (excerpt[excerpt.length - 1] ?? 0) >= 128) {
+    try {
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(excerpt);
+      break;
+    } catch {
+      excerpt = excerpt.subarray(0, -1);
+    }
+  }
+  return { content: excerpt.toString('utf8'), omittedBytes: bytes.length - excerpt.length };
+}
+
+// Fold one original code point at a time so expansion positions retain an exact source span.
+// The pattern uses the same folding rule; neither offset nor word classification uses folded text.
+function foldPattern(text: string): string {
+  return Array.from(text, (part) => part.toLowerCase()).join('');
+}
+async function foldWithSpans(
+  line: string,
+  starts: number[],
+  ends: number[],
+  signal: AbortSignalLike | undefined,
+): Promise<string> {
+  const chunks: string[] = [];
+  let source = 0;
+  let foldedCount = 0;
+  for (const part of line) {
+    if (++foldedCount % 16384 === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      throwIfAborted(signal);
+    }
+    const folded = part.toLowerCase();
+    chunks.push(folded);
+    for (let i = 0; i < folded.length; i++) {
+      starts.push(source);
+      ends.push(source + part.length);
+    }
+    source += part.length;
+  }
+  return chunks.join('');
+}
+async function findLiteral(
+  line: string,
+  needle: string,
+  insensitive: boolean,
+  wholeWord: boolean,
+  signal: AbortSignalLike | undefined,
+): Promise<number> {
+  let haystack = line;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  if (insensitive) {
+    haystack = await foldWithSpans(line, starts, ends, signal);
+  }
+  let from = 0;
+  let attempts = 0;
+  while (from <= haystack.length) {
+    if (++attempts % 16384 === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      throwIfAborted(signal);
+    }
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return -1;
+    const start = insensitive ? starts[at] : at;
+    const end = insensitive ? ends[at + needle.length - 1] : at + needle.length;
+    if (
+      start !== undefined &&
+      end !== undefined &&
+      (!wholeWord || (!wordBefore(line, start) && !wordAfter(line, end)))
+    )
+      return start;
+    from = at + 1;
+  }
+  return -1;
+}
+function wordBefore(value: string, at: number): boolean {
+  if (at <= 0) return false;
+  const last = value.charCodeAt(at - 1);
+  const start = last >= 0xdc00 && last <= 0xdfff && at >= 2 ? at - 2 : at - 1;
+  const code = value.codePointAt(start);
+  return code !== undefined && /[\p{L}\p{N}_]/u.test(String.fromCodePoint(code));
+}
+function wordAfter(value: string, at: number): boolean {
+  const next = value.codePointAt(at);
+  return next !== undefined && /[\p{L}\p{N}_]/u.test(String.fromCodePoint(next));
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -935,26 +2240,45 @@ async function walk(
   inScope: ScopeChecker,
   policy: FsPathPolicy | undefined,
   visit: (real: string, rel: string, dirent: Dirent) => Promise<boolean>,
-): Promise<void> {
-  const stack: string[] = [root];
+): Promise<boolean> {
+  const stack = [{ path: root, depth: 0 }];
+  let visited = 0;
+  let directories = 0;
+  async function visitDirectory(
+    handle: Awaited<ReturnType<typeof opendir>>,
+    dir: string,
+    depth: number,
+  ): Promise<boolean> {
+    try {
+      for await (const dirent of handle) {
+        throwIfAborted(signal);
+        if (++visited > SCAN_ENTRIES) return false;
+        const real = join(dir, dirent.name);
+        if (!(await visit(real, posixRel(root, real), dirent))) return false;
+        if (recursive && dirent.isDirectory() && !isSensitivePolicyReadPath(real, policy)) {
+          if (depth >= SCAN_DEPTH) return false;
+          stack.push({ path: real, depth: depth + 1 });
+        }
+      }
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+    return true;
+  }
   while (stack.length > 0) {
     throwIfAborted(signal);
     const queued = stack.pop();
     if (queued === undefined) break;
-    // Re-resolve + re-scope-check EVERY popped dir (including `root`, already canonical — a no-op resolve) right
-    // before its `readdir`, reducing the queue→read replacement window; a dir swapped out-of-jail in that window drops here.
-    const dir = await resolveInScope(queued, inScope);
-    if (dir === undefined) continue; // swapped out-of-jail or vanished between queue and read — skip
-    if (isSensitivePolicyReadPath(queued, policy) || isSensitivePolicyReadPath(dir, policy))
+    if (++directories > SCAN_DIRS) return false;
+    const dir = await resolveInScope(queued.path, inScope);
+    if (dir === undefined) return false;
+    if (isSensitivePolicyReadPath(queued.path, policy) || isSensitivePolicyReadPath(dir, policy))
       continue;
-    const dirents = await readdir(dir, { withFileTypes: true }).catch((): Dirent[] => []);
-    for (const dirent of dirents) {
-      const real = join(dir, dirent.name);
-      if (!(await visit(real, posixRel(root, real), dirent))) return;
-      if (recursive && dirent.isDirectory() && !isSensitivePolicyReadPath(real, policy))
-        stack.push(real);
-    }
+    const handle = await opendir(dir).catch(() => undefined);
+    if (handle === undefined) return false;
+    if (!(await visitDirectory(handle, dir, queued.depth))) return false;
   }
+  return true;
 }
 
 /** Resolve `dir` through `realpath` and return it only if still in scope (else `undefined`) — the walk's jail guard. */
@@ -969,6 +2293,7 @@ async function collectGlobFiles(
   maxMatches: number,
   pattern: string,
   signal: AbortSignalLike | undefined,
+  stage: FsStageInventory,
 ): Promise<{ real: string; rel: string; size: number; mtimeMs: number }[]> {
   // Refuse the original UNC spelling before portable glob separators erase its provenance.
   lexicalTarget(config, pattern);
@@ -981,34 +2306,52 @@ async function collectGlobFiles(
   assertNotSensitiveReadPath(lexicalTarget(config, prefix), config.pathPolicy);
   const base = await jailExisting(config, inScope, prefix);
   assertNotSensitiveReadPath(base, config.pathPolicy);
+  stage.assertIdentity(await stat(base, { bigint: true }));
   const matcher = compileGlob(slash < 0 ? portablePattern : portablePattern.slice(slash + 1));
   const out: { real: string; rel: string; size: number; mtimeMs: number }[] = [];
-  await walk(base, true, signal, inScope, config.pathPolicy, async (real, rel, dirent) => {
-    if (out.length >= maxMatches) return false;
-    if (dirent.isDirectory() || !matcher(rel)) return true;
-    // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).
-    const realResolved = await realpath(real).catch(() => undefined);
-    if (realResolved === undefined || !inScope(realResolved)) return true; // skip, never read out of scope
-    // Never surface a credential/secret store through a glob (the sensitive-read floor); the per-fd hard-link
-    // guard in readJailedFile then still refuses an aliased match the readGlob loop reaches.
-    if (
-      isSensitivePolicyReadPath(real, config.pathPolicy) ||
-      isSensitivePolicyReadPath(realResolved, config.pathPolicy)
-    )
+  let matchCap = false;
+  const complete = await walk(
+    base,
+    true,
+    signal,
+    inScope,
+    config.pathPolicy,
+    async (real, rel, dirent) => {
+      if (dirent.isDirectory() || !matcher(rel)) return true;
+      // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).
+      const realResolved = await realpath(real).catch(() => undefined);
+      if (realResolved === undefined || !inScope(realResolved)) return true; // skip, never read out of scope
+      // Never surface a credential/secret store through a glob (the sensitive-read floor); the per-fd hard-link
+      // guard in readJailedFile then still refuses an aliased match the readGlob loop reaches.
+      if (
+        isSensitivePolicyReadPath(real, config.pathPolicy) ||
+        isSensitivePolicyReadPath(realResolved, config.pathPolicy)
+      )
+        return true;
+      assertFsPolicyPath(config.pathPolicy, real, realResolved);
+      // stat the RESOLVED target (not the walk path) so an in-scope symlink TO a regular file still reads — a
+      // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
+      const info = await stat(realResolved).catch(() => undefined);
+      if (info === undefined || !info.isFile()) return true;
+      stage.assertIdentity(await stat(realResolved, { bigint: true }));
+      if (out.length >= maxMatches) {
+        matchCap = true;
+        return false;
+      }
+      out.push({
+        real: realResolved,
+        rel: relWorkspace(config, realResolved),
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+      });
       return true;
-    assertFsPolicyPath(config.pathPolicy, real, realResolved);
-    // stat the RESOLVED target (not the walk path) so an in-scope symlink TO a regular file still reads — a
-    // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
-    const info = await stat(realResolved).catch(() => undefined);
-    if (info === undefined || !info.isFile()) return true;
-    out.push({
-      real: realResolved,
-      rel: relWorkspace(config, realResolved),
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-    });
-    return true;
-  });
+    },
+  );
+  if (matchCap)
+    throw new FsCapabilityError(
+      `read_file: glob exceeds the ${maxMatches}-file limit; narrow the glob`,
+    );
+  if (!complete) throw new FsCapabilityError('read_file: glob traversal was incomplete');
   return out;
 }
 
@@ -1018,23 +2361,28 @@ async function collectGlobFiles(
  * ------------------------------------------------------------------------------------------------ */
 
 /** Compile a glob pattern to a predicate over a POSIX-separated relative path. */
-function compileGlob(pattern: string): (path: string) => boolean {
+function compileGlob(pattern: string, consumeWork?: () => void): (path: string) => boolean {
   const pat = pattern.split('/');
-  return (path: string) => matchSegments(pat, path.split('/'));
+  return (path: string) => matchSegments(pat, path.split('/'), consumeWork);
 }
 
 /** Match a pattern segment-list against a path segment-list; `**` matches zero or more whole segments. */
-function matchSegments(pat: readonly string[], str: readonly string[]): boolean {
+function matchSegments(
+  pat: readonly string[],
+  str: readonly string[],
+  consumeWork?: () => void,
+): boolean {
   let p = 0;
   let s = 0;
   let starP = -1; // pattern index just past the last `**`
   let starS = 0; // str index to resume from when extending the last `**`
   while (s < str.length) {
+    consumeWork?.();
     const seg = pat[p];
     if (seg === '**') {
       starP = ++p; // `**` matches zero segments first; remember where to extend it
       starS = s;
-    } else if (seg !== undefined && matchSegment(seg, str[s] ?? '')) {
+    } else if (seg !== undefined && matchSegment(seg, str[s] ?? '', consumeWork)) {
       p++;
       s++;
     } else if (starP >= 0) {
@@ -1044,17 +2392,21 @@ function matchSegments(pat: readonly string[], str: readonly string[]): boolean 
       return false;
     }
   }
-  while (pat[p] === '**') p++; // trailing `**` segments match the empty remainder
+  while (pat[p] === '**') {
+    consumeWork?.();
+    p++;
+  } // trailing `**` segments match the empty remainder
   return p === pat.length;
 }
 
 /** Match a single glob segment (`*` = any run sans `/`, `?` = one char sans `/`) against a path segment. */
-function matchSegment(glob: string, value: string): boolean {
+function matchSegment(glob: string, value: string, consumeWork?: () => void): boolean {
   let g = 0;
   let v = 0;
   let star = -1;
   let mark = 0;
   while (v < value.length) {
+    consumeWork?.();
     const gc = glob[g];
     if (gc === '?' || (gc !== undefined && gc !== '*' && gc === value[v])) {
       g++;
@@ -1069,7 +2421,10 @@ function matchSegment(glob: string, value: string): boolean {
       return false;
     }
   }
-  while (glob[g] === '*') g++;
+  while (glob[g] === '*') {
+    consumeWork?.();
+    g++;
+  }
   return g === glob.length;
 }
 

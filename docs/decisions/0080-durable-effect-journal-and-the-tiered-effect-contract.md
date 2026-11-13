@@ -39,6 +39,18 @@
 > `packages/shared/src/run.ts` and the store's docblock are corrected when `W7` lands. Run-scoped behaviour is
 > unchanged.
 
+> **Refined 2026-11-12 by [ADR-0124](0124-inspect-retained-run-effects-before-file-preparation.md) — implementation pending in MVP-3 Step 2.**
+> Prepared journaled filesystem calls gain a required read-only inspection before
+> file preparation, preserving atomic prepare as the race backstop. One shared
+> strict retained-envelope validator also governs the node resume gate and both
+> replay paths; exact mapping evidence replaces presence-only matching. Session
+> non-replay and the absence of a universal model-replay identity remain.
+> The canonical [effect contract](../reference/shared-core/effect-journal.md#retained-evidence-and-early-inspection--mvp-3)
+> specifies the refinement. Its §7 also states the existing registry order:
+> full-result mapping and model bounding precede settlement of those projections;
+> any earlier post-effect failure leaves prepared evidence and is never retried.
+> This note does not claim implementation acceptance or new effect tiers.
+
 ## Context
 
 A tool effect can complete at its target, the process can die before the result persists, and resume re-runs the
@@ -449,3 +461,31 @@ history and grants no automatic effect retry or whole-wave completion.
 > rewritten, and no effect retry authority is added. New independent review,
 > separate security and corrected-source publication checks remain pending in
 > the [second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).
+
+> Partially superseded 2026-11-12 by [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> every built-in `write_file` call is tier 3, including overwrite/new/empty and
+> byte-identical writes; `edit_file` remains tier 3. Final content alone is not
+> a receipt for inode/security-metadata publication. The existing durable claim,
+> resume gate, strict retained evidence and session non-replay remain; no second
+> native effect journal is introduced. Historical overwrite exclusions are
+> preserved above as history. The canonical [journal predicate](../reference/shared-core/effect-journal.md#3-what-is-journaled)
+> and metadata contract own the new scope and crash cuts. Implementation and
+> native security acceptance remain open.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.
+
+
+> **Clarified 2026-11-13 by accepted [ADR-0126](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md):**
+> A post-claim native admission or cleanup failure is not proof for discarding
+> a tier-3 effect. Unresolved evidence retains the existing attention/no-retry
+> behavior. Caller cancellation and independent effect-attention disclosure
+> are separate facts; no new tier, session replay or retry authority is added.
+> The [native contract](../reference/cli/native-filesystem-metadata.md#fixed-failure-facts-and-caller-outcomes)
+> owns the fixed host boundary and outcome table.

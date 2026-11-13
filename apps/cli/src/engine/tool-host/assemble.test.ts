@@ -5,8 +5,15 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BUILTIN_TOOLS, ToolUnavailableError, type ToolDef, type ToolHost } from '@relavium/core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  BUILTIN_TOOLS,
+  createInMemoryEffectJournal,
+  createToolRegistry,
+  ToolUnavailableError,
+  type ToolDef,
+  type ToolHost,
+} from '@relavium/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assembleToolEnv, wiredToolIds } from './assemble.js';
 
@@ -26,11 +33,78 @@ afterEach(async () => {
 });
 
 describe('assembleToolEnv', () => {
+  it('lets a scheduled timer cancel a large prepared diff before approval or dispatch', async () => {
+    const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
+      profile: 'chat-read-write',
+      fsScopeTier: 'sandboxed',
+      workspaceDir: workspace,
+    });
+    const controller = new AbortController();
+    const release = vi.fn();
+    const execute = vi.fn();
+    const confirm = vi.fn();
+    const effects = createInMemoryEffectJournal({
+      kind: 'run',
+      runId: 'r',
+      nodeId: 'n',
+      attempt: 1,
+    });
+    const prepare = vi.spyOn(effects, 'prepare');
+    let timerFired = false;
+    const fs = host.fs!;
+    const registry = createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: {
+        ...host,
+        fs: {
+          ...fs,
+          prepareWrite: async () => {
+            setTimeout(() => {
+              timerFired = true;
+              controller.abort();
+            }, 0);
+            await Promise.resolve();
+            return {
+              path: 'a',
+              before: 'a\n'.repeat(5000),
+              after: 'b\n'.repeat(5000),
+              execute,
+              release,
+            };
+          },
+        },
+      },
+    });
+    await expect(
+      registry.dispatch(
+        { type: 'tool_call', id: 'id', name: 'write_file', args: { path: 'a', content: 'b' } },
+        {
+          nodeId: 'n',
+          grantedToolIds: new Set(['write_file']),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects,
+          effectSlot: 0,
+          signal: controller.signal,
+          approval: { confirm },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(timerFired).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
   it('carries native authority inertly, then registers a real process in the original invocation', async () => {
     const invocation = createCliInvocation();
     const nativeProcesses = nativeProcessesForInvocation(invocation);
     const exitListeners = process.listenerCount('exit');
     assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'project',
       workspaceDir: workspace,
@@ -45,6 +119,7 @@ describe('assembleToolEnv', () => {
   it('chat-read-only: fs reads a real file but write_file fail-closes as tool_unavailable; process is wired', async () => {
     await writeFile(join(workspace, 'a.txt'), 'hello');
     const { host, policy } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-only',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -58,6 +133,7 @@ describe('assembleToolEnv', () => {
 
   it('workflow-read-write: fs can write', async () => {
     const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'workflow-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -73,6 +149,7 @@ describe('assembleToolEnv', () => {
   it('does NOT wire egress or os for the read-only chat or the workflow-run profile', () => {
     for (const profile of ['chat-read-only', 'workflow-read-write'] as const) {
       const { host } = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile,
         fsScopeTier: 'sandboxed',
         workspaceDir: workspace,
@@ -84,6 +161,7 @@ describe('assembleToolEnv', () => {
 
   it('chat-read-write: the full-capability host wires fs-write + process + egress + os (ADR-0057)', async () => {
     const { host, policy } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -106,6 +184,7 @@ describe('assembleToolEnv', () => {
     await writeFile(join(outside, 'secret.txt'), 'SECRET');
     try {
       const { host } = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'chat-read-write',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -119,6 +198,7 @@ describe('assembleToolEnv', () => {
   it('chat-read-write: threads the egress credentialRef resolver into the egress arm (host-side bearer)', async () => {
     let resolvedRef: string | undefined;
     const { host } = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: workspace,
@@ -145,6 +225,7 @@ describe('assembleToolEnv', () => {
       // chat-read-only + full ⇒ clamped to project (workspace-only): the OUTSIDE read is REJECTED, but an
       // IN-workspace read still works (so the clamp landed at project/workspace-only, not something stricter).
       const chat = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'chat-read-only',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -156,6 +237,7 @@ describe('assembleToolEnv', () => {
       expect((await chatFs.readFile('in.txt', {})).content).toBe('INSIDE');
       // workflow-read-write + full ⇒ NOT clamped (author-trusted): the outside read succeeds.
       const run = assembleToolEnv({
+        operatorHomeDir: workspace,
         profile: 'workflow-read-write',
         fsScopeTier: 'full',
         workspaceDir: workspace,
@@ -196,6 +278,7 @@ describe('wiredToolIds (advertise-filter)', () => {
 
   it('keeps egress (http/search) tools on the full-capability chat-read-write host', () => {
     const fullHost: ToolHost = assembleToolEnv({
+      operatorHomeDir: workspace,
       profile: 'chat-read-write',
       fsScopeTier: 'sandboxed',
       workspaceDir: '/tmp/relavium-advertise-full',
@@ -225,6 +308,46 @@ describe('wiredToolIds (advertise-filter)', () => {
       'mcp__server__read',
       'mcp_call',
     ]); // host.mcp present ⇒ both advertised
+  });
+
+  it('advertises discovery only when its declared filesystem operation is actually wired', () => {
+    const fs = fsHost.fs;
+    if (fs === undefined) throw new Error('missing fixture filesystem');
+    const base: ToolHost = {
+      fs: {
+        readFile: fs.readFile.bind(fs),
+        writeFile: fs.writeFile.bind(fs),
+        listDirectory: fs.listDirectory.bind(fs),
+      },
+    };
+    expect(
+      wiredToolIds(['read_file', 'search_files', 'find_files'], fsHost, BUILTIN_TOOLS),
+    ).toEqual(['read_file', 'search_files', 'find_files']);
+    expect(wiredToolIds(['read_file', 'search_files', 'find_files'], base, BUILTIN_TOOLS)).toEqual([
+      'read_file',
+    ]);
+    const stats = {
+      entriesVisited: 0,
+      filesScanned: 0,
+      bytesScanned: 0,
+      skippedBinary: 0,
+      skippedOversize: 0,
+      unreadable: 0,
+      incomplete: false,
+    };
+    const host: ToolHost = {
+      fs: {
+        ...base.fs,
+        readFile: fs.readFile.bind(fs),
+        writeFile: fs.writeFile.bind(fs),
+        listDirectory: fs.listDirectory.bind(fs),
+        searchFiles: () => Promise.resolve({ matches: [], stats }),
+      },
+    };
+    expect(wiredToolIds(['read_file', 'search_files', 'find_files'], host, BUILTIN_TOOLS)).toEqual([
+      'read_file',
+      'search_files',
+    ]);
   });
 
   it('keeps an unknown granted id (a dynamically-registered tool resolved elsewhere)', () => {

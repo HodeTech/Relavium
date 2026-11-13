@@ -7,6 +7,14 @@
 
 > **Amended 2026-08-17 by [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md).** A **side-effecting** host capability throw is no longer node-retryable. Retrying a dispatch whose effect may already have left the process is the duplicate the effect journal exists to prevent, so such a throw settles the journal row `ambiguous` and fails the node without consuming retry budget. A throw from a non-mutating capability is unchanged.
 
+> Amended 2026-11-11 by accepted [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md):
+> bounded read-only preparation binds exact write bytes before approval and
+> durable effect preparation; the richer preview uses a separate in-process
+> hook argument, never the durable approval event. Closed proven pre-effect edit
+> preconditions may receive bounded correction feedback; uncertain/dispatched
+> effects retain existing fatal/no-retry behavior. Design accepted, implementation
+> pending in MVP-3; [canonical contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
+
 ## Context
 
 Workstream **1.T** builds the engine-side `ToolRegistry` + dispatch that the `AgentRunner` (1.O) and `AgentSession` (1.V) invoke. [shared-core-engine.md](../architecture/shared-core-engine.md) names the `ToolRegistry` as "the engine-side registry and dispatcher for built-in and MCP tools," and [built-in-tools.md](../reference/shared-core/built-in-tools.md) catalogs the twelve built-ins and (via [ADR-0029](0029-tool-policy-hardening.md)) their guardrails. But a central contract is named in **no** document, and 1.T cannot make it implicitly:
@@ -108,3 +116,12 @@ historical-content limits. Earlier decision-acceptance notes do not claim this
 later implementation landing. Other Wave 3 decisions and increments remain
 staged; this note does not close ADR-0112 policy work, whole-wave publication or
 merge. No historical ADR body is rewritten.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

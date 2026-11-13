@@ -1,3 +1,5 @@
+import { createMeasuredFrameAcknowledgement } from './measured-frame-acknowledgement.js';
+import { ToolReviewHost } from './tool-review-view.js';
 import { CliError } from '../../process/cli-error.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
@@ -62,14 +64,6 @@ import {
   type ScrollState,
 } from './scroll.js';
 
-/**
- * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
- * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
- * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
- * `controller.handleKey`, and renders the Home strip, the loading echo, or the chat region from the published
- * state. The clock + terminal size are injected so the strip degrade (<80×24) and the relative times are testable.
- */
-
 export type { HomeChatSession } from './home-controller.js';
 
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
@@ -103,6 +97,8 @@ export interface RootAppProps {
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
   readonly clipboard?: ClipboardWriter | undefined;
+  /** Explicit masked review copy; independent of mouse selection preferences. */
+  readonly reviewClipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
   /**
@@ -121,6 +117,9 @@ export interface RootAppProps {
 function ChatRegion(
   props: Readonly<{
     store: ChatStoreController;
+    reviewSize: { cols: number; rows: number };
+    reviewCustody: () => boolean;
+    reviewClipboard: ClipboardWriter | undefined;
     acknowledgement: TranscriptAcknowledgement;
     editor: EditorState;
     palette: PaletteState | undefined;
@@ -176,6 +175,8 @@ function ChatRegion(
     reasoningEffort,
     reasoningVisible,
     approval,
+    review,
+    toolDisplays,
     markdown,
     displaySuspended,
   } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
@@ -194,7 +195,15 @@ function ChatRegion(
           : { height: props.promptHeight, overflowY: 'hidden' }
         : { height: viewport.rows, overflowY: 'hidden' })}
     >
+      <ToolReviewHost
+        store={props.store}
+        size={props.reviewSize}
+        hasCustody={props.reviewCustody}
+        clipboard={props.reviewClipboard}
+      />
       <ChatView
+        hidden={review !== undefined}
+        toolDisplays={toolDisplays}
         markdown={markdown}
         displaySuspended={displaySuspended}
         acknowledgement={props.acknowledgement}
@@ -250,6 +259,13 @@ function ChatRegion(
   );
 }
 
+/**
+ * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
+ * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
+ * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
+ * `controller.handleKey`, and renders the Home strip, the loading echo, or the chat region from the published
+ * state. The clock + terminal size are injected so the strip degrade (<80×24) and the relative times are testable.
+ */
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {
@@ -299,10 +315,32 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const suspendPort = props.suspendPort;
   useEffect(() => {
     if (suspendPort === undefined) return;
-    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    suspendPort.attach(async (callback) => {
+      controller.getSnapshot().session?.store.invalidateToolReview();
+      try {
+        await app.suspendTerminal(callback);
+      } finally {
+        // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
+        controller.getSnapshot().session?.store.invalidateToolReview();
+      }
+    });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort]);
+  }, [app, suspendPort, controller]);
   const [size, setSize] = useState(getSize);
+  const [homeFrame] = useState(() =>
+    createMeasuredFrameAcknowledgement({
+      current: controller.getSnapshot,
+      getSize: () => getSizeRef.current(),
+      hasCustody: () =>
+        propsRef.current.inputEnabled?.() !== false &&
+        propsRef.current.suspendPort?.isSuspended() !== true &&
+        propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+        stdout.writable !== false &&
+        !stdout.destroyed &&
+        !stdout.writableEnded,
+    }),
+  );
+  useEffect(() => () => homeFrame.dispose(), [homeFrame]);
   const [noticeWindow, setNoticeWindow] = useState({
     revision: state.noticeRevision,
     cols: size.cols,
@@ -362,6 +400,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     () =>
       subscribeResize(() => {
         nativeAcknowledgement?.invalidate();
+        homeFrame.invalidate();
+        controller.getSnapshot().session?.store.invalidateToolReview();
         setSize(getSize());
       }),
     [subscribeResize, getSize, nativeAcknowledgement],
@@ -422,6 +462,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           size.cols,
           scrollGeomRef.current.height,
           store.getSnapshot().color,
+          store.getSnapshot().toolDisplays,
         );
   };
 
@@ -482,6 +523,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       store.getSnapshot().state.transcript,
       size.cols,
       store.getSnapshot().color,
+      store.getSnapshot().toolDisplays,
     ).map((line) => line.text);
     void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state_)))
       .then((outcome) => {
@@ -535,7 +577,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const read = mouseReaderRef.current.read(input);
     if (read.kind === 'none') return false;
     const mouse = read.kind === 'event' ? read.event : undefined;
-    if (mouse !== undefined && altChat && props.nativePrompt?.getSnapshot().active !== true) {
+    if (
+      mouse !== undefined &&
+      altChat &&
+      props.nativePrompt?.getSnapshot().active !== true &&
+      controller.getSnapshot().session?.store.getSnapshot().review === undefined
+    ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
     }
@@ -546,6 +593,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
     const live = getSizeRef.current();
+    if (key.return && current.continueSessionId !== undefined && !homeFrame.visible(current))
+      return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
       if (key.escape || (key.ctrl && (input === 'c' || input === 'd')))
         controller.handleKey(input, key);
@@ -596,6 +645,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       input === '\x1a' ||
       (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'z')
     ) {
+      controller.getSnapshot().session?.store.invalidateToolReview();
+      homeFrame.invalidate();
       props.onSuspend?.();
       return;
     }
@@ -617,6 +668,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
+    const reviewStore = controller.getSnapshot().session?.store;
+    const reviewAction = reviewStore?.handleReviewInput(input, key);
+    if (reviewAction === 'handled') return;
+    if (reviewAction === 'abort') {
+      controller.handleKey('\u001b', { escape: true });
+      return;
+    }
     if (routeHomeInput(input, key)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
@@ -665,6 +723,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         <ChatRegion
           acknowledgement={acknowledgement}
           store={state.session.store}
+          reviewSize={size}
+          reviewCustody={() =>
+            props.inputEnabled?.() !== false &&
+            props.suspendPort?.isSuspended() !== true &&
+            props.nativePrompt?.getSnapshot().active !== true
+          }
+          reviewClipboard={props.reviewClipboard}
           editor={state.input}
           palette={state.palette}
           search={state.search}
@@ -758,6 +823,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {!prompt.active && (
         <HomeView
+          onFrame={(node) => {
+            homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
+          }}
           snapshot={state.snapshot}
           editor={state.input}
           errorText={state.errorText}

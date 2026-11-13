@@ -85,6 +85,7 @@ const REPLACEMENT_REPEATS = { repeats: 20 };
 
 function capability(policy: FsPathPolicy, tier: FsScopeTier = 'project') {
   return createNodeFsCapability({
+    operatorHomeDir: base,
     tier,
     workspaceDir: workspace,
     readOnly: false,
@@ -103,6 +104,7 @@ describe('invocation authority and owned native identities', () => {
       undefined,
     );
     const fs = createNodeFsCapability({
+      operatorHomeDir: base,
       tier: 'project',
       workspaceDir: lexicalWorkspace,
       readOnly: false,
@@ -192,6 +194,7 @@ describe('invocation authority and owned native identities', () => {
       const roots = [grant];
       const input = {
         tier: 'project' as const,
+        operatorHomeDir: base,
         workspaceDir: workspace,
         readOnly: true,
         extraRoots: roots,
@@ -431,6 +434,7 @@ describe('exact private host scratch descriptors (no production allocator)', () 
       const descriptor = issueHostScratchRoot({ homeDir: home, rootDir: scratch });
       for (const tier of ['sandboxed', 'project'] as const) {
         const fs = assembleToolEnv({
+          operatorHomeDir: home,
           profile: 'chat-read-write',
           fsScopeTier: tier,
           workspaceDir: workspace,
@@ -507,6 +511,8 @@ it.each(['workspace', 'grant', 'selector'] as const)(
       kind === 'workspace' ? '.relavium' : kind === 'grant' ? '.azure' : '.kube',
     );
     symlinkSync(grant, alias, 'junction');
+    const operatorHome = join(base, 'operator-home');
+    mkdirSync(operatorHome);
     const policy =
       kind === 'workspace'
         ? createFsPathPolicy({ workspaceDir: alias })
@@ -516,6 +522,7 @@ it.each(['workspace', 'grant', 'selector'] as const)(
             kind === 'selector' ? [alias] : undefined,
           );
     const fs = createNodeFsCapability({
+      operatorHomeDir: operatorHome,
       tier: 'project',
       workspaceDir: kind === 'workspace' ? grant : workspace,
       readOnly: false,
@@ -551,7 +558,12 @@ it(
 
 it('never repairs a failed construction by later creating the missing workspace', async () => {
   const missing = join(base, 'missing-workspace');
-  const fs = createNodeFsCapability({ tier: 'sandboxed', workspaceDir: missing, readOnly: false });
+  const fs = createNodeFsCapability({
+    operatorHomeDir: base,
+    tier: 'sandboxed',
+    workspaceDir: missing,
+    readOnly: false,
+  });
   mkdirSync(missing);
   writeFileSync(join(missing, 'a.txt'), 'later');
   await expect(fs.readFile('a.txt', {})).rejects.toThrow(/pinned identities/);
@@ -569,6 +581,7 @@ it.runIf(process.platform === 'win32')(
       undefined,
     );
     const fs = createNodeFsCapability({
+      operatorHomeDir: base,
       tier: 'project',
       workspaceDir: fsPolicyWorkspace(policy),
       pathPolicy: policy,

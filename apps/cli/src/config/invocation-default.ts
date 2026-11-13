@@ -1,7 +1,5 @@
-import { join } from 'node:path';
 import type { ProviderId } from '@relavium/llm';
-import { ProjectConfigSchema } from '@relavium/shared';
-import { loadConfigFile, type LoadedConfig } from './load.js';
+import type { LoadedConfig } from './load.js';
 
 export interface InvocationModelDefault {
   readonly model: string;
@@ -14,15 +12,7 @@ export function applyInvocationDefault(
   binding: InvocationModelDefault | undefined,
 ): LoadedConfig {
   if (binding === undefined) return loaded;
-  if (loaded.projectConfigDir !== undefined) {
-    for (const name of ['project.toml', 'workspace.toml']) {
-      const layer = loadConfigFile(join(loaded.projectConfigDir, name), ProjectConfigSchema, {
-        projectLayer: true,
-        home: loaded.homeDir,
-      });
-      if (layer?.chat?.default_model !== undefined) return loaded;
-    }
-  }
+  if (loaded.hasRepositoryChatModel) return loaded;
   return {
     ...loaded,
     config: {

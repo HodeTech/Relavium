@@ -7,13 +7,14 @@ import type { NativePromptUi } from './native-prompt-channel.js';
 import { NativePromptView } from './native-prompt-view.js';
 import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
 
-/** One input owner for native cards before standalone chat mounts. Lifecycle belongs to its caller. */
+/** One input owner for native cards before chat or inside its idle prompt. Lifecycle belongs to its caller. */
 export function NativePromptHost({
   ui,
   color,
   inputEnabled,
   onSuspend,
   suspendPort,
+  ownsSuspendAttachment = true,
   onRendererReady,
   onRendererError,
 }: Readonly<{
@@ -22,6 +23,8 @@ export function NativePromptHost({
   inputEnabled?: () => boolean;
   onSuspend?: () => void;
   suspendPort?: SuspendPort | undefined;
+  /** An enclosing live chat already owns the same mount's suspend attachment. */
+  ownsSuspendAttachment?: boolean;
   onRendererReady?: (flush: NoticeFlush) => void;
   onRendererError?: (error: Error) => void;
 }>): ReactElement {
@@ -57,10 +60,10 @@ export function NativePromptHost({
     };
   }, [stdout, acknowledgement]);
   useEffect(() => {
-    if (suspendPort === undefined) return;
+    if (suspendPort === undefined || !ownsSuspendAttachment) return;
     suspendPort.attach((callback) => app.suspendTerminal(callback));
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort]);
+  }, [app, suspendPort, ownsSuspendAttachment]);
   useInput((input, key) => {
     if (inputEnabled?.() === false) return;
     if (input === '\x1a' || (key.ctrl && !key.meta && input.toLowerCase() === 'z')) {

@@ -93,6 +93,7 @@ it('the exact held raw producer outlives bounded cancellation; late incurred rec
   const engine = new WorkflowEngine({
     host,
     effectJournal: () => ({
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
       prepare: () => {
         effects.push('prepare');
         return Promise.resolve({ outcome: 'proceed' });
@@ -179,6 +180,7 @@ for (const rejects of [false, true])
     const engine = new WorkflowEngine({
       host,
       effectJournal: () => ({
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: () => Promise.resolve({ outcome: 'proceed' }),
         settle: () => {
           effectCalls++;

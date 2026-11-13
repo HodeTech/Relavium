@@ -29,6 +29,8 @@ import {
 import type { ProviderResolver } from '../engine/providers.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

@@ -4,7 +4,18 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "drizzle/**"]
+      "cache": false,
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/tools/native-fs/**",
+        "$TURBO_ROOT$/tools/cli-package/files.mjs",
+        "$TURBO_ROOT$/.github/workflows/native-fs.yml"
+      ],
+      "outputs": ["dist/**", "drizzle/**", "native/fs-metadata/runtime/**"]
+    },
+    "test": {
+      "dependsOn": ["^build", "build"],
+      "outputs": []
     }
   }
 }

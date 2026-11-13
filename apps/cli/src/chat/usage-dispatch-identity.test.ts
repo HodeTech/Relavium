@@ -98,6 +98,8 @@ it.each(cases)(
     let uuid = 0;
     const built = await buildChatSession({
       chat: {
+        defaultMode: 'ask',
+        defaultModeSource: 'fallback',
         defaultModel: undefined,
         defaultProvider: undefined,
         fsScope: undefined,

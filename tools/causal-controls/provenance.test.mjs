@@ -282,16 +282,19 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 130);
+  assert.equal(secretsControls.length, 139);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    513,
+    549,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
     ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
+    // Seventeen owned interruption-disclosure cases extend the prior 143.
+    ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 160],
+    ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 160],
   ]) {
     const control = secretsControls.find((entry) => entry.id === id);
     assert.ok(control, `${id}: missing control`);

@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 
 import { journaledTier } from './effect-predicate.js';
+import { BUILTIN_TOOLS } from './builtins.js';
 import type { ToolDef } from './types.js';
 
 /** A minimal def — only the fields `journaledTier` reads carry meaning here. */
@@ -16,12 +16,12 @@ function defWith(overrides: Partial<ToolDef>): ToolDef {
     id: 'probe',
     source: 'builtin',
     description: '',
-    policyClass: 'read_only',
-    params: z.object({}),
+    parseArgs: (raw) => raw,
+    policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
     llmVisibleParams: { type: 'object' },
     dispatch: () => Promise.resolve(undefined),
     ...overrides,
-  } as ToolDef;
+  };
 }
 
 describe('journaledTier (ADR-0080 §3)', () => {
@@ -30,10 +30,12 @@ describe('journaledTier (ADR-0080 §3)', () => {
   });
 
   it('an effectful tool is journaled at the tier it declares for THAT call', () => {
-    // Two tools answer per call rather than per definition (`http_request` by method, `write_file` by
-    // append), which is why the decision takes the validated args.
+    // A tool such as http_request can classify each validated call separately.
     const def = defWith({
-      effect: (args) => ((args as { post?: boolean }).post === true ? 3 : undefined),
+      effect: (args) =>
+        typeof args === 'object' && args !== null && 'post' in args && args.post === true
+          ? 3
+          : undefined,
     });
     expect(journaledTier(def, { post: true })).toBe(3);
     expect(journaledTier(def, { post: false })).toBeUndefined();
@@ -55,6 +57,46 @@ describe('journaledTier (ADR-0080 §3)', () => {
       expect(journaledTier(defWith({ effect: () => 3, duplicationBenign: true, source }), {})).toBe(
         3,
       );
+    }
+  });
+});
+
+function builtin(id: string): ToolDef {
+  const found = BUILTIN_TOOLS.find((tool) => tool.id === id);
+  if (found === undefined) throw new Error('missing builtin effect fixture');
+  return found;
+}
+describe('ADR-0125 actual built-in effect assignments', () => {
+  it.each([
+    { path: 'new.txt', content: 'new' },
+    { path: 'existing.txt', content: 'replacement', append: false },
+    { path: 'existing.txt', content: 'replacement' },
+    { path: 'existing.txt', content: 'tail', append: true },
+    { path: 'existing.txt', content: '' },
+    { path: 'existing.txt', content: 'unchanged', append: false },
+    { path: 'parent/new.txt', content: '', createDirs: true },
+  ])('journals every write_file variant %# at tier3', (args) => {
+    const def = builtin('write_file');
+    expect(journaledTier(def, def.parseArgs(args))).toBe(3);
+  });
+  it('keeps every edit tier3 and read-only file/GET calls unjournaled', () => {
+    const cases = [
+      { id: 'edit_file', args: { path: 'a', old_string: 'old', new_string: 'new' }, tier: 3 },
+      { id: 'read_file', args: { path: 'a' }, tier: undefined },
+      { id: 'list_directory', args: { path: '.' }, tier: undefined },
+      { id: 'find_files', args: { glob: '*' }, tier: undefined },
+      { id: 'search_files', args: { pattern: 'x' }, tier: undefined },
+      { id: 'http_request', args: { url: 'https://api.example/x' }, tier: undefined },
+      {
+        id: 'http_request',
+        args: { url: 'https://api.example/x', method: 'GET' },
+        tier: undefined,
+      },
+      { id: 'http_request', args: { url: 'https://api.example/x', method: 'POST' }, tier: 3 },
+    ];
+    for (const entry of cases) {
+      const def = builtin(entry.id);
+      expect(journaledTier(def, def.parseArgs(entry.args))).toBe(entry.tier);
     }
   });
 });

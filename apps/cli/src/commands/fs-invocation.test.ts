@@ -15,7 +15,7 @@ import { Readable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClient, createSessionStore } from '@relavium/db';
-import type { CliInvocation } from '../process/invocation.js';
+import { createCliInvocation, type CliInvocation } from '../process/invocation.js';
 
 import {
   buildChatSession,
@@ -115,6 +115,12 @@ let home: string;
 let workspace: string;
 let outside: string;
 const argv = (...tokens: string[]) => ['node', 'relavium', ...tokens];
+async function closeFixture(f: ReturnType<typeof invocationFixture>): Promise<void> {
+  const closing = f.registry.terminate({ kind: 'normal' });
+  f.advance(3000);
+  await closing;
+  expect(f.registry.activeOwners).toBe(0);
+}
 beforeEach(() => {
   if (
     clearOperation !== undefined &&
@@ -190,16 +196,35 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
   )('invalid grants refuse %j before history/keys/provider/MCP builders', async ({ surface }) => {
     const captured = captureIo();
     const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true };
-    expect(
-      await run(
-        argv('--cwd', workspace, ...surface, '--allow-fs-root', join(base, 'missing-private-root')),
-        io,
-      ),
-      'FS_CAUSAL_INVOCATION_ADMISSION',
-    ).toBe(2);
-    expect(effects, 'FS_CAUSAL_INVOCATION_ADMISSION').toEqual({ history: 0, keys: 0, builders: 0 });
-    expect(captured.err()).not.toContain('missing-private-root');
-    expect(existsSync(join(home, '.relavium', 'history.db'))).toBe(false);
+    const invocation = createCliInvocation({ setExitCode: () => {}, exit: () => {} });
+    try {
+      expect(
+        await run(
+          argv(
+            '--cwd',
+            workspace,
+            ...surface,
+            '--allow-fs-root',
+            join(base, 'missing-private-root'),
+          ),
+          io,
+          undefined,
+          invocation,
+        ),
+        'FS_CAUSAL_INVOCATION_ADMISSION',
+      ).toBe(2);
+      expect(effects, 'FS_CAUSAL_INVOCATION_ADMISSION').toEqual({
+        history: 0,
+        keys: 0,
+        builders: 0,
+      });
+      expect(captured.err()).not.toContain('missing-private-root');
+      expect(existsSync(join(home, '.relavium', 'history.db'))).toBe(false);
+    } finally {
+      await invocation.registry.terminate({ kind: 'normal' });
+      invocation.finiteExit.exitNow();
+      expect(invocation.registry.activeOwners).toBe(0);
+    }
   });
 
   it.each([[], ['chat'], ['agent', 'run', 'agent.yaml']].map((surface) => ({ surface })))(
@@ -227,34 +252,38 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
     async ({ surface }) => {
       const captured = captureIo();
       const f = invocationFixture();
-      const code = await run(
-        argv(
-          '--allow-fs-root',
-          outside,
-          '--cwd',
-          workspace,
-          ...surface,
-          `--allow-fs-root=${workspace}`,
-        ),
-        {
-          ...captured.io,
-          stdin: Readable.from(['synthetic prompt']),
-          stdinIsTty: surface[0] !== 'agent',
-          stdoutIsTty: surface[0] !== 'agent',
-        },
-        undefined,
-        f.invocation,
-      );
-      // The injected key boundary deliberately throws: this certifies routing/admission, not a live provider turn.
-      expect(code).toBe(9);
-      expect(captured.err()).toContain('unexpected CLI failure');
-      expect(captured.err()).not.toContain('synthetic composition boundary reached');
-      expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
-      expect(effects.history).toBe(0);
-      expect(f.exit).not.toHaveBeenCalled();
-      f.advance(3000);
-      expect(await f.invocation.finiteExit.exited).toBe(9);
-      expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+      try {
+        const code = await run(
+          argv(
+            '--allow-fs-root',
+            outside,
+            '--cwd',
+            workspace,
+            ...surface,
+            `--allow-fs-root=${workspace}`,
+          ),
+          {
+            ...captured.io,
+            stdin: Readable.from(['synthetic prompt']),
+            stdinIsTty: surface[0] !== 'agent',
+            stdoutIsTty: surface[0] !== 'agent',
+          },
+          undefined,
+          f.invocation,
+        );
+        // The injected key boundary deliberately throws: this certifies routing/admission, not a live provider turn.
+        expect(code).toBe(9);
+        expect(captured.err()).toContain('unexpected CLI failure');
+        expect(captured.err()).not.toContain('synthetic composition boundary reached');
+        expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
+        expect(effects.history).toBe(0);
+        expect(f.exit).not.toHaveBeenCalled();
+        f.advance(3000);
+        expect(await f.invocation.finiteExit.exited).toBe(9);
+        expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+      } finally {
+        await closeFixture(f);
+      }
     },
   );
 
@@ -330,6 +359,7 @@ it('resumes current config at the canonical original workspace with fresh grants
   const fs = createNodeFsCapability({
     tier: 'project',
     workspaceDir: workspace,
+    operatorHomeDir: home,
     readOnly: true,
     ...(policy === undefined ? {} : { pathPolicy: policy }),
   });
@@ -539,18 +569,22 @@ it('forwards real argv grants into a project selector before composition', async
   config(workspace, `[chat]\nfs_scope="project"\nextra_roots=[${JSON.stringify(outside)}]\n`);
   const captured = captureIo();
   const f = invocationFixture();
-  const code = await run(
-    argv('chat', '--cwd', workspace, '--allow-fs-root', outside),
-    captured.io,
-    undefined,
-    f.invocation,
-  );
-  expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(9);
-  expect(captured.err()).not.toContain('synthetic composition boundary reached');
-  expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
-  expect(effects.history).toBe(0);
-  expect(f.exit).not.toHaveBeenCalled();
-  f.advance(3000);
-  expect(await f.invocation.finiteExit.exited).toBe(9);
-  expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+  try {
+    const code = await run(
+      argv('chat', '--cwd', workspace, '--allow-fs-root', outside),
+      captured.io,
+      undefined,
+      f.invocation,
+    );
+    expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(9);
+    expect(captured.err()).not.toContain('synthetic composition boundary reached');
+    expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
+    expect(effects.history).toBe(0);
+    expect(f.exit).not.toHaveBeenCalled();
+    f.advance(3000);
+    expect(await f.invocation.finiteExit.exited).toBe(9);
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+  } finally {
+    await closeFixture(f);
+  }
 });

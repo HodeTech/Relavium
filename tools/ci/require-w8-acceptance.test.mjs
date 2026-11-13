@@ -37,6 +37,7 @@ test('the actual required workflow joins both full offline controls and checks t
   );
   const ci = workflow.jobs.ci;
   assert.deepEqual(ci.needs, [
+    'native-fs-assets',
     'wire-mutations',
     'usage-mutations',
     'fs-mutations',
@@ -44,6 +45,14 @@ test('the actual required workflow joins both full offline controls and checks t
     'packed-cli',
     'map-controls',
   ]);
+  const nativeGuard = ci.steps.find(
+    (step) => step.name === 'Require all native component execution legs',
+  );
+  assert.deepEqual(nativeGuard, {
+    name: 'Require all native component execution legs',
+    env: { NATIVE_FS_RESULT: '${{ needs.native-fs-assets.result }}' },
+    run: "node -e \"require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')\"",
+  });
   const packedGuard = ci.steps.find((step) => step.name === 'Require complete packed CLI controls');
   assert.equal(packedGuard.env.PACKED_CLI_RESULT, '${{ needs.packed-cli.result }}');
   assert.equal(

@@ -946,6 +946,13 @@ theming architecture.
 
 ### 2.6.M — The first-class toolbelt: breadth + rendering
 
+**MVP-3 implementation checkpoint (2026-11-12):** its selected filesystem,
+rendering and startup-mode slice is independently accepted on `development`;
+the [checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)
+records delivered steps, review/security evidence and required PR CI/maintainer
+review. The broader toolbelt bullets retain their existing later milestones;
+command permissions are MVP-4 and web activation is MVP-7.
+
 Closing the tool gap against competitor CLIs. Today the registry has 13 built-ins with **no** file
 edit/patch, **no** content search, **no** find, **no** todo, **no** ask-user, and a dormant `web_search`
 (needs an unwired credential resolver). Every addition is engine-pure (Zod args, `llmVisibleParams`,
@@ -1397,6 +1404,2237 @@ on 2026-11-08, when MVP-2 was re-planned around the Home
 **Done:** MVP-A1, MVP-A2, MVP-A3, MVP-A4 and MVP-A7 shipped with MVP-1, accepted 2026-11-06 and on `main` since
 PR #97 (merged 2026-11-07); the acceptance record is [current.md](../current.md#next-work--the-cli-mvp) item 1.
 
+## MVP-3 plan — Editing, search and reviewable effects (2026-11-11)
+
+**Status: Accepted plan (maintainer, 2026-11-11); implementation in progress.**
+Baseline: `6c8a89e1` on `development`, after MVP-2 merged through PR #98.
+This is the one home for MVP-3's implementation plan; the existing MVP-2 records
+below remain historical. No new branch, dependency, release or history migration
+is proposed. Implementation follows `/implement-task`; approval covers the
+cross-package public API changes and new in-TUI views listed here.
+
+### Documentation preflight and decisions
+
+The author and three read-only Sol/Terra preflight agents compared the relevant
+existing documents with current authority, filesystem/dispatch and both chat
+hosts. This was design review, not implementation acceptance. The governing
+documents reviewed were ADRs 0029, 0033, 0037, 0055, 0057, 0059, 0062, 0063,
+0068, 0069, 0080, 0083, 0086, 0087, 0094, 0095, 0098, 0102, 0105, 0112,
+0113, 0116, 0120, 0122 and 0123; the built-in-tool, registry, config, chat,
+Home and accessibility references; the relevant standards; 2.6.M, MVP-A8/A9/
+A13/A14 and the recorded Wave 3 row 15c split. The ADR corpus was inventoried
+in numerical order; this is not a claim that every unrelated ADR or entire
+historical phase register received a new full review.
+
+| Confirmed gap or ambiguity | Proposed disposition and canonical home |
+|---|---|
+| Global mode key, layer precedence, model-writable `--config`, headless mode | [ADR-0116 proposal refinement](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md#proposal-review--2026-11-11), [config contract](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3): explicit global preference, repository `auto` refusal, invocation ceiling and trusted picker. |
+| Home clear currently synthesizes a new built-in agent instead of preserving its bound snapshot | Correct to existing ADR-0062 same-agent contract; preserve authored and legacy built-in grants across clear/resume/reseat. Never infer built-in provenance from its id. |
+| A ranged/truncated read does not prove the model saw the whole file; prior-turn tool content is not carried | [File-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3): bounded current-turn observed intervals tied to unchanged source bytes. |
+| Current approval happens before host write preparation; append can mutate in place | [Registry contract](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3): read-only preparation, exact-byte binding, effect barrier, final gates and atomic publication. |
+| Wholly masked changes and Unicode policy were explicitly open | [ADR-0120 proposal refinement](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md#proposal-review--2026-11-11): deliberate inspection of masked changes, conservative span provenance and escaped/code-point view; separate implementation security sitting remains mandatory. |
+| Optional general details timing was unset; full approval view was already mandatory | Include both in Step 2, sharing inspection primitives; no details-browser deferral. |
+| Native setup has flushed-frame consent evidence, legacy chat approvals do not | Reuse the acknowledgement/ownership pattern on both chat hosts; dimensions alone never authorize hidden input. |
+| Restore currently omits tool rows and budgets only conversation entries | [Chat contract](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract): bounded content-free groups, safe call-id correlation and explicit omission counts; no preamble/content restoration. |
+| Protected-path prompt wording can imply authority; preview copying can reach disk hatches | Approval cannot override the host's hard denial; keep previews/reveal buffers out of history/export/editor hatches and provide masked in-view copy. |
+| Consent zero-width ledger still says excluded from MVP-3 | Correct its scheduling to the mandatory ADR-0120 preview work; shared `[c]` extraction stays with paused Step 14b. |
+
+Two additional independent proposal reviews (GPT-6.1 Sol/high and GPT-6.1
+Terra/high) covered the complete nine-document proposal diff and checked its
+authority, preview/resource and UI contracts against current code. Verified
+corrections distinguished the pre-build design sitting from post-implementation
+security, existing authored writes from new grant activation, and intentional
+diff pagination from clipped consent controls; revealed masked spans require
+acknowledged display. Neither reviewer reported a remaining blocker after those
+corrections. Author validation checked all newly added relative links/anchors,
+documentation hygiene and unchanged executable inputs; lint/typecheck passed.
+This is approval-ready proposal review, not a passed implementation, source-bound
+runtime CI or completed pre-build security design sitting.
+
+**Maintainer acceptance — 2026-11-11:** the maintainer directed verification and
+correction of two supplied reviews, followed by acceptance of the documents and
+continued implementation without another approval stop. Both ADRs, the linked
+reference designs and this three-step plan are accepted together. No new ADR
+number is needed. Backward-compatibility adapters/migrations are not required
+for the unused development product; preserving frozen grants remains a security
+rule, not an old-version compatibility promise.
+
+| Supplied finding | Verified disposition |
+|---|---|
+| Startup-auto admission could survive deliberate narrowing | Fixed in ADR-0116/config contract: shared revocable live authority; narrower reads, errors and confirmed non-auto defaults revoke before replacement/persistence. Failed/stale hosts cannot restore it; explicit current-mode auto is separate. |
+| Synthetic whitespace/ending marks could equal literal source | Fixed: all approval tokens share reserved `<...>` syntax; every source `<` is escaped once, with no color dependency. Test literal token/dot/tab pairs on both sides and narrow layouts. |
+| Missing final newline unspecified | Fixed: final ending is LF/CRLF/none, explicit unterminated marker, empty/new-file states, newline-only add/remove tests. |
+| Expected edit preconditions could end a chat without useful feedback | Fixed: a closed content-free correction refusal is eligible only at the proven read-only pre-effect preparation cut; existing recovering chat paths/budgets apply. User/guardrail denials and uncertain effects remain fatal; MVP-4 denial recovery stays separate. |
+| Repository authority claim too broad | Corrected: a repository may request prompting and advertise writes; it cannot choose startup auto or approve for the operator. |
+| ADR-0059 reseat forward note missing | Added alongside dated 0037/0055/0057/0062/0063/0105/0112 notes and the security-standard refinement. |
+| Built-in id collision and accidental/reflex approval concerns | Step 3 requires an authored `relavium-chat` id negative control; mounted tests verify no implicit/default affirmative and visible current-mode/scope disclosures. No claim that automated tests measure human reflex behavior. |
+| Rich preview channel ambiguous | Fixed in registry contract: optional third in-process hook context, separate from closed `ToolApprovalRequest.preview` and durable events; correlated live observer covers auto/read traces. |
+| Unicode property availability | Verified locally on Node 22.23.1 and 24.22.2: 14 positive/negative vectors each for C, Z and Default_Ignorable_Code_Point. This supports language-runtime feasibility, not visual or implementation acceptance. |
+| Restore stats, MCP preview, related links and command timing | Diff stats explicitly not restored; unaudited MCP previews remain name-only; related decisions/security references added; default command grant explicitly MVP-4. Existing custom-agent command tests remain possible, without activating the new MVP-4 card. |
+
+A separate **pre-build security design sitting** must first
+confirm the masked-change/reveal policy and Unicode/inspection contract on the
+final approved documents. The general preflight is not a substitute. Its ruling
+is recorded here before any approval-card implementation; the later per-step
+security sitting tests the actual code as well.
+
+**Pre-build security design sitting — 2026-11-11:** a separate GPT-6.1 Terra/high
+review of the corrected accepted documents and existing dispatch/filesystem,
+sanitizer and native acknowledgement mechanisms found no blocking design
+finding. It confirmed the conservative reveal/acknowledgement rules, single-pass
+reserved token alphabet, EOF/empty states, bounded Unicode/code-point inspection,
+no universal visual guarantee, exact prepared-byte and journal binding, ephemeral
+sinks and shared revocable startup-auto authority. Step 2 card implementation
+may proceed under those contracts; existing in-place append, span-losing masking
+and legacy approval routing must actually be replaced. SSRF/command/keychain/IPC
+changes are outside this sitting. No implementation test or post-code security
+acceptance is claimed. A separate Sol/high authority/correction check found no
+substantive gap; its remaining stale acceptance/rollback/compatibility wording
+was corrected, and this later acceptance is linked from the dated MVP-2 checkpoint.
+
+### Three cohesive implementation steps
+
+The boundaries are dependency and security boundaries. Combining all three would
+make filesystem, consent/rendering and startup authority difficult to inspect;
+splitting individual tools or screens would repeat reviews of the same seams.
+Step 2 deliberately keeps editing, preview, input custody and trace rendering
+together: no newly offered edit may exist without its reviewable effect path.
+
+| Step | Deliverable | Principal code and canonical docs |
+|---|---|---|
+| **1 — Bounded reading, search and session output** | Ranged `read_file`, current-turn read evidence, literal `search_files`, glob `find_files`, visible directory/discovery caps and private bounded output-store provisioning/read/cleanup/sweep. Freeze measured resource limits before tool registration. Keep the built-in default grant unchanged. | Core `tools/types.ts`, `builtins.ts`, `registry.ts`, `bounding.ts`; CLI `engine/tool-host/fs.ts`, `fs-policy.ts`, `assemble.ts`, new focused traversal/output-store modules and session-owner wiring; promote the relevant [file-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3). |
+| **2 — Reviewable editing and truthful tool presentation** | After the pre-build design sitting: prepared atomic `edit_file`/`write_file`; typed live previews, bounded in-house diff, full review/reveal and general details; target/diff-stat traces, ordered live assistant segments and safe restored structural groups; both-chat 80×24/input guard and Home row budget. New `edit_file` and the later built-in write grant are enabled only with their complete approval path. Existing authored `write_file` gains that path in this same step; no unrelated workflow/headless grant is removed. | Core engine-side `ToolDef`/dispatch/host capability and curated exports; CLI prepared filesystem writer, preview/diff projection, shared views/reducers/acknowledgement, `session-view-model.ts`, `chat-store.ts`, `chat-ink.tsx`, `home-controller.ts`, `home-app.tsx`, `home-view.tsx`, `restored-transcript.ts` and hatches. Promote [registry](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3) and [chat](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract) contracts; update Home/accessibility and view command references. |
+| **3 — Enable the built-in agent and startup-mode UX** | Add read/search/find/write/edit grant only after Step 2; truthful prompt; strict mode/hint keys and resolver; shared mode/default picker and writer; invocation ceiling, first-frame mode, headless clamp; fresh/resume/clear/reseat parity and same-agent Home clear correction. Complete integrated milestone verification and documentation. | Shared `config.ts` and curated schema exports; CLI `config/load.ts`, `resolve.ts`, `write.ts`, `chat/default-agent.ts`, mode/session-host owners, `commands/chat.ts`, Home wiring and REPL manifest/palette/help. Promote [config](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3), grant/mode and CLI contracts; update roadmap, first-read docs and adjacent ADR notes. |
+
+File lists identify owned seams, not a requirement to edit every named file.
+Keep new helpers focused and shared between hosts; do not decompose unrelated
+god files or activate paused work merely because a caller is nearby. Core stays
+platform-pure; no new runtime dependency or vendor type crosses the LLM seam.
+Additive exported capability/preview types, config schemas and curated index
+exports are covered by the accepted plan. Missing capability paths fail closed;
+no legacy preview/write bypass is retained. Provider wire tool normalization is
+reused, not redesigned.
+
+Step 2 also owns the [ADR-0124 replay refinement](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md):
+shared `run.ts`, a shared retained-envelope schema/decoder and curated exports;
+core `execution-host.ts`, `engine.ts`, `effect-receipt-health.ts` and registry;
+DB `effect-journal-store.ts` and its port; CLI durability forwarding and explicit
+test doubles. This remains one cohesive step with prepared writes, not a fourth
+increment. Strict evidence validation must gate node scheduling independently
+of model regeneration; exact invocation/mapping comparison belongs at replay.
+The scoped proposal and supplied-review disposition below govern acceptance.
+
+### Interaction ledger
+
+| Surface | Intended change and boundary |
+|---|---|
+| Bare Home and its chat | Mode/default settings and live tool details are in the palette; native diff review stays in the app. Geometry changes do not activate run/gate/agent management. |
+| Standalone interactive chat/resume | Same mode/settings, approval and details views, inline/no-color parity and safe restoration; no new Home-only management palette items. |
+| `/mode` | Bare interactive form becomes a picker; direct name/Shift+Tab remain unsaved per-turn changes. Home bare form configures startup only. Exact semantics live in the chat contract. |
+| `/details` | New interactive, read-only view; unavailable historical preview is labelled. Non-TTY/JSON has no overlay or new raw-content dump. |
+| New file tools | YAML-selectable through the existing tool registry; no new top-level shell command. Existing read/write arguments keep their meaning; range/edit/search arguments and finite bounds are documented in their single reference home. |
+| Headless/JSON and workflow execution | No interactive startup-mode grant or richer display event payload. Headless chat remains `ask`; workflow author trust/effect semantics stay separate. Test existing machine fixtures rather than assuming an in-TUI change cannot leak there. |
+| Resume/clear/reseat | Mode is newly resolved; per-instance approvals/read evidence/spills reset. Frozen agent grants remain frozen; starting a new built-in conversation is the upgrade path. |
+| Development compatibility | No older-binary migration, alias or compatibility adapter is required; authority floors, frozen grants and current machine-output discipline remain. |
+
+### Acceptance and review loop
+
+Each step is a D64 security-tier increment. The maintainer requested two fresh
+independent review rounds per step; that is the chosen process even though the
+standing tier's minimum is one clean cumulative round. For each step:
+
+1. Implement with direct negative/failure-path tests; self-review the cumulative
+   milestone diff, seams, resource ownership and changed canonical contracts.
+2. Run author gates (`pnpm run ci` and `pnpm coverage:enforced`), commit the
+   coherent implementation, then launch round 1 with fresh Sol/Terra reviewers.
+   Partition the whole cumulative scope into explicit, overlapping-risk-aware
+   assignments; do not substitute unrelated sampled files for full coverage.
+3. Reproduce/verify findings, fix those that hold, run affected checks and commit.
+   Give skipped findings a concrete reason. Run round 2 with new reviewer agents
+   over the final cumulative scope, repeat verified fixes and commit.
+4. Perform a separate scoped security sitting. An unresolved blocker/high/medium
+   or material correction requires fresh complete validation/review of the
+   affected cumulative scope; two rounds are not a license to leave a defect.
+   No verified MVP-3 issue is deferred merely to save a review. Keep local review
+   reports ignored and put concise source-bound acceptance in this register.
+5. Push the accepted increment on `development`, observe its CI and automatically
+   continue to the next step. Do not switch branches. Stop only for an actual
+   blocker or a new decision outside the approved contract.
+
+Required evidence includes real filesystem and host paths, not only mocks:
+
+- Step 1: ranges/UTF-8, binary/secret/symlink/hardlink floors; huge nonmatching
+  trees/files/ignore data, finite work and abort; exact skipped/omitted reporting;
+  native concurrent-session spill isolation, partial writes, producer shutdown
+  and crash sweep, with live/unknown-owner preservation.
+- Step 2: unique/replace-all/observed-range rules; replace/append/createDirs and
+  stale/retargeted file refusal; journal/dispatch ordering and zero mutations
+  on reject/abort; same prepared bytes shown/written. Test masked code/whole
+  changes, Unicode/line endings, budget refusal, no-color/code-point inspection,
+  all preview sinks, auto/always traces, ordered segments and historical caps.
+  Drive both mounted hosts through resize, backpressure, stale-card ownership,
+  paste/coalesced input, hidden affirmatives and inline/full-screen parity.
+  Include literal marker collisions, empty/new files and final-newline-only
+  changes; pin the chosen diff algorithm and finite work/memory budgets.
+  Exercise a real SQLite post-settle/pre-checkpoint edit replay with zero file
+  preparation/publication or second settle; strict shared decoder and SQLite/
+  memory gate parity, including malformed valid JSON before any model execution,
+  valid absent values, missing old evidence, same-presence mapping replacement,
+  changed destination keys, key-order equivalence and absent versus empty mapping.
+  Test saved-result confirmation without new mutation cache authority, both
+  replay entry points, projection refusal before lookup, inspection-fault no
+  retry/recovery, fencing/producer joins, atomic miss/prepare races and different
+  regenerated calls/order without claiming deterministic redelivery.
+- Step 3: actual fresh/resume/clear/reseat construction matrix for both hosts,
+  authored/legacy agents, strict-layer precedence including shadowed `auto`,
+  writable-config escalation, explicit operator auto, failed/stale builds,
+  headless/JSON, first-frame footer/policy agreement, approval cache resets,
+  hint acknowledgement and preference publication/durability failures.
+  Include authored-agent id `relavium-chat`, startup-auto → narrower default →
+  model file rewrite to auto, retained old hosts, failed/stale replacements and
+  explicit current-mode auto as a separate control. No implicit/default approval.
+
+Use causal negative controls on security gates and deterministic work counters
+for complexity; wall-clock evidence supplements them. Keep existing deadlines,
+coverage floors and test populations. Re-run the complete combined author/CI
+gates at milestone closure, plus applicable native filesystem/secret/Windows
+and packaged-consumer gates for the changed surfaces. Do not represent offline
+transport tests as a live-provider or physical Windows terminal check.
+
+The failure glyph already shipped in MVP-2. Default `run_command`, new command
+approval/denial recovery, interrupt persistence/keymap and finite-ceiling config
+remain MVP-4; web is MVP-7, hub content MVP-8, MCP MVP-9, npm release MVP-10.
+Todo/`ask_user`, target-scoped approval caching, shared `[c]` extraction and the
+rest of paused Wave 3 retain their existing owners. These are existing scope
+boundaries, not newly deferred MVP-3 work. At the end, update delivered docs and
+open the `development` → `main` PR for maintainer review; do not merge or publish.
+
+### Step 1 delivery and review record (2026-11-11)
+
+The first increment implements bounded ranged reads, literal search, glob
+discovery and explicit directory/discovery limits. Native read observations are
+staged only for exact, untruncated model-facing results and promoted after the
+next model response; same-response sibling calls cannot borrow unseen evidence.
+Scopes are private engine identities and are released on every turn outcome.
+The built-in chat grant is unchanged; editing remains Step 2.
+
+Native chat/one-shot builders provision isolated private output stores. Opaque
+references remain instance-local; store shutdown seals admission, joins actual
+I/O and removes only pinned owned entries. Bounded startup maintenance preserves
+live, reused and uncertain owners. Partial initialization rolls back only proven
+owned entries and reports cleanup uncertainty. Fresh/resume/clear/reseat and
+Home teardown share the owning lifecycle, including abandoned builds.
+
+The original author gates cover the executable inputs committed as `9f148c70`:
+the complete `pnpm run ci` passes with all 32 changed TypeScript files unchanged
+throughout the run. Workspace tests include 7,466 CLI and 4,992 core
+passes; the 11 existing CLI and 11 LLM skips retain their platform/provider
+conditions. Build/format, isolation, package/bootstrap/CLI/media smokes, 1,031
+acceptance-tool tests and the wire, 23 usage, 115 filesystem and 130 secret
+mutation controls pass. Fixed/restored runs pass and their negative controls
+detect the intended semantic failures. No deadline, population or coverage
+floor was reduced. The source-worker import uses strip-compatible TypeScript;
+asynchronous host fixtures use isolated homes and explicit readiness.
+
+`pnpm coverage:enforced` also passes on the same unchanged TypeScript inputs;
+the existing package-floor scope is unchanged. The required two fresh
+independent review rounds and separate implementation security sitting are
+pending. Author implementation agents and
+the earlier design sitting do not count as those reviews. This entry records
+delivered scope, not Step 1 acceptance or whole-MVP-3 completion. Native Windows
+CI and real-terminal acceptance are not claimed from the local macOS run.
+
+**Independent round 1 — `3c4211cd..9f148c70`:** three fresh reviewers covered
+the entire increment: GPT-6.1 Terra/high on native filesystem behavior,
+GPT-6.1 Sol/high on private storage, and a separate Sol/high on core/lifecycle
+and canonical docs. Four findings were independently verified; none was skipped.
+
+| Verified finding | Correction |
+|---|---|
+| Scoped discovery treated a nested ignore file as workspace-root input | Compare its canonical directory with the canonical workspace root, independent of the requested walk's depth; test both ignore names and both discovery tools. |
+| A candidate open failure aborted `find_files` | Return the bounded partial result with unreadable/incomplete metadata, preserving cancellation precedence. |
+| Initial temp `fstat` failure leaked uncounted files and allowed further admission | Track exclusive creation separately; seal the instance, retain reservations and report uncertainty when no inode pin exists. Never delete an unpinned file. |
+| Scratch section claimed native chat had no allocator | Distinguish the implemented session-output lifecycle from the still separate child-artifact foundation. |
+
+Root native probes reproduced both discovery defects and the store quota
+failure before correction. Four new regression cases failed on the reviewed
+production code and pass after the fixes; the focused native/filesystem/host
+matrix passes 329 tests with three existing platform skips. Workspace
+lint/typecheck, build/format, test isolation, compiled CLI/bootstrap smokes and
+finite bundle closure pass. The fresh second round and separate security
+sitting are still pending; Step 1 is not accepted.
+
+**Independent round 2 — `3c4211cd..fc35776a`:** fresh Terra/high reviewed native
+filesystem/core/assembly and a fresh Sol/high reviewed private storage and every
+lifecycle/caller boundary. The latter was clean (37 focused tests); the former
+passed 35 CLI and 236 core tests but found one further completeness defect:
+an unsupported ignore file in an ancestor above the selected directory was not
+visited. Root independently reproduced `src/.gitignore` with a `src/sub` walk
+for both discovery tools; the finding was accepted, not deferred.
+
+The correction checks only admitted ancestors, stops at workspace/grant/confidentiality
+boundaries and caps additional ancestor inspection at 32 directories. Nested
+ignore presence is checked before directory enumeration, using the filesystem's
+actual name resolution rather than guessing filename case. Four regressions
+failed before correction and now pass, including extra-root authority and the
+depth limit. An additional boundary control caught and corrected an intermediate
+scratch-root regression before commit: its protected parent is a boundary, not
+an input to inspect or a reason to hide the explicitly granted scratch subtree.
+The native discovery suite now has 20 passing tests; the combined native/host
+matrix passes 334 tests with three existing platform skips. Workspace
+lint/typecheck, build/format, compiled CLI smoke and bundle closure pass. A
+fresh clean cumulative round remains due before the separate security sitting
+and Step 1 acceptance.
+
+**Independent round 3 — `3c4211cd..04b02024`:** fresh Terra/high covered native
+filesystem/private storage and fresh Sol/high covered core/lifecycle/docs. The
+latter was clean after 783 tests across 14 suites. The native review found one
+cancellation defect: the root-ignore read catch could return incomplete results
+after abort. Root reproduced all eight find/search cancellation cuts. The catch
+now rechecks abort before error classification, and discovery rechecks before
+returning a partial/final result. Eight regressions failed on the reviewed code
+and pass after correction; the native/host matrix passes 342 tests with three
+existing platform skips. The engine's independent cancellation floor is
+unchanged. Workspace lint/typecheck, build/format and compiled CLI smoke pass.
+A fresh cumulative review and the separate security sitting remain due;
+Step 1 is not accepted.
+
+**Independent round 4 — `3c4211cd..e5ca8a4d`:** a fresh Sol/high reviewer
+covered all 35 changed files, their real callers and persistence boundaries;
+928 tests across all 17 changed suites passed. Two native-probed medium
+findings remained: anchored ignore matching used the lexical workspace alias,
+and an existing dangling root ignore link was treated as an absent input.
+Root independently reproduced both for find/search. Matching now uses the
+canonical workspace root; fixed-name absence is distinguished from resolution
+failure after `lstat` proved presence. Four regressions failed before correction
+and now pass; the native/host matrix passes 346 tests with three existing
+platform skips. Workspace lint/typecheck, build/format and compiled CLI smoke
+pass. A fresh clean cumulative review and separate security sitting are still
+required before Step 1 acceptance.
+
+**Independent round 5 — `3c4211cd..7f6f2398`:** a fresh Terra/high reviewer
+completed all 35 changed files and their persistence/export/ownership callers;
+216 focused tests passed. One medium finding remained: late-detected binary or
+invalid UTF-8 candidates consumed source reads without charging the search byte
+budget. Root independently measured 21,135,360 actual bytes for twenty 1 MiB
+late-invalid candidates while the result claimed zero bytes and a complete scan.
+
+Every search descriptor read now observes a shared remaining budget, including
+binary probing and failed decoding. Whole-file reads reuse the probe rather than
+reading its prefix twice. Three regressions failed before correction and pass
+afterward; the native/host matrix passes 349 tests with three existing platform
+skips. An independent native descriptor probe now measures exactly 16,777,216
+bytes, matching the returned count and explicit `incomplete`/`bytes` limit.
+Workspace lint/typecheck, build/format and compiled CLI smoke pass. A fresh clean
+cumulative review and separate security sitting remain due before acceptance.
+
+**Step 2 design gate (opened 2026-11-11; closed below on 2026-11-12):**
+[ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+was Proposed pending explicit maintainer approval. The existing retained-run
+replay path needs a read-only inspection before file preparation to survive the
+post-settle/pre-checkpoint crash window without reusing old read evidence or
+creating a journal row on an edit precondition refusal. Its independent proposal
+review found no blocker; this is not an implementation security sitting. Step 1
+continued independently; no Step 2 source change preceded approval.
+
+**Independent round 6 — `3c4211cd..5f35fb1b` (2026-11-12):** a fresh Sol/high
+reviewer completed all 37 changed files (including the separately Proposed
+ADR-0124/index) and surrounding callers; all 17 changed suites passed 935 tests.
+One medium finding remained in glob reads: full-source UTF-8/NUL validation
+returned a binary skip before aggregate charging. Root independently measured
+20,971,520 candidate bytes read while returning only ten valid text bytes.
+
+Glob admission now charges fully read skipped sources independently of returned
+text size. The existing bounded prefix-only binary skip remains separate; the
+opened descriptor's size must fit the remaining budget before a full read.
+Two new regressions failed before correction, and an in-budget positive control
+preserves accurate returned text size. The native/host matrix passes 352 tests
+with three existing platform skips. The same native probe now refuses at the
+8 MiB aggregate limit after 7,348,224 candidate bytes (including the final
+bounded probe); the search probe still stops at exactly 16 MiB. Workspace
+lint/typecheck, build/format and compiled CLI smoke pass.
+
+A separate Terra/high implementation security sitting at `5f35fb1b` reported no
+security finding after 333 tests. It predates the later glob correction and
+does not accept the final increment. A fresh complete cumulative round and a
+fresh affected security sitting are required before Step 1 acceptance.
+
+### MVP-3 Step 1 local acceptance (2026-11-12)
+
+The executable Step 1 source at `7df16ec2496877ae3c361aaeaf4d5ce1f018b483`
+has completed the requested review/fix cycle with no unresolved finding and no
+new deferral. All verified findings from rounds 1–6 were corrected; the original
+author gates and their source binding are recorded above. Post-correction
+workspace lint/typecheck, build/format, native/host tests and compiled CLI smoke
+pass. Test isolation remains intact; no deadline, test population or coverage
+floor was weakened.
+
+**Fresh complete cumulative round 7:** Terra/high independently reviewed all
+37 changed files and relevant callers, ownership, persistence/export and
+canonical contracts. It found zero findings; all 17 changed suites passed
+938 tests. Native descriptor probes independently confirmed the glob refusal
+and exact 16 MiB search ceiling. The reviewed files remained unchanged.
+
+**New separate implementation security sitting:** a fresh Sol/high independently
+reviewed that same final cumulative source, including the glob correction.
+It found zero findings after 22 complete suites/1,475 passing tests, zero skips,
+and independent native controls for budgets, prefix-only limits, read-receipt
+identity/lifetime, private-store permissions, actual producer joins and cleanup.
+Its source/caller/sink audit covers the affected security boundaries; unchanged
+provider, SSRF, desktop IPC and live keychain paths are not newly recertified.
+The prior `5f35fb1b` sitting is historical and does not substitute for this one.
+
+This is local implementation acceptance. Push the checkpoint on `development`
+and observe its applicable CI before the next step; native Windows evidence
+comes from that CI, not these local macOS tests. Physical-terminal and live
+provider/keychain execution are not claimed. Step 2/3 remain unimplemented, the
+built-in default grant is unchanged. At this local acceptance, ADR-0124's
+separate approval gate remained open; the later design acceptance below closes
+it. This does not complete MVP-3 or authorize a merge or publication.
+
+### ADR-0124 review and design acceptance (2026-11-12)
+
+The maintainer supplied two reviews and explicitly directed verification,
+necessary corrections, acceptance and continued implementation; no older-binary
+compatibility obligation applies. Root and two independent source audits
+verified the findings against the current implementation, not their assumed
+exploitation scenarios. Read-only runtime probes reproduced the inherited
+SQLite/memory gate and registry mapping defects. No Step 2 source was changed.
+
+| Supplied concern | Verified disposition |
+|---|---|
+| Valid JSON with unusable replay structure passes the node gate | Confirmed in SQLite and memory with `{}`/unknown-version results. One strict shared decoder now belongs in the accepted contract for the gate and both replay entry points; block before model execution, preserving valid explicitly absent values. |
+| Mapping presence is weaker than mapping identity | Confirmed directly at the public registry: changed source paths with mapping still present returned the old projection. Bind the exact admitted mapping snapshot and distinguish absent/empty; no migration or guessed old evidence. |
+| Claimed CLI YAML-edit impact | Narrowed: current production callers do not supply `outputMapping`, and frozen workflow verification already rejects covered workflow drift. The registry contract defect still warrants correction in this same step. |
+| Universal replay/redelivery implication | Corrected: improvement is conditional on reproduced correlation/slot/tool, journal arguments and mapping; different regenerated calls/order retain current bounded guarantees, not logical exactly-once execution. |
+| Skip active confirmation on replay | Recommendation rejected: retain existing hook/mode/deny floors with an explicit saved-result delivery card, no current diff and no new mutation-cache authority. Existing actual-dispatch hook remains skipped only because no dispatch occurs. |
+| Inspection and post-hit errors | New inspection storage faults are explicitly non-recoverable/non-retryable; conflicts remain effect attention. Preserve cancel/fence precedence and prohibit typed or generic post-hit errors from re-enabling retries. This does not relabel every existing pre-prepare store fault. |
+| Session present row should be a miss | Recommendation rejected: a present identity conflicts under ADR-0098; absence alone is a miss. A normal content-free row is not corruption and its result column is never consumed. |
+| Signature, eligibility, stable projection and forwarding unspecified | Canonical protocol now owns required miss/replay signature, first-party prepared-hook plus journaled-tier eligibility, prelookup unsettled refusal and projection reuse, explicit fenced/lifetime/receipt/durability wrappers and doubles. |
+| Missing related links, reference order and public-API scope | Added ADR-0075/0079/0083 links, dated ADR-0080/0120 notes, shared/DB/core/CLI Step 2 scope, dispatch diagram, exact evidence protocol, current roadmap and regression matrix. The existing map/bound/settle order is accurately recorded. |
+
+A **fresh Sol/high corrected-design/security review** inspected all five
+substantive corrected documents and actual source boundaries. It found no
+unresolved blocker/high/medium design finding. Its checks specifically include
+legitimately absent mapped results and atomic prepare discovering replay after
+ordinary approval; the latter must replace the card and must not let delivery
+seed/expand mutation `always` authority. This is a design/source inspection,
+not runtime evidence for unimplemented behavior or the later implementation
+security sitting.
+
+ADR-0124 and its linked public-contract expansion are **Accepted** under the
+maintainer's instruction. The original three-step boundary is unchanged; all
+replay/evidence corrections belong to Step 2 alongside prepared writes.
+Its implementation begins after the Step 1 CI checkpoint. No further design
+approval is required for these verified corrections; ordinary implementation,
+two fresh review rounds, affected fixes and a separate security sitting remain.
+
+### MVP-3 Step 1 source checkpoint CI (2026-11-12)
+
+The pushed checkpoint `7889737c776f6891f2af046307a3fce06f490556` passed
+[CI run 43100476225](https://github.com/HodeTech/Relavium/actions/runs/43100476225):
+all 18 jobs succeeded, including all required contexts, complete causal-control
+families, exact packed CLI consumers, Windows and the advisory floor/peer jobs.
+The primary job verified complete causal/packed/map evidence before workspace
+execution, then passed lint/typecheck, every workspace, native DB diagnostics,
+build/format, isolation, fences, bundle closure and compiled/offline smokes.
+Workspace tests include 7,492 CLI passes/12 existing platform skips and 4,992 core
+passes. Coverage independently passed all 860 files, 18,003 tests/23 existing
+platform skips, under the unchanged llm/mcp thresholds and measured core scope.
+
+All 15 reviewed production files remain byte-identical to `7df16ec2` through
+the later documentation and test/CI-only extension. That extension's affected
+local validation and actual Windows execution supplement this complete source
+checkpoint; its initial Windows pass does not claim the two newly selected
+suites ran. Step 2 follows closure of the native validation clause below.
+
+### MVP-3 Step 1 Windows validation extension (2026-11-12)
+
+The initial pushed checkpoint's Windows job passed its selected existing
+filesystem suites, but its explicit selection did not include the new
+`fs-mvp3.test.ts` and `session-output-store.test.ts`. Add both to that same
+serialized step, retaining all previous cases, failure guards and deadlines.
+The expanded command passes locally: 14 suites, 402 tests and ten existing
+platform skips. This macOS result is not Windows execution evidence.
+
+A fresh Sol/medium selection review identified one source-backed fixture
+portability defect: a self-killed Windows child reports exit 1 with no POSIX
+signal, so the unconditionally expected `SIGKILL` was incorrect. Root verified
+the installed Node runtime's upstream libuv implementation. The fixture now
+requires synchronous post-publication readiness, no spawn error or stderr,
+and the strict platform-specific termination result. Actual crashed-owner
+reclamation and live-owner preservation remain unchanged and unmocked.
+
+A new Luna/high review found no issue in the corrected test/CI scope. The two
+complete native suites pass 63 tests; workspace lint/typecheck, build/format
+and the final expanded 14-suite selection pass. Application production sources
+remain identical to `7df16ec2`; no population, coverage floor or case/job timeout
+was weakened and no new skip was introduced.
+
+**Native validation closed:** on `ee50195b56f2b313e19acec1d574d8e9c2d70bb1`,
+the [extended Windows job](https://github.com/HodeTech/Relavium/actions/runs/43110550553/job/130825105102)
+passed its complete 14-suite selection: 393 tests and 19 existing platform
+skips. This explicitly includes all 25 output-store tests and 37 native
+MVP-3 filesystem passes with its one declared POSIX-permission skip. The job's
+other native suites and headless smoke also pass. These are actual Windows
+results, separate from the local counts above.
+
+Together with the complete 18-job source checkpoint, this closes Step 1's
+implementation/review/security and affected CI validation. Application sources
+were unchanged between those checkpoints. The later full CI repetition at
+`ee50195b` completed with the actual Windows extension green, but six causal
+jobs stopped before their controls because the exact Windows scheduling guard
+still expected twelve files; the dependent primary job consequently skipped
+its workspace checks. Commit `e82a4a95` aligns that guard with all fourteen
+intentionally selected files, preserving exact equality, existing cases and
+bounds. Its seven scheduling tests, lint and formatting pass locally; two new
+independent reviews (Terra/medium, Luna/high) found no issue in that exact
+guard-only correction. Replacement CI is required; the failed repetition is not recorded
+as green causal or workspace evidence. Step 2 source work continues on
+`development`; whole-MVP-3 acceptance, final combined CI and PR review remain open.
+
+**CI repetition and bounded diagnostics:** the full repetition at `e82a4a95`
+completed with sixteen jobs passing. Filesystem causal shard 2 stopped at
+`invocation-forward`'s mutated phase because the runner reported two unhandled
+errors; the dependent primary job did not run its workspace checks. Intended
+semantic mutation failures alone do not satisfy that control. The retained
+receipt exposed only the error count, so the original Linux/Node 24.22.2 cause
+remains unknown. Isolated fixed/mutated/restored repetitions on macOS and
+Linux/Node 24.22.3 did not reproduce those errors; they are not equivalent to
+the original CI population.
+
+Commit `2d9c3a42` adds bounded allowlisted error kinds and manifest-owned source
+locations to forensic stderr, with no raw message, cause, stack or private
+root. Its synchronous sink cannot leave a late write error after the receipt.
+The strict completion protocol and zero-unhandled gate remain unchanged.
+Invocation fixtures now always terminate and join in `finally`, including
+assertion failures; that verified cleanup gap is not attributed as the cause
+of the original errors. All 194 tool tests and 19 invocation tests pass
+locally. New independent Sol/high and Luna/high reviews and a separate
+Sol/high security sitting found no issue in the six-file increment. The
+[replacement CI](https://github.com/HodeTech/Relavium/actions/runs/43128764609)
+then correctly refused three stale coordinator-test assertions that still
+required empty stderr. Its causal controls did not run. Commit `cbf4f2f4`
+asserts the exact allowlisted diagnostic, fixture-owned source frame and
+absence of raw markers/private fixture prefixes, preserving receipt refusal,
+hash restoration and cleanup assertions. An isolated committed-source copy
+with physically installed frozen dependencies passes all 1,037 acceptance-tool
+tests, with no skips; scoped lint/formatting pass. Fresh independent
+Terra/medium and Luna/high reviews are clean. The
+[new repetition](https://github.com/HodeTech/Relavium/actions/runs/43131456310)
+completed all eighteen jobs successfully at `cbf4f2f4`, including both
+filesystem shards, all causal families, coverage, Windows and the four installed
+consumers. This validates that committed checkpoint, not the later Step 2
+implementation. The original two unhandled-error identities remain unknown;
+the passing repetition does not establish their cause.
+
+### MVP-3 Step 2 implementation start (2026-11-12)
+
+The three-step boundary stays unchanged. Parallel authors own coherent backend,
+native filesystem and shared UI areas within this one increment, with root
+integrating CLI/session/command wiring. Core preparation/preview types are
+agreed first. The UI reuses the existing `@relavium/llm/scrub-secrets` rule
+authority through an additive original-mask-range helper; no second credential
+rule set, runtime dependency or LLMProvider wire/type change is introduced.
+Always answers remain provisional through atomic replay resolution, using a
+narrow in-process approval-decision lifecycle rather than making the preview
+or display observer an authorization channel. These are implementations of the
+accepted span-preservation and replay-cache floors, not a new product decision.
+
+**New metadata design gate:** a separate source/security audit reproduced an
+ACL-denied append becoming a successful mode/uid/gid-only replacement, with ACL,
+quarantine and custom-xattr loss on macOS. Historical overwrite behavior is not
+authority for that new append behavior. The prototype is not native-security
+accepted. [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+and its proposed metadata contract define a preserve-or-refuse host-native
+boundary and explicit native-source/build/packaging exception for maintainer
+review. No Rust/native package implementation precedes approval. Backend/UI and
+other independent integration work can continue; metadata-dependent publication,
+Step 2 author acceptance and the Step 3 grant remain gated.
+
+The corrected proposal received a separate Sol/high read-only review with no
+finding blocking maintainer direction approval. It explicitly limits effective
+access checks, metadata visibility, native dependency families and delivery
+targets; Windows replacement candidates cannot bypass the existing atomicity
+contract by relabeling known partial failures as uncertainty. This is proposal
+review only: exact supported profiles, pinned/audited inputs, actual native and
+packaging proofs, fresh implementation reviews and a separate native security
+sitting remain due after approval.
+
+### ADR-0125 supplied review and design acceptance (2026-11-12)
+
+The maintainer instructed verification/correction of the supplied reviews,
+then design acceptance and continued implementation, with no compatibility
+obligation for the unaccepted prototype. ADR-0125 and its canonical metadata
+contract are **Accepted** under that instruction; native implementation and
+whole-Step-2 acceptance are separate and remain open.
+
+- **Durable overwrite uncertainty:** source inspection confirmed overwrite/new
+  `write_file` calls had no row. Every variant now requires tier-3 durability in
+  the accepted design, including empty/unchanged content. Existing strict-v2
+  inspection/resume and session non-replay apply; no adapter journal or guessed
+  old receipt is added. Missing-journal embedding paths refuse. A stale source
+  comment is not evidence of a registered `--no-history` CLI flag.
+- **Creation and recovery:** bind/revalidate OS-derived destination inheritance,
+  parent/default ACL/group/mask/credential inputs and admitted parent creation.
+  Named stages require bounded private ownership evidence before payload,
+  exclusive safe orphan cleanup and preservation of live/unknown owners. The
+  canonical contract defines timing, budgets and operator recovery. Owner-only
+  OS permissions also require an enforceable cross-host/process model-filesystem
+  exclusion for stages and aliases; otherwise placement refuses.
+- **Delivery/governance corrections:** lazy loading, original path/scope floors,
+  non-root ownership refusal, quarantine/Zone.Identifier, Cargo cooling review
+  and guide/principle forward notes are explicit. The new adapter is the third
+  native component. Its no-compile/no-extra-download rule does not describe
+  SQLite's existing prebuild/node-gyp or keyring's optional-package installation.
+  Eight targets are the new component's proof obligation, not an inferred
+  historical CLI support list. The unsafe prototype is no fallback obligation.
+  Node-API 8 is conservative; 9 also supports the exact Node 22.0.0 floor.
+- **Evidence scope:** the tracked developer probe was independently rerun by
+  root on non-root macOS arm64/Node 22.23.1. It verifies direct append refusal
+  and metadata loss under historical replacement/copy algorithms. Earlier
+  inline probes were likewise OS/algorithm experiments, not complete-host or
+  native adapter tests. No successful flags or Windows execution is inferred.
+  The [canonical receipt](../../reference/cli/native-filesystem-metadata.md#baseline-reproduction)
+  owns the reproducible command and exact observation limits.
+
+A fresh Sol/high complete design review found no remaining material issue.
+An independent Terra/high authority review found the named-stage model-access
+gap; after the explicit exclusion/refusal and consumer-proof correction, its
+affected re-review was clean. These are design reviews only. Concrete native
+profiles/allowlists, pinned/audited inputs, actual native and exact-artifact
+proofs on all enabled targets, two fresh implementation rounds and a separate
+native security sitting remain required. No native component was implemented
+before this design approval.
+
+### MVP-3 Step 2 author checkpoint (2026-11-12)
+
+The implementation now joins prepared edits/writes, strict retained-result
+inspection, native metadata-preserving publication and the shared approval/detail
+views in one increment. Every model `write_file` variant and `edit_file` claims
+tier-3 evidence before directory/stage creation or publication. Resume rejects
+unusable retained results before node execution, and replay binds the exact
+mapping configuration. Saved-result delivery preserves policy/confirmation floors
+without inventing a current diff or granting future mutation approval.
+
+Both chat hosts use engine-call-correlated live rows, preserve assistant text
+between calls and offer the same bounded full-review/details view. Inspection
+tracks original spans and actually flushed frames, including masked-only changes;
+raw/revealed previews remain in process memory and are sealed on departure.
+Restored tool groups retain structural outcomes rather than preview content.
+The new default editing grants and starting-mode work remain Step 3.
+
+The [native metadata contract](../../reference/cli/native-filesystem-metadata.md)
+owns the frozen platform profiles, creation inheritance, staging/index proof,
+operator recovery, dependency audit and evidence limits. Local native execution
+covers macOS arm64/APFS (28 Rust parent cases, three parent-owned child fixtures
+and eleven Node lifecycle cases) and non-root Linux arm64 GNU/musl profile runs.
+The real workflow/SQLite/native regression cohort has 23 cases covering claims,
+publication/settlement cuts, saved results, malformed evidence, identity changes
+and provisional `always` decisions. Native-unit kill cuts separately exercise
+partial metadata and payload; they are not whole-workflow cuts inside the native
+producer. Windows cross-checking is not Windows runtime proof.
+
+Author verification passed workspace lint/typecheck and all 18,303 tests, with
+22 existing skips; build/formatting, test isolation, DB sync, seam/dependency
+fences, bundle closure and compiled CLI/bootstrap/media/overflow/budget smoke
+also passed. The permanent usage cohort grows from 449 to 452 only because
+`chat.test.ts` adds one plain `/details` case and a two-case interactive/plain
+integration table; its 71 native children and deadlines are unchanged.
+Required coverage/Windows contexts explicitly fail when native production fails,
+rather than becoming dependency-skipped successes.
+All 1,068 root acceptance-tool tests pass without skips; final tools typecheck,
+lint and focused formatting checks pass as well.
+
+The source remains unaccepted. The running complete coverage gate, final
+two fresh implementation review rounds, separate native
+security sitting, all eight actual native target receipts and all four exact
+installed-tarball consumers remain to be closed. A current-host development
+asset is not a complete release inventory and cannot pass packing. The existing
+publication guard remains in force. No Step 3 grant or whole-MVP-3 completion
+is implied by this author checkpoint.
+
+### MVP-3 Step 2 first implementation review corrections (2026-11-12)
+
+The author checkpoint is `4ba04e1f`. Fresh Sol/Terra agents reviewed backend,
+native/delivery and UI areas. Their reports are review evidence, not authority;
+root checked the actionable cases against the implementation before changing it.
+The native read did not claim a complete security verdict. The following verified
+issues are corrected together, without changing the three-step plan:
+
+| Finding | Correction and evidence |
+|---|---|
+| Empty inheritance templates could escape ownership on normal pre/post-move or adoption failures | A held-identity guard owns each exclusively created template immediately; a trusted synchronous callback transfers ownership before post-move validation. Exact empty-object cleanup is tested through 132 repeated failures; links, swaps and uncertain cleanup preserve evidence. Three additional parent controls run on every native profile. |
+| Approval cards omitted the governed tool and action | Both shared views measure escaped mandatory identity/action rows, including saved-result delivery, and refuse incomplete identity evidence. Undeclared tools still expose name-only previews, never enumerated arguments. |
+| External suspension could revive prior frame/reveal evidence | Actual suspend entry and reclaim invalidate review state; custody loss discards acknowledged and pending frame evidence. Held-redraw tests exercise both real host wrappers. |
+| Explicit review copy inherited mouse-selection preferences | An independent review clipboard capability remains wired in inline/no-mouse/disabled-selection modes; automatic copy preferences keep their original meaning. |
+| A retained summary was inaccessible after absent/evicted preview | Summary-only details explicitly disclose the unavailable preview and retain masking, bounded selection and truthful outcome/identity. |
+| An output-root alias could write staging index evidence | The captured index boundary now rejects lexical/canonical descendants before creation and opened index/record/lock identities. Actual `createCliHost`/DB writes preserve the lock and refuse new records/directories while ordinary writes succeed. |
+| Diff chunk yields stayed entirely in the microtask queue | A host `yieldControl` capability supplies a real event-loop turn. Missing capability refuses and releases preparation. Actual timer cancellation and joined release tests prove no approval, claim or dispatch occurs after cancellation. |
+
+The first complete coverage run reached all 873 files but failed one existing
+surface-acquisition test: it expected the second close after one `setImmediate`,
+before asynchronous host teardown necessarily joined. An isolated repetition
+failed the same assertion on another surface. The fixture now waits for the exact
+second attempt within its existing wait bound; native-open, owner, signal,
+finite-exit and unsettled-result assertions remain unchanged. All 38 related
+tests pass. A complete final-source coverage run is still required; this failed
+run is not coverage acceptance.
+
+The [author-source CI](https://github.com/HodeTech/Relavium/actions/runs/43142517047)
+executed six macOS/Linux native profiles successfully. Both Windows builds and
+protocol probes succeeded, but the first selected native Rust case failed; its
+exact stage was not retained by that version of the validator. Dependent
+controls did not run, and the required aggregate/coverage/Windows contexts
+correctly failed instead of passing by skip. The validator now emits bounded
+fixed case/checkpoint/source-coordinate diagnostics without raw child output.
+Source inspection separately confirmed a documented access mismatch:
+directory handles later passed to `FlushFileBuffers` lacked its required write
+access. Corrected opens retain inspection rights and request that OS-checked
+access without mutating directories or ignoring failed flushes. A native
+Windows parent test now includes actual flush and denial checks. This correction
+does not establish the cause of the previous failure or prove NTFS durability;
+both actual Windows legs remain required.
+
+The local macOS profile now passes 31 parents plus eleven Node lifecycle cases,
+with three child fixtures exercised by their parents. Non-root Linux GNU/musl
+cleanup controls pass; Windows source cross-checking supplies no runtime proof.
+The Windows source cohort also grows from fourteen to twenty serial files to
+exercise the new prepared writes, mask helper, inventory/namespace guards,
+workflow replay cuts and actual host output guard. Deadlines and old cases are
+unchanged. The permanent usage cohort grows from 452 to 455 solely for three
+explicit-copy command regressions; all 71 native children remain required.
+
+After these corrections, workspace lint/typecheck and all 18,335 tests pass.
+The 23 skips comprise the prior 22 plus the new Windows-only index-spelling
+control on the local macOS run; that control is included in the expanded
+Windows cohort. Build/formatting, 874-file isolation, DB sync, tools
+typecheck/lint and seam/dependency fences pass. The original UNC-before-I/O
+controls also remain strict: raw input is rejected before the newly captured
+trusted-home canonical path is resolved.
+All 1,072 acceptance-tool tests pass on the frozen source. Bundle closure,
+177 compiled bootstrap controls and the real compiled workflow write/journal
+smoke pass with the current-host native artifact. This is source/build evidence,
+not a complete eight-target or installed-tarball acceptance.
+
+Fresh complete affected reviews, the separate security sitting and final
+combined/native/installed-consumer evidence remain open. Step 2 is not accepted,
+and Step 3 grants are not enabled.
+
+### MVP-3 Step 2 second implementation review (2026-11-12)
+
+New independent Terra/Sol reviewers completed the cumulative backend,
+native/filesystem and delivery partitions at `64509d9f` without a verified new
+finding. The delivery sitting independently passed 342 focused controls. These
+source reviews do not establish Windows runtime or complete artifact acceptance.
+The UI sitting verified two medium findings: copy used a fixed viewport instead
+of the acknowledged page, and an admitted long target could not enter a usable
+full view. Both are corrected: copying uses the exact emitted source window's
+masked companion, while a truncated target pages normally and requires actual
+visible inspection. Existing mask reveal requirements remain separate from
+ordinary target visibility. All 393 focused UI tests, CLI typecheck and targeted
+lint pass; thirteen new regressions leave the 455-case permanent cohort unchanged.
+A new complete affected UI review is required after this material correction.
+
+The `64509d9f` Windows arm64 repetition reached index creation and the
+`index-parent-flush` checkpoint before refusing; that last checkpoint alone does
+not distinguish the flush from the following recheck/allocation-lock work.
+`23449920` adds only test-gated subphase/private-policy checkpoints and the
+matching closed diagnostic vocabulary. No raw child output, SID or ACL is
+forwarded, and the release binary is unchanged. The macOS native profile and
+eight diagnostic controls pass; the Windows cause remains under investigation.
+
+Root's follow-up source audit also found the same early-ownership class in
+private stage directory/payload creation. A real native failure-injection test
+reproduced an empty stage and retained reservation after a normal held-handle
+failure. No payload is written, but repeat failures can consume bounded inventory
+slots. The fix is in progress; a directory whose identity cannot be established
+after creation must remain preserved rather than deleted by name. The earlier
+native review does not cover this subsequent correction. Step 2 and the final
+coverage/security/platform gates remain open.
+
+### MVP-3 Step 2 affected UI follow-up (2026-11-12)
+
+A new complete cumulative Sol/high UI sitting at `9ffb5a76` verified the exact
+page-copy and long-target corrections, both hosts' visibility/inspection/input
+paths, bounded details, restoration and content-exclusion boundaries. It passed
+115 focused tests but found one medium search defect: rejecting a masked first
+match skipped later visible matches on the same line. The fix exhausts eligible
+same-line candidates using bounded slices and binary mask lookup; hidden and
+absent matches still share the generic no-match response. Six regressions pass,
+including overlapping/cursor/cross-line cases; the focused 81-case model/host
+cohort, typecheck and lint pass. A final new affected review remains due.
+
+The review's tentative uncertainty-label concern was not promoted: a failed call
+and its separate durable-effect uncertainty/remedy are distinct existing facts.
+No retry or error classification was changed for that interpretation question.
+
+The `23449920` Windows proof run localized private-file owner and DACL mismatch
+on the allocation lock. Private Windows artifacts now receive an explicit
+TokenUser owner and protected sole-user descriptor at creation, retaining exact
+readback checks. Ordinary destination files/templates keep their OS-derived
+policy. A separate Sol/high design/security read verified that accepting only
+the same effective token's OS-designated TokenOwner as an alternative payload
+owner fits ADR-0125's concrete profile mandate; private index authority stays
+TokenUser. It requires same-handle/bracketed context checks, actual final-policy
+access evidence, and truthful current-pass recovery limits. It does not approve
+arbitrary owner groups, historical token lineage or weakened private records.
+This implementation/proof is in progress and receives a fresh native review
+and the separate final security sitting before acceptance.
+
+### MVP-3 Step 2 final affected validation (2026-11-12)
+
+A fresh complete Terra/high cumulative UI review at `3a04f219` closed the
+same-line search correction with no blocker/high/medium finding and 82 focused
+passes. A separate complete Sol/high UI security sitting passed 318 tests in
+twelve files and found no material issue in consent, visibility, input custody,
+copy/reveal, restoration and ephemeral-content boundaries. These verdicts cover
+the unchanged UI production source, not the later native or delivery changes.
+
+The Windows diagnostic run at `23449920` confirmed that newly created private
+allocation-lock ownership and DACL did not match the required private policy.
+Private files now receive the effective TokenUser's protected descriptor at
+exclusive creation. Destination policy remains OS-derived; supported payload
+ownership is limited to that same effective token's User or designated Owner.
+The same opened token supplies bracketed statistics and owner/user evidence;
+current-operation context is rechecked before destructive work. Recovery makes
+no claim to reconstruct a dead producer's historical token. New-file, stage and
+marker creation retain held identity through adoption; failures that cannot
+prove an exclusively owned empty object preserve the reservation instead of
+deleting by name. A fresh complete Terra/high affected-native source review
+found no blocker/high/medium issue. Actual Windows execution remains required;
+the separate implementation security sitting is recorded below.
+
+The local final native profile passes 33 macOS parent cases and eleven Node
+lifecycle cases; non-root Linux GNU and musl controls pass thirteen parent
+cases each. The full workspace run passes 18,354 tests, with 23 declared
+platform skips; build/format, lint/typecheck and boundary checks pass. These
+results are local evidence, not an eight-target or installed-consumer verdict.
+
+A fresh complete Sol/high affected delivery review found one medium runtime
+loader defect: the Windows owner-proof requirement trusted an unbound receipt
+platform. A synthetic acquisition witness reproduced the bypass before the
+fix. The loader now binds platform, architecture and libc to each finite target
+and derives the owner requirement from that target. Both Windows architectures
+have independent zero-acquisition refusal controls. All 22 profile/asset tests
+pass. Synthetic receipts certify only validator behavior. Actual Windows CI
+and complete assembly require a genuine
+distinct TokenOwner context separately on x64 and arm64; release binaries must
+also be free of the fixed test-hook/checkpoint prefix.
+
+The complete 1,075-case acceptance-tool run first stopped on seven stale native
+source bindings and the root-removal interruption fixture. After refreshing
+the source-bound asset, only the interruption fixture failed. An isolated run
+showed approximately 49 seconds spent constructing its 20,000 files before
+cleanup began, consuming most of the 60-second check-exit bound. The fixture
+now constructs that same tree before spawning the check and atomically adopts
+it into the check root. The shrink-triggered interrupt, exact population,
+60-second exit bound, exit 130 and complete-root-removal assertions remain.
+The targeted case passes; full tool and final coverage repetitions remain due.
+Neither failed run is acceptance evidence. Step 2 and the Step 3 grant remain
+open until all remaining review, security and source-bound platform gates pass.
+
+**Final source-review closure:** a new complete independent Sol/high affected
+delivery review found no blocker/high/medium finding after the loader fix.
+It independently passed all 22 asset/profile tests and twelve additional
+temporary zero-acquisition refusal controls, including each Windows target's
+spoofed platform, owner evidence, architecture and libc. The adjacent cleanup
+fixture correction preserves its original population and assertions; all
+fifteen tests in that file pass. No platform execution is inferred.
+
+Separate final implementation security sittings are clean for backend
+(Terra/high, 170 focused passes), native/filesystem (Sol/high, 59 passes and
+one Windows-only name-folding skip) and delivery (Sol/high, the independent
+controls above), in addition to the earlier UI sitting. The native sitting
+binds source `d6b6f511fb0a1367c589245c802011cc6af8cc4fa440df91fb273a0f60705447`
+and build recipe `de7d5c4bcd688b7aea0595743a23b1f9b05f6af25a3327fb87bfff1aa752832c`;
+both loader pins bind `bed61aeebd3a9533f2770f6d31528d3444f17dc0087dd2a14158ebcb0e54c21b`.
+Each partition completed its production-function/caller ledger. These are
+source/targeted-test verdicts, not final coverage, actual Windows, complete
+eight-target artifacts, installed-consumer or combined CI acceptance.
+
+**Frozen checkpoint validation:** `3beeefea1e6881be46e378f3496708003b998471`
+passes all 1,075 acceptance-tool tests with no skips. Enforced coverage passes
+all 874 files and 18,354 tests with 23 declared platform skips in 1,066.88 seconds,
+retaining the existing llm/mcp thresholds and measured core scope. This closes
+the earlier coverage-fixture failure on these source bytes.
+
+The [checkpoint CI](https://github.com/HodeTech/Relavium/actions/runs/43154464489)
+passes all six Linux/macOS native profiles. Both Windows architectures still
+fail the first producer-crash parent before its requested phase. The previous
+private owner/DACL mismatch no longer appears, but the rolling checkpoint
+suffix is dominated by cleanup and does not identify the original failure.
+No cause is inferred from that suffix. A test-only first-failure diagnostic
+is being reviewed; it must preserve original failure precedence, fixed bounded
+output and release exclusion. The failed CI is not Windows, artifact,
+installed-consumer, causal-control or combined acceptance.
+
+**Test-only first-failure correction:** fixed native boundary/class evidence now
+survives later cleanup checkpoints. An independent Sol/high review caught a
+diagnostic-precedence gap where an unwrapped primary error could still be
+replaced by cleanup evidence. The corrected patch records setup, payload and
+reservation errors before cleanup while preserving earlier deeper evidence.
+A new real `stage_new` control injects both an unwrapped source failure and a
+cleanup failure; a second control verifies nested precedence, successful empty
+state and single evaluation. Neither control reproduces the Windows cause.
+
+The corrected full affected review is clean, followed by a separate Terra/high
+diagnostic/tooling security sitting with no blocker/high/medium finding. Hooks,
+storage and injection compile only into tests; the production macro expands
+to the original operation. The exact allowlist gains 43 fixed tokens while
+retaining the 16-token/1,024-character receipt limit and malformed/unknown
+refusal. Selected parent populations are now macOS 35, Linux 15 and Windows 18;
+owned ignored fixtures and eleven Node lifecycle cases are unchanged. Local
+macOS passes all 35 parents and eleven Node cases; the release binary remains
+byte-identical to the coverage checkpoint, with all 43 tokens, the injected
+phase and test-hook prefix absent. Windows GNU cross-checking is compilation
+evidence only. New actual Windows execution remains required.
+
+**Windows token-contract correction:** the actual first-failure repetition at
+`21c4a2b0` passes all six Linux/macOS native profiles but still fails on both
+Windows architectures: x64 reports `first-pin`/`Changed`, while arm64 reports
+`first-metadata`/`Unsupported`. These identify boundaries, not root causes.
+Source review independently confirmed that primary-token comparison included
+ImpersonationLevel even though Windows defines that member only for an
+impersonation token. Normalize it only for a primary token, preserve the real
+impersonation level and every other selected statistic, and reject an unknown
+token type. Same-handle user/owner bracketing and ModifiedId checks remain.
+The existing Windows context parent now tests those distinctions and all three
+token identifiers; its native Windows execution remains due.
+
+Another 23 fixed test-only cuts distinguish the remaining pin/context and
+metadata/stream stages without changing stream admission. The complete Rust/JS
+allowlists match at 114 entries; output remains bounded to sixteen entries and
+1,024 characters. A new complete Terra/high affected review and a separate
+Terra/high security sitting are clean. Local macOS native/Node and lint,
+typecheck, build/format gates pass with an unchanged macOS release binary.
+This fixes a documented contract defect without claiming it caused either
+Windows failure or accepting either Windows profile.
+
+**Empty Windows stream inventory:** actual arm64 execution at `670e58bd`
+reaches `first-stream-no-data-header` after successful BackupRead exhaustion;
+x64 reaches `first-pin-rename`, an I/O failure mapped to `Changed`, not a
+token-context comparison. The empty-primary correction accepts only the
+descriptor-bound case specified in the native contract: both held/reopened
+handles must remain the same regular, non-reparse NTFS file with primary size
+zero before and after the complete bounded inventory. Unknown/duplicate/
+oversized streams and malformed or incomplete data still refuse. The only
+retained alternate stream is the already parsed, bounded Zone.Identifier.
+
+A complete affected Terra/high review identified a medium regression-test
+gap. The corrected existing Windows metadata parent retains actual unforced
+empty/Zone-only and exact-copy controls, and adds explicit test-only forced
+EOF on empty/nonempty files, truncated-header refusal and growth of an owned
+empty fixture before the post-check. These synthetic faults verify rejection
+boundaries, not OS behavior. The final affected review and separate Sol/high
+security sitting are clean. Selected test populations and all receipt bounds
+remain unchanged. Test phases use the scanned release-exclusion prefix.
+
+The x64 rename remains unchanged and unresolved. A Windows-test-only classifier
+maps its error to eleven fixed known categories, without raw codes, messages
+or paths; the original `Changed` result, operation and deadline remain.
+Rust/JS diagnostic allowlists match at 125 entries, still admitting at most
+sixteen per bounded receipt. Actual Windows native and artifact acceptance
+remain open after these corrections.
+
+**Held Windows record publication:** the `bc0b145e` repetition confirms a
+sharing violation on x64's private record path rename. Windows now uses the
+existing handle-bound no-replace primitive for `.prepare` to `.record`, keeping
+the source handle, pending full identity and index-directory handle throughout.
+Unix retains its previous rename. A conflicting record is preserved; uncertain
+failure still refuses before payload and does not permit a retry. The Windows
+parent retains both handles through positive identity/content and destination
+collision controls. This is an implementation alternative to the observed
+sharing failure, not proof of which internal reopen conflicted.
+
+ARM64's failure has advanced to metadata verification. Exact owner/group/DACL/
+control, stream, attribute, binding and token-context comparisons remain; new
+fixed field and fixture-phase labels make the next failure distinguishable.
+The error classifier now observes the actual handle-rename primitive in tests
+and still emits only closed categories. Both allowlists match at 142 entries,
+with unchanged receipt and test-population bounds. A new complete affected
+Terra/high review and separate Terra/high security sitting are clean. Local
+native/Node, 127 affected tools, lint/typecheck and build/format pass; actual
+Windows and combined acceptance remain open.
+
+**Windows parameter measurements:** the `ec00ff46` repetition fails on both
+architectures with `case-existing-metadata`/`rename-invalid-parameter` before
+metadata application. A Windows/test-only root case now runs first and measures
+48 fixed parameter combinations on fresh private fixtures. Held-parent relative
+forms and absolute diagnostic baselines, two information classes, three buffer
+sizes and creation/replacement are observed independently. Successful rows
+require held identity/content, no-clobber collision or old-open-target checks;
+inconsistent observations are labelled `mutation`. Production remains unchanged
+and fail-closed while these measurements are collected.
+
+Tooling requires exactly 48 unique complete known records within 64 KiB and
+256 bytes per line, then emits only normalized, measurement-only JSON. Both
+the diagnostic probe and owner case still require successful single Rust-test
+completion. Windows now selects nineteen parents, retaining every previous
+eighteen, owner proof and eleven Node cases; other platforms are unchanged.
+This does not weaken artifact certification or select a fallback.
+
+Complete independent Sol/high code and separate Sol/high security reviews are
+clean after one verified cleanup finding was corrected: the private test-root
+guard now suppresses checkpoint I/O only during its proof checks, with scoped
+thread-local restoration, so a broken traced stdout cannot panic in cleanup.
+Normal crash checkpoints remain active. Cleanup validates binding/private
+policy and the probe's volume/file-index witness, closes its handle and removes
+only its owned synthetic tree; unknown proof preserves it. This is test-fixture
+cleanup, not a replacement for production full-identity recovery. Local
+macOS native/Node, 131 affected tools, lint/typecheck and build/format pass;
+Windows measurement and ordinary-profile acceptance remain due.
+
+**NT measurement scope:** actual `14404c19` observations show all 24 Win32
+held-parent relative variants returning `invalid-parameter` on both targets,
+irrespective of the three buffer sizes. ARM64 has eighteen successful absolute
+observations; x64's 24 absolute observations return `sharing-violation`.
+Neither target reports a mutation in the cohort. These observations do not
+authorize an absolute-path production fallback.
+
+A separate Sol/high architectural scope audit verified that the existing
+ADR-0125 approval delegates minimal `windows-sys` feature closure and isolated
+mechanism experiments. Testing the documented user-mode Nt entry within those
+same guarantees needs no new ADR or renewed permission. A new decision would
+still be required for weaker atomicity/target authority, bypass checks, a new
+dependency family or changed support commitments.
+
+The test-only cohort now includes twelve held-parent relative Nt class-65
+observations, for sixty rows total. Class 66 is excluded. Only two necessary
+SDK features are added in the existing locked crate, with no crate/version or
+lockfile graph change. Pending handling retains native storage and handles
+through proven completion; an unproved wait aborts only the test subprocess
+before unwind and produces no successful receipt. Observed pending stays
+labelled `pending`. This is measurement, not production adoption or a production
+exception policy. All previous postconditions, ordinary parents, owner proof,
+Node cases and parser bounds remain. Complete independent Sol/high affected
+review and separate Terra/high security inspection are clean; local native/
+Node, 132 affected tools and lint/typecheck/build/format pass. Actual Windows
+NT measurements and the original production acceptance gates remain open.
+
+**Directory-rights measurements:** `4c5ee32f` executes all twelve NT relative
+variants successfully on ARM64, with no pending or mutation observation. x64
+still reports sharing violations for all twelve. These results establish
+neither a production strategy nor the source of the cross-target difference.
+The test-only cohort adds eight padded NT observations comparing non-DELETE
+read/write directory peers with thin traverse/read-attributes/read-control/
+synchronize peers. Both directory identities and private policies are checked
+while predecessor handles remain held. Cleanup transfers first, then all prior
+creator or read/write handles retire before the respective observations.
+File DELETE rights, postconditions and pending handling remain unchanged.
+
+The original sixty records remain, and the parser requires all sixty-eight
+fixed unique complete records within the existing caps. No production code,
+grant, ACL or privilege changes. A new complete Sol/high affected review and
+separate Sol/high security sitting are clean; local native/Node, 132 affected
+tools and lint/typecheck/build/format pass. The peer rows still require actual
+execution on both Windows architectures before a profile strategy is selected.
+
+**Peer results and production refinement:** at `9f12246a`,
+[CI run 43166086388](https://github.com/HodeTech/Relavium/actions/runs/43166086388)
+returns `ok` for all eight peer observations on x64 and ARM64, with no pending
+or mutation observation. Both read/write and thin peers succeed after retiring
+the broad creator handles. This does not isolate one particular omitted right
+as the cause. The six Linux/macOS native targets pass; ordinary Windows parents
+still stop at the unchanged Win32 relative publication, so combined CI is red
+and no profile or Step 2 acceptance is inferred.
+
+The canonical Windows profile now selects the measured padded, held-parent
+relative Nt class-65 mechanism and a continuous creator-to-read/write-peer
+handoff before private-directory adoption. It retains directory flush rights,
+source DELETE access, full identities, exact metadata and all publication
+postconditions. Production implementation, safe joined completion handling,
+fresh affected reviews and actual Windows ordinary-profile/consumer execution
+remain required before Step 2 closes. Step 3's editing grant remains gated.
+
+**Refinement source validation:** the production implementation now uses that
+single relative request and verified read/write handoff. Its owned completion
+context keeps a stable boxed status block, aligned buffer and both held handles
+through any exceptional pending drain; a pending observation always settles as
+possibly-published after proven completion. Fresh review verified two issues
+and both were corrected: the test-only directory ACL helper now acquires a
+short-lived, full-identity/policy-verified WRITE_DAC peer, and deterministic
+channel-driven controls exercise the actual production completion helper's
+failed wait, stale signal, backoff, final success/error and resource lifetimes.
+The production directory peer was not widened. All existing parent populations
+and sixty-eight parameter observations remain required.
+
+A new complete Terra/high affected code review and separate Sol/high security
+sitting are clean on native source SHA-256
+`7e97d2a4c3d8ede41371401324abd1786a48e389457f8fdfbb16f31857338755`.
+Local macOS native 35/three declared owned children and eleven Node lifecycle
+cases, 246 affected asset/delivery/packaging controls, tools lint/typecheck and
+nineteen workspace lint/typecheck/build/format tasks pass. Windows GNU test-code
+compilation and a standalone execution of the exact extracted completion
+controls pass; neither is actual Windows execution. The next source checkpoint
+must still pass both actual Windows ordinary profiles and all combined gates.
+
+**Descriptor-control measurements:** actual `f3c266f8`
+[CI run 43167960381](https://github.com/HodeTech/Relavium/actions/runs/43167960381)
+passes the earlier Windows relative rename and reaches payload staging on
+both architectures. Each refuses at `first-metadata-control-changed`; this
+does not yet identify which compared bit changed or in which direction. The
+exact protection/automatic-inheritance comparison remains mandatory.
+
+A Windows/test-only root case now measures nine fixed combinations of actual
+protected, unprotected and genuinely inherited fixture policy against the
+current component setter and two full-descriptor Nt setter forms. Source
+bytes/policy and held stage identity are checked; only bounded, validated fixed
+categories leave the child. The current production setter remains unchanged.
+This is a mechanism experiment within ADR-0125's delegation, not permission to
+use arbitrary descriptor flags or normalize inheritance. The diagnostic splits
+protection and automatic-inheritance mismatches, while all existing ordinary
+parents, sixty-eight rename observations and owner/Node controls remain.
+Windows selects twenty parents; success of the experiment cannot certify any
+candidate or Step 2.
+
+A fresh complete Terra/high affected review and separate Sol/high security
+sitting are clean on native source SHA-256
+`3f96186e39c0b0372b7652cc51716acd716fbd2bcff2474818cde80ce683bfc0`.
+Both reviewers independently pass the eighteen profile-tool controls. Root
+passes local macOS native 35/three owned children, eleven Node lifecycle cases,
+249 affected tools, tools lint/typecheck and nineteen workspace lint/typecheck/
+build/format tasks. Windows test code cross-compiles; the nine actual Windows
+observations remain pending. Dependency pins, lockfile, release inventory and
+all production guarantees are unchanged.
+
+**Initial descriptor results:** actual `12ad03b0`
+[CI run 43169448108](https://github.com/HodeTech/Relavium/actions/runs/43169448108)
+returns the same nine results on both Windows targets. The component setter
+changes the auto-inherited bit for protected/unprotected policy and DACL bytes
+for inherited policy. Both full-descriptor Nt forms exactly preserve the first
+two cases and preserve inherited DACL bytes, but differ in its auto-inherited
+bit. The ordinary producer now independently reports
+`first-metadata-auto-inherited-changed`. No candidate covers the full profile.
+
+Three additional `nt-request` observations retain the existing nine, using
+the OS control-bit setter on a captured-descriptor clone to request DACL
+auto-inheritance only when the captured auto-inherited bit is set. The Nt call
+then uses only OWNER/GROUP/DACL. Exact owner/group/DACL/protection/inheritance
+readback and source/stage checks remain unchanged. This twelve-row cohort
+remains test-only and cannot accept a production mechanism by itself.
+
+The new complete Terra/high affected review and separate Sol/high security
+sitting are clean on native source SHA-256
+`aa9e8f0f80442c6eeb5770497eafc8c646d2c565edc4d3add3777389b7570353`.
+Both independently pass all eighteen profile-tool controls. Root repeats local
+native 35/eleven Node cases, 249 affected tools and tools/workspace lint,
+typecheck, build and format successfully. Windows test-code compilation passes;
+actual request-bit measurements remain due on both architectures.
+
+**Request-form results and production selection:** actual `edee61c1`
+[CI run 43170192486](https://github.com/HodeTech/Relavium/actions/runs/43170192486)
+reports `exact` for all three request-form policies on both Windows targets.
+The production component setter still refuses at the unchanged strict
+auto-inherited-bit check, so this is not a profile or combined-CI pass.
+The canonical Windows profile selects the measured full-descriptor request
+form with basic OWNER/GROUP/DACL flags, using the OS control-bit setter only
+on a bounded captured-descriptor clone. Production and the request experiment
+will share the helper; legacy setters remain test-only diagnostic baselines.
+All source/access/readback, staging, journal and publication gates remain.
+Implementation, fresh affected reviews and the complete ordinary native and
+consumer gates remain required before Step 2 closes.
+
+A separate Sol/high completion-design inspection distinguishes this direct
+security setter from the IOSB-based rename interface. Its input remains owned
+through the actual documented call; only exact success proceeds, and every
+other status is a fatal metadata refusal. No pending protocol, file-signal
+completion inference or indefinitely parked producer is invented for an API
+that exposes none. A blocked OS call still retains its actual producer under
+the existing cooperative cancellation limit.
+
+**Shared production-helper validation:** the measured request form now backs
+production and its probe through one bounded descriptor helper. Existing native
+parents add protected, ordinary unprotected and genuinely inherited production
+copies, exact inherited-AI and unchanged-snapshot assertions. The direct-call
+classifier tests pending/success/denial without simulating an asynchronous OS
+request. There is no parent-population, dependency or lockfile change.
+
+A new complete Sol/high affected code review and separate Sol/high security
+sitting are clean on native source SHA-256
+`094470ea52dadad04c9f11e4c9fe5e0a3aeb09cd9e8347dcbb98e71c5dc49091`.
+Independent profile/assets controls pass 30/30, and both reviewers execute six
+source-extracted one-call/status controls successfully. Root passes local native
+35/eleven Node lifecycle cases, 249 affected tools and tools/workspace lint,
+typecheck, build and format. Windows test code cross-compiles. The actual
+modified production source still requires both ordinary Windows profiles,
+complete combined CI and installed consumers before Step 2 acceptance.
+
+**Windows fixture-order correction:** actual `1015c90a`
+[CI run 43171692315](https://github.com/HodeTech/Relavium/actions/runs/43171692315)
+passes all six Linux/macOS profiles. Both Windows targets complete the first
+sixteen sequential native parents, including the earlier producer/crash and
+exact-metadata cases, then stop in the parent-policy-change test's fixture
+creation. Its deny/restore helper intentionally leaves inheritable ACEs; a
+later private-file helper correctly refuses that non-private parent. Move
+only the source fixture's creation before those ACL changes. Every denial,
+snapshot/change and unchanged-byte assertion remains, and production predicates
+are unchanged. The other ACL-mutating fixture sites were audited for the same
+ordering issue.
+
+Fresh complete Terra/high affected review and separate Sol/high security
+test-gate audit are clean on native source SHA-256
+`1ec69a92837ae0aabcc6d1549c87df1bd921527da6931edefd9c5a883c6f228d`.
+Local native 35/eleven Node cases, thirty profile/asset controls and nineteen
+workspace lint/typecheck/build/format tasks pass; Windows test code compiles.
+The remaining Windows parents, Node lifecycle, combined CI and consumers still
+require actual execution; Step 2 acceptance remains open.
+
+**First complete native matrix and combined integration findings:**
+`c6cbb295` [CI run 43172318349](https://github.com/HodeTech/Relavium/actions/runs/43172318349)
+passes all eight native targets, both Windows twenty-parent/eleven-Node
+populations, the exact packed producer, product-map and wire/usage controls.
+This is not combined Step 2 acceptance. Four filesystem/secrets legs stop
+before their causal cohorts at a new delivery fixture's dependence on missing
+workspace `dist` exports. The fixture now resolves only three exact curated
+source exports; a source-only metafile assertion and cold/warm unaliased
+negative prevent generated local output from concealing that dependency.
+
+Windows replay workers also received a drive-letter path as an ESM `--import`;
+use its file URL, keeping all twenty-three cut/receipt assertions and joins.
+The other eight Windows scratch positives exposed a real shared-home/private-
+index integration gap; do not hide it by making every fixture native-private.
+That placement correction follows separately within ADR-0125's delegation.
+
+Installed consumers fail at the workflow case on all four legs; three
+non-macOS legs also fail native load. The exact tarball passes all ten smoke
+cases on a runtime-aligned local macOS installation, but that is not a CI
+consumer receipt. Local macOS and an ARM Linux container do not reproduce a
+hardlink failure. Keep product loader policy unchanged until actual evidence
+identifies the cause. The existing failure diagnostic now projects only fixed,
+case-fenced native-load/workflow checkpoints and eleven literal asset link-state
+enums; raw paths, stacks and private child content remain excluded under the
+unchanged eight-KiB one-line ceiling.
+
+Fresh complete Terra/high affected review and separate Sol/high security
+sitting are clean for this seven-file test/tool batch. Independent smoke tests
+pass 87/87 and delivery tests 10/10; root passes all twenty-three real SQLite
+replay cases, 115 affected tools, tools lint/typecheck and nineteen workspace
+lint/typecheck/build/format tasks. Native production source and all acceptance
+assertions/populations remain unchanged. Consumer causes and combined CI are
+still open; Step 3 grants remain gated.
+
+**Dedicated private staging-parent correction:** a separate Sol/high scope
+audit confirms the Windows fresh-journey gap: Home/config/DB first create the
+shared `.relavium` directory through Node, while native staging requires an
+exact TokenUser-private parent. Ordinary Windows inheritance cannot satisfy
+that stronger predicate. The refusal is safe but blocks the normal editing
+journey. Correcting only synthetic scratch setup would hide the product issue.
+
+ADR-0125 delegates concrete placement while preserving custody. The canonical
+contract now selects a dedicated native-created
+`<operator-home>/.relavium-fs-private-v1/fs-staging-v1/` sibling, with all strict
+private ownership/ACL, identity, alias, model-exclusion and recovery checks.
+The shared config/database directory is unchanged; onboarding and read-only
+startup gain no eager native dependency. No new ADR or approval is required
+for this invariant-preserving placement refinement.
+
+The unreleased old index is never silently ignored or migrated. Any presence
+refuses new inventory/write/recovery with an operator-recovery-required fact;
+only absence under pinned/rechecked ancestors permits progress. Old evidence
+and namespaces remain protected. Stop previous cooperating development hosts
+for the transition; no cross-version lock or older-binary compatibility is
+claimed. A retained trusted old adapter may recover only what its existing
+proof permits; unknown/live artifacts remain for explicit operator resolution.
+The canonical procedure owns those limits. Implementation and real Node-created
+Windows home/config/DB integration evidence precede acceptance.
+
+**Private-parent implementation review:** a fresh complete Terra/high affected
+round verified the sixteen-file correction. Its earlier high finding was
+reproduced: the new sibling's whole namespace also needs the permanent model
+path floor, independently of a captured inventory or the directory's existence.
+The shared parent constant now feeds lexical/canonical, sensitive-read and
+protected-write checks. Actual capability regressions fail before correction
+and pass afterward, including discovery, aliases and prepared writes.
+A new independent Terra/high static security sitting reviewed the complete
+corrected scope and callers with zero blocker/high/medium findings; it did
+not execute tests. The complete affected code round is also clean.
+
+Root verification passes 7,657 CLI tests with twelve conditional platform
+skips, 249 affected tools, nineteen workspace lint/typecheck/build/format
+tasks and tools lint/typecheck. Fresh macOS native execution passes all
+thirty-five parents, three declared owned child exclusions and eleven Node
+cases. The native source binds to
+`ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`;
+build binding is
+`dd0231a86da30f3aa0033555874ca4137734b70e03a4c766f6d411401f0e8874`.
+Actual Windows fresh config/database integration and all-target/combined CI
+for this placement remain required before Step 2 acceptance.
+
+The earlier `691c782c` consumer diagnostics now establish multiple links on
+all eleven literal native assets on Linux/Windows, where the strict loader
+refuses; macOS loads but stops at the denied-effect workflow checkpoint.
+These causes and the causal-control integration failures remain open. No
+loader policy is weakened and no installed-consumer success is claimed here.
+
+**Installed-asset and control integration correction:** a separate Sol/high
+design audit distinguishes ordinary package-manager hardlinks from archive,
+build and staging custody. The fixed installed shim/manifest/notices/binary
+paths now admit regular hardlinked files; fixed inventory, bounds, hashes,
+non-symlink checks and descriptor/path identity and stability checks remain.
+The canonical packaging contract records the trusted package/store boundary;
+it does not promise atomic verified-byte loading against a concurrent writer
+with authority over that installation. No store-name exemption, copy-only
+consumer setting or executable cache is introduced. Singleton requirements
+for build/archive custody, model targets and private staging remain intact.
+
+Fresh complete Terra/high affected review covers all seventeen changed files
+and callers with zero blocker/high/medium findings; 44 asset/profile/provenance
+and eighteen preload/diagnostic tests pass independently. A new independent
+Terra/high static security sitting is also clean for that complete scope; it
+performs no execution. Fresh macOS native 35/three declared child exclusions
+and eleven Node cases pass, including a joined actual compiled-addon load
+through genuinely hardlinked assets. All 42 native asset/profile/delivery
+tests, nineteen workspace lint/typecheck/build/format tasks and tools
+lint/typecheck pass. The source binding remains `ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`;
+the build binding is `345c5cd05063e2f35fb8f850f9be1c2f7b8cc68af0857667d2894dbd971195cf`,
+and the shim pin in both owners is `9f234956841c944cdff8024f644fdd08bfcbda7647c0a2359a39ed90ff912b3f`.
+The complete CLI rerun passes 7,657 cases with twelve conditional platform
+skips. An earlier run concurrent with physical control workers had nine
+timeout/readiness failures in three unchanged lifecycle/snapshot files;
+the quiet rerun keeps the same source, cases and timeout limits.
+
+The denied-effect smoke now admits the already exact, owned read-only umask
+query needed by older macOS preparation; generic process and network calls
+stay forbidden. Both actual macOS assets in the earlier complete artifact
+declare that query requirement, while the author machine's newer OS does not.
+The required older-macOS CI consumer remains the acceptance proof.
+
+Four repaired filesystem controls complete all twelve physical fixed/removal/
+restored phases with accepted source/dependency/evaluation/runtime receipts:
+scratch exactness uses a nested sensitive read rather than a write independently
+blocked by another guard; three floor controls now receive their owned host
+home. Two live-export declarations retain the full chat file and move from
+133 to 139 for six already authored details/clipboard cases. Independent
+collection audits all 66 declared files/2,348 cases without count drift. Local
+macOS fixed runs pass all 139 cases with zero unhandled errors, but do not
+naturally exit after reporting; the unchanged ninety-second watchdog kills
+and joins them and correctly refuses certification. Their removal/restored
+proof and the complete Linux CI matrix remain required; no timeout, process
+join, population or semantic assertion is weakened.
+
+**Windows Node probe follow-up:** at `e011cca1`, both Windows Rust
+populations pass before the Node lifecycle command exits nonzero without an
+operation-specific diagnostic. The test now completes its hardlink child and
+removes that fixture before loading the original addon in the parent. This
+avoids overlapping mapped-module lifetime during link creation/cleanup; it
+does not establish that overlap as the observed Windows failure's cause.
+Eleven lifecycle cases, compiled-byte checks and child deadlines remain.
+
+A complete Sol/high affected review finds one medium in the new closed-stage
+diagnostic: truncation can hide a duplicate marker or manufacture a newline
+after a malformed one. Root reproduces it with pure strings; regression
+inputs fail before correction. Lifecycle parsing now accepts only complete
+original stderr within 64 KiB, including its UTF-8 byte size; otherwise the
+stage is unavailable. Other native diagnostics and success receipts are
+unchanged. Fresh macOS native 35/three declared child exclusions, eleven Node
+cases, 43 asset/profile/delivery tests and tools lint/typecheck pass. The
+native source and shim pins remain unchanged; build binding is
+`3ffa16b4f3d37ac451fb69c8226f938091d3f93bfeef0cc8041c3cc51e43ff0f`.
+A fresh complete affected round and separate security sitting follow this
+correction; actual Windows and all-target/consumer CI remain required.
+
+**Corrected probe review and selected control closure:** a new complete
+Terra/high affected round at `195bb92b` is clean after 33 independent
+profile/asset tests. A new independent Sol/high static security sitting
+also reports zero blocker/high/medium findings for all four committed
+files and callers, without executing tests. Actual `e011cca1` CI passes
+the six non-Windows native targets; its two Windows lifecycle failures
+remain refused evidence, not a claimed mapped-module diagnosis.
+
+The two live-export controls now complete all six physical phases on an
+immutable `e011cca1` Debian ARM64/Node 22.23.2 source candidate: review notice
+is 139 passed / 136 passed plus three named failures / 139 passed; routing
+is 139 / 138 plus one named failure / 139. Every phase naturally exits and
+joins with zero unhandled errors, accepted source/dependency/evaluation/body
+receipts and exact restoration. Independent retained-evidence verification
+passes. Whole retained trees, including `export.json`, are 25 files each and
+8,698,498 / 8,697,572 bytes, within the unchanged limits. Together with the
+four filesystem controls above, all six selected controls/eighteen phases
+are certified. The unchanged Mac inventory retains its actual Darwin/ARM64
+metadata as lazy infrastructure in that Linux candidate; these are Linux
+causal runtime proofs, never Linux native-profile or consumer proofs. The
+earlier Mac post-report timeouts stay refused; a quiet sequential diagnostic
+rerun remains open. Complete current-head CI is still required for acceptance.
+
+**Native and installed-package integration — `e163f4cc`:**
+[CI run 43185672320](https://github.com/HodeTech/Relavium/actions/runs/43185672320)
+passes all eight native profiles, Windows database/filesystem/headless
+integration and all four installed CLI consumers, including the exact Node
+floor. This proves the corrected private-parent journey, installed hardlink
+loading and older-macOS denied-effect preparation on their actual platforms;
+it does not make the overall run green. Filesystem control shard 2 identifies
+one remaining fixture integration defect in `ancestor-error`.
+
+The persistent synthetic `EACCES` also reached prepared-write's independent
+parent revalidation, concealing removal of the earlier shared ancestor guard.
+The fixture now injects the error once at that exact path, records its hit and
+delegates later calls to real resolution. It retains both tool/`save_to`
+witnesses, all 21 cases and the no-directory-creation assertion. Independent
+Terra/high code and Sol/high static security reviews are clean; neither
+executes tests in these sittings. Selected physical phases pass 21 / 19 plus
+both named failures / 21, naturally joined with accepted source/dependency/
+evaluation/runtime receipts; independent retained replay passes. The complete
+115-control matrix runs on an immutable source candidate before acceptance.
+No product guard, mutation anchor, population, deadline or evidence rule changes.
+
+The quiet sequential Mac rerun also closes both live-export control cohorts
+at `195bb92b`: all six phases naturally exit and join within unchanged bounds,
+with independently verified retained evidence. The original parallel-run
+timeouts remain refused and do not reproduce in this quiet run; no source
+fix or claimed underlying-handle diagnosis is needed. Their 25-file retained
+trees total 10,416,638 / 10,415,042 bytes including `export.json`.
+
+### MVP-3 Step 2 acceptance (2026-11-12)
+
+The Step 2 implementation at `bc8c34b21ff82a7cd9ee2ea4608badb69e763e05`
+is accepted on `development` under the requested review/fix cycle. The preceding
+records preserve each verified finding, correction and source-bound review.
+Complete backend, UI, native and delivery affected rounds and separate security
+sittings are clean after their corrections. No verified finding or new deferral
+remains. Later static sittings are identified as static; they do not claim the
+execution proofs supplied by author runs and actual CI.
+
+[CI run 43188556943](https://github.com/HodeTech/Relavium/actions/runs/43188556943)
+completes successfully with all 26 jobs. This includes all eight actual native
+profiles, Windows database/filesystem/headless integration, all four installed
+consumers and their aggregate, both filesystem and secrets control shards,
+wire/usage and product-map controls, exact Node 22.13.0 floor, enforced coverage
+and the final lint/typecheck/test/build/format/fence/smoke checks. The final
+workspace run passes 18,359 tests with 24 conditional platform/provider skips;
+the Linux CLI portion passes 7,656 with thirteen conditional skips. The author's
+quiet macOS CLI run passes 7,657 with twelve skips. No timeout, coverage floor,
+semantic witness or control population was reduced.
+
+The independent local full filesystem capture matches the committed fixture
+bytes and accepts all 115 controls/345 phases/8,247 case executions. Both retained
+exports replay successfully with exact inventories, named removal witnesses,
+source restoration and naturally joined processes. Their whole retained trees
+are 1,051 files/30,461,044 bytes and 1,033 files/30,091,557 bytes, inside the
+unchanged 2,000-file/64-MiB limits. Quiet Mac and Linux live-export captures also
+complete; earlier refused loaded runs stay refused in the historical record.
+
+Final native bindings are source
+`ae293645e29852c82ea2825bb3652d5547b7f661fc5705df723da23ee4941c26`,
+build `3ffa16b4f3d37ac451fb69c8226f938091d3f93bfeef0cc8041c3cc51e43ff0f`,
+loader `9f234956841c944cdff8024f644fdd08bfcbda7647c0a2359a39ed90ff912b3f`
+and unchanged locked dependencies/notices. Actual Windows success after the
+hardlink fixture ordering correction does not retroactively establish the
+precise cause of the earlier opaque failure.
+
+Step 3 now starts under the already accepted ADR-0116/plan: strict starting-mode
+configuration, shared revocable invocation authority and mode/default UX, frozen
+agent identity across lifecycle rebuilds, and the new built-in grant. Static
+preparation confirms the existing per-turn confirmation-hook identity and CLI
+final-dispatch seam suffice; no additional shared/core dispatch API or ADR is needed. This does
+not enable the grant before its implementation. Whole-MVP-3 documentation,
+integrated acceptance and the `development` to `main` PR follow Step 3; maintainer
+PR review, merge and release are not claimed here.
+
+### MVP-3 Step 3 author checkpoint (2026-11-12)
+
+The cohesive final increment implements ADR-0116: the new built-in agent receives
+the seven read/search/find/write/edit tools after Step 2 acceptance. Commands,
+egress and ambient OS tools remain opt-in. Strict global mode/hint preferences,
+repository mode exclusion, precedence and separate closed writers are wired to
+one invocation runtime. Fresh/resumed/cleared/reseated hosts share live startup-auto
+revocation; the exact confirmation hook captured by the engine binds each turn
+to its original mode provenance at the final CLI dispatch gate. Explicit current
+mode choices remain separate, and every headless mode action stays effective `ask`.
+
+Home and standalone chat share the native current/default picker, explicit auto
+confirmation, visible rewrite disclosure and truthful publication outcomes. A
+revocation revision prevents a delayed successful save from restoring authority
+after a newer narrowing, read error, cancellation or owner replacement. The hint
+is acknowledged only after actual visible delivery. Home clear now uses its
+bound agent/context/policy closure, preserving older read-only and authored
+`relavium-chat` snapshots. Failed clear resets only its pending swap request so
+the retained conversation can accept another turn or exit normally. Strict
+model-settings reload refusals remain visible without misreporting a completed
+publication as unsaved.
+
+The author adds 112 cases: sixteen shared schema cases and 96 CLI cases, including
+real captured-turn/durable-prepare races, both-host lifecycle construction,
+owned malformed-config refusal, actual Ink mode/default input custody and
+measured hint delivery/refusal. Full workspace tests pass 18,472 cases with 23
+conditional skips, including 7,753 CLI passes/twelve skips. The passing complete
+run uses `pnpm turbo run test --concurrency=1 -- --maxWorkers=4`, with unchanged
+case/hook bounds and inventories. An earlier run caught strip-only Node source
+syntax and stale fixtures, corrected and verified by 109 focused passes. A
+subsequent default-worker run hit three existing native/markdown deadlines;
+the same final source passes the complete quieter run. Neither failed run is
+acceptance evidence or a claimed underlying scheduling diagnosis.
+
+All seventeen workspace lint/typecheck tasks and six build tasks pass, as do
+format, tooling lint/types, database sync, fence/engine-dependency/bundle-closure
+checks and compiled CLI bootstrap/smoke. Four new physical causal controls pass
+all twelve fixed/removal/restored phases (177 case executions/eight required
+removal witnesses). Independent retained replay verifies named outcomes,
+identical inventories, source/dependency/evaluation/runtime receipts and naturally
+joined processes. Each retained tree has 25 files and 9.76–9.83 MB including its
+export record. These are selected controls, not whole-family acceptance; the
+unchanged full matrix grows from 130/513 to 134 controls/521 named witnesses,
+preserving every previous control and all evidence bounds.
+
+This is the author checkpoint only. The requested first review/fix round, fresh
+second cumulative round, separate security sitting and current-head combined CI
+remain required before whole-MVP-3 acceptance. No new ADR, runtime dependency,
+design approval or backward-compatibility layer is needed.
+
+### MVP-3 Step 3 first independent review (2026-11-12)
+
+Three fresh Sol/high and Terra/high reviewers inspect `a751fd4a..8eea1eca`
+across authority/configuration/final dispatch, UI/input/visible publication,
+and both-host lifecycle/frozen identity. No confirmed blocker, high or medium
+finding remains. The authority review is static; lifecycle executes 29 focused
+cases, and UI executes 37 actual/shared-flow cases with one worker. Neither
+claims full native-platform or separate security acceptance.
+
+The lifecycle review identifies one stale read-only grant comment; it and adjacent
+starting-mode comments/read-only reference wording are corrected. A suggested
+old-selection generation fence is withdrawn after checking ADR-0116: deliberate
+trusted default-auto action may re-admit the shared authority, whereas explicit
+current-auto actions and stale save continuations cannot do so. No extra state
+machine or unapproved behavioral restriction is introduced. These comment/reference
+corrections pass format/diff checks; runtime semantics are unchanged. A new
+cumulative second round and separate final-source security sitting follow.
+
+### MVP-3 Step 3 second review corrections (2026-11-12)
+
+The fresh second cumulative round and separate security sitting examine
+`4599b1cb`. UI and authority reviewers report no confirmed finding; the authority
+review executes 89 focused cases. Lifecycle review verifies a high finding:
+live `/export`, `/workflows` and `/doctor` could validate narrower or invalid
+configuration without notifying the shared startup-auto authority. The security
+sitting independently confirms that path and a medium sibling in actual
+preference preparation. Neither finding-bearing sitting is acceptance evidence.
+
+Every live reader now uses the invocation's pinned configuration runtime,
+including both hosts' doctor probes. Model fallback retains repository model
+provenance from the same validated layers instead of reopening them. All five
+closed preference setters report actual validated source mode and source
+inspection/load failures before merging an update. Home model/setup, standalone
+fresh/resumed setup, hint acknowledgement and mode settings pass the same
+authority observer. A deliberate symlink write-only refusal does not invent a
+configuration read failure; unrelated serialization/publication failure does not
+substitute for a source observation.
+
+An explicitly confirmed startup-auto save may replace the identical semantic
+global mode already displayed and revoked on opening the picker. Its revision
+is still captured before preparation: a different newer narrowing, invalid source
+or independent revocation defeats re-admission. Positive known-baseline and
+explicit-current-mode cases remain, alongside changed-after-confirmation,
+five-writer and actual both-host observation regressions. The correction adds
+46 CLI cases; 149 focused cases and all seventeen workspace lint/typecheck tasks
+pass, with tooling lint/types, format and 887-file isolation checks.
+The complete quieter workspace rerun passes 18,518 cases with 23 conditional
+skips, including 7,799 CLI passes/twelve skips across all 488 CLI files. Its first
+run exposed two stale boundary assertions expecting fallback to reopen project
+files. Both existing cases now prove snapshot-only fallback followed by actual
+owned-read global-alias refusal and configured-auto revocation; all fifteen
+boundary/fallback cases pass separately before the complete passing rerun.
+All six workspace build tasks, database sync, engine/fence/bundle closure and
+compiled bootstrap/CLI smoke checks pass on the corrected production source.
+
+All nine startup controls pass 27 physical fixed/removal/restored phases,
+711 case executions and 36 required named removal witnesses. An independent
+replay rechecks retained stdout/stderr, exact named assertion outcomes, complete
+inventories, source/dependency/evaluation/runtime receipts and naturally joined
+processes. Each retained tree has 25 files and 9.76–9.97 MB including its export
+record, within unchanged bounds. Earlier selected captures with a misdeclared
+parameterized witness name were refused; matching the actual runner identity
+corrects that declaration without weakening outcome or retention checks. Selected
+evidence remains `complete: false`. The whole manifest now declares 139 controls
+and 549 required witnesses; every original 130 control declaration is preserved.
+
+This closes the verified code findings, not Step 3 acceptance. A fresh complete
+cumulative review and separate final-source security sitting remain required,
+followed by current-head combined CI and maintainer PR review.
+
+### MVP-3 Step 3 credential bootstrap correction (2026-11-12)
+
+Two fresh regular reviewers examine cumulative `a751fd4a..e376215e` without
+verified findings. Authority/lifecycle runs 102 focused cases; UX/configuration
+runs 89. The separate Sol/high security sitting runs 129 cases and identifies
+one medium residual: standalone credential bootstrap opened configuration again
+only to obtain `homeDir`, after the starting-mode owner existed. A narrower
+successful observation there could escape sticky revocation if a subsequent
+owned read saw `auto` again. This finding-bearing security sitting is not
+acceptance, and the regular verdicts do not supersede it.
+
+Chat's production resolver now forwards `homeDir` from its already validated
+snapshot through both interactive and headless key construction. The existing
+opened-database branch and other commands' strict loader behavior stay intact;
+no second chat configuration observation occurs merely to locate history.
+Four new actual dispatcher/resolver regressions fail on `e376215e` and pass with
+the correction, across fresh/resumed command routes and both output modes.
+They use a changed invalid source, real in-memory provider storage/custom-endpoint
+binding and a mocked keychain; they assert the exact selected home, joined
+temporary resource and absence of credential reads. All 44 affected dispatcher
+cases pass. This is evidence for eliminating the redundant read, not a runtime
+reproduction of the transient narrowing exploit or a live-keychain test.
+The full workspace rerun passes 18,522 cases with 23 conditional skips,
+including all 489 CLI files and 7,803 CLI passes/twelve skips. All seventeen
+lint/typecheck tasks, six prerequisite build tasks, format and 888-file
+isolation checks pass. Existing causal declarations and their bounds are unchanged.
+
+Fresh complete cumulative and separate security reviews on the corrective
+commit remain required before implementation acceptance.
+
+### MVP-3 Step 3 acceptance (2026-11-12)
+
+The final corrective source is `f6b614746922f53779f6b9674428215255564c92`.
+A fresh Terra/high complete cumulative review of `a751fd4a..f6b61474` reports no
+verified finding and independently passes 54 cases across four focused files.
+A new, separate Sol/high security sitting reviews that exact cumulative source,
+reports no verified finding and independently passes 182 cases across sixteen
+files with one worker. It verifies the removed credential-bootstrap reread,
+all live reader/writer observations, captured-turn dispatch, confirmed-default
+revision checks, native input/publication custody, hints and frozen grants.
+Earlier finding-bearing security verdicts remain historical; they are not
+counted as clean sittings. Interrupted broad reviewer invocations are not
+acceptance runs; the stated counts come from completed bounded reruns.
+
+Root's complete passing workspace run has 18,522 cases and 23 conditional skips;
+CLI contributes 7,803 passes/twelve skips across 489 files. Seventeen lint/typecheck
+tasks, six build tasks, format, 888-file isolation, database sync, engine/fence/
+bundle closure and compiled bootstrap/CLI smoke pass. The latest correction
+repeats the affected full toolchain and compiled checks; unchanged Step 2 native
+profiles retain their separately bound acceptance. No local claim replaces actual
+Windows/eight-target/installed-consumer or full causal-matrix CI execution.
+The nine selected startup controls and independent retained replay are recorded
+in the [second review corrections](#mvp-3-step-3-second-review-corrections-2026-11-12).
+No confirmed MVP-3 finding is deferred, and no new design decision is pending.
+
+### MVP-3 development implementation checkpoint (2026-11-12)
+
+- [x] [Step 1](#mvp-3-step-1-local-acceptance-2026-11-12): ranged reads,
+  bounded discovery/search, observed-read evidence and owned output storage.
+- [x] [Step 2](#mvp-3-step-2-acceptance-2026-11-12): prepared exact writes,
+  inspectable approvals/details, safe restored tool groups, retained workflow
+  replay and native metadata-preserving publication/delivery. All 26 combined
+  checkpoint CI jobs pass at `bc8c34b2`.
+- [x] [Step 3](#mvp-3-step-3-acceptance-2026-11-12): the seven-tool default grant,
+  configurable startup modes, current/default settings, live authority and
+  both-host lifecycle integration, independently reviewed on `f6b61474`.
+
+The development implementation is complete. The `development` to `main` PR
+requires combined CI on its own head and the maintainer's detailed review;
+this record does not claim that future run or a merge. The next implementation
+milestone is MVP-4 under the existing decisions and its still-required ADR
+approvals. The published npm version remains `0.1.1`, and the release guard is
+unchanged. Physical-terminal/live-provider manual testing complements the
+automated evidence; it is not claimed by source or mounted-terminal tests.
+
+### MVP-3 SonarCloud follow-up (2026-11-12)
+
+At `49f340e3`, both push and PR #99 GitHub Actions runs complete all 26 jobs
+successfully, including the full filesystem/secrets matrices, eight native
+profiles, Windows integration and four installed consumers. The separate
+SonarCloud application check fails its new-code reliability/security ratings.
+Its complete public API catalog has 209 issues: 183 code smells, nineteen
+bugs and seven vulnerabilities; GitHub annotations expose only fifty.
+
+Fresh Terra/high triage of all 26 bug/vulnerability reports finds no demonstrated
+application vulnerability or correctness defect in their observed call paths.
+The nineteen sorting reports concern deliberately ordinal string equality,
+catalogs and source-bound inventories; locale-sensitive sorting would change
+the contract. Three traversal reports treat explicit contributor/test argv as
+LLM input. Two PATH reports concern the existing trusted contributor/CI
+toolchain boundary, not installed runtime lookup. The GNU download verifies a
+hard-coded per-architecture SHA-256 before extraction; this proves integrity,
+not absence of public-request exposure or denial of service on downgraded
+transport. The Docker producer overrides the image default with nonzero
+UID:GID, dropped capabilities and no-new-privileges. These are source-context
+dispositions, not a remote Sonar classification or a claim that its gate passed.
+
+Fresh Sol/high source triage covers all 183 code smells across forty files and
+33 language-qualified rules. It verifies two medium responsiveness problems:
+root ignore preprocessing uses an unanchored repeated whitespace suffix regex,
+and Windows private-stage path folding uses an equivalent repeated dot/space
+suffix regex before OS path rejection. Admitted adversarial input exhibits
+quadratic work: 64 KiB ignore lines stall for roughly 1.7–2.2 seconds, and raw
+Windows `save_to` components can reach normalization without an OS component
+length bound. The remaining 181 reports are optional readability/style choices
+or inapplicable suggestions; no extra mandatory defective branch is established.
+In particular, ordered awaits, code-unit surrogate checks, own-property checks,
+the undeclared bundler define, and digest-pinned image tags keep their intended
+semantics. No quality-profile suppression or remote issue closure is made.
+
+The correction removes only the unnecessary repetition from the boolean ignore
+suffix check and reuses the already-linear filesystem component fold in one
+CLI-private pure helper. Stream-prefix, case, trailing ASCII dot/space and
+protected-namespace semantics remain. Differential local verification matches
+4,681 short mixed/Unicode/control inputs against the prior stage expression.
+Six named performance assertions fail on the preserved prior algorithms,
+while thirteen semantic controls pass; all nineteen pass after correction.
+The production discovery regressions cover both tools and both root ignore
+files, with separate CRLF/blank/comment/trailing-whitespace controls.
+
+The complete passing workspace run has 18,541 cases, 23 conditional skips and
+491 CLI files (7,822 CLI passes/twelve skips), with the corrected production
+bytes. The subsequent test-only Windows guard addition is a declared extra
+POSIX skip; its final focused cohort passes 32 cases with two Windows-only
+skips on macOS. Windows CI now explicitly includes the new two files and the
+actual inventory guard's long raw-component regression. Seventeen lint/typecheck
+tasks, six prerequisite builds, formatting, 890-file isolation and causal
+declaration provenance pass. Native Rust/build/loader inputs and the 139/549
+secrets declarations remain unchanged. Fresh corrective cumulative/security
+reviews and new current-head CI precede renewed PR readiness.
+
+#### Corrective source acceptance
+
+The exact corrective source is `7af8e05a`. A fresh Terra/high complete cumulative
+review finds no verified finding and independently passes 32 focused cases with
+two Windows-only skips on macOS. Its exhaustive Unicode scalar/suffix comparison
+finds no normalization difference. A new, separate Sol/high security sitting
+reports no verified finding on the same source, independently passes 108 cases
+with the same two skips, and matches 17,440 additional normalization controls.
+It follows actual ignore input and raw `save_to` admission through production
+callers and checks protected paths, publication ownership and cancellation.
+
+Root's exact-head full workspace run passes 18,541 cases with 24 conditional
+skips across 890 files; CLI contributes 7,822 passes/thirteen skips across 491
+files. All twelve requested test/build tasks complete successfully. The extra
+Windows inventory guard accounts for the additional macOS skip; actual Windows
+execution remains a current-head CI requirement. This locally accepts the
+corrective source without replacing eight-target native, installed-consumer or
+complete causal-matrix CI evidence. PR #99 stays draft for the corrected-head
+run. Browser review access is unavailable, so no remote Sonar issue classification
+is made and its separate quality gate is not claimed as passing.
+
+#### Windows scheduling inventory correction
+
+Both corrected-head CI attempts at `2e817559` reach and pass all eight native
+profiles and package production. Their shared acceptance-tool prelude then
+rejects the stale twenty-file Windows scheduling assertion: the workflow
+already selects both new preprocessing regression files, but its test inventory
+does not. The named assertion is independently reproduced locally before the
+correction. These failures are retained as failed CI attempts, not complete
+causal-matrix evidence.
+
+`b20d7d1e` adds those two files in the same order, asserts twenty-two files and
+updates the case name. All original twenty files, strict command equality,
+serial execution, media cohorts, required conditions and timeout checks remain.
+Root's complete acceptance-tool suite passes all 1,093 tests with no skips;
+focused ESLint, formatting and tools typechecking pass. Fresh independent
+Luna/medium correctness and Sol/medium gate-preservation reviews both report no
+finding and independently pass all eight scheduling tests. Production bytes
+remain at `7af8e05a`; no runtime/native change or new approval is introduced.
+The final head still requires combined CI before PR readiness.
+
+SonarCloud's `2e817559` analysis automatically closes both corrected S8786
+issues as `FIXED`, adds no issue key and retains the other 207 open reports.
+Its reliability/security gate remains red on the previously documented
+source-context dispositions; no profile suppression or manual remote
+classification is made.
+
+#### Geometry fixture coverage deadline
+
+At `9e6661e9`, the development coverage job passes. The PR coverage
+[job](https://github.com/HodeTech/Relavium/actions/runs/43244826843/job/131280362364)
+finishes 889 files successfully and reports one default-deadline failure:
+`bounds reverse-backtick geometry with 'ZWJ' boundaries` takes 5,023 ms against
+Vitest's default 5,000 ms. Its three siblings take 4,837, 4,842 and 4,958 ms.
+The remaining population is 18,539 passing cases and 25 conditional skips.
+Production markdown, this fixture and coverage orchestration have no change
+from the merged MVP-2 source; this is not a demonstrated MVP-3 runtime defect.
+
+A separate Sol/high investigation inspects the installed Vitest 3.2.6 elapsed
+check after a synchronous callback and the live 4,000-unit projection bound.
+Each fixture preserves three depths (48/96/192), 336 reverse append/draw
+operations, initial/final draws, three full-source parse/layout oracles, nine
+deterministic work bounds per depth and two normalized-work comparisons.
+Independent normal timings are 891–975 ms per kind; focused V8 timings are
+1,466–1,595 ms with every assertion passing. That focused coverage command exits
+nonzero because four CLI cases cannot meet unrelated engine coverage floors;
+it is diagnostic timing evidence, not full coverage acceptance.
+
+`16fad5a2` defines a finite 15,000 ms deadline only for those four cases, matching
+the adjacent 400-draw fixture and the existing causal deadline ceiling. All
+inputs, draws, oracle comparisons and work bounds remain. Root's full-file AST
+comparison, after removing only that deadline and comments, matches `9e6661e9`
+exactly. All 92 stream tests pass with no skips, alongside 77 causal timeout/
+outcome tests, CLI typechecking, focused lint and formatting. Fresh Luna/medium
+and Terra/medium reviews report no finding; Luna independently passes all four
+focused cases. No production source, global deadline, coverage threshold,
+exclusion, dependency or control manifest changes. Corrected-head combined CI
+remains required before PR readiness.
+
+#### Authenticated catalog remediation
+
+The historical `4e337553` checkpoint completes both PR and development CI runs
+with 26/26 successful jobs. The maintainer subsequently authorizes authenticated
+SonarCloud issue management and requests action on the complete remaining
+catalog. The following source and remote dispositions supersede the earlier
+read-only triage; the historical failed attempts above remain recorded.
+
+All 207 open baseline keys are individually reconciled, with no missing or
+extra key. The source correction is `42bba7f2` / `5228da6d` / `9f7811ae`:
+
+| Action | Count | Basis |
+|---|---:|---|
+| Implemented correction | 131 | Cohesive private phases for all 36 complexity reports; explicit presentation/validation mappings and equivalent language idioms; two independent fixed-input I/O cohorts parallelized; HTTPS-only download redirects and a nonroot musl image default. Both reviewed loader integrity pins are refreshed. |
+| False Positive | 36 | Nineteen canonical ordinal string sorts; three contributor-owned argv reports; four indirect Error subclasses; four dependent partial reads/writes; intentional UTF-16 operations, undeclared-global detection, hexadecimal grouping and literal string-pair inference. |
+| Accepted intentional behavior | 40 | Thirty dependency/custody/cancellation-ordered awaits; three stateless viewport row keys; two contributor toolchain PATH lookups; two ordered target-tuple defaults; one native-probe boolean, one ordinal tie comparator and one owned-map cleanup snapshot. These are retained designs, not deferred implementation tasks. |
+
+Every False Positive and Accepted transition includes its source rationale and
+is independently read back from the project/PR-scoped API. The immediate catalog
+receipt is 131 OPEN / 40 ACCEPTED / 36 FALSE_POSITIVE / two already FIXED S8786
+reports. Implemented corrections require a fresh source analysis for scanner
+closure; no quality profile, severity, exclusion or suppression is changed.
+Detailed per-key working records remain local under `docs/reviews/` in accordance
+with the documentation standard; tracked acceptance is this register.
+
+The refactors preserve exact read/write offsets, finite diff/discovery budgets,
+policy and ownership checks, native metadata/publication custody, replay
+validation, rendered wording and source-backed masked review. Root's review
+adds an admission check after the extracted asynchronous mode action, before
+opening another prompt. Both cancellation and owner replacement regressions
+fail when that check is removed and pass when restored. The extraction also
+retains discovery error propagation outside `finally`; no validation branch is
+discarded to lower a metric.
+
+Local verification passes 18,543 workspace cases with 24 conditional skips,
+all 17 lint/typecheck tasks, all six builds plus formatting, 1,093 acceptance-tool cases
+without skips, formatting, DB synchronization, isolation and seam/engine/bundle
+closure. The actual macOS profile passes all 35 declared Rust parents and eleven
+Node lifecycle cases. The canonical profile executes fault-injection parents
+individually; a default parallel cargo invocation is not substituted for that
+evidence. Local complete wire and 23-mechanism usage causal controls, compiled
+bootstrap/CLI, media, overflow and budget-replay smoke checks pass. A local
+`development-current` native asset set deliberately refuses complete-platform
+package production; actual eight-target profiles, four installed consumers,
+the full filesystem/secrets matrices and the final combined CI remain the
+current-head PR checks.
+
+The first fresh Sol/high complete cumulative review and Terra/high native,
+delivery and core review report no finding; they independently pass 25 mode and
+ten delivery cases. A separate fresh Sol/high security sitting reports no
+finding after reviewing the complete delta, actual callers and all 207
+dispositions; its independent cohorts pass 386 cases with two Windows-only
+skips. Root verifies its 41 source hashes and per-key reconciliation. The fresh
+second Terra/high complete cumulative and Sol/high CLI/UX/disposition reviews
+also report no finding. Sol independently passes 128 focused cases and compares
+135 documents, 53,258 pages, 466,560 key actions and 121 line-diff pairs against
+the baseline with exact equality. Both rounds and the separate security sitting
+bind the `9f7811ae` implementation before the scanner follow-up below.
+
+No runtime/Cargo dependency, public package contract, accepted architectural
+decision or release permission changes. Work stays on `development`; maintainer
+review and merge remain separate. The latest scanner and combined platform
+results are owned by [PR #99's checks](https://github.com/HodeTech/Relavium/pull/99/checks),
+which must match its final head before merge; local checks do not certify them.
+
+#### Fresh analysis correction receipt
+
+The fresh analysis explicitly binds `372e5488` and automatically marks every one
+of the 131 source-correction keys FIXED. Twelve obsolete contextual records also
+close as the code moves. Six new records are checked against their actual new
+sites: two string-inventory sorts receive independently verified False Positive
+transitions, and two ordered parent-validation/orphan-sweep awaits receive
+independently verified Accepted transitions. Their underlying canonical ordering,
+cancellation, custody and resource limits remain intentional.
+
+`3240fb88` fixes the other two records: a redundant zero assignment in line-range
+selection is removed, and the pure Windows probe buffer-size calculation is
+extracted from its remaining over-threshold test helper. The allocation, pointer
+writes, I/O status block and pending syscall lifetime remain together in the
+original attempt. This changes no registered parent, 60+8 rename rows, twelve
+security measurements, syscall parameter or production Windows publication.
+
+Full workspace verification is repeated successfully: 18,543 passing cases,
+24 conditional skips, lint/typecheck and six builds. The focused filesystem
+cohort passes 98 cases, the actual macOS profile again passes all 35 parents and
+eleven lifecycle cases, and pinned Windows test cross-compilation passes without
+claiming Windows execution. A new Sol/high complete cumulative review examines
+all 45 changed files through `3240fb88`, reports no finding and independently
+passes 99 cases without skips. A new Terra/high focused corrective security
+sitting reports no finding after verifying exact read bounds, ABI size formulas,
+types, held buffers and the unchanged pending-operation handling; it runs no
+independent test suite and does not recertify unrelated code.
+
+Final native source SHA-256 is
+`7937e1ab3698eaadc6068fc86daf76cfd904d24dd76156fed9d909f3cdf53d47`;
+reviewed recipe and loader bindings remain
+`1209fc99aff264a3ea04afc1ec0fbef4a95a683d2e8e54df57ef6b163c0ba198` and
+`e7edb7aeb59fdd61fd933dade7d05eae852db6a69b8dff97590a94119e74040a`.
+The two `372e5488` CI attempts are superseded and cancelled rather than counted
+as passing combined evidence. The corrected final PR head must obtain its own
+complete scanner/platform checks. No finding is manually marked fixed; source
+closure remains a fresh-analysis result.
+
+#### Causal inventory correction receipt
+
+The `f13c6a1b` PR run correctly refuses the secrets matrix with `Declared
+workload drift`: the two Sonar prompt-boundary regressions extend the complete
+mode-settings file from 23 to 25 cases. Four declarations had retained the old
+counts. The two picker-only controls now require 25 cases and the two combined
+writer/picker controls require 48; the writer-only cohort remains 23.
+
+All four affected controls pass fresh physical fixed/removal/restored runs with
+the complete 25/48-case inventories, their existing named negative witnesses,
+exact restoration and unchanged developer sources. These selected diagnostic
+runs retain `complete: false`; they do not substitute for the complete CI family.
+All 1,093 acceptance-tool cases pass without skips. No test selection, assertion,
+mutation, witness, timeout, evidence bound or runtime source changes. The failed
+PR run and superseded push retry remain historical evidence; the corrected head
+must pass fresh complete scanner/platform checks before merge.
+
+### PR #99 correction plan (2026-11-13)
+
+**Status: implementation and local review complete; current-head CI/scanner
+checks and maintainer review govern the merge checkpoint.**
+The maintainer supplied additional independent reviews against `80e8cd88`.
+Their claims are checked against current code and accepted contracts, with
+focused reproductions where needed. The review-owned Home catch is rejected:
+it silences an existing visible configuration error and fails its regression;
+restoring the existing owner catch makes both affected cases pass. Approximate
+finding counts and grep-only coverage claims are not accepted as defect proof.
+
+Keep the verified corrections in **one cohesive increment**, with package-scoped
+commits, instead of creating a review cycle for each small finding:
+
+- Runtime correctness, privacy and UX: output-reference projections, source/diff
+  admission, current approval/notice visibility, protected aliases, discovery
+  work and ignore roots, owned teardown and truthful uncertain-write outcomes.
+- Native ownership and proof: source admission, producer custody and recovery
+  completion under accepted [ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md).
+  The maintainer authorized implementation after the supplied design findings
+  were checked and required clarifications incorporated. Preserve
+  existing atomic publication, security policy and evidence on uncertainty.
+- Verification and delivery: targeted real boundary/negative tests, byte-pin
+  checkout rules, source-bound artifact retry behavior, measured outer CI
+  scheduling and current reference/runbook status. Keep every case, witness,
+  internal deadline and release gate unless separately justified and approved.
+
+The detailed disposition register belongs in ignored `docs/reviews/`, with an
+individual outcome for each supplied claim and evidence for confirmed fixes or
+rejections. Existing accepted limitations remain explicit; no issue is moved to
+a future milestone merely to close this increment. ADR-0121 is not accepted,
+filesystem containment is not relaxed and symlinked private storage is not
+silently enabled by following a reviewer suggestion.
+
+After implementation, run the appropriate complete toolchain and actual native
+profiles, two fresh independent cumulative review rounds and a separate native
+security sitting. Fix verified findings and commit them, then obtain fresh
+source-bound complete CI and Sonar results on the final PR head. The passing
+`80e8cd88` PR run (26/26) is historical evidence, not acceptance of later fixes.
+Its push retry's cancelled Node-22 advisory job completed typecheck, tests and
+build before the outer watchdog, but is not counted as a successful check.
+Maintainer review and merge remain separate.
+
+#### Correction author checkpoint (2026-11-13)
+
+The verified corrections are implemented on `development`; fresh independent
+review and final-head platform acceptance remain open. ADR-0126 is Accepted,
+including the quiescent upgrade boundary, exact v1/v2 exclusion rules, the
+single Linux source-admission cut, lifetime claims and bounded cleanup tail.
+Native failure facts stay private, and interrupted sessions disclose unresolved
+effects only after actual producers join. No release authority is added.
+
+The author toolchain passes **18,626 workspace tests / 24 conditional skips**,
+lint, types, build, formatting, DB sync, isolation and engine/seam/bundle gates.
+All **1,116 acceptance-tool cases** pass without skips. Compiled bootstrap,
+CLI workflow/cancellation, overflow capture and budget-replay smoke checks pass.
+The source-bound macOS profile passes **42 Rust parents / four subprocess
+helpers ignored** and all eleven Node lifecycle cases. The actual native-record
+TypeScript inventory suite passes 15 cases with two platform-specific skips.
+Windows source and test bodies cross-check with the locked bindings; this is
+not Windows runtime evidence.
+
+Targeted native arm64 GNU and musl controls exercise image-layer overlay files,
+replace/append, exact byte/policy refusal, post-open cancellation/error/crash,
+unavailable `faccessat2`, and effective-versus-real UID ACL denial. The isolated
+ACL worker receives no network or source tree and only its required capabilities.
+The separate PID-namespace harness is mandatory in Linux CI. Its local attempt
+refuses the available Docker Btrfs volume, outside the accepted filesystem
+profile; no namespace proof is inferred from that refusal. All eight native
+targets and four installed consumers must still pass on the corrected head.
+
+The complete filesystem/secrets declarations reconcile 254 controls against
+2,455 collected cases across 72 cohort files; all source anchors remain exact.
+The two chat cohorts now require 143 cases, and the usage permanent cohort
+requires 459 while retaining its 71 native children and timeout/readiness rules.
+No mutation, witness, assertion selection or internal deadline was removed.
+Earlier failed author runs exposed stale inventory pins and a contingent
+artifact-read diagnostic; the frozen-source complete tools run is green.
+The supplied review register retains each original claim and its disposition;
+it is not a substitute for the two new cumulative rounds and separate security
+sitting required below this checkpoint.
+
+#### Correction round 1 and repairs (2026-11-13)
+
+Three fresh scoped reviewers examined `80e8cd88..29002276`. Terra/high found no
+native source issue and ran no independent tests. Sol/high's CLI sitting found
+the required interruption notice could reach an already unmounted store, and
+the newly added append byte-count description contradicted the native result;
+476 existing cases and two reproductions passed. A separate Sol/high sitting
+found the required production host/native lower-overlay proof absent, plus
+stale ADR-0126 approval wording and missing model-schema bounds; 444 focused
+cases passed. These findings prevented acceptance of that review round.
+
+The Home repair retains a fixed content-free fallback until acknowledged stderr
+delivery after actual producers and terminal restoration join. Seven real
+fresh/resume/clear/reseat and delivery regressions fail on `29002276` and pass
+after repair. Model schemas now communicate the existing byte floors, and the
+canonical result description preserves `write_file`'s append-fragment count
+and `edit_file`'s complete-file count. ADR-0126's current descriptions say
+Accepted, while final implementation/platform acceptance stays open.
+
+A source-bound contributor bundle drives the actual TypeScript filesystem,
+registry and native addon on image-layer lower files. Unprivileged, networkless
+arm64 GNU and musl runs pass overwrite/append, unchanged preparation evidence,
+stale-source refusal and cancellation before claim, after publication before
+settlement, and after committed settlement. The pre-settlement case observes
+real published bytes while the production in-memory journal is still prepared;
+it then retains that row and cancels delivery. This is not SQLite durability or
+mid-native-call cancellation evidence. An isolated `80e8cd88` source and native
+build genuinely refuses during preparation on the same lower-file mechanism:
+bytes and identity stay unchanged while ctime changes. No loader-pin mismatch
+is used as the negative witness.
+
+The `29002276` CI checkpoint correctly fails two new proof/gate mismatches:
+the test-marker scan also rejected the fixed production error prefix, and a
+small producer PID collided with a consumer's Node worker PID. The corrected
+scan permits only the exact production prefix and continues rejecting other
+test hooks, including markers after it. The namespace fixture advances its own
+PID allocation and independently proves distinct namespaces and `ESRCH` while
+the producer lives. Its complete native recovery proof remains mandatory in CI.
+Linux contributor tooling uses the existing workspace Node floor; the actual
+GNU/musl native profile still executes exact Node 22.0.0 inside pinned images.
+
+Repair validation passes 18,634 workspace tests with 24 conditional skips and
+all 1,116 acceptance-tool cases without skips. The final contributor-only cut
+also passes actual GNU/musl runs and direct CLI types; refreshed native binding,
+30 asset/delivery/checkout tests, build and formatting pass. A late UI author
+edit missed the earlier cached typecheck; a stable state capture and the final
+direct typecheck correct that checkpoint gap. The source-bound macOS population
+remains 42 Rust parents, four subprocess helpers and eleven Node lifecycle cases.
+Fresh cumulative round 2, the separate security sitting and corrected-head
+complete CI/scanner acceptance remain open; these author receipts do not close them.
+
+#### Correction round 2 and standalone repairs (2026-11-13)
+
+Fresh Terra/high native and Sol/high core/delivery reviewers report no source
+findings at `d382cff0`; they independently pass 74 and 625 focused cases
+respectively, with their named platform skips. A fresh Sol/high CLI reviewer
+passes 480 existing cases but reproduces a high-severity standalone disclosure
+gap: a suspended TTY can hide the notice, and a late producer can send its raw
+warning before alternate-screen restoration. That finding prevents round-two
+acceptance. It does not change the already repaired Home behavior.
+
+The standalone repair shares a command-owned fixed pending notice across fresh,
+resume, clear and reseat. TTY delivery follows actual host join and acknowledged
+terminal restoration. Plain/JSON start a retained, captured stderr write while
+the session is active; final cleanup awaits that same acknowledgement, and a
+later joined turn starts a fresh warning epoch. No durable notice or stdout
+frame is added. All 17 new controls fail on `d382cff0` and pass after repair;
+286 scoped cases pass.
+
+The native security sitting separately reviews `d382cff0` and finds no confirmed
+native/effect/filesystem/delivery issue. Its 281 focused cases pass, with named
+fixture/platform skips. It does not certify standalone delivery or unrun
+platforms. The later CI fixture delta requires a scoped security follow-up:
+namespace numbers may be reused after the producer namespace has ended, so
+identity separation is required while both namespaces are alive. Recovery
+after producer death still requires the real joined death and retained native
+claim proof. Three protocol controls preserve the live separation guard and
+allow a reused dead namespace number; the old script fails that negative
+control. They are synthetic protocol tests, not native platform evidence.
+
+Repair author verification passes 18,651 workspace tests / 24 conditional skips,
+all 1,119 acceptance-tool cases without skips, lint, types, build and formatting.
+The source-bound macOS profile retains 42 Rust parents, four ignored subprocess
+helpers and eleven Node lifecycle cases; 33 focused asset/delivery/checkout and
+protocol controls pass. Complete cohort reconciliation preserves all 254 source
+anchors and witnesses across 72 files / 2,472 cases. The two chat cohorts require
+160 cases; usage requires 476 with its 71 native children, readiness and deadline
+rules unchanged. A new clean cumulative round, separate CLI security sitting,
+the native delta check and final-head complete CI/scanner checks remain open.
+
+#### Correction cumulative review and security checkpoint (2026-11-13)
+
+A fresh Sol/high complete cumulative round reviews `80e8cd88..6389cd9b` and
+the exact model-description correction committed at `7f00febd`. It reports zero
+remaining findings and independently passes 1,081 focused cases, with two
+platform skips and one ignored Rust subprocess fixture. The one optional
+directory-description suggestion is corrected and reviewed against the actual
+result contract; it does not change runtime result semantics.
+
+The separate Terra/high CLI/session/sink security sitting at `6389cd9b` reports
+no confirmed issue and independently passes 453 focused cases. A separate
+Sol/high native delta sitting preserves the earlier 281-case native security
+receipt: its three protocol controls pass, and the actual post-death native
+recovery requirement remains intact. These are scoped security receipts, not
+certification of unrun platforms or unrelated unchanged systems.
+
+Both `6389cd9b` CI runs execute all eight native target producers and all four
+installed consumers successfully. Their Windows integration cohort correctly
+rejects two new test-fixture mistakes: a Unix-only expected path separator, and
+a manually created private hierarchy without Windows' required protected DACL.
+The test-only correction at `b3b36169` uses native path separators and lets the
+native adapter create its exact secure hierarchy. All version/identity/privacy
+assertions and the Windows test remain enabled. No ACL or admission floor is
+relaxed. These failed integration runs are not counted as passing combined CI.
+
+#### Correction scanner follow-up source checkpoint (2026-11-13)
+
+The fresh correction scan adds 43 records. Each is checked against source:
+16 receive source fixes, six are verified False Positives and 21 are Accepted
+intentional patterns. All 27 remote transitions include a reason and pass an
+independent read-back. The detailed per-key register stays in ignored
+`docs/reviews/`; no profile, severity or exclusion is changed.
+
+The source fixes through `76cf3fda` name the existing snapshot, discovery,
+display-retention, review-transition and bounded-diff phases without moving
+authority or cleanup checks. Fixture outcomes become explicit statements;
+equivalent numeric patterns, generated probe text and Docker recipe populations
+are preserved. The namespace contributor helper now rejects option-shaped
+images and unencoded Docker mount CSV delimiters before any Docker action.
+Ten real orchestrator admission controls include nine failures on the old
+source; they are argument-boundary evidence, not native platform execution.
+Necessary sequential yields/observations, ordinal evidence sorting and the
+trusted contributor toolchain boundary remain explicit intentional choices.
+
+The unchanged final-source populations pass **18,651 workspace cases / 24
+conditional skips**, including 7,919 CLI cases / 13 skips across 494 files,
+and **1,129 acceptance-tool cases without skips**. Lint, strict types, tooling
+checks, build and formatting pass. The source-bound macOS profile retains
+42 Rust parents, four ignored subprocess fixtures and eleven Node lifecycle
+cases; 71 focused native tool controls pass with refreshed assets.
+
+The first full CLI attempt has two existing child-deadline failures and one
+existing acquisition-wait failure; isolated controls and the unchanged complete
+CLI repeat pass. Their cause is not established and no assertion or deadline
+is changed. An acceptance-tool attempt overlaps the author's commits and
+correctly rejects changed HEAD/index evidence; the frozen-source complete
+repeat passes all 1,129 cases. These failed attempts remain separate receipts.
+
+The final source acceptance below owns the completed review/security receipts.
+Verified outcomes for every source-corrected scanner record and corrected-head
+complete CI remain required in current PR checks; historical local or partial
+platform receipts do not supply that merge authority.
+
+#### Correction final development source acceptance (2026-11-13)
+
+The correction's implementation, requested review/fix rounds and separate
+security acceptance are complete on `development` through `76cf3fda`.
+The original supplied review register retains every claim's concrete disposition;
+no confirmed correction finding is deferred to MVP-4. The later 43-record
+scanner follow-up remains individually auditable as described above.
+
+Fresh round-one reviewers inspect the complete `6389cd9b..76cf3fda` delta:
+Sol/high's CLI/core review reports zero findings, independently collects 29
+filesystem passes / two platform skips and verifies 210 exact baseline/current
+diff-output and callback comparisons. Terra/high's native/delivery review reports
+zero findings, independently passes 50 tool controls and verifies generated
+child-program bytes and both recipe populations are unchanged.
+
+A new Terra/high round two examines the complete `80e8cd88..76cf3fda` correction,
+surrounding invariants and pending phase checkpoint. It reports no confirmed
+material finding and independently passes 648 Vitest cases / two platform skips
+plus 33 native delivery/protocol controls. This is a complete cumulative review,
+separate from the earlier clean 1,081-case round and the security sitting.
+
+A fresh Sol/high separate corrective security sitting at `76cf3fda` finds no
+confirmed security issue in its examined cumulative boundaries. Its independent
+checks pass 733 TypeScript cases, 65 Node tooling cases and 18 Rust cases, with
+two Windows skips and two ignored subprocess fixture entry points. It traces
+native admission/custody/recovery, terminal/notice authority, privacy, consent,
+bounded work and source-bound delivery. Unrelated unchanged systems and unrun
+platforms are not recertified.
+
+Final author checks retain the 18,651 workspace and 1,129 acceptance-tool totals,
+893-file isolation, DB sync, engine/seam/bundle gates and the source-bound macOS
+profile. The compiled bootstrap's 177 controls and workflow/cancellation,
+overflow-capture and budget-replay smoke checks pass on the corrected bundle.
+The subsequent documentation-only checkpoint does not change executable source,
+native build inputs, assertions, workloads or deadlines.
+
+The [current PR #99 checks](https://github.com/HodeTech/Relavium/pull/99/checks)
+must still supply successful final-head scanner/quality-gate, all eight actual
+native profiles, Windows integration, four installed consumers and complete
+combined CI before merge. This record claims development source/review
+acceptance; maintainer review, merge and publication are separate. ADR-0121
+remains Proposed and the publication guard remains closed.
+
+#### Correction scanner rescan follow-up (2026-11-13)
+
+The `f18e8434` scan confirms 14 of the original 16 source keys Fixed, retains
+one preparation complexity record at 16 and reports one new retention-helper
+complexity record at 16. The guarded contributor mount call still receives the
+taint report: its exact image and CSV-source admission, ten real orchestrator
+controls and independent security/general reviews establish a False Positive
+after the hardening. The relocated sequential fixture-read record receives the
+same individually reviewed Accepted rationale. Both remote transitions pass
+read-back; they do not suppress a real unguarded argument boundary.
+
+The two complexity records receive the smallest additional helper extractions
+at `e61ae0fa`: failed-preparation release retains its ownership guard and fixed
+error precedence; synchronous list reconciliation remains after eviction and
+before frame flush. A fresh Sol/medium scoped general reviewer finds no issue
+and reconstructs both files to verify helper-only changes. The separate
+Sol/high security delta sitting confirms unchanged authority, custody and
+classification. The additional Promise continuation occurs only after actual
+release on failed preparation; no admission or producer work moves with it.
+This readability-only follow-up does not replace the preceding complete
+cumulative round or independent security sitting.
+
+Author checks pass 148 affected cases, CLI strict types/lint/format, the unchanged
+complete CLI population of 7,919 cases / 13 skips, and all seven build/format
+tasks. Other workspace source, native source/build inputs, acceptance-tool
+workloads, assertions and deadlines are unchanged; their prior source-bound
+receipts retain their exact scope. The new analysis must confirm both remaining
+complexity fixes, and complete current-head platform/consumer/CI remains the
+merge requirement.
+
+#### Controlled publication fixture follow-up (2026-11-13)
+
+The `c278c7c6` push checkpoint passes all 25 prerequisite jobs but its final
+workspace run fails one prepared-write fixture: two competing executes both
+reject where the test assumes exactly one fully acknowledged success. The
+other 7,917 CLI cases pass with 14 platform skips. This is not accepted as an
+infrastructure failure or retried unchanged.
+
+A private unchanged-source GNU reproduction records 22 zero-fulfilled outcomes
+in 564 races, including exact winner bytes with `possibly_published` and
+uncertain cleanup. An observational pass correlates an actual nonblocking
+inventory-lock refusal with retained evidence. macOS and nonroot GNU negative
+controls do not reproduce the failure. The historical CI log omitted both
+exceptions, so this proves the same-source failure mechanism and invalid
+liveness assumption, not the exact historical CI syscall. The accepted contract
+requires exclusive publication and conservative cleanup uncertainty, rather
+than guaranteed progress for uncontrolled contenders.
+
+The test-only correction at `a0acfc66` keeps all eleven cases and the original
+mutation-free missing-parent checks. It holds one real native stage at its
+publication-dispatch boundary while the competing host execute must publish
+and join cleanup successfully, then invokes the captured real native publication
+for the stale writer. Assertions require both native calls, the exact winner
+result/bytes, typed nonretryable refusal, no target clobber, no stage/record
+remnants, both prepared releases joined and the loader spy restored. No native
+outcome is fabricated. This is a controlled stale-target cut, not a new
+uncontrolled-write progress guarantee or direct observation of an OS rename.
+
+Author checks pass the actual macOS eleven-case file, CLI types/lint/format and
+fresh GNU/musl nonroot standalone production-host/native fixtures. The Linux
+standalone wrapper is distinct from the Vitest loader spy; actual Windows and
+corrected-head full CI remain required. Production TypeScript/Rust, native
+inputs, workloads, case counts and deadlines are unchanged. Independent reviews
+and the scoped security follow-up own acceptance of this verification-only
+change; no ADR or product-policy change is introduced.
+
+Fresh Terra/high round one and Sol/high round two each report zero findings
+and independently pass the actual macOS eleven-case file. A separate Sol/high
+security follow-up confirms that the fixture calls both real native publication
+methods, joins actual cleanup, preserves the no-clobber oracle and owns its
+temporary resources. Its 505-entry non-test runtime/native/core/tooling/workflow
+tree comparison is byte-identical to the preceding accepted source. These are
+scoped verification-only follow-ups; the prior complete cumulative and separate
+security sittings retain their unchanged production scope. Corrected-head
+Windows, complete CI and scanner checks remain the final merge gate.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
@@ -1404,9 +3642,9 @@ Home and does everything there; subcommands stay for scripts.
 [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) records it. This section is the one home
 for MVP-2's scope, slices, decisions and acceptance under that direction.
 
-**Implementation receipt — 2026-11-10:** all four approved steps are implemented
-and independently accepted on `development`; see the
-[final step acceptance and checkpoint gates](#step-4-acceptance-2026-11-10).
+**Completion receipt — 2026-11-11:** all four approved steps, review corrections
+and combined verification are complete and merged to `main` through PR #98;
+see the [merge checkpoint](#mvp-2-merge-checkpoint-2026-11-11).
 The dated research, preflight and initial verification notes retain their
 historical baseline; the acceptance records establish the delivered state.
 
@@ -2431,6 +4669,52 @@ not claim a fresh production security sitting. Only this acceptance/status recor
 changes after the reviewed test commit. Final combined source-bound CI and
 maintainer review still gate the checkpoint PR.
 
+#### MVP-2 merge checkpoint (2026-11-11)
+
+**Complete and merged to `main`.** The maintainer merged
+[PR #98](https://github.com/HodeTech/Relavium/pull/98) on 2026-11-11 at
+`0db4c9408853f8770ea1ceb5c0cf27d515931ec0`. Its Git tree,
+`907c5e303b5e5a122a3da43bc4523f3ea1156fd9`, is identical to reviewed and tested
+head `81416f0d` and PR merge candidate `5868a8db`. `development` was fast-forwarded
+to the merge commit before this documentation close-out, without switching branches.
+
+- [x] [Step 1](#step-1-acceptance-2026-11-10): readable Markdown, wrapping/tabs and truthful CLI feedback.
+- [x] [Step 2](#step-2-acceptance-2026-11-10): native provider setup, typed key availability and source consent.
+- [x] [Step 3](#step-3-acceptance-2026-11-10): shared Home/shell initialization and global/project separation.
+- [x] [Step 4](#step-4-acceptance-2026-11-10): safe visible history, indexed discovery, `/resume`, Continue and exit hints.
+- [x] Verified supplied and subsequent findings resolved; required cumulative reviews and separate security sittings complete.
+- [x] Test-only fairness/oracle correction accepted after two fresh independent source reviews.
+- [x] Final source-bound verification and maintainer review/merge complete.
+
+The final [PR CI](https://github.com/HodeTech/Relavium/actions/runs/43017944352)
+and [development push CI](https://github.com/HodeTech/Relavium/actions/runs/43017937579)
+each passed all **18 jobs**, including the declared causal families, the Node-22
+floor, Windows native checks, all four installed-package consumers, and the main
+lint/typecheck/test/build/smoke gate. Each full Linux coverage run passed
+**857 files / 17,910 tests / 23 existing skips**, with no RPC errors. Final local
+build and enforced coverage passed at `81416f0d` (**17,911 tests / 22 existing
+Darwin skips**); SonarCloud's final-head quality gate passed. The merged PR retains
+the detailed checks, source identities and earlier failed/incomplete attempts;
+this closure does not relabel those attempts as successful.
+
+This checkpoint closes MVP-2's implementation, correction, CI and maintainer gates,
+including the MVP-2 splits pulled from paused Wave 3. No verified MVP-2 finding is
+deferred. Pending-gate wording in the dated step and correction records above is
+historical and is superseded by this checkpoint.
+
+MVP-3 is next under [the existing execution order](../current.md#next-work--the-cli-mvp).
+ADRs [0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+and [0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+remain Proposed and require acceptance before implementation. Their implementing
+increments retain the prescribed security review and D64 acceptance bar.
+> **Later update — 2026-11-11:** the maintainer subsequently accepted corrected
+> ADR-0116/0120 and their implementation plan; the [MVP-3 record](#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+> owns that acceptance and implementation progress. The Proposed wording above
+> preserves this earlier merge-checkpoint state.
+
+Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open. npm
+still serves `0.1.1`; the D59 release guard and MVP-10 release gates remain in force.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into
@@ -2490,7 +4774,7 @@ separate backlog.
 | #9 | `/doctor`'s `GLYPH` constants render Unicode check/cross marks unconditionally, with no ASCII-degrade path when `NO_COLOR`/non-ANSI output is active. | 2.6.L |
 | #73, #261, #262, #263 | Onboarding and the Home chrome hand-roll `toLocaleString('en-US')`/relative-time/pluralization strings (~228 unindirected literals) instead of `Intl.NumberFormat`/`Intl.RelativeTimeFormat`/`Intl.PluralRules`, and `[preferences].language` does not exist in config yet; an open design question on cost-formatting-under-locale needs a recorded decision. | 2.6.L |
 | #59, #68, #70, #71, #72 | Five `NO_COLOR`/ASCII-degrade gating gaps in the render layer: `bold` is never gated by the `color` flag at 5 call sites (unlike every other style prop); status/warning glyphs have no ASCII fallback under `NO_COLOR`; an attachment-bar pictographic emoji renders unconditionally; `NO_COLOR=''` (present-but-empty) is treated as absent. | 2.6.L |
-| #305 | `write_file`'s approval card shows no content diff/preview of what will be written, produces no post-write trace event, and is silent end-to-end when running in `auto` accept-edits mode — a blind spot on the highest-consequence built-in tool. | 2.6.M |
+| #305 | Historical missing write diff/trace: **closed on development in MVP-3**, 2026-11-12 ([Step 2 acceptance](#mvp-3-step-2-acceptance-2026-11-12)). | 2.6.M |
 | G30 | `http_request` is advertised to chat agents (`wireEgressOs=true` for `chat-read-write`), but no config path ever populates `allowedDomains` for chat — every call deterministically fails `domain_not_allowed` before the approval prompt renders. | 2.6.M |
 
 ## Milestones
@@ -2705,7 +4989,8 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract + the `ask_user` mid-turn pause/resume **engine** interaction (rides the EA4 pause machine; a turn-level pause distinct from the approval pause) (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts *Split 2026-11-04 for the MVP: the toolbelt and the tool-render/approval-preview contract first (MVP-3), the `ask_user` pause later.* | 2.6.M |
+| 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted**; MVP-3 slice independently implemented/reviewed on `development`, 2026-11-12 ([checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)). Later toolbelt slices retain their milestones. | 2.6.M |
+| 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Accepted**; MVP-3 filesystem grant/startup-mode slice independently implemented/reviewed on `development`, 2026-11-12 ([Step 3](#mvp-3-step-3-acceptance-2026-11-12)); command permissions remain MVP-4. | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |

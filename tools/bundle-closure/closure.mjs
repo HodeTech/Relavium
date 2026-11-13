@@ -5,10 +5,16 @@
  * checked here only for pairing; the candidate finalizer owns their content and custody.
  */
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { isBuiltin } from 'node:module';
 import { posix } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
+import {
+  NATIVE_HELPER,
+  NATIVE_OUTPUT_IMPORT,
+  NATIVE_LOADER_SHA256,
+} from '../native-fs/catalog.mjs';
 
 /** Code-unit order: deterministic and locale-independent, as `Array#sort` without a comparator. */
 function byCodeUnit(left, right) {
@@ -293,6 +299,18 @@ export function checkBundleClosure({
   const dependencies = record(record(manifest, 'manifest').dependencies, 'manifest.dependencies');
   record(files, 'files');
   const declared = new Set(Object.keys(dependencies));
+  const nativeLoaderPath = `${outputDirectory}/native-fs/loader.cjs`;
+  const nativeLoader = files[nativeLoaderPath];
+  if (
+    nativeLoader !== undefined &&
+    (nativeLoader.kind !== 'file' ||
+      typeof nativeLoader.contents !== 'string' ||
+      createHash('sha256').update(nativeLoader.contents).digest('hex') !== NATIVE_LOADER_SHA256 ||
+      (modeEvidence === 'posix' && nativeLoader.mode !== 0o644))
+  ) {
+    refuse('NATIVE_LOADER', 'native loader differs from the reviewed finite shim');
+  }
+  let nativeImports = 0;
   for (const name of declared) {
     if (externalPackage(name) !== name || typeof dependencies[name] !== 'string') {
       refuse('DEPENDENCY_DECLARATION', `invalid runtime dependency declaration: ${name}`);
@@ -315,6 +333,21 @@ export function checkBundleClosure({
       refuse('BUNDLED_DEPENDENCY', `third-party input must remain external: ${path}`);
     }
     for (const imported of imports(input.imports, `input ${path}`)) {
+      if (imported.path === NATIVE_OUTPUT_IMPORT) {
+        if (
+          path !== NATIVE_HELPER ||
+          imported.kind !== 'dynamic-import' ||
+          imported.external !== true ||
+          nativeLoader === undefined
+        ) {
+          refuse(
+            'NATIVE_LOADER',
+            'native loader edge must originate at the trusted lazy host boundary',
+          );
+        }
+        nativeImports += 1;
+        continue;
+      }
       if (imported.external === true) assertExternal(imported.path);
       else if (!Object.hasOwn(inputs, imported.path)) {
         refuse('MISSING_INPUT', `input ${path} references absent input ${imported.path}`);
@@ -385,6 +418,20 @@ export function checkBundleClosure({
     }
     const neighbours = new Set();
     function normalizeEdge(imported, metadata) {
+      if (imported.path === NATIVE_OUTPUT_IMPORT) {
+        if (
+          imported.kind !== 'dynamic-import' ||
+          (metadata && imported.external !== true) ||
+          nativeLoader === undefined ||
+          !Object.hasOwn(contributions, NATIVE_HELPER)
+        ) {
+          refuse(
+            'NATIVE_LOADER',
+            'native loader edge must remain lazy and owned by its host boundary',
+          );
+        }
+        return `${imported.kind}:native:${nativeLoaderPath}`;
+      }
       let target;
       if (metadata && imported.external !== true) {
         outputPath(imported.path, outputDirectory);
@@ -421,10 +468,13 @@ export function checkBundleClosure({
   }
   if (roots !== 1) refuse('ENTRY_POINT', 'expected one configured entry output');
   for (const path of Object.keys(files)) {
+    if (path === nativeLoaderPath && nativeImports === 1) continue;
     if (/\.(?:js|mjs|cjs)$/iu.test(path) && !Object.hasOwn(outputs, path)) {
       refuse('EXTRA_OUTPUT', `JS file is absent from build metadata: ${path}`);
     }
   }
+  if (nativeLoader !== undefined && nativeImports !== 1)
+    refuse('NATIVE_LOADER', 'native shim requires exactly one trusted source import');
   const reached = new Set();
   const pending = [`${outputDirectory}/index.js`];
   while (pending.length > 0) {

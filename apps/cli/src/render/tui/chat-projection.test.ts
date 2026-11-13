@@ -269,7 +269,7 @@ describe('chat-projection', () => {
         '→ read_file …',
       );
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: true })).toBe(
-        '→ read_file ✓',
+        '→ read_file ? outcome unknown',
       );
     });
 

@@ -1,0 +1,1244 @@
+# Native filesystem security metadata
+
+- **Status**: Implemented and accepted on development with MVP-3 Step 2 (2026-11-12).
+- **Owner ADR**: [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md).
+- **Surface**: CLI host only; [prepared writes](../shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3) and [packaging](packaging.md).
+
+This is the canonical accepted metadata boundary for prepared replace, append
+and edit. It does not certify the historical mode/uid/gid-only prototype. The maintainer authorized the corrected decision after supplied review
+findings were verified. The [Step 2 acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+records the implemented boundary, eight actual target profiles and installed
+consumer proofs. Dated probe records below retain their original acceptance state.
+
+## Authority and lifetime
+
+The TypeScript host retains scope/confidentiality guards, exact UTF-8 snapshots,
+read-before-edit evidence, approvals and effect correlation. The native adapter
+wraps OS metadata/access/publication primitives only. No generic filesystem,
+command, network or keychain capability is exposed to the model or core engine.
+Model arguments cannot create native handles or substitute metadata snapshots.
+
+Prepare binds bytes, canonical identity and supported metadata to one source.
+It queries operation-specific rights under the effective credentials used by
+the actual operation, tied to the same source identity. A POSIX real-UID
+`access()` check or a bare Windows `AccessCheck` result is not, by itself, proof
+of filesystem data-write/append access. During admitted execution, require
+operation-appropriate non-truncating source access under those credentials and
+recheck the source/policy near publication, including relevant read-only flags
+and mandatory access policy. Directory rename authority alone is insufficient.
+The existing owner-controlled check-to-publication race limit remains; this is
+not a new filesystem compare-and-swap guarantee. Metadata failure before effect admission is a
+fatal, fixed-reason safety refusal, not a correctable text-edit precondition or
+a new reason in ADR-0120's closed correction vocabulary. The current policies
+and cancellation precedence remain. Uncertainty after dispatch uses the existing
+non-retryable journal/error ladder, never a metadata-reset retry.
+
+All built-in `write_file` calls, including new-file creation, overwrite,
+byte-identical/empty replacements and append, and all `edit_file` calls use
+tier-3 durable preparation under ADR-0125. Their effect row precedes directory
+creation, staging, metadata application and publication. This replaces the
+historical overwrite exclusion in the [journal predicate](../shared-core/effect-journal.md#3-what-is-journaled)
+and makes prepared overwrites eligible for ADR-0124 inspection. Missing journal
+wiring refuses mutation. No row is created for a read-only preparation refusal
+or approval denial. After possible dispatch, an unresolved row blocks resume
+before provider/node execution; `retryable: false` alone is not crash evidence.
+Only usable committed run evidence may replay, without native preparation,
+publication or a second settlement. Session rows never replay. No migration can
+invent evidence for a historical unjournaled crash.
+
+Keep the TS host's lexical/canonical scope, protected/confidentiality, symlink
+and hard-link guards through publication. Native descriptors do not bypass
+those guards or widen authority. Node can perform a non-truncating write/append
+open; that alone cannot capture/copy ACLs, xattrs or flags or prove every later
+write-time access decision. Native safety failures at the preparation cut are
+fixed-diagnostic fatal/non-retryable errors, never new correctable edit reasons.
+
+Snapshot metadata and native handles are ephemeral and bounded. No ACL/xattr
+value, security descriptor, native path-bearing error or handle enters preview,
+history/effects, durable events, export or logs. Native operations remain owned
+by the actual producer until they settle; cancellation cannot detach copying or
+publication. Release is one-shot/idempotent under the owning operation.
+
+### Admitted existing-source handoff (ADR-0126)
+
+[ADR-0126](../../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+is accepted; implementation and fresh platform acceptance remain required.
+Linux prepared writes require Linux 5.8 or newer with the raw `faccessat2`
+syscall and `AT_EACCESS | AT_EMPTY_PATH` enabled. GNU's existing glibc baseline
+and the recorded musl profile remain unchanged; neither libc nor Node version
+proves kernel/seccomp capability. Query the held ordinary source descriptor
+using an empty path and `W_OK`. An unavailable/filtered syscall, unsupported
+flag, `EACCES`, `EPERM`, `EROFS` or uncertain result refuses before admission;
+there is no emulated mode/ACL or real-UID fallback. This is provisional for both
+replace and append; actual operation-specific write/append access is still
+required in the admitted task. See the
+[combined Linux access/faccessat2 manual](https://man7.org/linux/man-pages/man2/access.2.html).
+
+The host-private Node entrypoint remains
+`stageExistingMetadata(prepared, home, before, after, nonce, creationMask, cancellation)`.
+It is one joined native task, not a model capability. Its admission phase:
+
+1. The host brackets native preparation with strict full `PreparedSnapshot`
+   comparisons so the native policy capture belongs to the originally observed
+   bytes/version, not merely a matching dev/ino. Before execution, approval and
+   the tier-3 claim precede directory/staging/publication work. Resolve required
+   mask queries and other prerequisite awaits before the final strict host
+   target/version check. Queue the native task in that continuation. Awaiting
+   its completion is mandatory; no atomic JS-to-worker scheduling is claimed.
+2. After worker scheduling, the task strictly rechecks the prepared native
+   version, credentials, policy, exact full `before` bytes and named source
+   before its one actual non-truncating access open. Use `O_APPEND` for append;
+   do not truncate or write source data through that descriptor.
+3. On Linux overlayfs only, reopen a no-follow current read descriptor after
+   the access open. Require exact dev and ino across the original, access,
+   fresh read and current named object, plus the full native identity. Reject
+   unstable identity. Do not keep reading a possibly stale lower-layer fd.
+4. Compare full original bytes, regular/single-link type, size, mtime seconds
+   and nanoseconds, mode, uid/gid, supported ACL/xattrs/flags and effective
+   uid/gid/supplementary-group/creation-policy state with the prepared proof.
+   Only source ctime seconds/nanoseconds may differ across this one enabled
+   Linux overlay access cut. A ctime difference does not prove its cause.
+   Non-overlay Linux and other profiles retain their strict version checks.
+5. Bind the fresh reader and snapshot as a single admitted source for all
+   subsequent strict stage/policy/publication checks. Any later host check must
+   consume this same proof, not independently resnapshot or weaken the original
+   equality predicate. No second refresh after await, failure or retry is allowed.
+
+The internal profile operation supplies a fresh descriptor/snapshot together,
+or explicitly retains the existing strictly checked pair on unchanged
+platforms. It cannot change reviewed `before`/`after` bytes. The Linux exception
+does not widen scope, bypass index/runtime-root guards or prove an OS-level
+compare-and-swap against hostile same-user processes.
+
+macOS APFS and Windows NTFS keep their ADR-0125 access mechanisms. macOS still
+uses its effective non-truncating access open and strict source-version checks;
+it does not inherit the Linux ctime exception. Actual APFS tests must pin that
+behavior. Preparation creates no staging payload, application data write or
+publication; do not generalize this to absence of all OS-managed observations.
+For a failed, cancelled or killed Linux attempt after admitted access, original
+content/security and publication can remain unchanged while copy-up/storage
+and ctime have changed. Never call that zero-side-effect or silently roll back
+timestamps to manufacture a no-change receipt.
+
+### Fixed failure facts and caller outcomes
+
+Write-stage/publication/cleanup failures retain closed host-private primary and
+cleanup facts. Primary is one of `none`, `unsupported`, `access_denied`,
+`changed`, `cancelled`, `possibly_published`, `legacy_recovery_required` or
+`unknown`; cleanup is `not_needed`, `proven` or `uncertain`. Keep the original
+primary when cleanup also fails. Native OS text, paths and policy values never
+become these fields. A fixed enum-generated Node-API error token may transport
+the pair as `RELAVIUM_NATIVE_WRITE:<primary>:<cleanup>`, with only the listed
+literal values and a 96-byte maximum. The bridge admits exact allow-listed
+tokens from an own data-string message field only, never invokes error getters,
+and never parses OS
+error text or guesses facts from arbitrary strings. Unknown exceptions map
+conservatively to unconfirmed execution/cleanup. Successful opaque handles and
+their owning operation remain separate from failure facts.
+
+| Cut / evidence | Durable effect state | Caller and user disclosure |
+|---|---|---|
+| Ordinary preparation/policy refusal before a claim | No new row | Existing fixed refusal/correction vocabulary; no write attempt. |
+| Claimed mask/start/access/admission refusal or cancellation before publication | `ambiguous`, or unresolved `prepared` if recording fails | Fatal/non-retryable attention; no post-claim discard inferred from an exception. Copy-up/ctime may already have occurred. |
+| Claimed stage/publication failure or unproven cleanup | `ambiguous`, or unresolved `prepared` if recording fails | Fixed `effect_needs_attention`, never `tool_denied`/switch-mode advice; no automatic repeat. |
+| Native completion followed by cancellation before committed settlement | Unresolved `prepared`/`ambiguous` | Cancellation may remain terminal; separately disclose unconfirmed effects. |
+| Valid committed receipt followed by caller cancellation/delivery failure | Keep committed receipt | Do not relabel the receipt unresolved; actions may already have completed and cannot be rolled back by cancelling the caller. |
+| Recovery marker unlink followed by failed index flush | Cleanup uncertainty; no effect settlement inferred | Report incomplete cleanup, not a claim that the removed marker is retained or that cleanup is durably proven. |
+
+Workflow final effect health already owns unresolved-effect attention/exit
+classification. Sessions keep their own cancellation semantics and do not
+acquire workflow health authority. After joining the actual turn producers,
+the production Home and standalone/non-interactive chat surfaces must emit a
+separate fixed content-free notice when an aborted turn leaves unresolved
+claims, including the native-success/post-dispatch-abort cut. Use the existing
+surface notice/stderr channels; add no durable session event, target path,
+native fact or preview to history. Distinguish unresolved effects from known
+committed actions, preserve cancellation terminal precedence and never silently
+drop the required production notification. A native/bridge error classification
+does not itself settle, discard or retry an effect.
+
+## Required platform profiles
+
+These are acceptance requirements for the adapter, not statements that every
+OS/filesystem combination is already supported. Freeze the exact native
+mechanism/attribute allowlists and bounds in this home before source acceptance.
+Unknown or unsupported caller-visible security metadata is refused by default.
+
+| Profile | Required policy | Mechanism to validate |
+|---|---|---|
+| macOS ordinary local regular text files | Preserve owner/group/mode, effective ACL and supported xattrs including quarantine; respect write/append denial and relevant file flags. Bind/recheck metadata. Distinguish OS-managed provenance and content-bound metadata from opaque attributes. | Descriptor-bound system inspection/access checks and `fcopyfile` metadata controls with verification; unsupported flags/attributes or failed preservation refuse. Never treat Node `copyFile` as equivalent. |
+| Linux ordinary regular text files | Preserve owner/group/mode, POSIX access ACL and supported opaque user/security attributes under an explicit namespace profile; respect actual write rights and relevant inode flags. Integrity/capability or otherwise unsupported protected attributes refuse. | OS access, ACL/xattr/flag mechanisms via established bindings; no in-house ACL evaluator or mode-bit inference of ACL absence. Read/copy/verification failure refuses. |
+| Windows ordinary regular text files | Preserve the defined owner/group/DACL and supported named-stream/attribute policy; respect caller data-write/append rights, not merely parent delete rights. Separate privileged SACL/audit/integrity metadata from the caller-visible profile. | Native security inspection and private staging. `ReplaceFileW` is a candidate, not a selected atomic primitive: validate its DACL/stream merge and partial-failure behavior against the publication contract. Never enable ignore-ACL/ignore-merge fallbacks. |
+
+`com.apple.quarantine` and Windows `Zone.Identifier` (Mark-of-the-Web) are named
+preserve-or-refuse requirements, not optional members of an unspecified list.
+Content approval does not authorize removing/unblocking them. Actual attributed
+inputs, stream bytes and metadata-only changes need native positive/negative
+controls. Apple `fcopyfile` is a mechanism candidate, not proof that a particular
+flag preserves quarantine. Do not use `COPYFILE_CLONE` without the required ACL
+preservation path, or assume cloning proves the other metadata policies.
+
+Verify owner/group preservation under ordinary non-root credentials. If the
+effective caller cannot restore the required owner/group, or verification finds
+a different policy, refuse before publication; never ignore `chown` failure or
+normalize ownership to the staging creator. No elevated helper is introduced.
+
+The scope is the documented caller-visible and platform-publication profile.
+It cannot prove absence of privileged metadata the OS withholds. Do not claim
+universal preservation of invisible attributes or security policy outside those
+profiles. Linux xattr enumeration can omit attributes inaccessible to the
+caller; an empty list is not evidence of global absence. Unsupported enumeration,
+`ENOTSUP`, access errors and failed verification are not an empty supported
+profile. If available OS evidence cannot establish a supported operation,
+refuse. On Windows, define how conflicting named streams are handled:
+`ReplaceFileW`'s preservation of streams absent from the replacement does not
+prove equality of arbitrary conflicting streams or of the whole security
+descriptor. A privileged SACL or integrity label must not be promised preserved
+merely because a DACL operation succeeded.
+
+Special/privilege-bearing mode bits, integrity/content-bound attributes and
+filesystem-specific transformations require explicit supported behavior or
+refusal. Do not blindly copy an old integrity assertion onto changed bytes.
+OS-managed timestamps/version/provenance may legitimately change; identify
+those exceptions explicitly rather than presenting byte equality as meaning
+equivalence. Existing owner-controlled path-race limits remain, with no new
+claim of isolation from a hostile process running as the same user.
+
+## New-file creation policy
+
+Within each enabled profile, a new file's final access/security policy must be
+equivalent to the OS creating it directly in the actual destination parent
+under the operation's effective credentials, creation mode and captured umask.
+The default file mode is `0666` before OS inheritance/masking; the CLI's
+`createDirs` requests `0700` for each missing parent, subject to the OS umask
+and inheritance policy. Private staging's own
+parent or a later `chmod` is not evidence of that equivalence. The OS derives
+ACL inheritance; Relavium does not implement its own ACL evaluator/merger.
+
+Read-only preparation pins the nearest existing parent/ancestor identity and
+observable creation-policy inputs. Recheck before creating staged artifacts,
+after any admitted parent creation, and immediately before final publication.
+Bind the final parent and policy when missing parents are created, retaining
+the original ancestor/credential/mask expectations. Detectable identity/default
+policy or creation-mask changes refuse; unsupported/unverifiable inheritance
+refuses rather than silently losing or broadening legitimate access.
+
+| Profile | Required OS-derived inputs and control |
+|---|---|
+| Linux | Actual parent's default ACL, group/setgid and supported filesystem/mount/label semantics, effective uid/groups, requested mode and umask. Compare with direct kernel creation on the same supported profile. Creating with `0600` and then chmod is insufficient where an inherited ACL was filtered at creation. `O_TMPFILE` in the destination parent is an unnamed candidate, conditional on filesystem support, non-root publication and exact policy proof. |
+| macOS | Actual parent's inheritable ACL, owner/group and supported flags/attributes, effective credentials and creation mask. A descriptor-bound/private staging mechanism must reproduce the OS-derived destination policy; copied staging-directory defaults are insufficient. |
+| Windows | Actual parent's inheritable descriptor and group/owner policy, effective token, supported attributes/integrity profile and creation flags. Use native descriptor derivation/creation mechanisms, not a hand-built DACL. Prove the policy against direct `CreateFileW` creation for the supported profile. |
+
+These are closed-profile obligations, not a claim to observe hidden or dynamic
+name-dependent mandatory policy. Unsupported policy transformations refuse.
+Existing owner-controlled check-to-publication race limits remain; no atomic
+compare-and-swap of directory policy or process credentials is promised.
+Native controls cover different default ACLs, setgid/group inheritance, umasks,
+supported labels and parent-policy-only changes, including `createDirs`.
+
+## Private staging and publication
+
+Preparation creates no directory, temporary file or writable effect. After
+approval and durable admission for every model file write, create same-filesystem private
+staging using OS-enforced owner-only access before writing payload bytes.
+An original ACL-restricted mode0644 file must not yield a broadly readable
+temporary copy. A private staging directory may contain the file while final
+access metadata is installed; its identity/cleanup belong to the operation.
+
+Recheck source identity, bytes and supported metadata before publication. Apply
+and verify final access policy through OS mechanisms. Errors before publication
+refuse without changing the destination. Each enabled native primitive must
+preserve atomic replacement and no-clobber creation's existing byte contract,
+including its documented failure cases. Windows `ReplaceFileW` can return errors
+with the original path moved or absent; testing success alone is insufficient.
+Do not enable it merely by classifying those known incompatible namespace
+outcomes as uncertainty. Select a sufficient mechanism/profile or keep that
+platform's write acceptance blocked and seek a decision if the contract must
+change. Unanticipated possibly changed state after dispatch is non-retryable
+uncertainty, retained through the existing journal/error ladder with owned
+recovery; it is never a precondition miss or blind retry. Cleanup removes only
+pinned owned entries and reports uncertainty for unproven entries.
+
+New files follow the creation-policy section above; existing files
+keep their supported policy. Missing native support is not an implicit grant
+for mode-only or in-place writing. Read-only tools and CLI meta paths remain
+available without eagerly loading a native write component.
+
+## Crash staging ownership and recovery
+
+Prefer an OS-private unnamed staging primitive where its publication/policy
+contract is proven. Named staging needs host-owned recovery evidence before
+payload bytes are written; ordinary `finally` cleanup is insufficient.
+
+Use an owner-private, versioned index under the explicit operator home's
+`.relavium-fs-private-v1/fs-staging-v1/`, isolated from model file authority.
+Its dedicated parent is created and verified by the native adapter; the shared
+`.relavium/` config/database parent is neither normalized nor used as private
+index custody. This keeps ordinary Node-created Windows config/DB directories
+usable without an eager native dependency in onboarding or read-only startup.
+The dedicated parent and index retain the same strict private ownership, ACL,
+no-follow, held-identity and flush requirements. Records contain
+only a bounded staging locator, parent/directory/file native identities,
+owner uid/SID, producer PID/nonce and protocol/cleanup state. Do not persist
+final target names, payload, preview, ACL/xattr values or process-local handles.
+The staging locator itself reveals its parent location: it is private local
+operational recovery metadata, outside `history.db`, effects, events, exports
+and logs, not a secret-free product display value. It grants cleanup of proven
+owned artifacts only, never a new model filesystem root or publication authority.
+
+After the durable effect claim, reserve the private index record exclusively;
+create the private stage and empty payload, capture their identities and durably
+publish the pinned record before copying bytes. Use the platform's supported
+file/directory flush sequence. A crash before pinning cannot leave payload
+bytes; an unproven empty entry is preserved for operator recovery. This index
+is an artifact-ownership inventory, not a second effect journal. Publication
+uncertainty is resolved only by the existing effect gate, never by finding a
+temporary file or comparing final bytes.
+
+Owner-only permissions do not isolate a model using the same OS account.
+Reserve the staging namespace and hard-deny every model filesystem operation
+on active and orphan stage directories/artifacts, including lexical/canonical
+aliases, directory enumeration/descent, ranged/glob reads, search/find,
+mentions/resolver reads, writes and output-target consumers. Identity guards
+must also reject opened-object/hard-link aliases to staged payloads. Keep this
+exclusion through cleanup, across concurrent hosts and separate Relavium
+processes; an instance-local hidden-name convention is insufficient. Establish
+the trusted protected namespace/identity evidence before payload creation,
+with the private index outside model authority. A missing/incomplete guard may
+not silently omit another producer's stage. If a placement/profile cannot
+provide this boundary with bounded trustworthy evidence, refuse named staging
+there or use a proven unnamed mechanism. Prove both positive ordinary-file
+access and negative active/orphan/alias access through actual model-capability
+consumers. This does not claim sandboxing of an independently authorized OS
+process or a hostile same-user process under ADR-0105.
+
+The index namespace itself is protected before it exists. Reject its lexical
+and canonical paths, descendants and opened directory/record/lock identities,
+including an output `save_to` root that resolves into the index through an alias.
+This includes the entire dedicated `.relavium-fs-private-v1/` parent, not only
+the index child. Keep the previous index namespace protected as described below.
+Reuse that one captured boundary through lazy root creation and publication;
+protecting only payload identities does not protect the ownership evidence.
+
+Bound the inventory to 128 records, each at most 16 KiB, and a recovery pass to
+128 records/2 MiB of record data, eight immediate children per stage and no
+recursive descent. Check cancellation/yield and a two-second cooperative scan
+budget between OS operations, except the explicitly bounded cleanup completion
+section below; retain/join an actual native producer that has
+not settled. Exhaustion or a full/uncertain inventory emits a fixed diagnostic
+and cannot evict evidence or silently allocate untracked named staging.
+
+Validate private index ownership/permissions and regular link-free records.
+Claim cleanup exclusively, then revalidate the marker, parent/stage identities,
+owner, producer liveness and each exact owned regular single-link artifact before
+deletion. Remove only those artifacts and a proven empty owned stage. Preserve
+live or reused PIDs, inaccessible/unknown liveness, malformed/unrecognized
+records, identity changes, links and unproven entries. A dead cleanup claimant
+requires the same evidence before another claimant can recover its claim.
+Never remove final targets or user-created parent directories via this inventory.
+
+Interactive/session startup may inspect the bounded index and report a fixed
+pending-recovery fact without loading the native write component; meta paths
+do not perform that scan. Actual automatic reclamation runs under the first
+approved, durably admitted write's owned native lifetime, before its new staged
+payload. Read-only use need not load the addon. If no write occurs, or ownership
+cannot be proven, retained artifacts are reported rather than declared removed;
+explicit operator recovery inspects the private index and removes only artifacts
+whose ownership/liveness can be independently established. Document this local
+recovery procedure before source acceptance; it never authorizes auto-publication,
+effect retry or blind recursive deletion.
+
+Kill real producers before/after index pinning, during payload copy and metadata
+application, after publication and before effect settlement/checkpoint. On next
+use, prove bounded discovery, no live/unknown-owner deletion, orphan cleanup and
+the independent journal resume refusal/replay outcomes. Process-kill evidence
+does not certify machine-power-loss durability; OS flush guarantees and any
+actual power-loss evidence must be attributed separately.
+
+
+### Development layout transition
+
+The unaccepted development prototype used
+`<operator-home>/.relavium/fs-staging-v1/`. Before every new-layout model
+filesystem inventory capture, native write or explicit recovery, prove that
+this old index is absent, even if the new index does not exist. Pin and recheck
+the operator home and any existing shared `.relavium/` ancestor; reject
+symlinks/reparse objects, changed identity and ambiguous/inaccessible state.
+The shared ancestor's ordinary policy is eligible only for this absence probe,
+never as private inventory authority. Only rechecked `ENOENT` permits progress.
+
+Any old index, including a proven-empty directory, refuses with a fixed
+operator-recovery-required diagnostic. Preserve both layouts and all unknown
+evidence; do not migrate, delete, ignore or claim to have reclaimed the old
+index. The old namespace and object aliases remain excluded from model
+authority. All existing scan/cancellation budgets and producer joins apply.
+
+This is an unreleased development-layout transition, not cross-version
+compatibility. Stop previous cooperating hosts before using the new layout;
+there is no claim of a cross-version allocation lock against an old binary
+creating its index after the absence check. The maintainer confirmed the app
+is not actively used and requires no older-binary migration. An operator with
+old evidence can use a retained, source-bound pre-transition adapter and the
+recovery procedure below, inspecting that adapter's old
+`.relavium/fs-staging-v1/` layout instead of the new path in step 2; it still
+must prove private ownership and liveness.
+If it refuses or retains evidence, preserve it for explicit operator inspection
+and resolution. The new adapter cannot recover the old layout and must not
+report it as cleaned. No blind recursive removal is an approved recovery step.
+
+Mandatory integration evidence includes a real Node-created shared `.relavium`
+config/DB parent before the first Windows native write/recovery, successful
+publication through the native-private sibling, and unchanged shared-parent
+policy. Native-created replacement fixtures cannot substitute for that journey.
+
+### Private inventory protocol and claims
+
+The implementation uses a closed binary protocol, not JSON or an extensible
+metadata document. The explicit operator home is pinned and revalidated with
+its `.relavium-fs-private-v1/` parent and `fs-staging-v1/` directory. Native placement verifies
+operator ownership and the profile's private directory/file policy. The
+TypeScript reader checks pinned path/object identity, regular single-link
+records and the protocol. On Windows it follows the explicit operator-home
+ACL trust boundary in [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md):
+Node mode bits do not prove a private Windows ACL. Native creation and
+revalidation must establish that policy before placement is enabled.
+
+Only these index entries are recognized; `nonce` is exactly 32 lowercase
+hexadecimal characters:
+
+| Entry | Meaning and reader behavior |
+|---|---|
+| `inventory.lock` | Permanent empty allocation-lock file; never an ownership receipt. |
+| `<nonce>.reserved` | Empty exclusive reservation before pinning. No payload is authorized. |
+| `<nonce>.prepare` | At most 16 KiB of uncommitted record data. Partial writes are expected; no payload is authorized. |
+| `<nonce>.record` | Complete immutable pinned record. Supplies stage-directory and payload Node identities for model-authority exclusion. |
+
+A partial `.prepare` or ordinary `.reserved` state must not deny otherwise
+ordinary reads merely because its producer is concurrent. Such entries still
+require trusted names, private regular single-link objects and bounded sizes.
+Unknown entries, unsafe objects and malformed committed records fail closed.
+The permanent stage-path prefix is excluded before empty stage creation;
+transient records never waive that exclusion.
+
+All integers below are unsigned little-endian. Strings contain exactly the
+specified number of UTF-8 bytes, without a terminator; no trailing bytes or
+additional fields are accepted.
+
+| Byte offset | Field |
+|---|---|
+| 0 | Eight ASCII bytes `RVSTG002` for current lifetime custody, or known legacy `RVSTG001` for exclusion only |
+| 8 | Protocol/state byte `2` paired only with `RVSTG002`, or legacy `1` paired only with `RVSTG001`; followed by seven zero bytes |
+| 16 | Four-byte producer PID, in `1..2147483647` |
+| 20 | Two-byte owner length, in `1..184` |
+| 22 | Two-byte stage-locator length, in `1..4096` |
+| 24 | The 32 ASCII nonce bytes matching the entry name |
+| 56 | Owner: decimal effective UID on POSIX, SID on Windows |
+| After owner | Absolute normalized stage locator with basename `.relavium-fs-stage-v1.<pid>.<nonce>` |
+| After locator | Three 40-byte identities, in destination-parent, stage-directory, payload order |
+
+Each identity contains an eight-byte native volume value, a 16-byte native
+object ID, an eight-byte Node `dev` witness and an eight-byte Node `ino`
+witness. Native cleanup compares full identities; the read-only Node guard
+uses its separately proven witnesses. Record length is exactly
+`176 + ownerLength + locatorLength`. There are no final-target names, payload
+bytes, policy values or durable handles in this format.
+
+The v2 body and all bounds/identity checks are otherwise identical to v1.
+Rust and TypeScript recognize only those exact magic/byte pairs. TypeScript
+may use valid v1 identities to exclude artifacts, but v2 recovery never grants
+v1 automatic deletion authority. Unknown/mismatched pairs, reserved bytes,
+malformed lengths/UTF-8/owners/locators/identities or unreadable committed
+records fail the entire trusted inventory closed; they are never skipped.
+Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
+uncommitted meanings. Physical v1 directory/stage names are namespace names,
+not evidence of the record protocol. No mutable flag upgrades an old record.
+
+Before activating v2 for an operator home, stop/join every old producer,
+recovery process and inventory/reader, and retire old executable access to that
+home. Rolling coexistence and downgrade are unsupported. Known legacy evidence
+stays protected for operator-assisted recovery; preserving it does not make
+old automatic recovery safe. No local PID scan is claimed to prove all old
+processes are gone across namespaces. Old readers may safely refuse new records;
+this is not a supported mixed-version operating mode.
+
+Allocation and recovery count at most 128 distinct nonces and 385 directory
+entries (three transition entries per nonce plus the allocation lock), at most
+16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
+eight immediate stage children and never descends recursively. Cancellation
+and the two-second cooperative budget are checked between operations, except
+the bounded cleanup completion section below; they do
+not interrupt an outstanding OS call or authorize detaching its producer.
+
+Pinning flushes the empty payload, stage directory and destination parent and
+publishes the flushed prepared record by rename to `.record`, followed by the
+index-directory flush, before any payload copy. Index hierarchy creation also
+flushes its containing directories. The empty reservation can then be removed.
+Windows performs this transition through the already-held private record
+handle and selected handle-bound no-replace primitive, with the same held
+index directory as source and destination. A foreign existing `.record` is
+never replaced. This retains the pending identity through the transition;
+there is no close/reopen gap or retry. Unix keeps its existing path rename.
+During the live operation, the host adopts the exclusively created directory
+and empty payload immediately, retaining their handles and full identities.
+Normal pre-pin cancellation/error cleanup can remove those exact empty
+artifacts and its reservation after revalidation, including its owned partial
+prepared marker or a completed marker rename whose directory flush failed.
+Unexpected children, links, changed identities or missing proof preserve the
+artifacts. These ephemeral handles are never persisted: a crash before pinning
+still leaves unproven empty entries for operator recovery, and their names
+alone do not establish cleanup ownership.
+An exclusively created private object remains under its creator's held-identity
+guard through verification and adoption; failed cleanup retains the reservation.
+If directory creation succeeds but no handle or identity can be established,
+the empty directory and reservation are preserved as unproven, never deleted by
+name alone.
+
+Allocation holds an exclusive nonblocking kernel lock on `inventory.lock`;
+the v2 producer also claims its original prepared-record handle before record
+publication and payload bytes, retaining that same claim through stage,
+publication and joined release. Live-owner cleanup and pending-marker handling
+reuse it, without reacquiring/unlocking via a clone. Recovery opens a separate
+handle and must claim it **and** prove the existing independent PID/identity/
+owner rules; neither a free lock nor PID absence alone suffices.
+POSIX uses `flock(LOCK_EX | LOCK_NB)`. All claim descriptors/duplicates are
+atomically close-on-exec; Windows claim handles are non-inheritable.
+Windows uses `LockFile` on one byte at offset `MAX_RECORD_BYTES + 1 = 16385`.
+Valid contents occupy `[0,16384)`; the reader's maximum read is `[0,16385)`.
+The sentinel must never overlap either range or extend file contents. Real
+independent Windows readers must remain able to read while the producer holds
+the claim. These are cooperating-process claims, not
+protection from independently authorized hostile OS processes. See the
+[Apple flock manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html),
+[Linux flock manual](https://man7.org/linux/man-pages/man2/flock.2.html) and
+[Microsoft LockFile contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfile).
+A dead claimant leaves no persistent claim token to steal; the kernel releases
+its lock. Failure to acquire a claim preserves evidence and does not force
+unlocking or deleting the lock file.
+
+#### Bounded cleanup completion
+
+Keep cancellation/deadline checks throughout discovery, reversible cleanup and
+payload removal. Immediately before removing the proven empty stage, complete
+the final cooperative check and admit this fixed completion checklist in full:
+remove that stage; revalidate context; flush its parent; run the same full
+index/home/parent/private-policy proof without cooperative ticks; reopen and
+compare the unchanged marker identity; revalidate context before and after
+marker unlink; flush the index. These are bounded logical proof/cleanup
+operations, not a promise about the number or latency of underlying syscalls.
+No new scan, allocation, next candidate, payload copy or target publication is
+permitted after the cut. Passing `cancelled = None` to a proof that still checks
+the scan deadline is insufficient: use the shared full proof with an explicit
+tick-free completion policy. Suppress only cooperative cancellation/deadline
+exits; never omit authority, identity, private-policy or I/O checks.
+
+Count a removed record only after that complete sequence succeeds. Before-cut
+uncertain candidates retain evidence normally. After-cut proof/I/O/flush failure
+reports cleanup uncertainty instead of returning a false retained/removed
+count; a marker may already be absent after unlink. A process crash in the
+rmdir-to-durable-evidence gap remains conservative operator recovery. ENOENT
+alone never authorizes discarding a marker or losing a renamed artifact.
+
+### Explicit operator recovery procedure
+
+This procedure is local maintenance by the operator, outside model file
+authority. Automatic cleanup remains restricted to the first already-approved,
+durably admitted write's joined native lifetime. Do not manufacture a write or
+approve unwanted content merely to trigger cleanup. The host-private addon's
+`recoverMetadataStaging(home, cancellation)` entrypoint reuses the bounded
+native recovery routine and accepts only the explicit operator home. It
+returns `{ removed, retained }` counts and has no publication operation or
+arbitrary deletion target. This is an explicit operator maintenance path,
+not a model tool or a new public CLI command. Its local Node bridge has been
+exercised; exact-artifact and cross-platform invocation remain acceptance gates.
+
+1. Stop known Relavium sessions, workflow runs and host processes using this
+   operator home through their normal shutdown path. Wait for their owned work
+   to settle. Do not kill a PID merely because a record names it: it may have
+   been reused by another application. Keep the private index and stages in
+   place, and keep their namespace excluded from model tools.
+2. Inspect only this home's immediate
+   `.relavium-fs-private-v1/fs-staging-v1/` entries using trusted
+   local read-only tooling, subject to the protocol and discovery bounds
+   above. Keep locators and records local; do not paste them into model tools,
+   public issues or product logs. Stop on excess entries/data, malformed
+   records, unsafe ownership/policy, links or changed home/index identity.
+   Renaming the index, deleting it or changing permissions to bypass the scan
+   does not resolve retained artifacts.
+3. Separate complete pinned records from reservations and prepared fragments.
+   An empty stage, recognizable name, old timestamp or matching content is not
+   ownership proof. Preserve every entry lacking full pinned identities unless
+   independent, contemporaneous native ownership evidence supplies the missing
+   proof. Without that evidence, leave it in place for maintainer-assisted
+   recovery; a zero-length reservation does not make recursive deletion safe.
+4. For a pinned candidate, a trusted native inspection must prove the record's
+   operator UID/SID, current exact parent/directory/payload identities,
+   unchanged marker and private directories. Inspect no more than eight
+   immediate children. The only removable payload is the exact regular,
+   operator-owned, single-link `payload` object identified by the record.
+   Preserve unexpected children, aliases, identity differences and objects
+   whose owner or policy cannot be checked. On Windows, retain both the full
+   128-bit native file identity and the Node witness; a pathname, Node mode or
+   shortened file index is insufficient.
+5. Establish that the producer is absent and claim cleanup exclusively before
+   revalidating the proof. POSIX requires native `kill(pid, 0)` to fail with
+   `ESRCH`; permission denial and other errors are unknown. Windows requires
+   the checked process-absence/exit result. Live/reused PIDs, inaccessible
+   processes and uncertain results remain preserved. Recheck liveness and all
+   identities immediately before deletion. Use the native maintenance entrypoint
+   below for this claim-and-delete sequence. If the installed component is
+   unavailable or refuses, preserve the evidence for maintainer-assisted
+   recovery rather than substituting an unchecked shell deletion.
+6. Once the bounded native checks and exclusive claim succeed, remove only the
+   proven payload, flush its directory, remove the proven empty owned stage,
+   and flush its parent. Remove the unchanged pinned record and flush the
+   index only after artifact cleanup is proven. Preserve the record after
+   unproven aliases, unexpected entries or incomplete cleanup. Never remove a
+   final target, a user-created parent or the permanent allocation lock.
+7. Inspect again within the same bounds and report retained entries honestly.
+   Artifact cleanup does not settle an effect, prove publication or permit a
+   run retry/resume. Preserve the independent journal's unresolved row and
+   follow the [effect-resume gate](../shared-core/effect-journal.md) even when
+   no stage remains.
+
+For a trusted current installation, save the following operator program as
+`recover-fs-staging.mjs` and run it with Node 22 or newer. Supply the absolute
+path of that installation's `dist/native-fs/loader.cjs` and the actual operator
+home. A source checkout uses its verified
+`apps/cli/native/fs-metadata/runtime/loader.cjs` instead. Select the trusted
+installation explicitly; do not locate a shim from a model-selected workspace.
+The fixed shim verifies its asset inventory. This does not install, download
+or compile a component.
+
+```js
+import { createRequire } from 'node:module';
+import { isAbsolute } from 'node:path';
+
+try {
+  const [loaderPath, home, ...extra] = process.argv.slice(2);
+  if (!loaderPath || !home || extra.length || !isAbsolute(loaderPath) || !isAbsolute(home)) {
+    throw new Error('invalid maintenance arguments');
+  }
+  const { loadFsMetadataAddon } = createRequire(import.meta.url)(loaderPath);
+  const addon = loadFsMetadataAddon();
+  const cancellation = addon.createWriteCancellation();
+  const cancel = () => addon.cancelWrite(cancellation);
+  process.on('SIGINT', cancel);
+  try {
+    const report = await addon.recoverMetadataStaging(home, cancellation);
+    if (
+      !Number.isInteger(report.removed) || report.removed < 0 ||
+      !Number.isInteger(report.retained) || report.retained < 0 ||
+      report.removed + report.retained > 128
+    ) throw new Error('invalid maintenance result');
+    console.log(JSON.stringify({ removed: report.removed, retained: report.retained }));
+  } finally {
+    process.off('SIGINT', cancel);
+  }
+} catch {
+  process.stderr.write('Filesystem staging recovery could not be completed.\n');
+  process.exitCode = 1;
+}
+```
+
+```text
+node recover-fs-staging.mjs "/absolute/installation/dist/native-fs/loader.cjs" "/absolute/operator-home"
+```
+
+Wait for the program to exit, including after Ctrl-C. A retained count is not
+permission to remove those entries manually. Partial safe cleanup may precede
+a refusal; the fixed error does not assert that nothing changed. Unknown
+ownership and malformed/pre-pin evidence still require the proof and
+maintainer-assisted handling described above. This program never resolves an
+effect-journal `needs_attention` state or authorizes re-execution.
+
+On 2026-11-12 the exact program above was exercised on non-root macOS arm64,
+Node 22.23.1, using the verified source-runtime shim. A safely absent index
+returned zero counts without creating a directory or lock. A non-private
+ancestor returned the fixed refusal while preserving its mode and contents.
+The addon's separate killed-producer controls exercise actual pinned orphan
+removal. Installed-artifact and cross-target program execution remain open;
+the absent-state control alone is not proof of artifact deletion.
+
+### Staging implementation evidence scope
+
+The current `stage_index` Rust tests run on macOS with the actual
+`MacosProfile`, real files, OS locks and subprocesses; they do not substitute a
+mock `Profile`. The killed-child case exercises the native index producer
+before pinning and after pinned payload creation, waits for the killed child,
+and verifies conservative pre-pin retention and pinned orphan cleanup. Other
+cases cover capacity, binary validation, live producers, hard links, foreign
+children, changed home/marker identity, cancellation and exclusive claims.
+A 140-cycle reservation/directory/empty-payload cancellation case verifies that
+normal pre-pin cleanup does not consume the 128-record inventory; partial and
+renamed-marker cases exercise handle-bound cleanup after simulated pre-pin
+failures. Real-flush fixture lifetimes are serialized within this test module
+to keep its stress case from consuming another case's fixed cooperative scan
+budget. The TypeScript inventory tests use explicitly synthetic binary records and
+exercise ordinary access plus negative stage/alias access through model
+filesystem consumers.
+
+Those receipts prove the exercised index algorithm and macOS mechanisms. They
+are not full Node-API prepared-write, journal/resume, metadata-application or
+publication crash receipts; they do not establish Linux/Windows private-policy
+behavior, all supported architecture/libc targets or machine-power-loss
+durability. Each enabled profile still needs the native lifecycle and
+exact-artifact evidence required below.
+
+## Native component and delivery
+
+The selected component is a first-party Rust/Node-API adapter with a TypeScript
+host loader, isolated from shared/core/LLM provider interfaces. Approved direct
+Rust dependencies are `napi`/`napi-derive` (Node-API bridge), build-only
+`napi-build`, POSIX-only `libc` and Windows-only `windows-sys` (OS bindings).
+Use a minimal explicit feature set targeting **Node-API 8**, bounded worker
+tasks and no Tokio/network/process runtime. Feature/transitive closure is
+reviewed, not inferred from the direct list. Before native implementation,
+record exact compatible versions/features and the Rust toolchain in
+[tech-stack.md](../../tech-stack.md)'s dependency records and the native
+manifest/lockfile; audit licenses, advisories, unsafe FFI and build inputs.
+Apply principle 9a's default publish-age review posture explicitly to direct
+and transitive crates, with recorded provenance and any justified exception.
+Node-API 8 is a conservative sufficient ABI choice; Node-API 9 also supports
+Node 22.0.0. Do not claim version 9 raises that floor; version 10 requires a
+newer 22.x runtime. ABI compatibility still needs exact-floor execution.
+Additional direct dependency families need a decision rather than this
+decision's blanket approval. Native errors are converted to fixed typed host reasons.
+No metadata-dependent product code is accepted before ADR-0125 acceptance.
+
+The required finite build and native-execution matrix is:
+
+| Platform | Node architecture / libc | Rust targets |
+|---|---|---|
+| macOS | x64 and arm64 | `x86_64-apple-darwin`, `aarch64-apple-darwin` |
+| Linux | x64 and arm64, glibc and musl separately | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` |
+| Windows | x64 and arm64, MSVC | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` |
+
+This is a delivery obligation, not evidence that the CLI's other
+native dependencies or CI currently support every row. Establish the minimum
+OS/libc deployment baselines with the existing dependency support before
+building; do not bind glibc binaries only to the newest CI image. The current
+four installed-consumer legs (`current-linux`, `current-macos`,
+`current-windows` at the repository's current Node, and `minimum-linux` at exact
+Node 22.0.0) remain mandatory and do not prove this expanded
+matrix. Every enabled target needs native execution and exact-artifact receipts;
+cross-compilation alone is insufficient. Unavailable target support is an
+explicit blocker to resolve, not permission to narrow advertised support.
+
+This is the new adapter's eight-target obligation, not a retrospective whole-CLI
+architecture list. Keyring also publishes FreeBSD x64, Windows ia32 and Linux
+arm/riscv packages; that dependency catalog alone does not certify CLI support.
+Do not introduce a new eager addon gate on existing meta/read-only behavior
+outside this matrix where the CLI's other dependencies work. An unavailable
+adapter refuses the requested prepared write. SQLite, keyring and this adapter
+are three native components: exact-artifact consumers must exercise coexistence,
+without claiming that keyring availability proves SQLite or adapter availability.
+
+Build precompiled assets and bind each asset to reviewed source, lockfile,
+toolchain, target and fixed loader inventory. Preserve the public **Node
+22.0.0** runtime floor; this adapter must add no installed-user compiler or
+install/runtime download requirement. Existing `better-sqlite3` uses
+`prebuild-install || node-gyp rebuild --release`; keyring uses optional native
+npm packages. No CLI-wide no-download/no-compile proof is claimed. The stricter
+bundled-asset choice for this first-party component keeps its selected bytes
+inside the source-bound CLI artifact rather than another install-time fetch.
+Workspace
+installation's separate Node 22.13.0 floor must not replace that proof. Bundle trusted
+assets in the CLI artifact, select only from fixed platform identifiers and
+reject missing/mismatched assets. Installed package-manager hardlinks are eligible
+when the asset is an ordinary non-symlink file and the fixed inventory, bounded
+reads, hash and descriptor/path identity and stability checks pass. This relies
+on the existing trusted installed-package/store boundary, not protection against
+an authorized concurrent writer. Build and archive custody, staging inventory,
+model data and cleanup retain their separate single-link requirements. Never search PATH/workspace, honor a model
+library path, compile/download at runtime, or silently narrow release support.
+Native contributor setup and CI are distinct from user installation. Extend
+the [packaging contract](packaging.md) on acceptance, including exact-artifact
+installed consumers and ABI/native-execution evidence.
+
+Primary mechanism boundaries: [Node-API ABI/version support](https://nodejs.org/api/n-api.html),
+[bridge feature declarations](https://github.com/napi-rs/napi-rs/blob/main/crates/napi/Cargo.toml),
+[Microsoft replacement semantics](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+and [Linux xattr enumeration](https://man7.org/linux/man-pages/man2/listxattr.2.html).
+These inform the decision; no native feasibility or security acceptance is claimed.
+
+## Initial dependency audit
+
+On 2026-11-12, two reviewers independently checked the exact registry versions,
+checksums, publish dates, yanked status and licenses in the initial
+[Cargo lockfile](../../../apps/cli/native/fs-metadata/Cargo.lock). Its SHA-256 is
+`dd5b3adef08c0efa68c91cc733a50f7163afa751cb6cf4c3035da65c41ad7a63`.
+The [manifest](../../../apps/cli/native/fs-metadata/Cargo.toml) and
+[toolchain file](../../../apps/cli/native/fs-metadata/rust-toolchain.toml) own
+the exact direct pins, target features and compiler choice. The bridge uses
+Node-API 8 with default features disabled; the resolved all-target closure has
+no Tokio or futures runtime. The Windows-only `napi-sys` dynamic symbol loader
+uses the current process, not a model-selected library.
+The `windows-sys` threading and security-authorization features were added to
+the reviewed binding set for effective-token, file-security and SID operations;
+they add no crate family or lockfile entry.
+
+The NT rename mechanism and its test-only parameter experiment enable
+`Wdk_Storage_FileSystem` → `Wdk_Storage` → `Wdk` and `Win32_System_IO` →
+`Win32_System` in that same pinned `windows-sys`. Its existing Foundation
+binding exposes the status conversion. The reviewed feature closure adds no
+crate, version, driver or Node-API export; the lockfile and nineteen-package
+registry inventory remain unchanged. This uses ADR-0125's approved minimal
+feature closure and isolated-mechanism delegation, not a new dependency family.
+They use the documented user-mode Nt entry and class 65, never the
+access-check-bypass class 66. Feature selection is not Windows behavior or
+production-profile acceptance and does not constitute a fresh advisory query.
+
+All 19 registry entries were unyanked and more than 14 days old at review.
+Their license expressions are MIT, Apache-2.0, ISC and Unicode-3.0 variants;
+the exact expressions and checksums are those reported by crates.io for the
+locked versions. A batch query to OSV for every exact crate/version returned
+no matches. This is an advisory-database observation, not proof of the absence
+of vulnerabilities or a substitute for native source and unsafe-FFI review.
+Crates.io identifies the bridge and build crates with the napi-rs repository,
+`libc` with rust-lang/libc, and `windows-sys` with microsoft/windows-rs. The
+lockfile and this receipt must be re-reviewed together on any dependency change.
+The bundled [third-party notices](../../../apps/cli/native/fs-metadata/THIRD_PARTY_NOTICES.txt)
+include the actual license and copyright texts from the locked crate archives;
+where napi-rs archives omit the repository license, the notices identify the
+exact archive-recorded source commit and retrieved license hash. The initial
+notices SHA-256 is `d510559e31131e1d8a45eb7f9e6b4414d65a4d8fa58e2d2fadaa87f6f1fb1553`.
+
+The initial local build exposed only a protocol-version stub. On macOS arm64,
+isolated tests of a private metadata-copy helper reapplied captured quarantine
+bytes and checked one synthetic deny-ACL fixture. These are mechanism probes,
+not filesystem-profile, ABI, publication or packaging acceptance on any target.
+
+## Baseline reproduction
+
+Run `node tools/native-fs/metadata-policy-probe.mjs` from the repository root
+on non-root macOS. The [tracked developer probe](../../../tools/native-fs/metadata-policy-probe.mjs)
+uses fresh private fixtures and fixed OS-tool argv, cleans its own tree and
+reports booleans, not native paths or raw metadata. It deliberately exercises
+historical Node algorithms, not `FsCapability`, the new adapter or Windows.
+
+On 2026-11-12, root independently reran it on macOS arm64, Node 22.23.1,
+libuv 1.52.1, non-root uid 501. Fixture verification, direct-append denial and
+exact replacement bytes passed. Replacement and separate `copyFile` each
+dropped the deny ACL, quarantine and custom xattr (`true` for all six drop
+observations). No successful flags test, other filesystem, complete-host test
+or native adapter acceptance is inferred. The original inline probes were
+temporary OS/algorithm experiments; this tracked script supplies reproducibility.
+
+## Acceptance evidence
+
+The original MVP-3 profiles and delivery were accepted on `development` at the
+[Step 2 checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+The following initial mechanism observations retain their historical scope;
+phrases about pending integration describe those probe checkpoints. The
+Accepted ADR-0126 refinement authorizes its dependent implementation; later
+source changes require their own actual platform, package, independent-review
+and security acceptance. Current correction and fresh acceptance remain open.
+
+The Windows test-only rename-parameter cohort measures 68 fixed private-fixture
+combinations: 48 Win32 comparisons, twelve relative NT class-65 observations
+and eight padded NT observations with narrower held-directory peers.
+The dimensions cover information class, buffer size, relative/absolute target,
+same/cross directory and creation/replacement. It runs before ordinary native
+parents and emits only bounded, validated fixed records. Its absolute forms are
+diagnostic baselines, not a production fallback. Even successful measurements
+do not certify a candidate: ordinary metadata, inheritance, atomicity, crash,
+identity and installed-consumer controls remain mandatory on both Windows
+architectures. No production behavior changes merely because this cohort runs.
+
+NT probe buffers, status block and held handles stay alive through the call and
+any observed pending completion. Only a signalled owned handle plus a final
+status permits continuation; an initial pending observation remains labelled
+`pending`, never `ok`. An unproved wait/completion aborts the test subprocess
+before unwinding or freeing pending storage and produces no successful receipt.
+This exceptional test-process policy is not a production completion strategy.
+
+Peer observations compare non-DELETE read/write directory handles with thin
+traverse/read-attributes/read-control/synchronize handles. Each peer is opened
+and checked against the still-held predecessor's full native and Node-visible
+identity and private policy before ownership transfers. The cleanup guard is
+transferred before every earlier broad handle closes; read/write peers also
+close before thin observations. File handles retain the DELETE access needed
+for rename. This preserves continuous directory identity while measuring rights;
+it does not alter a production grant. At `9f12246a`, all eight peer observations
+returned `ok` on both actual Windows targets in
+[CI run 43166086388](https://github.com/HodeTech/Relavium/actions/runs/43166086388),
+with no `pending` or `mutation` observation. This supports the bounded handle
+strategy selected below; the ordinary profile still fails the earlier Win32
+relative publication and is not accepted by that measurement.
+
+The `f3c266f8` checkpoint passes the earlier relative publication on both
+Windows architectures, then refuses at exact DACL control comparison after
+metadata application. This identifies a control-bit mismatch, not its bit or
+direction. A separate test-only cohort compares `SetSecurityInfo` with the
+documented handle-bound `NtSetSecurityObject` full-descriptor entry, with and
+without a protection-information flag. It uses actual protected, unprotected
+and genuinely parent-inherited private-fixture policies, verifies the inherited
+ACE. The initial nine bounded fixed results at `12ad03b0` agree on both
+Windows targets: both Nt forms preserve the protected and unprotected cases
+exactly, while the inherited case preserves DACL bytes but differs in the
+automatic-inheritance control bit. The component setter changes that bit in
+both ordinary cases and DACL bytes in the inherited case. These observations
+do not accept either Nt form for production.
+
+The cohort adds one `nt-request` setter variant, for twelve records total:
+clone the bounded captured descriptor, use the OS
+`SetSecurityDescriptorControl` to set its DACL auto-inheritance request bit
+only when the captured auto-inherited bit is set, then call the basic Nt
+form. Actual `edee61c1`
+[CI run 43170192486](https://github.com/HodeTech/Relavium/actions/runs/43170192486)
+reports `exact` for that form on all three policies and both Windows targets.
+This supports the mechanism selection below, not a hand-written inheritance
+algorithm or a relaxation of exact readback. Source bytes/policy and held stage
+identity remain checked. No raw descriptor, SID, control value or path enters
+the measurement. No production setter, comparison or permission changes until
+the actual two-target observations justify selecting a mechanism; even exact
+measurements still require the complete ordinary profile and consumer gates.
+
+- Real ACL deny-write/append negatives: unchanged bytes/metadata, zero
+  publication and no pre-approval staging; readable source alone is insufficient.
+- Real ACL, quarantine/custom-xattr and supported flag positives on macOS;
+  corresponding ACL/xattr/label profiles on Linux and descriptor/stream cases on
+  Windows, including `Zone.Identifier`. Preserve or explicitly refuse, never silently drop.
+- Concurrent metadata-only changes, stale/replaced identity, attribute-limit
+  refusal, unavailable inspection/copy/verification and native partial failures.
+- Actual private staging access controls, including a restrictive source ACL
+  with mode0644 and a destination with broader default inheritance.
+- New-file no-clobber race, exact prepared bytes, actual-producer cancellation,
+  owned cleanup and no native metadata in any excluded sink.
+- All overwrite/new/append/edit durable claim/publication/settlement crash cuts;
+  prepared/ambiguous rows stop provider/node execution, valid committed evidence
+  replays without another native preparation/publication, sessions never replay.
+- OS-derived new-file policy equivalence and parent-policy-only changes, plus
+  killed-stage recovery, bounded inventory exhaustion, concurrent cleanup claims
+  and live/reused/unknown-owner preservation under ordinary non-root credentials.
+- Native build/ABI/packaging, three-component coexistence and adapter-specific
+  no-compile/no-extra-download installed-consumer tests on the
+  supported targets, with no missing-target fallback or reduced existing gate.
+- Fresh complete affected reviews and a separate native security sitting. A
+  successful Rust build, ABI claim or TypeScript mock is not native acceptance.
+
+<a id="macos-local-apfs-implementation-profile--integration-acceptance-pending"></a>
+
+## macOS local APFS implementation profile
+
+The implemented macOS profile admits local APFS volumes whose descriptor-bound volume
+capabilities explicitly report extended-security support. It refuses other
+filesystems and any failed or unsupported inspection. Source access is proved
+with a nontruncating effective `O_WRONLY` or `O_APPEND` open; source identity,
+size, version, owner, group, mode, flags, ACL and attributes are rechecked.
+An absent ACL is accepted only when the volume capability is supported and
+`fstatx_np`/`filesec_query_property` report no ACL; an unreadable or unsupported
+ACL is never treated as empty. ACL representations are opaque and bounded to
+64 KiB; the OS applies them without an in-house ACL evaluator.
+
+The exact attribute allowlist is `com.apple.quarantine`,
+`com.apple.provenance`, and nonempty names under `user.*`. Values are preserved
+and verified byte-for-byte, including provenance: inability to reproduce it
+refuses. Unknown Apple or other namespaces, including content-bound metadata,
+refuse. Enumeration is bounded to 16 KiB of names, 128 attributes, 64 KiB per
+value and 1 MiB of names and values in total. Only `UF_NODUMP` and `UF_HIDDEN`
+are supported flags; immutable, append-only, compressed, restricted and unknown
+flags refuse. Private directory owner, mode and ACL checks remain mandatory even
+when those two benign flags are present.
+
+The profile copies OS metadata into the pinned empty stage, restores supported
+flags with descriptor-bound `fchflags` when necessary, reapplies quarantine and
+verifies the exact source and stage policy after content writing. It does not
+restore old mtime or ctime after writing new content. New-file security policy
+comes from an empty `0666` template created in the actual parent and moved into
+the private stage before bytes. The parent policy, effective credentials and
+creation mask are rechecked; `getumask` is used when available, otherwise the
+trusted CLI owns and joins a fixed child mask query. The target mode is never
+derived from the private directory. Local macOS controls exercised both supported
+flags with ACL, quarantine and two opaque `user.*` values through actual
+publication, and refused immutable, append-only, unknown flags and unknown
+attribute namespaces. These controls do not certify untested filesystems,
+system MAC policy, SACLs, other targets or the remaining acceptance gates.
+Apple documents the relevant [file flags and `fchflags`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fchflags.2.html)
+and [descriptor-bound metadata copying](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/copyfile_state_set.3.html).
+
+## POSIX creation-mask boundary
+
+The draft macOS and Linux profiles refuse during read-only parent preparation
+when the effective umask masks any owner permission (`mask & 0700 != 0`). This
+keeps private index and stage creation from producing inaccessible artifacts.
+It is a closed profile refusal, not a change to the parent process's umask.
+For admitted masks, the destination template is created by the kernel with mode
+`0666` in the actual parent; private staging permissions do not substitute for
+that inherited policy. Local macOS child-process controls exercised `0022`,
+`0077` and `0002` against direct creation, including inherited ACLs, and
+confirmed that `0777` refuses before private-stage creation. The same owned
+child mask and default-ACL matrix passed as a non-root user in the Linux arm64
+glibc 2.28 and musl 1.2.5 containers. These local controls do not establish the
+required platform-matrix acceptance.
+
+The native producer pins an empty indexed stage before applying existing-file
+metadata. Test-only barriers stop an owned child during metadata application or
+after half the payload; the parent kills and joins that child, checks the
+unchanged old target or absent new target, and invokes actual native recovery.
+These native-unit cuts passed locally on macOS arm64 and as a non-root user in
+Linux arm64 glibc 2.28 and musl 1.2.5 containers. They complement the separate
+WorkflowEngine claim/publication/settlement crash tests; they are not a
+mid-native whole-workflow crash test. The barriers and their environment
+lookups are excluded from release builds. Windows native execution and the
+remaining platform acceptance matrix remain required.
+
+<a id="linux-local-implementation-profile--integration-acceptance-pending"></a>
+
+## Linux local implementation profile
+
+The implemented profile in `src/linux.rs` is descriptor-bound and limited to
+local ext4, XFS and overlayfs. Network filesystems, unsupported inode-flag
+queries and unknown filesystem types refuse. The interface is internal to the
+native component; this section does not enable a model capability or certify
+the complete producer, recovery, Node ABI or CLI artifact.
+
+- Preserve uid/gid, ordinary mode bits, kernel POSIX access ACL bytes,
+  `security.selinux` and opaque `user.*` attributes. Parent policy also captures
+  the kernel default ACL and setgid/group state. Special/privilege-bearing
+  regular-file mode bits and all other observed attribute namespaces refuse.
+  `security.capability`, `security.ima` and `security.evm` are explicit refusal
+  cases. Inaccessible privileged attributes are not claimed absent.
+- Bound enumeration to 64 KiB of names, 128 attributes, 64 KiB per value and
+  1 MiB of names/values in aggregate. Explicit known-policy reads distinguish
+  `ENODATA` from access or unsupported inspection; an empty enumerated list is
+  not an ACL-absence proof. The kernel interprets/applies ACLs; no ACL evaluator
+  is implemented in Relavium.
+- Preserve `SYNC`, `NODUMP`, `NOATIME` and `NOCOW`; apply these only to an empty
+  stage before payload and verify afterward. Extent layout and indexed-directory
+  flags are OS-managed exceptions. Observe parent `DIRSYNC` as creation policy.
+  Immutable/append-only flags deny replacement, including append implemented
+  by replacement; all remaining observed flags refuse. Old mtime/ctime are
+  not copied onto the new bytes.
+- Actual `O_WRONLY`/`O_APPEND` opens without truncation prove effective source
+  admission, bound to its descriptor identity/version. Recheck source policy,
+  uid/gid/supplementary groups and mask. Read the mask from bounded
+  `/proc/self/status`, without temporarily changing the process-wide mask.
+- Derive new-file policy by kernel creation of an **empty** reserved-name file
+  directly in the real parent at requested mode `0666`, then move that same
+  inode into private staging before payload. Compare its OS-derived policy
+  after the move and after content writing; revalidate the actual parent and
+  credentials/mask around derivation and publication. Private staging's own
+  inherited policy never substitutes for the destination's policy.
+- Use descriptor-relative `renameat` for replacement and the Linux
+  `renameat2(RENAME_NOREPLACE)` syscall for creation. The direct libc syscall
+  binding also serves musl, which has no corresponding libc wrapper at the
+  selected floor. No link/unlink emulation or in-place fallback is used.
+  A racing target remains intact; unanticipated publication errors retain
+  uncertainty through the existing effect journal.
+
+Six source-profile tests exercise exact ACL/custom-xattr/NODUMP preservation,
+effective write/append denial, metadata-only changes, real-parent default ACL
+inheritance, new-file success/no-clobber and linked-stage/privilege-bit refusal.
+Initial native arm64 execution on both selected GNU and musl images used
+Rust 1.98.0 and ordinary non-root users. This is OS-profile test evidence, not
+eight-target, native-producer, power-loss or installed-consumer acceptance.
+
+Primary behavior references: [kernel ACL inheritance and mode correspondence](https://man7.org/linux/man-pages/man5/acl.5.html),
+[xattr enumeration visibility](https://man7.org/linux/man-pages/man2/listxattr.2.html),
+[inode flags](https://man7.org/linux/man-pages/man2/ioctl_iflags.2.html),
+[non-mutating Linux mask observation](https://man7.org/linux/man-pages/man5/proc_pid_status.5.html)
+and [atomic replacement/no-replace semantics](https://man7.org/linux/man-pages/man2/rename.2.html).
+
+<a id="windows-local-ntfs-implementation-profile--native-execution-pending"></a>
+
+## Windows local NTFS implementation profile
+
+The implemented Windows profile is confined to fixed local NTFS volumes with
+persistent ACLs and named streams. Real native/ABI/installed-consumer execution
+and the separate security sitting were recorded at the
+[Step 2 acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+The earlier execution-pending observations below are historical. Subsequent
+changes require fresh source-bound platform and security evidence; a Rust
+cross-target type check supplies no OS or publication receipt. Filesystems,
+remote shares, reparse objects, multiple hard links and unsupported
+attribute/metadata observations refuse.
+
+Parent-directory handles used for the required index and stage flushes request
+`GENERIC_WRITE` in addition to directory listing and security inspection rights.
+Opening an existing parent performs an access check without changing its bytes
+or namespace; denial or a failed flush refuses. This follows the documented
+[`FlushFileBuffers` access requirement](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+but does not by itself establish that directory flush succeeds or proves
+namespace durability on the selected NTFS profile. Those remain real Windows
+execution and acceptance gates.
+
+Private-directory creation initially retains a DELETE-capable rollback handle.
+Before adoption, open a read/write peer without DELETE while the creator is
+still held, and verify the private policy plus equal full native identity and
+Node-visible witness. Only that peer is passed to the adoption callback and
+retained by the stage/index. On success the creator guard is disarmed and its
+handle closes; failure keeps the existing creator-bound rollback. No broad
+creator clone survives into publication, and no pathname-only or unpinned
+close/reopen gap is introduced. This preserves the flush rights while avoiding
+the broad-creator-handle interaction measured on x64; the measurement does not
+isolate which omitted right causes the conflict. This does not relax
+source-file DELETE access or final-policy validation.
+
+For payload eligibility, the current effective token is opened once and its
+TokenUser, OS-designated TokenOwner and token statistics are read with the
+statistics checked on both sides. The captured owner must equal exactly the
+current TokenUser or TokenOwner; this is an ownership eligibility check, not a
+replacement for the actual OS write-access check. Private index directories,
+locks and records remain strictly TokenUser-owned. The live operation binds
+and rechecks its compound token context, including during cleanup. Recovery
+binds the current recovery operation's context; the record does not contain the
+old producer's token identity and does not establish that it matches. Unknown
+current ownership or changed context preserves unproven artifacts.
+
+Token statistics bind TokenId, AuthenticationId, ModifiedId and the token type.
+Compare ImpersonationLevel only for an impersonation token; its primary-token
+value is undefined by the
+[Windows contract](https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-token_statistics)
+and is normalized rather than treated as authority or context drift. All other
+selected statistics and same-handle user/owner bracketing remain checked. This
+correction is independent of the still-unresolved Windows CI failure cause.
+
+The private staging directory's DACL is not a child-access barrier: Windows
+traverse privileges can bypass directory traversal checks. Once the approved
+final metadata has been applied to a payload, the access claim is the exact
+final authorized policy, including its owner, rather than continued sole-user
+payload privacy. The private index and initially private artifacts retain the
+strict TokenUser-only policy, and model filesystem namespace and identity
+exclusions continue to apply throughout.
+
+The closed caller-visible policy is owner SID, primary-group SID, DACL bytes
+and protection/automatic-inheritance controls. It inspects the caller-readable
+mandatory-label descriptor and refuses an explicit label; privileged audit
+SACLs and labels withheld by Windows are outside the preservation claim.
+Capture uses filesystem `GetSecurityInfo`. Existing-file policy application
+uses one `NtSetSecurityObject` call with OWNER/GROUP/DACL information and a
+bounded clone of that captured self-relative descriptor. On the clone only,
+`SetSecurityDescriptorControl` sets or clears `SE_DACL_AUTO_INHERIT_REQ` to
+match the captured `SE_DACL_AUTO_INHERITED` bit. Neither protection-information
+flags nor SACL-setting flags are passed. The twelve-row `edee61c1` observations
+show exact protected, unprotected and genuinely inherited policy for this
+request form on both Windows architectures; full profile acceptance remains
+required. The old component setter is a diagnostic baseline, not a fallback.
+`SetKernelObjectSecurity` is excluded for filesystem objects. A required
+owner/group assignment that ordinary credentials cannot perform refuses.
+Application must pass exact native policy comparison before and after payload
+copying; unsupported inheritance transformations refuse. No ACE permission
+evaluator, inheritance merger or privilege change is implemented.
+
+The full-descriptor setter follows its documented direct-call contract. Its
+input clone and held stage remain owned until the actual call returns; only
+`STATUS_SUCCESS` proceeds to exact readback. Every other status, including an
+unexpected `STATUS_PENDING`, is a fixed fatal, non-retryable metadata refusal.
+This API provides no IOSB/event or documented pending-completion protocol, so
+the host does not infer completion from a file signal or invent a wait, parked
+worker, asynchronous drain, abort, detached operation or publication retry.
+This differs from the rename interface, which exposes an IOSB. Cancellation
+is cooperative before/after the direct call; a block inside Windows retains
+the actual joined producer under the existing OS-call limitation.
+
+Supported file attributes are archive, hidden, system, not-content-indexed and
+the normal-file marker. Read-only, compression, encryption, sparse, reparse,
+recall/offline, integrity/pinning and all other flags refuse. Archive marking,
+creation/access/write/change timestamps, the replacement inode/file ID, USN
+journal entries and filesystem allocation are OS-managed publication effects;
+the profile does not promise to reproduce them. Source write/change time,
+size, identity, attributes, policy, streams and effective-token identity are
+rechecked before publication. `ReOpenFile` requests `FILE_WRITE_DATA` for
+replace/edit or `FILE_APPEND_DATA` for append against the captured object,
+without truncation. Parent delete authority cannot substitute for this check.
+
+A bounded `BackupRead` inventory processes at most eight headers, names of at
+most 512 bytes and a single `Zone.Identifier:$DATA` stream of at most 64 KiB.
+The unnamed data stream is skipped with the OS stream seek operation. Unknown
+ADS, extended-attribute records, object-ID/property/reparse/other backup stream
+types, unsupported stream flags, incomplete enumeration and oversized metadata
+refuse. `Zone.Identifier` bytes are copied exactly to a fresh stream on the
+pinned stage, then enumerated and compared; there is no merge/conflict rule.
+
+An inventory without an unnamed-data header is eligible only after successful
+exhaustion: the held source and reopened inventory handles must identify the
+same regular, non-reparse NTFS file, with unnamed-stream size zero before and
+after the inventory. Only the already parsed permitted Zone.Identifier bytes
+may be returned; a nonempty primary, incomplete inventory or changed evidence
+refuses. This is descriptor-bound empty-file evidence, not an inference from a
+missing stream name.
+
+Security descriptors are bounded to 64 KiB and normalized native paths to
+32,767 UTF-16 code units. Every failure crossing the host boundary is a fixed
+reason, never a stream name/value, SID/ACL, path-bearing native error or handle.
+
+Staging directories and private files are created with an explicit OS-built
+descriptor naming the effective token user as owner and a protected,
+sole-current-user DACL. The private directory ACE is not inheritable: each
+private child receives its own explicit descriptor, and reproducing an
+unprotected destination DACL does not inherit a staging ACE. Opened identities,
+owner, DACL and protection are independently verified before copying; any OS
+transformation that prevents exact destination-policy verification refuses.
+Native Windows controls must also prove exact preservation of genuinely inherited
+destination ACEs and control bits; the non-inheritable staging ACE alone does
+not prove that the OS will retain those destination ACEs when unprotecting.
+For new-file inheritance, Windows creates a fresh empty file directly in the
+actual destination parent with default security attributes, then one
+handle-bound, same-volume rename moves that same empty inode into the private
+stage. The inherited policy is captured and compared before payload and after
+copying. The common producer must reserve/protect both staging names and pin
+recovery ownership before any payload; these hooks alone do not establish the
+cross-process model-authority exclusion or crash-recovery contract.
+
+Publication dispatches exactly one
+user-mode `NtSetInformationFile(FileRenameInformationEx)` operation (class 65),
+using the pinned stage handle, destination-parent handle and a validated single
+basename. The aligned SDK `FILE_RENAME_INFORMATION` buffer includes at least
+the full structure plus the UTF-16 filename bytes and terminator space; the
+declared filename length excludes the terminator. The native relative form
+preserves held-parent authority: the Win32 wrapper's relative form returned
+`invalid-parameter` in the actual two-target parameter measurements. Absolute
+diagnostic forms are not a production fallback. Class 66, which bypasses access
+checks, is never used.
+All source handles use synchronous I/O. The documented set-information
+operation is synchronous even for asynchronous file objects. Its aligned
+buffer, status block and both held handles remain owned through completion.
+An unexpected `STATUS_PENDING` is never success: the same producer remains
+joined until the owned handle is signalled and the status block contains a
+final status, then reports possibly-published regardless of that final status.
+Cancellation or a wait deadline cannot prove kernel completion or release that
+storage. A stuck OS/driver can therefore delay teardown, as it can inside the
+synchronous call itself; the host does not detach, free, abort, retry publication
+or certify completion to satisfy a timer. Failed waits must not busy-spin.
+Existing-file publication uses only replace-if-exists plus POSIX semantics;
+new-file publication sets no replacement flag. There is no `ReplaceFileW`,
+backup-name dance, unlink/copy sequence, ignore-readonly/ignore-ACL flag,
+in-place fallback or automatic retry. A failed dispatched operation remains
+possibly-published in the durable effect ladder. That classification does not
+certify compatibility: real Windows controls must establish unchanged old
+bytes/namespace for the selected mechanism's documented failures before the
+profile is enabled, including competing new-file creation, read-only and
+directory targets and sharing/permission failures. Open old handles must retain
+the old object on successful replacement. Power-loss durability is a separate
+claim and is not established by these API selections.
+
+The module includes Windows-only positive/negative controls for ACL denial of
+write and append, owner/group/DACL and Mark-of-the-Web preservation, exact new
+bytes, unknown/oversized streams, metadata-only and parent-policy changes,
+comparison with direct OS new-file inheritance, no-clobber and selected
+publication failures. On 2026-11-12 its source and test bodies typechecked with
+Rust 1.98.0 for `x86_64-pc-windows-gnu` in an isolated harness using the locked
+`windows-sys` version/features. The complete addon's local cross check requires
+Windows `libnode.dll` and is not a Windows bridge receipt. Actual Windows CI at
+`9f12246a` builds both native architectures and completes the parameter cohort,
+but its first ordinary crash parent fails at the previous Win32 relative
+rename. No complete Windows profile, ABI lifecycle or installed-consumer pass
+is claimed. The refined mechanism must pass those unchanged gates.
+`FILE_ID_INFO` supplies the native 128-bit identity; the separate Node guard
+witness uses the NTFS volume serial and 64-bit file index. Compare it with actual
+Node bigint `stat`/`fstat` on both supported Node floors before enabling it.
+
+Primary mechanism sources: [file security and creation/inheritance](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights),
+[SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo),
+[full-descriptor Nt setter](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject),
+[OS descriptor control setter](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setsecuritydescriptorcontrol),
+[SetKernelObjectSecurity's filesystem exclusion](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setkernelobjectsecurity),
+[handle-bound rename structure/flags](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
+[user-mode Nt entry](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile),
+[synchronous set-information contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ioisoperationsynchronous),
+[pending status and completion](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_io_status_block),
+[BackupRead](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupread),
+[BackupSeek](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupseek),
+and [libuv's Windows stat assignment](https://github.com/libuv/libuv/blob/v1.52.1/src/win/fs.c).
+They justify the mechanism candidates and closed bounds, not profile acceptance.

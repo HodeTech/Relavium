@@ -43,6 +43,11 @@ import {
   assertInventories,
 } from './provenance.mjs';
 import { encodePhaseStdio, finish } from './retention.mjs';
+import {
+  captureCausalNativeAssets,
+  verifyCausalNativeAssets,
+  verifyCausalNativeInputs,
+} from '../native-fs/causal-assets.mjs';
 
 export async function runControls({ repository, evidenceKind, mutations, toolRoots }) {
   assert.ok(['filesystem', 'secrets'].includes(evidenceKind), 'Unknown evidence family');
@@ -75,8 +80,11 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
     restorations: [],
   };
   let primaryFailure;
-  let source, dependencies, manifest, ownFiles;
+  let source, dependencies, manifest, ownFiles, nativeCapture;
   async function phase(control, name) {
+    // A mutation of any native source/helper/recipe input cannot adopt an older binary. Runtime
+    // CJS and native files remain byte-verified infrastructure, never transpiled owned source.
+    verifyCausalNativeAssets(graph, nativeCapture);
     const output = join(scratch, control.id, name);
     mkdirSync(output, { recursive: true });
     const current = {
@@ -106,17 +114,21 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
       evaluationHelper: toUrl(join(graph, 'tools/usage-coverage-controls/evaluation.mjs')),
       phase: name,
       mutationId: control.id,
-      infrastructure: [config, join(graph, runtimeReporterPath)].map((path) => ({
-        path,
-        bytes: readFileSync(path).length,
-        sha256: digest(readFileSync(path)),
-      })),
+      infrastructure: [
+        ...[config, join(graph, runtimeReporterPath)].map((path) => ({
+          path,
+          bytes: readFileSync(path).length,
+          sha256: digest(readFileSync(path)),
+        })),
+        ...nativeCapture.assets.map((entry) => ({ ...entry, path: join(graph, entry.path) })),
+      ],
     });
     const infrastructure = [
       manifestPath,
       runtime,
       config,
       join(scratch, 'installed-dependencies.json'),
+      ...nativeCapture.assets.map((entry) => join(graph, entry.path)),
     ].map((path) => ({ path, sha256: digest(readFileSync(path)) }));
     const report = join(output, 'vitest.json');
     const child = await spawnJoined(
@@ -213,14 +225,22 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   try {
     source = captureSource(repository, graph);
     summary.sourceHead = source.head;
-    for (const file of source.files)
-      assert.equal(
-        realpathSync(join(repository, file.path)),
-        resolve(repository, file.path),
-        'Owned source path redirected',
-      );
+    assertSourcePaths(repository, source.files);
     ownFiles = captureOwnedTools(repository, graph, toolRoots);
     manifest = { ...source, files: mergeFiles(source.files, ownFiles) };
+    nativeCapture = captureCausalNativeAssets(repository, graph);
+    const captured = new Map(manifest.files.map((entry) => [entry.path, entry]));
+    for (const entry of nativeCapture.inputs)
+      if (captured.has(entry.path))
+        assert.deepEqual(
+          captured.get(entry.path),
+          entry,
+          'Native source differs from captured source',
+        );
+    manifest.files = mergeFiles(
+      manifest.files,
+      nativeCapture.inputs.filter((entry) => !captured.has(entry.path)),
+    );
     assertSelectedAnchors(selected, graph, manifest.files);
     dependencies = captureDependencies(repository);
     linkDependencies(repository, graph);
@@ -282,6 +302,8 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
     verifyOwnedTools(repository, toolRoots, ownFiles);
     verifyOwnedTools(graph, toolRoots, ownFiles);
     verifyFiles(graph, manifest.files);
+    verifyCausalNativeAssets(graph, nativeCapture);
+    verifyCausalNativeInputs(repository, nativeCapture);
     assert.deepEqual(captureDependencies(repository), dependencies, 'Dependency bytes changed');
     summary.complete = requested.length === 0;
     summary.isolated = true;
@@ -304,4 +326,13 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   if (primaryFailure) throw primaryFailure;
 
   return summary;
+}
+
+function assertSourcePaths(repository, files) {
+  for (const file of files)
+    assert.equal(
+      realpathSync(join(repository, file.path)),
+      resolve(repository, file.path),
+      'Owned source path redirected',
+    );
 }

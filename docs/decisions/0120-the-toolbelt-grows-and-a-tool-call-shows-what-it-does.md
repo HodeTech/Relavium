@@ -1,8 +1,25 @@
 # ADR-0120: The toolbelt grows, and a tool call shows what it does
 
-- **Status**: Proposed
-- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review)
+- **Status**: Accepted
+- **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; proposal refined 2026-11-11)
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [phase 2.6 · 2.6.M](../roadmap/phases/phase-2.6-conversational-authoring.md#26m--the-first-class-toolbelt-breadth--rendering), [MVP-A8, MVP-A9](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
+
+> **Accepted 2026-11-11 (maintainer):** the corrected design and linked MVP-3
+> plan are approved for implementation after addressing the supplied review.
+> This accepts the decisions, not an implementation or security sitting.
+> [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md)
+> governs scratch and filesystem containment; the
+> [security standard](../standards/security-review.md) governs both security gates.
+
+> **Refined 2026-11-12 by [ADR-0124](0124-inspect-retained-run-effects-before-file-preparation.md) — implementation pending in MVP-3 Step 2.**
+> A prepared journaled call first consults retained run evidence after grant,
+> provenance, policy and stable-projection admission. A miss retains this ADR's
+> read-only preparation → approval → durable prepare → execution ordering;
+> a matching retained hit performs no filesystem preparation/publication and
+> uses an explicitly labelled saved-result decision under existing approval floors.
+> Strict resume/replay evidence and exact mapping comparison are specified in the
+> [effect contract](../reference/shared-core/effect-journal.md#retained-evidence-and-early-inspection--mvp-3).
+> No session replay, persisted rich preview or new mutation authority is introduced.
 
 ## Context
 
@@ -53,6 +70,12 @@ Exact arguments, bounds and texts live in
     whose content changed since that read, so an edit never applies to a view
     the model did not see.
   - The write is atomic and preserves line endings. Binary files are refused.
+  - Expected, proven pre-effect edit preconditions return bounded content-free
+    correction feedback on the existing recovering chat paths. User/guardrail
+    denial and uncertain or possibly dispatched effects remain fatal under the
+    current policy. This does not activate MVP-4 denial recovery; the
+    [registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+    owns the closed reasons and classification.
 - **`search_files`.** Searches file contents.
   - The pattern is a **literal** (with case and whole-word options), never a
     regular expression, so there is no backtracking surface.
@@ -89,6 +112,10 @@ Exact arguments, bounds and texts live in
   A tool that declares none shows its name only. A field marked secret, a
   `credentialRef` or a masked input is structurally absent from `ToolPreview`'s
   type. It cannot be declared previewable.
+  MCP definitions without an audited host-owned preview declaration remain
+  name-only in MVP-3; a server cannot authorize its own preview fields. Rich MCP
+  target previews remain with MVP-9, while existing explicitly bound MCP grants
+  retain their current policy/approval floors.
 - **Every string passes the floor.** In a transcript row, each target and
   field passes `sanitizeUntrusted`: secret shapes masked on the original text,
   then terminal controls stripped. Each is bounded per field and per row. A
@@ -104,8 +131,9 @@ Exact arguments, bounds and texts live in
   approval card and its full view, every code point in a target, field or diff
   line that is not a printable graphic character renders as a visible, styled
   escape (for example `<U+202E>`, `<U+2028>` or `<U+E0049>`), never stripped and
-  never left invisible. A literal `<U+` already in the text is escaped too (its
-  `<` shows as `<U+003C>`), so the notation stays unambiguous where styling is
+  never left invisible. Every literal `<` already in the source is escaped
+  as `<U+003C>` in a single source pass; all synthetic approval tokens use the
+  reserved `<...>` namespace, so the notation stays unambiguous where styling is
   off. The set is defined by properties, with one short hand-kept list:
   - every `\p{C}` code point: controls, format characters, surrogates,
     private-use and unassigned code points;
@@ -118,17 +146,18 @@ Exact arguments, bounds and texts live in
     braille blank), U+16FE4 (a filler mark) and U+1D159 (a null notehead). A
     font can draw others blank; the mandatory security review owns this list.
 
-  A TAB shows as a styled tab mark instead, so tab-indented code stays readable
-  and a tab is still told from spaces. Whitespace at the end of a line, the
-  ASCII space included, shows as a styled mark per character (`·` for a space),
-  as `git diff` marks whitespace errors, so a trailing space never draws as
-  nothing. A CR before an LF is part of the line's ending, not trailing
+  A TAB shows as `<TAB>`. Whitespace at the end of a line shows one token per
+  character (`<SP>` for an ASCII space); a literal middle dot remains literal,
+  never an overloaded whitespace mark. A CR before an LF is part of the line's ending, not trailing
   whitespace. The line diff compares each line with its ending. The card states
   each side's endings whenever they are not all LF (a styled `CR LF endings` or
   `mixed endings` note beside the target, always shown for a new file whose
   lines end in CR LF), and a line whose ending differs from its side's or from
-  the other side's shows a styled `<CR LF>` or `<LF>` mark. A CR anywhere else is
-  escaped. A change to whitespace or to a line ending alone therefore never
+  the other side's shows `<CRLF>` or `<LF>`. A nonempty file's unterminated final
+  line shows `<EOF:NO_NEWLINE>`; an empty file has zero source lines and an
+  explicit empty-file state, not an invented unterminated line. A CR anywhere
+  else is escaped. Adding/removing only the final newline is a real two-sided
+  change. A change to whitespace or to a line ending alone therefore never
   renders as an unchanged line, and a file written in CR LF never looks like its
   LF twin. The property sets are ones the JavaScript regular-expression engine
   knows, so only the short blank-drawing list above is kept by hand. The escape
@@ -150,16 +179,18 @@ Exact arguments, bounds and texts live in
   span is flagged the approving answers stay disabled until the user reveals the
   masked spans in the full view with a deliberate key. The full view unmasks only
   on that key. Approving approves the bytes the host will write, masked spans
-  included, and the card says so. Whether a write whose changed lines are wholly
-  masked may be approved at all is for the mandatory security review.
+  included, and the card says so. The 2026-11-11 proposal below requires deliberate
+  reveal for every masked change, including wholly masked changed lines. The
+  mandatory pre-build security design sitting confirms that resolution.
 - **These rules are a starting set, not a proof.** Each closes a way an approval
   was shown to hide content while this draft was reviewed: zero-width and tag
   runs, the line separators, line-end whitespace and endings, and code inside a
   mask. This ADR claims only the rules it states. Whether they are complete
   (other code points a font draws blank, a terminal's own rendering, anything
   else that makes two different approvals look the same) is for the mandatory
-  security review before MVP-3 builds the card, which confirms or extends them;
-  until it has ruled, no wider guarantee is made.
+  security design sitting before MVP-3 builds the card, which confirms or extends
+  them. A separate post-implementation security sitting tests the built behavior;
+  neither sitting makes a wider visual-safety guarantee.
 - **Diffs are in-house.** A diff is a line diff computed in-house, with no
   dependency.
   - It is computed over the **same bytes the host will write**. The write
@@ -195,6 +226,80 @@ Exact arguments, bounds and texts live in
   persisted. After a resume, the repaint shows each call's name and its
   ADR-0095 structure, not its target. A target is a tool argument, and arguments
   stay off disk.
+
+### Proposal review — 2026-11-11
+
+These refinements were initially Proposed. The acceptance receipt above includes
+their corrected final form; they are not an implementation security sitting.
+
+- **Observed ranges, not merely a read flag.** Edit evidence belongs to the
+  current agent turn/tool loop and the unchanged source-file snapshot; session
+  evidence is instance-scoped, and ADR-0095 does not carry prior-turn tool
+  contents. A range or bounded
+  result proves only the source bytes actually delivered to the model. Every
+  replaced occurrence, including every `replace_all` occurrence, must be wholly
+  within those observed intervals. Creating a spill is not evidence that its
+  omitted bytes were read. The
+  [proposed file-tool contract](../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3)
+  owns range/provenance and bounded evidence semantics.
+- **Prepare without an effect.** Grant, argument/provenance and policy checks
+  precede a bounded, abortable, read-only write preparation. That preparation
+  freezes the exact before/after bytes, including append/new-file behavior.
+  No directory creation, temporary-file write or publication occurs before
+  approval and the existing durable effect-prepare barrier. The normal final
+  dispatch gates still run. Execution revalidates the target and consumes that
+  preparation rather than recomputing the approved content. `auto` and explicit
+  `[a]` grants still prepare and produce truthful traces. The
+  [proposed registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+  owns this ordering and the platform-pure public API boundary.
+- **Masked changes require inspection.** Any mask intersecting changed content,
+  including an entirely masked changed line, disables affirmative answers until
+  the operator deliberately reveals it in the full view and the required spans
+  have actually been displayed in acknowledged frames. The earlier flagged-span
+  rule also applies to targets and fields. Structurally excluded secrets,
+  credential references and tainted parameters never enter this reveal path.
+  Revealed text still uses visible escapes, is ephemeral, and is excluded from
+  logs, history, exports and copy hatches. Masking recognizes finite shapes;
+  it does not promise to conceal every sensitive value.
+- **Visible escapes are necessary, not a universal visual proof.** Keep the
+  stated Unicode property sets, blank-character list, unambiguous literal escape
+  notation, tab/trailing-space and exact line-ending rules. Confirm their actual
+  implementation with adversarial tests and a separate security sitting before
+  acceptance. No claim covers every font, confusable glyph or terminal. Text
+  with ambiguous width/unsupported layout must have a bounded numeric-code-point
+  inspection path in the full view; a rendering failure disables approval.
+- **Inspectability includes the full change.** A shortened card names exact
+  omitted counts. Its full view can traverse every changed byte and both sides,
+  within the admitted file/diff bounds. Diff computation has explicit work and
+  memory budgets; exceeding one refuses the write with a narrowing remedy,
+  rather than offering a coarse/unreviewable replacement as an approved diff.
+  Full-view navigation and deliberate reveal are view-only exceptions to
+  ADR-0057's approval key-swallow set. They never approve. The answer keys remain
+  the unmodified `[y]`, `[a]`, `[n]` set; Esc/Ctrl-C cancel. Exact keys and
+  visibility acknowledgement belong in the
+  [proposed chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract).
+- **Details ship in MVP-3.** Reuse the same bounded view for live tool details
+  and result summaries, including auto-write diff statistics. Both hosts,
+  inline mode, color-off and the 80×24 guard are part of this vertical. Retain
+  only bounded display state; no richer event/history payload is authorized.
+- **Restore only safe structure.** MVP-2 currently restores user/final-assistant
+  entries and omits tool rows. MVP-3 adds bounded content-free tool summaries
+  from already retained ADR-0095 structure, correlated by engine call id within
+  a completed turn. It restores no arguments, targets, diffs, result bodies,
+  reasoning or assistant tool-call preambles. Historical missing outcomes stay
+  unknown; this does not activate ADR-0119's interrupted-turn marker.
+- **Private output lifetime.** Session spill provisioning consumes ADR-0105's
+  exact host-issued scratch descriptor. Cleanup joins producers before removal;
+  crash sweeping proves orphan ownership and preserves live/unknown owners.
+  The spill remains separate from `history.db` and from future child-artifact
+  storage. Its read capability must not become a grant to neighboring sessions.
+
+These choices preserve explicit `[a]` session/tool grants; only `auto` and an
+explicit `[a]` bypass a fresh card, and every resulting write remains visible.
+The existing failure glyph shipped in MVP-2; it is a regression requirement,
+not a second MVP-3 delivery. The
+[MVP-3 plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11)
+owns scope, steps and the remaining implementation/security acceptance gates.
 
 ### Alternatives considered
 
@@ -236,3 +341,23 @@ Exact arguments, bounds and texts live in
 - `edit_file`'s read-before-edit rule needs per-session read bookkeeping.
 - The output store adds session-scoped files on disk, with their own sweep.
 - A resumed session shows less than the live one did, by design.
+
+> Refined 2026-11-12 by [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> prepared write publication gains a narrow Rust/Node-API CLI host boundary for
+> preserve-or-refuse security metadata, OS-derived new-file inheritance and
+> private crash-recoverable staging. Every `write_file` call requires tier-3
+> durable admission; `edit_file` remains tier 3. The core capability/approval
+> seam stays platform-pure TypeScript. The [metadata contract](../reference/cli/native-filesystem-metadata.md)
+> owns exact profiles, dependency/delivery gates and native proof; this is design
+> authorization, not acceptance of the prototype or native implementation.
+
+> Implementation checkpoint 2026-11-12: the MVP-3 read/search/edit, prepared-write, approval/details and safe restored-tool-group slice is independently accepted on `development`. The [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12) joins the three steps, actual native-target evidence and remaining PR CI/maintainer review. This does not activate later toolbelt milestones or claim a merge/publication.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

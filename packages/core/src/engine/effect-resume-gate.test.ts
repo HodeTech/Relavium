@@ -26,7 +26,20 @@ import type { RunHandle } from './run-handle.js';
 
 describe('blocksResume — §4’s table in one predicate', () => {
   it('a committed row WITH a retained result is the only thing that does not block', () => {
-    expect(blocksResume({ state: 'committed', result: { ok: true } })).toBe(false);
+    expect(
+      blocksResume({
+        state: 'committed',
+        result: {
+          v: 2,
+          hasValue: true,
+          value: { ok: true },
+          hasMappedValue: false,
+          outputMapping: null,
+          truncated: false,
+          summary: '',
+        },
+      }),
+    ).toBe(false);
   });
 
   it('a committed row WITHOUT a retained result blocks — a committed row is not a green light', () => {
@@ -156,6 +169,53 @@ workflow:
     expect(events.some((e) => e.type === 'node:started' && e.nodeId === 'out')).toBe(false);
   });
 
+  it.each([
+    {},
+    [],
+    null,
+    7,
+    { v: 1, value: 'old', hadMapping: false },
+    {
+      v: 2,
+      hasValue: true,
+      hasMappedValue: false,
+      outputMapping: null,
+      truncated: false,
+      summary: '',
+    },
+  ])('unusable committed evidence blocks before any regenerated executor %#', async (result) => {
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+    const journal = createInMemoryEffectJournalStore();
+    const port = journal.for({ kind: 'run', runId, nodeId: 'out', attempt: 1 });
+    await port.prepare(0, 'edit_file', 3, {});
+    await port.settle(0, 'edit_file', 'committed', result);
+    let executed = 0;
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: {
+        execute: () => {
+          executed++;
+          return Promise.resolve({ kind: 'completed', output: 'different response' });
+        },
+      },
+      effectJournal: (correlation) => journal.for(correlation),
+      effectResume: journal.resume,
+    });
+    const events = await drain(
+      await engine.resumeFromCheckpoint({
+        runId,
+        workflow: GATED,
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+    expect(executed).toBe(0);
+    expect(events.find((event) => event.type === 'run:failed')).toMatchObject({
+      error: { code: 'effect_needs_attention', retryable: false },
+    });
+  });
+
   it('a SETTLED effect does not block — the gate is not a blanket refusal', async () => {
     // Without this the assertion above passes for a gate that refused every resume with a journal wired,
     // which would make crash-recovery impossible rather than safe.
@@ -165,7 +225,15 @@ workflow:
     const journal = createInMemoryEffectJournalStore();
     const port = journal.for({ kind: 'run', runId, nodeId: 'out', attempt: 1 });
     await port.prepare(0, 'http_request', 3, { url: 'https://api.example/x' });
-    await port.settle(0, 'http_request', 'committed', { status: 200 });
+    await port.settle(0, 'http_request', 'committed', {
+      v: 2,
+      hasValue: true,
+      value: { status: 200 },
+      hasMappedValue: false,
+      outputMapping: null,
+      truncated: false,
+      summary: '',
+    });
 
     const engineB = new WorkflowEngine({
       host: createInMemoryHost({ store }),

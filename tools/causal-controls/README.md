@@ -27,6 +27,12 @@ The reporter runs from the copied graph, checks its own source pin, and is named
 in both the source manifest and runtime infrastructure. Its receipt joins the
 exact runtime bytes, phase/control, reporter source and spawned Vitest PID.
 Stderr checks remain additional diagnostics; they supply no zero-error authority.
+When Vitest reports unhandled errors, the reporter also writes a bounded JSON
+diagnostic to stderr, retained in the existing phase stdio envelope. It contains
+the phase and control, a fixed error-kind vocabulary, and at most eight reported
+stack locations that exactly match manifest-owned source paths. Messages, raw
+stacks and absolute paths are never included. A reported location is an untrusted
+clue, not proof of cause or a replacement for the unchanged completion receipt.
 
 The reporter creates an incomplete receipt before the run and invalidates it before
 each lifecycle transition. Its synchronous terminal write is the final callback

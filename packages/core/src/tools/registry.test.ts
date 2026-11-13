@@ -49,7 +49,7 @@ function call(name: string, args?: unknown, providerExecuted?: boolean): ToolCal
 }
 
 function stubHost(overrides?: Partial<ToolHost>): ToolHost {
-  return {
+  const host: ToolHost = {
     fs: {
       readFile: (path) =>
         Promise.resolve({
@@ -78,6 +78,31 @@ function stubHost(overrides?: Partial<ToolHost>): ToolHost {
       spill: (text) => Promise.resolve({ ref: 'spill://1', byteLength: text.length }),
     },
     ...overrides,
+  };
+  if (host.fs === undefined) return host;
+  const fs = host.fs;
+  return {
+    ...host,
+    fs: {
+      ...fs,
+      prepareWrite: async (request) => {
+        await Promise.resolve();
+        if (request.kind !== 'write') throw new Error('not a write fixture');
+        return {
+          path: request.path,
+          before: null,
+          after: request.content,
+          execute: (signal) =>
+            fs.writeFile(
+              request.path,
+              request.content,
+              { append: request.append, createDirs: request.createDirs },
+              signal,
+            ),
+          release: () => undefined,
+        };
+      },
+    },
   };
 }
 
@@ -201,7 +226,7 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     expect(reg.has('read_file')).toBe(true);
     expect(reg.has('nope')).toBe(false);
     expect(reg.list()).toEqual(BUILTIN_TOOL_IDS);
-    expect(reg.list()).toHaveLength(13);
+    expect(reg.list()).toHaveLength(16);
   });
 
   it('rejects a duplicate tool id at construction', () => {
@@ -487,6 +512,7 @@ describe('governedAction — the authoritative engine confirm-floor classifier (
     // A new governed built-in (or a policy-flag change) MUST update this map — the fail-closed floor can't drift.
     expect(governed).toEqual({
       write_file: 'fs_write',
+      edit_file: 'fs_write',
       run_command: 'process',
       http_request: 'egress',
       web_search: 'egress',
@@ -1702,12 +1728,13 @@ describe('ToolRegistry — journal identity of credential-shaped arguments (PR95
       if (host.fs === undefined) throw new Error('missing stub fs');
       const context = ctx();
       const prepare = vi.fn(context.effects.prepare);
+      const inspectReplay = vi.fn(context.effects.inspectReplay);
       const err: unknown = await registry(stubHost({ fs: { ...host.fs, writeFile } }))
         .dispatch(
           call('write_file', { path: './out.txt', content: 'UNSETTLED body', append: true }),
           {
             ...context,
-            effects: { ...context.effects, prepare },
+            effects: { ...context.effects, inspectReplay, prepare },
           },
         )
         .catch((error: unknown) => error);
@@ -1716,6 +1743,7 @@ describe('ToolRegistry — journal identity of credential-shaped arguments (PR95
       expect(err.fields, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toEqual(['content']);
       expect(err.message.includes('UNSETTLED'), 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').toBe(false);
       expect(prepare, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
+      expect(inspectReplay, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
       expect(writeFile, 'SECRETS_B7_CORE_UNSETTLED_REFUSAL').not.toHaveBeenCalled();
     } finally {
       vi.mocked(projectSecretShapedValue).mockImplementation(actual.projectSecretShapedValue);

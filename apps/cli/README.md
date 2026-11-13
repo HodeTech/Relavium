@@ -19,14 +19,21 @@ nothing leaves your machine unless you choose it.
 npm install -g relavium
 ```
 
-Requires **Node.js ≥ 22** (supported lines: 22 and 24). The package is an engine-inlined bundle that installs
-prebuilt native binaries — no C/C++ toolchain, no Python sidecar.
+Requires **Node.js ≥ 22** (supported lines: 22 and 24). The package is an
+engine-inlined bundle with native SQLite/keychain dependencies. SQLite can fall
+back to a local native build when its install-time prebuild is unavailable.
+The upcoming MVP-3 bundle ships its filesystem metadata adapter as verified
+precompiled assets; it adds no installed-user compiler or runtime download. See
+[packaging](../../docs/reference/cli/packaging.md) and the
+[source build runbook](../../docs/runbooks/local-dev-setup.md).
 
 ## Quick start
 
-The Home-first MVP-2 features below are implemented and reviewed on `development`
-for the upcoming v0.2.0 milestone. The current npm release is `0.1.1`; checkpoint
-and release status live in the [roadmap](../../docs/roadmap/current.md).
+The Home-first MVP-2 features are merged to `main`. MVP-3's editing/search,
+inspectable approvals and starting-mode settings are implemented and independently
+reviewed on `development` for the upcoming v0.2.0 milestone. The current npm
+release is `0.1.1`; checkpoint and release status live in the
+[roadmap](../../docs/roadmap/current.md).
 
 ```bash
 # 1 · Open Home and connect a provider through its native masked setup
@@ -50,6 +57,14 @@ from the OS keychain, `RELAVIUM_*`, then an eligible standard environment variab
 Standard variables are excluded for custom provider endpoints. The
 [credential-source contract](../../docs/reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
 defines the four supported names and interactive consent.
+
+In a new built-in conversation, ask the agent to read/search the project, then
+use `/mode accept-edits` to review an edit's diff before approving it. `/details`
+inspects live tool calls. Bare `/mode` separates the current mode from saving a
+startup default. Existing saved sessions keep their frozen tool grants; start a
+new built-in conversation to gain the new editing tools. The
+[chat contract](../../docs/reference/cli/chat-session.md) owns mode, review and
+resume behavior. Command execution permissions remain the next MVP-4 milestone.
 
 ## Why relavium
 

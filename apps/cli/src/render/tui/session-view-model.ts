@@ -1,4 +1,4 @@
-import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { SessionStreamHandleEvent, ToolLiveEvent } from '@relavium/core';
 import { contextWindowForModel } from '@relavium/llm';
 import {
   isUsageCoverageComplete,
@@ -34,6 +34,7 @@ export interface ToolCallView {
   readonly resolved: boolean;
   /** Actual result outcome; absent only on older view seeds without that fact. */
   readonly success?: boolean;
+  readonly outcome?: 'success' | 'failure' | 'denied' | 'unknown';
 }
 
 /** The per-turn summary shown after a completed assistant turn. */
@@ -62,7 +63,14 @@ export interface TurnSummary {
 export type TranscriptEntry =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly text: string; readonly summary?: TurnSummary }
-  | { readonly role: 'notice'; readonly text: string };
+  | { readonly role: 'notice'; readonly text: string }
+  | {
+      readonly role: 'tools';
+      readonly text: '';
+      readonly calls: readonly ToolCallView[];
+      readonly omitted?: number;
+      readonly summary?: never;
+    };
 
 export interface SessionViewState {
   readonly memoryPolicy?: Readonly<Memory>;
@@ -106,6 +114,7 @@ export interface SessionViewState {
   readonly liveReasoningTruncated: boolean;
   /** The in-flight turn's tool calls (annotations), in first-seen order. */
   readonly liveToolCalls: readonly ToolCallView[];
+  readonly liveObserver?: boolean;
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
   readonly usageCoverage?: UsageCoverage;
@@ -498,6 +507,7 @@ export function reduceSessionEvent(
     }
 
     case 'agent:tool_call':
+      if (base.liveObserver === true) return base;
       // The final assistant text is the segment AFTER the last tool call (mirrors the engine's result.text
       // and the persister), so reset the live buffer here; the tool annotation marks the boundary.
       return {
@@ -514,6 +524,7 @@ export function reduceSessionEvent(
       };
 
     case 'agent:tool_result':
+      if (base.liveObserver === true) return base;
       return {
         ...base,
         liveToolCalls: markResolved(base.liveToolCalls, event.toolId, event.success),
@@ -707,5 +718,51 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     activeTurnModel: undefined,
     turnStartedAtMs: undefined,
     transcript,
+  };
+}
+
+/** In-process lifecycle is the sole source of engine-call correlation; public events have no call id. */
+export function reduceToolLiveEvent(
+  state: SessionViewState,
+  event: ToolLiveEvent,
+): SessionViewState {
+  if (event.phase === 'started') {
+    const transcript =
+      state.turnText.length === 0
+        ? state.transcript
+        : appendTranscript(state.transcript, {
+            role: 'assistant',
+            text: (state.turnTextTruncated ? '…' : '') + state.turnText,
+          });
+    return {
+      ...state,
+      liveObserver: true,
+      transcript,
+      turnText: '',
+      turnTextTruncated: false,
+      liveTokens: '',
+      liveTokensTruncated: false,
+      liveToolCalls: pushBounded(
+        state.liveObserver === true ? state.liveToolCalls : [],
+        { id: event.callId, toolId: event.toolId, resolved: false },
+        MAX_LIVE_TOOL_CALLS,
+      ),
+    };
+  }
+  if (event.phase !== 'completed') return state;
+  const call = state.liveToolCalls.find((entry) => entry.id === event.callId);
+  if (call === undefined || call.resolved) return state;
+  const completed = {
+    ...call,
+    resolved: true,
+    outcome: event.outcome,
+    success: event.outcome === 'success',
+  };
+  return {
+    ...state,
+    liveToolCalls: state.liveToolCalls.map((entry) =>
+      entry.id === event.callId ? completed : entry,
+    ),
+    transcript: appendTranscript(state.transcript, { role: 'tools', text: '', calls: [completed] }),
   };
 }

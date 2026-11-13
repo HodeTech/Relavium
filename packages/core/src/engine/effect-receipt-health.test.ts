@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { EffectDispatchPort, EffectPrepareVerdict } from '@relavium/shared';
+import type {
+  EffectDispatchPort,
+  EffectPrepareVerdict,
+  EffectInspectReplayVerdict,
+} from '@relavium/shared';
 
 import { ToolEffectNeedsAttentionError } from '../tools/errors.js';
 import { EffectReceiptHealth } from './effect-receipt-health.js';
@@ -17,6 +21,7 @@ function deferred<T>() {
 const correlation = { kind: 'run', runId: 'run', nodeId: 'node', attempt: 1 } as const;
 function port(overrides: Partial<EffectDispatchPort> = {}): EffectDispatchPort {
   return {
+    inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
     prepare: () => Promise.resolve({ outcome: 'proceed' }),
     settle: () => Promise.resolve(),
     discard: () => Promise.resolve(),
@@ -171,4 +176,16 @@ describe('EffectReceiptHealth — final joined semantic observations (ADR-0103)'
     expect(health.needsAttention).toBe(true);
     expect(thenReads).toBe(0);
   });
+});
+
+it('inspection observes the exact actual producer but creates no pending effect claim', async () => {
+  const health = new EffectReceiptHealth();
+  const held = deferred<EffectInspectReplayVerdict>();
+  const effects = health.bind(port({ inspectReplay: () => held.promise }), correlation);
+  const result = effects.inspectReplay(0, 'edit_file', {});
+  expect(result).toBe(held.promise);
+  expect(health.needsAttention).toBe(false);
+  held.resolve({ outcome: 'miss' });
+  await result;
+  expect(health.needsAttention).toBe(false);
 });

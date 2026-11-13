@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BundleClosureError } from '../bundle-closure/closure.mjs';
+import { copyNativeAssets, NativeAssetError } from '../native-fs/assets.mjs';
 import {
   CANDIDATE_STAGING_ENV,
   CandidateFinalizationError,
@@ -38,6 +39,8 @@ try {
   if (resolve(process.cwd()) !== cli) fail('CLI prepack must run in its package directory');
   // Refuse an unusable staging directory before anything is built.
   if (staging !== undefined) assertPrivateStaging(staging, repository);
+  // A package may never be made from a current-host development inventory. Refuse before build.
+  copyNativeAssets({ repository, complete: true });
   const tsupManifest = createRequire(join(cli, 'package.json')).resolve('tsup/package.json');
   const tsup = join(dirname(tsupManifest), JSON.parse(readFileSync(tsupManifest, 'utf8')).bin.tsup);
   if (!runNode(tsup, cli)) fail('CLI build failed');
@@ -56,6 +59,7 @@ try {
   // Every known refusal carries a fixed code and at most a repository-relative path.
   if (error instanceof CandidateFinalizationError) fail(error.message);
   if (error instanceof BundleClosureError) fail(`CLI candidate closure: ${error.message}`);
+  if (error instanceof NativeAssetError) fail(error.message);
   if (error instanceof AssertionError) fail(`CLI candidate finalization: ${error.message}`);
   const code = error instanceof Error && 'code' in error ? String(error.code) : 'UNEXPECTED';
   fail(`CLI candidate finalization failed: ${code}`);

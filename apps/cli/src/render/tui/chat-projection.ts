@@ -1,3 +1,4 @@
+import type { ToolDisplay } from './tool-display.js';
 import type { ToolApprovalRequest } from '@relavium/core';
 import type { Memory, ReasoningEffort } from '@relavium/shared';
 
@@ -262,7 +263,31 @@ export function errorRecoveryHint(
  * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
  * recovery-hint line.
  */
-export function entryLines(entry: TranscriptEntry): DisplayLine[] {
+export function entryLines(
+  entry: TranscriptEntry,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): DisplayLine[] {
+  if (entry.role === 'tools') {
+    const lines: DisplayLine[] = [];
+    for (let start = 0; start < entry.calls.length; start += 4)
+      lines.push({
+        style: 'notice',
+        text: entry.calls
+          .slice(start, start + 4)
+          .map((call) => formatToolCall(call, displays?.get(call.id)))
+          .join(' · '),
+      });
+    if ((entry.omitted ?? 0) > 0) {
+      const last = lines.at(-1);
+      if (last !== undefined)
+        lines[lines.length - 1] = {
+          ...last,
+          text: last.text + ` · ${entry.omitted} omitted calls`,
+        };
+      else lines.push({ style: 'notice', text: `${entry.omitted} omitted calls` });
+    }
+    return lines;
+  }
   if (entry.role === 'user') {
     return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
   }
@@ -284,9 +309,14 @@ export function entryLines(entry: TranscriptEntry): DisplayLine[] {
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
 const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>();
 
-function wrapEntry(entry: TranscriptEntry, cols: number, color: boolean): DisplayLine[] {
+function wrapEntry(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): DisplayLine[] {
   const wrapped: DisplayLine[] = [];
-  const source = entryLines(entry);
+  const source = entryLines(entry, displays);
   let offset = 0;
   if (color && entry.role === 'assistant') {
     let blocks = entryParseCache.get(entry);
@@ -346,10 +376,15 @@ export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
   color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
   if (!Number.isFinite(cols) || cols < 1) return [];
   const out: DisplayLine[] = [];
   for (const entry of transcript) {
+    if (entry.role === 'tools' && displays !== undefined) {
+      out.push(...wrapEntry(entry, cols, color, displays));
+      continue;
+    }
     const cached = entryWrapCache.get(entry);
     let lines: readonly DisplayLine[];
     if (cached?.cols === cols && cached.color === color) {
@@ -379,8 +414,12 @@ export function liveScrollGeometry(
   cols: number,
   measuredHeight: number,
   color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
 ): ScrollGeometry {
-  return { totalLines: wrapTranscript(transcript, cols, color).length, height: measuredHeight };
+  return {
+    totalLines: wrapTranscript(transcript, cols, color, displays).length,
+    height: measuredHeight,
+  };
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
@@ -605,8 +644,28 @@ export function formatReasoningPanel(input: {
  * arrived. Never renders the tool's arguments or result bytes (those can carry user/secret data); only the id,
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
-export function formatToolCall(call: ToolCallView): string {
-  return `→ ${sanitizeInline(call.toolId)} ${call.resolved ? (call.success === false ? '✗' : '✓') : '…'}`;
+export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
+  const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
+  const marks = {
+    success: '✓',
+    failure: '✗ failed',
+    denied: '⊘ denied',
+    unknown: '? outcome unknown',
+    running: '…',
+  };
+  const target = display?.target === undefined ? '' : ` → ${display.target}`;
+  const stats =
+    display?.stats === undefined
+      ? ''
+      : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
+  return `→ ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+}
+
+function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
+  if (!call.resolved) return 'running';
+  if (call.success === true) return 'success';
+  if (call.success === false) return 'failure';
+  return 'unknown';
 }
 
 /**

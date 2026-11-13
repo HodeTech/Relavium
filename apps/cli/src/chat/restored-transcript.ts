@@ -4,6 +4,7 @@ import {
   INLINE_TRANSCRIPT_BOUND,
   type TranscriptBound,
   type TranscriptEntry,
+  type ToolCallView,
 } from '../render/tui/session-view-model.js';
 
 export const LEGACY_USER_DISPLAY = 'Earlier user message — compact display was not recorded.';
@@ -18,6 +19,41 @@ export class RestoredDisplayReadError extends Error {
 interface Unit {
   readonly user: SessionMessage;
   readonly terminal?: SessionMessage;
+  readonly tools?: readonly ToolCallView[];
+  readonly omittedCalls?: number;
+}
+/** Correlate only already-retained structural identities inside this completed turn. */
+function structuralTools(
+  messages: readonly SessionMessage[],
+): Pick<Unit, 'tools' | 'omittedCalls'> {
+  const calls = messages.flatMap((message) =>
+    message.content.filter((part) => part.type === 'tool_call'),
+  );
+  const results = messages.flatMap((message) =>
+    message.content.filter((part) => part.type === 'tool_result'),
+  );
+  const unique = [...new Map(calls.map((call) => [call.id, call])).values()];
+  const tools = unique.slice(0, 16).map((call): ToolCallView => {
+    const matching = results.filter((result) => result.toolCallId === call.id);
+    const outcome = restoredToolOutcome(matching);
+    return { id: call.id, toolId: call.name, resolved: true, outcome };
+  });
+  return { tools, omittedCalls: Math.max(0, unique.length - tools.length) };
+}
+function restoredToolOutcome(
+  matching: readonly { readonly outcome?: string }[],
+): NonNullable<ToolCallView['outcome']> {
+  if (matching.length !== 1) return 'unknown';
+  switch (matching[0]?.outcome) {
+    case 'ok':
+      return 'success';
+    case 'error':
+      return 'failure';
+    case 'denied':
+      return 'denied';
+    default:
+      return 'unknown';
+  }
 }
 type Region = 'summary' | 'trim' | 'retained';
 const textOf = (message: SessionMessage): string =>
@@ -36,11 +72,17 @@ export function restoreSessionTranscript(options: {
   const projection = projectSessionHistory(options.messages, false);
   const units: Unit[] = projection.turns.flatMap((turn) => [
     ...turn.legacyUserPrefix.map((user) => ({ user })),
-    { user: turn.user, terminal: turn.terminal },
+    { user: turn.user, terminal: turn.terminal, ...structuralTools(turn.messages) },
   ]);
   units.push(...projection.trailingLegacyUsers.map((user) => ({ user })));
-  const size = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
-  const total = units.reduce((count, unit) => count + size(unit), 0);
+  const conversationSize = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
+  const size = (unit: Unit): number =>
+    conversationSize(unit) + Math.ceil((unit.tools?.length ?? 0) / 4);
+  const total = units.reduce((count, unit) => count + conversationSize(unit), 0);
+  const totalCalls = units.reduce(
+    (count, unit) => count + (unit.tools?.length ?? 0) + (unit.omittedCalls ?? 0),
+    0,
+  );
   const cap = options.transcriptBound === INLINE_TRANSCRIPT_BOUND ? 200 : 500;
   let start = units.length,
     potential = 0;
@@ -110,13 +152,19 @@ export function restoreSessionTranscript(options: {
     legacy ||= missing;
   }
   const selected = candidates.slice(selectedStart);
-  const visible = selected.reduce((count, unit) => count + size(unit), 0);
+  const visible = selected.reduce((count, unit) => count + conversationSize(unit), 0);
+  const visibleCalls = selected.reduce((count, unit) => count + (unit.tools?.length ?? 0), 0);
   const omitted = total - visible;
   const retained = selected.some((unit) => regionOf(unit) === 'retained');
   const notice = (text: string): TranscriptEntry => ({ role: 'notice', text });
+  const omittedNotice = omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`;
+  const toolNotice =
+    totalCalls === 0
+      ? ''
+      : `${visibleCalls} structural tool calls restored; ${totalCalls - visibleCalls} omitted tool calls. Targets, previews, results and diff statistics are unavailable. `;
   const entries: TranscriptEntry[] = [
     notice(
-      `Restored ${visible} history entries${omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`} Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
+      `Restored ${visible} history entries${omittedNotice} ${toolNotice}Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
     ),
   ];
   if (policy !== undefined) entries.push(notice(policy));
@@ -143,6 +191,13 @@ export function restoreSessionTranscript(options: {
       role: 'user',
       text: recorded === undefined ? LEGACY_USER_DISPLAY : stripTerminalControls(recorded),
     });
+    if ((unit.tools?.length ?? 0) > 0)
+      entries.push({
+        role: 'tools',
+        text: '',
+        calls: unit.tools ?? [],
+        omitted: unit.omittedCalls ?? 0,
+      });
     if (unit.terminal !== undefined)
       entries.push({ role: 'assistant', text: stripTerminalControls(textOf(unit.terminal)) });
   }

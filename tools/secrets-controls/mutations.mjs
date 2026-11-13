@@ -852,7 +852,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    133,
+    160,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -872,7 +872,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    133,
+    160,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),
@@ -1790,5 +1790,180 @@ export const mutations = [
       ...displayBoundaryCases.slice(1).map((target) => ({ target, marker: displayBoundaryMarker })),
       ...displayRendererWitnesses(displayBoundaryMarker),
     ],
+  ),
+  // MVP-3: repository defaults cannot grant auto; old turns and stale save continuations share revocation.
+  control(
+    'startup-repository-auto-refusal',
+    'packages/shared/src/config.ts',
+    "export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto']);",
+    'export const RepositoryChatModeSchema = ChatModeSchema;',
+    ['packages/shared/src/config-chat-mode.test.ts'],
+    16,
+    'refuses repository mode auto',
+    'W2_STARTUP_REPOSITORY_AUTO_REFUSAL',
+  ),
+  control(
+    'startup-auto-final-dispatch',
+    'apps/cli/src/chat/session-host.ts',
+    '          if (opts.startingMode !== undefined)\n' +
+      '            assertStartingModeDispatch(\n' +
+      '              opts.startingMode.authority,\n' +
+      '              ctx.approval?.confirm,\n' +
+      '              toolId,\n' +
+      '              governed,\n' +
+      '            );',
+    '          void governed;',
+    ['apps/cli/src/chat/starting-mode-dispatch.test.ts'],
+    5,
+    'narrower while durable preparation is in flight',
+    'W2_STARTUP_AUTO_FINAL_DISPATCH',
+    ['read-error', 'explicit-next-turn'].map((change) => ({
+      target: `${change} while durable preparation is in flight`,
+      marker: 'W2_STARTUP_AUTO_FINAL_DISPATCH',
+    })),
+  ),
+  control(
+    'startup-default-confirmed-narrowing',
+    'apps/cli/src/chat/mode-settings.ts',
+    '      options.runtime.authority.revoke();',
+    '      void mode;',
+    ['apps/cli/src/chat/mode-settings.test.ts'],
+    25,
+    'confirmed narrowing revokes before failed prepare and does not leak the error',
+    'W2_STARTUP_CONFIRMED_NARROWING',
+    [
+      {
+        target: 'confirmed narrowing revokes before failed publish and does not leak the error',
+        marker: 'W2_STARTUP_CONFIRMED_NARROWING',
+      },
+    ],
+  ),
+  control(
+    'startup-default-stale-auto-admission',
+    'apps/cli/src/chat/starting-mode.ts',
+    '    if (expectedRevision !== this.revision) return false;',
+    '    void expectedRevision;',
+    ['apps/cli/src/chat/mode-settings.test.ts'],
+    25,
+    'a later narrower config observation wins over a pending successful auto publication',
+    'W2_STARTUP_STALE_AUTO_ADMISSION',
+    [
+      {
+        target:
+          'a later invalid config observation wins over a pending successful auto publication',
+        marker: 'W2_STARTUP_STALE_AUTO_ADMISSION',
+      },
+    ],
+  ),
+  control(
+    'startup-live-config-observation',
+    'apps/cli/src/commands/chat.ts',
+    '    wiring.startingModes?.read(deps.global.cwd) ??\n',
+    '',
+    ['apps/cli/src/commands/chat-starting-mode.test.ts'],
+    21,
+    "revokes configured auto after '/export' observes 'plan', preserving explicit current choice",
+    'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    [
+      ['export', 'invalid'],
+      ['workflows', 'plan'],
+      ['workflows', 'invalid'],
+    ].map(([command, observed]) => ({
+      target: `revokes configured auto after '/${command}' observes '${observed}', preserving explicit current choice`,
+      marker: 'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    })),
+  ),
+  control(
+    'startup-doctor-config-observation',
+    'apps/cli/src/chat/doctor-host.ts',
+    '      if (inputs.readConfig !== undefined) {\n' +
+      '        inputs.readConfig();\n' +
+      '        return;\n' +
+      '      }\n',
+    '',
+    ['apps/cli/src/commands/chat-starting-mode.test.ts', 'apps/cli/src/home/starting-mode.test.ts'],
+    34,
+    "revokes configured auto after '/doctor' observes 'plan', preserving explicit current choice",
+    'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+    [
+      {
+        target:
+          "revokes configured auto after '/doctor' observes 'invalid', preserving explicit current choice",
+        marker: 'W2_STARTUP_LIVE_CONFIG_OBSERVATION',
+      },
+      ...['plan', 'invalid'].map((observed) => ({
+        target: `live doctor observes ${observed} through the original owned authority`,
+        marker: 'W2_STARTUP_HOME_DOCTOR_OBSERVATION',
+      })),
+    ],
+  ),
+  control(
+    'startup-writer-mode-observation',
+    'apps/cli/src/config/write.ts',
+    "  observer?.observed(existing.preferences?.default_mode ?? 'ask');\n",
+    '',
+    ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
+    48,
+    "'model preferences' source 'ask'",
+    'W2_STARTUP_WRITER_MODE_OBSERVATION',
+    [
+      ...[
+        'model preferences',
+        'standard-key consent',
+        'keychain acknowledgement',
+        'default mode',
+        'hint acknowledgement',
+      ].flatMap((writer) =>
+        ['ask', 'absent']
+          .filter((state) => writer !== 'model preferences' || state !== 'ask')
+          .map((state) => ({
+            target: `'${writer}' source '${state}'`,
+            marker: 'W2_STARTUP_WRITER_MODE_OBSERVATION',
+          })),
+      ),
+      ...['ask', 'plan'].map((state) => ({
+        target: `auto preparation observes a newer ${state} source after confirmation`,
+        marker: 'W2_STARTUP_WRITER_MODE_OBSERVATION',
+      })),
+    ],
+  ),
+  control(
+    'startup-writer-read-failure',
+    'apps/cli/src/config/write.ts',
+    '    observer?.failed();\n',
+    '',
+    ['apps/cli/src/config/write-observation.test.ts', 'apps/cli/src/chat/mode-settings.test.ts'],
+    48,
+    "'model preferences' source 'invalid'",
+    'W2_STARTUP_WRITER_READ_FAILURE',
+    [
+      ...[
+        'standard-key consent',
+        'keychain acknowledgement',
+        'default mode',
+        'hint acknowledgement',
+      ].map((writer) => ({
+        target: `'${writer}' source 'invalid'`,
+        marker: 'W2_STARTUP_WRITER_READ_FAILURE',
+      })),
+      {
+        target: 'directory source inspection revokes before any proposed publication',
+        marker: 'W2_STARTUP_WRITER_INSPECTION_FAILURE',
+      },
+      {
+        target: 'auto preparation observes a newer invalid source after confirmation',
+        marker: 'W2_STARTUP_WRITER_READ_FAILURE',
+      },
+    ],
+  ),
+  control(
+    'startup-writer-inspection-failure',
+    'apps/cli/src/config/write.ts',
+    '    if (!(cause instanceof ConfigWriteRefusedError)) observer?.failed();\n',
+    '    void observer;\n',
+    ['apps/cli/src/config/write-observation.test.ts'],
+    23,
+    'parent replaced by a file revokes at actual source inspection',
+    'W2_STARTUP_WRITER_INSPECTION_FAILURE',
   ),
 ];

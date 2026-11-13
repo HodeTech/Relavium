@@ -433,6 +433,10 @@ export type CatalogMetadataOrigin = (typeof CATALOG_METADATA_ORIGINS)[number];
 export const FS_SCOPE_TIERS = ['sandboxed', 'project', 'full'] as const;
 export type FsScopeTier = (typeof FS_SCOPE_TIERS)[number];
 
+/** CLI chat policy modes and their operator cycle order (ADR-0116). */
+export const CHAT_MODES = ['ask', 'plan', 'accept-edits', 'auto'] as const;
+export type ChatMode = (typeof CHAT_MODES)[number];
+
 /** The three execution modes (local BYOK, cloud BYOK-central, managed gateway). */
 export const EXECUTION_MODES = ['local', 'cloud', 'managed'] as const;
 export type ExecutionMode = (typeof EXECUTION_MODES)[number];

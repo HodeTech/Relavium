@@ -50,8 +50,14 @@ and the bundle boundary are [ADR-0051](../decisions/0051-cli-distribution-thin-b
 > **Publication is refused — interim, 2026-10-22 (Wave 3 Step 9a.1).** The `publish` job first runs
 > a fail-closed guard that refuses every artifact: only a verified release candidate (exact tarball,
 > original ciphertext and release binding receipt) may publish, and none can exist until Wave 3 Step
-> 9d's custody graph and Wave 4b's production recipient do, so a tag push stops after the cross-OS smoke and nothing — not
-> even a v0.1.x patch — reaches npm (the [Interim release guard ruling](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19) of 2026-10-19).
+> 9d's custody graph and Wave 4b's production recipient do. The current tag admission
+> gate additionally rejects a `v*` push while ADR-0121 remains Proposed, **before
+> native build, packaging or cross-OS smoke**. Such a rejected tag produces no
+> corresponding native/package smoke evidence. Manual `workflow_dispatch` may
+> exercise the build/test path but cannot publish. The independent publication
+> guard still refuses npm publication, including v0.1.x patches (the
+> [Interim release guard ruling](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)
+> of 2026-10-19). Accepting the release ADR requires a separate maintainer decision.
 > The steps below describe the pre-custody flow; Step 9d replaces them with the
 > [custody graph](../reference/cli/packaging.md#archive-retry-and-publication).
 

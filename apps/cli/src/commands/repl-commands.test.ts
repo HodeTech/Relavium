@@ -30,6 +30,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, numbe
     setMode: vi.fn(),
     setReasoningEffort: vi.fn(),
     toggleReasoning: vi.fn(),
+    openDetails: vi.fn(),
     compactHistory: vi.fn(),
     trimHistory: vi.fn(),
     clearSession: vi.fn(),
@@ -62,6 +63,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'effort',
       'thinking',
+      'details',
       'compact',
       'trim',
       'clear',
@@ -97,6 +99,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['mode', 'setMode'],
       ['effort', 'setReasoningEffort'],
       ['thinking', 'toggleReasoning'],
+      ['details', 'openDetails'],
       ['compact', 'compactHistory'],
       ['trim', 'trimHistory'],
       ['clear', 'clearSession'],
@@ -131,7 +134,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /compact, /trim, /clear, /models, /scrollback, /edit, /copy',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /trim, /clear, /models, /scrollback, /edit, /copy',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -154,6 +157,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'effort',
       'thinking',
+      'details',
       'trim',
       'models',
       'scrollback',
@@ -179,6 +183,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'effort',
       'thinking',
+      'details',
       'compact',
       'trim',
       'clear',
@@ -198,6 +203,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'effort',
       'thinking',
+      'details',
       'compact',
       'trim',
       'clear',
@@ -212,6 +218,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       'exit',
       'doctor',
+      'mode',
       'clear',
       'models',
       'providers',

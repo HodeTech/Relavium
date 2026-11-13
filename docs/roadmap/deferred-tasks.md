@@ -2097,13 +2097,17 @@ resolved-id notice, `/export`'s "next free id" wording, and the card-ownership c
 - [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
   paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
   closed handle. *(low · apps/cli/src/commands/gate.ts)*
-- [ ] **ADR-0120's approval escape is a starting set; its completeness is for MVP-3's security review.**
+- [x] **ADR-0120's approval escape completeness — closed in MVP-3 on development (2026-11-12).**
   *Maintainer ruling 2026-11-07.* Rounds 2 to 5 each found a further way an approval preview could hide content
   (zero-width and tag runs, U+2028 and U+2029, line-end whitespace and endings, code inside a mask), each rated medium
   against the draft's claim that a preview never hides what it approves. The draft now states its rules as a starting
   set and claims only them; the mandatory security review confirms or extends them before the card is built, and the
   correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
   card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
+  **Closure:** the pre-build design sitting and independent implementation/security
+  reviews verify the escaped, masked, inspectable approval projection. The
+  [MVP-3 checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+  owns actual execution evidence and remaining PR CI/maintainer review.
 
 **D64 round 6 of the correction (2026-11-07, at `2cc865c7`)** found one medium in the correction: commands.md still
 said a losing rejection does not stop later gates, which cbe39064 changed; it now says the run parks on them. It also
@@ -2160,6 +2164,9 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
 > reviews and the separate filesystem sitting passed; the
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
 > records the actual-target corrections and verification.
+
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
 
 Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
 directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
@@ -3158,6 +3165,9 @@ so directly: these "should remain visible rather than disappear behind the green
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 > owns the evidence. The description and scheduling discussion below are historical.
 
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
+
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
 >
@@ -3404,15 +3414,25 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   D-2; PR #69).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
   `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
   *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
-- [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
+- [x] **Approval-consent-line zero-width hardening — closed in MVP-3 on development (2026-11-12).** The shared render
   floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
   highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
   already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
   a CVE gap (those chars cannot reorder a command to masquerade). **2026-11-06:** they can still hide content in an
-  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (Proposed) makes the
+  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (accepted 2026-11-11, implementation pending) makes the
   approval preview escape every default-ignorable and format code point, which covers this target when it lands.
-  **Scheduled → 2.6.M** (with tool-render v2). **Not pulled into the CLI MVP (checked 2026-11-04):** MVP-3 takes only render v2's two named behaviours, so this lands with render v2's remainder. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+  **Scheduled → 2.6.M** (with tool-render v2). **2026-11-11 preflight correction:** the
+  earlier 2026-11-04 exclusion is superseded by ADR-0120's mandatory approval-preview
+  escaping in MVP-3; see the [accepted plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
+  Design acceptance is complete; implementation remains pending and this item is not closed by design approval.
+  **Implementation closure 2026-11-12:** the mandatory ADR-0120 projection escapes
+  default-ignorable/format and other hidden source code points in targets and
+  review fields, with actual inspection/visibility guards on both hosts. The
+  [Step 2 acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+  records implementation tests and separate security sittings; earlier pending
+  wording above is historical. Shared `[c]` extraction below remains separate.
+  *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
   primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
@@ -4095,10 +4115,13 @@ future test cannot silently re-acquire it.
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [x] **Closed on development — MVP-2 step 1: alt-screen word wrapping (#61).**
+- [x] **Closed on `main` — MVP-2 step 1: alt-screen word wrapping (#61).**
   Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
   tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
   see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+  Merged 2026-11-11 through PR #98 (`0db4c940`); the
+  [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
+  closes its combined verification and maintainer gate.
   **Historical scheduling:** the maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur

@@ -427,6 +427,17 @@ export type {
   ToolActionPreview,
   ToolHost,
   FsCapability,
+  FsReadRange,
+  FileReadRange,
+  ToolReadScope,
+  FsScanLimit,
+  FsScanStats,
+  FsFindOpts,
+  FsSearchOpts,
+  FsFoundFile,
+  FsFindResult,
+  FsSearchMatch,
+  FsSearchResult,
   ProcessCapability,
   EgressCapability,
   ToolHostCallOptions,
@@ -471,3 +482,19 @@ export {
   type UsageDispositionDraft,
 } from './engine/money-durability.js';
 export { HostWorkRegistry } from './engine/host-work-registry.js';
+
+export { ToolPreparationError } from './tools/errors.js';
+export type { ToolPreparationReason } from './tools/errors.js';
+export type {
+  ToolDiffSourceSpan,
+  ToolDiffLine,
+  ToolFileEndings,
+  ToolFileDiff,
+  ToolPreview,
+  FsPrepareWriteRequest,
+  FsPreparedWrite,
+  ToolPreparedCall,
+  ToolApprovalLiveContext,
+  ToolLiveEvent,
+  ToolLiveObserver,
+} from './tools/types.js';

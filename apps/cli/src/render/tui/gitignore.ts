@@ -36,7 +36,7 @@ interface IgnoreRule {
 
 /** The compiled matcher: does `relPath` (a workspace-relative POSIX path) match an ignore rule? */
 export interface IgnoreMatcher {
-  ignores(relPath: string, isDir: boolean): boolean;
+  ignores(relPath: string, isDir: boolean, consumeWork?: () => void): boolean;
 }
 
 /** Split an ignore-file body into its non-comment, non-blank pattern lines (CRLF-tolerant, trailing-ws trimmed). */
@@ -53,12 +53,13 @@ export function parseIgnoreLines(text: string): string[] {
  * critically NON-backtracking-exponential: there is no regex and no nested quantifier, so an adversarial pattern
  * cannot make it super-linear beyond the bounded segment lengths.
  */
-function segmentMatches(glob: string, seg: string): boolean {
+function segmentMatches(glob: string, seg: string, consumeWork?: () => void): boolean {
   let g = 0;
   let s = 0;
   let starG = -1;
   let starS = 0;
   while (s < seg.length) {
+    consumeWork?.();
     if (g < glob.length && (glob[g] === '?' || glob[g] === seg[s])) {
       g += 1;
       s += 1;
@@ -74,7 +75,10 @@ function segmentMatches(glob: string, seg: string): boolean {
       return false;
     }
   }
-  while (g < glob.length && glob[g] === '*') g += 1; // trailing `*`(s) match the empty remainder
+  while (g < glob.length && glob[g] === '*') {
+    consumeWork?.();
+    g += 1;
+  } // trailing `*`(s) match the empty remainder
   return g === glob.length;
 }
 
@@ -88,12 +92,14 @@ function segmentMatches(glob: string, seg: string): boolean {
 function anchoredMatch(
   segs: readonly string[],
   pathSegs: readonly string[],
+  consumeWork?: () => void,
 ): { matched: boolean; endsBeforeEnd: boolean } {
   let pi = 0;
   let si = 0;
   let starPi = -1;
   let starSi = 0;
   while (pi < segs.length) {
+    consumeWork?.();
     const seg = segs[pi];
     if (seg === DOUBLESTAR) {
       starPi = pi; // `**` matches zero+ segments; record a resume point and try zero first
@@ -102,7 +108,7 @@ function anchoredMatch(
     } else if (
       si < pathSegs.length &&
       seg !== undefined &&
-      segmentMatches(seg, pathSegs[si] ?? '')
+      segmentMatches(seg, pathSegs[si] ?? '', consumeWork)
     ) {
       pi += 1;
       si += 1;
@@ -131,9 +137,14 @@ function compileRule(raw: string): IgnoreRule | undefined {
 }
 
 /** Whether one compiled rule matches the split path. Unanchored (single-segment) rules match a basename at any depth. */
-function ruleMatches(rule: IgnoreRule, pathSegs: readonly string[], isDir: boolean): boolean {
+function ruleMatches(
+  rule: IgnoreRule,
+  pathSegs: readonly string[],
+  isDir: boolean,
+  consumeWork?: () => void,
+): boolean {
   if (rule.anchored) {
-    const { matched, endsBeforeEnd } = anchoredMatch(rule.segments, pathSegs);
+    const { matched, endsBeforeEnd } = anchoredMatch(rule.segments, pathSegs, consumeWork);
     // dir-only fails ONLY when the match ends exactly at the path end (the LAST segment IS the candidate) and the
     // candidate is a file; a match ending earlier means the matched segment is a directory, so dir-only holds.
     return matched && (!rule.dirOnly || endsBeforeEnd || isDir);
@@ -142,7 +153,7 @@ function ruleMatches(rule: IgnoreRule, pathSegs: readonly string[], isDir: boole
   // holds for a non-last matched segment (always a directory) or, on the last segment, only when isDir.
   const glob = rule.segments[0] ?? '';
   for (let i = 0; i < pathSegs.length; i += 1) {
-    if (segmentMatches(glob, pathSegs[i] ?? '')) {
+    if (segmentMatches(glob, pathSegs[i] ?? '', consumeWork)) {
       const isLast = i === pathSegs.length - 1;
       if (!rule.dirOnly || !isLast || isDir) return true;
     }
@@ -165,14 +176,15 @@ export function compileIgnore(...texts: string[]): IgnoreMatcher {
     .filter((rule): rule is IgnoreRule => rule !== undefined);
   if (rules.length === 0) return NEVER;
   return {
-    ignores(relPath, isDir) {
+    ignores(relPath, isDir, consumeWork) {
       // Normalize a leading `./` + collapse a trailing `/`, then split into segments (dropping empty ones).
       const normalized = relPath.startsWith('./') ? relPath.slice(2) : relPath;
       const pathSegs = normalized.split('/').filter((seg) => seg.length > 0);
       if (pathSegs.length === 0) return false;
       let ignored = false;
       for (const rule of rules) {
-        if (ruleMatches(rule, pathSegs, isDir)) ignored = !rule.negate; // last matching rule wins (negation re-includes)
+        consumeWork?.();
+        if (ruleMatches(rule, pathSegs, isDir, consumeWork)) ignored = !rule.negate; // last matching rule wins (negation re-includes)
       }
       return ignored;
     },

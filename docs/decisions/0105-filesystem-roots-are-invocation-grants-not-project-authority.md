@@ -4,6 +4,13 @@
 - **Date**: 2026-10-12
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0083](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md), [ADR-0084](0084-consent-before-a-local-mcp-spawn.md)
 
+> Amended 2026-11-11 by accepted [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md):
+> MVP-3 becomes a production consumer of the existing exact scratch descriptor
+> for private per-session-instance output spill, with bounded provision/read,
+> producer join, cleanup and orphan sweeping. This does not activate the future
+> child-artifact store or relax any neighboring/nested path floor or host race
+> assumption. Implementation remains pending in the [file-tool contract](../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3).
+
 ## Context
 
 The [joint remediation Wave 2 status](../roadmap/current.md#next-work--wave-2--shut-the-doors)
@@ -337,3 +344,12 @@ future feature, deferral or claim of merge-commit execution.
 > that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
 > The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
 > owns review and acceptance; this note claims neither.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

@@ -36,6 +36,11 @@ import { MODE_EVIDENCE, emittedInventory } from '../bundle-closure/inventory.mjs
 import { flatFiles, readOrdinaryFile, sha256, byCodeUnit } from './files.mjs';
 import { within } from './paths.mjs';
 import {
+  inspectNativeAssets,
+  nativeSourceBinding,
+  sha256 as nativeSha256,
+} from '../native-fs/assets.mjs';
+import {
   SourceMapError,
   assertGeneratedRange,
   assertOriginalRange,
@@ -457,15 +462,21 @@ export function finalizeCandidate({ repository, staging }) {
   const runtime = Object.keys(metafile.outputs).filter((path) => !path.endsWith('.map'));
   if (runtime.length === 0 || runtime.length > LIMITS.outputs) refuse('OUTPUT_INVENTORY');
   const expectedEntries = ['metafile-esm.json'];
-  for (const path of runtime) {
-    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY');
-    if (!Object.hasOwn(metafile.outputs, `${path}.map`)) refuse('MAP_PAIRING', `apps/cli/${path}`);
-    expectedEntries.push(basename(path), `${basename(path)}.map`);
-  }
+  const hasNative = Object.hasOwn(metafile.inputs, 'src/engine/tool-host/fs-native-metadata.ts');
+  const native = hasNative
+    ? inspectNativeAssets(join(dist, 'native-fs'), {
+        complete: true,
+        binding: nativeSourceBinding(repository),
+      })
+    : undefined;
+  if (native !== undefined) expectedEntries.push('native-fs');
+  addOutputEntries(runtime, metafile.outputs, expectedEntries);
   if (Object.keys(metafile.outputs).length !== runtime.length * 2) refuse('MAP_PAIRING');
   const entries = readdirSync(dist, { withFileTypes: true });
   if (
-    entries.some((entry) => !entry.isFile()) ||
+    entries.some((entry) =>
+      entry.name === 'native-fs' && hasNative ? !entry.isDirectory() : !entry.isFile(),
+    ) ||
     !isDeepStrictEqual(
       entries.map((entry) => entry.name).sort(byCodeUnit),
       [...expectedEntries].sort(byCodeUnit),
@@ -554,10 +565,32 @@ export function finalizeCandidate({ repository, staging }) {
     sha256: sha256(item.map),
   }));
   const upstreamMaps = [...cache.keys()].filter((input) => !input.startsWith('src/')).length;
-  const record = { version: 1, outputs, maps, upstreamMaps };
+  const record = {
+    version: 1,
+    outputs,
+    maps,
+    upstreamMaps,
+    ...(native === undefined
+      ? {}
+      : {
+          nativeAssets: [...native.files].map(([name, bytes]) => ({
+            path: `dist/native-fs/${name}`,
+            bytes: bytes.length,
+            sha256: nativeSha256(bytes),
+          })),
+        }),
+  };
   writePrivateFile(
     join(staging, 'finalized.json'),
     Buffer.from(JSON.stringify(record, null, 2) + '\n'),
   );
   return record;
+}
+
+function addOutputEntries(runtime, outputs, expectedEntries) {
+  for (const path of runtime) {
+    if (!/^dist\/[A-Za-z0-9_-]+\.js$/u.test(path)) refuse('OUTPUT_INVENTORY');
+    if (!Object.hasOwn(outputs, `${path}.map`)) refuse('MAP_PAIRING', `apps/cli/${path}`);
+    expectedEntries.push(basename(path), `${basename(path)}.map`);
+  }
 }

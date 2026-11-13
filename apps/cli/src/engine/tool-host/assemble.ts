@@ -61,9 +61,11 @@ export interface AssembleToolEnvOptions {
   readonly fsScopeTier: FsScopeTier;
   /** The session/run working directory (absolute) — the fs jail anchor and the process spawn cwd. */
   readonly workspaceDir: string;
+  /** Explicit host-owned operator home for the staging inventory. */
+  readonly operatorHomeDir?: string;
   /** Immutable host-only invocation policy; never a project-authored grant. */
   readonly fsPolicy?: FsPathPolicy;
-  /** Exact host-issued private scratch prerequisite (no shipping allocator). */
+  /** Exact host-issued private scratch descriptor; its producer owns the separate lifetime. */
   readonly scratch?: HostScratchRoot;
   /**
    * Resolve a `web_search` / `http_request` `credentialRef` to its secret VALUE host-side (the keychain) for
@@ -109,10 +111,13 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   // refuses exactly the arm this host lacks.
   const unwired = unwiredToolArms(opts.profile);
   const host: ToolHost = {
+    yieldControl: () => new Promise<void>((resolve) => setImmediate(resolve)),
     // Strings in committed config cannot grant roots: only the pre-admitted host policy can widen project scope.
     fs: createNodeFsCapability({
       tier,
       workspaceDir: opts.workspaceDir,
+      ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+      ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
       readOnly,
       ...(opts.fsPolicy === undefined ? {} : { pathPolicy: opts.fsPolicy }),
       ...(opts.scratch === undefined ? {} : { scratch: opts.scratch }),
@@ -216,6 +221,8 @@ function requiredArmPresent(
   delegates: ReadonlySet<ToolDelegateName>,
 ): boolean {
   if (def.source === 'mcp') return host.mcp !== undefined; // discovered MCP tools route via host.mcp
+  if (def.requiresFsMethod !== undefined && host.fs?.[def.requiresFsMethod] === undefined)
+    return false;
   // Before any policy-class arm: a tool whose DELEGATE is absent cannot succeed regardless of its arms.
   if (def.requiresDelegate !== undefined && !delegates.has(def.requiresDelegate)) return false;
   if (def.policy.fsScoped)

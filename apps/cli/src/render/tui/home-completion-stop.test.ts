@@ -42,6 +42,7 @@ function fixture(
 ) {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const session: HomeChatSession = {
+    clear: (): Promise<HomeChatSession> => startChat(),
     sessionId: 'completion-owner',
     store,
     processLine: options.processLine ?? (() => Promise.resolve()),

@@ -79,6 +79,7 @@ function assembled(
   workspaceDir = workspace,
 ): FsCapability {
   const fs = assembleToolEnv({
+    operatorHomeDir: home,
     profile: 'chat-read-write',
     fsScopeTier: tier,
     workspaceDir,
@@ -136,6 +137,7 @@ describe.each(['sandboxed', 'project'] as const)('scratch plus policy in %s', (t
       }
       // Composition must not mutate the original policy and grant it scratch retroactively.
       const original = createNodeFsCapability({
+        operatorHomeDir: home,
         tier,
         workspaceDir: workspace,
         readOnly: false,
@@ -182,6 +184,7 @@ it('reattaches the same scratch descriptor and preserves an already attached pol
   });
   const attached = assembled(policy);
   const retained = createNodeFsCapability({
+    operatorHomeDir: home,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,
@@ -225,6 +228,7 @@ it('keeps opaque policy authority when extraRoots strings are also supplied', as
   mkdirSync(ungranted);
   writeFileSync(join(ungranted, 'outside.txt'), 'outside');
   const fs = createNodeFsCapability({
+    operatorHomeDir: home,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,

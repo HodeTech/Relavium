@@ -10,7 +10,7 @@ import {
   runMigrations,
   type SessionUsageReceipt,
 } from '@relavium/db';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { chatResumeCommand } from '../commands/chat.js';
 import { driveHome } from '../home/drive-home.js';
@@ -31,6 +31,9 @@ const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 
 function fixture() {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-resume-coverage-')));
+  const homeDir = mkdtempSync(join(tmpdir(), 'relavium-resume-operator-'));
+  vi.stubEnv('HOME', homeDir);
+  vi.stubEnv('USERPROFILE', homeDir);
   const configPath = join(cwd, 'config.toml');
   writeFileSync(configPath, '');
   const client = createClient();
@@ -41,6 +44,7 @@ function fixture() {
   let ordinal = 0;
   return {
     cwd,
+    homeDir,
     client,
     store,
     usage,
@@ -85,7 +89,9 @@ function fixture() {
     },
     close: () => {
       client.sqlite.close();
+      vi.unstubAllEnvs();
       rmSync(cwd, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
     },
   };
 }
@@ -275,7 +281,10 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         };
         type('first');
         props.controller.handleKey('', { return: true });
-        await flush();
+        await vi.waitFor(() => {
+          expect(props.controller.getSnapshot().session).toBeDefined();
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
+        });
         const original = props.controller.getSnapshot().session;
         if (original === undefined) throw new Error('Home did not create a session');
         expect(original.store.getSnapshot().state.cumulativeCostMicrocents).toBe(0);
@@ -289,7 +298,10 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         props.controller.handleKey('', { return: true });
         expect(props.controller.getSnapshot().modelPicker?.phase).toBe('effort');
         props.controller.handleKey('', { return: true });
-        await flush();
+        await vi.waitFor(() => {
+          expect(resumed).toBe(true);
+          expect(props.controller.getSnapshot().session).not.toBe(original);
+        });
         const current = props.controller.getSnapshot().session;
         expect(resumed).toBe(true);
         expect(current).not.toBe(original);
@@ -301,7 +313,9 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         const off = resumedHandle.subscribe((event) => observed.push(event));
         type('next');
         props.controller.handleKey('', { return: true });
-        await flush();
+        await vi.waitFor(() =>
+          expect(observed.filter((event) => event.type === 'cost:updated')).toHaveLength(1),
+        );
         current.store.flush();
         off();
         expect(observed.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
@@ -326,8 +340,11 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         );
       } finally {
         captured?.controller.handleKey('c', { ctrl: true });
-        await flush();
-        captured?.controller.handleKey('c', { ctrl: true });
+        if (captured !== undefined) {
+          const controller = captured.controller;
+          await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
+          controller.handleKey('c', { ctrl: true });
+        }
         await done;
         f.close();
       }

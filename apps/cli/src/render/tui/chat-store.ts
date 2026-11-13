@@ -1,5 +1,20 @@
-import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
+import type {
+  SessionStreamHandleEvent,
+  ToolApprovalRequest,
+  ToolApprovalLiveContext,
+  ToolLiveEvent,
+} from '@relavium/core';
 
+import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
+import {
+  initialToolReview,
+  acknowledgeToolReview,
+  reduceToolReviewKey,
+  type ToolReviewState,
+} from './tool-review-model.js';
+import type { ToolDisplay } from './tool-display.js';
+import type { ChatKey } from './chat-input.js';
+import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { Memory, ReasoningEffort } from '@relavium/shared';
 import { MarkdownStream } from '../markdown/index.js';
 import { TerminalStream } from '../terminal-stream.js';
@@ -17,6 +32,7 @@ import {
   appendWarning,
   initialSessionViewState,
   reduceSessionEvent,
+  reduceToolLiveEvent,
   type SessionViewSeed,
   type SessionViewState,
   type TranscriptBound,
@@ -40,6 +56,7 @@ import {
  *  `ToolApprovalDecision.reject.reason` seam. */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
+  readonly live?: ToolApprovalLiveContext;
   /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */
   readonly cacheable: boolean;
 }
@@ -64,6 +81,8 @@ export interface ChatStoreSnapshot {
   readonly reasoningVisible: boolean;
   /** The in-flight approval prompt, if a governed tool dispatch is awaiting the user's decision. */
   readonly approval: PendingApproval | undefined;
+  readonly review: ToolReviewState | undefined;
+  readonly toolDisplays: ReadonlyMap<string, ToolDisplay>;
   readonly tick: number;
   readonly color: boolean;
 }
@@ -76,6 +95,16 @@ export interface ChatStore {
 
 /** The store plus the control surface the renderer's frame loop + REPL drive. */
 export interface ChatStoreController extends ChatStore {
+  applyToolLiveEvent: (event: ToolLiveEvent) => void;
+  sealToolPreviews: () => void;
+  openDetails: () => void;
+  closeDetails: () => void;
+  invalidateToolReview: () => void;
+  bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
+  bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
+  acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
+  handleReviewInput: (input: string, key: ChatKey) => 'abort' | 'handled' | undefined;
+
   /** Bind the frozen instance policy before the session receives input. */
   setMemoryPolicy: (memory: Readonly<Memory> | undefined) => void;
   /** Bind actual endpoint capacity; undefined deliberately clears a catalog alias. */
@@ -154,6 +183,12 @@ export function createChatStore(
   let approval: PendingApproval | undefined;
   // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
+  let review: ToolReviewState | undefined;
+  let toolDisplays = new Map<string, ToolDisplay>();
+  let sealed = false;
+  let reviewVisible: (() => boolean) | undefined;
+  let reviewClipboard: ((text: string) => Promise<boolean>) | undefined;
+  let reviewPage: ReviewPage | undefined;
   let tickCount = 0;
   let dirty = false;
   let snapshot: ChatStoreSnapshot = {
@@ -164,6 +199,8 @@ export function createChatStore(
     reasoningEffort,
     reasoningVisible,
     approval,
+    review,
+    toolDisplays,
     tick: tickCount,
     color,
   };
@@ -175,6 +212,8 @@ export function createChatStore(
       reasoningEffort,
       reasoningVisible,
       approval,
+      review,
+      toolDisplays,
       tick: tickCount,
       color,
       markdown,
@@ -186,7 +225,200 @@ export function createChatStore(
     dirty = false;
   };
 
+  const copyReviewPage = (): void => {
+    if (review === undefined) return;
+    const expected = review;
+    const document = review.document;
+    if (document === undefined || reviewClipboard === undefined) {
+      review = { ...review, message: 'Clipboard unavailable.' };
+      flush();
+      return;
+    }
+    if (reviewPage?.valid !== true) {
+      review = { ...review, message: 'Review page unavailable — wait for a flushed frame.' };
+      flush();
+      return;
+    }
+    const masked = reviewPage.maskedRows.join('\n');
+    void reviewClipboard(masked).then(
+      (ok) => {
+        if (review !== expected || sealed) return;
+        review = {
+          ...review,
+          message: ok ? 'Masked page sent to terminal clipboard.' : 'Clipboard write failed.',
+        };
+        flush();
+      },
+      () => {
+        if (review === expected && !sealed) {
+          review = { ...review, message: 'Clipboard write failed.' };
+          flush();
+        }
+      },
+    );
+  };
+
+  const reconcileListSelection = (): void => {
+    if (review?.screen !== 'list') return;
+    const callId = review.callId ?? toolDisplays.keys().next().value;
+    const selected = callId === undefined ? -1 : [...toolDisplays.keys()].indexOf(callId);
+    review = selected < 0 ? undefined : { ...review, callId, selected };
+    reviewPage = undefined;
+  };
+
+  const retainToolDisplays = (): void => {
+    // Current consent/contents are pinned; list selection follows stable identity through eviction.
+    const pinnedCallId = review?.screen === 'list' ? undefined : review?.callId;
+    let bytes =
+      (pinnedCallId === undefined ? 0 : toolDisplays.get(pinnedCallId)?.document?.sourceBytes) ?? 0;
+    for (const [id, value] of [...toolDisplays].reverse()) {
+      if (id === pinnedCallId) continue;
+      const cost = value.document?.sourceBytes ?? 0;
+      if (bytes + cost > 32 * 1024 * 1024) {
+        const summary = { ...value };
+        delete summary.document;
+        toolDisplays.set(id, summary);
+      } else bytes += cost;
+    }
+    while (toolDisplays.size > 64) {
+      const id = [...toolDisplays.keys()].find((key) => key !== pinnedCallId);
+      if (id === undefined) break;
+      toolDisplays.delete(id);
+    }
+    reconcileListSelection();
+  };
+
+  const transitionReviewState = (
+    previous: ToolReviewState,
+    next: ToolReviewState,
+    calls: readonly ToolDisplay[],
+  ): ToolReviewState => {
+    if (next.screen !== 'list') return next;
+    return {
+      ...next,
+      callId: previous.screen === 'list' ? calls[next.selected]?.callId : previous.callId,
+      selected:
+        previous.screen === 'list'
+          ? next.selected
+          : calls.findIndex((call) => call.callId === previous.callId),
+    };
+  };
+
   return {
+    applyToolLiveEvent: (event) => {
+      if (sealed) return;
+      state = reduceToolLiveEvent(state, event);
+      if (event.phase === 'started') {
+        markdown.reset();
+        terminal.reset();
+      }
+      toolDisplays = new Map(toolDisplays).set(
+        event.callId,
+        updateToolDisplay(toolDisplays.get(event.callId), event),
+      );
+      retainToolDisplays();
+      flush();
+    },
+    sealToolPreviews: () => {
+      if (sealed) return;
+      sealed = true;
+      toolDisplays = new Map();
+      review = undefined;
+      reviewPage = undefined;
+      settleApproval?.({ outcome: 'reject' });
+      flush();
+    },
+    openDetails: () => {
+      if (!sealed && approval === undefined) {
+        review = initialToolReview('details', toolDisplays.keys().next().value);
+        flush();
+      }
+    },
+    closeDetails: () => {
+      if (review?.kind === 'details') {
+        review = undefined;
+        reviewPage = undefined;
+        flush();
+      }
+    },
+    invalidateToolReview: () => {
+      if (review !== undefined) {
+        review = { ...review, reveal: false, inspected: [] };
+        reviewPage = undefined;
+        flush();
+      }
+    },
+    bindReviewVisibility: (visible) => {
+      reviewVisible = visible;
+    },
+    bindReviewClipboard: (copy) => {
+      reviewClipboard = copy;
+    },
+    acknowledgeReviewFrame: (expected, page) => {
+      if (review !== expected) return;
+      reviewPage = page;
+      if (page === undefined) return;
+      const updated = acknowledgeToolReview(review, page);
+      if (updated !== review) {
+        review = updated;
+        flush();
+      }
+    },
+    handleReviewInput: (input, key) => {
+      if (review === undefined) return undefined;
+      const calls = [...toolDisplays.values()];
+      const action = reduceToolReviewKey(
+        review,
+        input,
+        key,
+        reviewVisible?.() === true,
+        reviewPage,
+        approval?.cacheable === true,
+        calls.length,
+      );
+      switch (action.kind) {
+        case 'state': {
+          review = transitionReviewState(review, action.state, calls);
+          reviewPage = undefined;
+          flush();
+          break;
+        }
+        case 'abort':
+          return 'abort';
+        case 'deny':
+          settleApproval?.(
+            action.reason === undefined
+              ? { outcome: 'reject' }
+              : { outcome: 'reject', reason: action.reason },
+          );
+          flush();
+          break;
+        case 'approve':
+          settleApproval?.({ outcome: 'approve', scope: action.scope });
+          flush();
+          break;
+        case 'close':
+          review = undefined;
+          reviewPage = undefined;
+          flush();
+          break;
+        case 'select': {
+          const selected =
+            review.callId === undefined ? undefined : toolDisplays.get(review.callId);
+          if (selected !== undefined) {
+            review = initialToolReview('details', selected.callId, detailsDocument(selected));
+            flush();
+          }
+          break;
+        }
+        case 'copy':
+          copyReviewPage();
+          break;
+        case 'none':
+          break;
+      }
+      return 'handled';
+    },
     setMemoryPolicy: (memory) => {
       const rest = { ...state };
       delete rest.memoryPolicy;
@@ -286,8 +518,12 @@ export function createChatStore(
       state = { ...state, compacting: false };
       flush();
     },
-    requestApproval: (request, cacheable, signal) =>
+    requestApproval: (request, cacheable, signal, live) =>
       new Promise<ApprovalAnswer>((resolve, reject) => {
+        if (sealed || settleApproval !== undefined) {
+          reject(abortError());
+          return;
+        }
         // Honor an already-aborted turn: reject with an AbortError so the dispatch routes to cancel, not deny.
         if (signal?.aborted === true) {
           reject(abortError());
@@ -295,6 +531,8 @@ export function createChatStore(
         }
         const clear = (): void => {
           approval = undefined;
+          review = undefined;
+          reviewPage = undefined;
           settleApproval = undefined;
           signal?.removeEventListener('abort', onAbort);
         };
@@ -310,7 +548,16 @@ export function createChatStore(
           clear();
           resolve(answer);
         };
-        approval = { request, cacheable };
+        approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
+        const fallback = {
+          kind: 'operation',
+          fields: [],
+        } satisfies import('@relavium/core').ToolPreview;
+        review = initialToolReview(
+          'approval',
+          live?.callId,
+          createReviewDocument(live?.preview ?? fallback),
+        );
         signal?.addEventListener('abort', onAbort);
         flush(); // render the [y]/[a]/[n] prompt
       }),
@@ -329,4 +576,59 @@ function abortError(): Error {
   const err = new Error('the approval was aborted');
   err.name = 'AbortError';
   return err;
+}
+
+function boundedDisplayText(source: string, limit: number): string {
+  const text = sanitizeUntrustedInline(source);
+  if (text.length <= limit) return text;
+  const unit = text.charCodeAt(limit - 1);
+  const end = unit >= 0xd800 && unit <= 0xdbff ? limit - 1 : limit;
+  return `${text.slice(0, end)} … (${reviewBytes(text.slice(end))} display bytes omitted)`;
+}
+
+function updateToolDisplay(previous: ToolDisplay | undefined, event: ToolLiveEvent): ToolDisplay {
+  let next: ToolDisplay = previous ?? {
+    callId: event.callId,
+    toolId: event.toolId,
+    outcome: 'running',
+  };
+  if (event.phase === 'preview') {
+    const document = createReviewDocument(event.preview);
+    if (event.preview.kind === 'saved-result') {
+      const delivery = { ...next };
+      delete delivery.document;
+      delete delivery.stats;
+      next = delivery;
+    }
+    return {
+      ...next,
+      ...(event.preview.target === undefined
+        ? {}
+        : { target: boundedDisplayText(event.preview.target, 512) }),
+      ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
+      document,
+    };
+  }
+  if (event.phase === 'completed')
+    return {
+      ...next,
+      outcome: event.outcome,
+      ...(event.summary === undefined ? {} : { summary: boundedDisplayText(event.summary, 2048) }),
+    };
+  return next;
+}
+function detailsDocument(selected: ToolDisplay) {
+  const preview = selected.document?.preview;
+  return createReviewDocument({
+    ...(preview ?? { kind: 'operation', fields: [] }),
+    fields: [
+      ...(preview?.fields ?? []),
+      ...(preview === undefined
+        ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
+        : []),
+      ...(selected.summary === undefined
+        ? []
+        : [{ name: 'Result summary', value: selected.summary }]),
+    ],
+  });
 }

@@ -15,12 +15,204 @@ A tool declaration in YAML has a `type` discriminator:
 | `plugin` | a user-supplied npm package | see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md) |
 | `http` | an arbitrary REST endpoint | configured per call |
 
+<a id="proposed-edit-search-and-ranged-reads--mvp-3"></a>
+
+## Edit, search and ranged reads — MVP-3
+
+**Accepted design (2026-11-11); Step 1 locally accepted (2026-11-12):**
+[ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+and its linked plan authorize these additions. Ranges, discovery, observed-read
+bookkeeping and the session spill store are implemented on `development`, with
+the [source-bound local acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
+distinguishing review/security gates from checkpoint CI.
+[Step 2 is also accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12),
+including editing/prepared writes and native metadata validation.
+[Step 3 is accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12):
+fresh built-in conversations receive the read/search/find/write/edit grant.
+Older and authored conversations retain their frozen grants; the
+[chat contract](../cli/chat-session.md) owns the mode and lifecycle behavior.
+
+- `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
+  `replace_all` (default false). A nonunique match without `replace_all`, no
+  match, binary/invalid UTF-8 source, stale source or insufficient observed
+  source intervals refuses without a write. Exact replacement copies untouched
+  bytes, including line endings; replacement text is UTF-8 encoded as supplied,
+  without silent newline normalization. Every changed occurrence must be
+  observable through the [prepared-write contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
+- `read_file` gains mutually exclusive line and byte ranges for a single file;
+  ranges cannot combine with glob. Line indices are one-based and inclusive;
+  byte offsets are zero-based, start-inclusive/end-exclusive UTF-8 offsets.
+  Refuse negative/reversed/out-of-file ranges and byte cuts inside a UTF-8
+  sequence. Return source range/size and explicit omitted counts alongside
+  text. The CLI continues to refuse binary/media reads: the catalog's generic
+  media-handle description does not activate CLI media support.
+- Successful model-facing reads establish source-identity/content-version and
+  delivered-byte intervals for the active agent turn's tool loop, in sessions
+  and workflow agent nodes alike. Bound both retained
+  sources and intervals; eviction only removes edit eligibility. Exact raw read
+  objects stage evidence only after untruncated model bounding; the next model
+  response promotes it before that response's tool batch. Sibling read/edit
+  calls cannot borrow evidence from a result not yet sent to the model. The
+  current implementation conservatively grants no evidence for truncated
+  results or spill reads: re-read the original file in a narrower source range.
+  A future spill mapping would have to prove original snapshot intervals.
+  Search snippets, find results and
+  arbitrary spill paths do not certify a file read. Reset on turn end/abort,
+  context reset, clear, resume and model reseat; do not implement CR-70's
+  deferred cross-turn tool-content carry.
+- `search_files` takes a literal nonempty pattern, optional case-sensitive and
+  whole-word matching, a scoped directory and optional file glob. Whole-word
+  boundaries use Unicode letters/numbers/underscore, not locale-dependent
+  casing or a model-supplied regular expression. Results identify usable paths,
+  one-based line numbers and bounded line excerpts. Omitted/skipped counts and
+  incomplete traversal are explicit; an unknown unvisited count is labelled
+  unknown, never invented as exact.
+- `find_files` takes a scoped directory and glob. Sort the admitted scanned set
+  by descending mtime with relative-path order as a deterministic tie-break.
+  A capped walk is labelled incomplete; it cannot claim the newest files in
+  the whole tree. Both tools reuse the existing jail, lexical/canonical
+  confidentiality checks, no-directory-symlink descent and bounded fd reads.
+- Ignore behavior starts with the existing documented in-house root-file subset:
+  workspace-root `.gitignore`, then `.relaviumignore`, last match wins;
+  comments, negation, directory suffixes, anchoring and `*`/`?`/`**` are
+  supported. Nested ignore files, character classes and other unsupported
+  syntax are not silently advertised as Git parity. Ignore rules only hide;
+  they never grant access. Bound ignore bytes/rules and matching work, preserve
+  security-pruned directories even under negation, and report unreadable or
+  unsupported ignore inputs rather than silently treating them as empty.
+- All discovery work is capped independently of matches: visited entries,
+  directories, depth, candidate files, per-file and aggregate bytes, pattern
+  and ignore work, results, output bytes and line width. Yield/check cancellation
+  during traversal and matching. Named finite defaults are below. No unbounded
+  walk/exponential matcher sits behind a bounded result list. Existing byte
+  ceilings remain floors. `list_directory` exposes its existing truncation.
+
+### File-tool inputs, results and resource limits
+
+`read_file` accepts `path`, optional `glob`, and optional `range: { unit:
+"lines" | "bytes", start, end }`; `range` and `glob: true` are exclusive. A
+range result adds `{ unit, start, end, startByte, endByte, omittedBytes }` to the
+existing file result; `sizeBytes` is the original source length. Empty files
+have zero lines: whole reads and byte `[0, 0)` succeed, line 1 is out of range.
+Whole/line reads scan at most 8 MiB. Byte seeks may address larger files with at
+most 8 MiB of requested bytes, plus an 8 KiB binary prefix and two one-byte
+boundary probes; only that prefix and requested UTF-8 slice/boundaries are
+inspected, not the unscanned file. Such large-file seeks confer no edit
+evidence. Stable source evidence hashes complete files of at most 8 MiB. Each
+active tool loop retains at most 256 eligible interval records and separately
+stages at most 256 records awaiting the next model response. Promotion keeps
+the newest 256 combined records; eviction only denies later edit eligibility.
+
+Glob reads admit at most 8 MiB of complete source reads in aggregate, including
+fully read candidates later skipped for NUL/invalid UTF-8. Each opened descriptor's
+size is admitted against the remaining source budget before its full read.
+The existing prefix-only binary skip is separately bounded by 8 KiB per matched
+file (at most 200 matches by default); it consumes no full-source budget.
+Returned glob `sizeBytes` counts delivered text sources, excluding skipped ones.
+
+`find_files` accepts `glob` and optional `path` (default `.`). `search_files`
+accepts a nonempty `pattern`, optional `path`/`glob`, `caseSensitive` (default
+true) and `wholeWord` (default false). Paths/globs are at most 4,096 UTF-8 bytes;
+literal patterns are at most 1,024. Case-insensitive search uses locale-independent
+per-code-point lowercase with source-offset mapping; it is not full Unicode
+case folding. Word boundaries are tested on the original source.
+
+Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
+returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
+contain visited entries, scanned files/bytes, binary/oversize skips, unreadable
+count, `incomplete` and optional limiting category. Search byte accounting charges
+actual source reads, including skipped binary/invalid UTF-8 candidates; every
+descriptor read observes the remaining aggregate budget. Capped traversal does not
+invent an unvisited total or global-newest claim. Each clipped line states its
+exact omitted byte count. Root ignore files use the declared subset; unreadable
+or unsupported rules/nested ignore files produce incomplete results rather than
+pretending to apply those rules.
+Ignore matching uses canonical workspace-relative candidates, including an
+invocation whose working directory is a permitted symlink. A present but
+unresolvable root ignore entry is unreadable input, not a proven absent file.
+Scoped discovery checks up to 32 admitted ancestors above its selected root for
+unsupported ignore files, stopping at workspace, grant or confidentiality
+boundaries. It also
+checks each visited non-workspace directory before enumerating it; presence is
+enough, so nested rule contents and final symlink targets are never read.
+An exhausted ancestor check reports the depth limit rather than a complete scan.
+
+| Independent host ceiling | Default |
+|---|---|
+| Visited entries / directories / depth | 10,000 / 1,000 / 32 |
+| Additional admitted ancestor directories checked for ignore files | 32; up to two fixed-name presence probes per directory |
+| Candidate files / results | 1,000 / 200 |
+| Search bytes per file / call | 1 MiB / 16 MiB |
+| Conservative matcher work units | 16,777,216 |
+| Bytes / rules per root ignore file | 64 KiB / 256 |
+| UTF-8 bytes per search excerpt | 2,048 |
+| Ordinary directory entries | 200 by default; a host-selected limit cannot exceed 1,000 |
+
+Directory truncation adds `truncated` and `omittedEntries: null` when the
+remaining count is unknown; `incomplete` distinguishes an unfinished walk.
+`entryLimit` is present only when the result-entry cap was reached, not when
+another traversal bound stopped the walk. Glob reads refuse an incomplete walk
+or an observed extra match beyond their 200-file default rather than silently
+dropping matches. Directory streams
+are bounded without materializing huge `readdir` arrays. Cooperative cancellation
+is checked across traversal, matching and chunked fd reads.
+
+Chat wires `ToolHost.outputStore` to a random per-session-instance private
+subtree admitted by an exact [host scratch descriptor](#host-issued-scratch),
+with owner-only POSIX directory/file modes and the existing Windows profile/ACL
+assumption. The model receives an opaque reference readable only by that
+session's bounded read capability; possession is not cross-session authority.
+Stored output is the bounded-result contract's content projection, not raw
+inline media or structurally excluded secrets. Cap individual and aggregate
+spill bytes/files. Join/cancel producers before clear/reseat/end cleanup; a
+next-start sweep checks ownership and identity, refuses links and preserves
+live or uncertain owners. Failure refuses a spill or reports cleanup honestly.
+Native production builders receive the operator home explicitly. Allocation
+creates `~/.relavium/session-outputs-v1/output-v1.<pid>.<uuid>` and an identity
+marker. Model refs use `output://<instance-uuid>/<file-uuid>`, never native paths;
+only that instance's read closure recognizes them. Ordinary filesystem grants
+do not gain the store root or write authority. Limits are 16 MiB per spill,
+64 MiB and 64 files per instance. Spills containing NUL are refused as invalid
+text before reserving bytes/files or creating an artifact; the existing
+preview-only fallback still reports full output unavailable. A no-range
+`output://` read whose complete JSON `FileRead` envelope exceeds the default
+model-result byte/line ceiling refuses with a fixed request for an explicit
+line or byte range. It neither truncates nor creates another spill/reference.
+Small full reads and explicit ranges keep their existing semantics; an
+oversized explicit range remains subject to ordinary result bounding.
+Startup sweep inspects at most 128 subtrees and 129 children per candidate, deletes only a proven dead PID's privately
+owned, matching regular/link-free tree, and preserves live/reused or uncertain
+owners and unmarked/malformed entries. An incomplete scan emits a fixed safe
+notice. Close seals new work, joins actual read/write producers, then validates
+and removes only owned files; cleanup uncertainty is reported. This is bounded
+filesystem work under owner-controlled storage, not an OS race-free jail.
+If exclusive temporary creation succeeds but its native identity cannot be
+captured, the instance seals admission, retains the reservation and reports
+cleanup uncertainty; an unpinned file is never guessed safe to delete.
+No content/ref is added to session messages, display metadata, session effects,
+exports or `history.db`. This lifecycle is not the future child-artifact store.
+
+Prepared writes cover replacement, append, new files and optional parent
+creation with the same target policy. Existing bytes and final content are
+bounded before diffing. No `mkdir` or temporary publication precedes approval
+and durable effect preparation. An unchanged source identity/version and
+missing-target expectation are rechecked immediately before atomic publication;
+detectable replacement/change refuses with a fresh-read/preview remedy. Preserve
+existing file metadata policy and untouched bytes. This is not an OS-level
+compare-and-swap or a race-free parent-directory jail against a hostile same-user
+process (ADR-0105). A host lacking the required prepared-write capability fails
+closed for the new interactive contract; it never shows a diff then dispatches
+an unbound legacy write.
+
 ## The built-in tools
 
 | Tool id | Purpose | Returns (shape) | Notes |
 | --- | --- | --- | --- |
-| `read_file` | Read text file content as UTF-8. Supports glob for reading multiple files. | `{ content, mimeType, sizeBytes, lastModified }`; **binary/media content returns a durable media handle** (`tool_result.media`, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), never inline base64 | Respects the workflow's FS scope tier. |
+| `read_file` | Read UTF-8 text, optionally by line/byte range or multi-file glob. | `{ content, mimeType, sizeBytes, lastModified, range? }`; generic media-capable hosts may use durable handles, while CLI hosts refuse binary/invalid UTF-8 text | Respects FS scope; source evidence requires an untruncated result and a later model response. |
+| `search_files` | Bounded literal content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
+| `find_files` | Find by bounded glob, newest-first within the scanned set. | `{ files: [{ path, sizeBytes, lastModified }], stats }` | Idempotent; incomplete traversal is explicit. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
+| `edit_file` | Replace exact text in a previously observed unchanged UTF-8 file. | `{ path, bytesWritten }` | Scoped read evidence, exact matching, bounded diff approval and durable effect admission; binary or stale sources refuse. |
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
 | `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
@@ -48,6 +240,11 @@ A tool declaration in YAML has a `type` discriminator:
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
+For prepared `write_file`, `bytesWritten` is the UTF-8 byte size of the supplied
+`content` payload. With append, it counts only the appended fragment and excludes
+the retained prefix. For `edit_file`, it is the UTF-8 byte size of the complete
+published file. Neither value counts filesystem write syscalls.
+
 ## Tool input/output mapping
 
 A `tool` node (direct tool execution without an LLM) and an agent's tool call both use `input_mapping` / `output_mapping` to wire workflow state into the tool and the result back out. Tool credentials are referenced by id from the secret store and are **never** inlined into the workflow JSON or echoed into event payloads (`agent:tool_call.toolInput` is sanitized; see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
@@ -65,6 +262,8 @@ limits, independent of operating-system command-line capacity.
 | Argument | Maximum |
 | --- | --- |
 | `write_file.content` | 8 MiB (8,388,608 bytes) |
+| `edit_file.old_string` / `edit_file.new_string` | 8 MiB each; `old_string` remains non-empty |
+| Filesystem tool `path` / `root`, and file discovery/list `glob` when supplied | 4,096 UTF-8 bytes; required paths remain non-empty |
 | `http_request.body` | 1 MiB (1,048,576 bytes), when supplied |
 | `git_commit.message` | 16 KiB (16,384 bytes); still non-empty |
 | `run_command.args` | 256 entries, each at most 16 KiB, totaling at most 64 KiB (65,536 bytes) |
@@ -74,6 +273,13 @@ argument vector remain valid. Impossible UTF-16 lengths and argument counts are 
 scanning; the vector's cheap aggregate check precedes all member byte scans. The existing shared
 byte counter measures plausible values, including multibyte text and unmatched surrogates.
 
+The byte admission ceiling is independent of review complexity. Prepared diffs
+also cap each source at 100,000 lines, emit at most 200,000 operations and bound
+the Myers frontier to 1,000,000 work units and 8 MiB of trace storage. Linear
+empty-side and common-prefix/suffix paths retain line/operation bounds and
+cooperative cancellation. A complex admitted input may still receive
+`diff_limit`; the content bound does not promise reviewability for every diff.
+
 The model-visible properties and array items describe their use, defaults and these limits through
 all supported dialect normalizers. JSON Schema `maxLength` is a necessary character bound, **not**
 the byte authority; descriptions communicate the UTF-8 constraint and aggregate argument limit.
@@ -82,14 +288,14 @@ imposing matching-name limits on unrelated fields such as `notify.body` or `git_
 
 ## Tool result bounding
 
-The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and the **path** to the full output spilled to the host's run-scoped **output store** (reclaimed at the run's terminal event). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
+The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and an authorized **reference** to the full output in the host-owned **output store**, where wired (native chat joins producers before instance cleanup). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
 
 | Knob | v1.0 default | Note |
 | --- | --- | --- |
 | Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
 | Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
 | Preview | head + tail slice within the ceiling | the marker names the omitted span; a result over the ceiling only by the inline media its text omits keeps that media-free text as its preview |
-| Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+| Spill | the host-owned output store; native chat reclaims after session-instance producer join | the path is handed to the model; readable via the FS-scope-tiered tools |
 
 **Inline media counts against the ceiling (2026-11-04).** The bound counts the inline media a result still
 holds — a base64 `data:` URI, a canonical base64 source, a binary buffer at its `byteLength` — at its full size,
@@ -351,7 +557,7 @@ The host-only `issueHostScratchRoot({ homeDir, rootDir })` factory issues an opa
 
 Both lexical and canonical containment must hold. Anchor/root identities are pinned and rechecked; anchor/root and descendant directories require owner-only POSIX modes and ownership, and symlink descendants refuse. The descriptor exempts only the ancestor `.relavium` component for accesses inside that exact subtree. Home config/history, every project `.relavium`, siblings/prefixes and nested secret/protected components remain denied. Windows retains the owner-controlled profile/ACL assumption; POSIX-bit checks do not verify Windows ACLs.
 
-Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automatic global tmp provisioning is removed without deleting existing directories; ordinary chat has no production allocator. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns production provisioning, per-parent isolation, join, cleanup and recovery.
+Native chat provisions the private session-output lifecycle described [above](#file-tool-inputs-results-and-resource-limits); its opaque reference reader does not add that subtree to ordinary filesystem grants. Automatic global tmp provisioning remains removed without deleting existing directories. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns child-artifact provisioning, per-parent isolation, join, cleanup and recovery; the session-output store does not activate that foundation.
 
 ### Physical media storage and limits
 

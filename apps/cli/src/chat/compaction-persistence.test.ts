@@ -10,6 +10,8 @@ import { buildResumedChatSession } from './session-host.js';
 import { createSessionPersister } from './persister.js';
 
 const chat: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

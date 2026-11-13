@@ -25,9 +25,13 @@ import type { ProviderProbeDeps } from './doctor-deep.js';
 const DOCTOR_KEYCHAIN_PROBE = 'doctor:reachability-probe';
 
 export interface DoctorHostInputs {
+  /** Trusted invocation home for private filesystem-artifact guards; never a model/config argument. */
+  readonly operatorHomeDir?: string;
   readonly workOwner?: ProviderProbeDeps['workOwner'];
   readonly cwd: string;
   readonly configPath?: string;
+  /** A live chat supplies its pinned invocation reader so every observation can revoke startup auto. */
+  readonly readConfig?: () => void;
   /** The provider seam — the `--deep` probe validates each provider whose key resolves (keychain ∪ env). */
   readonly resolver: ProviderResolver;
   /** The bound agent's declared `mcp_servers` — the `--deep` MCP tier REPORTS these (all connected in a live
@@ -48,6 +52,10 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
       store.get(DOCTOR_KEYCHAIN_PROBE);
     },
     config: () => {
+      if (inputs.readConfig !== undefined) {
+        inputs.readConfig();
+        return;
+      }
       loadResolvedConfig({
         cwd: inputs.cwd,
         ...(inputs.configPath === undefined ? {} : { configPath: inputs.configPath }),
@@ -57,6 +65,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
     // the report is faithful with the safe `sandboxed` default — no dependency on the live session's tier.
     toolHost: assembleToolEnv({
       profile: 'chat-read-only',
+      ...(inputs.operatorHomeDir === undefined ? {} : { operatorHomeDir: inputs.operatorHomeDir }),
       fsScopeTier: 'sandboxed',
       workspaceDir: inputs.cwd,
     }).host,

@@ -41,6 +41,7 @@ import {
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
@@ -58,6 +59,9 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
+import { runModeSettings } from '../chat/mode-settings.js';
+import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { ConfigError } from '../config/errors.js';
 import {
@@ -146,6 +150,10 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
+  /** Explicit home override for hermetic embeddings and tests. */
+  readonly homeDir?: string;
+  /** Explicit output resource factory for hermetic embeddings and tests. */
+  readonly outputStoreFactory?: Parameters<typeof buildChatSession>[0]['outputStoreFactory'];
   /** The same bootstrap invocation used by the guarded lazy route. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -256,10 +264,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
-  const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = loadResolvedConfig({
+  const initialConfig = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
+    ...(deps.homeDir === undefined ? {} : { home: deps.homeDir }),
   });
+  const { config, projectConfigDir, homeDir, globalConfig, globalConfigPath } = initialConfig;
+  const startingModes = createStartingModeRuntime(initialConfig, true);
+  const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const nativePrompt = createNativePromptChannel();
   let lastSavedSessionId: string | undefined;
@@ -319,6 +331,29 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
+  // A store update alone is not visibility proof (it may be hidden, scrolled away or replaced).
+  // Keep one content-free terminal fallback until its actual delivery is acknowledged.
+  let effectAttentionPending = false;
+  let effectAttentionDeliveryFailure: CliError | undefined;
+  const noteEffectAttention = (): void => {
+    effectAttentionPending = true;
+    if (!rendererActive || controller === undefined) return;
+    const current = controller.getSnapshot();
+    if (current.mode === 'chat' && current.session !== undefined)
+      current.session.store.notice(ABORTED_EFFECT_ATTENTION_NOTICE);
+    else controller.setProviderState(current.keyless, ABORTED_EFFECT_ATTENTION_NOTICE);
+  };
+  const flushEffectAttention = async (): Promise<void> => {
+    if (!effectAttentionPending) return;
+    try {
+      const deliver = () => deps.io.writeErrAcknowledged(`${ABORTED_EFFECT_ATTENTION_NOTICE}\n`);
+      await (ownership === undefined ? deliver() : ownership.surface.work.work.retainWork(deliver));
+      effectAttentionPending = false;
+    } catch (cause) {
+      effectAttentionDeliveryFailure = new CliError('output_unavailable', '', { cause });
+      ownership?.surface.work.failure(effectAttentionDeliveryFailure);
+    }
+  };
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
   let unsubscribeOnboardingInput: (() => void) | undefined;
@@ -589,6 +624,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const stopProviderSetup = (): void => promptFlow.cancel();
   ownership?.surface.work.signal.addEventListener('abort', stopProviderSetup, { once: true });
 
+  let result: ExitCode;
   try {
     const homeStore = createHomeStore({
       sessions: opened.store,
@@ -674,6 +710,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               },
               homeDir,
               deps.global.configPath === undefined ? undefined : globalConfigPath,
+              configReadObserver,
             ),
             assertAdmitting,
           );
@@ -709,6 +746,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     };
     const providerSetup = createProviderSetupCoordinator({
+      configReadObserver,
       flow: promptFlow,
       resolver: providers,
       policy: keyPolicy,
@@ -756,6 +794,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        readConfig: () => {
+          startingModes.read(deps.global.cwd);
+        },
+        operatorHomeDir: homeDir,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
@@ -768,26 +810,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // the picker. Cheap (a few small file reads) and only called on a picker open / accept, never per keystroke.
     // The EFFECTIVE `[chat]` block (project → workspace → global) — the shared read LOGIC (not a cached instance)
     // behind the model + effort readers, so a bare-Home picker open does up to two cheap reads (currentDefault +
-    // currentEffort), never per-keystroke. A mid-session malformed config degrades to `undefined`, never a crash.
-    const readEffectiveChat = ():
-      | ReturnType<typeof loadResolvedConfig>['config']['chat']
-      | undefined => {
-      try {
-        return applyInvocationDefault(
-          loadResolvedConfig({
-            cwd: deps.global.cwd,
-            home: homeDir,
-            configPath: globalConfigPath,
-          }),
-          invocationDefault,
-        ).config.chat;
-      } catch {
-        return undefined; // a mid-session malformed config must not crash the picker
-      }
-    };
-    const readEffectiveDefault = (): string | undefined => readEffectiveChat()?.defaultModel;
+    // currentEffort), never per-keystroke. A strict reload failure revokes startup auto and is shown by its owner.
+    const readEffectiveChat = (): ReturnType<typeof loadResolvedConfig>['config']['chat'] =>
+      applyInvocationDefault(startingModes.read(deps.global.cwd), invocationDefault).config.chat;
+    const readEffectiveDefault = (): string | undefined => readEffectiveChat().defaultModel;
     const readEffectiveEffort = (): ReasoningEffort | undefined =>
-      readEffectiveChat()?.reasoningEffort;
+      readEffectiveChat().reasoningEffort;
     // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
     // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
     // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
@@ -817,6 +845,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             },
             homeDir,
             deps.global.configPath === undefined ? undefined : globalConfigPath,
+            configReadObserver,
           );
           // A plain Home picker write needs the same real disclosure evidence
           // as setup, without adding another confirmation or terminal owner.
@@ -842,6 +871,23 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     };
 
+    const closeFailedUnownedBuild = async (built: BuiltChatSession): Promise<void> => {
+      try {
+        built.session.cancel();
+      } catch {
+        warnTeardown(deps.io, 'chat host');
+      }
+      try {
+        await built.whenHostSafeToClose();
+      } catch {
+        // A secondary close failure cannot hide the construction fault.
+        warnTeardown(deps.io, 'chat host');
+      } finally {
+        await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+        await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store'));
+      }
+    };
+
     // The SHARED HomeChatSession wiring over a built (FRESH or RESUMED) session + its view store — the persister,
     // the shared line handler (owns the ADR-0057 mode floor), the stream subscription + frame, the mention/shell
     // ports, and the bounded teardown. Used by startChat (fresh) and reseatChat (the ADR-0059 model switch), so the
@@ -852,40 +898,46 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       store: ChatStoreController,
       opts: { readonly open: boolean; readonly initialSequenceNumber?: number },
     ): Promise<HomeChatSession> => {
-      built.workOwner?.assertAdmitting();
-      ownership?.surface.work.assertAdmitting();
-      // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
-      // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
-      for (const tool of built.mcpSkipped) {
-        store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
-      }
-      // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
-      const chatDoctorProbes =
-        deps.doctorProbes ??
-        assembleDoctorProbes({
-          ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
-          cwd: deps.global.cwd,
-          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-          resolver: providers,
-          agentMcpServers: built.agent.mcp_servers ?? [],
-          mcpSkipped: built.mcpSkipped,
-        });
-      // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring must
-      // reclaim them — and any spawned MCP child — rather than leak the timer/subscription (chatCommand's guard).
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
-      const sendGuard = (): string | undefined => {
+      let view: ReturnType<SessionHomeLifetime['view']> | undefined;
+      try {
         built.workOwner?.assertAdmitting();
         ownership?.surface.work.assertAdmitting();
-        return providerHasKey(providers, built.agent.provider)
-          ? undefined
-          : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
-      };
-      const initialKeyRefusal = sendGuard();
-      if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
-      const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
-      try {
+        // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
+        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
+        for (const tool of built.mcpSkipped) {
+          store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
+        }
+        // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
+        const chatDoctorProbes =
+          deps.doctorProbes ??
+          assembleDoctorProbes({
+            readConfig: () => {
+              startingModes.read(built.context.workingDir);
+            },
+            operatorHomeDir: homeDir,
+            ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            cwd: deps.global.cwd,
+            ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+            resolver: providers,
+            agentMcpServers: built.agent.mcp_servers ?? [],
+            mcpSkipped: built.mcpSkipped,
+          });
+        // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring must
+        // reclaim them — and any spawned MCP child — rather than leak the timer/subscription (chatCommand's guard).
+        const sendGuard = (): string | undefined => {
+          built.workOwner?.assertAdmitting();
+          ownership?.surface.work.assertAdmitting();
+          return providerHasKey(providers, built.agent.provider)
+            ? undefined
+            : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+        };
+        const initialKeyRefusal = sendGuard();
+        if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
+        view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
+        view?.acquire(() => () => closeQuietly(deps.io, 'tool previews', store.sealToolPreviews));
         persister = createSessionPersister(
           {
             usageStore: createSessionUsageStore(opened.db),
@@ -920,7 +972,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             toolCallId: 'home',
           }),
         );
-        // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
+        // createChatLineHandler owns the mode control (ADR-0057/0116): it applies the resolved starting mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
         const {
           processLine,
@@ -930,6 +982,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
+          resumeAfterFailedClear,
         } = createChatLineHandler(
           {
             built,
@@ -937,9 +990,33 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             store,
             persister,
             doctorProbes: chatDoctorProbes,
+            startingModes,
             sendGuard,
           },
-          { ...deps, hatchPorts },
+          {
+            ...deps,
+            hatchPorts,
+            openModeSettings: (currentMode, onCurrentMode, notice) =>
+              runModeSettings({
+                runtime: startingModes,
+                cwd: built.context.workingDir,
+                interactive: true,
+                flow: promptFlow,
+                currentMode,
+                onCurrentMode,
+                notice,
+                assertAdmitting: () => {
+                  assertHomeAdmitting();
+                  built.workOwner?.assertAdmitting();
+                  if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
+                    throw new CliError(
+                      'invalid_invocation',
+                      'This conversation is no longer active.',
+                    );
+                },
+                publish: publishPreference,
+              }),
+          },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
@@ -967,6 +1044,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
           profile: 'chat-read-only',
+          operatorHomeDir: homeDir,
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
           ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
@@ -993,6 +1071,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
           torn = true;
           cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
+          closeQuietly(deps.io, 'tool previews', store.sealToolPreviews);
           clearInterval(frame);
           unsubscribe?.();
           try {
@@ -1001,11 +1080,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             try {
               closeQuietly(deps.io, 'persister', () => persister?.close());
             } finally {
-              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP')); // best-effort; never orphan a spawned stdio child
+              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+              await built.closeOutputStore?.().catch(() => warnTeardown(deps.io, 'output store')); // best-effort; never orphan a spawned stdio child
             }
           }
         };
         return {
+          clear: () => startChat(built),
+          resumeAfterFailedClear,
           store,
           processLine: async (line, display) => {
             try {
@@ -1018,34 +1100,45 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           stopReason,
           sessionId: built.sessionId,
           teardown,
-          ...(opts.open
-            ? {}
-            : {
-                onActivated: (isActive: () => boolean) => {
-                  if (isActive() && persister?.hasSavedTurns === true)
-                    lastSavedSessionId = built.sessionId;
-                  const activate = () =>
-                    reconcileResumedSessionEffects({
-                      io: deps.io,
-                      ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
-                      db: opened.db,
-                      sessionId: built.sessionId,
-                      sanitize: sanitizeInline,
-                      deliverNotice: (text) => store.notice(text),
-                      isActive: () => rendererActive && isActive(),
-                      flushNotice: async (publish) => {
-                        if (flushVisible === undefined)
-                          throw new Error('Home renderer is not ready.');
-                        await flushVisible(publish);
-                      },
-                    });
-                  return built.workOwner === undefined
-                    ? activate()
-                    : built.workOwner.enter(async () => {
-                        await activate();
-                      });
-                },
-              }),
+          onActivated: (isActive: () => boolean) => {
+            if (isActive() && persister?.hasSavedTurns === true)
+              lastSavedSessionId = built.sessionId;
+            const activate = async () => {
+              if (!opts.open)
+                await reconcileResumedSessionEffects({
+                  io: deps.io,
+                  ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
+                  db: opened.db,
+                  sessionId: built.sessionId,
+                  sanitize: sanitizeInline,
+                  deliverNotice: (text) => store.notice(text),
+                  isActive: () => rendererActive && isActive(),
+                  flushNotice: async (publish) => {
+                    if (flushVisible === undefined) throw new Error('Home renderer is not ready.');
+                    await flushVisible(publish);
+                  },
+                });
+              if (built.startingMode !== undefined && flushVisible !== undefined)
+                await activateStartingModeHint({
+                  runtime: startingModes,
+                  cwd: built.context.workingDir,
+                  selection: built.startingMode,
+                  currentMode: () => store.getSnapshot().mode,
+                  notice: (text) => store.notice(text),
+                  flushNotice: flushVisible,
+                  isActive: () => rendererActive && isActive(),
+                  assertAdmitting: () => {
+                    assertHomeAdmitting();
+                    built.workOwner?.assertAdmitting();
+                  },
+                });
+            };
+            return built.workOwner === undefined
+              ? activate()
+              : built.workOwner.enter(async () => {
+                  await activate();
+                });
+          },
           onAbort,
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
@@ -1054,6 +1147,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           runShellCommand,
         };
       } catch (err) {
+        closeQuietly(deps.io, 'tool previews', store.sealToolPreviews);
         if (built.workOwner !== undefined) {
           built.workOwner.failure(err);
           view?.release();
@@ -1061,11 +1155,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();
-        try {
-          closeQuietly(deps.io, 'persister', () => persister?.close());
-        } finally {
-          await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
-        }
+        await closeFailedUnownedBuild(built);
+        closeQuietly(deps.io, 'persister', () => persister?.close());
         throw err;
       }
     };
@@ -1075,8 +1166,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
     ): Promise<HomeChatSession> =>
       ownership === undefined ? factory() : ownership.hosts.construct(factory);
-    const startChat = (): Promise<HomeChatSession> =>
+    const startChat = (
+      bound?: Pick<BuiltChatSession, 'agent' | 'context' | 'fsPolicy'>,
+    ): Promise<HomeChatSession> =>
       constructChat(async (host) => {
+        const cwd = bound?.context.workingDir ?? deps.global.cwd;
+        const start = startingModes.resolve(cwd);
         // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
         // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
         // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
@@ -1096,9 +1191,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
         // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
         // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
-        // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
+        // startup); only with no fresh model (a genuinely unset default) fall back
         // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
-        const effectiveChat = readEffectiveChat();
+        const effectiveChat = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
         const freshModel = effectiveChat?.defaultModel;
         const [defaultModel, defaultProvider] =
           freshModel !== undefined
@@ -1106,6 +1201,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             : [config.chat.defaultModel, config.chat.defaultProvider];
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
+            startingMode: start.startingMode,
+            operatorHomeDir: homeDir,
+            ...(deps.outputStoreFactory === undefined
+              ? {}
+              : { outputStoreFactory: deps.outputStoreFactory }),
             ...(workOwner === undefined ? {} : { workOwner }),
             ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
             // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
@@ -1121,9 +1221,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     { io: deps.io, global: deps.global, homeDir },
                     workOwner,
                   ),
-            fsPolicy,
+            fsPolicy: bound?.fsPolicy ?? fsPolicy,
             chat: {
               ...config.chat,
+              defaultMode: start.loaded.config.chat.defaultMode,
+              defaultModeSource: start.loaded.config.chat.defaultModeSource,
+              ...(bound === undefined ? {} : { fsScope: bound.context.fsScopeTier }),
               defaultModel,
               defaultProvider,
               reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
@@ -1131,8 +1234,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...(config.maxTokensEstimate === undefined
               ? {}
               : { maxTokensEstimate: config.maxTokensEstimate }),
-            agentRef: undefined, // the built-in default agent (zero-config first run)
-            cwd: deps.global.cwd,
+            ...(bound === undefined ? {} : { agent: bound.agent }),
+            agentRef: undefined,
+            cwd,
             projectConfigDir,
             now,
             uuid,
@@ -1162,6 +1266,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+            onEffectAttention: noteEffectAttention,
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
           });
@@ -1215,6 +1320,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       restoreSignal?: AbortSignal,
     ): Promise<HomeChatSession> =>
       constructRestoredChat(restoreSignal, async (host) => {
+        let start = startingModes.resolve(deps.global.cwd);
         const loaded = preloaded ?? opened.store.loadFull(sessionId);
         if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
           throw new CliError(
@@ -1232,6 +1338,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 target.reasoningEffort,
               );
         const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+        if (record.context.workingDir !== deps.global.cwd)
+          start = startingModes.resolve(record.context.workingDir);
         const resolvePrice = readUserPricingOverlay(opened.db);
         // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
         // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
@@ -1250,9 +1358,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           noteToStore(budgetWarningText(warning));
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildResumedSession ?? buildResumedChatSession)({
+            startingMode: start.startingMode,
+            operatorHomeDir: homeDir,
+            ...(deps.outputStoreFactory === undefined
+              ? {}
+              : { outputStoreFactory: deps.outputStoreFactory }),
             ...(workOwner === undefined ? {} : { workOwner }),
             ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-            chat: config.chat,
+            chat: {
+              ...config.chat,
+              defaultMode: start.loaded.config.chat.defaultMode,
+              defaultModeSource: start.loaded.config.chat.defaultModeSource,
+            },
             fsPolicy,
             ...(config.maxTokensEstimate === undefined
               ? {}
@@ -1296,54 +1413,56 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
+            onEffectAttention: noteEffectAttention,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,
           });
         const built = host === undefined ? await build() : await host.build(build);
-        host?.work.assertAdmitting();
-        ownership?.surface.work.assertAdmitting();
-        if (restoreSignal?.aborted) {
-          // Legacy unowned callers still owe the actual returned builder's resources.
-          if (host === undefined) {
-            built.session.cancel();
-            await built.whenHostSafeToClose();
-            await built.closeMcp?.();
+        let transferred = false;
+        try {
+          host?.work.assertAdmitting();
+          ownership?.surface.work.assertAdmitting();
+          if (restoreSignal?.aborted) {
+            throw resumeCancelled;
           }
-          throw resumeCancelled;
+          // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
+          // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
+          const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
+          const store = createChatStore(
+            deps.global.color,
+            {
+              agentRef: built.agent.id,
+              model: built.agent.model,
+              // The amount and its qualifiers share this read even if another live host settled during build.
+              cumulativeCostMicrocents: costs.totalCostMicrocents,
+              usageCoverage: costs.coverage,
+              unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+              turnCount: built.resumeState.turnCount,
+              // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
+              // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
+              // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
+              transcript: carriedTranscript,
+              ...(initialRestore ? { initialRestore: true } : {}),
+            },
+            transcriptBoundFor(altScreenActive),
+          );
+          // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+          // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+          assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
+          storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+          // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
+          // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
+          for (const note of pendingNotes) store.notice(note);
+          pendingNotes.length = 0;
+          transferred = true;
+          return await wireHomeChatSession(built, store, {
+            open: false,
+            initialSequenceNumber: built.nextSequenceNumber,
+          });
+        } catch (cause) {
+          if (!transferred && host === undefined) await closeFailedUnownedBuild(built);
+          throw cause;
         }
-        // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
-        // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
-        const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
-        const store = createChatStore(
-          deps.global.color,
-          {
-            agentRef: built.agent.id,
-            model: built.agent.model,
-            // The amount and its qualifiers share this read even if another live host settled during build.
-            cumulativeCostMicrocents: costs.totalCostMicrocents,
-            usageCoverage: costs.coverage,
-            unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-            turnCount: built.resumeState.turnCount,
-            // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
-            // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
-            // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
-            transcript: carriedTranscript,
-            ...(initialRestore ? { initialRestore: true } : {}),
-          },
-          transcriptBoundFor(altScreenActive),
-        );
-        // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
-        // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
-        assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
-        storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
-        // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
-        // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
-        for (const note of pendingNotes) store.notice(note);
-        pendingNotes.length = 0;
-        return wireHomeChatSession(built, store, {
-          open: false,
-          initialSequenceNumber: built.nextSequenceNumber,
-        });
       });
 
     const reseatChat = (
@@ -1639,7 +1758,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       configAltScreen: config.altScreen,
     });
 
-    return await new Promise<ExitCode>((resolve, reject) => {
+    result = await new Promise<ExitCode>((resolve, reject) => {
       stopHomeInput = (): void => {
         if (homeInputSealed) return;
         homeInputSealed = true;
@@ -1671,6 +1790,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         homeStore,
         doctorProbes,
         models,
+        openModeSettings: () =>
+          runModeSettings({
+            runtime: startingModes,
+            cwd: deps.global.cwd,
+            interactive: true,
+            flow: promptFlow,
+            notice: (text) => controller?.setProviderState(keyless, text),
+            assertAdmitting: assertHomeAdmitting,
+            publish: publishPreference,
+          }),
         initializeProject: () => {
           if (flushVisible === undefined)
             throw new CliError(
@@ -1828,6 +1957,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
         // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
+        reviewClipboard: clipboard,
         ...(copyOnSelect ? { clipboard } : {}),
       };
       const mount = () =>
@@ -1895,13 +2025,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       ];
       await Promise.all(closing);
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
+        let restored = false;
         try {
           await controls?.write(DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR);
           await controls?.close();
           setupView?.release();
+          restored = true;
         } catch (cause) {
           ownership.surface.work.cleanupUncertain(cause);
         }
+        // Host close joined every actual producer before this point. The surface's entered
+        // root owns this captured stderr ACK after Ink/input/control restoration, never a host notifier.
+        if (restored) await flushEffectAttention();
       }
     } else {
       rendererActive = false;
@@ -1916,6 +2051,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       disposeJobControl?.();
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+      if (unmounted && pasteDisabled && mouseDisabled) await flushEffectAttention();
       closeDb(); // always close the shared db
     }
     nativePrompt.ui.dispose();
@@ -1931,4 +2067,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     }
   }
+  if (effectAttentionDeliveryFailure !== undefined) throw effectAttentionDeliveryFailure;
+  return result;
 }

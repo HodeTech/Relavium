@@ -84,6 +84,18 @@ for (const [kind, background] of [
         assert.equal(child.timedOut, false);
         const root = join(evidence, 'filesystem');
         const summary = JSON.parse(readFileSync(join(root, 'summary.json'), 'utf8'));
+        // Establish the primary refusal before inspecting artifacts that an earlier failure omits.
+        assert.equal(child.code, 1, 'A real background error must refuse the complete coordinator');
+        assert.equal(summary.complete, false);
+        assert.match(
+          summary.failure.message,
+          /Unhandled runtime error/,
+          'Coordinator must reach the background runtime-error refusal',
+        );
+        assert.deepEqual(
+          summary.mechanisms.map(({ id }) => id),
+          [success.id],
+        );
         const removal = JSON.parse(
           readFileSync(join(root, contaminated.id, 'mutated', 'vitest.json'), 'utf8'),
         );
@@ -93,13 +105,6 @@ for (const [kind, background] of [
           removal.testResults[0].assertionResults[0].failureMessages[0],
           /^AssertionError: CAUSAL_SYNTHETIC_DECLARED/,
         );
-        assert.equal(child.code, 1, 'A real background error must refuse the complete coordinator');
-        assert.equal(summary.complete, false);
-        assert.deepEqual(
-          summary.mechanisms.map(({ id }) => id),
-          [success.id],
-        );
-        assert.match(summary.failure.message, /Unhandled runtime error/);
         assert.equal(summary.restorations.length, 2);
         for (const restored of summary.restorations)
           assert.equal(restored.fixedSha256, restored.restoredSha256);
@@ -136,11 +141,31 @@ for (const [kind, background] of [
           ({ control, phase }) => control === contaminated.id && phase === 'mutated',
         );
         assert.ok(streams);
-        assert.equal(
-          streams.stderr,
-          '',
-          'JSON-only runtime diagnostics remain absent; the structured receipt must refuse',
+        const diagnosticPath =
+          kind === 'teardown-rejection' ? 'tools/causal-controls/runtime-error.cases.mjs' : target;
+        const diagnosticSource = readFileSync(join(repository, diagnosticPath), 'utf8').replace(
+          contaminated.before,
+          contaminated.after,
         );
+        const diagnosticLine =
+          diagnosticSource.split('\n').findIndex((line) => line.includes('CAUSAL_BACKGROUND_')) + 1;
+        assert.ok(diagnosticLine > 0, 'The fixture must own the reported source location');
+        assert.deepEqual(JSON.parse(streams.stderr), {
+          version: 1,
+          diagnostic: 'unhandled-runtime-errors',
+          phase: 'mutated',
+          mutationId: contaminated.id,
+          count: 1,
+          truncated: false,
+          entries: [
+            {
+              kind: 'Error',
+              origin: kind === 'exception' ? 'Uncaught Exception' : 'Unhandled Rejection',
+              reportedFrame: { path: diagnosticPath, line: diagnosticLine },
+            },
+          ],
+        });
+        assert.doesNotMatch(streams.stderr, /CAUSAL_BACKGROUND_|causal-runtime-error-/);
         assert.deepEqual(sourceState(repository), before);
         assert.deepEqual(
           ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']),

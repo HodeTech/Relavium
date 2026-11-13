@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-10): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-13): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -50,9 +50,30 @@ declined — and put the CLI MVP first:** `relavium` v0.2.0 on npm (milestone M3
 Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6.C and 2.6.F are done
 (2.6.F's v0.2.0 release clause closes with the MVP) and 2.6.Q P1–P5 landed; the MVP takes slices of the rest.
 **MVP-1 is accepted (2026-11-06) and on `main` with the second checkpoint (PR #97, merged 2026-11-07).
-All four MVP-2 steps are implemented and independently accepted on `development` (2026-11-10),
-including separate security sittings; the checkpoint PR carries combined CI and maintainer review.**
-See the [acceptance record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10).
+MVP-2 is complete and on `main` through PR #98 (`0db4c940`, merged 2026-11-11), including all four steps,
+review corrections, separate security sittings and passing combined CI.**
+See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
+MVP-3's three steps are implemented and independently accepted on `development`:
+editing/search tools, trustworthy approval previews and tool-call rendering v2,
+native metadata preservation, the built-in editing grant and startup-mode settings.
+The PR #99 correction source through `e61ae0fa` passes 18,651 workspace tests
+and 1,129 acceptance-tool cases. Verified general-review findings are fixed;
+fresh cumulative reviews and separate final-source security sittings are clean.
+All 207 baseline Sonar reports and 45 correction follow-ups have individual
+source actions or verified remote dispositions, including reviewed rescan follow-ups.
+Final-head scanner/platform
+checks and maintainer review govern PR #99's merge.
+The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+owns exact evidence and limits. MVP-4 is the next implementation milestone;
+its pending ADR approvals remain required. No merge or npm publication is claimed.
+**PR #99 review follow-up (2026-11-13): implementation and local review complete.**
+The [final development source checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
+records runtime/UX, native lifetime, delivery and scanner corrections and their
+independent review/security receipts. Current PR checks own final CI/scanner acceptance.
+[ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
+is Accepted after the supplied design reviews and maintainer approval; its
+source-admission/recovery implementation is complete. Earlier receipts retain
+their scoped historical meaning and do not replace current-head checks.
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.
@@ -75,8 +96,11 @@ has the full Phase 2.6 plan.
 
 These apply to every AI agent in this repo, regardless of model, runner, or tool.
 
-1. **TypeScript-first, strict.** All source is TypeScript. Strict mode; no `any`,
-   no unsafe `as`. Prefer type guards. See [docs/standards/code-style-typescript.md](docs/standards/code-style-typescript.md).
+1. **TypeScript-first, strict.** Application/engine source is TypeScript. Strict mode; no `any`,
+   no unsafe `as`. Prefer type guards. [ADR-0125](docs/decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+   permits only the CLI filesystem metadata adapter's Rust/Node-API source/build
+   boundary; shared/core and the LLM seam remain platform-pure TypeScript.
+   See [docs/standards/code-style-typescript.md](docs/standards/code-style-typescript.md).
 2. **Build in-house; minimize dependencies.** Write our own better implementations
    for the core. **No new runtime dependency without an ADR.** Never adopt the
    Vercel AI SDK or LangChain for the LLM layer — Relavium owns `@relavium/llm`.

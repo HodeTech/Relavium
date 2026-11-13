@@ -114,6 +114,11 @@ export class SessionHostOwner {
     } catch (cause) {
       this.work.cleanupUncertain(cause);
     }
+    try {
+      await built.closeOutputStore?.();
+    } catch (cause) {
+      this.work.cleanupUncertain(cause);
+    }
     const persister = this.#persister;
     if (persister !== undefined) {
       if (persister.durabilityFailure !== undefined)

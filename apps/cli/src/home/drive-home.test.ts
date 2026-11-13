@@ -24,8 +24,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render as renderInk, type Instance } from 'ink';
 import { createElement, isValidElement } from 'react';
 
-import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
-import { scriptedResolver, textTurn } from '../chat/test-support.js';
+import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
+  buildChatSession,
+  buildResumedChatSession,
+} from '../chat/session-host.js';
+import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
@@ -143,6 +148,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   let client: DbClient;
   let closeSpy: ReturnType<typeof vi.fn>;
   let cwd: string;
+  let testHomeDir: string;
 
   const io: CliIo = {
     writeOut: () => undefined,
@@ -161,9 +167,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     runMigrations(client.db);
     closeSpy = vi.fn();
     cwd = mkdtempSync(join(tmpdir(), 'relavium-home-'));
+    testHomeDir = mkdtempSync(join(tmpdir(), 'relavium-operator-home-'));
   });
   afterEach(() => {
     if (client.sqlite.open) client.sqlite.close();
+    rmSync(testHomeDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 
@@ -202,6 +210,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const writeControl = vi.fn();
     let uuidN = 0;
     const deps: HomeDeps = {
+      homeDir: testHomeDir,
+      outputStoreFactory: () => Promise.resolve(undefined),
       io,
       global,
       providers: scriptedResolver([textTurn('hello from the agent')]),
@@ -245,6 +255,136 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     };
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
+
+  it.each(['fresh', 'clear'] as const)(
+    'joins and closes an unowned %s build when the pre-wiring key check throws',
+    async (cut) => {
+      let props: RootAppProps | undefined;
+      let builds = 0,
+        refuseKey = false;
+      let releaseJoin = () => {};
+      const joined = new Promise<void>((resolve) => {
+        releaseJoin = resolve;
+      });
+      const closeMcp = vi.fn(async () => {}),
+        closeOutputStore = vi.fn(async () => {});
+      const resolver = scriptedResolver([textTurn('first answer')]);
+      const { deps } = makeDeps(
+        (value) => {
+          props = value;
+        },
+        {
+          providers: {
+            ...resolver,
+            hasKey: () => {
+              if (refuseKey) {
+                refuseKey = false;
+                throw new Error('PRIVATE_PRE_WIRING_KEY_FAULT');
+              }
+              return true;
+            },
+          },
+          buildSession: async (options) => {
+            const built = await buildChatSession(options);
+            builds++;
+            if (builds !== (cut === 'fresh' ? 1 : 2)) return built;
+            refuseKey = true;
+            return { ...built, whenHostSafeToClose: () => joined, closeMcp, closeOutputStore };
+          },
+        },
+      );
+      const running = driveHome(deps);
+      const ui = props;
+      if (ui === undefined) throw new Error('Home not mounted');
+      try {
+        type(ui, 'first');
+        ui.controller.handleKey('', ENTER);
+        let previous = ui.controller.getSnapshot().session;
+        if (cut === 'clear') {
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'));
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+          previous = ui.controller.getSnapshot().session;
+          ui.controller.handlePaste('/clear');
+          ui.controller.handleKey('', ENTER);
+        }
+        await vi.waitFor(() => expect(builds).toBe(cut === 'fresh' ? 1 : 2));
+        await flush();
+        expect(closeMcp).not.toHaveBeenCalled();
+        expect(closeOutputStore).not.toHaveBeenCalled();
+        releaseJoin();
+        await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+        expect(closeOutputStore).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+        expect(ui.controller.getSnapshot().session).toBe(previous);
+      } finally {
+        releaseJoin();
+        if (ui.controller.getSnapshot().mode === 'chat') {
+          ui.controller.handleKey('c', CTRL_C);
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
+        }
+        ui.controller.handleKey('c', CTRL_C);
+        await running;
+      }
+      expect(closeMcp).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('closes an unowned reseat build when reading its cost seed fails before wiring', async () => {
+    let props: RootAppProps | undefined;
+    const sessionStore = createSessionStore(client.db);
+    const readCosts = sessionStore.loadSessionCostBreakdown.bind(sessionStore);
+    let failCosts = false;
+    vi.spyOn(sessionStore, 'loadSessionCostBreakdown').mockImplementation((id) => {
+      if (failCosts) {
+        failCosts = false;
+        throw new Error('PRIVATE_RESEAT_COST_FAULT');
+      }
+      return readCosts(id);
+    });
+    const closeMcp = vi.fn(async () => {}),
+      closeOutputStore = vi.fn(async () => {});
+    const { deps } = makeDeps(
+      (value) => {
+        props = value;
+      },
+      {
+        openSessionStore: () => ({ store: sessionStore, db: client.db, close: closeSpy }),
+        buildResumedSession: async (options) => {
+          const built = await buildResumedChatSession(options);
+          failCosts = true;
+          return { ...built, closeMcp, closeOutputStore };
+        },
+      },
+    );
+    const running = driveHome(deps);
+    const ui = props;
+    if (ui === undefined) throw new Error('Home not mounted');
+    try {
+      type(ui, 'first');
+      ui.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'));
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+      const original = ui.controller.getSnapshot().session;
+      ui.controller.handleKey('/', {});
+      type(ui, 'models');
+      ui.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().modelPicker).toBeDefined());
+      type(ui, 'claude-opus-4-8');
+      ui.controller.handleKey('', ENTER);
+      if (ui.controller.getSnapshot().modelPicker?.phase === 'effort')
+        ui.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+      expect(closeOutputStore).toHaveBeenCalledOnce();
+      expect(ui.controller.getSnapshot().session).toBe(original);
+    } finally {
+      if (ui.controller.getSnapshot().mode === 'chat') {
+        ui.controller.handleKey('c', CTRL_C);
+        await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
+      }
+      ui.controller.handleKey('c', CTRL_C);
+      await running;
+    }
+  });
 
   it.each([true, false])(
     'resumes safe display through Continue without changing Home workspace (inline=%s)',
@@ -434,6 +574,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         await completion;
         vi.restoreAllMocks();
         if (client.sqlite.open) client.sqlite.close();
+        rmSync(testHomeDir, { recursive: true, force: true });
         rmSync(cwd, { recursive: true, force: true });
       }
     },
@@ -794,6 +935,60 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
+  });
+
+  it('keeps live tool details in the Home instance and clears them when returning Home', async () => {
+    writeFileSync(join(cwd, 'notes.txt'), 'HOME_TOOL_DETAILS_READ_RESULT');
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((props) => (captured = props), {
+      providers: scriptedResolver([
+        [
+          { type: 'text_delta', text: 'Before the read.' },
+          { type: 'tool_call_start', id: 'home-provider-call', name: 'read_file' },
+          {
+            type: 'tool_call_delta',
+            id: 'home-provider-call',
+            argsJsonDelta: '{"path":"notes.txt"}',
+          },
+          { type: 'tool_call_end', id: 'home-provider-call' },
+          stop('tool_use'),
+        ],
+        textTurn('After the read.'),
+      ]),
+    });
+    const running = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('Home did not mount.');
+    type(props, 'Read notes.txt');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    const session = props.controller.getSnapshot().session;
+    if (session === undefined) throw new Error('Home did not publish the session.');
+    const details = [...session.store.getSnapshot().toolDisplays.values()];
+    expect(details).toHaveLength(1);
+    expect(details[0]).toMatchObject({
+      toolId: 'read_file',
+      target: 'notes.txt',
+      outcome: 'success',
+    });
+    expect(details[0]?.callId).not.toBe('home-provider-call');
+    await session.processLine('/details');
+    expect(session.store.getSnapshot().review?.kind).toBe('details');
+    session.store.closeDetails();
+    props.controller.handleKey('c', CTRL_C);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+    expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
+    expect(session.store.getSnapshot().review).toBeUndefined();
+    session.store.applyToolLiveEvent({
+      phase: 'preview',
+      callId: 'late-home-call',
+      toolId: 'read_file',
+      preview: { kind: 'operation', target: 'late-home-target', fields: [] },
+    });
+    expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await running).toBe(EXIT_CODES.success);
   });
 
   it('retains both original native reservations when a pending clear build is superseded', async () => {
@@ -2127,6 +2322,345 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
    * ink's next frame, so the user is told they are near their spending cap on a line that lives for one frame.
    * `driveHome` was still writing raw.
    */
+  it('wires interrupted-effect disclosure to the production Home transcript', async () => {
+    let captured: RootAppProps | undefined;
+    let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+    let executions = 0;
+    const errs: string[] = [];
+    const made = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      {
+        io: { ...io, writeErr: (text) => errs.push(text) },
+        providers: scriptedResolver([
+          textTurn('ready'),
+          [
+            { type: 'tool_call_start', id: 'write', name: 'write_file' },
+            {
+              type: 'tool_call_delta',
+              id: 'write',
+              argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+            },
+            { type: 'tool_call_end', id: 'write' },
+            stop('tool_use'),
+          ],
+        ]),
+        buildSession: async (options) => {
+          expect(options.onEffectAttention).toBeTypeOf('function');
+          built = await buildChatSession({
+            ...options,
+            toolHost: {
+              fs: {
+                readFile: () =>
+                  Promise.resolve({
+                    content: '',
+                    mimeType: 'text/plain',
+                    sizeBytes: 0,
+                    lastModified: '',
+                  }),
+                listDirectory: () => Promise.resolve({ entries: [] }),
+                writeFile: () => Promise.reject(new Error('blind write forbidden')),
+                prepareWrite: () =>
+                  Promise.resolve({
+                    path: 'private-target',
+                    before: 'old',
+                    after: 'new',
+                    release: () => {},
+                    execute: () => {
+                      executions++;
+                      built?.session.abort();
+                      return Promise.resolve({ path: 'private-target', bytesWritten: 3 });
+                    },
+                  }),
+              },
+            },
+          });
+          return built;
+        },
+      },
+    );
+    const driving = driveHome(made.deps);
+    const props = captured;
+    if (props === undefined) throw new Error('Home render was not invoked');
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    await flush();
+    if (built === undefined || built.startingMode === undefined)
+      throw new Error('missing Home host');
+    applyChatMode(
+      makeChatModeEnv({
+        session: built.session,
+        tools: built.tools,
+        workspaceDir: built.context.workingDir,
+        startingModeAuthority: built.startingMode.authority,
+        prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+      }),
+      'accept-edits',
+    );
+    type(props, 'write');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(executions).toBe(1));
+    await built?.whenHostSafeToClose();
+    const transcript =
+      props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+    expect(
+      transcript.some(
+        (entry) => entry.role === 'notice' && entry.text === ABORTED_EFFECT_ATTENTION_NOTICE,
+      ),
+    ).toBe(true);
+    expect(errs.join('')).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+      expect.objectContaining({ state: 'prepared' }),
+    ]);
+    expect(
+      JSON.stringify(client.sqlite.prepare('SELECT content FROM session_messages').all()),
+    ).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    props.controller.handleKey('c', CTRL_C);
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    await driving;
+  });
+
+  it.each([
+    { surface: 'fresh', delivery: 'immediate', liveAbort: false },
+    { surface: 'resumed', delivery: 'immediate', liveAbort: false },
+    { surface: 'cleared', delivery: 'immediate', liveAbort: false },
+    { surface: 'reseated', delivery: 'immediate', liveAbort: false },
+    { surface: 'fresh', delivery: 'held', liveAbort: false },
+    { surface: 'fresh', delivery: 'failed', liveAbort: false },
+    { surface: 'fresh', delivery: 'immediate', liveAbort: true },
+  ] as const)(
+    'delivers joined uncertainty after owned $surface Home unmount (delivery=$delivery; liveAbort=$liveAbort)',
+    async ({ surface, delivery, liveAbort }) => {
+      const f = invocationFixture();
+      let captured: RootAppProps | undefined;
+      let built: Awaited<ReturnType<typeof buildChatSession>> | undefined;
+      let executions = 0;
+      let released = false;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = () => {
+          released = true;
+          resolve();
+        };
+      });
+      const errs: string[] = [],
+        order: string[] = [];
+      let acknowledge = () => {};
+      let deliveryEntered = false;
+      const deliveryAck =
+        delivery === 'held'
+          ? new Promise<void>((resolve) => {
+              acknowledge = resolve;
+            })
+          : Promise.resolve();
+      const toolHost: NonNullable<Parameters<typeof buildChatSession>[0]['toolHost']> = {
+        fs: {
+          readFile: () =>
+            Promise.resolve({
+              content: '',
+              mimeType: 'text/plain',
+              sizeBytes: 0,
+              lastModified: '',
+            }),
+          listDirectory: () => Promise.resolve({ entries: [] }),
+          writeFile: () => Promise.reject(new Error('blind write forbidden')),
+          prepareWrite: () =>
+            Promise.resolve({
+              path: 'private-target',
+              before: 'old',
+              after: 'new',
+              release: () => {},
+              execute: async () => {
+                executions++;
+                await held;
+                return { path: 'private-target', bytesWritten: 3 };
+              },
+            }),
+        },
+      };
+      const made = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          io: {
+            ...io,
+            writeErr: (text) => {
+              errs.push(text);
+              order.push('stderr-sync');
+            },
+            writeErrAcknowledged: async (text) => {
+              expect(order).toContain('restored');
+              deliveryEntered = true;
+              await deliveryAck;
+              if (delivery === 'failed') throw new Error('private-attention-output-failure');
+              errs.push(text);
+              order.push('stderr-ack');
+            },
+            writeOutAcknowledged: (text) => {
+              if (text === DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR)
+                order.push('restored');
+              return Promise.resolve();
+            },
+          },
+          providers: scriptedResolver([
+            textTurn('ready'),
+            [
+              { type: 'tool_call_start', id: 'write', name: 'write_file' },
+              {
+                type: 'tool_call_delta',
+                id: 'write',
+                argsJsonDelta: JSON.stringify({ path: 'private-target', content: 'new' }),
+              },
+              { type: 'tool_call_end', id: 'write' },
+              stop('tool_use'),
+            ],
+          ]),
+          buildSession: async (options) => {
+            built = await buildChatSession({ ...options, toolHost });
+            return built;
+          },
+          buildResumedSession: async (options) => {
+            const resumed = await buildResumedChatSession({ ...options, toolHost });
+            built = resumed;
+            return resumed;
+          },
+        },
+      );
+      const driving = driveHome(made.deps);
+      const completion = driving.then(
+        (value) => ({ value }),
+        (cause: unknown) => ({ cause }),
+      );
+      try {
+        const props = captured;
+        if (props === undefined) throw new Error('Home render missing');
+        type(props, 'hello');
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => {
+          expect(props.controller.getSnapshot().mode).toBe('chat');
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
+        });
+        const first = props.controller.getSnapshot().session;
+        if (surface === 'resumed') {
+          type(props, '/cancel');
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+          props.controller.handleKey('', { downArrow: true });
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => {
+            expect(props.controller.getSnapshot().mode).toBe('chat');
+            expect(props.controller.getSnapshot().session).not.toBe(first);
+          });
+        } else if (surface === 'cleared') {
+          type(props, '/clear');
+          props.controller.handleKey('', { downArrow: true });
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => {
+            expect(props.controller.getSnapshot().session).not.toBe(first);
+            expect(props.controller.getSnapshot().mode).toBe('chat');
+          });
+        } else if (surface === 'reseated') {
+          type(props, '/models');
+          props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined());
+          type(props, 'claude-opus-4-8');
+          props.controller.handleKey('', ENTER);
+          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+            props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first));
+        }
+        if (built === undefined || built.startingMode === undefined)
+          throw new Error('Home host missing');
+        await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+        applyChatMode(
+          makeChatModeEnv({
+            session: built.session,
+            tools: built.tools,
+            workspaceDir: built.context.workingDir,
+            startingModeAuthority: built.startingMode.authority,
+            prompt: () => Promise.resolve({ outcome: 'approve', scope: 'once' }),
+          }),
+          'accept-edits',
+        );
+        type(props, 'write');
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => expect(executions).toBe(1));
+        const originatingStore = props.controller.getSnapshot().session?.store;
+        if (liveAbort) {
+          built.session.abort();
+          release();
+          await built.whenHostSafeToClose();
+          await vi.waitFor(() =>
+            expect(
+              originatingStore
+                ?.getSnapshot()
+                .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
+            ).toBe(true),
+          );
+        }
+        made.signalHandlers[0]?.(15);
+        await vi.waitFor(() => expect(made.unmount).toHaveBeenCalledOnce());
+        expect(released).toBe(liveAbort);
+        if (!liveAbort) {
+          expect(errs.join('')).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+          expect(f.exit).not.toHaveBeenCalled();
+        }
+        release();
+        await built.whenHostSafeToClose();
+        if (delivery === 'held') {
+          await vi.waitFor(() => expect(deliveryEntered).toBe(true));
+          expect(order).toContain('restored');
+          expect(f.exit).not.toHaveBeenCalled();
+          expect(closeSpy).not.toHaveBeenCalled();
+          acknowledge();
+        }
+        const outcome = await completion;
+        if (delivery === 'failed') {
+          expect('cause' in outcome).toBe(true);
+          expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+        } else {
+          expect('value' in outcome).toBe(true);
+          expect(errs).toContain(ABORTED_EFFECT_ATTENTION_NOTICE + '\n');
+          expect(order.indexOf('stderr-ack')).toBeGreaterThan(order.indexOf('restored'));
+        }
+        expect(order).not.toContain('stderr-sync');
+        expect(
+          originatingStore
+            ?.getSnapshot()
+            .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
+        ).toBe(liveAbort);
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          expect.objectContaining({ state: 'prepared' }),
+        ]);
+        expect(
+          JSON.stringify(client.sqlite.prepare('SELECT content FROM session_messages').all()),
+        ).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+        expect(errs.join('')).not.toContain('private-target');
+        expect(errs.join('')).not.toContain('private-attention-output-failure');
+        if (delivery === 'failed') {
+          expect(f.registry.activeOwners).toBe(0);
+          expect(f.exit).not.toHaveBeenCalled();
+          // Infrastructure failure reserves the existing diagnostic interval before its finite backstop.
+          f.advance(3_000);
+        }
+        await vi.waitFor(() =>
+          expect(f.exit).toHaveBeenCalledWith(delivery === 'failed' ? 9 : 143),
+        );
+      } finally {
+        release();
+        acknowledge();
+        made.signalHandlers[0]?.(15);
+        await completion;
+        await f.registry.terminate({ kind: 'normal' });
+      }
+    },
+  );
+
   describe('a budget warning reaches the in-Home chat’s transcript', () => {
     it('routes through the view store, and never to stderr', async () => {
       let captured: RootAppProps | undefined;
@@ -2184,12 +2718,20 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       writeFileSync(cfg, '[preferences]\ncopy_on_select = false\n');
       const props = await captureProps({ global: { ...global, configPath: cfg } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
 
     it('`--no-mouse` withholds it too — there is no selection to copy', async () => {
       // Structural, not a second check: `resolveCopyOnSelect` takes the ALREADY-RESOLVED mouse decision.
       const props = await captureProps({ global: { ...global, noMouse: true } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
+    });
+
+    it('keeps explicit review copy available in inline mode', async () => {
+      const props = await captureProps({ global: { ...global, noAltScreen: true } });
+      expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
 
     it('`copy_on_select = true` with `--no-mouse` STILL withholds it', async () => {
@@ -2197,6 +2739,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       writeFileSync(cfg, '[preferences]\ncopy_on_select = true\n');
       const props = await captureProps({ global: { ...global, configPath: cfg, noMouse: true } });
       expect(props.clipboard).toBeUndefined();
+      expect(props.reviewClipboard).toBeTypeOf('function');
     });
   });
 

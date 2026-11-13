@@ -239,13 +239,13 @@ function checkMapControls(workflow) {
   assert.equal(job.defaults, undefined);
   assert.equal(workflow.jobs.ci.defaults, undefined);
   assert.deepEqual(job.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
-  assert.equal(job.needs, undefined);
+  assert.equal(job.needs, 'native-fs-assets');
   assert.equal(job.strategy, undefined);
   assert.equal(job['runs-on'], 'ubuntu-latest');
-  // Checkout, pnpm and Node only: no cache, upload or download action.
+  // The sole download is the source-bound native input; maps, caches and uploads remain absent.
   assert.deepEqual(
     job.steps.filter((step) => step.uses).map((step) => step.uses),
-    [actions.checkout, actions.pnpm, actions.node],
+    [actions.checkout, actions.pnpm, actions.node, actions.download],
   );
   assert.deepEqual(job.steps.find((step) => step.uses === actions.checkout).with, {
     'persist-credentials': false,
@@ -256,8 +256,27 @@ function checkMapControls(workflow) {
   });
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
-    ['pnpm install --frozen-lockfile', mapControlsCommand],
+    [
+      'pnpm install --frozen-lockfile',
+      "node tools/native-fs/assemble.mjs '${{ runner.temp }}/native-fs-assets'",
+      mapControlsCommand,
+    ],
   );
+  assert.deepEqual(job.steps.find((step) => step.uses === actions.download).with, {
+    pattern: 'native-fs-${{ github.run_id }}-*',
+    path: '${{ runner.temp }}/native-fs-assets',
+    'merge-multiple': false,
+  });
+  const download = job.steps.find((step) => step.uses === actions.download);
+  const assembly = job.steps[job.steps.indexOf(download) + 1];
+  assert.deepEqual(Object.keys(assembly).sort(), ['name', 'run']);
+  assert.equal(
+    assembly.run,
+    "node tools/native-fs/assemble.mjs '${{ runner.temp }}/native-fs-assets'",
+  );
+  // Native assembly receives protected own-run/source/attempt context from GitHub, with no
+  // step-local identity override. The later map controls retain the exact package source SHA.
+  assert.equal(assembly.env, undefined);
   const controls = job.steps.find((step) => step.run === mapControlsCommand);
   assert.deepEqual(Object.keys(controls).sort(), ['env', 'name', 'run']);
   assert.deepEqual(controls.env, { RELAVIUM_PACKAGE_SOURCE_SHA: '${{ github.sha }}' });
@@ -284,6 +303,34 @@ test('required CI runs the product map controls uncached and without uploads; re
 });
 
 for (const [name, mutate] of [
+  [
+    'current-consumer-attempt native selection',
+    (job) =>
+      (job.steps.find((step) => step.uses === actions.download).with.pattern =
+        'native-fs-${{ github.run_id }}-${{ github.run_attempt }}-*'),
+  ],
+  [
+    'merged native artifact directories',
+    (job) =>
+      (job.steps.find((step) => step.uses === actions.download).with['merge-multiple'] = true),
+  ],
+  [
+    'another workflow run for native artifacts',
+    (job) => (job.steps.find((step) => step.uses === actions.download).with['run-id'] = '12345'),
+  ],
+  [
+    'a forged native assembly source context',
+    (job) =>
+      (job.steps.find((step) => step.run?.startsWith('node tools/native-fs/assemble.mjs')).env = {
+        GITHUB_SHA: 'c'.repeat(40),
+      }),
+  ],
+  [
+    'a native artifact copy that bypasses validated complete assembly',
+    (job) =>
+      (job.steps.find((step) => step.run?.startsWith('node tools/native-fs/assemble.mjs')).run =
+        'cp -R native-fs-assets apps/cli/native/fs-metadata/runtime'),
+  ],
   [
     'a pnpm cache',
     (job) => (job.steps.find((step) => step.uses === actions.node).with.cache = 'pnpm'),
@@ -611,6 +658,7 @@ test('every CLI package, closure, bootstrap and CI tooling test runs in test:acc
     'tools/cli-package',
     'tools/cli-package/smoke',
     'tools/bundle-closure',
+    'tools/native-fs',
     'tools/cli-bootstrap',
     'tools/ci',
   ]) {

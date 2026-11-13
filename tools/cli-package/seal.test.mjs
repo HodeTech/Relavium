@@ -19,6 +19,9 @@ import { gzipSync } from 'node:zlib';
 import { ManifestError } from './manifest.mjs';
 import { finalizedPublicFiles, producerNodeMajor, sealPackage } from './seal.mjs';
 import { ustar } from './ustar-fixture.mjs';
+import { copyNativeAssets, inspectNativeAssets, sha256 } from '../native-fs/assets.mjs';
+import { syntheticNativeAssets } from '../native-fs/fixture.mjs';
+import { NATIVE_HELPER } from '../native-fs/catalog.mjs';
 
 /** A finalized candidate: public JS only in dist, its metafile and hash record in private staging. */
 function withFinalizedFixture(body) {
@@ -28,7 +31,8 @@ function withFinalizedFixture(body) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), bytes);
   };
-  const graph = (outputs) => write('staging/metafile-esm.json', JSON.stringify({ outputs }));
+  const graph = (outputs) =>
+    write('staging/metafile-esm.json', JSON.stringify({ inputs: {}, outputs }));
   const record = (paths) => {
     const outputs = paths.map((path) => {
       const bytes = readFileSync(join(root, 'apps/cli', path));
@@ -328,6 +332,7 @@ async function withCandidate(body, { packageManager = 'pnpm@9.12.3' } = {}) {
     write(
       join(staging, 'metafile-esm.json'),
       JSON.stringify({
+        inputs: {},
         outputs: Object.fromEntries(
           Object.keys(js).flatMap((path) => [
             [path, {}],
@@ -834,4 +839,56 @@ test('the seal requires the checkout and a private work directory before it read
       );
     }
   });
+});
+
+function addSyntheticNativeInventory({ root, staging, write }) {
+  // Format/inventory fixtures only: these are never ABI or native-execution evidence.
+  syntheticNativeAssets(root);
+  copyNativeAssets({ repository: root, complete: true });
+  const graph = JSON.parse(readFileSync(join(staging, 'metafile-esm.json'), 'utf8'));
+  graph.inputs[NATIVE_HELPER] = {};
+  write('staging/metafile-esm.json', JSON.stringify(graph));
+  const native = inspectNativeAssets(join(root, 'apps/cli/dist/native-fs'), { complete: true });
+  const record = JSON.parse(readFileSync(join(staging, 'finalized.json'), 'utf8'));
+  record.nativeAssets = [...native.files].map(([name, bytes]) => ({
+    path: `dist/native-fs/${name}`,
+    bytes: bytes.length,
+    sha256: sha256(bytes),
+  }));
+  write('staging/finalized.json', JSON.stringify(record));
+  return native;
+}
+
+test('finalized native inventory includes all eleven exact public assets independently of mapped ESM (synthetic inventory)', () => {
+  withFinalizedFixture((fixture) => {
+    const native = addSyntheticNativeInventory(fixture);
+    const files = finalizedPublicFiles(fixture.root, fixture.staging);
+    assert.equal(
+      [...files.keys()].filter((path) => path.startsWith('package/dist/native-fs/')).length,
+      11,
+    );
+    for (const [name, bytes] of native.files)
+      assert.deepEqual(files.get(`package/dist/native-fs/${name}`), bytes);
+    assert.ok(
+      ![...files.keys()].some((path) => path.endsWith('.rs') || path.endsWith('Cargo.lock')),
+    );
+  });
+});
+
+test('finalized native inventory refuses changed notices and a stale independent native hash record', () => {
+  for (const mutate of [
+    ({ root }) =>
+      writeFileSync(join(root, 'apps/cli/dist/native-fs/THIRD_PARTY_NOTICES.txt'), 'changed'),
+    ({ root, staging, write }) => {
+      const record = JSON.parse(readFileSync(join(staging, 'finalized.json'), 'utf8'));
+      record.nativeAssets[0].sha256 = '0'.repeat(64);
+      write('staging/finalized.json', JSON.stringify(record));
+      assert.ok(root);
+    },
+  ])
+    withFinalizedFixture((fixture) => {
+      addSyntheticNativeInventory(fixture);
+      mutate(fixture);
+      assert.throws(() => finalizedPublicFiles(fixture.root, fixture.staging));
+    });
 });

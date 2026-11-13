@@ -45,6 +45,13 @@ shared verbatim across every surface, not reimplemented per host. See
 [ADR-0011](../decisions/0011-internal-llm-abstraction.md) (which supersedes the earlier
 Vercel AI SDK decision recorded under ADR-0004).
 
+> Partially superseded 2026-11-12 by [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md):
+> only the CLI host's filesystem security-metadata component may use first-party
+> Rust/Node-API and its bounded native build/distribution inputs. Engine, LLM
+> provider seam and other application policy remain TypeScript; this is not an
+> engine rewrite or a general native-adapter exemption. The metadata contract
+> owns platform profiles, dependency pin/audit and native acceptance gates.
+
 ## 3. Local-first by default
 
 Phase 1 has zero cloud dependency and requires no account. Agents run on the user's

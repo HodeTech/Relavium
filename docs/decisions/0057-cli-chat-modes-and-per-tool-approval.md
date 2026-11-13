@@ -46,6 +46,18 @@
 >    Unicode bidirectional/directional format controls (U+202A–202E, U+2066–2069, LRM/RLM/ALM) so a streamed/pasted
 >    line can't visually spoof its logical bytes in an approval prompt (CVE-2021-42574); ZWJ/ZWNJ are preserved.
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+> and [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md):
+> configured interactive starting modes use live revocable startup-auto authority;
+> headless stays ask. Diff inspection/reveal and its focused navigation/search are
+> view-only approval-swallow exceptions; they never approve and require current
+> owner/geometry/flushed-frame evidence before affirmative input. Proven pre-effect
+> edit preconditions get the registry's scoped correction feedback, distinct from
+> MVP-4 denial recovery. Protected paths and explicit `[a]` semantics remain.
+> Implementation is pending; [chat contract](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> and [registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+> refine the earlier wording without silently changing shipped behavior.
+
 ## Context
 
 We want Claude-Code-style chat modes (ask / plan / accept-edits / auto) and per-tool approval for writes
@@ -229,3 +241,14 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Interactive approval remains an independent floor. The invocation-live HTTP authority is rechecked after awaited approval/effect preparation; a permission change cannot be bypassed by an earlier approval snapshot. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+> Amended 2026-11-12 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) and [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md): the MVP-3 filesystem slice is implemented on `development`, with mode-gated editing/search, inspectable write approval and configurable startup authority. The command grant/permission slice remains MVP-4. The [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12) records independent acceptance and required PR CI/maintainer review; this does not claim a merge or publication.
+
+
+> **Implementation receipt — 2026-11-13:** the MVP-3 refinement described above
+> was subsequently implemented and independently accepted on `development`; the
+> [implementation checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records its scoped evidence. Earlier implementation-pending wording retains
+> its historical design-checkpoint meaning. The
+> [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
+> remains open and requires fresh acceptance; no merge or publication is claimed.

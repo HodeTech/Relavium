@@ -6,6 +6,7 @@ import { validateDeclaredEnv } from './declared-env.js';
 import { FS_ROOT_LIMITS } from './fs-root-limits.js';
 export { FS_ROOT_LIMITS } from './fs-root-limits.js';
 import {
+  CHAT_MODES,
   FS_SCOPE_TIERS,
   LLM_PROVIDERS,
   ON_EXCEED_ACTIONS,
@@ -22,6 +23,10 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
+
+/** Only operator defaults may select auto; repository defaults deny or prompt for governed actions. */
+export const ChatModeSchema = z.enum(CHAT_MODES);
+export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto']);
 
 /** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
@@ -176,6 +181,8 @@ export const GlobalConfigSchema = z
       .optional(),
     preferences: z
       .object({
+        default_mode: ChatModeSchema.optional(),
+        default_mode_hint_shown: z.boolean().optional(),
         default_model: z.string().optional(),
         // The provider that serves `default_model`, PERSISTED at pick time (ADR-0059 — the provider is authoritative,
         // never re-inferred from the id). Written alongside `default_model` by the `/models` picker + the onboarding
@@ -238,6 +245,7 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
  */
 export const ChatConfigSchema = z
   .object({
+    default_mode: RepositoryChatModeSchema.optional(),
     default_model: z.string().optional(),
     // The provider serving `[chat].default_model`, persisted at pick time (ADR-0059). See the identical
     // `[preferences].default_provider` note above; the project layer overrides the global one, like `default_model`.

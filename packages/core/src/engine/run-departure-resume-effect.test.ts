@@ -46,7 +46,16 @@ for (const effect of ['unresolved', 'unreadable', 'committed'] as const) {
     if (effect !== 'unreadable') {
       const port = journal.for({ kind: 'run', runId: first.runId, nodeId: 'out', attempt: 1 });
       await port.prepare(0, 'http_request', 3, {});
-      if (effect === 'committed') await port.settle(0, 'http_request', 'committed', { ok: true });
+      if (effect === 'committed')
+        await port.settle(0, 'http_request', 'committed', {
+          v: 2,
+          hasValue: true,
+          value: { ok: true },
+          hasMappedValue: false,
+          outputMapping: null,
+          truncated: false,
+          summary: '',
+        });
     }
     let calls = 0;
     const engine = new WorkflowEngine({

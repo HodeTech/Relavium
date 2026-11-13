@@ -32,6 +32,13 @@
 > every other path uses. The reseat is one of the two places ADR-0081's acceptance criteria re-assert the
 > property, because the original defect survived a reseat.
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> a reseated interactive instance starts in the currently configured mode rather
+> than unconditionally ask, subject to shared revocable startup-auto authority.
+> Frozen agent grants remain unchanged and approvals/read evidence are fresh;
+> failed/stale replacements cannot restore revoked authority. Headless remains
+> ask. This is accepted MVP-3 design, not a shipped implementation claim.
+
 ## Context
 
 An `AgentSession` binds one agent and one model for its lifetime — multi-agent/model orchestration is a

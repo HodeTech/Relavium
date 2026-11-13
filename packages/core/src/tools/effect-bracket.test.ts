@@ -34,6 +34,7 @@ function recordingJournal(): {
   const order: string[] = [];
   return {
     port: {
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
       prepare: async (slot, toolId, tier, redacted, key) => {
         order.push('prepare');
         return inner.prepare(slot, toolId, tier, redacted, key);
@@ -108,6 +109,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
         },
         effects: {
           ...journal.port,
+          inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
           prepare: async (...args) => {
             const verdict = await journal.port.prepare(...args);
             if (failurePoint === 'prepare') failed = true;
@@ -297,6 +299,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const ctx: ToolDispatchContext = {
       ...ctxWith(recordingJournal()),
       effects: {
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: () => Promise.reject(new Error('history.db is locked')),
         settle: () => Promise.resolve(),
         discard: () => Promise.resolve(),
@@ -418,6 +421,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       ...ctxWith(recordingJournal()),
       secretArgKeys: new Set(['authorization']),
       effects: {
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: (_slot, _toolId, _tier, redacted) => {
           captured.push(redacted);
           return Promise.resolve({ outcome: 'proceed' });
@@ -471,6 +475,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const ctx: ToolDispatchContext = {
       ...ctxWith(recordingJournal()),
       effects: {
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: (_slot, _toolId, _tier, redacted) => {
           captured.push(redacted);
           return Promise.resolve({ outcome: 'proceed' });
@@ -532,6 +537,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const ctx: ToolDispatchContext = {
       ...ctxWith(recordingJournal()),
       effects: {
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: () => Promise.resolve({ outcome: 'proceed' }),
         settle: () => Promise.reject(new Error('history.db went away')),
         discard: () => Promise.resolve(),
