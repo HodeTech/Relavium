@@ -258,6 +258,49 @@ export function createChatStore(
     );
   };
 
+  const retainToolDisplays = (): void => {
+    // Current consent/contents are pinned; list selection follows stable identity through eviction.
+    const pinnedCallId = review?.screen === 'list' ? undefined : review?.callId;
+    let bytes =
+      (pinnedCallId === undefined ? 0 : toolDisplays.get(pinnedCallId)?.document?.sourceBytes) ?? 0;
+    for (const [id, value] of [...toolDisplays].reverse()) {
+      if (id === pinnedCallId) continue;
+      const cost = value.document?.sourceBytes ?? 0;
+      if (bytes + cost > 32 * 1024 * 1024) {
+        const summary = { ...value };
+        delete summary.document;
+        toolDisplays.set(id, summary);
+      } else bytes += cost;
+    }
+    while (toolDisplays.size > 64) {
+      const id = [...toolDisplays.keys()].find((key) => key !== pinnedCallId);
+      if (id === undefined) break;
+      toolDisplays.delete(id);
+    }
+    if (review?.screen === 'list') {
+      const callId = review.callId ?? toolDisplays.keys().next().value;
+      const selected = callId === undefined ? -1 : [...toolDisplays.keys()].indexOf(callId);
+      review = selected < 0 ? undefined : { ...review, callId, selected };
+      reviewPage = undefined;
+    }
+  };
+
+  const transitionReviewState = (
+    previous: ToolReviewState,
+    next: ToolReviewState,
+    calls: readonly ToolDisplay[],
+  ): ToolReviewState => {
+    if (next.screen !== 'list') return next;
+    return {
+      ...next,
+      callId: previous.screen === 'list' ? calls[next.selected]?.callId : previous.callId,
+      selected:
+        previous.screen === 'list'
+          ? next.selected
+          : calls.findIndex((call) => call.callId === previous.callId),
+    };
+  };
+
   return {
     applyToolLiveEvent: (event) => {
       if (sealed) return;
@@ -270,31 +313,7 @@ export function createChatStore(
         event.callId,
         updateToolDisplay(toolDisplays.get(event.callId), event),
       );
-      // Current consent/contents are pinned; list selection follows stable identity through eviction.
-      const pinnedCallId = review?.screen === 'list' ? undefined : review?.callId;
-      let bytes =
-        (pinnedCallId === undefined ? 0 : toolDisplays.get(pinnedCallId)?.document?.sourceBytes) ??
-        0;
-      for (const [id, value] of [...toolDisplays].reverse()) {
-        if (id === pinnedCallId) continue;
-        const cost = value.document?.sourceBytes ?? 0;
-        if (bytes + cost > 32 * 1024 * 1024) {
-          const summary = { ...value };
-          delete summary.document;
-          toolDisplays.set(id, summary);
-        } else bytes += cost;
-      }
-      while (toolDisplays.size > 64) {
-        const id = [...toolDisplays.keys()].find((key) => key !== pinnedCallId);
-        if (id === undefined) break;
-        toolDisplays.delete(id);
-      }
-      if (review?.screen === 'list') {
-        const callId = review.callId ?? toolDisplays.keys().next().value;
-        const selected = [...toolDisplays.keys()].findIndex((id) => id === callId);
-        review = selected < 0 ? undefined : { ...review, callId, selected };
-        reviewPage = undefined;
-      }
+      retainToolDisplays();
       flush();
     },
     sealToolPreviews: () => {
@@ -356,21 +375,7 @@ export function createChatStore(
       );
       switch (action.kind) {
         case 'state': {
-          const previousReview = review;
-          review =
-            action.state.screen === 'list'
-              ? {
-                  ...action.state,
-                  callId:
-                    previousReview.screen === 'list'
-                      ? calls[action.state.selected]?.callId
-                      : previousReview.callId,
-                  selected:
-                    previousReview.screen === 'list'
-                      ? action.state.selected
-                      : calls.findIndex((call) => call.callId === previousReview.callId),
-                }
-              : action.state;
+          review = transitionReviewState(review, action.state, calls);
           reviewPage = undefined;
           flush();
           break;

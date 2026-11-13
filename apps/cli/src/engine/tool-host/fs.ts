@@ -1249,12 +1249,12 @@ async function prepareWrite(
     return captureRequiredCreationMask(processes, required, maskSignal);
   };
   const initialMask = await creationMask(signal);
-  async function prepareNative(): Promise<unknown> {
-    if (
-      target !== undefined &&
-      !equalSnapshot(before, await snapshotPrepared(target, maxBytes, signal, stage))
-    )
+  async function assertPreparedSnapshot(path: string): Promise<void> {
+    if (!equalSnapshot(before, await snapshotPrepared(path, maxBytes, signal, stage)))
       throw new ToolPreparationError('stale_file');
+  }
+  async function prepareNative(): Promise<unknown> {
+    if (target !== undefined) await assertPreparedSnapshot(target);
     let nativePrepared: unknown;
     let preparationOwned = false;
     try {
@@ -1285,11 +1285,7 @@ async function prepareWrite(
         }
       }
       await verifyPreparedIdentity();
-      if (
-        target !== undefined &&
-        !equalSnapshot(before, await snapshotPrepared(target, maxBytes, signal, stage))
-      )
-        throw new ToolPreparationError('stale_file');
+      if (target !== undefined) await assertPreparedSnapshot(target);
     } catch (error) {
       if (preparationOwned) {
         try {
@@ -1780,6 +1776,29 @@ async function discover(
     const dir = await openDirectory(resolved);
     if (dir === undefined) return false;
     try {
+      function matchCandidate(
+        entry: import('node:fs').Dirent,
+        candidate: string,
+        rel: string,
+        workspaceRel: string,
+      ): 'stop' | 'ignored' | 'matched' | 'unmatched' {
+        try {
+          // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
+          work += rel.length + workspaceRel.length + 2;
+          consumeMatcherWork();
+          const ignoredCandidate =
+            isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
+            (isWithinFsRoot(workspaceRoot, candidate) &&
+              ignored.ignores(workspaceRel, entry.isDirectory(), consumeMatcherWork));
+          const matchesCandidate = !ignoredCandidate && (entry.isDirectory() || matchesGlob(rel));
+          if (ignoredCandidate) return 'ignored';
+          return matchesCandidate ? 'matched' : 'unmatched';
+        } catch (cause) {
+          if (cause !== matcherLimit) throw cause;
+          stop('work');
+          return 'stop';
+        }
+      }
       async function processEntry(
         entry: import('node:fs').Dirent,
         currentDir: string,
@@ -1797,23 +1816,9 @@ async function discover(
         const candidate = join(currentDir, entry.name);
         const rel = posixRel(root, candidate);
         const workspaceRel = posixRel(workspaceRoot, candidate);
-        let ignoredCandidate: boolean;
-        let matchesCandidate: boolean;
-        try {
-          // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
-          work += rel.length + workspaceRel.length + 2;
-          consumeMatcherWork();
-          ignoredCandidate =
-            isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
-            (isWithinFsRoot(workspaceRoot, candidate) &&
-              ignored.ignores(workspaceRel, entry.isDirectory(), consumeMatcherWork));
-          matchesCandidate = !ignoredCandidate && (entry.isDirectory() || matchesGlob(rel));
-        } catch (cause) {
-          if (cause !== matcherLimit) throw cause;
-          stop('work');
-          return 'stop';
-        }
-        if (ignoredCandidate) return 'next';
+        const match = matchCandidate(entry, candidate, rel, workspaceRel);
+        if (match === 'stop') return 'stop';
+        if (match === 'ignored') return 'next';
         stage.assertIdentity(await lstat(candidate, { bigint: true }));
         function queueDirectory(): 'next' | 'stop' {
           if (depth >= SCAN_DEPTH) {
@@ -1824,7 +1829,7 @@ async function discover(
           return 'next';
         }
         if (entry.isDirectory()) return queueDirectory();
-        if (!matchesCandidate) return 'next';
+        if (match === 'unmatched') return 'next';
         const real = await realpath(candidate).catch(() => undefined);
         if (real === undefined) {
           stats.unreadable++;

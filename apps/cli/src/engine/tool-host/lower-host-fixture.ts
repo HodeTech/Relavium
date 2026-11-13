@@ -132,24 +132,20 @@ for (const scenario of [
       else assert.equal('runErrorCode' in error && error.runErrorCode, 'tool_failed');
       return true;
     });
-    assert.equal(
-      await readFile(path, 'utf8'),
-      scenario === 'host-changed'
-        ? 'other!'
-        : scenario === 'host-committed-cancel' || scenario === 'host-publish-cancel'
-          ? 'after'
-          : 'before',
-    );
+    const actualContent = await readFile(path, 'utf8');
+    let expectedContent = 'before';
+    if (scenario === 'host-changed') expectedContent = 'other!';
+    else if (scenario === 'host-committed-cancel' || scenario === 'host-publish-cancel')
+      expectedContent = 'after';
+    assert.equal(actualContent, expectedContent);
     if (scenario === 'host-cancel') assert.deepEqual(effects.rows(), []);
-    else
-      assert.equal(
-        effects.rows()[0]?.state,
-        scenario === 'host-committed-cancel'
-          ? 'committed'
-          : scenario === 'host-publish-cancel'
-            ? 'prepared'
-            : 'ambiguous',
-      );
+    else {
+      const actualState = effects.rows()[0]?.state;
+      let expectedState = 'ambiguous';
+      if (scenario === 'host-committed-cancel') expectedState = 'committed';
+      else if (scenario === 'host-publish-cancel') expectedState = 'prepared';
+      assert.equal(actualState, expectedState);
+    }
   }
   assert.equal(approved, true);
   if (scenario === 'host-publish-cancel') assert.equal(observedPublished, true);

@@ -189,6 +189,9 @@ it.skipIf(process.platform === 'win32')(
 );
 
 it('protects native-produced v2 records and rejects unknown native record versions', async () => {
+  // This native interoperability fixture must let the adapter create its own
+  // protected hierarchy; Node's mode alone cannot establish the Windows DACL.
+  await rm(join(home, '.relavium-fs-private-v1'), { recursive: true });
   const adapter = await loadNativeMetadataWriteAdapter();
   const mask = process.platform === 'win32' ? undefined : process.umask();
   const prepared: unknown[] = [];

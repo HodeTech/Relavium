@@ -89,7 +89,7 @@ it('does not apply workspace ignore rules to synthetic parent segments of an ext
   });
   expect((await fs.findFiles?.('.', { glob: '**/*.txt' }))?.files).toHaveLength(0);
   const found = await fs.findFiles?.(extra, { glob: '**/*.txt' });
-  expect(found?.files.map((file) => file.path)).toEqual(['../extra/visible.txt']);
+  expect(found?.files.map((file) => file.path)).toEqual([join('..', 'extra', 'visible.txt')]);
   expect(found?.stats.incomplete).toBe(false);
   expect((await fs.searchFiles?.(extra, { pattern: 'needle' }))?.matches).toHaveLength(1);
 });
