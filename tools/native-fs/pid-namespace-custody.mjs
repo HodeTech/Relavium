@@ -71,6 +71,13 @@ if (mode === '--producer') {
     throw new Error('NATIVE_PID_NAMESPACE_ARGUMENTS');
   const image = process.argv[2];
   const binary = resolve(process.argv[3]);
+  // Docker parses mount sources as CSV even with shell expansion disabled.
+  if (
+    typeof image !== 'string' ||
+    !/^relavium-native-[a-z0-9-]+$/u.test(image) ||
+    [binary, script].some((path) => /[,"\r\n\0]/u.test(path))
+  )
+    throw new Error('NATIVE_PID_NAMESPACE_ARGUMENTS');
   const prefix = `relavium-custody-${randomBytes(12).toString('hex')}`;
   const volume = `${prefix}-fixture`;
   const common = [

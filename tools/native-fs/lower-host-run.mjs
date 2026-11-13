@@ -111,9 +111,11 @@ try {
 try {
   if (container !== undefined) {
     const state = docker(['inspect', '--format', '{{.State.Running}}', container]);
-    if (!success(state) || !['true', 'false'].includes(state.stdout.trim()))
-      mayRemoveBundle = false;
-    else if (state.stdout.trim() === 'true' && !success(docker(['kill', container])))
+    if (
+      !success(state) ||
+      !['true', 'false'].includes(state.stdout.trim()) ||
+      (state.stdout.trim() === 'true' && !success(docker(['kill', container])))
+    )
       mayRemoveBundle = false;
     if (
       mayRemoveBundle &&

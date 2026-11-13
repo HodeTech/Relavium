@@ -25,7 +25,7 @@ const refuse = (code) => {
 };
 const positive = (value) =>
   typeof value === 'string' &&
-  /^[1-9][0-9]{0,15}$/u.test(value) &&
+  /^[1-9]\d{0,15}$/u.test(value) &&
   Number.isSafeInteger(Number(value));
 function identity(environment) {
   const { GITHUB_RUN_ID: runId, GITHUB_RUN_ATTEMPT: attempt, GITHUB_SHA: sourceSha } = environment;
@@ -80,7 +80,7 @@ export function selectNativeArtifacts({
   const attempts = new Set();
   for (const name of names) {
     if (name.length > 128) refuse('NAME');
-    const match = /^native-fs-([1-9][0-9]{0,15})-([1-9][0-9]{0,15})-([a-z0-9_-]+)$/u.exec(name);
+    const match = /^native-fs-([1-9]\d{0,15})-([1-9]\d{0,15})-([a-z0-9_-]+)$/u.exec(name);
     if (
       match === null ||
       !positive(match[1]) ||
