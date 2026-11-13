@@ -1253,6 +1253,14 @@ async function prepareWrite(
     if (!equalSnapshot(before, await snapshotPrepared(path, maxBytes, signal, stage)))
       throw new ToolPreparationError('stale_file');
   }
+  async function releaseFailedPreparation(prepared: unknown): Promise<void> {
+    try {
+      if (before === null) await native.releaseNewMetadata(prepared);
+      else await native.releaseExistingMetadata(prepared);
+    } catch {
+      throw new HostDeniedError('filesystem metadata cleanup failed');
+    }
+  }
   async function prepareNative(): Promise<unknown> {
     if (target !== undefined) await assertPreparedSnapshot(target);
     let nativePrepared: unknown;
@@ -1287,14 +1295,7 @@ async function prepareWrite(
       await verifyPreparedIdentity();
       if (target !== undefined) await assertPreparedSnapshot(target);
     } catch (error) {
-      if (preparationOwned) {
-        try {
-          if (before === null) await native.releaseNewMetadata(nativePrepared);
-          else await native.releaseExistingMetadata(nativePrepared);
-        } catch {
-          throw new HostDeniedError('filesystem metadata cleanup failed');
-        }
-      }
+      if (preparationOwned) await releaseFailedPreparation(nativePrepared);
       if (error instanceof ToolPreparationError) throw error;
       throw new HostDeniedError('filesystem metadata preparation refused');
     }

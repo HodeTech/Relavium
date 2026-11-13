@@ -258,6 +258,14 @@ export function createChatStore(
     );
   };
 
+  const reconcileListSelection = (): void => {
+    if (review?.screen !== 'list') return;
+    const callId = review.callId ?? toolDisplays.keys().next().value;
+    const selected = callId === undefined ? -1 : [...toolDisplays.keys()].indexOf(callId);
+    review = selected < 0 ? undefined : { ...review, callId, selected };
+    reviewPage = undefined;
+  };
+
   const retainToolDisplays = (): void => {
     // Current consent/contents are pinned; list selection follows stable identity through eviction.
     const pinnedCallId = review?.screen === 'list' ? undefined : review?.callId;
@@ -277,12 +285,7 @@ export function createChatStore(
       if (id === undefined) break;
       toolDisplays.delete(id);
     }
-    if (review?.screen === 'list') {
-      const callId = review.callId ?? toolDisplays.keys().next().value;
-      const selected = callId === undefined ? -1 : [...toolDisplays.keys()].indexOf(callId);
-      review = selected < 0 ? undefined : { ...review, callId, selected };
-      reviewPage = undefined;
-    }
+    reconcileListSelection();
   };
 
   const transitionReviewState = (
