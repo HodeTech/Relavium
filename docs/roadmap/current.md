@@ -129,6 +129,9 @@ checks before maintainer merge.
 [ADR-0126](../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
 is accepted after the supplied reviews and maintainer instruction; the native
 source-admission and recovery-lifetime implementation is complete.
+A subsequent [controlled-publication fixture correction](phases/phase-2.6-conversational-authoring.md#controlled-publication-fixture-follow-up-2026-11-13)
+removes an unsupported scheduler-dependent success assumption while preserving
+the real publication/no-clobber proof and unchanged runtime contracts.
 ADR-0121 and other pending MVP-4/release
 decisions are not implicitly accepted by this correction work.
 

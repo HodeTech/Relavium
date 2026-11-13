@@ -3589,6 +3589,52 @@ receipts retain their exact scope. The new analysis must confirm both remaining
 complexity fixes, and complete current-head platform/consumer/CI remains the
 merge requirement.
 
+#### Controlled publication fixture follow-up (2026-11-13)
+
+The `c278c7c6` push checkpoint passes all 25 prerequisite jobs but its final
+workspace run fails one prepared-write fixture: two competing executes both
+reject where the test assumes exactly one fully acknowledged success. The
+other 7,917 CLI cases pass with 14 platform skips. This is not accepted as an
+infrastructure failure or retried unchanged.
+
+A private unchanged-source GNU reproduction records 22 zero-fulfilled outcomes
+in 564 races, including exact winner bytes with `possibly_published` and
+uncertain cleanup. An observational pass correlates an actual nonblocking
+inventory-lock refusal with retained evidence. macOS and nonroot GNU negative
+controls do not reproduce the failure. The historical CI log omitted both
+exceptions, so this proves the same-source failure mechanism and invalid
+liveness assumption, not the exact historical CI syscall. The accepted contract
+requires exclusive publication and conservative cleanup uncertainty, rather
+than guaranteed progress for uncontrolled contenders.
+
+The test-only correction at `a0acfc66` keeps all eleven cases and the original
+mutation-free missing-parent checks. It holds one real native stage at its
+publication-dispatch boundary while the competing host execute must publish
+and join cleanup successfully, then invokes the captured real native publication
+for the stale writer. Assertions require both native calls, the exact winner
+result/bytes, typed nonretryable refusal, no target clobber, no stage/record
+remnants, both prepared releases joined and the loader spy restored. No native
+outcome is fabricated. This is a controlled stale-target cut, not a new
+uncontrolled-write progress guarantee or direct observation of an OS rename.
+
+Author checks pass the actual macOS eleven-case file, CLI types/lint/format and
+fresh GNU/musl nonroot standalone production-host/native fixtures. The Linux
+standalone wrapper is distinct from the Vitest loader spy; actual Windows and
+corrected-head full CI remain required. Production TypeScript/Rust, native
+inputs, workloads, case counts and deadlines are unchanged. Independent reviews
+and the scoped security follow-up own acceptance of this verification-only
+change; no ADR or product-policy change is introduced.
+
+Fresh Terra/high round one and Sol/high round two each report zero findings
+and independently pass the actual macOS eleven-case file. A separate Sol/high
+security follow-up confirms that the fixture calls both real native publication
+methods, joins actual cleanup, preserves the no-clobber oracle and owns its
+temporary resources. Its 505-entry non-test runtime/native/core/tooling/workflow
+tree comparison is byte-identical to the preceding accepted source. These are
+scoped verification-only follow-ups; the prior complete cumulative and separate
+security sittings retain their unchanged production scope. Corrected-head
+Windows, complete CI and scanner checks remain the final merge gate.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
