@@ -196,6 +196,44 @@ function backtrack(
   return reversed;
 }
 
+async function matchingEdges(
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  tick: () => boolean,
+  yieldWork: () => Promise<void>,
+): Promise<{ prefix: number; oldEnd: number; nextEnd: number }> {
+  let prefix = 0;
+  while (prefix < old.length && prefix < next.length && same(old[prefix]!, next[prefix]!)) {
+    prefix++;
+    if (tick()) await yieldWork();
+  }
+  let oldEnd = old.length;
+  let nextEnd = next.length;
+  while (oldEnd > prefix && nextEnd > prefix && same(old[oldEnd - 1]!, next[nextEnd - 1]!)) {
+    oldEnd--;
+    nextEnd--;
+    if (tick()) await yieldWork();
+  }
+  return { prefix, oldEnd, nextEnd };
+}
+
+async function appendDirectOperations(
+  old: readonly DiffLine[],
+  next: readonly DiffLine[],
+  add: (operation: LineDiffOperation) => void,
+  tick: () => boolean,
+  yieldWork: () => Promise<void>,
+): Promise<void> {
+  for (const line of old) {
+    add({ kind: 'delete', before: line });
+    if (tick()) await yieldWork();
+  }
+  for (const line of next) {
+    add({ kind: 'insert', after: line });
+    if (tick()) await yieldWork();
+  }
+}
+
 async function boundedOperations(
   old: readonly DiffLine[],
   next: readonly DiffLine[],
@@ -209,18 +247,7 @@ async function boundedOperations(
     await options.yield?.();
     options.checkCancelled?.();
   };
-  let prefix = 0;
-  while (prefix < old.length && prefix < next.length && same(old[prefix]!, next[prefix]!)) {
-    prefix++;
-    if (tick()) await yieldWork();
-  }
-  let oldEnd = old.length;
-  let nextEnd = next.length;
-  while (oldEnd > prefix && nextEnd > prefix && same(old[oldEnd - 1]!, next[nextEnd - 1]!)) {
-    oldEnd--;
-    nextEnd--;
-    if (tick()) await yieldWork();
-  }
+  const { prefix, oldEnd, nextEnd } = await matchingEdges(old, next, tick, yieldWork);
   const add = (operation: LineDiffOperation): void => {
     if (operations.length >= MAX_OPERATIONS) throw new DiffLimitError();
     operations.push(operation);
@@ -232,14 +259,7 @@ async function boundedOperations(
   const middleOld = old.slice(prefix, oldEnd);
   const middleNext = next.slice(prefix, nextEnd);
   if (middleOld.length === 0 || middleNext.length === 0) {
-    for (const line of middleOld) {
-      add({ kind: 'delete', before: line });
-      if (tick()) await yieldWork();
-    }
-    for (const line of middleNext) {
-      add({ kind: 'insert', after: line });
-      if (tick()) await yieldWork();
-    }
+    await appendDirectOperations(middleOld, middleNext, add, tick, yieldWork);
   } else {
     const { trace, distance } = await shortestPath(middleOld, middleNext, options);
     for (const operation of backtrack(middleOld, middleNext, trace, distance)) {
