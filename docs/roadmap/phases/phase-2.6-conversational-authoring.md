@@ -3512,7 +3512,7 @@ correctly rejects changed HEAD/index evidence; the frozen-source complete
 repeat passes all 1,129 cases. These failed attempts remain separate receipts.
 
 The final source acceptance below owns the completed review/security receipts.
-Automatic closure of the 16 source-corrected scanner records and corrected-head
+Verified outcomes for every source-corrected scanner record and corrected-head
 complete CI remain required in current PR checks; historical local or partial
 platform receipts do not supply that merge authority.
 
@@ -3558,6 +3558,36 @@ native profiles, Windows integration, four installed consumers and complete
 combined CI before merge. This record claims development source/review
 acceptance; maintainer review, merge and publication are separate. ADR-0121
 remains Proposed and the publication guard remains closed.
+
+#### Correction scanner rescan follow-up (2026-11-13)
+
+The `f18e8434` scan confirms 14 of the original 16 source keys Fixed, retains
+one preparation complexity record at 16 and reports one new retention-helper
+complexity record at 16. The guarded contributor mount call still receives the
+taint report: its exact image and CSV-source admission, ten real orchestrator
+controls and independent security/general reviews establish a False Positive
+after the hardening. The relocated sequential fixture-read record receives the
+same individually reviewed Accepted rationale. Both remote transitions pass
+read-back; they do not suppress a real unguarded argument boundary.
+
+The two complexity records receive the smallest additional helper extractions
+at `e61ae0fa`: failed-preparation release retains its ownership guard and fixed
+error precedence; synchronous list reconciliation remains after eviction and
+before frame flush. A fresh Sol/medium scoped general reviewer finds no issue
+and reconstructs both files to verify helper-only changes. The separate
+Sol/high security delta sitting confirms unchanged authority, custody and
+classification. The additional Promise continuation occurs only after actual
+release on failed preparation; no admission or producer work moves with it.
+This readability-only follow-up does not replace the preceding complete
+cumulative round or independent security sitting.
+
+Author checks pass 148 affected cases, CLI strict types/lint/format, the unchanged
+complete CLI population of 7,919 cases / 13 skips, and all seven build/format
+tasks. Other workspace source, native source/build inputs, acceptance-tool
+workloads, assertions and deadlines are unchanged; their prior source-bound
+receipts retain their exact scope. The new analysis must confirm both remaining
+complexity fixes, and complete current-head platform/consumer/CI remains the
+merge requirement.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

@@ -117,12 +117,13 @@ merge remained separate.
 **Additional PR #99 review (2026-11-13): implementation and local review complete.**
 The supplied reports at `80e8cd88` are individually reconciled against actual
 code, contracts and focused probes. Runtime/UX, native lifetime, delivery and
-scanner corrections through `76cf3fda` pass 18,651 workspace cases and 1,129
+scanner corrections through `e61ae0fa` pass 18,651 workspace cases and 1,129
 acceptance-tool cases. Requested review/fix rounds, a fresh complete cumulative
 round and separate final-source security sitting are clean. The
 [final development source checkpoint](phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
-owns exact review/test evidence and limits. All 43 additional scanner records
-have source fixes or verified remote dispositions; final-head automatic closure,
+owns exact review/test evidence and limits. All 45 additional scanner records
+have source fixes or verified remote dispositions, including the two rescan
+follow-ups; final-head source/disposition verification,
 quality gate and complete native/consumer/combined CI must pass in current PR
 checks before maintainer merge.
 [ADR-0126](../decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)

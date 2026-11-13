@@ -56,11 +56,12 @@ See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authorin
 MVP-3's three steps are implemented and independently accepted on `development`:
 editing/search tools, trustworthy approval previews and tool-call rendering v2,
 native metadata preservation, the built-in editing grant and startup-mode settings.
-The PR #99 correction source through `76cf3fda` passes 18,651 workspace tests
+The PR #99 correction source through `e61ae0fa` passes 18,651 workspace tests
 and 1,129 acceptance-tool cases. Verified general-review findings are fixed;
 fresh cumulative reviews and separate final-source security sittings are clean.
-All 207 baseline Sonar reports and 43 correction follow-ups have individual
-source actions or verified remote dispositions. Final-head scanner/platform
+All 207 baseline Sonar reports and 45 correction follow-ups have individual
+source actions or verified remote dispositions, including reviewed rescan follow-ups.
+Final-head scanner/platform
 checks and maintainer review govern PR #99's merge.
 The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 owns exact evidence and limits. MVP-4 is the next implementation milestone;
