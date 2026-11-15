@@ -170,10 +170,20 @@ describe('modelSwitchNotice — the mid-session /models marker', () => {
     );
   });
 
-  it("RETAINS ADR-0059's bound disclosure — text-only, and TOOL results are what is lost", () => {
+  it("RETAINS ADR-0059's bound disclosure — TOOL arguments and results are what is lost (ADR-0128 wording)", () => {
     const marker = modelSwitchNotice('a', 'b');
-    expect(marker).toContain('text transcript only');
-    expect(marker).toContain('Prior tool calls and their results');
+    expect(marker).toContain(
+      'Prior tool arguments and results (including files a tool read) are not carried',
+    );
+  });
+
+  it('does NOT overstate the loss — content-free records of tool names and outcomes DO carry', () => {
+    // ADR-0128: telling the user no tool activity crosses the swap would be false in the other direction, the same
+    // class of error ADR-0059's note 4 corrected for `@`-attached files.
+    const marker = modelSwitchNotice('a', 'b');
+    expect(marker).toContain('content-free records of earlier tool calls (tool name and outcome)');
+    expect(marker).not.toContain('transcript only');
+    expect(marker).not.toContain('Prior tool calls and their results');
   });
 
   it('does NOT understate what the new model sees — an @-attached file DOES carry', () => {

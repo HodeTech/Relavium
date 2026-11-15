@@ -102,9 +102,11 @@ describe('restored archive and actual authored model request', () => {
         expect(requests).toEqual([]);
         expect(store.loadMessages('s')).toEqual(messages);
         const rawRestore = reconstructSessionState(record, messages);
+        // No tool rows were written, and there is no completeness marker, so each restored turn is ambiguous.
+        const ambiguous = { records: [], omitted: 0, incomplete: true };
         expect(rawRestore.completedTurnSpans).toEqual([
-          { start: 0, end: 1 },
-          { start: 1, end: 3 },
+          { start: 0, end: 1, receipts: ambiguous },
+          { start: 1, end: 3, receipts: ambiguous },
         ]);
         built = await buildResumedChatSession({
           now: () => Date.parse(timestamp),
@@ -145,6 +147,10 @@ describe('restored archive and actual authored model request', () => {
         expect(sent.includes('CANONICAL latest')).toBe(memory?.type !== 'none');
         expect(sent.includes('CANONICAL empty-final')).toBe(
           memory?.type !== 'none' && memory?.type !== 'window',
+        );
+        // ADR-0128: one fixed notice discloses the ambiguity, and only when a selected turn carries it.
+        expect(sent.split('Some earlier tool activity may not be listed').length - 1).toBe(
+          memory?.type === 'none' ? 0 : 1,
         );
         expect(sent.includes('PRIVATE SUMMARY')).toBe(
           memory?.type !== 'none' && memory?.type !== 'window',

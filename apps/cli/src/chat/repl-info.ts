@@ -217,6 +217,11 @@ export function clearedNotice(oldSessionId: string): string {
  * boundary at all. A user reading the old wording would have believed an `@`-attached secret was invisible to the new
  * model when it is not — an understatement about data exposure, which is the dangerous direction to be wrong in.
  *
+ * **ADR-0128 (2026-11-15) refines the clause, in the same direction.** The new model now also sees bounded,
+ * content-free *receipts* — a tool's name and recorded outcome, never its arguments or result — so "text transcript
+ * only" would be false the other way round. The wording therefore says exactly what is and is not carried: tool
+ * arguments and results (including a file a tool read) are not; content-free records of tool names and outcomes are.
+ *
  * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
  * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
  * into the transcript.
@@ -224,8 +229,8 @@ export function clearedNotice(oldSessionId: string): string {
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
     `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
-    `transcript only. Prior tool calls and their results (including files a tool read) are not carried; text you ` +
-    `sent — @-attached file contents included — is.`
+    `transcript plus content-free records of earlier tool calls (tool name and outcome). Prior tool arguments and ` +
+    `results (including files a tool read) are not carried; text you sent — @-attached file contents included — is.`
   );
 }
 

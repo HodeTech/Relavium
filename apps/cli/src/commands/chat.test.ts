@@ -2711,9 +2711,15 @@ describe('chatCommand', () => {
     // The marker names BOTH ends of the switch (2.6.C) — it now lands beneath a conversation the user can still see,
     // so "what changed" is the useful thing to say, not "here is your new model" to an empty screen.
     expect(intros[1]).toContain('claude-sonnet-4-6 → claude-opus-4-8');
-    // ADR-0059 BINDS this disclosure clause (a host-side reseat carries the transcript text-only). Dropping it would
-    // need a superseding ADR, not a wording change — so it is asserted, not just present.
-    expect(intros[1]).toContain('text transcript only');
+    // ADR-0059 BINDS this disclosure clause: tool arguments and results do not cross a reseat. ADR-0128 (Accepted
+    // 2026-11-15) refines it — content-free records of tool names and outcomes DO cross — and the notice must say
+    // both, so each half is asserted, not just present.
+    expect(intros[1]).toContain(
+      'Prior tool arguments and results (including files a tool read) are not carried',
+    );
+    expect(intros[1]).toContain(
+      'content-free records of earlier tool calls (tool name and outcome)',
+    );
     expect(intros[1]).toContain('@-attached file contents included');
 
     const full = store.loadFull('id-0');

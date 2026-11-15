@@ -214,21 +214,41 @@ describe('session structure through the real CLI host and SQLite', () => {
         consentGate: () => Promise.resolve(new Map()),
       });
       const resumedPersister = attach(resumed, resumed.nextSequenceNumber);
+      // Derived from the real persisted rows. The surviving empty-final turn made one MCP-discovered call, which
+      // is recorded under the fixed label; the plain turn after it has zero tool rows and is therefore ambiguous.
       expect(resumed.resumeState.completedTurnSpans).toEqual([
-        { start: 0, end: 1 },
-        { start: 1, end: 3 },
+        {
+          start: 0,
+          end: 1,
+          receipts: {
+            records: [{ label: 'other_tool', outcome: 'ok' }],
+            omitted: 0,
+            incomplete: false,
+          },
+        },
+        { start: 1, end: 3, receipts: { records: [], omitted: 0, incomplete: true } },
       ]);
       for (const text of ['q4', 'q5']) {
         resumedPersister.beginUserTurn(text);
         await resumed.session.sendMessage(text);
       }
+      // The fixed ADR-0128 prose is replaced by short tokens so this test pins WHERE receipts sit, not their wording
+      // (the wording is pinned in core).
+      const tokens = (text: string): string =>
+        text
+          .replace(/\[Earlier turns of this conversation[^\]]*\]/g, '<legend>')
+          .replace(/\[Some earlier tool activity[^\]]*\]/g, '<gap>')
+          .replace(/\[Recorded tool calls made while[^\]]*\]/g, '<open>')
+          .replace(/\[End of recorded tool calls\.\]/g, '<close>');
       const wire = requests.map((request) =>
         request.messages.map((message) => ({
           role: message.role,
-          text: message.content
-            .filter((part) => part.type === 'text')
-            .map((part) => part.text)
-            .join(''),
+          text: tokens(
+            message.content
+              .filter((part) => part.type === 'text')
+              .map((part) => part.text)
+              .join(''),
+          ),
         })),
       );
       expect(wire).toEqual(
@@ -236,12 +256,18 @@ describe('session structure through the real CLI host and SQLite', () => {
           ? [[{ role: 'user', text: 'q4' }], [{ role: 'user', text: 'q5' }]]
           : [
               [
-                { role: 'user', text: 'q2\n\nq3' },
+                // Both selected turns: the legend (one block exists), the gap sentence (the plain turn is
+                // ambiguous), then q2 with its own block, folded with q3.
+                {
+                  role: 'user',
+                  text: '<legend> <gap>\n\nq2\n\n<open>\n1. other_tool — ok\n<close>\n\nq3',
+                },
                 { role: 'assistant', text: 'a3' },
                 { role: 'user', text: 'q4' },
               ],
               [
-                { role: 'user', text: 'q3' },
+                // q2 has left the window; only the ambiguous plain turn keeps the one gap sentence.
+                { role: 'user', text: '<gap>\n\nq3' },
                 { role: 'assistant', text: 'a3' },
                 { role: 'user', text: 'q4' },
                 { role: 'assistant', text: 'a4' },
