@@ -145,7 +145,7 @@ full-screen ships together with:
 
   Today's `✓ Copied` toast claims more than OSC 52 can confirm, and MVP-2 slice 2a corrects it.
 
-The benchmark records these as the most common failure of products that made full-screen the default.
+The retained UX notes identify these as required affordances when full-screen takes over the terminal.
 
 ### 9. Commands are discoverable without documentation
 
@@ -153,7 +153,7 @@ The benchmark records these as the most common failure of products that made ful
   commands show an argument hint or open a picker. A command that cannot run in the current state is shown disabled,
   with the reason.
 - **Typos.** A mistyped slash command reports the nearest match. It never runs it: an auto-run fuzzy match executes
-  the wrong command, a lesson Claude Code recorded.
+  the wrong command.
 - **Keys.** The footer hint-bar shows the current screen's most relevant keys, and `/help` lists all of them
   (2.6.E's cheat sheet). There is still no separate `/shortcuts` command (ADR-0056).
 
@@ -174,8 +174,8 @@ The benchmark records these as the most common failure of products that made ful
 - **Run subcommands from inside the TUI** (a slash that spawns `relavium <cmd>`). Rejected, the same reason
   ADR-0056's amendment gave. A child process takes over the terminal and loses the Home's state. Re-hosting the core
   avoids both problems.
-- **Full-screen only, dropping the inline renderer.** Rejected. Copilot CLI removed its inline mode, and its
-  still-open complaint lists lost scrollback, search and copy. The inline renderer is also the screen-reader path.
+- **Full-screen only, dropping the inline renderer.** Rejected. Native scrollback, search and copy still need a usable path. The inline
+  renderer is also the screen-reader path.
 - **A single shared registry for shell and slash commands.** Not needed. The two registries describe different
   shapes (argv grammar against a live session's capabilities). The rule that matters is one core per task (§2).
 

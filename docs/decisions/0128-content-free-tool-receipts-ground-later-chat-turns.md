@@ -33,7 +33,12 @@ The [session contract draft](../reference/contracts/agent-session-spec.md#propos
 owns the proposed fields, bounds and ordering. Decisions binding its implementation:
 
 1. Use only validated, paired structural records. A record means a call and its
-   outcome were recorded; `error` can include pre-dispatch refusal. `ok` means a
+   outcome were recorded; restored rows are unverified local-store claims,
+   not authenticated execution provenance. Syntax/pairing validation cannot
+   prove a historical registry resolution. Emit only code-owned built-in labels;
+   replace every other name with a fixed label to avoid sending arbitrary
+   historical text. Keep engine-form ids internal for pairing; render only
+   projection-local ordinals. `error` can include pre-dispatch refusal. `ok` means a
    recorded successful outcome, without proving target identity, exact bytes or
    current filesystem state. Never derive evidence from assistant prose, display
    labels or arbitrary event payloads.
@@ -44,7 +49,9 @@ owns the proposed fields, bounds and ordering. Decisions binding its implementat
 3. Apply the existing authored memory selection and completed-turn boundaries.
    Normal turns, empty finals, resume and model reseat use the same receipt
    projection. Missing historical structure means unavailable evidence, never
-   proof that no call occurred. Failed/aborted turns remain excluded under the
+   proof that no call occurred. Zero-row restored turns are ambiguous without
+   a completeness marker and stay unavailable, even if the original live
+   instance knew it made no calls. Failed/aborted turns remain excluded under the
    current contract; MVP-4's proposed markers remain independently gated.
 4. Make this projection the normal behavior under existing memory policy. It
    adds no setting or raw-content toggle. CR-70's separate user-scoped toggle,
@@ -55,7 +62,10 @@ owns the proposed fields, bounds and ordering. Decisions binding its implementat
    receipt archive. Preserve request measurement, four-pass fit, rollback,
    cancellation, `/trim` message units and durable boundary identity.
 6. Bound output and retained auxiliary receipt state so the correction cannot
-   accumulate a second unbounded transcript. Disclose unavailable/omitted detail
+   accumulate a second unbounded transcript. Bound input validation, copying,
+   counting and derivation work as well as output; uninspected detail is unknown.
+   Preserve whole records through oversized-message summarization. Disclose
+   unavailable/omitted detail
    without treating absence as evidence of no activity. Measure the added request
    bytes/tokens and local projection cost before acceptance.
 
@@ -99,9 +109,11 @@ tests. Run the maintainer's two fresh review rounds and a separate security
 sitting; do not split each field or lifecycle path into its own step.
 
 Required tests cover successful create/read followed by another turn; multiple
-calls with mixed outcomes; empty finals; normal, resumed and reseated parity;
+calls with mixed outcomes; empty finals; normal, resumed and reseated evidence
+parity subject to the documented empty-history ambiguity;
 all memory policies; legacy gaps; missing/mismatched/duplicate structural
-identities; byte/count limits and auxiliary-state eviction; request ownership;
+identities and forged matching rows; credential-like custom names/ids;
+byte/count/work limits and auxiliary-state eviction; request ownership;
 compaction success/failure/abort and trim rebasing; overflow measurement; and
 no argument/result/path/media/signature leakage into notes, history or export.
 Verify stale receipts cannot bypass fresh-read, policy, approval or non-replay

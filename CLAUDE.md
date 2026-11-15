@@ -142,6 +142,12 @@ These apply to every AI agent in this repo, regardless of model, runner, or tool
     [docs/standards/commit-style.md](docs/standards/commit-style.md) and
     [docs/standards/documentation-style.md](docs/standards/documentation-style.md).
 
+**Research documentation direction (maintainer, 2026-11-15):** retain technical
+findings and Relavium requirements without naming or linking external agent
+products. Follow the [documentation direction](docs/analysis/README.md#maintainer-documentation-direction--2026-11-15).
+Required dependency/provider provenance and truthful assisting-tool attribution
+remain explicit; this instruction does not rewrite published Git history.
+
 ## Where to find things
 
 | Need | Path |

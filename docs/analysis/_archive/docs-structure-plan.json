@@ -269,16 +269,16 @@
       {
         "key": "strategy",
         "topicsCovered": [
-          "competitiveAnalysis: 7 competitors each with strengths(5)/gaps(7-8)/ourAdvantage — Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, CrewAI/AutoGen",
+          "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
           "uniqueValueProp: statement + 5 proof points",
-          "goToMarket: primaryUser (senior devs/tech leads at 5-50 eng teams who outgrew Claude Code/Cline/Cursor), phase1LaunchStrategy (lead with VS Code Marketplace, CLI via Homebrew/npm, desktop as wow-demo, seed 20-30 templates), 7 distribution channels, viralMechanic (workflow file as the invite)",
+          "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
           "workflowAsCodeDifferentiator: keyInsight (workflow file = team infrastructure primitive), 8 use cases (onboarding, CI/CD parity, workflow code review, audit trail, OSS library, versioning/rollback, monorepo inheritance, documentation), networkEffects (hub-and-spoke, value scales with team size)",
           "pricingStrategy: freeTier (8 features + limits), proTier ($20/mo or $16 annual, 9 features), teamTier ($15/seat min 3, 9 features), enterpriseTier (custom ~$2000/mo for 25+ seats, 11 features), rationale (gate on collaboration/scale not capability)",
           "cloudExecutionTrigger: businessCase (cloud = business model unlock not tech milestone), 10 cloud-only capabilities, whenToLaunch (3 simultaneous conditions: 500+ teams with shared .agentorg/ workflows, 20% Pro/Team asking for scheduled/webhook, stable runtime)"
         ],
         "depth": "Deep and authoritative on positioning/business. Competitive analysis is thorough (7 named competitors with specific, current strengths and gaps). NOTE: two different pricing schemes coexist — strategy.pricingStrategy has 4 tiers (Free/Pro $20/Team $15/Enterprise ~$2000) while corePortal.webPortal.tiers has 3 tiers (Free/Pro $19/Enterprise). These conflict on tier count and Pro price ($20 vs $19) and must be reconciled.",
         "concreteArtifacts": [
-          "Full 7-competitor competitive matrix (Claude Code, Cursor, Continue.dev, Cline/Roo-code, GitHub Copilot Agent Mode, n8n/Zapier, CrewAI/AutoGen) with strengths/gaps/ourAdvantage — strategy.competitiveAnalysis",
+          "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
           "UVP statement verbatim: 'The only platform that lets any developer visually design, locally execute, and git-commit multi-model multi-agent workflows that run identically in their IDE, terminal, desktop canvas, and CI/CD pipeline...' — strategy.uniqueValueProp.statement",
           "4-tier pricing (Free / Pro $20 / Team $15-seat-min-3 / Enterprise ~$2000+ for 25 seats) with rationale — strategy.pricingStrategy",
           "Viral mechanic: 'the workflow file itself is the invite' — strategy.goToMarket.viralMechanic",
@@ -1186,7 +1186,7 @@
       {
         "path": "docs/uvp.md",
         "type": "file",
-        "purpose": "Unique value proposition statement + positioning vs LangGraph/n8n/Zapier/Claude Code; why visual + git + multi-model + no-lock-in.",
+        "purpose": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
         "readiness": "partial",
         "sourceContent": "strategy.uniqueValueProp.statement (ready) + competitive framing (to-be-written)"
       },
@@ -1634,7 +1634,7 @@
       {
         "path": "docs/analysis/competitive-landscape-2026-06-03.md",
         "type": "file",
-        "purpose": "Dated competitive analysis (LangGraph/n8n/Zapier/Claude Code) feeding uvp.md. Optional, dated per house style.",
+        "purpose": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
         "readiness": "to-be-written",
         "sourceContent": "strategy.uniqueValueProp (basis); to-be-written"
       },

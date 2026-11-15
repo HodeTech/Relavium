@@ -21,7 +21,7 @@ It has two parts:
 | [cli-ux-benchmark-2026-11-08.md](cli-ux-benchmark-2026-11-08.md) | Retained terminal UX requirements and the dated Relavium Home reach inventory; informs ADR-0122 and MVP-2. |
 | [macos-file-write-compatibility-2026-11-15.md](macos-file-write-compatibility-2026-11-15.md) | Local metadata compatibility and the in-place versus atomic-publication tradeoff informing ADR-0127. |
 | [chat-context-command-and-latency-2026-11-15.md](chat-context-command-and-latency-2026-11-15.md) | Source-grounded context omission, latency evidence limits, scoped correction proposal and notes for existing MVP-4/MVP-5 work. |
-| [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive itself is **frozen — never edited**. |
+| [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive is frozen apart from its explicitly recorded maintainer-directed editorial redaction. |
 
 ## Conventions
 
@@ -32,8 +32,8 @@ It has two parts:
   in their one canonical home under [reference/](../reference/README.md); analysis links
   to them rather than restating them (see
   [documentation-style.md](../standards/documentation-style.md) §6).
-- **The archive is one-way and frozen.** The living tree never edits the archive, and the
-  archive never gets new "current" content. See [_archive/README.md](_archive/README.md).
+- **The archive is one-way and frozen.** Apart from its documented editorial
+  redaction, the archive receives no edits or new "current" content. See [_archive/README.md](_archive/README.md).
 
 For where this folder sits in the overall taxonomy, see
 [documentation-style.md](../standards/documentation-style.md) §4.
@@ -43,6 +43,7 @@ For where this folder sits in the overall taxonomy, see
 Retain technical findings and Relavium acceptance requirements without naming or
 linking the external agent products investigated. This editorial pass removes
 such comparisons from the tracked research and dependent documentation; it does
-not change accepted technical decisions, version history or frozen local raw
-research. Required dependency/provider provenance and truthful contributor-tool
+not change accepted technical decisions or published version history. The
+[archive redaction exception](_archive/README.md#maintainer-directed-editorial-redaction--2026-11-15)
+is recorded explicitly; ignored local working research is not product documentation. Required dependency/provider provenance and truthful contributor-tool
 attribution remain separate from product comparisons.

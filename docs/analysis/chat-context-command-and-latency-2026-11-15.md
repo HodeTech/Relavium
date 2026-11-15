@@ -196,7 +196,9 @@ The earlier recommendation to advance these capabilities is withdrawn.
 The immediate context correction proposed in
 [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
 is narrower: show the model bounded, content-free records of prior completed
-turns' tool calls and outcomes. The existing store already records those facts.
+turns' tool calls and outcomes, substituting a fixed label for custom/MCP names.
+The existing store already records that structure; restored records remain
+unverified local claims, not authenticated execution evidence.
 Do not add raw arguments, file paths, results, reasoning or signatures to this
 projection. A successful record establishes a recorded successful outcome, not
 the bytes or current state of a file. A failed call may have been refused before
@@ -256,8 +258,8 @@ available `/effort` comparison remains explicit user control. No speedup,
 
 ## Acceptance scope for the proposed context correction
 
-- Create/read in one turn, then a subsequent request: recorded names, engine
-  identities and outcomes remain associated with the correct completed turn.
+- Create/read in one turn, then a subsequent request: safe tool labels, local
+  ordinals and recorded outcomes remain associated with the correct completed turn.
 - Same instance, resume and model reseat; empty final text; memory `none` and
   `window`; manual/automatic compaction, trimming and request measurement.
 - Multi-file and partial-success calls; errors and pre-dispatch refusals must

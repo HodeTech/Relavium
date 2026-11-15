@@ -1,10 +1,10 @@
 # Archive — Provenance Map
 
-> Frozen. Never edit the files in this folder.
+> Frozen, except for the narrow maintainer-directed editorial redaction recorded below.
 
 This folder holds the **raw analysis JSONs** that seeded the entire Relavium `docs/`
-tree. They are kept verbatim as a historical record of where the living documentation
-came from. The relationship is strictly **one-way**: the archive seeds the living docs;
+tree. Except for that recorded redaction, they are kept verbatim as a historical
+record of where the living documentation came from. The relationship is strictly **one-way**: the archive seeds the living docs;
 the living docs never write back into the archive, and the archive is never updated to
 match later decisions.
 
@@ -85,3 +85,14 @@ This is the current-vision pivot and the **primary** source for most of the tree
    [vision.md](../../vision.md) and [product-constraints.md](../../product-constraints.md)).
 4. **Cite, don't carry.** When a living doc draws on the archive, it should cite the
    reusable artifact — never reintroduce the dead-end framing around it.
+
+## Maintainer-directed editorial redaction — 2026-11-15
+
+The maintainer requested that the codebase and documentation retain technical
+conclusions without external agent product names/comparison references. As a
+narrow exception to archive immutability, matching comparison string values in
+`synthesis-raw.json` and `docs-structure-plan.json` were replaced with an explicit
+redaction notice. JSON structure, other values and links remain intact. This is
+not a refresh of the historical technical analysis. Original text remains in
+published Git history; no history was rewritten. The living documents retain the
+applicable Relavium requirements and current decisions.

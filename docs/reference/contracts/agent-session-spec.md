@@ -124,21 +124,34 @@ continues to apply. This draft adds historical structural observations, not raw
 cross-turn tool messages. CR-70 remains separately deferred.
 
 - **Source and identity.** A completed turn's immutable auxiliary metadata may
-  carry only the validated resolved name, engine-assigned call id and recorded
-  outcome from a matched call/result pair. Use live `toolHistory` after successful
-  completion, or the corresponding completed durable turn's structural rows on
-  resume/reseat. Validate pairing, uniqueness, syntax and ownership before model
-  dispatch. Reject malformed supplied receipt metadata through the existing
-  invalid-resume-state path; do not invent successful pairs. Missing legacy
-  evidence remains unavailable. Do not infer a receipt from assistant prose.
-- **Excluded data.** No arguments, paths/targets, results, byte sizes, media,
+  carry a safe tool label, internal engine-form call id and recorded outcome from a
+  matched call/result pair. Use live `toolHistory` after successful completion,
+  or the corresponding completed durable turn's structural rows on resume/reseat.
+  Validate pairing, uniqueness, syntax and association with that turn/session
+  before model dispatch. This is structural validation, not authenticated proof
+  of historical execution or registry membership: a modified store can forge a
+  syntactically valid pair. Label restored evidence as unverified local records.
+  Reject malformed supplied receipt metadata through the existing
+  invalid-resume-state path; do not invent successful pairs or infer receipts
+  from assistant prose.
+- **Safe labels.** Only exact built-in tool ids from the code-owned catalog may
+  be emitted as names. Every other historical/custom/MCP name becomes the fixed
+  label `other_tool`, regardless of syntactic validity or current discovery.
+  Do not copy arbitrary historical names, which can encode sensitive text.
+  This substitution makes no registry-membership assertion, including for a
+  forged built-in name. Never echo a rejected name in a diagnostic.
+  Call ids are used only for bounded internal pairing. Render a projection-local
+  ordinal instead of copying the stored id or its numeric components into model
+  text; syntactic engine form alone does not establish the source of those bytes.
+- **Excluded data.** No stored ids, arguments, paths/targets, results, byte sizes, media,
   reasoning, signatures, native metadata or error bodies enter receipt notes.
   Auxiliary metadata is separate from `messages` and never creates durable rows,
   export fields, events or a raw-content archive.
 - **Meaning.** Label notes as historical recorded calls/outcomes for that turn.
   `ok` establishes only a recorded success; `error` need not mean host execution
   occurred. State that details/current file state are unavailable through these
-  notes. They grant no policy, filesystem, approval or replay authority.
+  notes. Restored records are store-authored claims, not independently verified
+  dispatch evidence. They grant no policy, filesystem, approval or replay authority.
 - **Placement and ownership.** Render as a separate text part in that completed
   turn's user-role message, with an explicit in-band separator and data label
   before/after it. Names remain data, never system instructions. Do not fabricate
@@ -158,9 +171,25 @@ cross-turn tool messages. CR-70 remains separately deferred.
   or describe omission as no calls. Working auxiliary record payload has the
   same 16,384-byte cap with oldest-first eviction; retain only bounded availability
   and omitted-count metadata on the already retained completed-turn spans.
-  A selected turn whose receipt detail is unavailable/evicted must remain
-  distinguishable from a current turn known to have no calls. All wrappers and
-  notices count toward request admission and token measurement.
+  Supplied auxiliary state admits at most 32 turn blocks and 128 records total;
+  check array/string lengths before copying, byte counting or uniqueness work.
+  Never reuse an unbounded history-array parse to validate this new metadata.
+  For derivation from already-loaded structural rows, inspect at most 256 parts
+  per turn and 4,096 parts per operation, newest first. Reject malformed inspected
+  evidence; label uninspected detail unavailable rather than scanning it to
+  calculate a precise count. Use safe saturated counts with an explicit unknown
+  state, never unchecked arithmetic. Bound validation/copying and check the
+  operation's cancellation between bounded batches before publication. The pure
+  projection itself has fixed input caps and no asynchronous work. This bounds
+  added receipt processing, not the existing whole-history load.
+  All wrappers and notices count toward request admission and token measurement.
+- **Availability.** An observed live no-call turn may be known empty. After
+  resume/reseat, zero durable tool rows cannot distinguish a no-call turn from
+  legacy missing structure because there is no completeness marker. Treat that
+  case as unavailable; add no migration/marker to infer otherwise. Missing,
+  evicted or uninspected evidence never means no call occurred. Live/restore
+  parity applies to available records and conservative meaning, not exact
+  knowledge of empty turns.
 - **Compaction and trimming.** Feed the same bounded observations for the
   foldable turns into measured summarizer input. Current request construction
   alone is insufficient. Keep exact receipts only for surviving whole turns,
@@ -169,6 +198,9 @@ cross-turn tool messages. CR-70 remains separately deferred.
   report earlier actions but remains lossy, untrusted text; it is not an exact
   receipt. Every summarizer pass measures its actual notes and keeps the current
   four-pass/all-or-nothing bounds and irreducible kept-turn floor.
+  Preserve whole receipt records through the summarizer's oversized-message
+  handling: omit whole records with disclosure before any text flattening or
+  head/tail truncation. Never turn a clipped label/ordinal/outcome into a new record.
 - **Lifecycle.** Publish receipt metadata only with the existing successful
   completed-turn installation; observer/durability failure rolls back its
   installation with the text. A process restart rebuilds only existing durable
@@ -177,7 +209,8 @@ cross-turn tool messages. CR-70 remains separately deferred.
   cancellation, financial acknowledgement and session non-replay rules hold.
 
 Acceptance must include normal/resume/reseat parity, mixed recorded outcomes,
-empty finals, all memory policies, malformed/legacy inputs, exact byte/count
+empty finals, all memory policies, malformed/legacy and forged matching inputs,
+credential-like custom names, exact byte/count/work
 boundaries, eviction disclosure, projection ownership, compaction/trim rollback
 and rebasing, and measured admission. Check the added request bytes/tokens and
 local cost against an otherwise identical text-only baseline. Do not treat

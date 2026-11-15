@@ -157,7 +157,7 @@
     ],
     "connectionModel": {
       "choice": "Model C: Hybrid — standalone for all execution, desktop app integration as optional enhancement",
-      "reasoning": "Model A (desktop-required) is a distribution liability: the extension would be uninstallable without a separate native app running, which breaks the VS Code extension mental model and would generate 1-star reviews from developers who just want to try it. Claude Code's standalone model proves users expect zero external dependencies. Model B (fully standalone) is technically correct but misses integration value — developers who have the desktop app open on their second monitor should be able to jump to the visual canvas with one click. Model C gives the best of both: the extension ships a bundled TypeScript workflow engine (same engine package as the desktop app and CLI — this is the key architectural constraint) that runs in the VS Code extension host process. This means zero external dependency for workflow execution. When the desktop app IS running, the extension detects it on a well-known local port (default: 57210) via an HTTP health check at activation time. If detected, enhanced features are unlocked: 'Open in Designer' command launches the canvas to that workflow, live run status syncs bidirectionally, and agent configs edited in the desktop app hot-reload into the extension. The hybrid detection uses a 2-second timeout health check — if the desktop app is not on that port, the extension silently continues in standalone mode with no user-visible degradation. This mirrors how the Live Share extension works — full standalone value, richer experience when the server is present.",
+      "reasoning": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
       "architectureDetails": "Shared engine package: packages/workflow-engine (TypeScript) is published as an npm package consumed by the desktop app (Electron), CLI (Node.js), and this extension (VS Code extension host). The engine is pure TypeScript with no native bindings — critical for running inside the VS Code extension host which has Node.js but not arbitrary native modules. The engine exposes: WorkflowRunner class, AgentRegistry, RunEventBus (EventEmitter). API key access: standalone mode reads from .agentorg/secrets.enc (AES-256-GCM encrypted file, key derived from OS keychain via the 'keytar' module which VS Code ships natively). Desktop IPC: when the desktop app is detected, the extension registers as a secondary client on the desktop app's local IPC socket (Unix domain socket on macOS/Linux, named pipe on Windows) using the existing protocol defined in the backend architecture. Run events flow over this socket. The extension never proxies API calls through the desktop app — LLM calls always go directly from the extension host to the provider APIs, avoiding latency and avoiding the desktop app being a single point of failure."
     },
     "languageServerDesign": {
@@ -421,7 +421,7 @@
   "strategy": {
     "competitiveAnalysis": [
       {
-        "competitor": "Claude Code (Anthropic)",
+        "competitor": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
         "strengths": [
           "Deep Claude model integration with superior reasoning",
           "Native CLI with strong terminal UX",
@@ -438,7 +438,7 @@
           "No CI/CD integration path — designed for interactive use only",
           "No cross-surface consistency (CLI and extension feel different)"
         ],
-        "ourAdvantage": "We offer everything Claude Code does across surfaces, but add multi-model routing, multi-agent orchestration, visual design, and version-controllable workflows that teams can share via git — Claude Code users graduate to us when they outgrow single-agent, single-model workflows"
+        "ourAdvantage": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements."
       },
       {
         "competitor": "Cursor",
@@ -482,7 +482,7 @@
         "ourAdvantage": "Continue.dev solves model flexibility but stops at the chat/autocomplete layer. We share the multi-model philosophy but add the orchestration and workflow abstraction layer above it — Continue.dev users who want to chain agents and persist workflows are our natural upgrade path"
       },
       {
-        "competitor": "Cline / Roo-code",
+        "competitor": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
         "strengths": [
           "Highly capable agentic coding with browser and terminal access",
           "Open-source and extensible",
@@ -500,7 +500,7 @@
           "High token cost per session with no workflow optimization layer",
           "No enterprise control plane or governance"
         ],
-        "ourAdvantage": "Cline is the power user's agentic workhorse but every run is ephemeral and manual. We add the orchestration layer that makes Cline-style agentic execution reusable, composable, and team-shareable — with visual design and version control"
+        "ourAdvantage": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements."
       },
       {
         "competitor": "GitHub Copilot Agent Mode",
@@ -577,7 +577,7 @@
       ]
     },
     "goToMarket": {
-      "primaryUser": "Individual senior developers and tech leads at small-to-medium engineering teams (5–50 engineers) who already use Claude Code, Cline, or Cursor and have hit the ceiling of single-agent, single-surface workflows. They own their own toolchain decisions, have API keys, and evangelize tools internally. They are the Claude Code power user who wants more.",
+      "primaryUser": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements.",
       "phase1LaunchStrategy": "Lead with the VS Code extension on the VS Code Marketplace as the zero-friction entry point — it reaches developers in their existing environment with no behavior change required. Simultaneously publish the CLI via Homebrew and npm for terminal-native users. The desktop canvas is the 'wow demo' artifact used for content marketing and conference talks but is not the primary acquisition surface in Phase 1. The web portal launches as a lightweight quota dashboard — it exists to handle API key management and team invitations, not as a standalone product. Seed the .agentorg/ workflow library on GitHub before launch with 20–30 high-quality workflow templates covering the top developer use cases (code review, PR description generation, test generation, dependency audit, documentation generation). These templates serve as both distribution and product education.",
       "distributionChannels": [
         "VS Code Marketplace — primary acquisition channel, zero install friction for the 30M+ VS Code users",
@@ -602,7 +602,7 @@
         "Monorepo workflow inheritance: parent directory workflows are inherited by subdirectories, enabling org-level standards with project-level overrides",
         "Documentation artifact: the workflow YAML file documents not just what AI does but why — comments in YAML serve as living documentation of the team's AI strategy"
       ],
-      "networkEffects": "Each workflow file committed to a shared repo creates a pull toward adoption for every team member who pulls that repo. At the org level, a platform team publishing canonical workflows to an internal GitHub repository creates a hub-and-spoke distribution model where the platform team's workflow quality improvements propagate to all consuming teams automatically via git pull. This is a network effect that no session-based tool (Claude Code, Cursor, Cline) can replicate — their value is personal and does not compound with team size. Our value scales with team size because each new team member both consumes existing workflows and contributes new ones."
+      "networkEffects": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements."
     },
     "pricingStrategy": {
       "freeTier": {
@@ -839,11 +839,11 @@
     "killerFeatures": [
       {
         "feature": "Live canvas execution theater",
-        "why": "Token streaming appears inside individual ReactFlow node faces as the workflow executes — not in a separate log panel, but directly on the canvas node. Parallel branches stream simultaneously. Users watch their multi-agent pipeline think in real time. This transforms the canvas from a static diagram into a live operational display. No competitor (Claude Code, Cursor, n8n, Dify) does this — they all separate the diagram from the output."
+        "why": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements."
       },
       {
         "feature": "Git-native YAML workflows",
-        "why": "Every workflow is a reviewable, diffable, version-controllable YAML file. Teams can PR workflow changes, revert bad agent prompts, and ship workflow changes through the same CI/CD pipeline as code changes. This is the graduation path from Claude Code and Cursor — users who outgrow chat-driven, stateless interactions get persistence and collaboration without leaving their git workflow. Competitor n8n uses proprietary JSON blobs; Dify stores workflows in a database with no git integration."
+        "why": "Named product comparison removed by maintainer direction on 2026-11-15; consult the living Relavium requirements."
       },
       {
         "feature": "One-click 'Retry from node' on failure",

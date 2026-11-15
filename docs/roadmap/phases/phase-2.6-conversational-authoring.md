@@ -4110,9 +4110,8 @@ user's journey.
        contract. It is never read from project or workspace configuration, so a cloned repository cannot grant
        it. It stores the variable's name, never its value. Extending ADR-0112's operator-owned onboarding state
        this way gets a dated note on ADR-0112 in slice 2b.
-     - **Evidence.** Codex CLI and Gemini CLI pre-fill instead of authenticating silently, and Claude Code asks
-       once. Codex and Claude Code were re-checked against source and docs; Gemini comes from a source read. A community issue on Claude Code's tracker reports users surprised
-       by env-key billing (#9699).
+     - **Rationale.** Explicit source disclosure and consent prevent an ambient
+       environment key from silently changing the interactive user's billing account.
    - **Subcommands use a standard variable directly.** That covers `run`, `agent run`, `models refresh`,
      `provider test`, and plain and `--json` chat: these are the scripting surface. `RELAVIUM_*` variables keep
      their direct use everywhere.
@@ -4129,8 +4128,7 @@ user's journey.
    - **Discovery.** Its palette description names connecting, logging in and API keys. The palette filter already
      matches descriptions, so a user typing "connect", "login" or "key" finds it.
 5. **Session scope.**
-   - **Scope.** The picker shows sessions whose working directory is this directory, the default in Claude Code,
-     Codex CLI, Kimi and Grok Build. One key widens to every directory. Typing filters titles.
+   - **Scope.** The picker shows sessions whose working directory is this directory. One key widens to every directory. Typing filters titles.
    - **Rows** show the title and age, plus the directory when widened.
    - **`--continue`** resumes this directory's latest session. With none, it says so and exits 2.
    - **Non-TTY.** `chat resume` without an id still exits 2.
@@ -4161,7 +4159,7 @@ user's journey.
      200 into the inline renderer.
      - The first restored line counts the entries left out. They stay in `history.db`, and the model's context
        follows the existing restore rules, so nothing is lost.
-     - Paging older entries in on scroll, as Codex does, is a follow-up.
+     - Paging older entries in on scroll is a follow-up.
      - **Qualified 2026-11-09:** the caps bound only the initial restored prefix,
        including notices/dividers/placeholders. New live entries append under
        existing behavior; caches track retained view entries. No permanent live
@@ -4186,7 +4184,7 @@ user's journey.
      [Home reference](../../reference/cli/home.md#minimum-terminal-size) owns the
      delivered behavior. MVP-3 retains the wider strip/browser geometry work.
 8. **The way back (MVP-A30).** On exit after a session with at least one turn, one line names both ways back: run
-   `relavium` and use `/resume`, or `relavium chat resume <id>`. Crush and Gemini CLI print the same kind of line.
+   `relavium` and use `/resume`, or `relavium chat resume <id>`.
 9. **Project init.**
    - **One core.** `/init` and `relavium init` share one core. It creates `.relavium/workflows/` and
      `.relavium/agents/` in the working directory.
@@ -5451,3 +5449,21 @@ comparison links from tracked research and dependent prose at the maintainer's
 request. Technical decisions, dependency/provider provenance, truthful tooling
 attribution and version history retain their meaning. No runtime source or
 published contract is activated by these notes.
+
+### Context correction design review — first round, 2026-11-15
+
+The first independent Sol/high design review covered `696520a0..1f750eb5`;
+a separate Terra/high security design sitting reviewed the same documents and
+source boundaries. Confirmed actions: complete the remaining named-product
+cleanup; treat restored structure as unverified local claims; map non-built-in
+names to a fixed label and keep stored ids out of model notes; bound added input
+validation/copying/derivation work; and conservatively classify structural-empty
+restored turns as unavailable. The compaction draft now explicitly preserves
+whole receipt records before oversized text truncation. Existing raw carrying,
+MVP-4/5 scheduling, store format and runtime remain unchanged.
+
+Source-grounding checks passed all 246 existing cases across session, resume,
+request projection, compaction reliability and effort admission. These verify
+current behavior, not the proposed receipt implementation or hosted latency.
+Fresh cumulative design/security checks and maintainer ADR approval remain
+required before runtime implementation.
