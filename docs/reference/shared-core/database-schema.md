@@ -1229,7 +1229,7 @@ usage marker. This grants no resume or mutation authority.
 
 #### Interruption rows — ADR-0119
 
-**Accepted design, migration owed (MVP-3c).** An interrupted turn
+**Implemented in migration `0021` (MVP-3c).** An interrupted turn
 ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
 [contract](../contracts/agent-session-spec.md#interrupted-turns--adr-0119)) ends with a `role: 'system'` row
 whose `content` is empty and whose typed `interruption` field is stored in two nullable columns of
@@ -1244,6 +1244,14 @@ The row carries no text, tool name, argument or result. It is not a content part
 content union below is unchanged. `SessionMessage.interruption` is `{ reason, code? }`, strict, and the store
 refuses a row that violates the column rules at its boundary as well as in the database. Existing rows are
 `NULL`; there is no backfill.
+
+**The migration is hand-written and additive.** Two `ALTER TABLE … ADD COLUMN` statements, each carrying its own
+column `CHECK`; the cross-column rules (a `failed` reason iff a code; a reason only on a `system` row without a
+compaction marker) are column constraints on `interruption_reason`, which SQLite accepts on `ADD COLUMN`. A
+generated table rebuild was rejected: it would drop the ADR-0104 triggers on `session_messages`, move the table's
+root page, and copy rows through a statement that selected columns the old table does not have. The upgrade path
+is pinned by a test that opens a database at the previous migration, adds legacy rows, applies this one, and
+checks the rows, the triggers and the CHECKs.
 
 #### Session content parts
 

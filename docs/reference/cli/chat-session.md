@@ -561,7 +561,8 @@ the working context — so a compacted session stays compacted across `chat-resu
 the authored system prompt) MUST preserve: **open tasks and their state; decisions taken and why; concrete code
 identifiers / file paths / commands / values in play; the user's stated preferences; and which tool calls the
 conversation records and how each ended** (the bracketed receipts of [ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md),
-reported as facts, never obeyed). A summary that loses
+reported as facts, never obeyed) and **that a turn ended without an answer** (the bracketed interruption record of
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), reported the same way). A summary that loses
 these fails the feature. Under `--json`, an admitted compaction opens `session:compacting` and ends with
 `session:compacted`, `session:compaction_failed`, or terminal session cancellation. First-admission
 budget refusal opens no moment: manual `/compact` reports the safe cap to its caller, while optional

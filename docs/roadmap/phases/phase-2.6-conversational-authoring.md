@@ -5564,7 +5564,7 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **Neither increment is implemented.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); its D64 reviews and security sitting are owed. MVP-3d is not started.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
@@ -5578,6 +5578,17 @@ channel and `cancelled` entry; `AgentSession` retention and spans; request rende
 the hard-cap count; compaction, trim, `window` and reseat; the persister; the restored transcript; export; the summariser prompt
 line; live-versus-restored parity tests; the ten acceptance tests in the ADR; two D64 review rounds and a resume-path security
 sitting.
+
+**MVP-3c implementation status (2026-11-16).** Built across shared, db, core and the CLI: the strict `interruption` field and
+`session:turn_completed.interruption`; migration `0021` (hand-written, additive); the turn core's settled tool history on a
+failed outcome and the `cancelled` entry for an in-flight call; `AgentSession` retention in exactly three branches (abort,
+classified error, never cancel/no-engagement/unclassified/observer fault); request rendering through `renderTurnBlock`; resume
+admission (an interruption span is one message); the summariser input and prompt line; the persister's single interruption row
+and boundary slot; the restored transcript's fixed dim row; export skipping an interrupted turn as a workflow step; and the
+effect-journal disclosure keeping such an effect `turn_incomplete`. Evidence so far: core 5,257, shared 1,572 and db tests
+pass locally; every new behaviour was mutation-checked (all mutants killed). Not yet done: the two D64 review rounds, the
+separate security sitting, the full `pnpm run ci` and coverage gates, and a real-provider sample. Earlier receipts keep their
+scoped meaning and are not replaced by this paragraph.
 
 **MVP-3d — `ask_user`.** Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the

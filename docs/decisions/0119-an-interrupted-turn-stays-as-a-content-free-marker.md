@@ -158,7 +158,7 @@ part by the same projection as ADR-0128's receipts:
 | none, and incomplete (evicted or degraded) | `Tool calls made before the interruption may not be listed.` |
 
 The sentence is at most 420 bytes and is **not** subject to ADR-0128's receipt caps (it is the point of this
-ADR); its bytes are counted by `receiptBlockBytes` only so a turn's block size stays truthful. The exact
+ADR); `receiptBlockBytes` does not count it either, so the receipt budget measures receipts alone. The exact
 strings are pinned in [agent-session-spec.md](../reference/contracts/agent-session-spec.md#interrupted-turns--adr-0119).
 
 **The memory policy still decides the request.** With `memory` omitted or `summary` the block is in the
@@ -275,3 +275,25 @@ contracts before it was accepted or declined; the review saw documents, not the 
 One addition the review did not make: a turn is retained **only if a provider engaged**, so the live hard-cap
 counter and the restored one count the same set; without it a pre-egress failure would be counted after a resume
 but not live.
+
+## Implementation note — 2026-11-16
+
+Built as MVP-3c on `development`. The decisions above held; building them settled these points, none of which
+changes a rule:
+
+- **The migration is hand-written and additive** (two `ALTER TABLE … ADD COLUMN`, each with its own column
+  `CHECK`). A generated table rebuild was rejected because it would drop the ADR-0104 triggers on
+  `session_messages` and copy rows through a statement that selected columns the old table lacks.
+- **An effect that landed in a retained interrupted turn is still disclosed at resume as `turn_incomplete`.** The
+  interrupted turn stays out of the "completed calls" set the disclosure joins on, so keeping the turn for the
+  model does not silence the user's notice; this is exactly what happened when the turn was rolled back.
+- **An overflow retry that follows a first attempt which already dispatched calls reports its history as unknown**
+  (`may not be listed`) rather than a list that omits those calls: the retry restarts the engine's tool ordinals,
+  so the two attempts' histories cannot be merged by id.
+- **A turn whose failure was a host callback or observer fault is not retained**, the same as an unclassified
+  throw: the engine cannot vouch for it.
+- **The summariser's fixed prompt gained the one line §4 promised**, and the interruption sentence is not counted
+  by `receiptBlockBytes`, so the receipt budget measures receipts alone.
+- **Acceptance owed (D64):** two independent review rounds with no blocker, high or medium finding, and a
+  separate security sitting on the resume path. Nothing in this note is a receipt for either.
+
