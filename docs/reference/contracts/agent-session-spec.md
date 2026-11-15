@@ -116,6 +116,73 @@ parts before host cost callbacks, refuses invalid metadata with `SessionStateErr
 `invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
 a failed, aborted or cancelled turn creates none.
 
+### Proposed content-free action receipts — ADR-0128
+
+**Draft only; requires [ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
+acceptance before implementation.** The stable text-only request behavior above
+continues to apply. This draft adds historical structural observations, not raw
+cross-turn tool messages. CR-70 remains separately deferred.
+
+- **Source and identity.** A completed turn's immutable auxiliary metadata may
+  carry only the validated resolved name, engine-assigned call id and recorded
+  outcome from a matched call/result pair. Use live `toolHistory` after successful
+  completion, or the corresponding completed durable turn's structural rows on
+  resume/reseat. Validate pairing, uniqueness, syntax and ownership before model
+  dispatch. Reject malformed supplied receipt metadata through the existing
+  invalid-resume-state path; do not invent successful pairs. Missing legacy
+  evidence remains unavailable. Do not infer a receipt from assistant prose.
+- **Excluded data.** No arguments, paths/targets, results, byte sizes, media,
+  reasoning, signatures, native metadata or error bodies enter receipt notes.
+  Auxiliary metadata is separate from `messages` and never creates durable rows,
+  export fields, events or a raw-content archive.
+- **Meaning.** Label notes as historical recorded calls/outcomes for that turn.
+  `ok` establishes only a recorded success; `error` need not mean host execution
+  occurred. State that details/current file state are unavailable through these
+  notes. They grant no policy, filesystem, approval or replay authority.
+- **Placement and ownership.** Render as a separate text part in that completed
+  turn's user-role message, with an explicit in-band separator and data label
+  before/after it. Names remain data, never system instructions. Do not fabricate
+  assistant/tool-protocol messages. Request construction owns fresh copies and
+  cannot mutate live metadata or stored rows. Adjacent-role folding happens after
+  this projection, preserving the association even for empty-final turns.
+- **Selection.** First apply the existing memory policy: `none` includes no
+  prior receipts or omission notices; `window` includes only its selected turns;
+  omitted/`summary` follows retained history. No receipt creates a new completed
+  turn or changes `/trim` message units, counters or durable boundary mapping.
+- **Bounds.** At most 32 whole records and 4,096 UTF-8 bytes, including wrappers
+  and omission disclosure, per completed turn; at most 16,384 such bytes across
+  one request. Within a turn, remove oldest whole records first, keeping order
+  and a fixed disclosure with the omitted count. Across turns, omit oldest
+  receipt blocks whole; reserve space for one fixed request disclosure that
+  earlier recorded detail was omitted. Never partially truncate names/identities
+  or describe omission as no calls. Working auxiliary record payload has the
+  same 16,384-byte cap with oldest-first eviction; retain only bounded availability
+  and omitted-count metadata on the already retained completed-turn spans.
+  A selected turn whose receipt detail is unavailable/evicted must remain
+  distinguishable from a current turn known to have no calls. All wrappers and
+  notices count toward request admission and token measurement.
+- **Compaction and trimming.** Feed the same bounded observations for the
+  foldable turns into measured summarizer input. Current request construction
+  alone is insufficient. Keep exact receipts only for surviving whole turns,
+  rebased with their spans after an atomic successful compaction/trim. Failed or
+  cancelled compaction keeps the original metadata. A generated summary can
+  report earlier actions but remains lossy, untrusted text; it is not an exact
+  receipt. Every summarizer pass measures its actual notes and keeps the current
+  four-pass/all-or-nothing bounds and irreducible kept-turn floor.
+- **Lifecycle.** Publish receipt metadata only with the existing successful
+  completed-turn installation; observer/durability failure rolls back its
+  installation with the text. A process restart rebuilds only existing durable
+  structural evidence; a model reseat follows the same reconstruction. This
+  introduces no live raw-content handoff or failed-turn marker. Current
+  cancellation, financial acknowledgement and session non-replay rules hold.
+
+Acceptance must include normal/resume/reseat parity, mixed recorded outcomes,
+empty finals, all memory policies, malformed/legacy inputs, exact byte/count
+boundaries, eviction disclosure, projection ownership, compaction/trim rollback
+and rebasing, and measured admission. Check the added request bytes/tokens and
+local cost against an otherwise identical text-only baseline. Do not treat
+synthetic provider timings as a measurement of a real hosted model.
+
 ### Measured compaction and one-shot recovery
 
 Automatic work is permitted by the resolved memory policy, independently of funding. Pre-send

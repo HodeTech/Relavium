@@ -153,15 +153,15 @@ Primary references: [Apple DTS on inferred consent and MACL](https://developer.a
 and [Apple's metadata copy interface](https://github.com/apple-oss-distributions/copyfile/blob/main/copyfile.3).
 
 > **Amended 2026-11-15 after the maintainer-requested application comparison:**
-> The [pinned source investigation](../analysis/macos-file-write-compatibility-2026-11-15.md)
-> traces OpenCode 2.3.0 and Codex CLI 0.167.0 local writes to destination
-> write/truncate operations rather than Relavium's private-stage replacement.
+> The [publication tradeoff analysis](../analysis/macos-file-write-compatibility-2026-11-15.md)
+> distinguishes destination write/truncate operations from Relavium's
+> private-stage replacement.
 > Retaining the old inode explains why that route need not copy its ordinary
 > metadata onto a replacement, but does not prove all OS-managed metadata is
-> unchanged or provide the same byte-publication guarantee. Claude Code's
-> inspected public docs/repository do not establish its core writer's MACL
-> mechanism; do not assume parity from successful writes or configuration-file
-> atomicity. Retain this decision's atomic contract, parent role correction and
+> unchanged or provide the same byte-publication guarantee. Successful writes or
+> configuration-file atomicity do not establish an ordinary-file writer's exact
+> MACL mechanism or equivalent guarantees. Retain this decision's atomic contract,
+> parent role correction and
 > real-use evidence gates. Switching to in-place writes or an implicit fallback
 > would reverse ADR-0125's chosen guarantee and needs a separate maintainer
 > decision. Parent support is not universal file-MACL compatibility; an exposed
@@ -212,3 +212,8 @@ and [Apple's metadata copy interface](https://github.com/apple-oss-distributions
 > security sitting are complete. The [final source checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
 > owns executed checks, real-parent/editor observations, performance limits and
 > remaining delivery gates. Earlier pending notes remain historical receipts.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).

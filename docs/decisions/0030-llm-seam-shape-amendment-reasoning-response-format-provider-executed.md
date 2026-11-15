@@ -94,7 +94,7 @@ it — is unchanged; this only grows the seam's shape. The canonical types live 
 `JSONSchema7`). Each adapter lowers `json` to the provider's **native** structured-output mode where
 one exists (OpenAI `response_format: json_schema`; Gemini `responseJsonSchema` + JSON mime type;
 Anthropic `output_config`/forced tool) — native-vs-forced-tool is a per-adapter implementation detail,
-not a seam concern. We deliberately **drop** the opencode `{ type: 'tool' }` variant: "force a
+not a seam concern. We deliberately **drop** a separate `{ type: 'tool' }` variant: "force a
 specific tool" is already expressed by `toolChoice: { name }`, so a third variant would be a
 redundant second way to force a tool.
 
@@ -111,7 +111,7 @@ redundant second way to force a tool.
 vendor-shaped `unknown`, so consumers would pattern-match vendor shapes — the exact coupling ADR-0011
 forbids). *(ii)* Defer all three until their consumers exist (rejected for the union-member additions —
 breaking-to-add-later; and bundling the optional fields into the same one-time amendment is cheaper
-than three future re-touches of every adapter). *(iii)* A full ~16-member opencode-style event union
+than three future re-touches of every adapter). *(iii)* A full ~16-member event union
 with `step-*`, media, audio, citations (rejected: speculative; those are deferrable optional/feature
 additions to add with their capability when demanded — this amendment stays minimal).
 
@@ -165,3 +165,8 @@ Reasoning quantities remain part of complete output evidence when applicable. Un
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).

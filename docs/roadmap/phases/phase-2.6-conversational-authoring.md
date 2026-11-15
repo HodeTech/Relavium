@@ -15,8 +15,7 @@
 > `schema_version` 1.1 additive-migration decision finalized; UX polish, syntax highlighting, expanded
 > locales, Home mockup — after the Phase-2.5 close), expanding the original authoring-and-parity scope
 > into the phase that makes the CLI a **first-class, Home-centric product**. The rewrite folds three
-> inputs: the maintainer's CLI-experience findings, a competitor research pass (opencode, Claude Code,
-> Codex CLI, Gemini CLI, Temporal/`gh run`-class run tooling, Aider/Goose/Amp/Cursor/Copilot), and a
+> inputs: the maintainer's CLI-experience findings, a terminal and workflow UX research pass, and a
 > line-by-line triage of [../deferred-tasks.md](../deferred-tasks.md) (the now-doable items are pulled in
 > below, each mapped to a workstream). Workstreams **2.6.A–E keep their original identities** (they are
 > referenced by ADR-0058/0059/0060 and the deferred-tasks doc); **2.6.F–P were added**
@@ -128,7 +127,7 @@ and the deferred-tasks items each workstream absorbs (mapped in the
   and `@`-mention of media files — the dedicated, security-reviewed follow-up stands.
 - **Full-fidelity reseat tool-context** (the 1.X/1.Z persister/schema extension) — the reseat keeps its
   text-only-transcript notice.
-- **File-snapshot undo** (opencode-style revert of a message *and its file changes*) — 2.6.E ships
+- **File-snapshot undo** (revert of a message *and its file changes*) — 2.6.E ships
   conversation-level `/rewind`/`/fork` only.
 - **retry-from-node** ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md) Part B — needs the
   run-attempt model). The 2.6.G run-detail browser must be designed so a later "retry from this node"
@@ -1428,14 +1427,14 @@ historical phase register received a new full review.
 
 | Confirmed gap or ambiguity | Proposed disposition and canonical home |
 |---|---|
-| Global mode key, layer precedence, model-writable `--config`, headless mode | [ADR-0116 proposal refinement](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md#proposal-review--2026-11-11), [config contract](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3): explicit global preference, repository `auto` refusal, invocation ceiling and trusted picker. |
+| Global mode key, layer precedence, model-writable `--config`, headless mode | [ADR-0116 proposal refinement](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md#proposal-review--2026-11-11), [config contract](../../reference/contracts/config-spec.md#starting-chat-mode--mvp-3): explicit global preference, repository `auto` refusal, invocation ceiling and trusted picker. |
 | Home clear currently synthesizes a new built-in agent instead of preserving its bound snapshot | Correct to existing ADR-0062 same-agent contract; preserve authored and legacy built-in grants across clear/resume/reseat. Never infer built-in provenance from its id. |
-| A ranged/truncated read does not prove the model saw the whole file; prior-turn tool content is not carried | [File-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3): bounded current-turn observed intervals tied to unchanged source bytes. |
-| Current approval happens before host write preparation; append can mutate in place | [Registry contract](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3): read-only preparation, exact-byte binding, effect barrier, final gates and atomic publication. |
+| A ranged/truncated read does not prove the model saw the whole file; prior-turn tool content is not carried | [File-tool contract](../../reference/shared-core/built-in-tools.md#edit-search-and-ranged-reads--mvp-3): bounded current-turn observed intervals tied to unchanged source bytes. |
+| Current approval happens before host write preparation; append can mutate in place | [Registry contract](../../reference/shared-core/tool-registry.md#prepared-writes-and-live-previews--mvp-3): read-only preparation, exact-byte binding, effect barrier, final gates and atomic publication. |
 | Wholly masked changes and Unicode policy were explicitly open | [ADR-0120 proposal refinement](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md#proposal-review--2026-11-11): deliberate inspection of masked changes, conservative span provenance and escaped/code-point view; separate implementation security sitting remains mandatory. |
 | Optional general details timing was unset; full approval view was already mandatory | Include both in Step 2, sharing inspection primitives; no details-browser deferral. |
 | Native setup has flushed-frame consent evidence, legacy chat approvals do not | Reuse the acknowledgement/ownership pattern on both chat hosts; dimensions alone never authorize hidden input. |
-| Restore currently omits tool rows and budgets only conversation entries | [Chat contract](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract): bounded content-free groups, safe call-id correlation and explicit omission counts; no preamble/content restoration. |
+| Restore currently omits tool rows and budgets only conversation entries | [Chat contract](../../reference/cli/chat-session.md#mvp-3-interaction-contract): bounded content-free groups, safe call-id correlation and explicit omission counts; no preamble/content restoration. |
 | Protected-path prompt wording can imply authority; preview copying can reach disk hatches | Approval cannot override the host's hard denial; keep previews/reveal buffers out of history/export/editor hatches and provide masked in-view copy. |
 | Consent zero-width ledger still says excluded from MVP-3 | Correct its scheduling to the mandatory ADR-0120 preview work; shared `[c]` extraction stays with paused Step 14b. |
 
@@ -1502,9 +1501,9 @@ together: no newly offered edit may exist without its reviewable effect path.
 
 | Step | Deliverable | Principal code and canonical docs |
 |---|---|---|
-| **1 — Bounded reading, search and session output** | Ranged `read_file`, current-turn read evidence, literal `search_files`, glob `find_files`, visible directory/discovery caps and private bounded output-store provisioning/read/cleanup/sweep. Freeze measured resource limits before tool registration. Keep the built-in default grant unchanged. | Core `tools/types.ts`, `builtins.ts`, `registry.ts`, `bounding.ts`; CLI `engine/tool-host/fs.ts`, `fs-policy.ts`, `assemble.ts`, new focused traversal/output-store modules and session-owner wiring; promote the relevant [file-tool contract](../../reference/shared-core/built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3). |
-| **2 — Reviewable editing and truthful tool presentation** | After the pre-build design sitting: prepared atomic `edit_file`/`write_file`; typed live previews, bounded in-house diff, full review/reveal and general details; target/diff-stat traces, ordered live assistant segments and safe restored structural groups; both-chat 80×24/input guard and Home row budget. New `edit_file` and the later built-in write grant are enabled only with their complete approval path. Existing authored `write_file` gains that path in this same step; no unrelated workflow/headless grant is removed. | Core engine-side `ToolDef`/dispatch/host capability and curated exports; CLI prepared filesystem writer, preview/diff projection, shared views/reducers/acknowledgement, `session-view-model.ts`, `chat-store.ts`, `chat-ink.tsx`, `home-controller.ts`, `home-app.tsx`, `home-view.tsx`, `restored-transcript.ts` and hatches. Promote [registry](../../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3) and [chat](../../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract) contracts; update Home/accessibility and view command references. |
-| **3 — Enable the built-in agent and startup-mode UX** | Add read/search/find/write/edit grant only after Step 2; truthful prompt; strict mode/hint keys and resolver; shared mode/default picker and writer; invocation ceiling, first-frame mode, headless clamp; fresh/resume/clear/reseat parity and same-agent Home clear correction. Complete integrated milestone verification and documentation. | Shared `config.ts` and curated schema exports; CLI `config/load.ts`, `resolve.ts`, `write.ts`, `chat/default-agent.ts`, mode/session-host owners, `commands/chat.ts`, Home wiring and REPL manifest/palette/help. Promote [config](../../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3), grant/mode and CLI contracts; update roadmap, first-read docs and adjacent ADR notes. |
+| **1 — Bounded reading, search and session output** | Ranged `read_file`, current-turn read evidence, literal `search_files`, glob `find_files`, visible directory/discovery caps and private bounded output-store provisioning/read/cleanup/sweep. Freeze measured resource limits before tool registration. Keep the built-in default grant unchanged. | Core `tools/types.ts`, `builtins.ts`, `registry.ts`, `bounding.ts`; CLI `engine/tool-host/fs.ts`, `fs-policy.ts`, `assemble.ts`, new focused traversal/output-store modules and session-owner wiring; promote the relevant [file-tool contract](../../reference/shared-core/built-in-tools.md#edit-search-and-ranged-reads--mvp-3). |
+| **2 — Reviewable editing and truthful tool presentation** | After the pre-build design sitting: prepared atomic `edit_file`/`write_file`; typed live previews, bounded in-house diff, full review/reveal and general details; target/diff-stat traces, ordered live assistant segments and safe restored structural groups; both-chat 80×24/input guard and Home row budget. New `edit_file` and the later built-in write grant are enabled only with their complete approval path. Existing authored `write_file` gains that path in this same step; no unrelated workflow/headless grant is removed. | Core engine-side `ToolDef`/dispatch/host capability and curated exports; CLI prepared filesystem writer, preview/diff projection, shared views/reducers/acknowledgement, `session-view-model.ts`, `chat-store.ts`, `chat-ink.tsx`, `home-controller.ts`, `home-app.tsx`, `home-view.tsx`, `restored-transcript.ts` and hatches. Promote [registry](../../reference/shared-core/tool-registry.md#prepared-writes-and-live-previews--mvp-3) and [chat](../../reference/cli/chat-session.md#mvp-3-interaction-contract) contracts; update Home/accessibility and view command references. |
+| **3 — Enable the built-in agent and startup-mode UX** | Add read/search/find/write/edit grant only after Step 2; truthful prompt; strict mode/hint keys and resolver; shared mode/default picker and writer; invocation ceiling, first-frame mode, headless clamp; fresh/resume/clear/reseat parity and same-agent Home clear correction. Complete integrated milestone verification and documentation. | Shared `config.ts` and curated schema exports; CLI `config/load.ts`, `resolve.ts`, `write.ts`, `chat/default-agent.ts`, mode/session-host owners, `commands/chat.ts`, Home wiring and REPL manifest/palette/help. Promote [config](../../reference/contracts/config-spec.md#starting-chat-mode--mvp-3), grant/mode and CLI contracts; update roadmap, first-read docs and adjacent ADR notes. |
 
 File lists identify owned seams, not a requirement to edit every named file.
 Keep new helpers focused and shared between hosts; do not decompose unrelated
@@ -3640,8 +3639,7 @@ Windows, complete CI and scanner checks remain the final merge gate.
 **Design accepted; implementation authorization and acceptance pending.**
 The maintainer requested reconciliation of three supplied design reviews,
 acceptance of the corrected documents and a separate approval before product
-implementation. A subsequent instruction added a careful OpenCode/Codex/Claude
-Code comparison before proceeding. That instruction changes the documentation
+implementation. A subsequent instruction added a careful file-publication mechanism comparison before proceeding. That instruction changes the documentation
 work, not the reserved implementation gate.
 
 [ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
@@ -3682,11 +3680,10 @@ upstream binary behavior. Document checks pass whitespace, new local links and
 fragments, one H1 outside fences, and syntax-only parsing of both documented
 Python probes. The probes were not executed in this checkpoint.
 
-The [application investigation](../../analysis/macos-file-write-compatibility-2026-11-15.md)
-pins OpenCode 2.3.0 and Codex CLI 0.167.0 local write paths to destination
-write/truncate behavior. It records the unavailable Claude Code core-writer
-proof, rather than claiming a metadata guarantee from documentation or user
-reports. This establishes a real compatibility tradeoff but does not authorize
+The [publication tradeoff analysis](../../analysis/macos-file-write-compatibility-2026-11-15.md)
+distinguishes destination write/truncate from private-stage replacement. It does
+not infer an exact metadata guarantee from successful writing, documentation or
+user reports. This establishes a real compatibility tradeoff but does not authorize
 silently replacing Relavium's accepted atomic publication with in-place writes.
 The dated ADR-0127 amendment links that reasoning and retains the real-use gate.
 
@@ -4161,7 +4158,7 @@ user's journey.
      - tool rows are not repainted in MVP-2; existing content-free structure is
        already stored. MVP-3 owns richer tool-row presentation.
    - **Bounds.** A resume restores at most the last 500 entries into the full-screen renderer and at most the last
-     200 into the inline renderer. opencode's inline mode uses the same 200.
+     200 into the inline renderer.
      - The first restored line counts the entries left out. They stay in `history.db`, and the model's context
        follows the existing restore rules, so nothing is lost.
      - Paging older entries in on scroll, as Codex does, is a follow-up.
@@ -5425,3 +5422,32 @@ inference** ([phase-5-managed-inference.md](phase-5-managed-inference.md), the o
 ([phase-6-cloud-execution-portal.md](phase-6-cloud-execution-portal.md)), the two
 decoupled per Option B. See the [phase index](../README.md#phase-index) and the
 [milestone spine](../README.md#global-milestone-spine) (M3 onward).
+
+## Chat investigation follow-ups — 2026-11-15
+
+**Maintainer scope direction:** keep scheduled work in its current milestone.
+The [context/latency investigation](../../analysis/chat-context-command-and-latency-2026-11-15.md)
+provides these implementation inputs without external product comparisons or
+advancing MVP-4/5. This register records follow-ups, not implementation acceptance.
+
+| Owner | Notes to use when implementing | Acceptance emphasis |
+|---|---|---|
+| MVP-4 / MVP-A15 / ADR-0118 | Distinguish executable-plus-argv execution (`shell: false`) from explicit interpreter execution. An installed executable is not a grant; file-tool roots do not isolate a subprocess. Inspect the full admitted command/cwd and settle any shell-interpreter policy in its own approved design. | Controlled command fixtures; Once/Session/Remember and revocation; headless refusal; cancellation/output bounds/producer join. Never imply pipes or redirection work as shell syntax by default. |
+| MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers are separate from successful-turn historical receipts. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
+| MVP-5 / MVP-A16 | Typed execution-host OS/architecture, project/cwd, actual runner kind, observed shell, IANA timezone, date/offset and current capabilities/mode. Unknown facts stay unknown; remote/container/WSL execution can differ from the client. Do not infer location/language from timezone. | Platform and timezone transitions; no wholesale environment, credentials or unrelated machine inventory in prompts. Host observations and repository instructions retain their separate provenance. |
+| MVP-5 / prompt caching | Keep stable instructions/tool schemas separate from changing time observations. Measure cache hit/miss and prefix invalidation under equivalent tasks rather than promising a latency reduction from aggregate usage. | Token classes when actually reported; identical correctness/approval behavior; no silent effort/model changes or raw-content diagnostic capture. |
+| CR-70 / v0.2.1 | Full raw tool-content carrying and in-turn overflow continuation retain their existing trigger and schedule. The historical facts in the proposed receipt correction are not a full-content archive. | Future design still resolves bounds/toggle, live handoff, provider signatures/conformance and restart/storage privacy. Do not mark CR-70 complete from receipts. |
+| Context correction / Proposed ADR-0128 | Bounded recorded call/outcome notes from existing structural evidence; no raw arguments, paths or results. | See the [draft canonical projection](../../reference/contracts/agent-session-spec.md#proposed-content-free-action-receipts--adr-0128); maintainer approval precedes runtime changes. |
+| Performance investigation | Start with controlled offline session/registry measurements; separate request rounds/attempts, first stream frame, first visible text, tool work and persistence using monotonic time. Actual-provider attribution requires an approved observation boundary if a public API changes. | Missing timing/usage is unknown, not zero; overlapping phases are not additive. Optimize only a measured bottleneck, keeping admission, money/durability acknowledgements and native safety proofs. |
+
+The latest source examination found no independently established latency defect
+explaining the reported 47.3-second turn. Its footer and persisted usage do not
+provide a phase breakdown. The user's explicit `/effort` control remains
+available; this investigation changes no default or active choice. Offline
+scripted timings cannot establish provider/network latency or answer fidelity.
+
+The documentation-only cleanup also removes external agent product names and
+comparison links from tracked research and dependent prose at the maintainer's
+request. Technical decisions, dependency/provider provenance, truthful tooling
+attribution and version history retain their meaning. No runtime source or
+published contract is activated by these notes.

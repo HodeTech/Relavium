@@ -171,6 +171,7 @@ flowchart TD
 | 0125 | [File writes preserve security metadata through a native host adapter](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md) | Accepted | 2026-11-12 |
 | 0126 | [Native write admission and recovery keep explicit lifetime proof](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md) | Accepted | 2026-11-13 |
 | 0127 | [macOS write metadata has distinct parent and file profiles](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md) | Accepted (locally implemented/reviewed; final-head CI/merge gates remain) | 2026-11-14 |
+| 0128 | [Content-free tool receipts ground later chat turns](0128-content-free-tool-receipts-ground-later-chat-turns.md) | Proposed | 2026-11-15 |
 
 ## Creating a new ADR
 

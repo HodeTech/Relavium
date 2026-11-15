@@ -87,10 +87,9 @@ remain required.
    The [further-review disposition](phases/phase-2.6-conversational-authoring.md#adr-0127-further-supplied-review-reconciliation-2026-11-15)
    adds the generic file-attribute suffix guard, diagnostic trust policy and
    completed-payload size expectation without granting implementation authority.
-   The [application comparison](../analysis/macos-file-write-compatibility-2026-11-15.md)
-   traces pinned OpenCode/Codex local in-place writers and records Claude Code's
-   unverified writer internals. Their compatibility is not proof of Relavium's
-   atomic replacement/metadata guarantee; no in-place fallback is authorized.
+   The [publication tradeoff analysis](../analysis/macos-file-write-compatibility-2026-11-15.md)
+   distinguishes in-place writes from private-stage replacement. Ordinary write
+   compatibility is not proof of Relavium's atomic replacement/metadata guarantee; no in-place fallback is authorized.
    The [implementation author checkpoint](phases/phase-2.6-conversational-authoring.md#adr-0127-implementation-author-verification-2026-11-15)
    records current source, local verification, real operator interactions and
    the controlled performance comparison. Independent source reviews and the
@@ -316,13 +315,19 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    un-deferred, D67; CR-71 itself closed in W7); configurable, finite turn ceilings with conservative
    defaults (MVP-A11).
    The [2026-11-15 context/latency investigation](../analysis/chat-context-command-and-latency-2026-11-15.md)
-   confirms the successful-tool-history gap and recommends bringing CR-70 and
-   minimal host facts forward. This is a reviewable recommendation: CR-70's
-   approved v0.2.1 timing and MVP-A16's MVP-5 assignment remain unchanged until
-   the maintainer decides and the required ADR is accepted.
+   supplies [implementation notes](phases/phase-2.6-conversational-authoring.md#chat-investigation-follow-ups--2026-11-15)
+   for the command/shell boundary and truthful tool outcomes. The maintainer
+   confirmed on 2026-11-15 that scheduled capabilities stay in their existing
+   milestones. [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
+   separately proposes bounded content-free historical receipts as a narrow
+   context correction; it awaits approval and does not advance CR-70.
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file
    and environment block (MVP-A16); 2.6.E · **Type-ahead message queue**; `chat --model/--provider` and a one-shot
    prompt mode (MVP-A17).
+   The same [implementation notes](phases/phase-2.6-conversational-authoring.md#chat-investigation-follow-ups--2026-11-15)
+   retain OS/timezone provenance, remote-host distinctions, stable cache prefixes
+   and measured latency acceptance for this milestone; no environment or caching
+   work is moved forward.
 6. **MVP-6 — Conversational authoring.** Accept ADR-0058 and ADR-0060 with their reviews; 2.6.A ·
    `validateAuthoredWorkflow` back-port and **`nodeCatalogIssue` never resolves the agent's own model**; `$ref`
    agent resolution; 2.6.B's wizard and conversational authoring loop, its import gate and the UVP hint

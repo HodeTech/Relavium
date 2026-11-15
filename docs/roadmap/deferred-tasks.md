@@ -2289,6 +2289,12 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
       **Scheduled 2026-11-04 (D67):** v0.2.1, right after the CLI MVP's v0.2.0, designed together with ADR-0096 §5's
       in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
+      **Investigation note 2026-11-15:** the maintainer retained that schedule.
+      [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
+      proposes only bounded content-free call/outcome evidence; it awaits approval
+      and neither implements raw carrying nor closes this item. Reuse the
+      [investigation's acceptance cases](../analysis/chat-context-command-and-latency-2026-11-15.md#acceptance-scope-for-the-proposed-context-correction)
+      when designing the separate full-content projection.
 
 - [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
       [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
@@ -3847,7 +3853,7 @@ future test cannot silently re-acquire it.
       event namespace, and cost/resource governance — before any implementation.
       *(medium · `packages/core` engine + an `invoke_workflow` tool)*
 
-- [ ] **File-snapshot undo (opencode-style revert of message + file changes).** Phase 2.6.E ships
+- [ ] **File-snapshot undo (revert of message + file changes).** Phase 2.6.E ships
   conversation-level `/rewind`/`/fork` only — reverting the file changes a message made requires an
   engine-level file-snapshot mechanism (tracking which tool calls modified which files at which
   conversation point). Deferred to [Phase 3 — desktop](../roadmap/phases/phase-3-desktop.md) or a

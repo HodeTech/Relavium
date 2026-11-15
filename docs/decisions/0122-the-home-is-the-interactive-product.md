@@ -30,17 +30,14 @@ criterion 2 repeats it. The code and two Accepted ADRs still say otherwise:
   [reach table](../analysis/cli-ux-benchmark-2026-11-08.md#appendix--relaviums-home-reach-on-2026-11-08)). No strip row can be opened. The Home's
   palette offers four commands. Several in-TUI messages tell the user to leave and run a shell command.
 
-The benchmark of eleven current terminal agents (Claude Code, Codex CLI, opencode, Crush, Gemini CLI, Antigravity CLI,
-Grok Build, Copilot CLI, Kimi, Kiro, Cline) shows the field converging on the same model:
+The [retained UX design notes](../analysis/cli-ux-benchmark-2026-11-08.md) identify the intended interaction model:
 
 - The bare command opens the interactive app.
 - Management tasks have in-app forms: sessions, models, credentials, MCP, settings, init.
 - Subcommands remain for scripts.
 
-Several of them also have a landing screen: Grok Build, opencode, Crush, Copilot CLI and Cline. The benchmark
-also records what full-screen costs. Codex, Claude Code and Copilot CLI all drew sustained complaints about lost
-scrollback, copy and search after making it the default. Those products had to rebuild these affordances inside the
-app.
+A landing screen provides a consistent place for those tasks. Full-screen operation also takes over native
+scrollback, copy and search; the app must supply these affordances explicitly.
 
 ## Decision
 
@@ -212,3 +209,8 @@ The benchmark records these as the most common failure of products that made ful
 
 The code comments that restated the old rule (`repl-commands.ts`, `manifest.ts`) are corrected in the same
 change.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).

@@ -11,9 +11,8 @@
 Today a bare `relavium` (no subcommand) prints `program.helpInformation()` and exits `0`
 (`apps/cli/src/run.ts`), and `commander` deliberately has **no default action**
 (`apps/cli/src/program.ts`) — a default action would turn an unknown subcommand into a positional
-argument and swallow the "unknown command" error. Every terminal-native agent CLI we surveyed
-(Claude Code, Codex, opencode, Google's Antigravity `agy`) instead opens an interactive session on the
-bare command; the project's agent-first stance ([ADR-0024](0024-agent-first-entry-point-agentsession.md))
+argument and swallow the "unknown command" error. An interactive session on the bare command is the intended terminal-native
+entry; the project's agent-first stance ([ADR-0024](0024-agent-first-entry-point-agentsession.md))
 wants the same "type the name → start talking" entry. But the CLI is also a CI/automation tool: the
 `--json` NDJSON stream and the meta-op behaviour (help, version) are a binding contract
 ([ADR-0049](0049-cli-machine-output-contract.md)), and breaking it would strand scripts and pipelines.
@@ -97,3 +96,8 @@ future feature, deferral or claim of merge-commit execution.
 > focused and opened, and every effect still goes through the same consent and approval paths as its subcommand. The
 > TTY gate, the meta-operation contract and the ADR-0007 analogy are unchanged. This note does not claim
 > implementation landing.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).

@@ -1,7 +1,7 @@
 # Chat action history, environment awareness and latency investigation
 
 - **Date**: 2026-11-15
-- **Status**: Investigation and recommended plan; no new runtime or roadmap decision is approved by this report.
+- **Status**: Investigation with maintainer scope direction recorded 2026-11-15; runtime corrections still require the proposed ADR approval.
 - **Local source**: `development` at `b60bb1e5`; unrelated user-owned pnpm workspace/lock changes were left untouched.
 - **Related**: [current roadmap](../roadmap/current.md#next-work--the-cli-mvp), [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md), [CR-70 deferral](../roadmap/deferred-tasks.md), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [chat contract](../reference/cli/chat-session.md), [tool contract](../reference/shared-core/built-in-tools.md)
 
@@ -172,77 +172,104 @@ facts as a bounded trailing observation when needed, rather than changing a
 large system prefix every second. The application can then prefer macOS-specific
 guidance for this session unless the user asks for another platform.
 
-## Pinned upstream comparison
+## Implementation lessons retained from the investigation
 
-These are read-only source observations at upstream HEADs resolved on
-2026-11-15, not installed-binary or comparative latency tests. No upstream code
-was executed, no account was configured, and no universal security or correctness
-claim follows. Current source layouts differ from older online examples.
+The useful design lessons are an explicit action-history projection, matched
+call/result boundaries when full carrying is implemented, bounded output and
+compaction, and typed host-owned facts. These are requirements to assess against
+Relavium's own contracts. They do not establish another application's guarantees
+or justify adopting a different persistence or shell policy.
 
-| Project / commit | Action-history mechanism inspected | Host-context mechanism inspected |
-|---|---|---|
-| OpenCode `d432a06b9c07bab0be4e8d642173b1cb14137f11` | Its [history lowering](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/session/runner/to-llm-message.ts#L145) constructs assistant calls and matching tool-result messages from projected stored history; error cuts and model/provider metadata are handled explicitly. | [Built-in instructions](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/instructions/builtins.ts#L24) include cwd/workspace/git/platform and a separate date instruction, with distinct initial/changed rendering. The inspected block does not prove explicit IANA timezone injection. |
-| Octomind `ccaa3d32ce25bb1881569c25d31d6d2b1e60415d` | [Tool-result processing](https://github.com/Muvon/octomind/blob/ccaa3d32ce25bb1881569c25d31d6d2b1e60415d/src/session/chat/response/tool_result_processor.rs#L354) caps output before adding paired tool messages. Its [session messages](https://github.com/Muvon/octomind/blob/ccaa3d32ce25bb1881569c25d31d6d2b1e60415d/src/session/chat/session/messages.rs#L468) persist tool messages before the in-memory append. Compression/archive is a separate mechanism. | [Placeholder construction](https://github.com/Muvon/octomind/blob/ccaa3d32ce25bb1881569c25d31d6d2b1e60415d/src/session/helper_functions.rs#L133) gathers date/time with timezone, shell and OS; requested prompt placeholders consume that context. It also probes developer binaries. Relavium need not copy that broader probing cost. |
-| Cline `72b3d7140553a733242126e51a7c2e87efe75c64` | The inspected SDK [agent runtime](https://github.com/cline/cline/blob/72b3d7140553a733242126e51a7c2e87efe75c64/sdk/packages/agents/src/agent-runtime.ts#L988) appends tool-result messages to runtime state, snapshots it, and clones state messages into the next model request. Separate compaction can transform history. | The CLI [prompt resolver](https://github.com/cline/cline/blob/72b3d7140553a733242126e51a7c2e87efe75c64/apps/cli/src/runtime/prompt.ts#L25) passes cwd and platform; the shared [prompt builder](https://github.com/cline/cline/blob/72b3d7140553a733242126e51a7c2e87efe75c64/sdk/packages/shared/src/prompt/cline.ts#L198) supplies the current date. Explicit IANA timezone delivery is not established by this path. |
-| Aider `5dc9490bb35f9729ef2c95d00a19ccd30c26339c` | [Completed messages](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/coders/base_coder.py#L1036) move into retained history; request construction combines that history with repository and current chat-file context. Its editing/message architecture differs from a generic paired-tool loop. | [Platform information](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/coders/base_coder.py#L1127) includes platform, `SHELL`/`COMSPEC`, language and local date. Using local time to compute a date does not establish explicit timezone injection. |
+At the maintainer's request, product names, source pins and product links have
+been removed from this document. This retains the technical conclusions without
+presenting external implementations as Relavium's design authority.
 
-The useful common pattern is an explicit action-history projection plus
-host-supplied facts, with deliberate truncation/compaction. There is no evidence
-here that copying another product's prompt, raw persistence policy or shell
-exposure would provide its entire behavior or meet Relavium's existing privacy
-and effect guarantees.
+## Maintainer scope direction — 2026-11-15
 
-## Recommended implementation plan and decisions
+Keep scheduled capabilities in their existing milestones. Command permissions,
+command-runner versus shell-interpreter semantics and interruption/denial
+behavior remain MVP-4. Project instructions, OS/timezone environment facts and
+prompt caching remain MVP-5. Full raw cross-turn tool carrying remains CR-70,
+with its approved v0.2.1 timing and ADR-0096 overflow-continuation dependency.
+The earlier recommendation to advance these capabilities is withdrawn.
 
-Use three cohesive increments, each with the already requested commit/review
-cycle. Do not split every history field or terminal string into its own step.
-The sequence below is a recommendation, not an amendment to accepted scheduling.
+The immediate context correction proposed in
+[ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
+is narrower: show the model bounded, content-free records of prior completed
+turns' tool calls and outcomes. The existing store already records those facts.
+Do not add raw arguments, file paths, results, reasoning or signatures to this
+projection. A successful record establishes a recorded successful outcome, not
+the bytes or current state of a file. A failed call may have been refused before
+execution. This reduces unsupported claims that no previous call occurred; it
+cannot guarantee every model response or replace full tool-content memory.
 
-| Increment | Deliverable and acceptance | Decisions before implementation |
-|---|---|---|
-| 1. Grounded conversational context | Preserve bounded successful action evidence in subsequent requests; retain matched live call/result context where permitted; distinguish past observations from current file validity. Project existing durable structural receipts on resume, with explicit missing-content disclosure. Include the planned denial/interruption behavior. Add a small typed host-environment observation so answers use the actual OS/timezone/capabilities. | Bring CR-70 forward from v0.2.1, and the minimal environment slice forward from MVP-5. A new ADR must settle live versus durable content, model reseat/provider boundaries, defaults/toggle, bounds and host provenance; append forward notes to affected accepted decisions. |
-| 2. Usable command execution | Deliver MVP-4's default `run_command` grant, full command/cwd inspection, Once/Session/Remember, revocation and interruption semantics. Test real `git`/`gh`-class argv execution with controlled fixtures and refusal paths. | Review/accept existing ADR-0115/0117/0118/0119 as applicable. Explicitly decide the shell-interpreter boundary; do not equate `run_command` availability with arbitrary Bash syntax or OS sandboxing. |
-| 3. Measured latency reduction | Content-free per-call timing for admission, provider wait/generation, tool execution, native join and persistence. Attribute token classes when provider evidence exists. Reduce redundant discovery/readback and repeated prompt work; measure caching and effort levels with matched tasks, retaining correctness checks. | Approve caching/API refinements if they alter the public seam or accepted policy. Preserve user-chosen effort; choose any new default from measurements. Agree a benchmark methodology before promising an SLA. |
+This is a Proposed design, not approval to change ADR-0095 or runtime behavior.
+The session contract owns its
+[draft receipt projection](../reference/contracts/agent-session-spec.md#proposed-content-free-action-receipts--adr-0128).
+The separate future carrying design must still settle live content, provider
+boundaries, model reseat, process restart, user controls and conformance. A
+same-process volatile handoff does not inherently require disk persistence;
+raw-content continuity after a process restart does require separately reviewed
+protected persistence. Neither is part of this correction.
 
-Recommended history policy for design review: keep raw arguments/results off
-unencrypted disk, use the existing durable structural receipts for historical
-action evidence, and allow bounded paired live tool context. For a model change
-inside the same process, explicitly transfer that volatile context to the new
-session instance, normalize it for the destination provider, and exclude opaque
-provider reasoning/signatures. This requires revisiting ADR-0095's existing
-no-reseat constraint; it does not inherently require writing raw content to disk.
-It grants no old filesystem read/version evidence or new tool authority.
+## Performance findings and necessary actions
 
-After process restart, structural receipts can recover the fact of an action
-without its old raw result. Full raw-content continuity across restart requires
-reviewed protected persistence; an in-memory-only design cannot promise it.
-The maintainer should settle this restart/storage boundary, live model handoff,
-defaults and bounds in the ADR, rather than leave them implicit in implementation.
+A second source inspection found no deterministic redundant host call, effort
+selection regression or metadata-path defect explaining this delay. The default
+prompt does not require both listing and finding a file or a post-write readback.
+Effort resolves live override, then authored value, then unset; provider/model
+capability admission still determines the wire setting. Do not silently lower
+the user's selection or treat its authored snapshot as proof of the wire.
 
-Required acceptance scenarios include:
+The shared turn core captures and measures each owned request after tool results;
+admission, usage accounting and persistence acknowledgements are correctness
+barriers. Removing them to shorten a turn is not an established optimization.
+The footer derives whole-turn duration from lifecycle wall clocks. Existing
+rows cannot reconstruct provider wait, first content, thinking, tool time or
+persistence for the reported turn.
 
-- Create/read in turn one; next-turn requests contain grounded successful action
-  evidence. Multi-file and partial-success sequences retain correct associations.
-- Same instance, model switch, resume, empty final, manual/automatic compaction,
-  bounded memory, overflow, denied/aborted/failed turns and provider fallback.
-  Paired calls/results remain protocol-valid; lost/truncated evidence is explicit.
-- Old file reads are recognizable as past observations; a fresh edit still
-  requires current read/version evidence. Historical actions are never rerun
-  merely because they appear in context, and session effect rows never replay.
-- Hostile tool output stays untrusted; provider signatures do not cross invalid
-  model/provider boundaries; credentials and raw results do not leak into
-  history, diagnostic timings, project instructions or system authority.
-- macOS/Linux/Windows plus remote/container/unknown host facts; timezone/date
-  transitions and cache stability; actual capabilities remain authoritative.
-- Approved/unapproved `git`/`gh`-class arguments, denied destructive commands,
-  stale approval, headless execution, bounded output, cancellation and producer
-  join. A successful command permission is not a wider filesystem grant.
-- Matched simple-create, read/edit, multi-turn implementation and test-command
-  workloads; report p50/p95, request counts, first-token/complete latency and
-  token classes, comparing equal correctness and approval behavior. Separate
-  provider latency from local tool cost; do not weaken native publication proof.
+Before selecting a runtime optimization:
 
-The current v0.2.0 plan does not provide all of these context guarantees.
-For a development-focused product, moving the context work ahead of sustained
-complex coding use is recommended. This report authorizes no implementation,
-silent feature activation, changed memory persistence or command grant.
+1. Establish a contributor-only, offline baseline using scripted providers and
+   controlled temporary tool fixtures through the real session/registry path.
+   Record monotonic durations and request/attempt counts separately. Synthetic
+   provider delay calibrates the measurement; it is not a hosted-model latency
+   estimate. Compare equivalent outcomes and approval behavior.
+2. Distinguish provider start, first stream frame, first visible text, completion,
+   tool dispatch and persistence. A first reasoning frame is not visible-text
+   first-token latency. Nested/overlapping phases must not be summed as disjoint
+   wall time. Unknown usage or missing phase data stays unknown, never zero.
+3. If actual-provider attribution is needed, define the narrow typed local
+   observation boundary before adding it. Do not log prompts, results, paths,
+   command arguments, provider error bodies or keys; no telemetry or paid
+   provider replay follows from this report. Public API/event changes require
+   their normal design approval.
+4. Optimize only a measured bottleneck and compare matched p50/p95, calls,
+   attempts, complete latency and available token classes. Include cancellation,
+   fallback, failure and durability behavior; do not weaken fresh-read,
+   approval, native publication proof or producer-join guarantees.
+
+MVP-5's caching work should reuse these measurements and test stable prefixes,
+cache hits/misses and changing host facts. It stays in MVP-5. The immediately
+available `/effort` comparison remains explicit user control. No speedup,
+47.3-second phase attribution, new effort default or end-to-end SLA is claimed.
+
+## Acceptance scope for the proposed context correction
+
+- Create/read in one turn, then a subsequent request: recorded names, engine
+  identities and outcomes remain associated with the correct completed turn.
+- Same instance, resume and model reseat; empty final text; memory `none` and
+  `window`; manual/automatic compaction, trimming and request measurement.
+- Multi-file and partial-success calls; errors and pre-dispatch refusals must
+  not become successful-execution claims. Missing legacy records, truncation
+  and eviction must not be rendered as proof that nothing happened.
+- All notes stay untrusted user-role data. Raw content and credentials stay off
+  disk; no fabricated tool protocol messages or provider signatures are added.
+  Existing receipts grant no authority to rerun tools or reuse a stale file read.
+- The existing MVP-4 denial/interruption design remains separately gated;
+  this proposal does not invent records for uncommitted failed turns.
+
+Two cohesive implementation increments are sufficient once authorized: context
+receipt projection with its full review/security cycle, then measured latency
+work only where the baseline identifies a justified change. The latter must not
+be used to pull scheduled caching or environment capabilities forward.
