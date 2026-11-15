@@ -3986,8 +3986,17 @@ The first push run's filesystem shard 2 separately failed at
 passed. The retained receipt does not identify the underlying native cause;
 this is not classified as runner flakiness or repaired by weakening a guard.
 The focused local catalog control passes fixed/mutated/restored, preserving the
-historical failed receipt and its platform limit. Fresh final-head CI and scanner
-outcomes, correction review and maintainer merge remain separate gates.
+historical failed receipt and its platform limit.
+
+Follow-up source `b1bd59a7` has two fresh clean review rounds: Terra/high examined
+the complete CI/scanner delta; a new Sol/high reviewer examined the entire
+`fd9f3d86..b1bd59a7` increment. A separate Sol/high security delta sitting is
+clean and independently verified that the extracted reader body and control
+definitions preserve their former behavior. These were read-only reviews,
+without broad test repetitions or independent execution of the author's evidence.
+The fixed-helper benchmark also completes all 800 measured operations and 80
+warmups successfully with unchanged source/asset bindings. Fresh final-head CI,
+scanner read-back and maintainer merge remain separate gates.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

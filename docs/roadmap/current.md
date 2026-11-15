@@ -315,6 +315,11 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    denied or aborted turn kept in context as a content-free interruption marker (the CR-71 residual,
    un-deferred, D67; CR-71 itself closed in W7); configurable, finite turn ceilings with conservative
    defaults (MVP-A11).
+   The [2026-11-15 context/latency investigation](../analysis/chat-context-command-and-latency-2026-11-15.md)
+   confirms the successful-tool-history gap and recommends bringing CR-70 and
+   minimal host facts forward. This is a reviewable recommendation: CR-70's
+   approved v0.2.1 timing and MVP-A16's MVP-5 assignment remain unchanged until
+   the maintainer decides and the required ADR is accepted.
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file
    and environment block (MVP-A16); 2.6.E · **Type-ahead message queue**; `chat --model/--provider` and a one-shot
    prompt mode (MVP-A17).
