@@ -1,6 +1,6 @@
 # Troubleshoot tool denials
 
-- **Status**: Operational guidance; ADR-0127 implementation is authorized, with fresh source acceptance in progress.
+- **Status**: Operational guidance for locally implemented/reviewed ADR-0127; public-guide release delivery remains a separate check.
 - **Date**: 2026-11-15
 - **Related**: [chat failure guidance](../reference/cli/chat-session.md#denial-guidance-design--adr-0127), [native metadata contract](../reference/cli/native-filesystem-metadata.md), [chat modes](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)
 

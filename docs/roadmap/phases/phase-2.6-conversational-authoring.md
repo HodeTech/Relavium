@@ -3892,6 +3892,47 @@ production addon excludes the inspection fixtures and proof/test markers.
 Fresh cumulative source review and a separate security sitting remain required
 before this increment's local acceptance.
 
+### ADR-0127 final local source acceptance (2026-11-15)
+
+**Locally accepted on `development`; merge/release acceptance is separate.**
+Implementation `4dab2d28` and verified first-review corrections `b7ce337b` form
+one cohesive increment against `fd9f3d86`. Fresh Sol/high native/delivery and
+Terra/high denial/UX/privacy reviewers each examined that entire cumulative
+range and reported zero verified findings. A separate Sol/high security sitting
+examined the same final source, surrounding ownership/authority boundaries,
+native test isolation, diagnostic confidentiality and contributor containment;
+it reported zero unresolved security findings. These were independent static
+reviews: none reran the author's tests, benchmarks, editor interactions or CI.
+
+The correction author checks pass: 18,682 workspace tests (24 conditional skips;
+CLI 7,950 passes/13 skips), lint/types/build, all 1,129 acceptance-tool cases,
+tool lint/types, formatting, test isolation, seam/dependency fences and emitted
+CLI closure. The current arm64 native profile passes all 54 exact Rust parents
+and eleven Node lifecycle cases, with five declared helper/timing cases ignored
+by the ordinary profile. Production-byte inspection excludes the MACL fault
+fixtures, proof-timing and test-hook markers. User-owned workspace/lock changes
+remain unstaged and unchanged; local execution used installed Turbo 2.11.11.
+
+The corrected native SHA-256 is
+`253ff133c2f5bb272905cd5f4636e511dfa81a9bc507c4de20be09d04af898ca`,
+source binding
+`b8a1bfd29e35262129d76c2942796bcfdaac3ae8663ae05c87bbe4440ed72ca7`.
+The earlier actual MACL-parent host operations and reported VS Code/TextEdit
+interactions retain their exact recorded build/interval scope above. The new
+inspection-fault controls complement those positives without manipulating OS
+labels. A current-source benchmark repetition passes all 800 measured writes
+plus 80 warmups: ordinary p50 44.7–50.4 ms/p95 48.3–55.3 ms, dense p50
+54.6–58.5 ms/p95 58.6–65.8 ms. This repetition is not a paired attribution
+experiment; the earlier counterbalanced comparison and unexplained historical
+tails remain as reported above.
+
+Current-head eight-target execution, four installed-consumer legs, scanner and
+PR checks, maintainer merge review and release-time public-guide delivery still
+own their respective acceptance. Local APFS success does not certify every
+macOS installation or another platform. File/template MACL, unlisted metadata
+and concurrent policy changes remain explicit refusal cases. No merge, npm
+publication, in-place fallback or activation of proposed MVP-4 ADRs is claimed.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

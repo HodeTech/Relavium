@@ -170,7 +170,7 @@ flowchart TD
 | 0124 | [Inspect retained run effects before file preparation](0124-inspect-retained-run-effects-before-file-preparation.md) | Accepted | 2026-11-11 |
 | 0125 | [File writes preserve security metadata through a native host adapter](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md) | Accepted | 2026-11-12 |
 | 0126 | [Native write admission and recovery keep explicit lifetime proof](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md) | Accepted | 2026-11-13 |
-| 0127 | [macOS write metadata has distinct parent and file profiles](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md) | Accepted (implementation authorized; acceptance in progress) | 2026-11-14 |
+| 0127 | [macOS write metadata has distinct parent and file profiles](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md) | Accepted (locally implemented/reviewed; final-head CI/merge gates remain) | 2026-11-14 |
 
 ## Creating a new ADR
 

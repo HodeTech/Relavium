@@ -963,7 +963,9 @@ and [descriptor-bound metadata copying](https://developer.apple.com/library/arch
 
 ### macOS parent and file attribute profiles — ADR-0127
 
-**Design accepted 2026-11-15; implementation authorized and in progress.**
+**Design and local source accepted 2026-11-15.** Current-head platform and
+consumer checks remain separate; see the
+[implementation checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15).
 The maintainer accepted the corrected
 [ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
 design and subsequently authorized source work on that date. Current source

@@ -596,7 +596,9 @@ The remedy is **always host-authored**; it never interpolates a provider message
 
 ### Denial guidance design — ADR-0127
 
-**Design accepted 2026-11-15; implementation authorized, source acceptance in progress.**
+**Design and local source accepted 2026-11-15.** See the
+[implementation checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+for verification and remaining delivery gates.
 [ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
 replaces the old generic mode/policy recommendation. Current source includes the
 neutral hint and the continuing plain driver's bounded denial explanation;

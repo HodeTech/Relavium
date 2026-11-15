@@ -74,6 +74,9 @@ independent review/security receipts. Current PR checks own final CI/scanner acc
 is Accepted after the supplied design reviews and maintainer approval; its
 source-admission/recovery implementation is complete. Earlier receipts retain
 their scoped historical meaning and do not replace current-head checks.
+The subsequent [ADR-0127 manual-test correction](docs/roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+is implemented and locally accepted on `development` after two review rounds
+and a separate security sitting; final-head platform/consumer/PR gates remain.
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

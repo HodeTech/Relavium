@@ -50,6 +50,9 @@ Current PR checks own final CI/scanner acceptance.
 is Accepted after the supplied design reviews and maintainer approval; its
 source-admission/recovery implementation is complete. Earlier receipts retain
 their scoped historical meaning and do not replace current-head checks.
+The subsequent [ADR-0127 manual-test correction](docs/roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+is implemented and locally accepted on `development` after two review rounds
+and a separate security sitting; final-head platform/consumer/PR gates remain.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.

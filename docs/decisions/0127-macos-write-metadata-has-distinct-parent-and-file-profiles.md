@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-11-14
 - **Accepted**: 2026-11-15, after the supplied reviews were reconciled under the maintainer's instruction.
-- **Implementation**: Authorized by the maintainer on 2026-11-15; source implementation and acceptance in progress.
+- **Implementation**: Authorized and locally accepted on `development`, 2026-11-15; current-head platform/consumer/PR checks and maintainer merge remain separate gates.
 - **Related**: [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md) (still Proposed), [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md), [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), [ADR-0126](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md), [native metadata contract](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127), [chat failure presentation](../reference/cli/chat-session.md#denial-guidance-design--adr-0127), [architectural principles](../standards/architectural-principles.md)
 
 ## Context
@@ -205,3 +205,10 @@ and [Apple's metadata copy interface](https://github.com/apple-oss-distributions
 > increment and its planned verification/review cycle on `development`. Earlier
 > approval-pending notes describe their historical documentation checkpoint.
 > Authorization alone is not implementation, platform or release acceptance.
+
+> **Implementation acceptance — 2026-11-15:** source commits `4dab2d28` and
+> `b7ce337b` implement the accepted profile and diagnostic policy. Two independent
+> review rounds, both verified first-round corrections, and a separate final
+> security sitting are complete. The [final source checkpoint](../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+> owns executed checks, real-parent/editor observations, performance limits and
+> remaining delivery gates. Earlier pending notes remain historical receipts.

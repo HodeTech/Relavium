@@ -1,6 +1,6 @@
 # Verify macOS write metadata
 
-- **Status**: Contributor procedure for accepted ADR-0127; implementation authorized, source acceptance in progress.
+- **Status**: Contributor procedure for locally implemented/reviewed ADR-0127; current-head platform/consumer checks and merge remain separate gates.
 - **Date**: 2026-11-15
 - **Related**: [ADR-0127](../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md), [canonical profile and acceptance gates](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127), [user troubleshooting](troubleshoot-tool-denials.md)
 

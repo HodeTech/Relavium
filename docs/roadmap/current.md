@@ -59,7 +59,7 @@ owns delivered scope and acceptance evidence.
 
 ## Next work — the CLI MVP
 
-**Active manual-test correction (2026-11-15): design accepted; implementation authorized and in progress.**
+**Manual-test correction (2026-11-15): implementation and local review complete.**
 The reported pre-correction code rejected the observed project parent's
 `com.apple.macl` and ordinary test files' `com.apple.lastuseddate#PS` during
 read-only metadata preparation. The generic chat denial hint incorrectly
@@ -67,8 +67,12 @@ attributed that refusal to mode/policy. The maintainer requested a planned
 correction after reviewing the analysis. Historical MVP-3 acceptance does not
 cover these newly observed scenarios.
 
-One cohesive increment is planned, avoiding separate review cycles for each
-attribute or UI string:
+One cohesive increment covers these items, avoiding separate review cycles for
+each attribute or UI string. Source commits `4dab2d28` and `b7ce337b` are locally
+accepted; the [final source checkpoint](phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+records both review rounds, verified corrections and the separate security
+sitting. Final-head CI/scanner, platform/consumer checks and maintainer merge
+remain required.
 
 1. **Design accepted 2026-11-15:** the supplied review findings have been checked
    against code and primary sources and reconciled in
@@ -76,7 +80,7 @@ attribute or UI string:
    its [native profile](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127)
    and [chat guidance](../reference/cli/chat-session.md#denial-guidance-design--adr-0127).
    The maintainer subsequently granted the separately reserved implementation
-   approval on 2026-11-15. Source work and its acceptance cycle are in progress;
+   approval on 2026-11-15. Source work and its local acceptance cycle are complete;
    design acceptance alone does not certify product/platform behavior.
    The [supplied-review disposition](phases/phase-2.6-conversational-authoring.md#adr-0127-supplied-review-and-design-acceptance-2026-11-15)
    records confirmed findings and corrected review assumptions individually.
@@ -89,7 +93,8 @@ attribute or UI string:
    atomic replacement/metadata guarantee; no in-place fallback is authorized.
    The [implementation author checkpoint](phases/phase-2.6-conversational-authoring.md#adr-0127-implementation-author-verification-2026-11-15)
    records current source, local verification, real operator interactions and
-   the controlled performance comparison; independent source review is in progress.
+   the controlled performance comparison. Independent source reviews and the
+   separate final security sitting are complete at the checkpoint above.
 2. Add distinct parent/file inspection roles in the macOS adapter; retain
    bounded parent MACL evidence without transferring it; preserve exact
    last-used file values, without adding that name to the parent profile. Require
