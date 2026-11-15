@@ -2,9 +2,10 @@
  * Session resume (1.Y) — reconstruct an `AgentSession`'s in-flight state from its persisted transcript so a
  * conversation continues after a process restart. Sessions are **directly stored** (ADR-0003 governs *runs*,
  * not sessions), so resume RELOADS rows ({@link SessionStore.loadFull}, 1.X) rather than replaying an event
- * log, and it reuses the run-side idempotency **principle** (1.R): an interrupted, never-completed turn is
- * rolled back — the `sessionId+sequenceNumber` analog of "re-run the incomplete node" — so resume yields only
- * **completed exchanges** and the next turn re-prompts rather than replaying a half turn.
+ * log, and it reuses the run-side idempotency **principle** (1.R): a crash remnant — a user row with structural
+ * rows and no terminal — is rolled back, the `sessionId+sequenceNumber` analog of "re-run the incomplete node", so
+ * resume yields only **completed exchanges** and **retained interrupted turns** (ADR-0119: a user message ended by an
+ * interruption row, which carries no answer) and the next turn re-prompts rather than replaying a half turn.
  *
  * Platform-free: it operates only on `@relavium/shared` types (the host loads via `@relavium/db`; the engine
  * never imports it). The projection mirrors `AgentSession`'s cross-turn invariant — the in-flight transcript
