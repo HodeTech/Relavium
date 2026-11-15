@@ -121,6 +121,37 @@ export type GateDecisionValue = z.infer<typeof GateDecisionValueSchema>;
  */
 export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
+/**
+ * Why a retained session turn ended without a completed answer
+ * ([ADR-0119](../../../docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) §1). A CLOSED set:
+ * the user's turn-level abort, a classified failure (its closed `ErrorCode` rides with it), a fatal denial, and the
+ * within-turn tool-round limit. Nothing free-form can be stored or sent.
+ */
+export const SESSION_INTERRUPTION_REASONS = ['aborted', 'failed', 'denied', 'turn_limit'] as const;
+export const SessionInterruptionReasonSchema = z.enum(SESSION_INTERRUPTION_REASONS);
+export type SessionInterruptionReason = z.infer<typeof SessionInterruptionReasonSchema>;
+
+/**
+ * The content-free interruption of a retained turn: a reason from the closed set and, **only** for `failed`, the
+ * closed `ErrorCode`. It rides on `session:turn_completed` (the engine says it retained the turn) and, typed, on the
+ * interruption row the persister writes. A code on any other reason, or a `failed` without one, is refused.
+ */
+export const SessionInterruptionSchema = z
+  .object({ reason: SessionInterruptionReasonSchema, code: ErrorCodeSchema.optional() })
+  .strict()
+  .superRefine((interruption, ctx) => {
+    const failed = interruption.reason === 'failed';
+    if (failed !== (interruption.code !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: failed
+          ? 'a failed interruption carries its error code'
+          : 'only a failed interruption carries an error code',
+      });
+    }
+  });
+export type SessionInterruption = z.infer<typeof SessionInterruptionSchema>;
+
 /** The five-value LLM stop reason. Canonical home — the `@relavium/llm` seam re-exports this. */
 export const StopReasonSchema = z.enum(STOP_REASONS);
 
@@ -1040,6 +1071,9 @@ export const SessionTurnCompletedEventSchema = z.object({
   stopReason: SessionStopReasonSchema,
   tokensUsed: TokensUsedSchema,
   toolHistory: SessionToolHistorySchema.optional(),
+  // ADR-0119: present exactly when the engine RETAINED this aborted/failed/denied/turn_limit turn in the session. The
+  // persister writes the interruption row iff this is set, so the engine and the store never re-derive the rule.
+  interruption: SessionInterruptionSchema.optional(),
   // A failed turn (provider error, rate limit, cancellation) still completes — with an error.
   error: z.object(eventErrorFields).optional(),
 });

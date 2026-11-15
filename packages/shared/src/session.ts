@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { AgentSnapshotSchema } from './agent.js';
 import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
-import { SessionContextSchema, StopReasonSchema } from './run-event.js';
+import { SessionContextSchema, SessionInterruptionSchema, StopReasonSchema } from './run-event.js';
 import {
   SessionContentPartSchema,
   SessionToolCallPartSchema,
@@ -68,6 +68,13 @@ export const SessionMessageSchema = z
      * column (an older reader that lacks the column reads the marker as an inert `system` row).
      */
     compaction: z.object({ droppedThroughSequence: nonNegativeInt }).strict().optional(),
+    /**
+     * Present ONLY on an **interruption row** (`role: 'system'`, empty `content`,
+     * [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)): the terminal row of a
+     * retained aborted/failed/denied/`turn_limit` turn. A closed reason and, for `failed`, a closed `ErrorCode` —
+     * stored in the `interruption_reason`/`interruption_code` columns. Never together with `compaction`.
+     */
+    interruption: SessionInterruptionSchema.optional(),
     timestamp: isoTimestamp,
   })
   .strict()
@@ -77,6 +84,26 @@ export const SessionMessageSchema = z
         code: z.ZodIssueCode.custom,
         message: 'a boundary marker belongs to a system row',
       });
+    }
+    if (message.interruption !== undefined) {
+      if (message.role !== 'system') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'an interruption belongs to a system row',
+        });
+      }
+      if (message.compaction !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'a row is a boundary marker or an interruption, never both',
+        });
+      }
+      if (message.content.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'an interruption row carries no content',
+        });
+      }
     }
     if (message.role === 'tool' && message.content.some((part) => part.type !== 'tool_result')) {
       ctx.addIssue({

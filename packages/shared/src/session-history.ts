@@ -27,6 +27,12 @@ export interface CompletedSessionTurn {
   readonly messages: readonly SessionMessage[];
   /** Nontrailing bare-user context written before explicit empty terminals existed. Not extra turns. */
   readonly legacyUserPrefix: readonly SessionMessage[];
+  /**
+   * Present only for a **retained interrupted turn** ([ADR-0119](../../../docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)):
+   * the turn then ends with a `role: 'system'` interruption row — `terminal` — whose content is empty, instead of
+   * an assistant answer. Absent for every completed turn.
+   */
+  readonly interruption?: NonNullable<SessionMessage['interruption']>;
 }
 
 /**
@@ -55,7 +61,25 @@ export function projectSessionHistory(
   let rows: SessionMessage[] = [];
   let legacyUsers: SessionMessage[] = [];
   for (const message of ordered) {
-    if (message.compaction !== undefined || message.role === 'system') continue;
+    if (message.compaction !== undefined) continue;
+    if (message.role === 'system') {
+      // ADR-0119: an interruption row is the terminal of the OPEN exchange. A system row with none open, or any
+      // other system row, is inert here. A user row with structural rows and NO terminal stays a crash remnant.
+      if (message.interruption === undefined || user === undefined) continue;
+      rows.push(message);
+      if (user.sequenceNumber > boundary)
+        turns.push({
+          user,
+          terminal: message,
+          messages: rows,
+          legacyUserPrefix: legacyUsers.filter((row) => row.sequenceNumber > boundary),
+          interruption: message.interruption,
+        });
+      user = undefined;
+      rows = [];
+      legacyUsers = [];
+      continue;
+    }
     if (message.role === 'user') {
       // The old atomic writer stored a successful empty final as a user row alone. Another user makes
       // it nontrailing, which the old resume retained. Structural rows instead identify an interrupted
