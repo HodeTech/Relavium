@@ -1007,6 +1007,149 @@ describe('createSessionPersister', () => {
     expect(full?.session.title).toBe('kept');
   });
 
+  describe('a RETAINED interrupted turn (ADR-0119)', () => {
+    const toolThenFailure = (): StreamChunk[][] => [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'read_file' },
+        { type: 'tool_call_end', id: 'c1' },
+        stop('tool_use'),
+      ],
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'refused' },
+        },
+      ],
+    ];
+
+    it('writes the user message, the content-free tool structure and ONE interruption row, atomically', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('read it', 'read it (display)');
+      await built.session.sendMessage('read it');
+
+      const full = store.loadFull('sess-1');
+      expect(full?.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'system',
+      ]);
+      const terminal = full?.messages[3];
+      expect(terminal?.content).toEqual([]);
+      expect(terminal?.interruption).toMatchObject({ reason: 'failed' });
+      expect(terminal?.interruption?.code).toBeDefined();
+      expect(terminal?.modelId).toBeUndefined();
+      // The exchange now exists, so its real usage accumulates into the session; the display text landed with it.
+      expect(full?.session.totalInputTokens).toBeGreaterThan(0);
+      expect([...store.loadUserDisplayTexts('sess-1', [0])]).toEqual([[0, 'read it (display)']]);
+      expect(persister.hasSavedTurns).toBe(true);
+      expect(listenerNotes).toEqual([]);
+    });
+
+    it('reconstructs as a counted turn whose span carries the interruption', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('read it');
+      await built.session.sendMessage('read it');
+      const full = store.loadFull('sess-1');
+      if (full === undefined) throw new Error('missing session');
+      const state = reconstructSessionState(full.session, full.messages);
+      expect(state.turnCount).toBe(1);
+      expect(state.messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'read it' }] },
+      ]);
+      expect(state.completedTurnSpans).toHaveLength(1);
+      expect(state.completedTurnSpans[0]).toMatchObject({
+        start: 0,
+        end: 1,
+        interruption: { reason: 'failed' },
+      });
+    });
+
+    it('LATCHES a failed interrupted-turn write: no partial turn, no phantom sequence, the user is told', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      const boom = Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+        throw boom;
+      });
+      persister.beginUserTurn('read it');
+      await built.session.sendMessage('read it');
+      // All of the turn or none of it: not the user row, not the call/result pairs, not the interruption row.
+      expect(store.loadMessages('sess-1')).toHaveLength(0);
+      expect(persister.durabilityFailure).toBe(boom);
+      expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+      expect(persister.hasSavedTurns).toBe(false);
+    });
+
+    it('persists an abort that landed after a provider engaged, and none that landed before one', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([
+          [
+            { type: 'tool_call_start', id: 'c1', name: 'read_file' },
+            { type: 'tool_call_end', id: 'c1' },
+            stop('tool_use'),
+          ],
+          textTurn('never streamed to completion'),
+        ]),
+      );
+      persister.start();
+      built.session.start();
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (event.type === 'agent:tool_result') built.session.abort();
+      });
+      persister.beginUserTurn('stop me');
+      await built.session.sendMessage('stop me');
+      unsubscribe();
+      const full = store.loadFull('sess-1');
+      expect(full?.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'system',
+      ]);
+      expect(full?.messages.at(-1)?.interruption).toEqual({ reason: 'aborted' });
+    });
+
+    it('maps a later compaction boundary over the interruption row as a turn slot', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([
+          textTurn('r1'),
+          ...toolThenFailure(),
+          textTurn('r3'),
+          textTurn('SUMMARY'),
+        ]),
+      );
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('q1');
+      await built.session.sendMessage('q1');
+      persister.beginUserTurn('q2 interrupted');
+      await built.session.sendMessage('q2 interrupted');
+      persister.beginUserTurn('q3');
+      await built.session.sendMessage('q3');
+      expect((await built.session.compact('manual')).kind).toBe('compacted');
+      const messages = store.loadMessages('sess-1');
+      const marker = messages.find((message) => message.compaction !== undefined);
+      // q3 is kept; the boundary sits at q2's interruption row (sequence 5), not at a "real message".
+      const interruptionRow = messages.find((message) => message.interruption !== undefined);
+      expect(marker?.compaction?.droppedThroughSequence).toBe(interruptionRow?.sequenceNumber);
+      // A resume sees only q3's exchange past the boundary.
+      const reconstructed = reconstructSessionState(
+        store.loadFull('sess-1')?.session as AgentSessionRecord,
+        messages,
+      );
+      expect(reconstructed.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'q3' },
+        { type: 'text', text: 'r3' },
+      ]);
+    });
+  });
+
   it('marks the session ended on cancel (its sole terminal), leaving it resumable', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
@@ -1107,7 +1250,14 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('second').catch(() => undefined);
     const after = store.loadFull('sess-1');
     expect(after?.session.totalCostMicrocents).toBe(afterSuccess); // cost did NOT regress to 0 on the error
-    expect(after?.messages).toHaveLength(2); // the failed turn added no transcript rows
+    // ADR-0119: the engaged, classified failure is RETAINED — its user message and one interruption row, no answer.
+    expect(after?.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'system',
+    ]);
+    expect(after?.messages.at(-1)?.interruption).toMatchObject({ reason: 'failed' });
   });
 
   it('on cancel after a successful turn: status ended, totals retained, messages untouched', async () => {

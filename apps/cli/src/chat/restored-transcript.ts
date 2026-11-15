@@ -1,4 +1,10 @@
-import { projectSessionHistory, type Memory, type SessionMessage } from '@relavium/shared';
+import { interruptionPhrase } from '@relavium/core';
+import {
+  projectSessionHistory,
+  type Memory,
+  type SessionInterruption,
+  type SessionMessage,
+} from '@relavium/shared';
 import { stripTerminalControls } from '../render/sanitize.js';
 import {
   INLINE_TRANSCRIPT_BOUND,
@@ -19,6 +25,8 @@ export class RestoredDisplayReadError extends Error {
 interface Unit {
   readonly user: SessionMessage;
   readonly terminal?: SessionMessage;
+  /** ADR-0119: set when the turn ended in an interruption row instead of an answer. */
+  readonly interruption?: SessionInterruption;
   readonly tools?: readonly ToolCallView[];
   readonly omittedCalls?: number;
 }
@@ -72,7 +80,12 @@ export function restoreSessionTranscript(options: {
   const projection = projectSessionHistory(options.messages, false);
   const units: Unit[] = projection.turns.flatMap((turn) => [
     ...turn.legacyUserPrefix.map((user) => ({ user })),
-    { user: turn.user, terminal: turn.terminal, ...structuralTools(turn.messages) },
+    {
+      user: turn.user,
+      terminal: turn.terminal,
+      ...(turn.interruption === undefined ? {} : { interruption: turn.interruption }),
+      ...structuralTools(turn.messages),
+    },
   ]);
   units.push(...projection.trailingLegacyUsers.map((user) => ({ user })));
   const conversationSize = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
@@ -198,7 +211,11 @@ export function restoreSessionTranscript(options: {
         calls: unit.tools ?? [],
         omitted: unit.omittedCalls ?? 0,
       });
-    if (unit.terminal !== undefined)
+    // ADR-0119: an interrupted turn has no answer. Show its fixed dim row where the answer would be, built from the
+    // closed phrase table — never from stored text — so it restores no argument, target, diff or result.
+    if (unit.interruption !== undefined)
+      entries.push(notice(`Interrupted — ${interruptionPhrase(unit.interruption)}`));
+    else if (unit.terminal !== undefined)
       entries.push({ role: 'assistant', text: stripTerminalControls(textOf(unit.terminal)) });
   }
   return entries;

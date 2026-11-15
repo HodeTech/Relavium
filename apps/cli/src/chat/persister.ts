@@ -18,6 +18,7 @@ import {
   type SessionContext,
   type SessionMessage,
   type SessionStatus,
+  type SessionInterruption,
   type SessionToolHistoryEntry,
   type UsageInvocation,
   type UsageCoverageSnapshot,
@@ -289,6 +290,7 @@ export function createSessionPersister(
     userDisplayText: string | undefined,
     tokensUsed: { input: number; output: number },
     toolHistory: readonly SessionToolHistoryEntry[],
+    interruption?: SessionInterruption,
   ): void => {
     const nextTitle = title ?? deriveSessionTitle(userText);
     // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
@@ -311,10 +313,26 @@ export function createSessionPersister(
         });
       }
     }
-    // An explicit terminal, even for empty text, distinguishes completion from an interrupted tool loop.
-    staged.push(
-      stageText(sequenceNumber + staged.length, 'assistant', assistantText, turnModelCatalogId),
-    );
+    if (interruption === undefined) {
+      // An explicit terminal, even for empty text, distinguishes completion from an interrupted tool loop.
+      staged.push(
+        stageText(sequenceNumber + staged.length, 'assistant', assistantText, turnModelCatalogId),
+      );
+    } else {
+      // ADR-0119: a RETAINED INTERRUPTED turn ends in an interruption row instead of an answer — role `system`
+      // (a storage encoding only), empty content, the typed reason. The partial assistant text in `assistantText` is
+      // deliberately not stored: it is incomplete and possibly the reason the user stopped. The engine decided to
+      // retain the turn and said so on the event, so this never re-derives the predicate.
+      staged.push({
+        id: deps.uuid(),
+        sessionId: deps.sessionId,
+        sequenceNumber: sequenceNumber + staged.length,
+        role: 'system',
+        content: [],
+        interruption,
+        timestamp: iso(),
+      });
+    }
     const nextInput = totalInputTokens + tokensUsed.input;
     const nextOutput = totalOutputTokens + tokensUsed.output;
     deps.store.writeTurn({
@@ -335,8 +353,10 @@ export function createSessionPersister(
     realMessageSeqs.push(user.sequenceNumber);
     const terminal = staged.at(-1);
     if (terminal !== undefined) {
+      // The interruption row is the turn's boundary slot (ADR-0095 invariant 5) but not a real message.
       turnBoundarySeqs.push(terminal.sequenceNumber);
-      if (assistantText.length > 0) realMessageSeqs.push(terminal.sequenceNumber);
+      if (interruption === undefined && assistantText.length > 0)
+        realMessageSeqs.push(terminal.sequenceNumber);
     }
     totalInputTokens = nextInput;
     totalOutputTokens = nextOutput;
@@ -407,9 +427,16 @@ export function createSessionPersister(
         // from `cost:updated`, is kept.) A completed exchange always has a user message (the REPL calls
         // beginUserTurn before sendMessage); gating the whole exchange on it prevents an orphaned assistant
         // row with no preceding user row.
+        //
+        // ADR-0119 narrows that: the engine now RETAINS a turn it accepted, a provider engaged in, and that ended by
+        // the turn-level abort or a classified error. It says so by setting `interruption` on this event, and the
+        // persister writes the user message, the content-free tool structure and one interruption row iff that field
+        // is present — the engine and the store cannot disagree, because the store never re-derives the predicate.
+        // Everything else (a session-ending cancel emits no event; an unclassified throw, a turn with no engaged
+        // provider, the hard cap) still persists no messages.
         if (
-          event.error === undefined &&
-          event.stopReason !== 'aborted' &&
+          (event.interruption !== undefined ||
+            (event.error === undefined && event.stopReason !== 'aborted')) &&
           pendingUserText !== undefined
         ) {
           // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
@@ -423,7 +450,13 @@ export function createSessionPersister(
           // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
           const userText = pendingUserText;
           persistDurably(() => {
-            commitTurn(userText, pendingUserDisplayText, event.tokensUsed, event.toolHistory ?? []);
+            commitTurn(
+              userText,
+              pendingUserDisplayText,
+              event.tokensUsed,
+              event.toolHistory ?? [],
+              event.interruption,
+            );
           });
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still

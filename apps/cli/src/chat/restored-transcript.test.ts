@@ -410,3 +410,83 @@ describe('MVP-3 restored structural tool groups', () => {
     },
   );
 });
+
+describe('ADR-0119 restored interrupted turns', () => {
+  const interruptionRow = (
+    sequence: number,
+    interruption: NonNullable<SessionMessage['interruption']>,
+  ): SessionMessage => ({
+    ...row(sequence, 'system', ''),
+    content: [],
+    interruption,
+  });
+  const interrupted = (
+    start: number,
+    interruption: NonNullable<SessionMessage['interruption']>,
+  ) => [
+    row(start, 'user', 'original private text'),
+    {
+      ...row(start + 1, 'assistant', ''),
+      content: [
+        { type: 'tool_call' as const, id: 'session-tool:1:0', name: 'write_file', argsBytes: 999 },
+      ],
+    },
+    {
+      ...row(start + 2, 'tool', ''),
+      content: [
+        {
+          type: 'tool_result' as const,
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 0,
+          outcome: 'cancelled' as const,
+        },
+      ],
+    },
+    interruptionRow(start + 3, interruption),
+  ];
+
+  it('shows the user line, the structural calls and one fixed dim row where an answer would be', () => {
+    const messages = [
+      row(0, 'user', 'first'),
+      row(1, 'assistant', 'answer'),
+      ...interrupted(2, { reason: 'aborted' }),
+    ];
+    const entries = restore(
+      messages,
+      new Map([
+        [0, 'first'],
+        [2, 'second (display)'],
+      ]),
+    );
+    const roles = entries.map((entry) => entry.role);
+    // notice, [user, assistant] for the answered turn, [user, tools, notice] for the interrupted one.
+    expect(roles.slice(-5)).toEqual(['user', 'assistant', 'user', 'tools', 'notice']);
+    const last = entries.at(-1);
+    expect(last).toEqual({ role: 'notice', text: 'Interrupted — the user stopped it' });
+    const group = entries.find((entry) => entry.role === 'tools');
+    expect(group?.role === 'tools' && group.calls.map((call) => call.outcome)).toEqual(['unknown']);
+    // The canonical text never appears as a fallback, and nothing is invented for the missing answer.
+    expect(JSON.stringify(entries)).not.toContain('original private text');
+    expect(entries.filter((entry) => entry.role === 'assistant')).toHaveLength(1);
+  });
+
+  it('names every reason from the closed phrase table and nothing from stored text', () => {
+    const cases: [NonNullable<SessionMessage['interruption']>, string][] = [
+      [{ reason: 'aborted' }, 'Interrupted — the user stopped it'],
+      [{ reason: 'failed', code: 'provider_auth' }, 'Interrupted — it failed (provider_auth)'],
+      [{ reason: 'denied' }, 'Interrupted — a tool call was refused and the turn ended'],
+      [{ reason: 'turn_limit' }, 'Interrupted — it reached the limit on tool rounds'],
+    ];
+    for (const [interruption, expected] of cases) {
+      const entries = restore(interrupted(0, interruption), new Map([[0, 'shown']]));
+      expect(entries.at(-1)).toEqual({ role: 'notice', text: expected });
+    }
+  });
+
+  it('does not mistake a crash remnant for an interrupted turn', () => {
+    // User + structural rows with NO terminal: ADR-0095's remnant, still omitted from the restored view.
+    const remnant = interrupted(0, { reason: 'aborted' }).slice(0, 3);
+    const entries = restore(remnant, new Map([[0, 'shown']]));
+    expect(JSON.stringify(entries)).not.toContain('Interrupted —');
+  });
+});

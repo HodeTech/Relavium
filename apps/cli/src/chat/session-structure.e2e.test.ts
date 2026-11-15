@@ -327,7 +327,13 @@ describe('session structure through the real CLI host and SQLite', () => {
       persister.beginUserTurn('first');
       await built.session.sendMessage('first');
       unsubscribe();
-      expect(store.loadMessages('session')).toEqual([]);
+      // ADR-0119: the engaged turn is RETAINED as user → call → result → interruption, content-free.
+      const kept = store.loadMessages('session');
+      expect(kept.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'system']);
+      expect(kept.at(-1)?.interruption).toMatchObject({
+        reason: mode === 'errored' ? 'failed' : 'aborted',
+      });
+      expect(JSON.stringify(kept)).not.toContain('SYNTHETIC_PRIVATE_TOOL_RESULT');
       const journal = createEffectJournalStore(client.db, { uuid: () => 'unused', now });
       const first = journal.readSessionDisclosureSnapshot('session');
       expect(first.disclosures).toEqual([
@@ -349,7 +355,8 @@ describe('session structure through the real CLI host and SQLite', () => {
         startMcpClient: connect,
         consentGate: () => Promise.resolve(new Map()),
       });
-      const next = attach(resumed, 0);
+      // The real host seeds the sequence past EVERY row, including the retained turn's interruption row.
+      const next = attach(resumed, resumed.nextSequenceNumber);
       next.beginUserTurn('second');
       await resumed.session.sendMessage('second');
       expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
@@ -358,6 +365,86 @@ describe('session structure through the real CLI host and SQLite', () => {
       ]);
     },
   );
+
+  it('shows the model the same request after a real SQLite resume as in the live session, an aborted turn in between (ADR-0119)', async () => {
+    const mcp = () =>
+      startMcpClient([
+        {
+          id: 'fs',
+          open: () =>
+            Promise.resolve({
+              ...connection,
+              callTool: () =>
+                Promise.resolve({
+                  content: [{ type: 'text', text: 'SYNTHETIC_PRIVATE_TOOL_RESULT' }],
+                  isError: false,
+                }),
+            }),
+        },
+      ]);
+    const liveRequests: LlmRequest[] = [];
+    const live = await fresh([], {
+      providers: capturingResolver(
+        // q1 makes a call: a restart cannot prove a plain-chat turn made none (ADR-0128), so parity is stated for
+        // turns whose evidence is recorded — the interrupted one included.
+        [call('provider-id-1'), textTurn('a1'), call('provider-id-2'), textTurn('a3')],
+        liveRequests,
+      ),
+      startMcpClient: mcp,
+    });
+    const persister = attach(live);
+    persister.beginUserTurn('q1');
+    await live.session.sendMessage('q1');
+    const unsubscribe = live.handle.subscribe((event) => {
+      if (event.type === 'agent:tool_result') live.session.abort();
+    });
+    persister.beginUserTurn('q2 interrupted');
+    await live.session.sendMessage('q2 interrupted');
+    unsubscribe();
+    const saved = store.loadFull('session');
+    if (saved === undefined) throw new Error('missing session');
+    expect(saved.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+      'system',
+    ]);
+    // The live session continues first; its request is the reference. Its q3 is deliberately NOT staged for
+    // persistence, so the resumed host below can write the same sequence numbers into the same database.
+    await live.session.sendMessage('q3');
+    const liveWire = liveRequests.at(-1)?.messages;
+
+    const restoredRequests: LlmRequest[] = [];
+    const resumed = await buildResumedChatSession({
+      chat,
+      record: saved.session,
+      messages: saved.messages,
+      now,
+      providers: capturingResolver([textTurn('a3')], restoredRequests),
+      onListenerError: () => undefined,
+      startMcpClient: connect,
+      consentGate: () => Promise.resolve(new Map()),
+    });
+    expect(resumed.resumeState.turnCount).toBe(2);
+    expect(resumed.resumeState.completedTurnSpans.map((span) => span.interruption)).toEqual([
+      undefined,
+      { reason: 'aborted' },
+    ]);
+    const next = attach(resumed, resumed.nextSequenceNumber);
+    next.beginUserTurn('q3');
+    await resumed.session.sendMessage('q3');
+    expect(restoredRequests[0]?.messages).toEqual(liveWire);
+    // The interrupted turn reached the model as a recorded call plus the fixed note, and nothing from the tool.
+    const sent = JSON.stringify(liveWire);
+    expect(sent).toContain('q2 interrupted');
+    expect(sent).toContain('1. other_tool — ok');
+    expect(sent).toContain('the user stopped it');
+    expect(sent).not.toContain('SYNTHETIC_PRIVATE_TOOL_RESULT');
+  });
 
   it('persists resolved MCP structure with exact per-call attempt joins and no raw strings', async () => {
     const built = await fresh([call('provider-sentinel-1'), call('provider-sentinel-2'), [stop()]]);
