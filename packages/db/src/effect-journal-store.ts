@@ -432,13 +432,16 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         }
         // Schema-valid rows can still be unfinished, orphaned or abandoned. Only the shared
         // structural projector proves completion; working compaction/trim boundaries never filter it.
-        const completedCalls = new Set(
-          completedSessionTurns(history, false).flatMap((turn) =>
-            turn.messages.flatMap((message) =>
-              message.content.flatMap((part) => (part.type === 'tool_call' ? [part.id] : [])),
-            ),
-          ),
-        );
+        // ADR-0119: a RETAINED INTERRUPTED turn is a turn that did not complete. It stays out of `completedCalls`, so
+        // a committed effect that landed in it is disclosed as `turn_incomplete` exactly as it was when that whole
+        // turn was rolled back — keeping the turn in the transcript for the model must not silence the user's notice.
+        const completedCalls = new Set<string>();
+        const interruptedCalls = new Set<string>();
+        for (const turn of completedSessionTurns(history, false)) {
+          const into = turn.interruption === undefined ? completedCalls : interruptedCalls;
+          for (const message of turn.messages)
+            for (const part of message.content) if (part.type === 'tool_call') into.add(part.id);
+        }
         const committed: CapturedSessionEffect[] = [];
         const disclosures: SessionEffectDisclosure[] = [];
         for (const row of rows) {
@@ -464,6 +467,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id !== undefined && calls.has(id) && calls.get(id) !== row.toolId) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id !== undefined && interruptedCalls.has(id)) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'turn_incomplete' });
           } else if (id !== undefined && calls.has(id) && !completedCalls.has(id)) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id === undefined || !calls.has(id)) {

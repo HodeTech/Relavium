@@ -212,6 +212,51 @@ setInterval(() => {}, 1000);
     },
   );
 
+  it('keeps disclosing an effect that landed in a retained interrupted turn as turn_incomplete (ADR-0119)', () => {
+    // Retaining the turn for the model must not silence the user's notice about work done in a turn that never
+    // finished: before ADR-0119 this turn was rolled back and its effect was disclosed, and it still is.
+    const finished = effect(1);
+    store().settle(finished, 'committed');
+    completed(1, 0);
+    const stopped = effect(2);
+    store().settle(stopped, 'committed');
+    const session = createSessionStore(client.db);
+    const id = 'session-tool:2:0';
+    let sequenceNumber = 4;
+    for (const message of [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'stopped halfway' }] },
+      {
+        role: 'assistant' as const,
+        content: [{ type: 'tool_call' as const, id, name: 'run_command', argsBytes: 7 }],
+      },
+      {
+        role: 'tool' as const,
+        content: [
+          {
+            type: 'tool_result' as const,
+            toolCallId: id,
+            resultBytes: 0,
+            outcome: 'cancelled' as const,
+          },
+        ],
+      },
+      { role: 'system' as const, content: [], interruption: { reason: 'aborted' as const } },
+    ]) {
+      session.appendMessage({
+        ...message,
+        id: `m${String(sequenceNumber)}`,
+        sessionId: 's1',
+        sequenceNumber: sequenceNumber++,
+        timestamp,
+      });
+    }
+    const snapshot = store().readSessionDisclosureSnapshot('s1');
+    expect(snapshot.committed).toHaveLength(2);
+    expect(snapshot.disclosures).toEqual([
+      { toolId: 'run_command', state: 'committed', reason: 'turn_incomplete' },
+    ]);
+  });
+
   it('joins ALL history after compaction and distinguishes incomplete, legacy, command and unresolved effects', () => {
     const finished = effect(2);
     store().settle(finished, 'committed', 'not retained');

@@ -257,6 +257,9 @@ export function toSessionMessageRow(
     modelId: m.modelId ?? null,
     // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
     compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
+    // ADR-0119: NULL for every row but an interruption row; the closed reason (+ the closed code for 'failed').
+    interruptionReason: m.interruption?.reason ?? null,
+    interruptionCode: m.interruption?.code ?? null,
     createdAt: isoToEpochMs(m.timestamp),
   };
 }
@@ -281,6 +284,15 @@ export function fromSessionMessageRow(
     ...(row.compactionDroppedThroughSequence === null
       ? {}
       : { compaction: { droppedThroughSequence: row.compactionDroppedThroughSequence } }),
+    // ADR-0119: re-validated by the schema below; a stored value outside the closed sets cannot be reloaded.
+    ...(row.interruptionReason === null
+      ? {}
+      : {
+          interruption: {
+            reason: row.interruptionReason,
+            ...(row.interruptionCode === null ? {} : { code: row.interruptionCode }),
+          },
+        }),
     timestamp: epochMsToIso(row.createdAt),
   };
   const message = validateSessionMessage(candidate);
@@ -569,6 +581,8 @@ export function createSessionStore(db: Db): SessionStore {
         finishReason: sessionMessages.finishReason,
         modelId: sessionMessages.modelId,
         compactionDroppedThroughSequence: sessionMessages.compactionDroppedThroughSequence,
+        interruptionReason: sessionMessages.interruptionReason,
+        interruptionCode: sessionMessages.interruptionCode,
         createdAt: sessionMessages.createdAt,
       })
       .from(sessionMessages)
