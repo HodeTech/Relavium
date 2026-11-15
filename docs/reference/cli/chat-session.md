@@ -471,6 +471,11 @@ before admitting an older unit. A tool-heavy latest completed turn must still
 fit. Report omitted conversation entries and omitted tool calls separately;
 physical wrapping is independently measured. Keep existing legacy-user display
 substitution, empty finals, compaction dividers and model-context projection.
+Once [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) is implemented
+(MVP-3c), a restored **interrupted turn** shows its user message and a fixed dim row, `Interrupted — the user
+stopped it` / `it failed (<code>)` / `a tool call was refused and the turn ended` / `it reached the limit on tool
+rounds`, where an assistant answer would be; it restores no argument, target, diff or result, and counts as one
+logical entry in the restore budget.
 Historical unavailable preview/detail content is labelled unavailable, never
 reconstructed from text. This needs no new history payload or migration.
 
@@ -709,7 +714,8 @@ That redacted-value change is deliberate; the machine stream gets no new field
 or human hint. Other embedding hosts remain responsible for their own reason
 content under the [approval contract](../shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
 No failed-turn retention, return-to-model, retry or mode-authority change is
-selected. In particular, this does not activate ADR-0117 or ADR-0119.
+selected by this guidance work. (ADR-0117 has since been accepted and
+implemented with MVP-3b; ADR-0119 is accepted with its implementation owed in MVP-3c.)
 
 Pin the actual displayed code, sanitized explanation and exact hint in each continuing
 driver, using native metadata refusal, an ask/plan restriction, user rejection

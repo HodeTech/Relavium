@@ -279,3 +279,13 @@ indicative figures in the Consequences above (the body is left as accepted):
   deriving receipts while reconstructing a resumed session costs about 1 ms for 1,000 turns of four calls each.
 - Measuring found one defect in the first implementation, fixed before acceptance: the per-operation 4,096-part
   budget was spent only after a turn finished, so one turn could overshoot it by up to 254 parts.
+
+> **Forward note 2026-11-16 — [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) accepted.** The
+> gap this ADR leaves open for a failed, aborted or fatally refused turn closes when ADR-0119 is implemented
+> (MVP-3c). Its rules for the interplay: an interrupted turn renders **one** block — this ADR's receipts block,
+> then one fixed interruption sentence — and its tool names come only through this ADR's label rule (a built-in
+> label or `other_tool`); it is *complete by structure* and is never `incomplete` merely for having no records;
+> a degraded one gets this ADR's single request notice and no second one; an in-flight call at the interruption is
+> recorded `cancelled` ("execution state unknown", defined here), making `cancelled` live for the first time.
+> This ADR's text is otherwise unchanged.
+

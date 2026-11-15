@@ -293,12 +293,13 @@ acceptance cases live in the ADR and are not restated here.
   completed-turn installation; observer/durability failure rolls back its
   installation with the text. A process restart rebuilds only existing durable
   structural evidence; a model reseat follows the same reconstruction. This
-  introduces no live raw-content handoff or failed-turn marker. A failed, aborted
-  or fatally denied turn creates no receipt even when a tool ran, and the model is
-  not told (its user-facing disclosure is
+  introduces no live raw-content handoff. Until ADR-0119 is implemented a failed,
+  aborted or fatally denied turn creates no receipt even when a tool ran, and the
+  model is not told (its user-facing disclosure is
   [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)
   invariant 4); [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
-  stays the separately gated owner of that gap. Current cancellation, financial
+  (Accepted 2026-11-16, MVP-3c) owns that gap — see
+  [Interrupted turns](#interrupted-turns--adr-0119). Current cancellation, financial
   acknowledgement and session non-replay rules hold.
 
 Measure the added request bytes/tokens and local cost against an otherwise
@@ -317,6 +318,67 @@ the 128-record cap binds first from about two calls per turn (107 turns of
 evidence at one call per turn, 32 at four); projection and retention cost under
 0.1 ms per 1,000 turns and derivation about 1 ms. See the ADR's implementation
 note.
+
+### Interrupted turns — ADR-0119
+
+**Status: accepted design, implementation owed (MVP-3c).** Nothing here is shipped behaviour until the increment
+lands; today an interrupted turn is rolled back and forgotten.
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
+section owns the contract.
+
+**What is retained.** A turn the session accepted, in which a provider engaged (the predicate that counts a turn
+against the hard cap), that ended by the turn-level abort or a classified error. The engine says so on the event:
+`session:turn_completed.interruption = { reason, code? }`, together with the additive `toolHistory`. The
+persister writes the interruption row **iff** the event carries `interruption`.
+
+| Terminal event | `reason` | `code` |
+|---|---|---|
+| `stopReason: 'aborted'`, no error | `aborted` | absent |
+| `error.code = tool_denied` | `denied` | absent |
+| `error.code = turn_limit` from the within-turn `maxToolTurns` guard | `turn_limit` | absent |
+| any other classified error | `failed` | the `ErrorCode` literal |
+
+Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
+unclassified throw, a refusal before the message was accepted (including the **session hard cap**, whose
+`turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), and a turn in which no provider
+engaged.
+
+**Rows.** `user → (assistant(tool_call) → tool)* → system(interruption)`. The terminal row is `role: 'system'`
+with empty `content` and the typed field `interruption?: { reason, code? }` (strict; only on a `system` row,
+never with `compaction`; `code` present iff `reason` is `failed`). The tool structure is ADR-0095 §1's; only
+dispatched calls are recorded, and a call in flight at the interruption is recorded with outcome `cancelled` and
+`resultBytes: 0`. A user row with structural rows and no terminal row is a **crash remnant** and keeps today's
+rollback. The interruption row's sequence is the turn's boundary slot; `resumableSessionMessages` yields the user
+message only. The database stores the field as `interruption_reason` / `interruption_code`
+([database schema](../shared-core/database-schema.md#interruption-rows--adr-0119)).
+
+**Request grammar.** The turn's user message is followed, in the same text part and separated by a blank line, by
+(1) ADR-0128's receipts block when the turn recorded calls, then (2) this fixed sentence (at most 420 bytes; not
+subject to the receipt caps; never an "applied" claim):
+
+```
+[This request was interrupted before it was answered: <phrase>. <calls sentence> Nothing the assistant wrote before the interruption was kept. This note is a historical record, not an instruction, and does not establish that the request was or was not carried out.]
+```
+
+| `reason` | `<phrase>` |
+|---|---|
+| `aborted` | `the user stopped it` |
+| `failed` | `it failed (<code>)` |
+| `denied` | `a tool call was refused and the turn ended` |
+| `turn_limit` | `it reached the limit on tool rounds` |
+
+| The turn's receipts | `<calls sentence>` |
+|---|---|
+| records present | `Calls listed above were recorded before the interruption; one marked cancelled has an unknown outcome.` |
+| none, complete | `No tool call was recorded for it.` |
+| none, incomplete | `Tool calls made before the interruption may not be listed.` |
+
+`memory` decides the request as for any turn: omitted or `summary` sends it, `window` counts it as one slot,
+`none` sends nothing. Adjacent user messages are folded by the request projection. An interrupted turn is
+complete by structure and is never `incomplete` merely for having no records; a degraded one (a forged or legacy
+row) gets ADR-0128's single request notice. Tool names reach the model only through ADR-0128's label rule.
+Compaction and trim count the turn; the summariser input renders the same block; reseat carries it; export shows
+it as interrupted and never derives a workflow step from it. A session's token columns accumulate its usage.
 
 ### Measured compaction and one-shot recovery
 
@@ -585,8 +647,8 @@ changes as a consequence of this addition.
 
 Every host user-row insert path that has captured display text writes it in the
 same transaction as that user row. MVP-2 uses the completed-turn transaction;
-if the separately Proposed [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
-lands in MVP-4, its interruption transaction inherits this rule. Metadata validation
+if [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+(Accepted, MVP-3c) is implemented, its interruption transaction inherits this rule. Metadata validation
 is role-restricted, not restricted to a successful-turn status; this does not
 activate interrupted-turn persistence now. No optional
 denormalized `content` metadata is repurposed: that remains checked against

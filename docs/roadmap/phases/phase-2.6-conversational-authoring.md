@@ -4363,7 +4363,7 @@ resolution, config writing, project discovery and verification harnesses.
 | The display/model string-equality test conflicts with hidden attachments, legacy prefixes and memory selection | Compare selected structural identities/order against real reconstruction, then test the separate safe display mapping; never claim display text equals model input |
 | A later trim can retain an earlier compact summary | Policy-aware saved-context dividers distinguish summarized history, subsequently trimmed history and retained text; no blanket claim that all earlier text is unseen |
 | The restore cap is described both as an initial limit and a permanent store ceiling | Bound only the initial restored prefix, including notices; select whole exchanges. New live entries append, full-screen reseat carries the current view, inline reseat does not reprint it, and clear starts empty |
-| The plan says MVP-3 will store tool rows although content-free structure already persists | MVP-2 omits restored tool rows; MVP-3 owns richer/interrupted tool-row presentation. The durable content-free interruption marker remains MVP-4 under the separately Proposed ADR-0119 |
+| The plan says MVP-3 will store tool rows although content-free structure already persists | MVP-2 omits restored tool rows; MVP-3 owns richer/interrupted tool-row presentation. The durable content-free interruption marker is MVP-3c under ADR-0119 (Accepted 2026-11-16) |
 | New consent writes depend on shared-writer protections still assigned to paused row 16a | Pull only final-symlink refusal, safe typed recovery, existing-file comment-loss disclosure and truthful onboarding outcomes into step 2; row 16a's other obligations remain with their owner |
 | Consent cancellation/write failure and old-binary recovery need exact semantics | Accepted, unimplemented [config contract](../../reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2) and dated ADR-0063/0112 refinements, including pre-publication failure versus published-but-unconfirmed directory sync |
 | The compaction overview repeats superseded triggers/fallbacks; the security skill claims an OS subprocess jail | Correct the existing chat reference and security skill to their accepted canonical contracts; no runtime policy change |
@@ -5431,7 +5431,7 @@ advancing MVP-4/5. This register records follow-ups, not implementation acceptan
 | Owner | Notes to use when implementing | Acceptance emphasis |
 |---|---|---|
 | MVP-4 / MVP-A15 / ADR-0118 | Distinguish executable-plus-argv execution (`shell: false`) from explicit interpreter execution. An installed executable is not a grant; file-tool roots do not isolate a subprocess. Inspect the full admitted command/cwd and settle any shell-interpreter policy in its own approved design. | Controlled command fixtures; Once/Session/Remember and revocation; headless refusal; cancellation/output bounds/producer join. Never imply pipes or redirection work as shell syntax by default. |
-| MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers are separate from successful-turn historical receipts. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
+| MVP-3b/MVP-3c/MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers (MVP-3c) are separate from successful-turn historical receipts but render through the same block. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
 | MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
 | MVP-5 / MVP-A16 | Typed execution-host OS/architecture, project/cwd, actual runner kind, observed shell, IANA timezone, date/offset and current capabilities/mode. Unknown facts stay unknown; remote/container/WSL execution can differ from the client. Do not infer location/language from timezone. | Platform and timezone transitions; no wholesale environment, credentials or unrelated machine inventory in prompts. Host observations and repository instructions retain their separate provenance. |
 | MVP-5 / prompt caching | Keep stable instructions/tool schemas separate from changing time observations. Measure cache hit/miss and prefix invalidation under equivalent tasks rather than promising a latency reduction from aggregate usage. | Token classes when actually reported; identical correctness/approval behavior; no silent effort/model changes or raw-content diagnostic capture. |
@@ -5545,7 +5545,7 @@ sample and no full CI run is claimed** (D64: the increment touches the approval 
 | Reject / Esc | `[n]`/`[c]` deny and continue (the refusal returns to the model, [ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); `Esc`/Ctrl-C stop the turn. |
 | Correction budget, range clip, failure footer | [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md). |
 | Sequencing | Ahead of MVP-4, so the command card is built on the new card. |
-| ADR-0119 | Requested for this increment; **not built** — live-only retention would shift the persister's index-to-sequence mapping and break resume parity. It is the next increment (see the ADR's scheduling note). |
+| ADR-0119 | Requested for this increment but **not built** here: live-only retention would shift the persister's index-to-sequence mapping and break resume parity. Revised after a twelve-finding review and **Accepted 2026-11-16** as its own increment, [MVP-3c](#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16), ahead of MVP-4. |
 | Type-ahead queue | Stays in MVP-5. |
 
 Implementation facts a reviewer should check first: the registry keeps a refusal **fatal** after an
@@ -5561,4 +5561,34 @@ Open for the security sitting: that every disclosure the contract requires is ei
 shown whenever non-zero; that the omitted-count row and the key rows cannot be the rows the budget
 drops; that a wrapped warning cannot push the controls out of the frame; and that `canAsk:false` cannot
 be reached with a person present.
+
+### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
+
+Maintainer decisions of 2026-11-16. **Neither increment is implemented.**
+
+**MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
+design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
+review table. The material changes: the marker is a typed `interruption` row field stored in two `CHECK`-constrained columns
+(one migration), **not** a new content part; the turn core carries the settled tool history out of an error path and records an
+in-flight call as `cancelled` (ADR-0128's "unknown", its first live producer); the model sees ADR-0128's receipts block plus one
+fixed, pinned sentence with no tool names of its own; a turn is retained only when a provider engaged, so the live and restored
+hard-cap counts agree; session-ending cancellation, process death and unclassified throws keep today's rollback; ADR-0115 is not
+a dependency. Work list: shared schema and `session:turn_completed.interruption`; the migration and store; the turn core's
+channel and `cancelled` entry; `AgentSession` retention and spans; request rendering and receipt byte accounting; resume and
+the hard-cap count; compaction, trim, `window` and reseat; the persister; the restored transcript; export; the summariser prompt
+line; live-versus-restored parity tests; the ten acceptance tests in the ADR; two D64 review rounds and a resume-path security
+sitting.
+
+**MVP-3d — `ask_user`.** Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
+an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the
+engine pausing the turn and returning the answer as the tool result, a configurable five-minute timeout, `tool_unavailable`
+without a terminal, `human_gate` for workflows) **omits multiple choice with multi-select**, and the ADR must settle: the
+question/answer shape (one to four questions, two to four options each with a description, single or multiple selection, a
+free-text "other"); the engine pause and how an interrupted paused turn is recorded (ADR-0119); the host seam and the docked
+card (ADR-0129's layout, the native prompt host's select/text primitives, keys `↑/↓`, `1`–`9`, `Space`, `Enter`, `Esc` returning a
+"declined" result); bounds and sanitization of model-authored question text (a new terminal sink for untrusted content);
+non-interactive behaviour; and that an answer is **never consent** (no `always`, no approval-cache effect). Building blocks that
+exist today: the native prompt host (select with hints, text, masked, directory picker — host-initiated only, no multi-select),
+the approval store's promise-and-overlay primitive, the engine's per-tool approval pause, and the workflow `human_gate`
+(`input` kind). Nothing model-initiated exists.
 

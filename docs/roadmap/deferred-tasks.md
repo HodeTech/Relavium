@@ -2324,8 +2324,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
-      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
-      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment drafted in Gate 0.
+      **Pulled into the CLI MVP 2026-11-04 (D67) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
+      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment. **Moved 2026-11-16 out of MVP-4 into MVP-3c;** ADR-0119 Accepted, ADR-0095 amended.
 
 - [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
       upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
@@ -4173,13 +4173,16 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
   ownership ends, and the close condition above stands.
 
-- [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (next increment).**
-  Requested for MVP-3b and deliberately not built there: keeping the turn only in memory would shift the
-  persister's `realMessageSeqs`/`turnBoundarySeqs` mapping and break resume parity. Needs the marker
-  row and its shared-schema part, the persister write, resume reconstruction, the restored transcript,
-  compaction/trim counting, reseat and export in one step, with D64 review rounds and a security sitting on
-  the resume path. Until then a turn that ends in an error is forgotten by the model (the footer now names
-  the failed tools). *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
+- [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (MVP-3c, ahead of MVP-4).**
+  **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); implementation not
+  started. The decision cannot be built live-only: the persister maps message indices to durable sequence numbers
+  (`realMessageSeqs`/`turnBoundarySeqs`). Work list in the [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16);
+  D64 rigor tier (two review rounds, a resume-path security sitting). Until then a turn that ends in an error is forgotten
+  by the model (the footer names the failed tools). *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
+- [ ] **`ask_user` — a structured mid-turn question with options, free text and multi-select (MVP-3d, after MVP-3c).**
+  Decided 2026-11-16 to move up from "after v0.2.1". Nothing is implemented; the design in the phase register omits
+  multi-select. Starts with an ADR (shape, engine pause, interrupted-pause recording, docked card, sanitization, "an answer
+  is never consent"). *(medium · product · ADR row 9 part 2, 2.6.M)*
 - [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
   predicate also covers credential stores, which the rule keeps fatal; split the two and design the
   allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*

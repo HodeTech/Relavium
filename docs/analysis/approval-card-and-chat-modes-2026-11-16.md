@@ -123,8 +123,9 @@ Structural session data (roles, counts, timestamps, token totals — no content)
   (the host refused out-of-file ranges), and the footer said only "a tool call failed".
 
 Hence ADR-0131 (consecutive no-progress rounds; clip a range's end; name the failed tools) and, separately,
-ADR-0119, which keeps the turn in the session; see its 2026-11-16 scheduling note for why that is a
-whole-increment change.
+ADR-0119, which keeps the turn in the session. ADR-0119 was revised after a twelve-finding design review and
+Accepted the same day as its own increment (MVP-3c); it cannot be a live-only change, because the persister
+maps message indices to durable sequence numbers.
 
 ## What was adopted, and what was not
 

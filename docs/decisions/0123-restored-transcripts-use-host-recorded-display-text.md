@@ -52,9 +52,10 @@ a plain prompt. A caller without that form leaves metadata absent; the persister
 never infers it from canonical submitted text or equality of strings. Plain/JSON
 drivers explicitly pass their captured input line as display text because they
 perform no attachment expansion. A failed or aborted turn keeps today's
-no-transcript-write behavior. MVP-4's still-Proposed ADR-0119 owns interruption
-markers; if accepted, its user-row insert must atomically carry the same captured
-display metadata. This ADR neither accepts nor implements ADR-0119 early.
+no-transcript-write behavior. ADR-0119 owns interruption markers (Accepted
+2026-11-16 as MVP-3c, after this ADR was written); its user-row insert atomically
+carries the same captured display metadata. This ADR neither accepted nor
+implemented ADR-0119.
 
 For legacy user rows with no display metadata, show a fixed explanation that the
 older prompt's display form was not stored and may contain attached context.

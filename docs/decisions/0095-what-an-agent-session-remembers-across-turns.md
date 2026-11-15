@@ -384,3 +384,16 @@ result, path or id, so CR-70's "process only" and per-turn-ceiling constraints, 
 (§2 itself says the new model "sees notes" after a reseat). CR-70's raw-content carrying remains
 deferred to v0.2.1 on its existing trigger. The runtime lands in one implementation step; until then
 the text-only request still ships.
+
+> **Amended 2026-11-16 by accepted [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md).**
+> §1's "a completed turn is persisted as `user → assistant(tool_call) → tool → … → assistant(text)`" gains a second
+> shape: a **retained interrupted turn** ends with a `role: 'system'` *interruption row* instead of the terminal
+> assistant row (`user → (assistant(tool_call) → tool)* → system(interruption)`), and a turn is still identified
+> by row structure. §1's sentence "no migration is needed" is amended for this one element: the interruption row
+> carries a typed `interruption` field stored in two nullable, `CHECK`-constrained columns, which is one
+> migration. The generic durable content union is untouched, so the 2026-09-18 session-only arm holds. §4's
+> `window` row: an interrupted turn takes one of the `window_size` slots, like a completed turn. A user row with
+> structural rows and no terminal row remains a crash remnant and keeps today's rollback. Invariants 1–6 are
+> unchanged; invariant 4 (resume reproduces the transcript) is the reason the turn cannot be retained in memory
+> alone.
+

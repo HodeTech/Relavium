@@ -123,8 +123,8 @@ remain required.
    artifact/consumer and PR checks remain required; local APFS success alone
    does not certify the declared target matrix.
 
-This correction does not activate MVP-4's still-proposed denied-tool feedback
-or interrupted-turn history decisions (ADR-0117/0119). File-level MACL and
+This correction did not activate the denied-tool feedback or interrupted-turn history decisions
+(ADR-0117 landed in MVP-3b; ADR-0119 is MVP-3c). File-level MACL and
 unlisted metadata remain explicit unsupported cases under the accepted design;
 no attribute deletion, broad OS permission change, in-place write or automatic
 retry is part of the correction.
@@ -320,15 +320,30 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    [ADR-0131](../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md) (the correction budget counts
    consecutive no-progress rounds, a line range past the end of a file is clipped, `tool_failed` names the failed tools).
    Analysis: [the approval card and chat modes](../analysis/approval-card-and-chat-modes-2026-11-16.md).
-   **Not in this increment:** [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
-   (the failed turn stays in the session) — it needs its full durable shape at once and is the next increment; see
-   its scheduling note. The type-ahead message queue stays in MVP-5.
+   The type-ahead message queue stays in MVP-5.
+   **MVP-3c — The failed turn stays (2026-11-16, ahead of MVP-4).** [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md),
+   **Accepted 2026-11-16** after a twelve-finding design review, moved out of MVP-4 into its own increment: a
+   retained, aborted, failed, denied or `turn_limit` turn is stored as the user's message, the content-free tool
+   structure and one typed *interruption row* (one migration), and the model sees it as ADR-0128's receipts block
+   plus one fixed sentence. It needs its full durable shape at once — the persister maps message indices to durable
+   sequence numbers, so a live-only change would break resume parity. Scope: shared schema and event field, the
+   migration and store, the turn core's error channel and `cancelled` entry for an in-flight call, retention and
+   request rendering, resume, compaction/trim/window/reseat, the restored transcript and export, with live-versus-
+   restored parity tests. **Implementation not started**; D64's rigor tier applies (a resume path): two independent
+   review rounds with no blocker/high/medium finding and a separate security sitting. ADR-0115 is not a
+   dependency. Session-ending cancellation and process death keep today's rollback (ADR-0098's disclosure at resume).
+   **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's
+   structured mid-turn question moves up from "after v0.2.1" into its own increment. It starts with an ADR that
+   also covers what the earlier design omitted — **multiple choice with free text and multi-select** — on the
+   engine's existing pause machine and a docked, keyboard-owning card built on ADR-0129's layout and the native
+   prompt host; a new terminal sink for untrusted content, so D64's rigor tier applies. Not started; its ADR is the
+   first step (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
-   pending approval rejecting it (MVP-A12; row 11b split); denials returned to the model (MVP-A10); a failed,
-   denied or aborted turn kept in context as a content-free interruption marker (the CR-71 residual,
-   un-deferred, D67; CR-71 itself closed in W7); configurable, finite turn ceilings with conservative
-   defaults (MVP-A11).
+   pending approval rejecting it (MVP-A12; row 11b split); the rest of the denials returned to the model
+   (MVP-A10: the protected-path and allowlist classes; the user, mode and headless classes landed in MVP-3b); the
+   failed-turn marker is **no longer here** — it is MVP-3c (the CR-71 residual, D67; CR-71 itself closed in W7);
+   configurable, finite turn ceilings with conservative defaults (MVP-A11).
    The [2026-11-15 context/latency investigation](../analysis/chat-context-command-and-latency-2026-11-15.md)
    supplies [implementation notes](phases/phase-2.6-conversational-authoring.md#chat-investigation-follow-ups--2026-11-15)
    for the command/shell boundary and truthful tool outcomes. The maintainer
@@ -373,8 +388,8 @@ MVP-1 and MVP-2 are complete on `main`; MVP-3 implementation is complete on
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115, 0117–0119 and
-0121, each accepted before its implementation. ADR-0116/0120 are accepted; MVP-3
+the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115 and
+0121, each accepted before its implementation (ADR-0117 and ADR-0119 were accepted 2026-11-16). ADR-0116/0120 are accepted; MVP-3
 keeps their pre-build design and post-implementation security gates. All open
 obligations are in [deferred-tasks.md](deferred-tasks.md).
 
@@ -612,7 +627,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D64 | MVP | Acceptance bar for MVP increments | ✅ **Ruled 2026-11-04 — tiered** (see [Next work](#next-work--the-cli-mvp)) |
 | D65 | MVP | Paused Wave 3 increments' user-visible pieces | ✅ **Ruled 2026-11-04:** six recorded splits (10b, 15a, 15c, 11b, 16b, 17a) and #61 move into the MVP; Steps 12/14 stay paused |
 | D66 | Gate 0 | `current.md`'s history | ✅ **Ruled 2026-11-04:** relocate the unique records, delete the duplicated history, keep every inbound anchor |
-| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 |
+| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 · **Amended 2026-11-16:** the interruption marker moves to its own increment ahead of MVP-4 (MVP-3c, ADR-0119 Accepted); user/mode/headless denials returned in MVP-3b |
 | D68 | MVP-1/2/4 | First-run defaults and the keymap | ✅ **Ruled 2026-11-04:** env-var key fallback, the interactive output budget, the default model following the stored key, a minimal `init`, and one keymap ADR (Ctrl+C interrupts the turn, a second press ends the session, Ctrl+C at a pending approval rejects it first) superseding the 2026-10-19 `/cancel` wording |
 | D69 | MVP | Order of the added lanes | ✅ **Ruled 2026-11-04:** authoring → web → Home → MCP · **Amended 2026-11-08 by D75:** the Home (MVP-8) moves ahead of authoring, right after MVP-4 |
 | D70 | MVP | npm pre-release before v0.2.0 | ✅ **Ruled 2026-11-04 — none** |

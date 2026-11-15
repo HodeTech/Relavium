@@ -869,8 +869,8 @@ host-recorded display text, never an inferred empty prompt.
 
 The migration leaves every existing row NULL. Every host user-row insert with
 captured display metadata includes that field in the same transaction. MVP-2
-uses the existing completed-turn transaction; a future accepted ADR-0119
-interruption transaction inherits this rule without being implemented here.
+uses the existing completed-turn transaction; ADR-0119's interruption transaction
+(Accepted, MVP-3c, not yet implemented) inherits this rule.
 Updates/backfills of historical rows
 are not introduced. Metadata writes and the separate display read reject display
 metadata on non-user roles within their admitted rows.
@@ -1226,6 +1226,24 @@ It must not join a later standalone `loadStepExecutions` result to the earlier f
 do not query or allocate step rows. A strict failure invokes no step callback; display degradation
 may still show standalone step detail only with explicitly unverified coverage and an unavailable
 usage marker. This grants no resume or mutation authority.
+
+#### Interruption rows — ADR-0119
+
+**Accepted design, migration owed (MVP-3c).** An interrupted turn
+([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
+[contract](../contracts/agent-session-spec.md#interrupted-turns--adr-0119)) ends with a `role: 'system'` row
+whose `content` is empty and whose typed `interruption` field is stored in two nullable columns of
+`session_messages`:
+
+| Column | Type | Rule |
+|---|---|---|
+| `interruption_reason` | text | `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`); only on a `role = 'system'` row; `NULL` on every other row and whenever `compaction_dropped_through_sequence` is set |
+| `interruption_code` | text | the closed `ErrorCode` taxonomy; present **iff** the reason is `failed` |
+
+The row carries no text, tool name, argument or result. It is not a content part: the strict session-only
+content union below is unchanged. `SessionMessage.interruption` is `{ reason, code? }`, strict, and the store
+refuses a row that violates the column rules at its boundary as well as in the database. Existing rows are
+`NULL`; there is no backfill.
 
 #### Session content parts
 

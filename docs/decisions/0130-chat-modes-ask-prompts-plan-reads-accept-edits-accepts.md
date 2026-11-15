@@ -129,8 +129,8 @@ wants the old behaviour configures `plan`.
 
 ### Acceptance note — 2026-11-16
 
-Accepted together with ADR-0117, ADR-0119, ADR-0129 and ADR-0131 as one
-increment ahead of MVP-4. The implementation, two independent review rounds with
+Accepted together with ADR-0117, ADR-0129 and ADR-0131 as one
+increment (MVP-3b) ahead of MVP-4. ADR-0119 is a separate increment (MVP-3c). The implementation, two independent review rounds with
 no blocker/high/medium finding (D64), and a separate security sitting on the
 approval path are owed before the increment is accepted. The first two decisions
 (the mode table and the `ask` default) were taken by the maintainer after the

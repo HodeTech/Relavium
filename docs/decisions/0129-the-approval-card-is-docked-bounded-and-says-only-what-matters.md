@@ -163,8 +163,8 @@ below-80×24 refusal, the single keyboard owner, the clipboard rules and the
 
 ### Acceptance note — 2026-11-16
 
-Accepted with ADR-0117, ADR-0119, ADR-0130 and ADR-0131 as one increment ahead of
-MVP-4. The implementation, two review rounds with no blocker/high/medium finding
+Accepted with ADR-0117, ADR-0130 and ADR-0131 as one increment (MVP-3b) ahead of
+MVP-4. ADR-0119 is a separate increment (MVP-3c) with its own acceptance. The implementation, two review rounds with no blocker/high/medium finding
 and a separate security sitting (D64: an approval path) are owed before it is
 accepted. A terminal-bell notification for a card that waits while the terminal
 is unfocused is recorded as a follow-up, not decided here.

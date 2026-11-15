@@ -67,6 +67,12 @@
 > approval card is docked below the conversation. The fail-closed floor, the protected-path and scope
 > refusals, the once/always cache and the keys `y`/`a`/`n`/`c` are unchanged.
 
+> Amended 2026-11-16 by accepted [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (implementation
+> owed, MVP-3c): the abort clause's rollback is withdrawn for a turn the session accepted and in which a provider
+> engaged — it stays in the session as the user's message, its content-free tool structure and an interruption row.
+> The rollback stays for session-ending cancellation, process death, an unclassified throw and a turn in which no
+> provider engaged.
+
 ## Context
 
 We want Claude-Code-style chat modes (ask / plan / accept-edits / auto) and per-tool approval for writes
