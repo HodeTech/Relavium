@@ -5531,3 +5531,34 @@ implementation (the per-operation part budget was spent only after a turn finish
 Still owed before acceptance: the maintainer's two fresh independent review rounds, a separate security sitting, a
 real-provider text-projection conformance sample where a key is available, and the final-head CI. No merge,
 publication or paid replay is claimed, and CR-70, MVP-4 and MVP-5 are unchanged.
+
+### MVP-3b — approval card v2, honest modes and refusals that return (2026-11-16)
+
+Recorded on `development` after the maintainer's decisions of 2026-11-16. Source evidence is unit and
+component-harness evidence; **no independent review round, no separate security sitting, no real-provider
+sample and no full CI run is claimed** (D64: the increment touches the approval path).
+
+| Decision | Result |
+|---|---|
+| Mode model | Four modes, true names ([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)): `ask` asks (default), `plan` is read-only, `accept-edits` accepts file edits, `auto` unchanged. With no one to answer, governed tools are hidden. |
+| Card placement | Docked below the conversation; `[v]` and `/details` remain the only takeover screens ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)). |
+| Reject / Esc | `[n]`/`[c]` deny and continue (the refusal returns to the model, [ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); `Esc`/Ctrl-C stop the turn. |
+| Correction budget, range clip, failure footer | [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md). |
+| Sequencing | Ahead of MVP-4, so the command card is built on the new card. |
+| ADR-0119 | Requested for this increment; **not built** — live-only retention would shift the persister's index-to-sequence mapping and break resume parity. It is the next increment (see the ADR's scheduling note). |
+| Type-ahead queue | Stays in MVP-5. |
+
+Implementation facts a reviewer should check first: the registry keeps a refusal **fatal** after an
+effect was admitted and for a saved-result delivery; a revoked starting-`auto` authority stays fatal
+(`ToolDeniedByUserError` `fatal`); `accept-edits` still asks for a protected target, a non-edit class
+and a saved result; the card's `compact` page skips the `=before N` duplicate of a context line and
+its hidden counts come from separate suffix arrays; an ending token prints only where a line's ending
+differs (`endingShown`); an end-of-range clip reports `requestedEnd`. Mutation checks were run against
+the three layout behaviours (the card hiding the conversation, an ending token on every line, a
+four-row body cap) and each broke its test.
+
+Open for the security sitting: that every disclosure the contract requires is either always shown or
+shown whenever non-zero; that the omitted-count row and the key rows cannot be the rows the budget
+drops; that a wrapped warning cannot push the controls out of the frame; and that `canAsk:false` cannot
+be reached with a person present.
+

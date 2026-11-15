@@ -167,6 +167,61 @@ describe('chat-projection', () => {
       expect(line).not.toContain('model/MCP-derived context'); // the raw message is NOT echoed (F4 constraint)
     });
 
+    it('names the tools whose calls failed, with counts, sanitized and bounded (ADR-0131 §3)', () => {
+      const ESC = String.fromCharCode(0x1b);
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        errorMessage: 'must not be shown',
+        failedTools: [
+          { toolId: 'read_file', count: 2 },
+          { toolId: 'search_files', count: 1 },
+          { toolId: `${ESC}]0;pwn\u0007${'x'.repeat(80)}`, count: 1 },
+        ],
+      });
+      expect(line).toContain('failed calls ended the turn: read_file \u00d72, search_files, ');
+      expect(line).not.toContain('must not be shown');
+      // eslint-disable-next-line no-control-regex -- asserting NO control byte survives the sanitizer
+      expect(/[\u0000-\u001f\u007f]/.test(line)).toBe(false);
+      expect(line).toContain("outside this session's workspace");
+      // A hostile tool name is cut to 40 code points, never echoed whole.
+      expect(line).not.toContain('x'.repeat(41));
+    });
+
+    it('falls back to the generic hint when no failed tool is known (a restored or legacy summary)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        failedTools: [],
+      });
+      expect(line).toContain('a tool call failed (');
+      expect(line).not.toContain('failed calls ended the turn');
+    });
+
+    it('shows the time the system took and, separately, the time spent waiting for the person', () => {
+      const line = formatTurnSummary({
+        stopReason: 'stop',
+        tokensUsed: { input: 10, output: 20 },
+        durationMs: 298_000,
+        waitedMs: 236_000,
+      });
+      expect(line).toContain('1m02s'); // 298s − 236s of active time
+      expect(line).toContain('3m56s waiting for you');
+      expect(line).not.toContain('4m58s');
+    });
+
+    it('shows no wait part when the turn never waited', () => {
+      const line = formatTurnSummary({
+        stopReason: 'stop',
+        tokensUsed: { input: 10, output: 20 },
+        durationMs: 61_000,
+      });
+      expect(line).toContain('1m01s');
+      expect(line).not.toContain('waiting for you');
+    });
+
     it('terminal-sanitizes the rendered reason (strips ANSI/OSC/control bytes) and omits an empty reason', () => {
       const ESC = String.fromCharCode(0x1b);
       const BEL = String.fromCharCode(0x07);
@@ -305,6 +360,20 @@ describe('chat-projection', () => {
       liveTokens: '',
       liveTokensTruncated: false,
     } as const;
+
+    it('says the turn is waiting for the person — not "Working…" — while an approval card is open', () => {
+      const line = formatBusyLine({
+        ...base,
+        liveTokens: 'streamed text that must not hide the wait',
+        elapsedMs: 5_000,
+        awaitingApprovalMs: 83_000,
+      });
+      expect(line.dim).toBe(true);
+      expect(line.text).toBe('⠋ Waiting for your answer 1m23s · Esc stops the turn');
+      expect(line.text).not.toContain('Working');
+      // Without a card the pre-token status is unchanged.
+      expect(formatBusyLine({ ...base, elapsedMs: 5_000 }).text).toContain('Working… 5s');
+    });
 
     it('renders the compaction moment first (dim, ADR-0062 §7), winning over every other state', () => {
       const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });

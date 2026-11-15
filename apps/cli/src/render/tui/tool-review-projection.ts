@@ -18,11 +18,26 @@ export interface ReviewField {
   readonly masks: readonly ReviewMask[];
   readonly byteIndex: readonly { offset: number; bytes: number }[];
 }
+/** What a projected row IS, for colour and for the compact card — typed UI framing, never inferred from source. */
+export type ReviewRowKind = 'added' | 'removed' | 'context' | 'meta';
 export interface ReviewSourceLine extends SourceRange {
   readonly label: string;
   readonly ending: 'lf' | 'crlf' | 'none' | 'field';
   readonly changed: boolean;
   readonly trailingStart?: number;
+  /** The diff role of a diff line; absent for a target/field line. */
+  readonly kind?: ReviewRowKind;
+  /**
+   * The `=before N` copy of a context line. The full view lists both sides so every byte of each is inspectable;
+   * the compact card shows a context line once (its `=N` after-side copy) and skips this one.
+   */
+  readonly cardSkip?: boolean;
+  /**
+   * Whether the ending notation is printed after this line (ADR-0129 §4). `false` only for a `lf`/`crlf` line whose
+   * side is uniformly that ending and whose other side is empty or the same — the ordinary case. A differing,
+   * mixed or unterminated ending always shows its token, so a change of endings can never look unchanged.
+   */
+  readonly showEnding?: boolean;
 }
 export interface ReviewDocument {
   readonly valid: boolean;
@@ -35,6 +50,9 @@ export interface ReviewDocument {
   readonly changedBytes: number;
   readonly changedLines: number;
   readonly remainingBytes: readonly number[];
+  /** Suffix counts over the lines the COMPACT card shows (everything but {@link ReviewSourceLine.cardSkip}). */
+  readonly cardRemainingLines: readonly number[];
+  readonly cardRemainingBytes: readonly number[];
 }
 export interface ReviewCursor {
   readonly line: number;
@@ -95,6 +113,8 @@ export function createReviewDocument(preview: ToolPreview): ReviewDocument {
     changedBytes: 0,
     changedLines: 0,
     remainingBytes: [0],
+    cardRemainingLines: [0],
+    cardRemainingBytes: [0],
   });
   if (!validPreviewBounds(preview) || !validPreviewDiff(preview)) return invalid();
   const fields: ReviewField[] = [],
@@ -125,6 +145,8 @@ export function createReviewDocument(preview: ToolPreview): ReviewDocument {
   }
   const indexedLines = lines.map((line) => indexTrailingWhitespace(line, fields));
   const remainingBytes = indexRemainingBytes(lines, fields);
+  const cardLines = indexRemainingLines(lines);
+  const cardBytes = indexRemainingBytes(lines, fields, (line) => line.cardSkip !== true);
   const required = requiredInspectionRanges(lines, fields, masks);
   return {
     valid: required.length <= 8192,
@@ -134,6 +156,8 @@ export function createReviewDocument(preview: ToolPreview): ReviewDocument {
     masks,
     required,
     remainingBytes,
+    cardRemainingLines: cardLines,
+    cardRemainingBytes: cardBytes,
     sourceBytes: fields.reduce((sum, field) => sum + reviewBytes(field.text), 0),
     changedBytes,
     changedLines,
@@ -152,6 +176,8 @@ export function escapeReviewCharacter(char: string, trailing: boolean, numeric =
 }
 export interface ReviewPage {
   readonly rows: readonly string[];
+  /** The role of each row in {@link ReviewPage.rows}, parallel to it. */
+  readonly kinds: readonly ReviewRowKind[];
   /** Masked companion of exactly these emitted rows, never a second viewport projection. */
   readonly maskedRows: readonly string[];
   /** Source actually readable in this frame: placeholders do not prove their hidden bytes. */
@@ -172,6 +198,7 @@ export function projectReviewPage(
   rowLimit: number,
   reveal = false,
   numeric = false,
+  compact = false,
 ): ReviewPage {
   const page: PageProjection = {
     document,
@@ -180,6 +207,7 @@ export function projectReviewPage(
     reveal,
     numeric,
     rows: [],
+    kinds: [],
     maskedRows: [],
     visibleSource: [],
     shown: [],
@@ -189,7 +217,25 @@ export function projectReviewPage(
     work: 0,
   };
   while (page.valid && page.lineIndex < document.lines.length && page.rows.length < rowLimit) {
+    if (compact && document.lines[page.lineIndex]?.cardSkip === true) {
+      // The full view lists this line; the compact card shows its context line once, so it takes no row.
+      page.lineIndex++;
+      page.offset = 0;
+      if (++page.work > 65_536) page.valid = false;
+      continue;
+    }
     if (!appendReviewLine(page)) break;
+  }
+  // A skipped line at the tail is not "more to read": settle on the next line the card would show.
+  if (compact) {
+    while (
+      page.valid &&
+      page.lineIndex < document.lines.length &&
+      document.lines[page.lineIndex]?.cardSkip === true
+    ) {
+      page.lineIndex++;
+      page.offset = 0;
+    }
   }
   const next =
     page.lineIndex >= document.lines.length
@@ -197,12 +243,15 @@ export function projectReviewPage(
       : { line: page.lineIndex, offset: page.offset };
   return {
     rows: page.rows,
+    kinds: page.kinds,
     maskedRows: page.maskedRows,
     visibleSource: page.visibleSource,
     shown: reveal ? page.shown : [],
     next,
-    hiddenLines: document.lines.length - (next?.line ?? document.lines.length),
-    hiddenBytes: hiddenReviewBytes(document, next),
+    hiddenLines: compact
+      ? (document.cardRemainingLines[next?.line ?? document.lines.length] ?? 0)
+      : document.lines.length - (next?.line ?? document.lines.length),
+    hiddenBytes: hiddenReviewBytes(document, next, compact),
     valid: page.valid,
   };
 }
@@ -214,6 +263,7 @@ interface PageProjection {
   readonly reveal: boolean;
   readonly numeric: boolean;
   readonly rows: string[];
+  readonly kinds: ReviewRowKind[];
   readonly maskedRows: string[];
   readonly visibleSource: SourceRange[];
   readonly shown: SourceRange[];
@@ -283,6 +333,7 @@ function emitReviewRow(
     }
   }
   page.rows.push(row);
+  page.kinds.push(line.kind ?? 'meta');
   page.maskedRows.push(masked + ending);
 }
 function projectReviewRow(
@@ -349,7 +400,7 @@ function appendReviewLineEnding(
   line: ReviewSourceLine,
   row: ReviewRow,
 ): boolean {
-  const ending = reviewEnding(line.ending);
+  const ending = line.showEnding === false ? '' : reviewEnding(line.ending);
   if (row.width + ending.length > page.columns) {
     if (row.position === row.start) {
       page.valid = false;
@@ -374,9 +425,14 @@ function appendReviewLineEnding(
   page.lineIndex++;
   return true;
 }
-function hiddenReviewBytes(document: ReviewDocument, next: ReviewCursor | undefined): number {
+function hiddenReviewBytes(
+  document: ReviewDocument,
+  next: ReviewCursor | undefined,
+  compact = false,
+): number {
   const nextLine = next === undefined ? undefined : document.lines[next.line];
-  const remaining = document.remainingBytes[next?.line ?? document.lines.length] ?? 0;
+  const suffix = compact ? document.cardRemainingBytes : document.remainingBytes;
+  const remaining = suffix[next?.line ?? document.lines.length] ?? 0;
   if (nextLine === undefined || next === undefined) return remaining;
   return (
     remaining -
@@ -513,6 +569,7 @@ function appendDiffLines(
   let changedBytes = 0,
     changedLines = 0;
   for (const line of diff.lines) {
+    const showEnding = endingShown(diff, line.kind, line.ending);
     if (line.kind === 'context' && line.before !== undefined && line.after !== undefined) {
       lines.push({
         field: before,
@@ -521,6 +578,9 @@ function appendDiffLines(
         label: `=before ${line.before.line}`,
         ending: line.ending,
         changed: false,
+        kind: 'context',
+        cardSkip: true,
+        showEnding,
       });
     }
     const side = line.kind === 'removed' ? line.before : (line.after ?? line.before);
@@ -533,6 +593,8 @@ function appendDiffLines(
       label: `${diffLineMark(line.kind)}${side.line}`,
       ending: line.ending,
       changed: line.kind !== 'context',
+      kind: line.kind,
+      showEnding,
     });
     if (line.kind !== 'context') {
       changedLines++;
@@ -540,6 +602,22 @@ function appendDiffLines(
     }
   }
   return { changedBytes, changedLines };
+}
+/**
+ * Whether a diff line prints its ending token (ADR-0129 §4, as ADR-0120 asks): only a line whose ending differs
+ * from the rest of its side or from the other side. An unterminated line always shows `<EOF:NO_NEWLINE>`, so
+ * adding or dropping only the final newline stays a visible two-sided change, and LF vs CRLF can never look equal.
+ */
+function endingShown(
+  diff: PreviewDiff,
+  kind: PreviewDiffLine['kind'],
+  ending: ReviewSourceLine['ending'],
+): boolean {
+  if (ending !== 'lf' && ending !== 'crlf') return true;
+  if (kind === 'context') return !(diff.beforeEndings === ending && diff.afterEndings === ending);
+  const own = kind === 'removed' ? diff.beforeEndings : diff.afterEndings;
+  const other = kind === 'removed' ? diff.afterEndings : diff.beforeEndings;
+  return !(own === ending && (other === 'empty' || other === ending));
 }
 function indexTrailingWhitespace(
   line: ReviewSourceLine,
@@ -554,6 +632,7 @@ function indexTrailingWhitespace(
 function indexRemainingBytes(
   lines: readonly ReviewSourceLine[],
   fields: readonly ReviewField[],
+  include: (line: ReviewSourceLine) => boolean = () => true,
 ): number[] {
   const remaining: number[] = Array.from({ length: lines.length + 1 }, () => 0);
   for (let index = lines.length - 1; index >= 0; index--) {
@@ -561,9 +640,17 @@ function indexRemainingBytes(
     if (line !== undefined)
       remaining[index] =
         (remaining[index + 1] ?? 0) +
-        fieldRangeBytes(fields[line.field], line.start, line.end) +
-        endingLength(line.ending);
+        (include(line)
+          ? fieldRangeBytes(fields[line.field], line.start, line.end) + endingLength(line.ending)
+          : 0);
   }
+  return remaining;
+}
+/** Suffix counts of the lines the compact card shows. */
+function indexRemainingLines(lines: readonly ReviewSourceLine[]): number[] {
+  const remaining: number[] = Array.from({ length: lines.length + 1 }, () => 0);
+  for (let index = lines.length - 1; index >= 0; index--)
+    remaining[index] = (remaining[index + 1] ?? 0) + (lines[index]?.cardSkip === true ? 0 : 1);
   return remaining;
 }
 function requiredInspectionRanges(

@@ -610,13 +610,23 @@ async function dispatch(
     if (cause instanceof ToolCancelledError) throw cause;
     if (isAbort(cause, ctx)) throw new ToolCancelledError(def.id, cause);
     if (cause instanceof ToolDispatchError) {
-      if ((effectDispatched || replayHit) && (cause.retryable || cause.recoverable))
+      if ((effectDispatched || replayHit) && (cause.retryable || cause.recoverable)) {
+        // A refusal of a saved-result delivery (or of anything after an effect was admitted) stays FATAL, as it
+        // always was: the model is not invited to retry a call whose effect identity is already held
+        // (ADR-0117 returns the refusal of a NEW call, decided before any effect, to the model).
+        if (cause instanceof ToolDeniedByUserError)
+          throw new ToolDeniedByUserError(def.id, cause.reason, cause.message, {
+            denialClass: cause.denialClass,
+            ...(cause.explanation === undefined ? {} : { explanation: cause.explanation }),
+            fatal: true,
+          });
         throw new ToolExecutionError(
           def.id,
           'Tool delivery failed after effect admission.',
           cause,
           { recoverable: false, retryable: false },
         );
+      }
       throw cause;
     }
     throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause, {
@@ -854,7 +864,12 @@ async function confirmDispatch(
       decision.reason !== undefined && decision.reason.length > 0
         ? `: ${decision.reason}`
         : ' by the user';
-    throw new ToolDeniedByUserError(def.id, 'user_rejected', `tool \`${def.id}\` denied${why}`);
+    throw new ToolDeniedByUserError(def.id, 'user_rejected', `tool \`${def.id}\` denied${why}`, {
+      denialClass: decision.denialClass ?? 'user',
+      ...(decision.reason !== undefined && decision.reason.length > 0
+        ? { explanation: decision.reason }
+        : {}),
+    });
   }
   // An abort that landed WHILE the prompt was pending — the hook approved anyway / ignored the signal —
   // must still cancel: the governed side effect must not run. Mirrors the post-dispatch guard in dispatch()

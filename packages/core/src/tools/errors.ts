@@ -13,7 +13,7 @@ import { byCodeUnit, RelaviumError } from '@relavium/shared';
 
 import type { ErrorCode } from '@relavium/shared';
 
-import type { ToolId } from './types.js';
+import type { ToolDenialClass, ToolId } from './types.js';
 import { markEffectAttentionError } from './effect-attention-marker.js';
 
 export { ToolDispatchError } from './dispatch-error.js';
@@ -65,13 +65,18 @@ export type ToolPolicyDenyReason =
   | 'media_scope_denied'; // read_media: the requesting scope is not in the handle's allowedScopes (ADR-0044 §1)
 
 /**
- * A per-tool approval (ADR-0057 EA3) denied the dispatch — the user rejected it, or (fail-closed) the
- * interactive-approval regime was active for a governed-class tool but no `confirm` hook was wired. Carries
- * the **existing** `tool_denied` run code (already absent from `RETRYABLE_ERROR_CODES`), so a user denial is
- * **fatal, never retried** (re-issuing the same call just re-prompts/re-denies — like a guardrail denial). A
- * distinct class from {@link ToolPolicyError} (a guardrail/grant denial of the engine's OWN policy): this is
- * the user's interactive consent verdict, with its own reason discriminant. Its message may include a
- * host-supplied user explanation; the code itself does not establish that text's origin or privacy.
+ * A per-tool approval (ADR-0057 EA3) denied the dispatch — the user rejected it, the session's mode does not
+ * allow it, no one can answer (headless), or (fail-closed) the interactive-approval regime was active for a
+ * governed-class tool but no `confirm` hook was wired. Carries the **existing** `tool_denied` run code (already
+ * absent from `RETRYABLE_ERROR_CODES`), so a denial is **never retried** (re-issuing the same call just
+ * re-denies). A distinct class from {@link ToolPolicyError} (a guardrail/grant denial of the engine's OWN
+ * policy): this is the interactive consent verdict, with its own reason discriminant.
+ *
+ * **Returns to the model** ([ADR-0117](../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md)):
+ * `reason: 'user_rejected'` is `recoverable`, so on the `recoverToolFailures` surfaces the turn feeds a FIXED
+ * text per {@link denialClass} back as an `isError` tool result and continues. The wiring faults
+ * (`no_approval_hook`, `approval_error`) stay fatal. Its message may include a host-supplied user explanation;
+ * the code itself does not establish that text's origin or privacy.
  */
 export class ToolDeniedByUserError extends ToolDispatchError {
   readonly code = 'tool_denied';
@@ -79,11 +84,36 @@ export class ToolDeniedByUserError extends ToolDispatchError {
   readonly retryable = false;
   /** Why the dispatch was denied — a stable label, never an authored value. */
   readonly reason: ToolApprovalDenyReason;
+  /** Which fixed text the model is shown (ADR-0117 §2). Always `user` for the wiring-fault reasons. */
+  readonly denialClass: ToolDenialClass;
+  /** The explanation the host supplied (the user's typed words, or the mode's fixed label). Untrusted display text. */
+  readonly explanation: string | undefined;
+  /** `true` when the engine refused a repeat of an invocation the user already declined this turn (ADR-0117 §3). */
+  readonly repeated: boolean;
 
-  constructor(toolId: ToolId, reason: ToolApprovalDenyReason, message: string) {
-    super(message, toolId, undefined);
+  constructor(
+    toolId: ToolId,
+    reason: ToolApprovalDenyReason,
+    message: string,
+    detail?: {
+      readonly denialClass?: ToolDenialClass;
+      readonly explanation?: string;
+      readonly repeated?: boolean;
+      /**
+       * Keep this refusal fatal even though a decision made it: a consent AUTHORITY that was revoked mid-turn
+       * (the starting `auto` mode) is a boundary, not a conversation — feeding it back would invite the model
+       * to retry under an approval that no longer stands.
+       */
+      readonly fatal?: boolean;
+    },
+  ) {
+    // Only a decision someone actually made returns to the model; a wiring fault is a defect to surface.
+    super(message, toolId, undefined, reason === 'user_rejected' && detail?.fatal !== true);
     this.name = 'ToolDeniedByUserError';
     this.reason = reason;
+    this.denialClass = detail?.denialClass ?? 'user';
+    this.explanation = detail?.explanation;
+    this.repeated = detail?.repeated === true;
   }
 }
 export type ToolApprovalDenyReason =

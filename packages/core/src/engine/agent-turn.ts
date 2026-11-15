@@ -72,10 +72,10 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
+import { canonicalJson, RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
-import { ToolDispatchError } from '../tools/errors.js';
+import { ToolDeniedByUserError, ToolDispatchError } from '../tools/errors.js';
 import type {
   ToolCallPart,
   ToolDispatchContext,
@@ -93,6 +93,7 @@ import {
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
 import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { denialResultText, REPEATED_DENIAL_TEXT } from './denial-text.js';
 import { sessionJsonBytes } from './session-json-bytes.js';
 
 /**
@@ -100,13 +101,15 @@ import { sessionJsonBytes } from './session-json-bytes.js';
  *
  * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** (the
  * tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
- * `turn_limit`), while `maxToolCorrections` is a **monotonic sub-budget** *within* that loop: a
- * recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` when
- * {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once exceeded, ends the turn EARLY
- * with `tool_failed`. A genuine (non-recoverable) tool round never resets it, so
- * corrections accumulate across interleaved genuine rounds. Net worst-case egress is `maxToolTurns + 1`
- * provider calls regardless of `maxToolCorrections` — the correction budget can only *shorten* a turn,
- * never extend its egress (so the DoS bound is the turn budget alone, not the product of the two).
+ * `turn_limit`), while `maxToolCorrections` is a **sub-budget** *within* that loop that counts
+ * CONSECUTIVE rounds in which no tool call ran to a result ([ADR-0131](../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)):
+ * a recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` or a refusal that
+ * returns to the model when {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once
+ * exceeded, ends the turn EARLY with `tool_failed`. A round in which at least one call succeeded — or one with
+ * no failure at all — resets it to zero, so a long productive turn is not ended by its fourth unrelated slip.
+ * Net worst-case egress is `maxToolTurns + 1` provider calls regardless of `maxToolCorrections` — the
+ * correction budget can only *shorten* a turn, never extend its egress (so the DoS bound is the turn budget
+ * alone, not the product of the two).
  */
 export interface AgentTurnLimits {
   /** Max tool-loop continuations before the run-default DoS guard fails the turn (`turn_limit`). */
@@ -395,6 +398,23 @@ export function codeForLlmError(error: LlmError): ErrorCode {
 function isRecoverableToolError(err: ToolDispatchError, limits: AgentTurnLimits): boolean {
   if (err.code === 'unknown_tool' || err.code === 'invalid_args') return true;
   return limits.recoverToolFailures === true && err.recoverable;
+}
+
+/** The fixed model-facing text for a refusal that returns to the model (ADR-0117 §2–§3). */
+function deniedResultText(err: ToolDeniedByUserError): string {
+  return err.repeated ? REPEATED_DENIAL_TEXT : denialResultText(err.denialClass, err.explanation);
+}
+
+/**
+ * A stable key for "the same invocation": the tool name plus the canonical form of its arguments. `undefined`
+ * when the arguments have no canonical form (the engine then simply does not remember the refusal).
+ */
+function invocationKey(call: ToolCallPart): string | undefined {
+  try {
+    return `${call.name}\u0000${canonicalJson(call.args)}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Map a non-correctable tool throw to the node `ErrorCode` (cancel wins; a denial is fatal). */
@@ -1080,17 +1100,20 @@ function toolFailureMessage(
     attemptNumber,
   });
   if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
+    // A refusal a person (or the mode) decided is shown as ONE fixed text per class (ADR-0117 §2), never as the
+    // free-form error message; every other recoverable failure keeps its own reason-only message.
+    const text = err instanceof ToolDeniedByUserError ? deniedResultText(err) : err.message;
     emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
       toolId: call.name,
       success: false,
-      outputSummary: err.message,
+      outputSummary: text,
       attemptNumber,
     });
     return {
       role: 'tool',
-      content: [{ type: 'tool_result', toolCallId: call.id, result: err.message, isError: true }],
+      content: [{ type: 'tool_result', toolCallId: call.id, result: text, isError: true }],
     };
   }
   const { code, retryable } =
@@ -1186,7 +1209,9 @@ async function dispatchToolCalls(
   /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
   slotBase: number,
   history: SessionToolHistoryEntry[],
-): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
+  /** Invocations the user already declined this turn (ADR-0117 §3) — a repeat is refused without prompting. */
+  denied: Set<string>,
+): Promise<{ messages: LlmMessage[]; correctable: boolean; succeeded: number }> {
   // **ADR-0086 §2's tool-call ceiling, checked BEFORE the first dispatch.** It is the one ceiling whose
   // subject is a provider RESPONSE rather than an authored file, so it cannot live at admission — the model
   // chooses this width, not the author. Checking it per-call would leave the first sixteen already executed,
@@ -1211,6 +1236,8 @@ async function dispatchToolCalls(
   /** Media the response's tool calls produced, delivered as ONE message after the loop (`CR-50`). */
   const pending: PendingAttachment[] = [];
   let correctable = false;
+  /** Calls that ran to a result — the "this round made progress" signal for the correction budget. */
+  let succeeded = 0;
   // INDEXED, and the index is the effect slot (ADR-0080). One model response can contain several tool calls,
   // so the correlation alone cannot tell two effects of one turn apart — the second legitimate effect would
   // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
@@ -1219,6 +1246,15 @@ async function dispatchToolCalls(
     const id = params.sessionToolCallId?.(slotBase + slot);
     let outcome: ToolDispatchOutcome;
     try {
+      const repeatKey = invocationKey(call);
+      if (repeatKey !== undefined && denied.has(repeatKey)) {
+        throw new ToolDeniedByUserError(
+          call.name,
+          'user_rejected',
+          `tool \`${call.name}\` denied: the user already declined this call`,
+          { repeated: true },
+        );
+      }
       outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         // Prepared/standalone context data cannot grant execution-local lifetime authority.
@@ -1235,6 +1271,16 @@ async function dispatchToolCalls(
     } catch (err) {
       const hostFailure = toolHostEntryFailure(err);
       if (hostFailure !== undefined) throw hostFailure.error;
+      // Remember a refusal the user decided, so an identical repeat is refused without asking again.
+      if (
+        err instanceof ToolDeniedByUserError &&
+        err.reason === 'user_rejected' &&
+        err.denialClass === 'user' &&
+        !err.repeated
+      ) {
+        const refusedKey = invocationKey(call);
+        if (refusedKey !== undefined) denied.add(refusedKey);
+      }
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
       const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
       const part = failure.content.find((entry) => entry.type === 'tool_result');
@@ -1260,6 +1306,7 @@ async function dispatchToolCalls(
       correctable = true;
       continue;
     }
+    succeeded += 1;
     // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
     // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
     // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
@@ -1305,7 +1352,7 @@ async function dispatchToolCalls(
   if (attachment !== undefined) {
     results.push(attachment);
   }
-  return { messages: results, correctable };
+  return { messages: results, correctable, succeeded };
 }
 
 /**
@@ -1330,6 +1377,7 @@ async function dispatchToolUseTurn(
    */
   slotBase: number,
   history: SessionToolHistoryEntry[],
+  denied: Set<string>,
 ): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
@@ -1358,9 +1406,15 @@ async function dispatchToolUseTurn(
     nonSkippedAttempts,
     slotBase,
     history,
+    denied,
   );
+  // The budget counts CONSECUTIVE rounds in which nothing ran to a result (ADR-0131). A round where at least
+  // one call succeeded made progress, so it resets the count; a long, productive turn is no longer ended by
+  // its fourth unrelated slip. The total stays bounded by `maxToolTurns`, so this can only shorten a turn.
   let next = corrections;
-  if (dispatched.correctable) {
+  if (!dispatched.correctable || dispatched.succeeded > 0) {
+    next = 0;
+  } else {
     next += 1;
     if (next > params.limits.maxToolCorrections) {
       throw new AgentTurnError(
@@ -2182,6 +2236,8 @@ async function driveAgentTurn(
     // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
     let slotBase = 0;
     const toolHistory: SessionToolHistoryEntry[] = [];
+    /** Invocations the user declined this turn — an identical repeat is refused without prompting (ADR-0117 §3). */
+    const deniedInvocations = new Set<string>();
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       coverageRound = toolTurn;
@@ -2291,6 +2347,7 @@ async function driveAgentTurn(
         corrections,
         slotBase,
         toolHistory,
+        deniedInvocations,
       ));
     }
   } catch (error) {

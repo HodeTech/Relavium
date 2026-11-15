@@ -30,6 +30,8 @@ import {
   appendNotice,
   appendUserMessage,
   appendWarning,
+  approvalClosed,
+  approvalOpened,
   initialSessionViewState,
   reduceSessionEvent,
   reduceToolLiveEvent,
@@ -534,6 +536,7 @@ export function createChatStore(
           review = undefined;
           reviewPage = undefined;
           settleApproval = undefined;
+          state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
         };
         const onAbort = (): void => {
@@ -549,6 +552,7 @@ export function createChatStore(
           resolve(answer);
         };
         approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
+        state = approvalOpened(state, Date.now());
         const fallback = {
           kind: 'operation',
           fields: [],

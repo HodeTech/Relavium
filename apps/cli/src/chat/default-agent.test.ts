@@ -56,7 +56,8 @@ describe('buildDefaultChatAgent', () => {
       'edit_file',
     ]);
     expect(agent.system_prompt).toContain('same turn');
-    expect(agent.system_prompt).toContain('Writes require approval in accept-edits');
+    expect(agent.system_prompt).toContain('In ask mode each write needs the user');
+    expect(agent.system_prompt).toContain('plan mode is read-only');
     // No command / commit / egress / ambient OS grant.
     for (const dangerous of [
       'run_command',

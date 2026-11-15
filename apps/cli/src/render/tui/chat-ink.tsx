@@ -406,10 +406,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const showIdlePrompt = !running && paletteOpen !== true;
   // The whole-second live-turn elapsed (2.5.H) — `undefined` before a turn starts (no `turnStartedAtMs`), so the
   // pre-first-token status shows only when a turn is actually in flight.
+  // An open approval card is the person's time, not the turn's: the timer excludes it (and shows the wait itself).
+  const awaitingApprovalMs =
+    state.approvalSinceMs === undefined
+      ? undefined
+      : Math.max(0, props.nowMs - state.approvalSinceMs);
   const elapsedMs =
     state.turnStartedAtMs === undefined
       ? undefined
-      : Math.max(0, props.nowMs - state.turnStartedAtMs);
+      : Math.max(
+          0,
+          props.nowMs - state.turnStartedAtMs - state.approvalWaitMs - (awaitingApprovalMs ?? 0),
+        );
   // The in-flight busy line — the labeled compaction moment (ADR-0062 §7), the `!`-shell command line, the
   // pre-token live-turn status ("Working… {elapsed} · Esc to stop"), or the streaming token line (with the
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
@@ -425,6 +433,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       props.markdown !== undefined &&
       !state.compacting &&
       props.busyCommand === undefined &&
+      awaitingApprovalMs === undefined &&
       state.liveTokens.length > 0
     ) {
       const cols = props.viewport?.cols ?? props.columns ?? 80;
@@ -456,6 +465,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: props.markdown?.sourceTail() ?? state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
+      awaitingApprovalMs,
       reasoningActive,
       // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
       // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
@@ -1785,14 +1795,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         width={layoutColumns(windowSize.columns)}
         {...(viewport === undefined ? {} : { height: viewport.rows })}
       >
-        <ToolReviewHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          clipboard={props.reviewClipboard}
-        />
         <ChatView
-          hidden={review !== undefined}
+          hidden={review !== undefined && review.screen !== 'card'}
           toolDisplays={toolDisplays}
           markdown={markdown}
           displaySuspended={displaySuspended}
@@ -1806,7 +1810,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           mode={mode}
           reasoningEffort={reasoningEffort}
           reasoningVisible={reasoningVisible}
-          approval={approval}
+          approval={review === undefined ? approval : undefined}
           attachments={attachments}
           busyCommand={busyCommand}
           // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
@@ -1821,6 +1825,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             modelPicker !== undefined ||
             effortPicker !== undefined
           }
+        />
+        {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
+            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
+        <ToolReviewHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+          clipboard={props.reviewClipboard}
+          color={color}
         />
         {palette !== undefined && (
           <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />

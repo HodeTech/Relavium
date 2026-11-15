@@ -553,7 +553,16 @@ export type JailedRead =
       digest?: string;
     };
 
-function lineReadBounds(content: Buffer, range: FsReadRange): { from: number; to: number } {
+/**
+ * The byte bounds of a one-based inclusive LINE range. An `end` past the last line is **clipped** to it
+ * ([ADR-0131](../../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md) §2): the
+ * caller gets the lines that exist, `endLine` names the last one delivered, and `clipped` says the request ran over.
+ * A `start` past the last line is still an error, and says how long the file is.
+ */
+function lineReadBounds(
+  content: Buffer,
+  range: FsReadRange,
+): { from: number; to: number; endLine: number; clipped: boolean } {
   let from = 0;
   let to = content.length;
   let line = 1;
@@ -583,9 +592,19 @@ function lineReadBounds(content: Buffer, range: FsReadRange): { from: number; to
     to = content.length;
     foundEnd = true;
   }
-  if (!foundStart || !foundEnd)
-    throw new FsCapabilityError('read_file: invalid or out-of-file range');
-  return { from, to };
+  if (!foundStart) {
+    // The scan ran to the end of the file, so `line` is its length. Naming it lets the next call be right.
+    throw new FsCapabilityError(
+      content.length === 0
+        ? 'read_file: the file is empty, so it has no lines to read'
+        : `read_file: start line ${String(range.start)} is past the end of the file, which has ${String(line)} lines`,
+    );
+  }
+  if (!foundEnd) {
+    // `end` ran past the last line: deliver through the end of the file instead of failing.
+    return { from, to: content.length, endLine: line, clipped: true };
+  }
+  return { from, to, endLine: range.end, clipped: false };
 }
 
 /**
@@ -733,7 +752,12 @@ export async function readJailedFile(
         from = range.start;
         to = range.end;
       }
-      if (range?.unit === 'lines') ({ from, to } = lineReadBounds(content, range));
+      let clippedTo: number | undefined;
+      if (range?.unit === 'lines') {
+        const bounds = lineReadBounds(content, range);
+        ({ from, to } = bounds);
+        if (bounds.clipped) clippedTo = bounds.endLine;
+      }
       async function validateSeekBoundaries(from: number, to: number): Promise<void> {
         for (const boundary of [from, to]) {
           if (boundary < st.size) {
@@ -775,6 +799,8 @@ export async function readJailedFile(
           : {
               range: {
                 ...range,
+                // A clipped line range reports the lines actually delivered and what was asked for.
+                ...(clippedTo === undefined ? {} : { end: clippedTo, requestedEnd: range.end }),
                 startByte: from,
                 endByte: to,
                 omittedBytes: st.size - (to - from),

@@ -101,7 +101,7 @@ describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
     const h = mountChat(store);
     await waitFor(() => (h.lastFrame() ?? '').length > 0);
     const pending = store.requestApproval(approvalReq, false);
-    await waitFor(() => (h.lastFrame() ?? '').includes('Review tool operation'));
+    await waitFor(() => (h.lastFrame() ?? '').includes('Esc stops the turn'));
     await settleFrames();
     expect(store.getSnapshot().review?.screen).toBe('card');
     h.stdin.write('c');
@@ -249,7 +249,7 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     void store.requestApproval(approvalReq, false).then((a) => {
       answered = a;
     });
-    await waitFor(() => frame().includes('Review tool operation'));
+    await waitFor(() => frame().includes('Esc stops the turn'));
     await settleFrames();
     stdin.write('y'); // a genuine keystroke on the `useInput` channel — NOT wrapped as a paste
     await waitFor(() => answered !== undefined);

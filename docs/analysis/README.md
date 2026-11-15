@@ -21,6 +21,7 @@ It has two parts:
 | [cli-ux-benchmark-2026-11-08.md](cli-ux-benchmark-2026-11-08.md) | Retained terminal UX requirements and the dated Relavium Home reach inventory; informs ADR-0122 and MVP-2. |
 | [macos-file-write-compatibility-2026-11-15.md](macos-file-write-compatibility-2026-11-15.md) | Local metadata compatibility and the in-place versus atomic-publication tradeoff informing ADR-0127. |
 | [chat-context-command-and-latency-2026-11-15.md](chat-context-command-and-latency-2026-11-15.md) | Source-grounded context omission, latency evidence limits, scoped correction proposal and notes for existing MVP-4/MVP-5 work. |
+| [approval-card-and-chat-modes-2026-11-16.md](approval-card-and-chat-modes-2026-11-16.md) | Measured weaknesses of the approval card and the four chat modes, a product-neutral survey of how comparable agents place, size and word consent prompts and define read-only modes, and the patterns adopted (ADR-0129/0130/0131). |
 | [_archive/README.md](_archive/README.md) | Provenance map: which living docs were seeded by which frozen raw-analysis section. The archive is frozen apart from its explicitly recorded maintainer-directed editorial redaction. |
 
 ## Conventions

@@ -308,6 +308,21 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    agent grant review** as amended by D62 (MVP-A14) with `[chat].default_mode` (MVP-A13); the 80×24 guard on
    both chat surfaces and the Home strip row budget (#63, row 15c split) — MVP-3 owns the strip's geometry
    and its no-hidden-input rule, MVP-8 its content.
+   **MVP-3b — Approval card v2, honest modes and refusals that return (2026-11-16, ahead of MVP-4).**
+   Added by the maintainer after a real session showed the approval screen replacing the conversation, the
+   default mode refusing instead of asking, and a long turn dying on its fourth unrelated slip. Delivered on
+   `development`, reviews and the separate security sitting owed (D64, an approval path):
+   [ADR-0129](../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) (a docked,
+   bounded card that says only what matters), [ADR-0130](../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)
+   (`ask` asks and is the default, `plan` is read-only, `accept-edits` accepts file edits, `auto` unchanged),
+   [ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md) (user, mode and headless refusals
+   return to the model; protected-path and allowlist classes follow with MVP-4's command card) and
+   [ADR-0131](../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md) (the correction budget counts
+   consecutive no-progress rounds, a line range past the end of a file is clipped, `tool_failed` names the failed tools).
+   Analysis: [the approval card and chat modes](../analysis/approval-card-and-chat-modes-2026-11-16.md).
+   **Not in this increment:** [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+   (the failed turn stays in the session) — it needs its full durable shape at once and is the next increment; see
+   its scheduling note. The type-ahead message queue stays in MVP-5.
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
    pending approval rejecting it (MVP-A12; row 11b split); denials returned to the model (MVP-A10); a failed,

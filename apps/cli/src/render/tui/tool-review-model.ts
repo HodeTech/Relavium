@@ -5,6 +5,14 @@ import {
 } from './chat-projection.js';
 import type { ChatKey } from './chat-input.js';
 import {
+  CARD_KEY_ROWS,
+  CARD_MAX_BODY_ROWS,
+  CARD_RULE_ROWS,
+  cardDenialExtraRows,
+  cardRowBudget,
+  cardWarnings,
+} from './tool-review-card.js';
+import {
   projectReviewPage,
   REVIEW_START,
   type ReviewCursor,
@@ -183,28 +191,39 @@ export function toolReviewPage(
   const shortenedTarget = target?.next !== undefined || target?.valid === false;
   const targetLine =
     state.document.preview.target === undefined ? undefined : state.document.lines[0];
-  const shortenedRows = shortenedTarget ? 1 : 0;
-  const headerRows = state.screen === 'card' ? (target?.rows.length ?? 0) + shortenedRows : 0;
+  const card = state.screen === 'card';
+  const denialRows =
+    state.denial === undefined ? 0 : denialReasonDisclosure(Math.max(1, columns - 2)).length;
+  // The docked card (ADR-0129) spends up to half the terminal: its title, one summary row, its warnings, the two
+  // key rows and any denial capture are chrome; every other row is diff body. The full view keeps its own budget.
+  const cardChrome =
+    CARD_RULE_ROWS +
+    Math.max(1, target?.rows.length ?? 0) +
+    1 +
+    cardWarnings({
+      document: state.document,
+      shortenedTarget,
+      targetHiddenBytes: target?.hiddenBytes ?? 0,
+      inspected: reviewInspected(state),
+      columns: Math.max(1, columns - 2),
+    }).length +
+    (state.denial === undefined ? CARD_KEY_ROWS : cardDenialExtraRows(denialRows) + 1) +
+    (state.message === '' ? 0 : 1);
+  const cardRows = Math.min(CARD_MAX_BODY_ROWS, cardRowBudget(rows) - cardChrome);
+  const fullRows =
+    rows -
+    15 -
+    (state.searching ? 2 : 0) -
+    (state.denial === undefined ? 0 : denialRows + 2) -
+    (state.message === '' ? 0 : 2);
   const page = projectReviewPage(
     state.document,
-    state.screen === 'card' && targetLine !== undefined ? { line: 1, offset: 0 } : state.cursor,
+    card && targetLine !== undefined ? { line: 1, offset: 0 } : state.cursor,
     Math.max(0, columns - 2),
-    Math.max(
-      1,
-      Math.min(
-        state.screen === 'card' ? 4 : 200,
-        rows -
-          15 -
-          headerRows -
-          (state.searching ? 2 : 0) -
-          (state.denial === undefined
-            ? 0
-            : denialReasonDisclosure(Math.max(1, columns - 2)).length + 2) -
-          (state.message === '' ? 0 : 2),
-      ),
-    ),
+    Math.max(1, card ? cardRows : Math.min(200, fullRows)),
     state.reveal,
     state.numeric,
+    card,
   );
   return {
     ...page,

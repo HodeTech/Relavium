@@ -80,14 +80,14 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
       expect(hint).toContain('rm -rf /'); // the user's own typed command — echoing adds no exposure
     });
 
-    it('a mode-floor deny in ask/plan offers the Shift+Tab switch', () => {
-      expect(shellDenyHint(cmd, false, 'ask')).toBe(
-        '! rm -rf /: denied in ask mode. Switch to accept-edits or auto (Shift+Tab) to run it.',
+    it('a mode-floor deny in plan offers the Shift+Tab switch', () => {
+      expect(shellDenyHint(cmd, false, 'plan')).toBe(
+        '! rm -rf /: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.',
       );
-      expect(shellDenyHint(cmd, false, 'plan')).toContain('denied in plan mode');
     });
 
     it('a user decline in a run-capable mode is a plain "declined"', () => {
+      expect(shellDenyHint(cmd, false, 'ask')).toBe('! rm -rf /: declined.');
       expect(shellDenyHint(cmd, false, 'accept-edits')).toBe('! rm -rf /: declined.');
       expect(shellDenyHint(cmd, false, 'auto')).toBe('! rm -rf /: declined.');
     });

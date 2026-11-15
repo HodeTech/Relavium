@@ -440,9 +440,9 @@ describe('Home configured starting modes and frozen clear binding', () => {
         action: 'fs_write',
         preview: { path: 'notes.md' },
       });
-      expect(resumed.store.getSnapshot().approval).toBeDefined();
-      resumed.store.answerApproval({ outcome: 'reject' });
-      await expect(decision).resolves.toMatchObject({ outcome: 'reject' });
+      // accept-edits applies a file edit without a card (ADR-0130): the decision is immediate, nothing is asked.
+      await expect(decision).resolves.toMatchObject({ outcome: 'approve' });
+      expect(resumed.store.getSnapshot().approval).toBeUndefined();
 
       f.writeMode('ask');
       f.command('/models');
@@ -455,7 +455,16 @@ describe('Home configured starting modes and frozen clear binding', () => {
       expect(reseated.sessionId).toBe(resumed.sessionId);
       expect(f.publications[3]?.mode).toBe('ask');
       expect(f.firstFrames.get(reseated)).toContain('ask mode');
-      expect(f.publications[3]?.policy?.advertise?.('write_file')).toBe(false);
+      // ask offers every granted tool and asks for each governed action (ADR-0130).
+      expect(f.publications[3]?.policy?.advertise).toBeUndefined();
+      const asked = f.publications[3]?.policy?.confirm?.({
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: 'notes.md' },
+      });
+      expect(reseated.store.getSnapshot().approval).toBeDefined();
+      reseated.store.answerApproval({ outcome: 'reject' });
+      await expect(asked).resolves.toMatchObject({ outcome: 'reject' });
     } finally {
       await f.close();
     }

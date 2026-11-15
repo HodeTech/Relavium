@@ -36,7 +36,7 @@ export interface ChatModeEnv {
   readonly onToolLiveEvent?: ToolLiveObserver;
   /** The live session the mapped turn policy is pushed to. */
   readonly session: Pick<AgentSession, 'setTurnPolicy'>;
-  /** Governed tool ids (the ask/plan advertise hide-set) — derived once from the session's granted defs. */
+  /** Governed tool ids (the plan advertise hide-set) — derived once from the session's granted defs. */
   readonly governed: ReadonlySet<string>;
   /** The session once/always memory (shared across mode changes — an "always" persists until the session ends). */
   readonly cache: ApprovalCache;
@@ -120,6 +120,7 @@ export function applyChatMode(
     prompt: env.prompt,
     cache: env.cache,
     isProtectedTarget: env.isProtectedTarget,
+    canAsk: interactive, // no TTY / no approver ⇒ the governed tools are hidden, as in plan
   });
   if (selection !== undefined && policy.confirm !== undefined)
     bindStartingModePolicy(policy.confirm, selection);

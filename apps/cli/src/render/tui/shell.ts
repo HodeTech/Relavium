@@ -88,7 +88,7 @@ export function commandLine(cmd: ShellCommand): string {
 
 /**
  * The ACTIONABLE, secret-free deny message (ADR-0061 — "never a dead 'denied'"). An `allowlist` miss shows the
- * exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `ask`/`plan` mode floor (offer
+ * exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `plan` mode floor (offer
  * the Shift+Tab switch) or a user decline. The command string is the user's OWN typed input (already visible +
  * history-recallable), so echoing it adds no exposure.
  */
@@ -97,8 +97,8 @@ export function shellDenyHint(cmd: ShellCommand, allowlist: boolean, mode: ChatM
   if (allowlist) {
     return `! ${line}: not allowed. Add "${line}" to [chat].allowed_commands to enable it.`;
   }
-  if (mode === 'ask' || mode === 'plan') {
-    return `! ${line}: denied in ${mode} mode. Switch to accept-edits or auto (Shift+Tab) to run it.`;
+  if (mode === 'plan') {
+    return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.`;
   }
   return `! ${line}: declined.`;
 }

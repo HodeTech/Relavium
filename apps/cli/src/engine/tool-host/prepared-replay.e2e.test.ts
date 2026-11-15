@@ -329,7 +329,7 @@ describe('actual registry and CLI provisional approval cache', () => {
           }
           return { outcome: 'approve', scope: 'always' };
         });
-        const policy = buildTurnPolicy('accept-edits', {
+        const policy = buildTurnPolicy('ask', {
           governed: new Set(['write_file']),
           cache,
           prompt,

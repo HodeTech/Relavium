@@ -101,7 +101,22 @@ describe('review source projection', () => {
     expect(final).toContain('-1 same<EOF:NO_NEWLINE>');
     expect(final).toContain('+1 same<LF>');
     expect(page(replacement('same\r\n', 'same\n')).rows.join('\n')).toContain('-1 same<CRLF>');
-    expect(page(replacement('x \t\n', 'x·\n')).rows.join('\n')).toContain('x<SP><TAB><LF>');
+    // Both sides uniformly LF: the ending carries no information, so the ordinary line prints no token
+    // (ADR-0129 §4) — yet the trailing whitespace on the removed line is still spelled out.
+    const ordinary = page(replacement('x \t\n', 'x·\n')).rows.join('\n');
+    expect(ordinary).toContain('-1 x<SP><TAB>');
+    expect(ordinary).not.toContain('<LF>');
+  });
+  it('prints an ending token on a side whose ending differs from the other side, and none when both agree', () => {
+    // LF → CRLF: nothing may look unchanged, so both sides spell their ending.
+    const converted = page(replacement('a\n', 'a\r\n')).rows.join('\n');
+    expect(converted).toContain('-1 a<LF>');
+    expect(converted).toContain('+1 a<CRLF>');
+    // CRLF replaced by CRLF is uniform on both sides: no token (the card states "CRLF endings" instead).
+    expect(page(replacement('a\r\n', 'b\r\n')).rows.join('\n')).not.toContain('<CRLF>');
+    // A new LF or CRLF file has an empty other side and is uniform: no per-line token either.
+    expect(page(replacement(null, 'a\n')).rows.join('\n')).not.toContain('<LF>');
+    expect(page(replacement(null, 'a\r\n')).rows.join('\n')).not.toContain('<CRLF>');
   });
   it('keeps new empty files explicit and never invents an unterminated source line', () => {
     const document = createReviewDocument(replacement(null, ''));

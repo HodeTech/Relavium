@@ -20,6 +20,14 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import {
+  cardKeyRows,
+  cardScopePhrase,
+  cardStats,
+  cardVerb,
+  cardWarnings,
+} from './tool-review-card.js';
+import { colorProps, dimProps } from './projection.js';
+import {
   createReviewDocument,
   escapeReviewCharacter,
   projectReviewPage,
@@ -93,6 +101,8 @@ export function ToolReviewHost(
     size: { cols: number; rows: number };
     hasCustody: () => boolean;
     clipboard?: ClipboardWriter | undefined;
+    /** Whether colour output is on (the card colours additions, removals and warnings). */
+    color?: boolean | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
@@ -168,6 +178,22 @@ export function ToolReviewHost(
         Esc cancels.
       </Text>
     );
+  if (review.screen === 'card') {
+    // The docked card (ADR-0129): the conversation stays above it, so this root draws only the card.
+    return (
+      <Box ref={ref} flexDirection="column" flexShrink={0}>
+        <ReviewCard
+          snapshot={snapshot}
+          review={review}
+          page={page}
+          identity={identity}
+          columns={props.size.cols}
+          rows={props.size.rows}
+          color={props.color === true}
+        />
+      </Box>
+    );
+  }
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text bold>{reviewTitle(review)}</Text>
@@ -185,6 +211,157 @@ export function ToolReviewHost(
       )}
       {review.message !== '' && <Text>{escaped(review.message)}</Text>}
     </Box>
+  );
+}
+
+const RULE_LABEL = ' Approval needed ';
+
+/** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
+function approvalRule(columns: number): string {
+  return `\u2500${RULE_LABEL}${'\u2500'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+}
+
+/** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
+function keyTone(part: string, color: boolean): Record<string, unknown> {
+  if (!color) return {};
+  if (part === '[y]' || part === '[a]') return { color: 'green', bold: true };
+  if (part === '[n]') return { color: 'red', bold: true };
+  if (part === 'Esc') return { color: 'yellow', bold: true };
+  if (/^\[[cv]\]$/u.test(part)) return { color: 'cyan', bold: true };
+  return { dimColor: true };
+}
+
+function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
+  const parts = row.split(/(\[[acnvy]\]|Esc)/u).filter((part) => part.length > 0);
+  return (
+    <Text wrap="truncate-end">
+      {parts.map((part, index) => (
+        <Text key={index} {...keyTone(part, color)}>
+          {part}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+/** Strip a framing label (`target `, `tool `) from a projected row: it is generated text, never source. */
+function withoutLabel(row: string, label: string): string {
+  return row.startsWith(`${label} `) ? row.slice(label.length + 1) : row;
+}
+
+/** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
+function cardBodyRow(row: string, kind: ReviewPage['kinds'][number]): string {
+  return kind === 'context' && row.startsWith('=') ? ` ${row.slice(1)}` : row;
+}
+
+/**
+ * The docked approval card ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)).
+ * Title, diff body, one summary row, only the warnings that apply, and two key rows. Everything it shows comes from
+ * the same projected page the safety machinery acknowledges; this component only chooses the words and colours.
+ */
+function ReviewCard({
+  snapshot,
+  review,
+  page,
+  identity,
+  columns,
+  rows,
+  color,
+}: Readonly<{
+  snapshot: ChatStoreSnapshot;
+  review: ToolReviewState;
+  page: ReviewPage | undefined;
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
+  columns: number;
+  rows: number;
+  color: boolean;
+}>): ReactElement {
+  const request = snapshot.approval?.request;
+  const toolId = request?.toolId ?? '';
+  const document = review.document;
+  const target = toolReviewTarget(review, columns, rows);
+  const verb = cardVerb(toolId, request?.action ?? '', document?.preview);
+  const targetRows = (target?.rows ?? []).map((row) => withoutLabel(row, 'target'));
+  // A delivered saved result is not a new operation: its card says so, and shows no invented fresh diff.
+  const savedResult = document?.preview.kind === 'saved-result';
+  const titleRows = savedResult
+    ? [
+        'Deliver saved result \u2014 no new filesystem operation',
+        ...targetRows.map((row) => `  ${row}`),
+      ]
+    : targetRows.length === 0
+      ? [`${verb} ${inputDisplay(sanitizeUntrustedInline(toolId))}`]
+      : targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `  ${row}`));
+  const identityText = withoutLabel(identity?.rows[0] ?? '', 'tool');
+  const stats = cardStats(document);
+  const inspected = reviewInspected(review);
+  const warnings = cardWarnings({
+    document,
+    shortenedTarget: target?.next !== undefined || target?.valid === false,
+    targetHiddenBytes: target?.hiddenBytes ?? 0,
+    inspected,
+    columns: Math.max(1, columns - 2),
+  });
+  const keys = cardKeyRows({
+    inspected,
+    cacheable: snapshot.approval?.cacheable === true,
+    scope: escaped(cardScopePhrase(toolId)),
+  });
+  const cut = (page?.hiddenLines ?? 0) > 0;
+  return (
+    <>
+      <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+        {approvalRule(columns)}
+      </Text>
+      {titleRows.map((row, index) => (
+        <Text key={`title-${index}`} bold wrap="truncate-end">
+          {row}
+        </Text>
+      ))}
+      {(page?.rows ?? []).map((row, index) => {
+        const kind = page?.kinds[index] ?? 'meta';
+        const props =
+          kind === 'added'
+            ? colorProps(color, 'green')
+            : kind === 'removed'
+              ? colorProps(color, 'red')
+              : kind === 'context'
+                ? dimProps(color)
+                : {};
+        return (
+          <Text key={index} {...props}>
+            {cardBodyRow(row, kind) || ' '}
+          </Text>
+        );
+      })}
+      <Box justifyContent="space-between">
+        <Text {...dimProps(color)}>
+          {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
+        </Text>
+        {cut && (
+          <Text {...dimProps(color)}>
+            {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
+          </Text>
+        )}
+      </Box>
+      {warnings.map((warning, index) => (
+        <Text key={`warn-${index}`} {...colorProps(color, 'yellow')}>
+          {warning}
+        </Text>
+      ))}
+      {review.denial !== undefined ? (
+        <Box flexDirection="column">
+          <Text {...dimProps(color)}>
+            {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
+          </Text>
+          <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
+          <Text wrap="truncate-end">{'Enter denies and continues \u00b7 Esc stops the turn'}</Text>
+        </Box>
+      ) : (
+        keys.map((row, index) => <KeyRow key={`keys-${index}`} row={row} color={color} />)
+      )}
+      {review.message !== '' && <Text>{escaped(review.message)}</Text>}
+    </>
   );
 }
 

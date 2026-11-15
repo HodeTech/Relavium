@@ -120,6 +120,12 @@ export interface FileReadRange extends FsReadRange {
   readonly startByte: number;
   readonly endByte: number;
   readonly omittedBytes: number;
+  /**
+   * Present only when a line range's `end` ran past the last line and was clipped to it
+   * ([ADR-0131](../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md) §2): `end` is
+   * then the last line actually delivered and this is the end that was asked for.
+   */
+  readonly requestedEnd?: number;
 }
 /** Ephemeral engine-created identity, not a model argument or durable identifier. */
 export type ToolReadScope = object;
@@ -510,7 +516,21 @@ export type ToolApprovalDecision =
        * Saved-result delivery never invokes this callback; previews/observers carry no authority. */
       readonly onDispatchSucceeded?: () => void;
     }
-  | { readonly outcome: 'reject'; readonly reason?: string };
+  | {
+      readonly outcome: 'reject';
+      /** The user's typed explanation (`user` class) or the host's FIXED label for the policy (`mode` class). */
+      readonly reason?: string;
+      /**
+       * Why the call was refused ([ADR-0117](../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md)):
+       * `user` — the person answered no (the default); `mode` — the session's mode does not allow the action;
+       * `unavailable` — no person can answer (headless). Each class has ONE fixed model-facing text, so the
+       * result never depends on the target's state.
+       */
+      readonly denialClass?: ToolDenialClass;
+    };
+
+/** The closed set of refusals an approval hook can report ([ADR-0117](../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md)). */
+export type ToolDenialClass = 'user' | 'mode' | 'unavailable';
 
 /**
  * The host-injected interactive consent hook. MUST be secret-free and SHOULD honor the `AbortSignal` (an

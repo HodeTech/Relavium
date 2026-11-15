@@ -42,9 +42,14 @@ Older and authored conversations retain their frozen grants; the
 - `read_file` gains mutually exclusive line and byte ranges for a single file;
   ranges cannot combine with glob. Line indices are one-based and inclusive;
   byte offsets are zero-based, start-inclusive/end-exclusive UTF-8 offsets.
-  Refuse negative/reversed/out-of-file ranges and byte cuts inside a UTF-8
-  sequence. Return source range/size and explicit omitted counts alongside
-  text. The CLI continues to refuse binary/media reads: the catalog's generic
+  Refuse negative/reversed ranges, a line `start` past the last line (the error
+  names the file's line count), a byte range past the file's size, and byte cuts
+  inside a UTF-8 sequence. A line `end` past the last line is **clipped** to it
+  ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
+  §2): the result's `range.end` is the last line actually delivered and
+  `range.requestedEnd` carries the end that was asked for, present only when the
+  request was clipped. Return source range/size and explicit omitted counts
+  alongside text. The CLI continues to refuse binary/media reads: the catalog's generic
   media-handle description does not activate CLI media support.
 - Successful model-facing reads establish source-identity/content-version and
   delivered-byte intervals for the active agent turn's tool loop, in sessions
@@ -285,6 +290,32 @@ all supported dialect normalizers. JSON Schema `maxLength` is a necessary charac
 the byte authority; descriptions communicate the UTF-8 constraint and aggregate argument limit.
 Config-only parameters remain excluded. These limits apply only to the listed arguments, without
 imposing matching-name limits on unrelated fields such as `notify.body` or `git_status` configuration.
+
+## Refusals that return to the model
+
+[ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md) returns
+a refusal that was decided from the call and the session's own policy to the model
+as an `isError` tool result, on the interactive surfaces (`relavium chat`, the Home,
+a one-shot `agent run`) and never in a workflow node. There is **one fixed text per
+class, identical for every target state**; the only variable parts are the user's own
+typed words and the mode's fixed label, both bounded to 300 code points with
+control characters, bidirectional overrides and line separators flattened to a
+space. The code owns the strings in `packages/core/src/engine/denial-text.ts`; this
+table is their canonical description, so the two must change together.
+
+| Class | Model-facing text |
+|---|---|
+| `user` | The user declined this tool call. Nothing was run or changed, and the call must not be repeated. Suggest a different approach, or ask the user what they prefer. *(+ ` The user's reason: "<their words>"` when they gave one.)* |
+| `mode` | This action is not available in the current mode *(+ ` (<mode label>)`, e.g. `plan mode is read-only`)*. Nothing was run or changed. Describe what you would do, so the user can switch modes or do it themselves. |
+| `unavailable` | No one is available to approve this action in this session, so it was not run. Nothing was changed. Continue without it, or describe what you would have done. |
+| repeat | The user already declined an identical call in this turn, so it was not run again. Nothing was run or changed. Propose something different, or ask the user what they prefer. |
+
+A repeat is the same tool name with the same canonical arguments within one turn.
+Each returned refusal counts toward the correction budget, which counts
+**consecutive rounds in which no call ran to a result**; a round with at least one
+success resets it (ADR-0131 §1). A refusal after an effect was admitted, a
+saved-result delivery, a revoked starting-`auto` authority and the wiring faults stay
+fatal.
 
 ## Tool result bounding
 

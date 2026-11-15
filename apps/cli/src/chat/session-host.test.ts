@@ -1837,25 +1837,41 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
-  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime', async () => {
+  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime: a declined card writes nothing and the turn continues (ADR-0117)', async () => {
     // Prove the PRODUCTION seam — createChatModeControl(built, store) applies the initial ask mode via the real
-    // store.requestApproval prompt — denies a governed write end-to-end (not just the manual-env path above).
+    // store.requestApproval prompt. The write is gated on a published card; declining it writes nothing and the
+    // REFUSAL RETURNS to the model, so the turn goes on and completes (it used to end with `tool_denied`).
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeAgent(['write_file']),
       providers: scriptedResolver([
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+        textTurn('understood, I will not write it'),
       ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // applies ask → the fail-closed regime is now active
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    createChatModeControl(built, store); // applies ask → the fail-closed regime is now active
     built.session.start();
-    await built.session.sendMessage('write a file');
+    const turn = built.session.sendMessage('write a file');
+    await vi.waitFor(
+      () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+      { timeout: 5000 },
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // nothing lands while the card is open
+    store.answerApproval({ outcome: 'reject', reason: 'not now' });
+    await turn;
     built.session.cancel();
     const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.error : 'missing',
+    ).toBeUndefined();
+    const refused = events.find((e) => e.type === 'agent:tool_result' && !e.success);
+    expect(refused?.type === 'agent:tool_result' ? refused.outputSummary : '').toContain(
+      'The user declined this tool call',
     );
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
@@ -1909,27 +1925,39 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     );
   });
 
-  it('createChatModeControl ask: denies an OS-class dispatch too (read_clipboard) — the exfil sink is gated', async () => {
+  it('createChatModeControl plan: refuses an OS-class dispatch too (read_clipboard) — the exfil sink is gated, and the refusal returns to the model', async () => {
     // ADR-0057 §security review: read_clipboard reads ambient secret-bearing OS state, so it is a governed os
-    // action — denied in ask (never advertised, and the confirm floor rejects it if the model calls it anyway).
+    // action — refused in plan (never advertised, and the confirm floor refuses it if the model calls it anyway).
+    // ADR-0117: the refusal is a fixed mode text that returns to the model, so the turn continues.
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
       agentRef: writeAgent(['read_clipboard']),
-      providers: scriptedResolver([callWithArgs('c1', 'read_clipboard', {})]),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_clipboard', {}),
+        textTurn('I cannot read the clipboard in plan mode'),
+      ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime active
+    const control = createChatModeControl(
+      built,
+      createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
+    );
+    control.onModeChange('plan'); // the read-only regime
     built.session.start();
     await built.session.sendMessage('read my clipboard');
     built.session.cancel();
     const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.error : 'missing',
+    ).toBeUndefined();
+    const refused = events.find((e) => e.type === 'agent:tool_result' && !e.success);
+    expect(refused?.type === 'agent:tool_result' ? refused.outputSummary : '').toContain(
+      'not available in the current mode (plan mode is read-only)',
     );
   });
 
-  it('createChatModeControl accept-edits: an APPROVE lets the governed write through the store prompt', async () => {
+  it('createChatModeControl ask: an APPROVE lets the governed write through the store prompt', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
@@ -1943,7 +1971,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const control = createChatModeControl(built, store);
-    control.onModeChange('accept-edits'); // switch to accept-edits (prompts each governed write)
+    control.onModeChange('ask'); // the default: a card for each governed write
     built.session.start();
     const turn = built.session.sendMessage('write a file');
     // Drive the interactive prompt: wait for the published approval, then approve it.

@@ -4172,3 +4172,20 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   after actual word-wrap implementation and regression evidence land.
   **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
   ownership ends, and the close condition above stands.
+
+- [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (next increment).**
+  Requested for MVP-3b and deliberately not built there: keeping the turn only in memory would shift the
+  persister's `realMessageSeqs`/`turnBoundarySeqs` mapping and break resume parity. Needs the marker
+  row and its shared-schema part, the persister write, resume reconstruction, the restored transcript,
+  compaction/trim counting, reseat and export in one step, with D64 review rounds and a security sitting on
+  the resume path. Until then a turn that ends in an error is forgotten by the model (the footer now names
+  the failed tools). *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
+- [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
+  predicate also covers credential stores, which the rule keeps fatal; split the two and design the
+  allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **ADR-0131 — clip a spill read's line range too.** `session-output-store.ts` still refuses a line range
+  whose end is past the last line; align it with `read_file`'s clip. *(low · apps/cli/src/engine/tool-host/session-output-store.ts)*
+- [ ] **ADR-0129 follow-ups.** A terminal bell or notification when a card waits while the terminal is
+  unfocused; a side-by-side diff on wide terminals; per-file review of a multi-file change; the
+  narrow-the-scope key and editable "always" pattern for command cards (MVP-4). *(low · product)*
+

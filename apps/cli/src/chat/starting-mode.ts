@@ -178,6 +178,7 @@ export class StartingModeAuthority {
         toolId,
         'user_rejected',
         'Starting auto mode was revoked; choose a current mode before another action.',
+        { fatal: true }, // a revoked consent authority ends the turn; it is never fed back (ADR-0117 §1)
       );
     }
   }

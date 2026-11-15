@@ -187,3 +187,22 @@ The exact message shape lives in
 - The outcome-unknown status has to be derived faithfully from the dispatch and
   effect bookkeeping. A wrong status would mislead the model about a side
   effect, so it needs its own tests.
+
+### Scheduling note — 2026-11-16
+
+The maintainer asked for this decision to land with the approval-card and mode
+increment after a real session lost a 3 min 50 s, 590 000-token turn to a
+`tool_failed` and the model then answered that no tool had been called. On
+inspection it cannot be built safely as a live-only change. The persister maps the
+engine's message indices to durable sequence numbers (`realMessageSeqs`,
+`turnBoundarySeqs`) so that a compaction boundary survives a restart; an engine
+that kept an interrupted turn in memory while the store did not would shift every
+later boundary and break the resume-parity invariant (ADR-0095 invariant 4). The
+decision therefore needs its full durable shape at once: the marker row and its
+shared-schema part, the persister write, resume reconstruction, the restored
+transcript, compaction/trim counting, reseat, and export. It stays **Proposed** and
+is the **next increment**, with its own D64 review rounds and a security sitting on
+the resume path. Until it lands, ADR-0131's consecutive budget makes the failure
+rarer and the turn summary now names the failed tools, but the model still forgets a
+turn that ended in an error.
+

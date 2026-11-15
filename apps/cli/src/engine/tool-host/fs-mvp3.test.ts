@@ -39,11 +39,52 @@ it('reads exact line and UTF-8 byte ranges without changing line endings', async
     /UTF-8/,
   );
   await expect(fs.readFile('a', { range: { unit: 'lines', start: 4, end: 4 } })).rejects.toThrow(
-    /range/,
+    'start line 4 is past the end of the file, which has 3 lines',
   );
   await expect(
     fs.readFile('a', { glob: true, range: { unit: 'bytes', start: 0, end: 1 } }),
   ).rejects.toThrow(/glob/);
+});
+
+it('clips a line range that runs past the end of the file and reports what was delivered (ADR-0131)', async () => {
+  await writeFile(join(root, 'a'), 'one\ntwo\nthree\n');
+  const fs = capability();
+  const clipped = await fs.readFile('a', { range: { unit: 'lines', start: 2, end: 99 } });
+  expect(clipped.content).toBe('two\nthree\n');
+  expect(clipped.range).toEqual({
+    unit: 'lines',
+    start: 2,
+    end: 3, // the last line actually delivered
+    requestedEnd: 99, // what was asked for
+    startByte: 4,
+    endByte: 14,
+    omittedBytes: 4,
+  });
+  // A request that fits is untouched and carries no `requestedEnd`.
+  const exact = await fs.readFile('a', { range: { unit: 'lines', start: 2, end: 3 } });
+  expect(exact.range).not.toHaveProperty('requestedEnd');
+  expect(exact.content).toBe('two\nthree\n');
+  // A final unterminated line is a line too.
+  await writeFile(join(root, 'b'), 'x\ny');
+  const tail = await fs.readFile('b', { range: { unit: 'lines', start: 2, end: 10 } });
+  expect(tail.content).toBe('y');
+  expect(tail.range).toMatchObject({ end: 2, requestedEnd: 10 });
+});
+
+it('still refuses a start past the end, and says how long the file is (ADR-0131)', async () => {
+  await writeFile(join(root, 'a'), 'one\ntwo\nthree\n');
+  const fs = capability();
+  await expect(fs.readFile('a', { range: { unit: 'lines', start: 9, end: 12 } })).rejects.toThrow(
+    'start line 9 is past the end of the file, which has 3 lines',
+  );
+  await writeFile(join(root, 'empty'), '');
+  await expect(
+    fs.readFile('empty', { range: { unit: 'lines', start: 1, end: 1 } }),
+  ).rejects.toThrow(/empty/);
+  // Bytes stay strict: an end past the file's size is refused, since a clipped byte range could cut a code point.
+  await expect(fs.readFile('a', { range: { unit: 'bytes', start: 0, end: 999 } })).rejects.toThrow(
+    /range/,
+  );
 });
 
 it('certifies only acknowledged host result intervals in the same live scope', async () => {

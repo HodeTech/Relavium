@@ -58,6 +58,15 @@
 > and [registry contract](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
 > refine the earlier wording without silently changing shipped behavior.
 
+> Amended 2026-11-16 by accepted [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md),
+> [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md) and
+> [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md): `ask` is the mode
+> that asks (a card for each governed action), `plan` is the read-only mode (its refusal returns to the
+> model), `accept-edits` applies file edits inside the workspace without a card, and `auto` is unchanged.
+> A person's `[n]`/`[c]` answer and a mode refusal now continue the turn; `Esc`/Ctrl-C still stop it. The
+> approval card is docked below the conversation. The fail-closed floor, the protected-path and scope
+> refusals, the once/always cache and the keys `y`/`a`/`n`/`c` are unchanged.
+
 ## Context
 
 We want Claude-Code-style chat modes (ask / plan / accept-edits / auto) and per-tool approval for writes

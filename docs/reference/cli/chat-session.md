@@ -342,9 +342,31 @@ The [config contract](../contracts/config-spec.md#proposed-starting-chat-mode--m
 owns authority and publication outcomes. Non-TTY/JSON never open this picker and remain
 effective `ask`; direct mode commands cannot create a headless approver.
 
+**The docked card ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)).**
+While an approval waits, its card sits in the live region below the conversation, which stays
+on screen; the full view (`[v]`) and the call list (`/details`) are the only screens that take
+the terminal over. The card takes at most three fifths of the rows (twelve at 80×24) and never
+leaves fewer than eight for the transcript. It shows, in order: a thin rule; the **effect and
+target** (`Create merhaba.md`, `Edit src/app.ts`, `Overwrite notes.txt`); the **diff body**
+(`+n` additions, `-n` removals, context dimmed, coloured when colour is on) sized to the
+height; one summary row — the tool's id, `+added −removed · N bytes`, and, when the body is
+cut, `… N more lines (M bytes hidden)`; **only the warnings that apply** (a shortened target, masked
+values that require inspection, a non-LF or changed line-ending convention, a lock with no
+other stated cause), each wrapped to the card's width; and two key rows —
+`[y] Allow   [a] Allow all <file writes|file edits|<tool> calls> this session   [n] Deny` and
+`[c] Deny + reason   [v] Full diff   Esc stops the turn`. While Allow is locked behind an
+inspection the first key row offers only `[n] Deny` and says why. The card opens with a yellow rule labelled `Approval needed`,
+its answer keys are coloured, and while it is open the busy line reads `Waiting for your answer <time> · Esc stops the turn`;
+the wait is excluded from the turn's elapsed time and from the footer's duration, which shows `<active> · <wait> waiting for you`. `[n]` and `[c]` deny and
+**continue**; `Esc` and Ctrl-C **stop** the turn. A clean change shows no zero counts. An ending
+token (`<LF>`, `<CRLF>`) is printed only where a line's ending differs from the rest of its side or
+from the other side; `<EOF:NO_NEWLINE>` always prints. Everything below about inspection,
+masks, exact-frame acknowledgement and resource limits applies to the card and the full view alike.
+
 **Approval and details.** Both chat hosts reuse one pure state machine and views.
-The card names the target, exact changed/hidden byte and line counts, mask counts,
-line-ending changes and `[a]`'s tool/session scope. `[v]` opens its full view;
+The card names the target, exact changed/hidden byte and line counts, and `[a]`'s tool/session
+scope; mask counts and line-ending notes appear on it when non-zero or non-LF, and the full view always
+lists them. `[v]` opens its full view;
 the full view has bounded paging, search, both diff sides, code-point inspection,
 and an explicit `[r]` reveal action. A compact target header states its exact omitted
 byte count when shortened; the full target remains a paged source field in the
@@ -454,14 +476,16 @@ reconstructed from text. This needs no new history payload or migration.
 
 ## Chat modes + per-tool approval (2.5.E, [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
 
-The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+write, process, egress, os); a **mode** is a policy layer on that one instance — **no reseat**, so switching never loses tool context. `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** and `/mode <name>` jumps directly; the active mode is always shown in the footer. Absent a configured start, the default is read-only **`ask`**; [starting-mode authority](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3) governs every new instance. Two layers enforce it: a best-effort per-turn **advertise-filter** (a governed tool is not offered to the model) and the **authoritative, fail-closed `confirmAction` floor** — so even if the model names a hidden tool, the mode still decides.
+The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+write, process, egress, os); a **mode** is a policy layer on that one instance — **no reseat**, so switching never loses tool context. `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** and `/mode <name>` jumps directly; the active mode is always shown in the footer. Absent a configured start, the default is **`ask`**; [starting-mode authority](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3) governs every new instance. Two layers enforce it: a best-effort per-turn **advertise-filter** (a governed tool is not offered to the model) and the **authoritative, fail-closed `confirmAction` hook**. The names say what the modes do ([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)):
 
 | Mode | Advertised tools | A governed action (write / command / network / clipboard) |
 | --- | --- | --- |
-| `ask` (default) | granted read-only tools (the built-in agent has read/list/git status/search/find) | **denied** |
-| `plan` | read-only | **denied** |
-| `accept-edits` | all granted | **prompts** each time — `[y]` yes (once) · `[a]` always (this tool, this session) · `[n]` no · `[esc]` abort |
-| `auto` | all granted | **auto-approved** for granted actions; hard protected-path and scope refusals remain |
+| `ask` (default) | every granted tool | **a card, every time** — `[y]` once · `[a]` always for this tool this session · `[n]` deny and continue · `[c]` deny with a reason · `[v]` full view · `Esc` stops the turn |
+| `plan` | granted read-only tools (the built-in agent has read/list/git status/search/find) | **refused** with a fixed mode text that **returns to the model** ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); nothing is asked or changed |
+| `accept-edits` | every granted tool | a **file edit inside the workspace is applied without a card** (its transcript row keeps the target and diff statistics); a command, network call, ambient OS action, protected path or delivered saved result still gets a card |
+| `auto` | every granted tool | **auto-approved** for granted actions; hard protected-path and scope refusals remain (a protected target falls back to a card that can never be remembered) |
+
+With **no one to answer** — a plain, `--json` or one-shot surface — the effective mode stays `ask`, but the governed tools are **hidden** from the model as in `plan`, and a call that names one anyway is refused with the *unavailable* text. The model never sees a tool it cannot use.
 
 **Governed classes** (what the floor gates): a write (`fsWrite`), any egress (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), an `os` action (`read_clipboard` — an un-jailed read of ambient, secret-bearing OS state — and `notify`), and a `run_command` with a model-chosen command. Read-only fs reads + `git_status` are never gated. **Protected paths** (`.git/`, `.relavium/`, `.ssh/`, shell-startup files) are refused in **every** mode including `auto`; only the ancestor `.relavium` component of an exact [host-issued scratch descriptor](../shared-core/built-in-tools.md#host-issued-scratch) has a contextual exemption, with nested floors retained. No mode escapes the `fs` jail / scope tier. An **`Esc`** mid-turn aborts the in-flight turn but **keeps the session alive** (distinct from `/cancel`): it settles one `session:turn_completed` (an `aborted` stop-reason), rolls back the pending message, and returns to idle. The once/always memory is **in-memory** and per-session — a `chat-resume` re-prompts. The one-shot `relavium agent run` (non-interactive) runs `ask` (governed actions denied — no approver). On the interactive surface a host tool EXECUTION failure to an **idempotent read** (e.g. a file-not-found `read_file` — the #1 cause is launching `chat` from a directory that does not contain the path) is **fed back to the model** so it can adapt / explain rather than ending the turn (`recoverToolFailures`, scoped via `ToolExecutionError.recoverable`); a **governed / side-effecting** failure stays fail-fast. When a turn does die on `tool_failed`, its one-line summary shows a **static, secret-free hint** ("a path may be outside this session's workspace, or the target was unavailable") — never the raw error message (which may carry model / MCP context).
 

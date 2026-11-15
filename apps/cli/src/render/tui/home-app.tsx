@@ -195,14 +195,8 @@ function ChatRegion(
           : { height: props.promptHeight, overflowY: 'hidden' }
         : { height: viewport.rows, overflowY: 'hidden' })}
     >
-      <ToolReviewHost
-        store={props.store}
-        size={props.reviewSize}
-        hasCustody={props.reviewCustody}
-        clipboard={props.reviewClipboard}
-      />
       <ChatView
-        hidden={review !== undefined}
+        hidden={review !== undefined && review.screen !== 'card'}
         toolDisplays={toolDisplays}
         markdown={markdown}
         displaySuspended={displaySuspended}
@@ -217,7 +211,7 @@ function ChatRegion(
         mode={mode}
         reasoningEffort={reasoningEffort}
         reasoningVisible={reasoningVisible}
-        approval={approval}
+        approval={review === undefined ? approval : undefined}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
@@ -231,6 +225,14 @@ function ChatRegion(
           props.modelPicker !== undefined ||
           props.effortPicker !== undefined
         }
+      />
+      {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
+      <ToolReviewHost
+        store={props.store}
+        size={props.reviewSize}
+        hasCustody={props.reviewCustody}
+        clipboard={props.reviewClipboard}
+        color={color}
       />
       {props.palette !== undefined && (
         <PaletteView commands={HOME_CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />

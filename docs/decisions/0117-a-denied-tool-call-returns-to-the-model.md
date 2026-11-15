@@ -1,6 +1,6 @@
 # ADR-0117: A denied tool call returns to the model
 
-- **Status**: Proposed
+- **Status**: Accepted — 2026-11-16, by the maintainer, together with ADR-0129, ADR-0130 and ADR-0131 (see the implementation note at the end).
 - **Date**: 2026-11-05
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [D67](../roadmap/current.md#wave-gating-decisions), [MVP-A10](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
@@ -144,3 +144,30 @@ structure-only rule. Its text is fixed, so it carries no target content.
   state. A new tool or a new floor needs that classification before it ships.
 - The interactive and workflow paths now differ on denials, as they already
   differ on recoverable host failures.
+
+### Implementation note — 2026-11-16
+
+Implemented with the approval-card and mode increment
+([ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md),
+[ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md),
+[ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md)).
+
+**Returned to the model now:** a user rejection (with the user's typed words), a
+**mode** refusal (`plan`, with the mode's fixed label) and the headless
+**unavailable** refusal. Each has one fixed text (see
+[built-in-tools.md](../reference/shared-core/built-in-tools.md#refusals-that-return-to-the-model));
+a repeat of an invocation the user declined in the same turn is refused without
+asking again; every returned refusal draws on the correction budget, which ADR-0131
+now counts as consecutive rounds in which nothing ran.
+
+**Still fatal, by design:** a refusal that arrives after an effect was admitted or
+for a saved-result delivery (the model must not retry a call whose effect identity
+is already held), a revoked starting-`auto` authority (a consent boundary, not a
+conversation), and the wiring faults `no_approval_hook` / `approval_error`.
+
+**Not yet returned:** a protected-path refusal and a command outside the allowlist.
+The protected-path predicate also covers credential stores, which the rule above
+keeps fatal because their wording could depend on the target; separating the two
+classes and designing the allowlist-miss text belong with MVP-4's `run_command`
+card ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)).
+

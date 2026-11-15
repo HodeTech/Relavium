@@ -220,3 +220,9 @@ Accepted ADRs; this proposal does not silently rewrite their decisions.
   protected-path prompt still holds.
 
 > Implementation checkpoint 2026-11-12: the MVP-3 built-in filesystem grant, startup-mode authority and shared current/default settings are independently accepted on `development`. The [Step 3 record](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12) binds final source, verified review corrections and separate security evidence. Command execution remains the planned MVP-4 slice; combined checkpoint PR CI and maintainer review govern merge.
+
+> Amended 2026-11-16 by accepted [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md):
+> the built-in agent's editing tools are hidden in `plan` only, not in `ask`; in `ask` each write gets a
+> card, in `accept-edits` an in-workspace edit is applied without one. The headless rule stands — a surface
+> with no one to answer stays effectively `ask` — and now also hides the governed tools from the model.
+

@@ -427,6 +427,7 @@ export type {
   ToolApprovalContext,
   ToolApprovalRequest,
   ToolApprovalDecision,
+  ToolDenialClass,
   ToolActionPreview,
   ToolHost,
   FsCapability,

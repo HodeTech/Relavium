@@ -36,12 +36,20 @@ describe('makeChatModeEnv + applyChatMode', () => {
   it('derives the governed hide-set from the session tools and pushes the mapped policy on apply', () => {
     const { session, policies } = fakeSession();
     const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
-    applyChatMode(env, 'ask');
+    applyChatMode(env, 'plan');
     expect(policies).toHaveLength(1);
     const policy = policies[0];
     expect(policy?.confirm).toBeDefined(); // the regime is active (fail-closed) in every mode
     expect(policy?.advertise?.('read_file')).toBe(true);
-    expect(policy?.advertise?.('write_file')).toBe(false); // governed hidden in ask
+    expect(policy?.advertise?.('write_file')).toBe(false); // governed hidden in plan
+  });
+
+  it('ask advertises every granted tool — the person decides each call (ADR-0130)', () => {
+    const { session, policies } = fakeSession();
+    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    applyChatMode(env, 'ask');
+    expect(policies[0]?.advertise).toBeUndefined();
+    expect(policies[0]?.confirm).toBeDefined();
   });
 
   it('applies a new policy on every mode change (accept-edits advertises all)', () => {

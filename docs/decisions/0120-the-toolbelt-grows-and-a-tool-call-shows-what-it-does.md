@@ -361,3 +361,11 @@ owns scope, steps and the remaining implementation/security acceptance gates.
 > its historical design-checkpoint meaning. The
 > [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
 > remains open and requires fresh acceptance; no merge or publication is claimed.
+
+> Amended 2026-11-16 by accepted [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
+> (presentation only): the card is docked below the conversation, sized to the terminal, and shows mask
+> counts and line-ending notes only when they apply; an ending token prints only where a line's ending
+> differs. Every safety rule above — visible escapes, mask reveal, exact-frame acknowledgement, resource
+> limits — is unchanged. Also amended by [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md):
+> a line range whose end is past the last line is clipped, not refused.
+

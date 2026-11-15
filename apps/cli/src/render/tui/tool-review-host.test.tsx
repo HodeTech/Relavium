@@ -143,6 +143,13 @@ function fixture(
     errors,
     ready,
     text: () => output.frames.join(''),
+    /** The most recent complete frame (control sequences stripped) that contains `needle`. */
+    lastFrameWith: (needle: string): string | undefined =>
+      output.frames
+        // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+        .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
+        .filter((frame) => frame.includes(needle))
+        .at(-1),
     resize: (cols: number, rows: number) => {
       output.columns = cols;
       output.rows = rows;
@@ -150,6 +157,183 @@ function fixture(
     },
   };
 }
+
+function poemPreview(lines: number): ToolPreview {
+  const text = Array.from({ length: lines }, (_, index) => `line ${index + 1} of the new file`);
+  let offset = 0;
+  const diffLines = text.map((line, index) => {
+    const start = offset;
+    offset += line.length + 1;
+    return {
+      kind: 'added' as const,
+      text: line,
+      ending: 'lf' as const,
+      after: { line: index + 1, start, end: offset },
+    };
+  });
+  const after = `${text.join('\n')}\n`;
+  return {
+    kind: 'operation',
+    target: 'merhaba.md',
+    fields: [],
+    diff: {
+      before: null,
+      after,
+      beforeEndings: 'empty',
+      afterEndings: 'lf',
+      stats: {
+        addedLines: lines,
+        removedLines: 0,
+        beforeBytes: 0,
+        afterBytes: new TextEncoder().encode(after).byteLength,
+      },
+      lines: diffLines,
+    },
+  };
+}
+
+describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (host) => {
+  const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 60));
+
+  it('keeps the conversation on screen above the card instead of replacing it', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    f.store.appendUser('EARLIER-CONVERSATION-LINE');
+    const answer = f.store.requestApproval(request, true, undefined, {
+      callId: 'docked',
+      preview: poemPreview(6),
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    const frame = f.lastFrameWith('Esc stops the turn');
+    expect(frame).toContain('EARLIER-CONVERSATION-LINE');
+    expect(frame).toContain('Create merhaba.md');
+    // The old takeover chrome is gone.
+    expect(frame).not.toContain('Review tool operation');
+    expect(frame).not.toContain('fs_write');
+    f.input.push('n');
+    expect(await answer).toEqual({ outcome: 'reject' });
+  });
+
+  it('says only what matters for a clean change: no zero counts, no ending token per line, one key legend', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    void f.store.requestApproval(request, true, undefined, {
+      callId: 'clean',
+      preview: poemPreview(3),
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    const frame = f.lastFrameWith('Esc stops the turn') ?? '';
+    expect(frame).toContain('+1 line 1 of the new file');
+    expect(frame).toContain('write_file \u00b7 +3 \u22120');
+    expect(frame).not.toMatch(/masked/u);
+    expect(frame).not.toContain('<LF>');
+    expect(frame).not.toContain('Inspection requirements met');
+    expect(frame).not.toContain('hidden lines');
+    expect(frame).toContain('[y] Allow   [a] Allow all file writes this session   [n] Deny');
+    expect(frame).toContain('[c] Deny + reason   [v] Full diff   Esc stops the turn');
+  });
+
+  it('uses the available height: a short file is shown whole on a tall terminal and cut with exact counts on the floor', async () => {
+    const tall = fixture(host, true, false);
+    tall.resize(120, 40);
+    await tall.ready();
+    void tall.store.requestApproval(request, true, undefined, {
+      callId: 'tall',
+      preview: poemPreview(17),
+    });
+    await vi.waitFor(() => expect(tall.text()).toContain('Esc stops the turn'));
+    await settle();
+    const wide = tall.lastFrameWith('Esc stops the turn') ?? '';
+    expect(wide).toContain('+17 line 17 of the new file');
+    expect(wide).not.toMatch(/more lines?/u);
+
+    const small = fixture(host, true, false);
+    await small.ready();
+    void small.store.requestApproval(request, true, undefined, {
+      callId: 'small',
+      preview: poemPreview(40),
+    });
+    await vi.waitFor(() => expect(small.text()).toContain('Esc stops the turn'));
+    await settle();
+    const floor = small.lastFrameWith('Esc stops the turn') ?? '';
+    const shown = floor.split('\n').filter((row) => /^\+\d+ line /u.test(row)).length;
+    expect(shown).toBeGreaterThan(0);
+    expect(floor).toMatch(
+      new RegExp(`\\u2026 ${40 - shown} more lines \\(\\d+ bytes hidden\\)`, 'u'),
+    );
+    // The controls are never the row that is dropped.
+    expect(floor).toContain('Esc stops the turn');
+    expect(floor).toContain('[y] Allow');
+    expect(floor.split('\n').length).toBeLessThanOrEqual(24);
+  });
+
+  it('warns — and offers no Allow — for a masked value until it has been inspected', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    void f.store.requestApproval(request, true, undefined, { callId: 'masked', preview });
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    const frame = (f.lastFrameWith('Esc stops the turn') ?? '').replace(/\s+/gu, ' ');
+    expect(frame).toMatch(/1 masked value in this change/u);
+    expect(frame).toContain('[n] Deny (Allow is locked until you inspect the change)');
+    expect(frame).not.toContain('[y] Allow');
+    expect(frame).not.toContain('abcdefghijkl'); // the secret stays masked
+  });
+
+  it('opens with a rule that says the turn is waiting on the person', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    void f.store.requestApproval(request, true, undefined, {
+      callId: 'rule',
+      preview: poemPreview(2),
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    expect(f.lastFrameWith('Esc stops the turn')).toMatch(/\u2500 Approval needed \u2500+/u);
+  });
+
+  it("starts the person's wait clock when the card opens and folds it into the turn when it closes", async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    expect(f.store.getSnapshot().state.approvalSinceMs).toBeUndefined();
+    const answer = f.store.requestApproval(request, true, undefined, {
+      callId: 'wait',
+      preview: poemPreview(2),
+    });
+    await vi.waitFor(() => expect(f.store.getSnapshot().state.approvalSinceMs).toBeDefined());
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    f.input.push('n');
+    await answer;
+    const closed = f.store.getSnapshot().state;
+    expect(closed.approvalSinceMs).toBeUndefined();
+    expect(closed.approvalWaitMs).toBeGreaterThan(0);
+  });
+
+  it('uses the full view (a takeover) only on request, and the card returns on [b]', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    f.store.appendUser('EARLIER-CONVERSATION-LINE');
+    void f.store.requestApproval(request, true, undefined, {
+      callId: 'full',
+      preview: poemPreview(3),
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
+    await settle();
+    f.input.push('v');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+    await settle();
+    expect(
+      f.lastFrameWith('Tool details') ?? f.lastFrameWith('Review tool operation'),
+    ).toBeDefined();
+    f.input.push('b');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+    await settle();
+    expect(f.lastFrameWith('Esc stops the turn')).toContain('EARLIER-CONVERSATION-LINE');
+  });
+});
 
 describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
   it('shows the complete denial privacy disclosure at the minimum supported geometry', async () => {
@@ -159,14 +343,14 @@ describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
       callId: 'denial-privacy',
       preview,
     });
-    await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     f.input.push('c');
     await vi.waitFor(() => expect(f.text().replace(/\s+/gu, ' ')).toContain('private note.'));
     const text = f.text().replace(/\s+/gu, ' ');
     expect(text).toContain('Your reason may appear in session and redirected output.');
     expect(text).toContain('This is not a private note.');
-    expect(f.text()).toContain('Enter deny');
+    expect(f.text()).toContain('Enter denies and continues');
     expect(f.store.getSnapshot().review?.denial).toBe('');
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     f.input.push('\r');
@@ -186,7 +370,7 @@ describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
           answered = true;
           return value;
         });
-      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
       f.input.push('y');
       f.input.push(bracketed('ry'));
       await new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -255,8 +439,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
         },
         true,
       );
-      await vi.waitFor(() => expect(f.text()).toContain(`tool ${toolId}`));
-      expect(f.text()).toContain('action fs_write');
+      await vi.waitFor(() => expect(f.text()).toContain(toolId));
       expect(f.text()).not.toContain('NEVER_SHOW_ARGUMENTS');
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       f.input.push('a');
@@ -299,7 +482,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
           ],
         },
       });
-      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       f.input.push('v');
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
@@ -339,7 +522,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
           })),
         },
       });
-      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       f.input.push('v');
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
@@ -389,7 +572,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
           answered = true;
           return value;
         });
-      await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+      await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
       expect(f.text()).not.toContain('Review unavailable');
       if (kind === 'plain') expect(f.text()).toContain('Target shortened');
@@ -504,7 +687,7 @@ describe.each(['chat', 'home'] as const)('flushed review custody %s', (host) => 
       .then(() => {
         answered = true;
       });
-    await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+    await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     f.input.push('v');
     await new Promise<void>((resolve) => setTimeout(resolve, 40));

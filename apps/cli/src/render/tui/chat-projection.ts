@@ -123,8 +123,16 @@ export function formatTurnSummary(summary: TurnSummary): string {
     // We must NOT echo `errorMessage` (a tool_failed message MAY carry model/prompt/MCP-server context — the very
     // reason it is outside SAFE_MESSAGE_CODES); instead a STATIC, host-authored hint at the most common real
     // cause: a path outside the session workspace (the #1 launch-cwd gotcha) or an unavailable target.
+    const failed = (summary.failedTools ?? [])
+      .map(({ toolId, count }) => {
+        const name = [...sanitizeInline(toolId)].slice(0, 40).join('');
+        return count > 1 ? `${name} \u00d7${count}` : name;
+      })
+      .filter((entry) => entry.length > 0);
     head =
-      "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)";
+      failed.length === 0
+        ? "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)"
+        : `error: tool_failed — failed calls ended the turn: ${failed.join(', ')} (a path may be outside this session's workspace, or the target was unavailable)`;
   } else {
     head = `error: ${summary.errorCode}`;
   }
@@ -137,7 +145,13 @@ export function formatTurnSummary(summary: TurnSummary): string {
     // the bound model), so it surfaces exactly when attribution differs from the footer. Sanitized like every id.
     summary.model === undefined ? undefined : `via ${sanitizeInline(summary.model)}`,
     formatTokens(summary.tokensUsed),
-    summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
+    // The time the SYSTEM took: a wait on an approval card is the person's, shown on its own.
+    summary.durationMs === undefined
+      ? undefined
+      : formatDuration(Math.max(0, summary.durationMs - (summary.waitedMs ?? 0))),
+    summary.waitedMs === undefined
+      ? undefined
+      : `${formatDuration(summary.waitedMs)} waiting for you`,
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
 }
@@ -456,6 +470,11 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
+  /**
+   * Milliseconds an approval card has been open, when one is. The turn is then WAITING FOR THE PERSON, not working:
+   * the line says so (and what Esc does) instead of "Working…", and its timer is the wait, never the turn's.
+   */
+  readonly awaitingApprovalMs?: number | undefined;
   /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
   readonly columns?: number | undefined;
   /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
@@ -469,6 +488,12 @@ export function formatBusyLine(input: {
   if (input.busyCommand !== undefined) {
     return {
       text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      dim: true,
+    };
+  }
+  if (input.awaitingApprovalMs !== undefined) {
+    return {
+      text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)} · Esc stops the turn`,
       dim: true,
     };
   }
