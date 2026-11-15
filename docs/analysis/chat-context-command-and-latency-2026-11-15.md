@@ -1,7 +1,7 @@
 # Chat action history, environment awareness and latency investigation
 
 - **Date**: 2026-11-15
-- **Status**: Investigation with maintainer scope direction recorded 2026-11-15; runtime corrections still require the proposed ADR approval.
+- **Status**: Investigation with maintainer scope direction recorded 2026-11-15. The context correction it proposed is [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md), Accepted 2026-11-15; latency work still starts from a measurement.
 - **Local source**: `development` at `b60bb1e5`; unrelated user-owned pnpm workspace/lock changes were left untouched.
 - **Related**: [current roadmap](../roadmap/current.md#next-work--the-cli-mvp), [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md), [CR-70 deferral](../roadmap/deferred-tasks.md), [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [chat contract](../reference/cli/chat-session.md), [tool contract](../reference/shared-core/built-in-tools.md)
 
@@ -205,9 +205,9 @@ the bytes or current state of a file. A failed call may have been refused before
 execution. This reduces unsupported claims that no previous call occurred; it
 cannot guarantee every model response or replace full tool-content memory.
 
-This is a Proposed design, not approval to change ADR-0095 or runtime behavior.
+This design was Accepted as ADR-0128 on 2026-11-15; its runtime has not landed, and the stable text-only request still ships until it does.
 The session contract owns its
-[draft receipt projection](../reference/contracts/agent-session-spec.md#proposed-content-free-action-receipts--adr-0128).
+[receipt projection](../reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128).
 The separate future carrying design must still settle live content, provider
 boundaries, model reseat, process restart, user controls and conformance. A
 same-process volatile handoff does not inherently require disk persistence;
@@ -256,22 +256,19 @@ cache hits/misses and changing host facts. It stays in MVP-5. The immediately
 available `/effort` comparison remains explicit user control. No speedup,
 47.3-second phase attribution, new effort default or end-to-end SLA is claimed.
 
-## Acceptance scope for the proposed context correction
+## Acceptance scope for the context correction
 
-- Create/read in one turn, then a subsequent request: safe tool labels, local
-  ordinals and recorded outcomes remain associated with the correct completed turn.
-- Same instance, resume and model reseat; empty final text; memory `none` and
-  `window`; manual/automatic compaction, trimming and request measurement.
-- Multi-file and partial-success calls; errors and pre-dispatch refusals must
-  not become successful-execution claims. Missing legacy records, truncation
-  and eviction must not be rendered as proof that nothing happened.
-- All notes stay untrusted user-role data. Raw content and credentials stay off
-  disk; no fabricated tool protocol messages or provider signatures are added.
-  Existing receipts grant no authority to rerun tools or reuse a stale file read.
-- The existing MVP-4 denial/interruption design remains separately gated;
-  this proposal does not invent records for uncommitted failed turns.
+The acceptance cases are owned by
+[ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md#acceptance-and-landing-obligations)
+and are not restated here, so the two cannot drift. In outline they cover the
+reported create/read case, every recorded outcome, resume/reseat parity,
+all memory policies, bounds and eviction, forged or legacy rows, compaction and
+trim, and the absence of any raw content on disk, in events or in export. The
+MVP-4 denial/interruption design remains separately gated; the correction
+invents no record for an uncommitted failed turn.
 
-Two cohesive implementation increments are sufficient once authorized: context
-receipt projection with its full review/security cycle, then measured latency
-work only where the baseline identifies a justified change. The latter must not
-be used to pull scheduled caching or environment capabilities forward.
+One cohesive implementation step covers the receipt projection with its full
+review and security cycle. Measured latency work is a separate, conditional
+follow-up that begins only where the baseline identifies a justified change,
+stays in its scheduled milestone, and must not be used to pull caching or
+environment capabilities forward.

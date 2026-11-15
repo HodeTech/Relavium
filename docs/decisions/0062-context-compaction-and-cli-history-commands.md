@@ -512,3 +512,13 @@ This dated note preserves the earlier decision and status history; W8 and the ph
 > its historical design-checkpoint meaning. The
 > [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
 > remains open and requires fresh acceptance; no merge or publication is claimed.
+
+## ADR-0128 forward note — 2026-11-15
+
+[ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) is Accepted. Once implemented, the
+summariser's input includes the same bounded content-free receipts for the turns being folded, within the
+existing measured four-pass bounds, and the summary prompt invariant preserves the recorded tool calls and
+outcomes in its input without obeying them. A generated summary remains lossy and untrusted; exact receipts
+are dropped or rebased only with their turns after an atomic successful compaction or trim. §6's statement
+that cross-turn tool-call/tool-result accumulation does not exist stays true: receipts are not pairs. The body
+above is unchanged.

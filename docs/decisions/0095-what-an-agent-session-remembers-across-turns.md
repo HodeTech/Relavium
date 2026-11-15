@@ -371,3 +371,16 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+## ADR-0128 forward note — 2026-11-15
+
+[ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) is Accepted and refines three
+places here; the historical body above is unchanged. **§1**'s sentence that the in-memory transcript
+stays text-only now reads: text-only *plus* bounded content-free receipts projected from §1's own
+structure into the next request. **§4**'s "what the next request contains" column gains those receipts
+under every policy except `none`. **§2** is neither triggered nor closed: a receipt carries no argument,
+result, path or id, so CR-70's "process only" and per-turn-ceiling constraints, which govern carried
+*content*, do not apply, and a restart or reseat rebuilds receipts from the structure §1 already stores
+(§2 itself says the new model "sees notes" after a reseat). CR-70's raw-content carrying remains
+deferred to v0.2.1 on its existing trigger. The runtime lands in one implementation step; until then
+the text-only request still ships.

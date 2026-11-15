@@ -138,3 +138,13 @@ session that drops history (rejected: poor UX — the user expects to continue).
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Clear/reseat/Home builds share live narrowing HTTP authority and latest-only selection publication. Explicit ephemeral provider/model choices survive invocation rebuilds without being represented as persisted defaults. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+## ADR-0128 forward note — 2026-11-15
+
+[ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) is Accepted. Once implemented, a
+reseat carries bounded content-free *receipts* of earlier completed turns' tool names and outcomes, beside
+the text transcript, through the same reconstruction a resume uses. The disclosure then says: prior tool
+arguments and results (including files a tool read) are not carried; only content-free records of tool
+names and outcomes are; text the user sent, `@`-attached file contents included, is. Note 4's correction
+stands, and the new wording must not repeat its error in the opposite direction. Until the implementation
+step lands, the current notice is accurate. The body above is unchanged.

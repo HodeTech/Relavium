@@ -5432,10 +5432,11 @@ advancing MVP-4/5. This register records follow-ups, not implementation acceptan
 |---|---|---|
 | MVP-4 / MVP-A15 / ADR-0118 | Distinguish executable-plus-argv execution (`shell: false`) from explicit interpreter execution. An installed executable is not a grant; file-tool roots do not isolate a subprocess. Inspect the full admitted command/cwd and settle any shell-interpreter policy in its own approved design. | Controlled command fixtures; Once/Session/Remember and revocation; headless refusal; cancellation/output bounds/producer join. Never imply pipes or redirection work as shell syntax by default. |
 | MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers are separate from successful-turn historical receipts. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
+| MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
 | MVP-5 / MVP-A16 | Typed execution-host OS/architecture, project/cwd, actual runner kind, observed shell, IANA timezone, date/offset and current capabilities/mode. Unknown facts stay unknown; remote/container/WSL execution can differ from the client. Do not infer location/language from timezone. | Platform and timezone transitions; no wholesale environment, credentials or unrelated machine inventory in prompts. Host observations and repository instructions retain their separate provenance. |
 | MVP-5 / prompt caching | Keep stable instructions/tool schemas separate from changing time observations. Measure cache hit/miss and prefix invalidation under equivalent tasks rather than promising a latency reduction from aggregate usage. | Token classes when actually reported; identical correctness/approval behavior; no silent effort/model changes or raw-content diagnostic capture. |
 | CR-70 / v0.2.1 | Full raw tool-content carrying and in-turn overflow continuation retain their existing trigger and schedule. The historical facts in the proposed receipt correction are not a full-content archive. | Future design still resolves bounds/toggle, live handoff, provider signatures/conformance and restart/storage privacy. Do not mark CR-70 complete from receipts. |
-| Context correction / Proposed ADR-0128 | Bounded recorded call/outcome notes from existing structural evidence; no raw arguments, paths or results. | See the [draft canonical projection](../../reference/contracts/agent-session-spec.md#proposed-content-free-action-receipts--adr-0128); maintainer approval precedes runtime changes. |
+| Context correction / ADR-0128 (Accepted 2026-11-15) | Bounded recorded call/outcome notes from existing structural evidence; no raw arguments, paths or results. | See the [canonical projection](../../reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128) and the ADR's acceptance set. |
 | Performance investigation | Start with controlled offline session/registry measurements; separate request rounds/attempts, first stream frame, first visible text, tool work and persistence using monotonic time. Actual-provider attribution requires an approved observation boundary if a public API changes. | Missing timing/usage is unknown, not zero; overlapping phases are not additive. Optimize only a measured bottleneck, keeping admission, money/durability acknowledgements and native safety proofs. |
 
 The latest source examination found no independently established latency defect
@@ -5485,8 +5486,48 @@ dependency, event/store format, effort selection, permissions or publication
 policy changed. The existing 246 source-grounding tests remain the scoped test
 evidence; full workspace/platform/provider runs were not repeated for docs.
 
-**Remaining gate:** ADR-0128 is Proposed. Obtain the maintainer's requested new-ADR
-approval before implementing its one cohesive context correction and running
-implementation reviews. Performance work must start with controlled measurement;
+**Gate cleared 2026-11-15:** the maintainer accepted ADR-0128 after the design-review
+findings below. Its one cohesive context correction and the implementation reviews
+follow. Performance work must start with controlled measurement;
 no actual-provider attribution or speedup is claimed. Scheduled MVP-4/MVP-5 and
 CR-70 work remains in place.
+
+### Context correction design review — third round and acceptance, 2026-11-15
+
+Three further independent design reviews read the Proposed ADR-0128, its contract
+draft and the investigation. Each finding was checked against the code before it
+was accepted or declined. Folded: the four durable outcomes (`ok`, `error`,
+`denied`, `cancelled`) are now an explicit table with what each does not establish
+(`denied` is written today only for a refused `read_media` scope and every other
+`tool_denied` ends the turn; `cancelled` has no completed-turn producer); one ordered
+retention rule replaces the separate turn/record/byte caps (a 32-turn-block admission
+cap would have refused a valid 33-turn resume, the default hard turn cap being 50 with
+no upper limit); zero-row restored turns are disclosed by one fixed request notice
+instead of a per-turn line; pairing and uniqueness are claimed only over the inspected
+rows of one turn and a bad turn degrades to incomplete rather than failing resume; the
+ADR-0095 references name §1, §2 and §4; the eviction/prompt-caching interaction, the
+failed-turn side-effect gap, the `other_tool` indistinguishability and the new egress
+class are recorded as negatives; the reseat disclosure and summarizer prompt are
+pinned as landing obligations; the acceptance set now lives only in the ADR. Declined:
+an `Untrusted` brand on receipt text, because the receipt grammar carries no free-form
+string (classify-and-discard at the reconstruction boundary replaces it). No runtime
+source, store format or published contract other than the receipt section changed.
+
+### ADR-0128 implementation checkpoint — 2026-11-15
+
+The one cohesive step is implemented on `development`: the pure receipt projection and retention rule
+(`turn-receipts.ts`), live collection from the typed `toolHistory`, resume/reseat derivation from the persisted
+structural rows, request projection (turn blocks plus the single notice), summariser input with whole-record
+handling, host-supplied admission, the corrected reseat notice and the summariser prompt. `CompletedTurnSpan.receipts`
+is required, so a host that forgets it fails to compile rather than claiming a known-empty turn.
+
+Evidence, scoped: the core package passes 5,224 tests, including 61 pure and 14 session-level receipt tests and a
+live-versus-restored request parity check across nine turns with eviction; the CLI passes 7,951 (13 skipped, unchanged),
+including the real SQLite resume/reseat suites now pinning where receipts sit. A 19-mutation sweep over the
+receipt rules killed 18; the survivor (the span restore when the completion sink refuses a compaction after
+installation) now has a test and that mutant is killed on re-run. Writing the tests exposed one defect in the first
+implementation (the per-operation part budget was spent only after a turn finished), fixed and covered. Measured sizes and costs are in the ADR's implementation note.
+
+Still owed before acceptance: the maintainer's two fresh independent review rounds, a separate security sitting, a
+real-provider text-projection conformance sample where a key is available, and the final-head CI. No merge,
+publication or paid replay is claimed, and CR-70, MVP-4 and MVP-5 are unchanged.

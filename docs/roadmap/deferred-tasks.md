@@ -2291,9 +2291,10 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
       **Investigation note 2026-11-15:** the maintainer retained that schedule.
       [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
-      proposes only bounded content-free call/outcome evidence; it awaits approval
-      and neither implements raw carrying nor closes this item. Reuse the
-      [investigation's acceptance cases](../analysis/chat-context-command-and-latency-2026-11-15.md#acceptance-scope-for-the-proposed-context-correction)
+      (Accepted 2026-11-15) adds only bounded content-free call/outcome receipts; it
+      neither implements raw carrying nor closes this item, and this item's trigger and
+      constraints are unchanged. Reuse the
+      [ADR-0128 acceptance cases](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md#acceptance-and-landing-obligations)
       when designing the separate full-content projection.
 
 - [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
@@ -3837,6 +3838,39 @@ future test cannot silently re-acquire it.
 > matching test asserts surrogate pairs per UTF-16 unit) — `codePointAt` would merge pairs and break the
 > pinned tests. `type ToolId = string` is a deliberate **semantic domain alias** for readability, not a
 > redundant alias.
+
+## The default chat agent cannot rename, move, copy or delete a file (found 2026-11-15)
+
+> **Found in use:** after attaching a file, the user asked the agent to rename it. The agent has no rename tool, so
+> it says so, offers to create a new file under the new name with the same content, and states that it cannot delete
+> the original. That is the grant working as designed and the model describing it truthfully; the gap is the
+> capability, not the wording.
+
+**What is true today.** The built-in agent holds seven tools ([ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)):
+`read_file`, `list_directory`, `git_status`, `search_files`, `find_files`, `write_file`, `edit_file`. None can rename,
+move, copy or delete, and no accepted or proposed ADR adds such a tool. The nearest thing the model can do is read the
+old file and `write_file` the same bytes elsewhere, which is a copy, not a rename; it cannot remove the original.
+Observed 2026-11-15: the model already discloses exactly that, so no prompt change was made. (A first reading
+assumed it presented the copy as a rename; the user's transcript showed otherwise, and a prompt sentence added on
+that assumption was reverted before it was committed.)
+
+**What is planned, and what is not.**
+
+- **Planned, as a command, not a tool.** MVP-4 ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md),
+  D63) gives the default agent `run_command` behind a typed argv/cwd approval card, so `mv a b` and `rm a` become
+  possible there as ordinary approved commands (`shell: false`, executable plus argv, no globbing). Until then the
+  only route is the user's own `!mv a b`, which is disabled unless `[chat].allowed_commands` names that exact string.
+- **Not planned: a dedicated `move_file` / `delete_file` tool.** It would be a new filesystem write path (jail and
+  protected-path checks on both ends, symlink and cross-device cases, native metadata preservation per
+  [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), an approval
+  preview that shows source and destination, and an effect-journal identity), so it needs its own ADR, a rigor pass
+  and a separate security sitting under the D64 bar.
+
+**Decision needed from the maintainer, after MVP-4 has been used:** whether a command card for `mv`/`rm` is good
+enough (the card shows the argv but not the files' content or metadata, and a command is not `fsWrite`-governed), or
+whether rename/move earns a typed tool. **Trigger to revisit:** MVP-4 observed in use, or a second report of a
+rename/move/delete request. **MVP-4 acceptance should include** a rename through the approved command path and a
+refusal when the command is declined. *(medium · apps/cli/src/chat/default-agent.ts; ADR-0116, ADR-0118)*
 
 ## Phase-2.6 out-of-scope carry-forward
 

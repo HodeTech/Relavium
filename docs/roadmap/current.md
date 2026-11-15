@@ -319,8 +319,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    for the command/shell boundary and truthful tool outcomes. The maintainer
    confirmed on 2026-11-15 that scheduled capabilities stay in their existing
    milestones. [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
-   separately proposes bounded content-free historical receipts as a narrow
-   context correction; it awaits approval and does not advance CR-70.
+   separately adds bounded content-free historical receipts as a narrow
+   context correction (Accepted 2026-11-15, implemented on `development` the same
+   day; independent reviews and a security sitting are owed); it does not
+   advance CR-70.
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file
    and environment block (MVP-A16); 2.6.E · **Type-ahead message queue**; `chat --model/--provider` and a one-shot
    prompt mode (MVP-A17).
