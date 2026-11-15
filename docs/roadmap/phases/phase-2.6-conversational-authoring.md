@@ -4232,7 +4232,7 @@ user's journey.
     `✓ Copied` toast therefore claims more than Relavium knows.
     - In 2a the toast wording says the copy was sent to the terminal's clipboard, not that it arrived.
     - A local write failure is reported as a failure.
-    - Using a platform clipboard tool first, which can confirm the write (Kiro does this), is a follow-up.
+    - Using a platform clipboard tool first, which can confirm the write, is a follow-up.
 14. **Where the new commands live.**
     - `/resume`, `/providers` and `/init` are Home-tree commands: they run in the Home and in a chat started from
       it.
@@ -5467,3 +5467,26 @@ request projection, compaction reliability and effort admission. These verify
 current behavior, not the proposed receipt implementation or hosted latency.
 Fresh cumulative design/security checks and maintainer ADR approval remain
 required before runtime implementation.
+
+### Context correction design review — cumulative closure, 2026-11-15
+
+A fresh Terra/high cumulative design review and a new separate Sol/high security
+design sitting covered `696520a0..e4d158bb`. No technical design finding remained.
+The cumulative round found one remaining named-product clipboard comparison;
+its parenthetical is removed without changing the follow-up. The separate
+security sitting reports no finding at any severity. This is design review,
+not runtime implementation acceptance or maintainer ADR approval.
+
+All 1,196 local documentation paths/fragments across the 26 changed files resolve;
+changed Markdown has one H1, the two narrowly redacted archive JSON files parse,
+and whitespace checks pass. A tracked-tree whole-word scan finds none of the
+four named agent products from the context investigation. No runtime source,
+dependency, event/store format, effort selection, permissions or publication
+policy changed. The existing 246 source-grounding tests remain the scoped test
+evidence; full workspace/platform/provider runs were not repeated for docs.
+
+**Remaining gate:** ADR-0128 is Proposed. Obtain the maintainer's requested new-ADR
+approval before implementing its one cohesive context correction and running
+implementation reviews. Performance work must start with controlled measurement;
+no actual-provider attribution or speedup is claimed. Scheduled MVP-4/MVP-5 and
+CR-70 work remains in place.
