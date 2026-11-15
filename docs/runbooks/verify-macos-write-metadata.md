@@ -61,6 +61,11 @@ this documentation checkpoint.
 
 ## Performance comparison
 
+The controlled attribute-fixture helper uses Apple's fixed `/usr/bin/python3`
+path on macOS. It performs setup outside measured dispatch and refuses if that
+contributor prerequisite is unavailable; it does not search `PATH` or install
+an interpreter. The product's write capability does not depend on Python.
+
 Run the checked-in contributor harness from the repository root:
 
 ```bash

@@ -100,12 +100,13 @@ const PROVIDER_MESSAGE_CODES: ReadonlySet<string> = new Set([
  * as mixed-origin text. The finite backstop does not promise arbitrary user content is nonsensitive.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  const reason =
-    summary.errorMessage === undefined
-      ? ''
-      : summary.errorCode === 'tool_denied'
+  let reason = '';
+  if (summary.errorMessage !== undefined) {
+    reason =
+      summary.errorCode === 'tool_denied'
         ? projectDenialExplanation(summary.errorMessage)
         : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+  }
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;

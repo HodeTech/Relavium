@@ -1,4 +1,5 @@
 /** Contributor-only source-bound APFS benchmark. Run before/after the correction. */
+import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { readFileSync, rmSync } from 'node:fs';
@@ -24,6 +25,11 @@ const esbuild = require(
 const outfile = resolve(
   `apps/cli/src/engine/tool-host/.adr127-benchmark-${randomBytes(12).toString('hex')}.mjs`,
 );
+/** @param {string} left @param {string} right */
+function compareSourceNames(left, right) {
+  // Fingerprints require locale-independent byte ordering, not display collation.
+  return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}
 try {
   const result = await esbuild.build({
     entryPoints: ['apps/cli/src/engine/tool-host/macos-write-benchmark.ts'],
@@ -60,7 +66,7 @@ try {
       js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
     },
   });
-  const inputs = Object.keys(result.metafile.inputs).sort();
+  const inputs = Object.keys(result.metafile.inputs).sort(compareSourceNames);
   function digest() {
     const hash = createHash('sha256');
     for (const path of [...inputs, 'pnpm-lock.yaml'])
@@ -71,7 +77,7 @@ try {
     });
     hash.update(JSON.stringify(currentBinding)).update(JSON.stringify(currentAssets.manifest));
     for (const [name, bytes] of [...currentAssets.files].sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
+      compareSourceNames(a, b),
     ))
       hash.update(name).update('\0').update(bytes).update('\0');
     return hash.update(readFileSync(outfile)).digest('hex');

@@ -2308,20 +2308,7 @@ mod producer_crash_tests {
         let pid = child.0.id();
         let stdout = child.0.stdout.take().expect("child stdout");
         let (send, receive) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if let Some((_, code)) = line.split_once("RELAVIUM_NATIVE_CHECKPOINT:") {
-                    if let Some(known) = CHECKPOINTS.iter().copied().find(|known| *known == code) {
-                        let _ = send.send(Receipt::Checkpoint(known));
-                    }
-                }
-                if let Some((_, receipt)) = line.split_once("RELAVIUM_NATIVE_PHASE:") {
-                    let _ = send.send(Receipt::Phase(receipt.to_owned()));
-                    break;
-                }
-            }
-        });
+        let reader = std::thread::spawn(move || forward_phase_receipts(stdout, send));
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let mut checkpoints = Vec::new();
         let receipt = loop {
@@ -2387,6 +2374,20 @@ mod producer_crash_tests {
             );
         }
         std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+    fn forward_phase_receipts(stdout: std::process::ChildStdout, send: mpsc::Sender<Receipt>) {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if let Some((_, code)) = line.split_once("RELAVIUM_NATIVE_CHECKPOINT:") {
+                if let Some(known) = CHECKPOINTS.iter().copied().find(|known| *known == code) {
+                    let _ = send.send(Receipt::Checkpoint(known));
+                }
+            }
+            if let Some((_, receipt)) = line.split_once("RELAVIUM_NATIVE_PHASE:") {
+                let _ = send.send(Receipt::Phase(receipt.to_owned()));
+                break;
+            }
+        }
     }
     fn seed_partial_metadata(_root: &Path, _target: &Path, phase: &str) {
         #[cfg(target_os = "macos")]

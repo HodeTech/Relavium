@@ -3871,12 +3871,12 @@ export function makePlainPrinter(
           : undefined;
         // Build the optional hint LINE separately (no nested template literal) before composing the output.
         const hintLine = hint === undefined ? '' : `${hint}\n`;
-        const fact =
-          event.error.code === 'context_overflow'
-            ? ` — ${sanitizeInline(event.error.message)}`
-            : recoveryHints && event.error.code === 'tool_denied'
-              ? ` — ${projectDenialExplanation(event.error.message)}`
-              : '';
+        let fact = '';
+        if (event.error.code === 'context_overflow') {
+          fact = ` — ${sanitizeInline(event.error.message)}`;
+        } else if (recoveryHints && event.error.code === 'tool_denied') {
+          fact = ` — ${projectDenialExplanation(event.error.message)}`;
+        }
         io.writeOut(`\n[turn failed: ${event.error.code}${fact}]\n${hintLine}`);
         return;
       }

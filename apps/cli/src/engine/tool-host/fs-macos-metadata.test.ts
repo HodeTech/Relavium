@@ -141,7 +141,9 @@ describe.skipIf(process.platform !== 'darwin')(
         },
         f.ctx,
       );
-      expect(readValue() === hex).toBe(true);
+      // Keep opaque metadata out of assertion diagnostics, including on mismatch.
+      const preservedAfterAppend = readValue() === hex;
+      expect(preservedAfterAppend).toBe(true);
       const ctx = {
         ...f.ctx,
         effectSlot: 1,
@@ -162,7 +164,8 @@ describe.skipIf(process.platform !== 'darwin')(
         ctx,
       );
       expect(await readFile(path, 'utf8')).toBe('after\né🙂\n');
-      expect(readValue() === hex).toBe(true);
+      const preservedAfterEdit = readValue() === hex;
+      expect(preservedAfterEdit).toBe(true);
       expect(f.effects.rows().map((row) => row.state)).toEqual(['committed', 'committed']);
     });
   },

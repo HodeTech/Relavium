@@ -41,7 +41,7 @@ try {
     await mkdir(parent, { mode: 0o700 });
     const path = join(parent, 'target');
     if (cohort === 'dense') {
-      execFileSync('python3', ['-c', attributes, parent]);
+      execFileSync('/usr/bin/python3', ['-c', attributes, parent]);
     }
     for (const operation of ['create', 'overwrite', 'append', 'edit'] as const) {
       const samples: number[] = [];
@@ -52,7 +52,7 @@ try {
         else {
           await writeFile(path, before, { mode: 0o600 });
           if (cohort === 'dense' && attempt === 0) {
-            execFileSync('python3', ['-c', attributes, path]);
+            execFileSync('/usr/bin/python3', ['-c', attributes, path]);
           }
         }
         const effects = createInMemoryEffectJournal({

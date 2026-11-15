@@ -3933,6 +3933,62 @@ macOS installation or another platform. File/template MACL, unlisted metadata
 and concurrent policy changes remain explicit refusal cases. No merge, npm
 publication, in-place fallback or activation of proposed MVP-4 ADRs is claimed.
 
+### ADR-0127 CI and scanner follow-up (2026-11-15)
+
+The first pushed source checkpoint `b60bb1e5` passes all eight native execution
+profiles and four installed-consumer legs in PR run
+[43703499391](https://github.com/HodeTech/Relavium/actions/runs/43703499391).
+Its later controls exposed two declared secrets workloads still expecting 160
+chat cases after five denial-printer cases were added. Both declarations and
+their independent provenance pins now require 165. All anchors, named witnesses,
+native-child counts and deadlines remain unchanged. Focused fixed/mutated/restored
+runs for both controls pass their exact populations and expected causal failures.
+
+The scanner produced 15 new records. Each was checked against source:
+
+| Sonar key | Disposition |
+|---|---|
+| `AaHeugWUGiVmDmX-ym2k` | Accepted remotely with rationale; sequential benchmark parent setup precedes sampling. |
+| `AaHeugWUGiVmDmX-ym2m` | Accepted remotely with rationale; remove the same target before the next create sample. |
+| `AaHeugWUGiVmDmX-ym2n` | Accepted remotely with rationale; seed bytes before the measured overwrite/append/edit. |
+| `AaHeugWUGiVmDmX-ym2p` | Accepted remotely with rationale; current read evidence must precede write dispatch. |
+| `AaHeugWUGiVmDmX-ym2q` | Accepted remotely with rationale; await dispatch before timing/verification/next sample. |
+| `AaHeugWUGiVmDmX-ym2r` | Accepted remotely with rationale; verify this sample's bytes before resetting its target. |
+| `AaHeugWUGiVmDmX-ym2l` | Source action: use fixed `/usr/bin/python3` for the controlled parent attribute fixture. |
+| `AaHeugWUGiVmDmX-ym2o` | Source action: same fixed utility path for controlled file attributes. |
+| `AaHeugiiGiVmDmX-ym2u` | Source action: explicit locale-independent source-name comparator for fingerprint ordering. |
+| `AaHeugiiGiVmDmX-ym2v` | Source action: reuse the named comparator instead of a nested ternary. |
+| `AaHeugZGGiVmDmX-ym2s` | Source action: flatten the continuing plain denial/overflow branch. |
+| `AaHeugNXGiVmDmX-ym2h` | Source action: flatten the summary's optional denial-reason branch. |
+| `AaHeugWRGiVmDmX-ym2i` | Source action: name the append metadata-preservation predicate; keep opaque bytes out of failed assertion output. |
+| `AaHeugWRGiVmDmX-ym2j` | Source action: name the edit preservation predicate under the same diagnostic boundary. |
+| `AaHeugbRGiVmDmX-ym2t` | Source action: extract the test-only crash-receipt forwarding loop; keep phase barriers, kill/join and recovery assertions unchanged. |
+
+All six Accepted states were read back in the authenticated UI with explanatory
+comments and without sharing comments for analyzer training. They are intentional
+sequencing, not incorrect detections, so none was mislabeled False Positive.
+Nine source actions require a fresh scanner read-back; no quality-profile,
+exclusion or severity change is used. The fixed Python helper is contributor-only,
+outside measured dispatch, and does not add a product runtime dependency.
+
+The correction passes 18,682 workspace tests/24 conditional skips, workspace
+lint/types/build, all 1,129 acceptance-tool cases, tool lint/types, formatting and
+CLI closure. The current macOS native profile still passes 54 Rust parents and
+eleven Node lifecycle cases with five declared ignored helpers. Test-only helper
+extraction leaves the production binary SHA-256 unchanged at
+`253ff133c2f5bb272905cd5f4636e511dfa81a9bc507c4de20be09d04af898ca`;
+the source binding is now
+`94afadd244ee5ca56c6c023f3a34e297dfc713ca377565985b1c65b49c1b6365`.
+
+The first push run's filesystem shard 2 separately failed at
+`catalog-directory/fixed`, where `FS_CAUSAL_ANCESTOR_CLIMB tool` received a
+`NativeWriteNeedsAttentionError`. Its preceding `cas-nlink` restoration had
+passed. The retained receipt does not identify the underlying native cause;
+this is not classified as runner flakiness or repaired by weakening a guard.
+The focused local catalog control passes fixed/mutated/restored, preserving the
+historical failed receipt and its platform limit. Fresh final-head CI and scanner
+outcomes, correction review and maintainer merge remain separate gates.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
