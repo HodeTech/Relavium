@@ -56,8 +56,9 @@ export function makeCatalogIdResolver(
  *
  * Each completed exchange stores user text, ordered content-free tool pairs from the terminal event,
  * and an explicit final assistant text part (even empty), in one transaction with the session row.
- * The engine's next-turn projection remains text-only. Error/abort turns persist no exchange,
- * while their billed cost remains real. Held application keys are not injected into these rows;
+ * The engine's next-turn projection remains text-only. A turn the engine RETAINED as interrupted (ADR-0119) is
+ * stored as the user text, the same tool pairs and one interruption row instead of an answer; every other
+ * error/abort turn persists no exchange. Billed cost is real either way. Held application keys are not injected into these rows;
  * user-authored text, including explicit file/shell injection, can still contain sensitive data.
  */
 
@@ -439,8 +440,9 @@ export function createSessionPersister(
             (event.error === undefined && event.stopReason !== 'aborted')) &&
           pendingUserText !== undefined
         ) {
-          // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
-          // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
+          // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of an exchange that PERSISTS (a
+          // completed one, or a turn retained as interrupted, ADR-0119) of a titleless session, so a rolled-back turn
+          // never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
           // A failed write already skipped the reset below by throwing, so `pendingUserText` survived — but
           // only by ACCIDENT, and the next `beginUserTurn` overwrote it anyway, losing an exchange the
@@ -459,7 +461,7 @@ export function createSessionPersister(
             );
           });
         } else {
-          // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
+          // A turn the engine did NOT retain persists no messages and accumulates no TOKENS, but the row is still
           // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.
           persistDurably(() => {
             deps.store.updateSession(record('active'));
@@ -611,7 +613,8 @@ export function createSessionPersister(
       if (durabilityFailure !== undefined) return;
       // Only STAGE the user text; the title is derived when (and if) the exchange COMPLETES + persists (see
       // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
-      // errored first turn whose message rows are rolled back — a label with no transcript behind it.
+      // errored first turn whose message rows are rolled back (a turn the engine does not retain) — a label with no
+      // transcript behind it.
       pendingUserText = text;
       pendingUserDisplayText = userDisplayText;
       assistantText = '';
