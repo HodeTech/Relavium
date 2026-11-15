@@ -47,6 +47,12 @@ import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrust
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
 import {
+  admitSuppliedSpans,
+  receiptsFromToolHistory,
+  retainTurnReceipts,
+  type TurnReceipts,
+} from './turn-receipts.js';
+import {
   ToolDefSchema,
   type FallbackPlanEntry,
   type LlmMessage,
@@ -451,8 +457,12 @@ export class SessionStateError extends RelaviumError {
   }
 }
 
-/** Resume metadata is copied only after its bounds and text-only completed-turn shape are proven. */
-function validateCompletedTurnSpans(state: SessionResumeState): void {
+/**
+ * Resume metadata is copied only after its bounds and text-only completed-turn shape are proven. Returns the
+ * admitted spans, receipt copies frozen: host-supplied receipt metadata over a cap or of the
+ * wrong shape is a programming error and is refused like any other invalid resume state (ADR-0128).
+ */
+function validateCompletedTurnSpans(state: SessionResumeState): CompletedTurnSpan[] {
   const invalid = (): never => {
     throw new SessionStateError(
       'invalid_resume_state',
@@ -483,6 +493,8 @@ function validateCompletedTurnSpans(state: SessionResumeState): void {
       invalid();
     previousEnd = span.end;
   }
+  const admitted = admitSuppliedSpans(state.completedTurnSpans);
+  return admitted ?? invalid();
 }
 
 type PlanResult =
@@ -688,14 +700,14 @@ export class AgentSession {
     // `admit: false` — see the constructor. A resume continues a session that was already admitted, on a
     // frozen snapshot its user cannot edit; re-admitting it would strand their transcript.
     const session = new AgentSession(params, { admit: false });
-    validateCompletedTurnSpans(state);
+    const spans = validateCompletedTurnSpans(state);
     session.#messages.push(
       ...state.messages.map((message) => ({
         ...message,
         content: message.content.map((part) => ({ ...part })),
       })),
     );
-    session.#completedTurnSpans.push(...state.completedTurnSpans.map((span) => ({ ...span })));
+    session.#completedTurnSpans.push(...spans);
     session.#turnCount = state.turnCount;
     // Commands restart negative slots under a NEW durable turn key on resume/reseat.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
@@ -965,8 +977,21 @@ export class AgentSession {
       }
       const completedStart =
         this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
-      if (completedStart >= 0)
-        this.#completedTurnSpans.push({ start: completedStart, end: this.#messages.length });
+      if (completedStart >= 0) {
+        // ADR-0128: the typed content-free `toolHistory` becomes this turn's receipts, and the same retention
+        // rule a restart applies evicts the oldest block if the payload would now exceed its cap. The span is
+        // pushed only AFTER the completion sink accepted the turn, so a rejected turn leaves no receipts.
+        this.#completedTurnSpans.push({
+          start: completedStart,
+          end: this.#messages.length,
+          receipts: receiptsFromToolHistory(result.toolHistory),
+        });
+        this.#completedTurnSpans.splice(
+          0,
+          this.#completedTurnSpans.length,
+          ...retainTurnReceipts(this.#completedTurnSpans),
+        );
+      }
       // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
       // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
       // (those return before here or from the catch, so a failed turn never triggers compaction).
@@ -1344,7 +1369,19 @@ export class AgentSession {
     const dropped = this.#messages.length - keptMessageCount;
     return this.#completedTurnSpans
       .filter((span) => span.start >= dropped)
-      .map((span) => ({ start: span.start - dropped, end: span.end - dropped }));
+      .map((span) => ({
+        start: span.start - dropped,
+        end: span.end - dropped,
+        receipts: span.receipts,
+      }));
+  }
+
+  /** Receipts for the foldable prefix, aligned by index: set only at a completed turn's user message. */
+  #foldableReceipts(count: number): (TurnReceipts | undefined)[] {
+    const aligned = new Array<TurnReceipts | undefined>(count).fill(undefined);
+    for (const span of this.#completedTurnSpans)
+      if (span.start < count) aligned[span.start] = span.receipts;
+    return aligned;
   }
 
   #replaceHistory(kept: readonly LlmMessage[]): void {
@@ -1472,12 +1509,21 @@ export class AgentSession {
         compactionRequestFits(prepared, windows, this.#maxTokensEstimate);
       const tokensBefore = this.#estimateContextTokens();
       checkCancelled();
+      // ADR-0128: the same bounded receipts a request carries, aligned with the foldable messages.
+      const foldableReceipts = this.#foldableReceipts(split.foldable.length);
       let running = this.#compactionSummary,
         offset = 0;
       const usage = { input: 0, output: 0 };
       const summaryUsageCoverage = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
       for (let pass = 0; pass < COMPACTION_MAX_PASSES && offset < split.foldable.length; pass++) {
-        const chunk = prepareCompactionChunk(split.foldable, offset, running, prepare, fits);
+        const chunk = prepareCompactionChunk(
+          split.foldable,
+          offset,
+          running,
+          prepare,
+          fits,
+          foldableReceipts,
+        );
         checkCancelled();
         const outcome = await captureAgentTurnOutcome({
           ...params,

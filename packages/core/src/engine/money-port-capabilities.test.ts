@@ -25,6 +25,7 @@ import {
   type TurnMoneyPort,
   type UsageDispositionDraft,
 } from './money-durability.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 type CostEvent = Parameters<NonNullable<TurnMoneyPort['emitCost']>>[0];
 type Claim = Parameters<NonNullable<TurnMoneyPort['claimUsage']>>[1];
@@ -503,8 +504,8 @@ for (const shape of shapes) {
               { role: 'user', content: [{ type: 'text', text: 'latest' }] },
             ],
             completedTurnSpans: [
-              { start: 0, end: 1 },
-              { start: 1, end: 2 },
+              { start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS },
+              { start: 1, end: 2, receipts: KNOWN_EMPTY_RECEIPTS },
             ],
             turnCount: 2,
             cumulativeCostMicrocents: 0,

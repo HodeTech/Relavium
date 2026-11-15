@@ -31,6 +31,7 @@ import {
   MoneyDurability,
   type SettledAttemptDraft,
 } from './money-durability.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const model = 'usage-failure-policy';
 const price: ModelPricing = {
@@ -427,7 +428,11 @@ for (const budgeted of [false, true])
       const session = summarising
         ? AgentSession.resume(init, {
             messages,
-            completedTurnSpans: messages.map((_, i) => ({ start: i, end: i + 1 })),
+            completedTurnSpans: messages.map((_, i) => ({
+              start: i,
+              end: i + 1,
+              receipts: KNOWN_EMPTY_RECEIPTS,
+            })),
             turnCount: 3,
             cumulativeCostMicrocents: 0,
             conservativeCostMicrocents: 0,

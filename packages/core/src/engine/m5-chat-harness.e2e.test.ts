@@ -41,6 +41,7 @@ import { serializeWorkflow, sessionToWorkflow } from '../export/serializer.js';
 import { reconstructSessionState, type SessionResumeState } from './session-resume.js';
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { RECEIPT_NOTICE_INCOMPLETE } from './turn-receipts.js';
 
 // --- LLM-provider stubs (mirror agent-session.test.ts) -----------------------------------------------
 
@@ -459,8 +460,15 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
     await resumed.sendMessage('again');
 
     // The provider saw the prior transcript plus the new user message.
+    // The restored zero-row turn is ambiguous (ADR-0128), so one fixed notice heads the request.
     expect(seen[0]).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `${RECEIPT_NOTICE_INCOMPLETE}\n\n` },
+          { type: 'text', text: 'hello' },
+        ],
+      },
       { role: 'assistant', content: [{ type: 'text', text: 'hi there' }] },
       { role: 'user', content: [{ type: 'text', text: 'again' }] },
     ]);

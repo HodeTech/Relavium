@@ -14,6 +14,7 @@ import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent
 import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
 import { BudgetPauseError } from './budget-governor.js';
 import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const text = (value: string): LlmMessage => ({
   role: 'user',
@@ -165,7 +166,11 @@ function fixture(
     },
     {
       messages: history,
-      completedTurnSpans: history.map((_, i) => ({ start: i, end: i + 1 })),
+      completedTurnSpans: history.map((_, i) => ({
+        start: i,
+        end: i + 1,
+        receipts: KNOWN_EMPTY_RECEIPTS,
+      })),
       turnCount: history.length,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,

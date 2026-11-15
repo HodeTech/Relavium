@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { markUntrusted } from '../tools/untrusted.js';
 import { buildTurnMessages } from './turn-messages.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const user = (text: string): LlmMessage => ({ role: 'user', content: [{ type: 'text', text }] });
 const assistant = (text: string): LlmMessage => ({
@@ -30,8 +31,8 @@ describe('one pure session request projection (ADR-0095)', () => {
     const options = {
       memory: { type: 'window' as const, window_size: 2 },
       completedTurnSpans: [
-        { start: 1, end: 3 },
-        { start: 4, end: 5 },
+        { start: 1, end: 3, receipts: KNOWN_EMPTY_RECEIPTS },
+        { start: 4, end: 5, receipts: KNOWN_EMPTY_RECEIPTS },
       ],
       pendingUser: pending,
     };
@@ -56,7 +57,7 @@ describe('one pure session request projection (ADR-0095)', () => {
       text(
         buildTurnMessages(undefined, [user('completed'), pending], {
           memory: { type: 'window', window_size: 1 },
-          completedTurnSpans: [{ start: 0, end: 1 }],
+          completedTurnSpans: [{ start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }],
           pendingUser: pending,
         }),
       ),
@@ -65,7 +66,7 @@ describe('one pure session request projection (ADR-0095)', () => {
       text(
         buildTurnMessages(markUntrusted('SUMMARY'), [user('archive'), pending], {
           memory: { type: 'none' },
-          completedTurnSpans: [{ start: 0, end: 1 }],
+          completedTurnSpans: [{ start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }],
           pendingUser: pending,
         }),
       ),
@@ -78,7 +79,7 @@ describe('one pure session request projection (ADR-0095)', () => {
       const messages = [user('completed')];
       const projected = buildTurnMessages(markUntrusted('SUMMARY'), messages, {
         memory: type === 'none' ? { type } : { type, window_size: 1 },
-        completedTurnSpans: [{ start: 0, end: 1 }],
+        completedTurnSpans: [{ start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }],
       });
       expect(text(projected)).toEqual(type === 'none' ? [] : [{ role: 'user', text: 'completed' }]);
     },

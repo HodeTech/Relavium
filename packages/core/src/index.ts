@@ -350,6 +350,9 @@ export type {
   CompletedSessionTurn,
   CompletedTurnSpan,
 } from './engine/session-resume.js';
+// ADR-0128 — the content-free tool-receipt vocabulary a completed-turn span carries. Types only: the prose,
+// the retention rule and the derivation are engine internals, reached through `reconstructSessionState`.
+export type { ReceiptOutcome, ReceiptRecord, TurnReceipts } from './engine/turn-receipts.js';
 // 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
 // sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
 // scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
