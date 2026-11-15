@@ -135,6 +135,7 @@ import {
   liveScrollGeometry,
   reasoningLabelActive,
   sanitizeApprovalReason,
+  denialReasonDisclosure,
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
@@ -633,8 +634,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             // The `[c]` typed-reason capture (Step 14): a hint + the buffer echoed SANITIZED (bidi/control-stripped,
             // one line) with a block cursor. Enter denies WITH this reason; Esc cancels back to the choices below.
             <Box flexDirection="column">
+              <Text {...dimProps(color)}>
+                {denialReasonDisclosure(props.columns ?? props.viewport?.cols ?? 80).join('\n')}
+              </Text>
               <Text {...dimProps(color)} wrap="truncate-end">
-                session/redirected diagnostics · Enter send · Esc cancel
+                Enter to send · Esc to cancel
               </Text>
               <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
                 {`> ${sanitizeInline(props.reasonDraft.text)}█`}

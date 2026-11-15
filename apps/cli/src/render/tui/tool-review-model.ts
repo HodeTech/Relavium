@@ -1,4 +1,8 @@
-import { MAX_APPROVAL_REASON_INPUT_CHARS, sanitizeApprovalReason } from './chat-projection.js';
+import {
+  MAX_APPROVAL_REASON_INPUT_CHARS,
+  denialReasonDisclosure,
+  sanitizeApprovalReason,
+} from './chat-projection.js';
 import type { ChatKey } from './chat-input.js';
 import {
   projectReviewPage,
@@ -193,7 +197,9 @@ export function toolReviewPage(
           15 -
           headerRows -
           (state.searching ? 2 : 0) -
-          (state.denial === undefined ? 0 : 3) -
+          (state.denial === undefined
+            ? 0
+            : denialReasonDisclosure(Math.max(1, columns - 2)).length + 2) -
           (state.message === '' ? 0 : 2),
       ),
     ),

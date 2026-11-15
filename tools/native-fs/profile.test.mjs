@@ -373,7 +373,7 @@ test('Windows measurement case runs first while all production parents and eleve
   );
   assert.ok(windows.passed.includes(WINDOWS_OWNER_CASE));
   for (const [platform, count, ignored] of [
-    ['darwin', 49, 5],
+    ['darwin', 54, 5],
     ['linux', 21, 6],
   ]) {
     const population = rustPopulation(platform);

@@ -152,6 +152,28 @@ function fixture(
 }
 
 describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
+  it('shows the complete denial privacy disclosure at the minimum supported geometry', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    const answer = f.store.requestApproval(request, false, undefined, {
+      callId: 'denial-privacy',
+      preview,
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Review tool operation'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('c');
+    await vi.waitFor(() => expect(f.text().replace(/\s+/gu, ' ')).toContain('private note.'));
+    const text = f.text().replace(/\s+/gu, ' ');
+    expect(text).toContain('Your reason may appear in session and redirected output.');
+    expect(text).toContain('This is not a private note.');
+    expect(f.text()).toContain('Enter deny');
+    expect(f.store.getSnapshot().review?.denial).toBe('');
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    f.input.push('\r');
+    expect(await answer).toEqual({ outcome: 'reject' });
+    expect(f.errors).toEqual([]);
+  });
+
   it.each([true, false])(
     'keeps masked edits unapprovable before deliberate flushed inspection, alternate=%s',
     async (alternate) => {

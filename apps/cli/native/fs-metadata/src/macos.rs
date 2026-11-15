@@ -457,10 +457,124 @@ fn check_write_access(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum AttributeRole {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttributeRole {
     Parent,
     File,
+}
+
+// Controlled inspection observations only: no OS consent label is created,
+// interpreted or removed. None of this machinery exists in the shipped addon.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum TestMaclObservation {
+    Absent,
+    Value(&'static [u8]),
+    UnreadableLength,
+    UnreadableValue,
+    Oversized,
+}
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct TestMaclInspection {
+    role: AttributeRole,
+    fd: Option<RawFd>,
+    before: TestMaclObservation,
+    after: Option<TestMaclObservation>,
+    published: bool,
+}
+#[cfg(test)]
+thread_local! {
+    static TEST_MACL_INSPECTION: std::cell::Cell<Option<TestMaclInspection>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn with_test_macl_inspection<T>(
+    role: AttributeRole,
+    fd: Option<RawFd>,
+    before: TestMaclObservation,
+    after: Option<TestMaclObservation>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<TestMaclInspection>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_MACL_INSPECTION.set(self.0);
+        }
+    }
+    let restore = Restore(TEST_MACL_INSPECTION.replace(Some(TestMaclInspection {
+        role,
+        fd,
+        before,
+        after,
+        published: false,
+    })));
+    let result = operation();
+    drop(restore);
+    result
+}
+#[cfg(test)]
+fn test_macl_observation(fd: RawFd, role: AttributeRole) -> Option<TestMaclObservation> {
+    TEST_MACL_INSPECTION
+        .get()
+        .filter(|probe| probe.role == role && probe.fd.is_none_or(|expected| expected == fd))
+        .map(|probe| {
+            if probe.published {
+                probe.after.unwrap_or(probe.before)
+            } else {
+                probe.before
+            }
+        })
+}
+#[cfg(test)]
+fn test_macl_published() {
+    if let Some(mut probe) = TEST_MACL_INSPECTION.get() {
+        probe.published = true;
+        TEST_MACL_INSPECTION.set(Some(probe));
+    }
+}
+
+fn attribute_length(fd: RawFd, name: &std::ffi::CStr, _role: AttributeRole) -> isize {
+    #[cfg(test)]
+    if name.to_bytes() == b"com.apple.macl" {
+        if let Some(observation) = test_macl_observation(fd, _role) {
+            return match observation {
+                TestMaclObservation::Value(value) => value.len() as isize,
+                TestMaclObservation::UnreadableValue => 4,
+                TestMaclObservation::Oversized => MAX_QUARANTINE_BYTES as isize + 1,
+                _ => -1,
+            };
+        }
+    }
+    unsafe { libc::fgetxattr(fd, name.as_ptr(), ptr::null_mut(), 0, 0, 0) }
+}
+fn read_attribute(
+    fd: RawFd,
+    name: &std::ffi::CStr,
+    value: &mut [u8],
+    _role: AttributeRole,
+) -> isize {
+    #[cfg(test)]
+    if name.to_bytes() == b"com.apple.macl" {
+        if let Some(observation) = test_macl_observation(fd, _role) {
+            return match observation {
+                TestMaclObservation::Value(bytes) if bytes.len() == value.len() => {
+                    value.copy_from_slice(bytes);
+                    bytes.len() as isize
+                }
+                _ => -1,
+            };
+        }
+    }
+    unsafe {
+        libc::fgetxattr(
+            fd,
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    }
 }
 
 impl AttributeRole {
@@ -499,6 +613,21 @@ fn supported_xattrs(
     if actual != length {
         return Err(NativeFailure::Changed);
     }
+    #[cfg(test)]
+    if let Some(observation) = test_macl_observation(fd, role) {
+        names = names
+            .split_inclusive(|byte| *byte == 0)
+            .filter(|name| *name != b"com.apple.macl\0")
+            .flatten()
+            .copied()
+            .collect();
+        if !matches!(observation, TestMaclObservation::Absent) {
+            names.extend_from_slice(b"com.apple.macl\0");
+        }
+        if names.len() > 16 * 1024 {
+            return Err(NativeFailure::Unsupported);
+        }
+    }
     let mut result = Vec::new();
     if names.is_empty() {
         return Ok(result);
@@ -515,7 +644,7 @@ fn supported_xattrs(
             return Err(NativeFailure::Unsupported);
         }
         let native_name = std::ffi::CString::new(name).map_err(|_| NativeFailure::Unsupported)?;
-        let length = unsafe { libc::fgetxattr(fd, native_name.as_ptr(), ptr::null_mut(), 0, 0, 0) };
+        let length = attribute_length(fd, &native_name, role);
         let length = usize::try_from(length).map_err(|_| NativeFailure::Unsupported)?;
         if length > MAX_QUARANTINE_BYTES {
             return Err(NativeFailure::Unsupported);
@@ -527,16 +656,7 @@ fn supported_xattrs(
             return Err(NativeFailure::Unsupported);
         }
         let mut value = vec![0; length];
-        let actual = unsafe {
-            libc::fgetxattr(
-                fd,
-                native_name.as_ptr(),
-                value.as_mut_ptr().cast(),
-                value.len(),
-                0,
-                0,
-            )
-        };
+        let actual = read_attribute(fd, &native_name, &mut value, role);
         if usize::try_from(actual).ok() != Some(length) {
             return Err(NativeFailure::Changed);
         }
@@ -1185,6 +1305,7 @@ impl PublicationProof<'_> {
         #[cfg(test)]
         {
             crate::test_hooks::hit("macos-published-before-proof");
+            test_macl_published();
             if crate::test_hooks::fail("macos-post-publish-proof") {
                 return Err(NativeFailure::Unsupported);
             }
@@ -1351,6 +1472,91 @@ mod profile_tests {
             assert!(!role.admits(b"user."));
             assert!(role.admits(b"com.apple.quarantine"));
         }
+    }
+
+    #[test]
+    fn macl_parent_change_and_read_bounds_fail_closed() {
+        let fixture = Fixture::new();
+        let parent = MacosProfile::open_parent(&fixture.0).expect("parent");
+        let fd = Some(parent.as_raw_fd());
+        let mask = Some(mask());
+        let actual_before =
+            supported_xattrs(parent.as_raw_fd(), AttributeRole::Parent).expect("actual names");
+        let before = with_test_macl_inspection(
+            AttributeRole::Parent,
+            fd,
+            TestMaclObservation::Value(b"synthetic-before"),
+            None,
+            || MacosProfile::capture_parent(&parent, mask).expect("bounded synthetic observation"),
+        );
+        for observation in [
+            TestMaclObservation::Absent,
+            TestMaclObservation::Value(b"synthetic-after"),
+            TestMaclObservation::UnreadableLength,
+            TestMaclObservation::UnreadableValue,
+            TestMaclObservation::Oversized,
+        ] {
+            with_test_macl_inspection(AttributeRole::Parent, fd, observation, None, || {
+                assert!(MacosProfile::recheck_parent(&before, &parent, mask).is_err());
+            });
+        }
+        let absent = with_test_macl_inspection(
+            AttributeRole::Parent,
+            fd,
+            TestMaclObservation::Absent,
+            None,
+            || MacosProfile::capture_parent(&parent, mask).expect("absent observation"),
+        );
+        with_test_macl_inspection(
+            AttributeRole::Parent,
+            fd,
+            TestMaclObservation::Value(b"synthetic-added"),
+            None,
+            || assert!(MacosProfile::recheck_parent(&absent, &parent, mask).is_err()),
+        );
+        for observation in [
+            TestMaclObservation::UnreadableLength,
+            TestMaclObservation::UnreadableValue,
+            TestMaclObservation::Oversized,
+        ] {
+            with_test_macl_inspection(AttributeRole::Parent, fd, observation, None, || {
+                assert!(MacosProfile::capture_parent(&parent, mask).is_err())
+            });
+        }
+        assert!(
+            supported_xattrs(parent.as_raw_fd(), AttributeRole::Parent).expect("actual names")
+                == actual_before
+        );
+    }
+
+    #[test]
+    fn file_macl_refuses_without_changing_source() {
+        let fixture = Fixture::new();
+        let mut source = fixture.file("source");
+        source.write_all(b"before").expect("source bytes");
+        let before = source_state(&source).expect("version");
+        with_test_macl_inspection(
+            AttributeRole::File,
+            Some(source.as_raw_fd()),
+            TestMaclObservation::Value(b"synthetic-file-label"),
+            None,
+            || {
+                assert!(matches!(
+                    MacosProfile::capture_existing(
+                        &source,
+                        &fixture.0.join("source"),
+                        WriteOperation::Replace
+                    ),
+                    Err(crate::profile_api::NativeFailure::Unsupported)
+                ));
+            },
+        );
+        assert!(source_state(&source).expect("unchanged version") == before);
+        assert_eq!(
+            std::fs::read(fixture.0.join("source")).expect("unchanged bytes"),
+            b"before"
+        );
+        assert_eq!(std::fs::read_dir(&fixture.0).expect("no stage").count(), 1);
     }
 
     #[test]

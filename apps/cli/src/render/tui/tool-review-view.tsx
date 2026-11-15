@@ -1,4 +1,5 @@
 import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import { denialReasonDisclosure } from './chat-projection.js';
 import {
   useEffect,
   useLayoutEffect,
@@ -301,7 +302,7 @@ function ReviewContent({
       )}
       {review.denial !== undefined && (
         <Box flexDirection="column">
-          <Text wrap="truncate-end">session/redirected diagnostics</Text>
+          <Text>{denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}</Text>
           <Text wrap="truncate-end">Reason to deny: {inputDisplay(review.denial)}█</Text>
           <Text wrap="truncate-end">Enter deny · Esc abort</Text>
         </Box>

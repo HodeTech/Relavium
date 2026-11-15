@@ -1097,6 +1097,161 @@ mod macos_publication_tests {
     }
 
     #[test]
+    fn macl_prepublication_changes_preserve_target() {
+        use crate::macos::{
+            with_test_macl_inspection, AttributeRole, TestMaclObservation as Observation,
+        };
+        for existing in [false, true] {
+            for (before, after) in [
+                (Observation::Absent, Observation::Value(b"synthetic-added")),
+                (Observation::Value(b"synthetic-before"), Observation::Absent),
+                (
+                    Observation::Value(b"synthetic-before"),
+                    Observation::Value(b"synthetic-after"),
+                ),
+                (
+                    Observation::Value(b"synthetic-before"),
+                    Observation::UnreadableLength,
+                ),
+                (
+                    Observation::Value(b"synthetic-before"),
+                    Observation::UnreadableValue,
+                ),
+                (
+                    Observation::Value(b"synthetic-before"),
+                    Observation::Oversized,
+                ),
+            ] {
+                with_test_macl_inspection(AttributeRole::Parent, None, before, None, || {
+                    let (fixture, state, mask) = fixture(existing, b"reviewed");
+                    let result =
+                        with_test_macl_inspection(AttributeRole::Parent, None, after, None, || {
+                            publish(state, mask)
+                        });
+                    assert!(result.is_err());
+                    if existing {
+                        assert_eq!(
+                            std::fs::read(fixture.0.join("target")).expect("unchanged"),
+                            b"before"
+                        );
+                    } else {
+                        assert!(!fixture.0.join("target").exists());
+                    }
+                    assert!(!std::fs::read_dir(&fixture.0)
+                        .expect("parent")
+                        .any(|entry| entry
+                            .expect("entry")
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".relavium-fs-stage-v1.")));
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn template_macl_refuses_before_payload_publication() {
+        use crate::macos::{with_test_macl_inspection, AttributeRole, TestMaclObservation};
+        let (fixture, state, mask) = fixture(false, b"reviewed");
+        let OwnedPreparedStage::New(mut state) = state else {
+            panic!("new stage");
+        };
+        state.owned.cleanup().expect("baseline stage cleanup");
+        let result = with_test_macl_inspection(
+            AttributeRole::File,
+            None,
+            TestMaclObservation::Value(b"synthetic-template-label"),
+            None,
+            || {
+                stage_new(
+                    state.prepared,
+                    &fixture.0.join("home"),
+                    b"reviewed",
+                    "0123456789abcdef0123456789abcdef",
+                    Some(mask),
+                    &AtomicBool::new(false),
+                )
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(NativeFailure::CleanupFacts {
+                primary: NativePrimary::Unsupported,
+                uncertain: false
+            })
+        ));
+        assert!(!fixture.0.join("target").exists());
+        assert!(!std::fs::read_dir(&fixture.0)
+            .expect("parent")
+            .any(|entry| entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".relavium-fs-stage-v1.")));
+    }
+
+    #[test]
+    fn macl_postpublication_faults_are_possible_publication() {
+        use crate::macos::{
+            with_test_macl_inspection, AttributeRole, TestMaclObservation as Observation,
+        };
+        for existing in [false, true] {
+            for (role, before, after) in [
+                (
+                    AttributeRole::Parent,
+                    Observation::Absent,
+                    Observation::Value(b"synthetic-added"),
+                ),
+                (
+                    AttributeRole::Parent,
+                    Observation::Value(b"synthetic-before"),
+                    Observation::Absent,
+                ),
+                (
+                    AttributeRole::Parent,
+                    Observation::Value(b"synthetic-before"),
+                    Observation::Value(b"synthetic-after"),
+                ),
+                (
+                    AttributeRole::Parent,
+                    Observation::Value(b"synthetic-before"),
+                    Observation::UnreadableLength,
+                ),
+                (
+                    AttributeRole::Parent,
+                    Observation::Value(b"synthetic-before"),
+                    Observation::UnreadableValue,
+                ),
+                (
+                    AttributeRole::Parent,
+                    Observation::Value(b"synthetic-before"),
+                    Observation::Oversized,
+                ),
+                (
+                    AttributeRole::File,
+                    Observation::Absent,
+                    Observation::Value(b"synthetic-file-label"),
+                ),
+            ] {
+                with_test_macl_inspection(role, None, before, Some(after), || {
+                    let (fixture, state, mask) = fixture(existing, b"reviewed");
+                    assert!(matches!(
+                        publish(state, mask),
+                        Err(NativeFailure::CleanupFacts {
+                            primary: NativePrimary::PossiblyPublished,
+                            uncertain: false
+                        })
+                    ));
+                    assert_eq!(
+                        std::fs::read(fixture.0.join("target")).expect("published bytes retained"),
+                        b"reviewed"
+                    );
+                });
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "contributor-only verifier timing; no wall-clock acceptance threshold"]
     fn bounded_post_publication_proof_timing() {
         for existing in [false, true] {

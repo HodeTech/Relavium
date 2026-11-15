@@ -30,6 +30,13 @@ export { sanitizeInline, stripTerminalControls };
 export const MAX_APPROVAL_REASON_CHARS = 300;
 export const MAX_APPROVAL_REASON_INPUT_CHARS = 4096;
 const OMITTED_DENIAL_EXPLANATION = 'denial explanation omitted (too long)';
+const DENIAL_REASON_DISCLOSURE =
+  'Your reason may appear in session and redirected output. This is not a private note.';
+
+/** Explicit privacy scope, prewrapped without truncating it on a narrow terminal. */
+export function denialReasonDisclosure(columns: number): readonly string[] {
+  return wrapText(DENIAL_REASON_DISCLOSURE, Math.max(1, columns));
+}
 
 function capCodeUnits(text: string, maximum: number): string {
   const lastUnit = text.charCodeAt(maximum - 1); // NOSONAR — inspect a possible split surrogate

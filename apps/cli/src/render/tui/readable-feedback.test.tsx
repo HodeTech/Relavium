@@ -25,6 +25,42 @@ const answer: TranscriptEntry = {
 };
 
 describe('MVP-2 truthful feedback', () => {
+  it.each([32, 80])(
+    'keeps the legacy denial privacy disclosure visible at %s columns',
+    async (columns) => {
+      const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+      const capture = render(
+        <Box width={columns} flexDirection="column">
+          <ChatView
+            state={store.getSnapshot().state}
+            tick={0}
+            nowMs={0}
+            color={false}
+            editor={emptyEditor()}
+            running={true}
+            mode="accept-edits"
+            reasoningVisible={false}
+            columns={columns}
+            approval={{
+              request: {
+                toolId: 'write_file',
+                action: 'fs_write',
+                preview: {},
+                unredactedPreview: {},
+              },
+              cacheable: false,
+            }}
+            reasonDraft={emptyEditor()}
+          />
+        </Box>,
+      );
+      await waitFor(() => (capture.lastFrame() ?? '').includes('private note.'));
+      const text = (capture.lastFrame() ?? '').replace(/\s+/gu, ' ');
+      expect(text).toContain('Your reason may appear in session and redirected output.');
+      expect(text).toContain('This is not a private note.');
+    },
+  );
+
   it('projects an actual failed tool result through the store into a failure glyph', () => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const stamp = { sessionId: 's', timestamp: '2026-11-09T00:00:00Z', nodeId: 'n' };

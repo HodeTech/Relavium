@@ -105,7 +105,7 @@ describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
     await settleFrames();
     expect(store.getSnapshot().review?.screen).toBe('card');
     h.stdin.write('c');
-    await waitFor(() => (h.lastFrame() ?? '').includes('session/redirected diagnostics'));
+    await waitFor(() => (h.lastFrame() ?? '').includes('private note'));
     await settleFrames();
     expect(store.getSnapshot().review?.denial).toBe('');
     let typed = '';

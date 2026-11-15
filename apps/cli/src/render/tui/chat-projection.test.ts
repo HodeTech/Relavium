@@ -15,6 +15,7 @@ import {
   formatToolCall,
   formatTurnSummary,
   projectDenialExplanation,
+  denialReasonDisclosure,
   liveScrollGeometry,
   MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
@@ -35,6 +36,17 @@ import {
 } from './session-view-model.js';
 
 describe('chat-projection', () => {
+  it.each([20, 32, 78, 80])(
+    'preserves the complete denial privacy disclosure at %s columns',
+    (columns) => {
+      const lines = denialReasonDisclosure(columns);
+      expect(lines.join('').replace(/\s+/gu, ' ')).toBe(
+        'Your reason may appear in session and redirected output. This is not a private note.',
+      );
+      expect(lines.every((line) => line.length <= columns)).toBe(true);
+    },
+  );
+
   describe('formatTurnSummary', () => {
     it('renders the stop reason, the token counts, and the duration for a successful turn', () => {
       const line = formatTurnSummary({

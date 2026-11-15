@@ -3858,6 +3858,40 @@ checkpoint. Full target-matrix, installed-consumer and current-head PR checks,
 maintainer merge review and the guide's release-time public-URL check remain
 distinct gates. No merge or publication is claimed.
 
+### ADR-0127 first implementation review corrections (2026-11-15)
+
+The first implementation commit is `4dab2d28`, against base `fd9f3d86`.
+Separate read-only source reviews by Sol/high (native behavior and delivery)
+and Terra/high (UX, diagnostic trust and privacy) each identified one Medium
+acceptance gap. Both were verified against the source:
+
+- The native role predicate and real-parent positive test did not prove all
+  required MACL refusals. Five additional native parent cases now cover parent
+  addition/removal/change, unreadable length/value and oversized observations,
+  source-file and new-template MACL refusal, unchanged/absent targets before
+  publication, and possible-publication classification after rename. These
+  controlled inspection faults run through the real bounded reader and
+  stage/publication paths; they never create, remove or interpret OS consent
+  labels. They complement, rather than replace, the actual OS-managed parent
+  and user-interaction observations above. All injection machinery is test-only.
+- The typed-reason prompt's abbreviated privacy notice was unclear and could
+  truncate. Both approval views now explicitly say the reason may appear in
+  session and redirected output and is not a private note. Width-aware wrapping
+  retains the full notice; the shared review page reserves its actual height.
+  Mounted Home/standalone controls at 80×24 and legacy-view controls at 32/80
+  columns verify the complete disclosure without weakening consent visibility.
+
+The five targeted MACL cases and focused UI controls pass. The corrected native
+profile now declares 54 Rust parent cases, five ignored helper/timing cases and
+eleven Node lifecycle cases. This is a new correction population; the earlier
+49-parent receipt and measured binary above retain their historical scope.
+The corrected source also passes 18,682 workspace tests (24 conditional skips),
+workspace lint/types/build, all 1,129 acceptance-tool cases, tool lint/types,
+formatting, isolation, seam/dependency fences and emitted CLI closure. The
+production addon excludes the inspection fixtures and proof/test markers.
+Fresh cumulative source review and a separate security sitting remain required
+before this increment's local acceptance.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen
