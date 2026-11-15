@@ -70,7 +70,7 @@ stateDiagram-v2
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
 | **sendMessage** | Append the pending user to the **working transcript**, run one assistant turn through the shared turn core (streaming + tool-call loop), and retain the final assistant **text** on success. The host atomically persists the completed turn's [durable messages](#session-messages), including content-free tool structure and an explicit terminal even for empty final text. Working context excludes tool pairs; carrying them to a later request is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). The request instead carries bounded, content-free [receipts](#content-free-action-receipts--adr-0128) of earlier completed turns' recorded calls and outcomes ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)). |
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
-| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), roll the pending user message back, and return to `idle`. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
+| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), and return to `idle`. A turn a provider had engaged in is **retained** as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md): the event carries `interruption: { reason: 'aborted' }`); one aborted before any provider engaged rolls its pending user message back. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
@@ -293,9 +293,10 @@ acceptance cases live in the ADR and are not restated here.
   completed-turn installation; observer/durability failure rolls back its
   installation with the text. A process restart rebuilds only existing durable
   structural evidence; a model reseat follows the same reconstruction. This
-  introduces no live raw-content handoff. Until ADR-0119 is implemented a failed,
-  aborted or fatally denied turn creates no receipt even when a tool ran, and the
-  model is not told (its user-facing disclosure is
+  introduces no live raw-content handoff. Since ADR-0119 (MVP-3c) an engaged turn that
+  ended by abort, a fatal denial or another classified error keeps its recorded calls
+  and a fixed interruption note; a session-ending cancel, a crash and an unclassified
+  throw still create no receipt even when a tool ran (the user-facing disclosure is
   [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)
   invariant 4); [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
   (Accepted 2026-11-16, MVP-3c) owns that gap — see
@@ -321,8 +322,8 @@ note.
 
 ### Interrupted turns — ADR-0119
 
-**Status: accepted design, implementation owed (MVP-3c).** Nothing here is shipped behaviour until the increment
-lands; today an interrupted turn is rolled back and forgotten.
+**Status: implemented on `development` (MVP-3c, 2026-11-16); its D64 review rounds and security sitting are owed.**
+A session-ending cancel, a crash and an unclassified throw are still rolled back and forgotten (below).
 [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
 section owns the contract.
 

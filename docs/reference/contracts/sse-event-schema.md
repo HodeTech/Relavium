@@ -554,7 +554,7 @@ interface BaseSessionEvent {
 export type SessionEvent =
   | SessionStartedEvent       // 'session:started'   — { agentRef, model, context }
   | SessionTurnStartedEvent   // 'session:turn_started'   — a user message began an assistant turn
-  | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed, toolHistory?, interruption?, error? }; `interruption?: { reason, code? }` (ADR-0119, accepted, implementation owed) is set exactly when the engine retained an aborted/failed/denied/`turn_limit` turn — the persister writes the interruption row iff it is present; stopReason is the SESSION superset (the 5 LLM StopReasons + 'aborted' — the EA7 mid-turn abort, ADR-0057)
+  | SessionTurnCompletedEvent // 'session:turn_completed' — { stopReason, tokensUsed, toolHistory?, interruption?, error? }; `interruption?: { reason, code? }` (ADR-0119, implemented as MVP-3c) is set exactly when the engine retained an aborted/failed/denied/`turn_limit` turn — the persister writes the interruption row iff it is present; stopReason is the SESSION superset (the 5 LLM StopReasons + 'aborted' — the EA7 mid-turn abort, ADR-0057)
   | SessionCancelledEvent     // 'session:cancelled' — cancel() was called; the session ends (terminal). NOT a mid-turn abort (EA7), which keeps the session alive — see session:turn_completed{stopReason:'aborted'}.
   | SessionExportedEvent      // 'session:exported'  — { workflowPath } (chat-to-workflow export)
   | SessionCompactingEvent    // 'session:compacting' — { reason:SessionCompactionReason, windowUnknown?:boolean } (ADR-0062 §7: compaction STARTED — the "Summarizing…" moment; carries no counts, they ride the terminal below)

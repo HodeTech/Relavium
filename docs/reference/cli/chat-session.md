@@ -716,7 +716,7 @@ or human hint. Other embedding hosts remain responsible for their own reason
 content under the [approval contract](../shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
 No failed-turn retention, return-to-model, retry or mode-authority change is
 selected by this guidance work. (ADR-0117 has since been accepted and
-implemented with MVP-3b; ADR-0119 is accepted with its implementation owed in MVP-3c.)
+implemented with MVP-3b; ADR-0119 is implemented as MVP-3c, its review gates owed.)
 
 Pin the actual displayed code, sanitized explanation and exact hint in each continuing
 driver, using native metadata refusal, an ask/plan restriction, user rejection
