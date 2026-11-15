@@ -3967,7 +3967,7 @@ The scanner produced 15 new records. Each was checked against source:
 All six Accepted states were read back in the authenticated UI with explanatory
 comments and without sharing comments for analyzer training. They are intentional
 sequencing, not incorrect detections, so none was mislabeled False Positive.
-Nine source actions require a fresh scanner read-back; no quality-profile,
+Nine source actions awaited the fresh scanner read-back recorded below; no quality-profile,
 exclusion or severity change is used. The fixed Python helper is contributor-only,
 outside measured dispatch, and does not add a product runtime dependency.
 
@@ -3995,8 +3995,15 @@ clean and independently verified that the extracted reader body and control
 definitions preserve their former behavior. These were read-only reviews,
 without broad test repetitions or independent execution of the author's evidence.
 The fixed-helper benchmark also completes all 800 measured operations and 80
-warmups successfully with unchanged source/asset bindings. Fresh final-head CI,
-scanner read-back and maintainer merge remain separate gates.
+warmups successfully with unchanged source/asset bindings. Fresh final-head CI
+and maintainer merge remain separate gates.
+
+**Scanner read-back:** the analysis bound to `70b4e4ca` passes Quality Gate,
+with zero open findings and zero security hotspots. GitHub check `132787494318`
+is successful. All fifteen keys above were individually read back through the
+Sonar API: nine are Fixed, six are Accepted; no record is left open. This certifies
+that source head and preserves earlier failure evidence. Later documentation
+commits still require their own current-head CI checks; no merge is claimed.
 
 ## MVP-2 plan — Home-first (2026-11-08)
 

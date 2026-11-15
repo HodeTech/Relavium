@@ -206,14 +206,18 @@ The sequence below is a recommendation, not an amendment to accepted scheduling.
 
 Recommended history policy for design review: keep raw arguments/results off
 unencrypted disk, use the existing durable structural receipts for historical
-action evidence, and allow bounded paired live tool context within explicitly
-defined provider/session boundaries. This delivers useful continuity with a
-smaller privacy change than raw transcript persistence. It must disclose that
-resume/reseat can recover the fact of an action without its old raw result.
-If full raw-content continuity across restart/model reseat is required, choose
-and review protected persistence now; an in-memory-only design cannot honestly
-promise it. These are alternatives the maintainer should resolve in the ADR,
-not an implementation detail to hide in code.
+action evidence, and allow bounded paired live tool context. For a model change
+inside the same process, explicitly transfer that volatile context to the new
+session instance, normalize it for the destination provider, and exclude opaque
+provider reasoning/signatures. This requires revisiting ADR-0095's existing
+no-reseat constraint; it does not inherently require writing raw content to disk.
+It grants no old filesystem read/version evidence or new tool authority.
+
+After process restart, structural receipts can recover the fact of an action
+without its old raw result. Full raw-content continuity across restart requires
+reviewed protected persistence; an in-memory-only design cannot promise it.
+The maintainer should settle this restart/storage boundary, live model handoff,
+defaults and bounds in the ADR, rather than leave them implicit in implementation.
 
 Required acceptance scenarios include:
 
