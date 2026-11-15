@@ -24,7 +24,7 @@ import type { Memory } from '@relavium/shared';
 
 import { unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import type { CompletedTurnSpan } from './session-resume.js';
-import { renderReceiptNotice, renderTurnReceiptBlock } from './turn-receipts.js';
+import { renderReceiptNotice, renderTurnBlock } from './turn-receipts.js';
 
 export interface SessionRequestProjection {
   readonly memory?: Readonly<Memory>;
@@ -95,7 +95,7 @@ function withReceiptBlocks(
 ): LlmMessage[] {
   const blocks = new Map<number, string>();
   for (const span of spans) {
-    const block = renderTurnReceiptBlock(span.receipts);
+    const block = renderTurnBlock(span);
     if (block !== undefined) blocks.set(span.start, block);
   }
   return messages.slice(from, to).map((message, offset) => {

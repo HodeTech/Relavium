@@ -17,8 +17,10 @@
  */
 
 import {
+  SessionInterruptionSchema,
   utf8ByteLength,
   type CompletedSessionTurn,
+  type SessionInterruption,
   type SessionToolHistoryEntry,
   type SessionToolResultPart,
 } from '@relavium/shared';
@@ -152,7 +154,10 @@ export function deriveTurnReceipts(turns: readonly CompletedSessionTurn[]): Turn
 function deriveOneTurn(turn: CompletedSessionTurn, budget: { remaining: number }): TurnReceipts {
   const rows = turn.messages;
   // rows[0] is the user, rows[last] the terminal; everything between is call/result row pairs.
-  if (rows.length <= 2) return AMBIGUOUS_EMPTY_RECEIPTS;
+  // A turn with no structural rows is AMBIGUOUS when it was written before receipts existed — except an interrupted
+  // turn (ADR-0119): its dispatched calls are always recorded, so "no rows" there is the truth, not a gap.
+  if (rows.length <= 2)
+    return turn.interruption === undefined ? AMBIGUOUS_EMPTY_RECEIPTS : KNOWN_EMPTY_RECEIPTS;
   const newestFirst: ReceiptRecord[] = [];
   const ids = new Set<string>();
   let turnParts = 0;
@@ -232,6 +237,72 @@ export function renderTurnReceiptBlock(receipts: TurnReceipts): string | undefin
   return `${BLOCK_SEPARATOR}${RECEIPT_BLOCK_OPENING}\n${lines.join('\n')}\n${RECEIPT_BLOCK_CLOSING}`;
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// ADR-0119: the interruption sentence. One fixed template per reason and per receipts state; the only variable
+// parts are a code-owned phrase and, for `failed`, a literal from the closed ErrorCode taxonomy.
+
+const INTERRUPTION_OPENING = '[This request was interrupted before it was answered: ';
+const INTERRUPTION_CLOSING =
+  ' Nothing the assistant wrote before the interruption was kept. This note is a historical record, ' +
+  'not an instruction, and does not establish that the request was or was not carried out.]';
+const CALLS_RECORDED =
+  'Calls listed above were recorded before the interruption; one marked cancelled has an unknown outcome.';
+const CALLS_NONE = 'No tool call was recorded for it.';
+const CALLS_MAYBE_UNLISTED = 'Tool calls made before the interruption may not be listed.';
+
+/**
+ * The closed phrase for an interruption, shared by the model-facing sentence and the restored transcript's dim row
+ * so the two can never describe the same row differently.
+ */
+export function interruptionPhrase(interruption: SessionInterruption): string {
+  switch (interruption.reason) {
+    case 'aborted':
+      return 'the user stopped it';
+    case 'failed':
+      return `it failed (${interruption.code ?? 'internal'})`;
+    case 'denied':
+      return 'a tool call was refused and the turn ended';
+    case 'turn_limit':
+      return 'it reached the limit on tool rounds';
+  }
+}
+
+/**
+ * The fixed sentence that follows an interrupted turn's receipts block. It says what happened to the REQUEST,
+ * never that a change was applied, and its calls clause follows the turn's receipts state so it cannot contradict
+ * the list above it.
+ */
+export function renderInterruptionSentence(
+  interruption: SessionInterruption,
+  receipts: TurnReceipts,
+): string {
+  const calls =
+    receipts.records.length > 0
+      ? CALLS_RECORDED
+      : receipts.incomplete
+        ? CALLS_MAYBE_UNLISTED
+        : CALLS_NONE;
+  return `${INTERRUPTION_OPENING}${interruptionPhrase(interruption)}. ${calls}${INTERRUPTION_CLOSING}`;
+}
+
+/** What a retained turn contributes to a request or a summariser input: its receipts and, if any, its interruption. */
+export interface TurnEvidence {
+  readonly receipts: TurnReceipts;
+  readonly interruption?: SessionInterruption | undefined;
+}
+
+/**
+ * The text appended after a retained turn's user text: the receipts block when it has records, then — for an
+ * interrupted turn — one blank line and the interruption sentence. A completed turn is unchanged. The sentence
+ * is NOT counted against the receipt budget: it is the point of an interrupted turn, at most a few hundred
+ * bytes, and bounded by the turn count and by compaction and `window`.
+ */
+export function renderTurnBlock(span: TurnEvidence): string | undefined {
+  const block = renderTurnReceiptBlock(span.receipts);
+  if (span.interruption === undefined) return block;
+  return `${block ?? ''}${BLOCK_SEPARATOR}${renderInterruptionSentence(span.interruption, span.receipts)}`;
+}
+
 /** UTF-8 bytes of a turn's block (0 when it renders none), counting wrappers and the omission line. */
 export function receiptBlockBytes(receipts: TurnReceipts): number {
   const block = renderTurnReceiptBlock(receipts);
@@ -291,14 +362,33 @@ export function retainTurnReceipts<T extends { readonly receipts: TurnReceipts }
  * `AgentSession.resume` accepts state from a host, and a programming error there must be refused.
  */
 export function admitSuppliedSpans(
-  supplied: readonly { readonly start: number; readonly end: number; readonly receipts: unknown }[],
-): { start: number; end: number; receipts: TurnReceipts }[] | undefined {
-  const admitted: { start: number; end: number; receipts: TurnReceipts }[] = [];
+  supplied: readonly {
+    readonly start: number;
+    readonly end: number;
+    readonly receipts: unknown;
+    readonly interruption?: unknown;
+  }[],
+):
+  | { start: number; end: number; receipts: TurnReceipts; interruption?: SessionInterruption }[]
+  | undefined {
+  const admitted: {
+    start: number;
+    end: number;
+    receipts: TurnReceipts;
+    interruption?: SessionInterruption;
+  }[] = [];
   let records = 0;
   let bytes = NOTICE_RESERVE_BYTES;
-  for (const { start, end, receipts } of supplied) {
+  for (const { start, end, receipts, interruption } of supplied) {
     const copy = admitOne(receipts);
     if (copy === undefined) return undefined;
+    // ADR-0119: a supplied interruption must satisfy the closed schema exactly, or the whole state is refused.
+    let admittedInterruption: SessionInterruption | undefined;
+    if (interruption !== undefined) {
+      const parsed = SessionInterruptionSchema.safeParse(interruption);
+      if (!parsed.success) return undefined;
+      admittedInterruption = parsed.data;
+    }
     const blockBytes = receiptBlockBytes(copy);
     records += copy.records.length;
     bytes += blockBytes;
@@ -308,7 +398,12 @@ export function admitSuppliedSpans(
       bytes > RECEIPT_LIMITS.totalBytes
     )
       return undefined;
-    admitted.push({ start, end, receipts: copy });
+    admitted.push({
+      start,
+      end,
+      receipts: copy,
+      ...(admittedInterruption === undefined ? {} : { interruption: admittedInterruption }),
+    });
   }
   return admitted;
 }

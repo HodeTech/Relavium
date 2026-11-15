@@ -112,6 +112,39 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(exported.workflow.nodes[1]).not.toHaveProperty('tools');
   });
 
+  it('shows an interrupted turn as interrupted in the transcript but never derives a workflow step from it (ADR-0119)', () => {
+    const interruption = {
+      ...msg(5, 'system', []),
+      interruption: { reason: 'aborted' as const },
+    };
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'answered' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(2, 'user', [{ type: 'text', text: 'stopped halfway' }]),
+      msg(3, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'write_file', argsBytes: 2 },
+      ]),
+      msg(4, 'tool', [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:2:0',
+          resultBytes: 0,
+          outcome: 'cancelled',
+        },
+      ]),
+      interruption,
+    ]);
+    // input → turn-1 → output: the interrupted exchange is not a step and grants no tool.
+    expect(exported.workflow.nodes.map((node) => node.id)).toEqual(['input', 'turn-1', 'output']);
+    expect(JSON.stringify(exported.workflow.nodes)).not.toContain('write_file');
+    // The transcript keeps every row, and the interruption row says why the exchange ended.
+    const kept = (
+      exported.workflow.metadata?.['relaviumExport'] as { messages: SessionMessage[] } | undefined
+    )?.messages;
+    expect(kept).toHaveLength(6);
+    expect(kept?.at(-1)).toMatchObject({ role: 'system', interruption: { reason: 'aborted' } });
+  });
+
   it('exports completed empty finals and old compacted tool history, omitting the unresolved marker from grants', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'old' }]),

@@ -1281,16 +1281,43 @@ async function dispatchToolCalls(
         const refusedKey = invocationKey(call);
         if (refusedKey !== undefined) denied.add(refusedKey);
       }
+      const name =
+        err instanceof ToolDispatchError &&
+        err.code !== 'unknown_tool' &&
+        params.registry.has(err.toolId ?? call.name)
+          ? (err.toolId ?? call.name)
+          : 'unknown_tool';
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
-      const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      let failure: LlmMessage;
+      try {
+        failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      } catch (fatal) {
+        // ADR-0119: a fatal tool failure ends the turn, but the call DID dispatch. Record it before the throw so a
+        // retained interrupted turn lists it — `cancelled` ("execution state unknown") for a call in flight when the
+        // turn was aborted, `denied` for a fatal refusal, `error` otherwise. Calls the model asked for that never
+        // started are not recorded. A failure to record never replaces the failure being thrown.
+        if (id !== undefined) {
+          try {
+            history.push(
+              unfinishedToolHistoryEntry(
+                id,
+                name,
+                call,
+                err instanceof ToolDispatchError && err.code === 'cancelled'
+                  ? 'cancelled'
+                  : err instanceof ToolDispatchError && err.code === 'tool_denied'
+                    ? 'denied'
+                    : 'error',
+              ),
+            );
+          } catch {
+            /* the original failure stays primary */
+          }
+        }
+        throw fatal;
+      }
       const part = failure.content.find((entry) => entry.type === 'tool_result');
       if (id !== undefined && part?.type === 'tool_result') {
-        const name =
-          err instanceof ToolDispatchError &&
-          err.code !== 'unknown_tool' &&
-          params.registry.has(err.toolId ?? call.name)
-            ? (err.toolId ?? call.name)
-            : 'unknown_tool';
         history.push(
           sessionToolHistoryEntry(
             id,
@@ -1353,6 +1380,26 @@ async function dispatchToolCalls(
     results.push(attachment);
   }
   return { messages: results, correctable, succeeded };
+}
+
+/**
+ * The history entry for a call that dispatched but never produced a result the model saw — in flight at an abort
+ * (`cancelled`: ADR-0128's "execution state unknown"), or refused/failed fatally. `resultBytes` is 0 because there
+ * is no bounded model-facing result; the pair contract is unchanged.
+ */
+function unfinishedToolHistoryEntry(
+  id: string,
+  resolvedName: string,
+  call: ToolCallPart,
+  outcome: SessionToolHistoryEntry['result']['outcome'],
+): SessionToolHistoryEntry {
+  const parsed = SessionToolHistoryEntrySchema.safeParse({
+    call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
+    result: { type: 'tool_result', toolCallId: id, resultBytes: 0, outcome },
+  });
+  if (!parsed.success)
+    throw new AgentTurnError('internal', 'session tool structure could not be recorded', false);
+  return parsed.data;
 }
 
 /**
@@ -1439,6 +1486,8 @@ export type CapturedAgentTurnOutcome =
       readonly overflowEntry?: FallbackPlanEntry;
       readonly engaged: boolean;
       readonly usage: { readonly input: number; readonly output: number };
+      /** Calls that dispatched before the failure, content-free; absent when the driver never started. */
+      readonly toolHistory?: readonly SessionToolHistoryEntry[];
     };
 
 /** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
@@ -1634,6 +1683,7 @@ export async function captureAgentTurnOutcome(
           : 'turn',
       engaged: acc.engaged,
       usage: knownUsage,
+      ...(acc.toolHistory === undefined ? {} : { toolHistory: [...acc.toolHistory] }),
     };
   } finally {
     try {
@@ -1711,6 +1761,12 @@ interface TurnUsageAccumulator {
   overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
   /** Complete stop/attempt quantities observed before host callbacks, not yet consumed by accounting. */
   observedStopUsage?: { readonly input: number; readonly output: number };
+  /**
+   * The turn's settled tool structure, the SAME array the driver appends to. A failed outcome carries a copy so a
+   * retained interrupted turn can list the calls that dispatched before it ended (ADR-0119). Absent until the
+   * driver started.
+   */
+  toolHistory?: readonly SessionToolHistoryEntry[];
 }
 
 /**
@@ -2236,6 +2292,7 @@ async function driveAgentTurn(
     // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
     let slotBase = 0;
     const toolHistory: SessionToolHistoryEntry[] = [];
+    usage.toolHistory = toolHistory; // a failed outcome reads the settled history from here (ADR-0119)
     /** Invocations the user declined this turn — an identical repeat is refused without prompting (ADR-0117 §3). */
     const deniedInvocations = new Set<string>();
 

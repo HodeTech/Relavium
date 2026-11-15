@@ -19,6 +19,7 @@ import {
   resumableSessionMessages,
   type AgentSessionRecord,
   type SessionContentPart,
+  type SessionInterruption,
   type SessionMessage,
 } from '@relavium/shared';
 
@@ -36,6 +37,12 @@ export interface CompletedTurnSpan {
   readonly start: number;
   readonly end: number;
   readonly receipts: TurnReceipts;
+  /**
+   * Present only for a RETAINED INTERRUPTED turn ([ADR-0119](../../../../docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)):
+   * the span then covers the user message alone (there is no assistant answer) and the request appends the fixed
+   * interruption sentence after the receipts block. Absent for a completed turn.
+   */
+  readonly interruption?: SessionInterruption;
 }
 
 /**
@@ -124,12 +131,19 @@ export function reconstructSessionState(
   // fails a resume.
   const derived = deriveTurnReceipts(turns);
   const receipts = new Map(turns.map((turn, index) => [turn.user, derived[index]]));
+  const interruptions = new Map(turns.map((turn) => [turn.user, turn.interruption]));
   const completedTurnSpans: CompletedTurnSpan[] = [];
   for (const [index, message] of surviving.entries()) {
     const length = lengths.get(message);
     const turnReceipts = receipts.get(message);
+    const interruption = interruptions.get(message);
     if (length !== undefined && turnReceipts !== undefined)
-      completedTurnSpans.push({ start: index, end: index + length, receipts: turnReceipts });
+      completedTurnSpans.push({
+        start: index,
+        end: index + length,
+        receipts: turnReceipts,
+        ...(interruption === undefined ? {} : { interruption }),
+      });
   }
   const committed: LlmMessage[] = surviving.map((m) => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',

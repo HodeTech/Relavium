@@ -415,7 +415,15 @@ describe('W7 compaction authority, policy and atomic recovery controls', () => {
         await h.session.sendMessage('next-unique');
         const request = h.requests.at(-1);
         if (request === undefined) throw new Error('missing request');
-        expect(body(request)).not.toContain('pending-unique');
+        // ADR-0119: the engaged, classified failure is RETAINED — the request carries the user's message and the
+        // fixed interruption note (with the closed code), never a partial answer.
+        expect(terminal).toMatchObject({
+          interruption: { reason: 'failed', code: 'context_overflow' },
+        });
+        expect(body(request)).toContain('pending-unique');
+        expect(body(request)).toContain(
+          'This request was interrupted before it was answered: it failed (context_overflow).',
+        );
         expect(body(request)).toContain('latest');
         expect(body(request)).toContain('next-unique');
       } else expect(terminal).toMatchObject({ stopReason: 'stop' });
@@ -572,9 +580,15 @@ describe('W7 atomic compaction cancellation at every entry', () => {
             await h.session.sendMessage('next-unique');
             const nextRequests = h.requests.filter((r) => body(r).includes('next-unique'));
             expect(nextRequests.length).toBeGreaterThan(0);
+            // A turn no provider engaged in is rolled back; an engaged one (overflow recovery, where the first
+            // attempt reached the provider) is retained as an interrupted turn (ADR-0119) and stays visible.
             if (!after && entry !== 'manual')
-              for (const request of nextRequests)
-                expect(body(request)).not.toContain('pending-unique');
+              for (const request of nextRequests) {
+                if (entry === 'recovery') {
+                  expect(body(request)).toContain('pending-unique');
+                  expect(body(request)).toContain('the user stopped it');
+                } else expect(body(request)).not.toContain('pending-unique');
+              }
           }
         });
 });

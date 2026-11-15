@@ -154,6 +154,9 @@ export function sessionToWorkflow(
   let turnIndex = 0;
 
   for (const turn of completedSessionTurns(ordered, false)) {
+    // ADR-0119: an interrupted turn was never answered, so deriving a workflow never turns it into a step. It stays
+    // in `metadata.relaviumExport.messages` (its interruption row marks it as interrupted, with its tool structure).
+    if (turn.interruption !== undefined) continue;
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
     const prompt = neutralizeInterpolation(

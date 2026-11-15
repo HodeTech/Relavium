@@ -645,7 +645,7 @@ describe('summariser input carries the same projection', () => {
     );
     const out = render(
       renderConversationToSummarise(undefined, foldable, [
-        receipts([record('read_file', 'denied')]),
+        { receipts: receipts([record('read_file', 'denied')]) },
         undefined,
       ]),
     );
@@ -656,7 +656,11 @@ describe('summariser input carries the same projection', () => {
 
   it('keeps a turn whose user text is empty when it still has records', () => {
     const out = render(
-      renderConversationToSummarise(undefined, [user('')], [receipts([record('write_file')])]),
+      renderConversationToSummarise(
+        undefined,
+        [user('')],
+        [{ receipts: receipts([record('write_file')]) }],
+      ),
     );
     expect(out).toContain('User: \n\n');
     expect(out).toContain('1. write_file — ok');
@@ -684,7 +688,9 @@ describe('oversized-message summarisation never clips a record', () => {
       undefined,
       prepare,
       (prepared) => (prepared as unknown as { text: string }).text.length <= limit,
-      withReceipts ? [receipts([record('read_file'), record('write_file', 'error')])] : undefined,
+      withReceipts
+        ? [{ receipts: receipts([record('read_file'), record('write_file', 'error')]) }]
+        : undefined,
     );
     return (chunk.prepared as unknown as { text: string }).text;
   };
