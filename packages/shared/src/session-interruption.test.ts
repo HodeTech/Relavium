@@ -55,7 +55,7 @@ describe('the interruption value (ADR-0119 §2)', () => {
     expect(SessionInterruptionSchema.safeParse(value).success).toBe(true);
   });
 
-  it.each([
+  const forged: [unknown, string][] = [
     [{ reason: 'failed' }, 'a failed interruption must carry its code'],
     [{ reason: 'aborted', code: 'tool_failed' }, 'only failed carries a code'],
     [{ reason: 'denied', code: 'tool_denied' }, 'only failed carries a code'],
@@ -63,7 +63,8 @@ describe('the interruption value (ADR-0119 §2)', () => {
     [{ reason: 'failed', code: 'not_a_code' }, 'an unknown code'],
     [{ reason: 'aborted', extra: 1 }, 'an unknown field'],
     [{}, 'no reason'],
-  ])('refuses %j (%s)', (value) => {
+  ];
+  it.each(forged)('refuses %j (%s)', (value) => {
     expect(SessionInterruptionSchema.safeParse(value).success).toBe(false);
   });
 });
