@@ -376,8 +376,19 @@ type ToolApprovalDecision =
       readonly outcome: 'approve';
       readonly onDispatchSucceeded?: () => void; // commit a provisional mutation grant after real non-replay success
     }
-  | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
+  | { readonly outcome: 'reject'; readonly reason?: string }; // optional host-supplied explanation
 ```
+
+**Denial explanation content.** An optional `reason` can be a fixed host label
+or user-authored text collected by that host. A `string` type or `tool_denied`
+code proves neither static origin nor absence of secrets. The registry currently
+appends this text to the public denial message, so callers must not supply
+managed secrets or raw native details. Terminal-only cleanup is not a redaction
+guarantee. The accepted
+[ADR-0127 CLI diagnostic policy](../cli/chat-session.md#denial-explanation-trust-and-output-policy)
+requires producer and presentation protection for its typed-rejection path.
+That policy changes no approval decision shape, authority, retry behavior or
+return-to-model contract; other host implementations own their input protection.
 
 **Preview redaction (#91).** "Secret-free" is enforced by the registry, not asserted: every preview field is
 scrubbed with the same `redactSecretShapedText` detector applied to `agent:tool_call.toolInput`, because the

@@ -80,6 +80,15 @@ Run validator, delivery and independent closure controls with:
 node --test tools/native-fs/assets.test.mjs tools/native-fs/artifact.test.mjs tools/native-fs/checkout.test.mjs tools/native-fs/delivery.test.mjs tools/bundle-closure/closure.test.mjs
 ```
 
+`node tools/native-fs/macos-write-benchmark.mjs baseline` (or `corrected`) runs
+the source-bound contributor APFS benchmark, not a model capability or a binary
+selector. Its controlled temporary fixtures exercise the actual auto policy,
+registry, host and reference journal. The
+[verification procedure](../../docs/runbooks/verify-macos-write-metadata.md#performance-comparison)
+owns cohorts, warmups, percentile method, retained-failure behavior and the
+separate proof timing. Native source/asset bindings are rechecked after the
+workload; benchmark success does not certify other targets or installed consumers.
+
 `fixture.mjs` creates explicitly synthetic format/inventory fixtures for refusal controls only. It
 never constitutes a native-execution receipt or a complete release asset set. Required CI builds and
 executes real binaries before any native artifact upload. Existing release publication guards remain

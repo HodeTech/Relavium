@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-15
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -589,10 +589,113 @@ A classified **failed** turn is not a session terminal, so the REPL remains live
 - `provider_auth` — check the key or **unlock the OS keychain** if it locked mid-session, then resend.
 - **context overflow** — a classified `context_overflow` displays the fixed engine facts (attempted model/window and whether tools ran) with one policy-aware remedy in its summary, without a second static hint. The same remedy serves the legacy keyword heuristic on an unclassified/custom-endpoint `validation` message. Under [`memory`](../contracts/agent-yaml-spec.md#conversational-memory) `none`, it suggests a shorter message or larger model, never `/compact` or `/trim`; `window` permits `/trim` and a smaller `window_size` for a **new** session, never `/compact`; `summary` or omitted memory permits both history commands. If tools ran, it tells the user to check their effects before continuing because resending can repeat them.
 - `tool_failed` (incl. an **unreachable MCP server**) — the summary names the likely cause (a path / an unavailable target); fix it and resend (no blind retry — a side-effecting tool failure is fail-fast by design).
-- `tool_denied` — switch the `/mode` if that was intended; `tool_unavailable` — a host/config gap (the capability arm isn't wired for the session): rephrase to avoid the tool, or wire it and start a fresh session.
+- `tool_denied` — read the reported reason, check the session's permissions or safety requirements and consult the [denial guidance](#denial-guidance-design--adr-0127); `tool_unavailable` — a host/config gap (the capability arm isn't wired for the session): rephrase to avoid the tool, or wire it and start a fresh session.
 - `budget_exceeded` / `turn_limit` / `content_filter` / `internal` — each renders its own actionable one-liner. (`cancelled` settles as `aborted` with no error, and `sandbox_error` / `run_timeout` are WorkflowEngine-only, so none is chat-reachable and none carries a hint.)
 
-The remedy is **always host-authored** — the provider message is read only to pick the right hint (the context-overflow heuristic), **never echoed**, so no provider text or secret reaches the terminal. The classified overflow remedy renders once with the summary; other hints render on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
+The remedy is **always host-authored**; it never interpolates a provider message. The existing vetted provider-status summary is separate from that hint. The classified overflow remedy renders once with the summary; other hints render on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
+
+### Denial guidance design — ADR-0127
+
+**Design accepted 2026-11-15; implementation authorized, source acceptance in progress.**
+[ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
+replaces the old generic mode/policy recommendation. Current source includes the
+neutral hint and the continuing plain driver's bounded denial explanation;
+fresh source acceptance is recorded separately from design agreement.
+
+The presentation boundary receives `error.code`, `error.message` and context;
+it does not receive a typed approval-denial reason. `user_rejected` is a private
+`ToolApprovalDenyReason` carried by `ToolDeniedByUserError`, whose public code is
+also `tool_denied`. It is not a separate turn-error code. A single neutral hint
+therefore serves mode, user, scope and host-safety refusals. This intentionally
+removes the mode shortcut from the generic hint without changing the `/mode`
+command or the actual mode/approval decisions. Do not parse message text to
+infer a subtype or add a new public discriminator for this correction.
+
+The exact fixed hint is:
+
+> The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.
+
+The destination is a compile-time constant, not an error-, model- or
+configuration-selected URL; rendering it performs no request or automatic open.
+The tracked [troubleshooting guide](../../runbooks/troubleshoot-tool-denials.md)
+must ship in the repository with the correction. Local development can use that
+file before its `main` URL becomes available after merge.
+Before a CLI artifact carrying this URL is published, the guide must exist on
+`main` in that release's ancestry and the public URL must resolve to it. Keep
+this a delivery check, not a runtime network dependency. A local checkout before
+merge uses the tracked guide directly; an unmerged-branch 404 is not evidence
+that the profile or a user's permissions are broken. This adds no release
+authorization and does not bypass the existing publication guard.
+
+#### Denial explanation trust and output policy
+
+`tool_denied` does not prove that its message is a static host label. The CLI
+supports an optional user-written rejection reason, and the registry currently
+appends that text to `ToolDeniedByUserError.message`. Thus a denial message can
+combine host framing and user-authored data. The present `sanitizeInline`
+terminal cleanup by itself does not redact secrets or establish origin. The
+corrected producer/display pipeline does not rely on the former static-label
+assumption.
+
+Retain the optional typed-rejection experience as user-owned diagnostic text.
+In the CLI producer, apply the existing `sanitizeUntrustedInline` pipeline to
+the original submitted reason **before** the existing 300-code-unit cap and
+before handing it to `ToolApprovalDecision.reject.reason`. If the submitted
+input exceeds 4096 UTF-16 code units, omit the entire explanation with the same
+fixed too-long label used below. Raw tool-review capture retains one overflow
+code point so its input boundary cannot silently truncate a credential before
+this omission/redaction decision. This uses the
+[finite diagnostic backstop](../shared-core/diagnostic-secret-backstop.md),
+not a new detector or a promise that arbitrary personal text/secret fragments
+can be recognized. Explain in the denial-entry UI that the submitted explanation
+is diagnostic text that can appear in session output, including redirected
+output; it is not a private note for the approval editor alone. Never inject a
+managed secret, raw native failure or metadata fact into a reason.
+
+Render the complete assembled denial explanation as untrusted text in Home,
+standalone TUI and continuing plain chat, regardless of whether it contains a
+fixed label or a user explanation. If incoming explanation text exceeds 4096
+UTF-16 code units, omit it entirely with the fixed label
+`denial explanation omitted (too long)`, rather than printing a truncated raw
+prefix. Otherwise use `sanitizeUntrustedInline` on the complete original message
+before display normalization/capping, then cap the resulting one-line text to
+1024 UTF-16 code units without splitting a surrogate pair, with a fixed elision
+mark when shortened. Do not classify message text, infer a trusted subtype,
+or treat terminal stripping alone as redaction.
+
+**Add the missing plain-driver explanation line.** Continuing `drivePlain`
+must print the sanitized `tool_denied` explanation with its failure code before
+the common hint, using that same projection as Home/TUI. A hint pointing at a
+reported reason with no reason line is not acceptance. A fixed host mode or
+metadata explanation stays understandable; a user explanation stays visibly
+diagnostic data and may be redacted. Neither establishes authority to retry.
+Do not broadly echo `tool_failed`, unknown error messages or provider text.
+The native contract separately owns the
+[fixed aggregate preparation explanation](native-filesystem-metadata.md#native-refusal-presentation).
+Native details are still reduced to that fixed label at their host boundary;
+the display scrubber is not permission to forward raw native errors.
+
+The CLI producer's already-sanitized optional user reason can enter the existing
+turn error/event `message` and therefore JSON or existing diagnostic copies.
+That redacted-value change is deliberate; the machine stream gets no new field
+or human hint. Other embedding hosts remain responsible for their own reason
+content under the [approval contract](../shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
+No failed-turn retention, return-to-model, retry or mode-authority change is
+selected. In particular, this does not activate ADR-0117 or ADR-0119.
+
+Pin the actual displayed code, sanitized explanation and exact hint in each continuing
+driver, using native metadata refusal, an ask/plan restriction, user rejection
+and an in-scope/protected-path refusal. Check that a mode restriction remains
+understandable and that metadata/uncertain effects do not suggest `/mode` as a
+repair. Post-publication proof failures keep the separate
+`effect_needs_attention` presentation. One-shot `agent run` still suppresses the
+continuing-session hint, and JSON still emits its existing structured stream;
+no human hint is inserted into it. Test benign free user text, terminal/bidi/OSC
+controls, recognized synthetic credential/header/query shapes, redaction before
+the producer/display caps, oversize omission and redirected plain output. Check
+the producer's JSON/error value as well as TUI/Home/plain projections; do not
+claim complete detection of arbitrary secrets from a successful finite fixture.
+No additional error family becomes displayable.
 
 ## Tool availability
 

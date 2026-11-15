@@ -848,7 +848,8 @@ async function confirmDispatch(
     );
   }
   if (decision.outcome !== 'approve') {
-    // `decision.reason` is a host-supplied, secret-free label (e.g. "writes are not allowed in ask mode").
+    // The embedding host owns protection of optional diagnostic text; it may be a user explanation,
+    // not a fixed label. A public denial code establishes neither origin nor privacy.
     const why =
       decision.reason !== undefined && decision.reason.length > 0
         ? `: ${decision.reason}`

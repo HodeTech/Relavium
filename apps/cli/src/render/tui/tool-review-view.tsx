@@ -300,7 +300,11 @@ function ReviewContent({
         </Text>
       )}
       {review.denial !== undefined && (
-        <Text>Reason to deny: {inputDisplay(review.denial)}█ · Enter deny · Esc abort</Text>
+        <Box flexDirection="column">
+          <Text wrap="truncate-end">session/redirected diagnostics</Text>
+          <Text wrap="truncate-end">Reason to deny: {inputDisplay(review.denial)}█</Text>
+          <Text wrap="truncate-end">Enter deny · Esc abort</Text>
+        </Box>
       )}
       {review.searching && (
         <Text>Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find</Text>

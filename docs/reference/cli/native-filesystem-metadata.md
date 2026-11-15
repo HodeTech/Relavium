@@ -931,8 +931,10 @@ An absent ACL is accepted only when the volume capability is supported and
 ACL is never treated as empty. ACL representations are opaque and bounded to
 64 KiB; the OS applies them without an in-house ACL evaluator.
 
-The exact attribute allowlist is `com.apple.quarantine`,
-`com.apple.provenance`, and nonempty names under `user.*`. Values are preserved
+The role-specific
+[ADR-0127 profile below](#macos-parent-and-file-attribute-profiles--adr-0127)
+owns the current attribute names and the pending source-acceptance evidence.
+Quarantine, provenance and supported generic file values are preserved
 and verified byte-for-byte, including provenance: inability to reproduce it
 refuses. Unknown Apple or other namespaces, including content-bound metadata,
 refuse. Enumeration is bounded to 16 KiB of names, 128 attributes, 64 KiB per
@@ -956,6 +958,217 @@ attribute namespaces. These controls do not certify untested filesystems,
 system MAC policy, SACLs, other targets or the remaining acceptance gates.
 Apple documents the relevant [file flags and `fchflags`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fchflags.2.html)
 and [descriptor-bound metadata copying](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/copyfile_state_set.3.html).
+
+<a id="proposed-macos-parent-and-file-attribute-profiles--adr-0127"></a>
+
+### macOS parent and file attribute profiles — ADR-0127
+
+**Design accepted 2026-11-15; implementation authorized and in progress.**
+The maintainer accepted the corrected
+[ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
+design and subsequently authorized source work on that date. Current source
+contains these corrections; their fresh source/platform acceptance remains
+separate from design acceptance and the historical mechanism probes.
+
+| Object role | Additional admitted name | Required treatment |
+|---|---|---|
+| Destination parent, for new and existing writes | `com.apple.macl` | Read bounded opaque bytes from the pinned parent descriptor; retain them only for strict parent revalidation. Never set, remove or copy this parent attribute onto a template, payload or target. |
+| Existing source and its replacement stage | `com.apple.lastuseddate#PS` | Capture the source value as bounded opaque bytes; preserve and verify that exact value on the replacement file. |
+| New-file template and its payload/target | `com.apple.lastuseddate#PS` | Preserve the value only if the OS-created empty template itself exposes it. Preserve absence when absent. Never generate a date or derive/copy this value from the parent. |
+
+No new parent admission for `com.apple.lastuseddate#PS` is granted: the reported
+observation was on files, not directories. An observed parent value still
+refuses under the closed parent profile. Parent support for other names needs
+its own evidence and reviewed profile change.
+
+Quarantine and provenance keep their exact-name security-preservation rules.
+The generic `user.*` rule is refined by object role; the earlier prefix-only
+implementation did not enforce the following restriction.
+
+| Role | Generic `user.*` rule in the corrected design |
+|---|---|
+| Source file, replacement stage, new template/payload and published file | Admit only a nonempty name after `user.` with **no ASCII `#` anywhere**. Refuse every suffixed generic name, including known content-dependent names and empty, unknown, mixed or multiple property suffixes. |
+| Unchanged destination parent | Retain the existing bounded, nonempty `user.*` names, including suffixed names, as opaque strict-revalidation evidence only. No parent value is copied, interpreted as permission, or used to synthesize a child value. |
+
+For example, `user.note` remains an opaque-file positive, while
+`user.test-content#C`, `user.note#N`, `user.note#B`, `user.note#PS`, `user.note#`,
+`user.note#unknown` and mixed/clearing variants refuse in the file role before
+publication. Do not strip a suffix, remove the attribute or copy a stale
+content assertion merely because its bytes can be reproduced. The exact
+file-name admission of `com.apple.lastuseddate#PS` is a separately reviewed
+exception, not a generic `#PS` allowance. Unmarked opaque `user.*` values are
+not claimed to have understood application-specific semantics.
+
+Matching is byte-exact. Unknown Apple/other namespaces still refuse. Use an
+explicit native object role so parent-only MACL or suffixed-user evidence cannot
+leak into file capture, OS-created templates, copying or final verification.
+
+Apple's [xattr suffix implementation](https://github.com/apple-oss-distributions/copyfile/blob/main/xattr_flags.c)
+uses `#` to introduce preservation properties: `P` means no export and `S`
+means syncable. Its copy/save rules preserve `#PS` because it sets none of the
+content-dependent, never-preserve or backup-only exclusions for those intents.
+That supports preserving this exact observed name, not a runtime predicate
+which admits every suffix or trusts unknown names. The value format is not
+interpreted. Keep the suffix intact; do not rewrite it to a bare name or infer
+permission from `xattr_preserve_for_intent`.
+
+Apple's [property definitions](https://github.com/apple-oss-distributions/copyfile/blob/main/xattr_flags.h)
+mark `#C` as content-dependent, and its save rules exclude such metadata even
+when copy intent would preserve it. Default metadata copying plus equality is
+therefore insufficient to establish save safety. Refusing all generic suffixed
+file names avoids implementing a permissive property parser or accepting unknown
+suffixes that the OS parser ignores. This rule is **not** a generic save-intent
+filter for the exact security names: quarantine must still be preserved under
+ADR-0125 even though Apple's general intent table gives it content-dependent
+properties. A content edit never authorizes removing that warning.
+
+Apply the existing name/count/value/aggregate bounds to every observation,
+including parent-only metadata. Enumeration, sizing and value-read failures
+refuse; an unreadable value is not absence or a reason to skip an entry. Recheck
+the complete parent attribute set and values together with the existing parent
+identity, ACL, owner/group/mode/flags, credentials and creation-mask evidence.
+MACL addition, removal or value change invalidates the prepared parent. Raw
+values remain ephemeral native evidence, outside previews, model content,
+events, history, effect receipts and logs.
+
+Keep actual destination-parent template creation and all publication checks.
+The OS, not a custom MACL/ACL evaluator, supplies child creation policy. A
+file-level MACL, including one observed on an OS-created template, remains an
+unsupported file observation and refuses at the pre-publication checks. Never
+strip it or normalize it into an admitted parent observation. Failure after an
+effect claim retains the existing conservative journal/error classification.
+
+#### Mandatory runtime verification after macOS publication
+
+For both existing replacement and new-file publication, the joined native
+operation must run a bounded post-rename verifier before it can return success
+and before the host/registry can commit a receipt. Test-only target inspection
+does not satisfy this obligation.
+
+Retain the pinned payload descriptor, its native identity, completed payload
+byte length and expected staged file policy across rename. After all payload
+bytes have been written and before publication, bind the exact descriptor
+length to the trusted reviewed output buffer's **byte length**. For append,
+this is the complete old-plus-appended output, not only the appended delta.
+It is not the old source length, the empty creation template's zero length,
+or a JavaScript string/code-point count. Empty reviewed output can legitimately
+have length zero. Preserve this proven length in the owned native stage; never
+adopt the target's post-rename length as a new expectation.
+
+Under the pinned destination parent, prove that the
+current target entry, inspected without following symlinks, names that same
+ordinary, single-linked payload object. The named parent must still be the
+pinned parent. Compare the target size with that completed payload length.
+Separately compare owner/group/mode, supported flags, ACL and the complete
+file-role attribute set/values with the expected policy. For replacement,
+**security policy** derives from the prepared source; for creation it derives
+from the actual empty destination template, not its byte length.
+The expected new inode is the payload inode, not the replaced source inode.
+Do not demand the old source's mtime/ctime on the new file or adopt a fresh
+metadata baseline to conceal a mismatch. Existing strict source/version checks
+before publication remain unchanged.
+
+Revalidate the complete parent evidence, including parent MACL and credentials,
+under the existing identity/policy/mask rules. Bound every observation by the
+existing enumeration and byte limits; unknown, changed, unreadable or unprovable
+metadata/identity is a failure, not absence. This remains an observation under
+the accepted owner-controlled race limit, not a filesystem compare-and-swap or
+a promise that another writer can never change the object later.
+
+Any failure once rename succeeded, including an inability to complete the proof,
+maps to native `PossiblyPublished` and the existing tier-3 uncertainty path.
+Preserve independent cleanup uncertainty through the existing failure facts.
+Leave the effect ambiguous, or unresolved prepared if that recording fails;
+never commit a successful receipt, return a pre-effect denial, delete/restore
+the target, repair metadata or automatically retry. Caller cancellation may
+retain its aborted terminal outcome while unresolved-effect disclosure remains
+mandatory under the [failure/outcome table](#fixed-failure-facts-and-caller-outcomes).
+Cancellation or a deadline cannot skip verification and still yield success.
+Retain and join the actual operation, preserve existing cleanup/flush obligations
+and report any failure honestly; a crash in this interval also leaves unresolved
+journal evidence. No Linux/Windows profile change is selected by this decision.
+
+#### Native refusal presentation
+
+For an ordinary native preparation refusal before effect admission, use this
+fixed host reason with the existing fatal/non-retryable `tool_denied` code:
+`filesystem metadata preparation refused; permissions or unsupported filesystem metadata may prevent this write`.
+This is one aggregate explanation, not a claim to distinguish a particular
+attribute, permission error, metadata race or native failure. No native values,
+raw errors or new typed denial fields cross the boundary. The
+[chat denial guidance](chat-session.md#denial-guidance-design--adr-0127)
+owns the common hint and troubleshooting destination. A post-rename proof failure
+uses attention disclosure, never this pre-admission reason.
+
+#### Implementation acceptance gates
+
+The four publication operations mean **create, overwrite, append and exact
+edit**. Run each through the actual CLI prepared-write host and journal under
+a real local APFS parent already observed to carry OS-managed MACL. Do not
+create that evidence by setting a synthetic MACL, alter the parent's label or
+modify a user's preexisting file content. Use newly created controlled files
+in that parent. Inspect the final target's exact bytes, expected identity,
+owner/group/mode/flags, ACL and all caller-visible attribute names; assert exact
+supported values privately. Record OS/build, actual host/native source binding,
+operation outcomes and fixed policy-equality results. Missing real-parent access
+or evidence is an open gate, not a synthetic pass or full platform acceptance.
+
+Keep the synthetic create/add-usage/edit regression and exact-value checks.
+Separately require a controlled file created through the host, then opened/used
+by an actual user in a recorded application, with the application closed before
+the host's full exact-edit journey. Observe the last-used name without injecting
+it; record all bounded visible attribute names and safe outcome/equality facts
+before interaction, after interaction and after edit. Do not claim to know who
+added metadata from an old snapshot. If the interaction does not produce the
+name, evidence for that case is missing. If it produces file MACL or other
+unsupported names, require honest refusal/attention behavior and record the
+product limit; that is not a successful ordinary-use editing acceptance.
+
+Exercise runtime post-rename verification failures and crashes, identity
+replacement, new unknown or file-MACL observations, missing/changed last-used
+values, unreadable metadata and parent changes at that cut. Assert no successful
+receipt, durable unresolved journal state, safe caller presentation and no retry
+or target rollback. Also cover parent MACL addition/removal/change after
+preparation, unreadable/oversized values, unknown names and file-level MACL at
+pre-publication cuts. An incompatible OS observation blocks profile acceptance
+until resolved.
+Cover empty and multibyte output and complete appended output against the
+stored payload-length expectation. A pre-publication length mismatch refuses;
+a mismatch first detected after rename retains possible-publication semantics.
+Require real native file-role negatives for generic `user.*` suffixes, including
+`#C`, known save-excluded flags, apparently benign `#PS`, unknown/empty suffixes
+and clearing/multiple-suffix variants. Existing-source refusal must precede any
+effect row/stage; a bad OS-created template discovered after a claim must use
+the existing post-claim ladder. Prove unchanged/absent target bytes at those
+pre-publication cuts. Separately prove parent-role evidence stays opaque and
+strictly revalidated, and that a suffixed parent value is not copied to the child.
+Keep ACL-deny, quarantine/provenance, no-clobber, stale-read, ownership, cleanup,
+scope and approval controls. Use both auto and accept-edits to prove equal
+filesystem safety with their respective approval behavior. Check the actual
+fixed reason and common hint in Home chat, standalone TUI and continuing plain
+chat, plus the separate one-shot/JSON contracts. The
+[verification runbook](../../runbooks/verify-macos-write-metadata.md)
+owns the contributor procedure and historical mechanism commands; none of those
+mechanism results replaces native, host, real-interaction or target-matrix proof.
+
+#### Performance evidence before implementation acceptance
+
+Measure the complete deterministic host path for create, overwrite, append and
+exact edit on the same local APFS environment, before/after the correction.
+Include normal and attribute-dense supported fixtures and report p50/p95,
+sample/outcome counts and the post-publication verifier's separate cost.
+The [verification runbook](../../runbooks/verify-macos-write-metadata.md#performance-comparison)
+owns the reproducible measurement procedure. A formerly unsupported case has
+no successful-write baseline and must not be compared with a fast refusal.
+No fastest-path or measured-regression claim follows from an operation count.
+
+Keep one joined, bounded native publication/proof operation and avoid duplicate
+inspection within the same proof cut. The new post-rename observations are
+necessary additional OS work, not zero extra filesystem calls. Do not replace
+them with a stale pre-publication cache, skip a check, add a permissive retry,
+or relax bounds to improve a number. Investigate material regression against
+repeat variance and resolve it before acceptance; do not introduce flaky
+wall-clock assertions into ordinary CI or waive a safety gate for speed.
 
 ## POSIX creation-mask boundary
 

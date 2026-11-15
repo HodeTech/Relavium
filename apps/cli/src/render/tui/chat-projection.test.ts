@@ -14,6 +14,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  projectDenialExplanation,
   liveScrollGeometry,
   MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
@@ -737,6 +738,18 @@ describe('chat-projection', () => {
   });
 
   describe('sanitizeApprovalReason ([c] typed denial reason, Step 14)', () => {
+    it('redacts the original diagnostic before the producer cap and existing JSON/error copies', () => {
+      const credential = `sk-${'A'.repeat(60)}`;
+      const reason = sanitizeApprovalReason(`${'x '.repeat(140)}${credential}`);
+      expect(reason).toContain('[REDACTED]');
+      expect(reason).not.toContain('sk-');
+      expect(
+        JSON.stringify({ error: { code: 'tool_denied', message: `tool denied: ${reason}` } }),
+      ).not.toContain(credential);
+      expect(sanitizeApprovalReason('x'.repeat(4097))).toBe(
+        'denial explanation omitted (too long)',
+      );
+    });
     it('returns undefined for an empty / whitespace-only reason (degrades to a plain reject)', () => {
       expect(sanitizeApprovalReason('')).toBeUndefined();
       expect(sanitizeApprovalReason('   \t  ')).toBeUndefined();
@@ -770,6 +783,46 @@ describe('chat-projection', () => {
       expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
       // No unpaired surrogate survived (each code unit is a full BMP code point).
       for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
+    });
+  });
+
+  describe('bounded mixed-origin denial diagnostics (ADR-0127)', () => {
+    it.each([
+      'filesystem metadata preparation refused; permissions or unsupported filesystem metadata may prevent this write',
+      'writes are not allowed in ask mode',
+      'tool denied by the user: use a different approach',
+      'refusing to write inside a protected directory',
+    ])('keeps the explanation and exact neutral hint for %s', (message) => {
+      expect(
+        formatTurnSummary({
+          stopReason: 'error',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: 'tool_denied',
+          errorMessage: message,
+        }),
+      ).toContain(message);
+      expect(errorRecoveryHint('tool_denied', message)).toBe(
+        "The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.",
+      );
+      expect(errorRecoveryHint('tool_denied', message)).not.toContain('/mode');
+    });
+
+    it('scrubs credentials and controls before display truncation and omits oversize messages', () => {
+      const credential = `sk-${'B'.repeat(60)}`;
+      const input = `${'x '.repeat(490)}api-key: ${credential}; after`;
+      const projected = projectDenialExplanation(input);
+      expect(projected).not.toContain('sk-');
+      expect(projected.length).toBeLessThanOrEqual(1024);
+      const controlled = projectDenialExplanation(
+        `\u001b]0;title\u0007no\u202e\nAuthorization: Bearer synthetic-credential`,
+      );
+      for (const forbidden of ['synthetic-credential', '\u001b', '\u0007', '\u202e'])
+        expect(controlled).not.toContain(forbidden);
+      expect(projectDenialExplanation(`${credential}${'x'.repeat(4097)}`)).toBe(
+        'denial explanation omitted (too long)',
+      );
+      const split = projectDenialExplanation(`${'x'.repeat(1022)}🙂tail`);
+      expect(split).toBe(`${'x'.repeat(1022)}…`);
     });
   });
 

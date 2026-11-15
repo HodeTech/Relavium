@@ -634,7 +634,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             // one line) with a block cursor. Enter denies WITH this reason; Esc cancels back to the choices below.
             <Box flexDirection="column">
               <Text {...dimProps(color)} wrap="truncate-end">
-                reason to deny · Enter to send · Esc to cancel
+                session/redirected diagnostics · Enter send · Esc cancel
               </Text>
               <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
                 {`> ${sanitizeInline(props.reasonDraft.text)}█`}

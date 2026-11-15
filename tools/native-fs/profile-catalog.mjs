@@ -13,6 +13,17 @@ export const NODE_LIFECYCLE_CASES = Object.freeze([
   'killed-node-producer-recovery',
 ]);
 const MACOS = [
+  ...[
+    'file_suffixes_refuse_while_parent_values_remain_strict_evidence',
+    'exact_role_names_never_grant_cross_role_admission',
+    'last_used_file_value_is_preserved_exactly_and_changes_refuse',
+    'published_proof_checks_payload_length_identity_metadata_and_parent',
+  ].map((name) => `macos::profile_tests::${name}`),
+  ...[
+    'empty_and_multibyte_publication_use_completed_payload_length',
+    'payload_length_change_refuses_before_publication',
+    'post_publication_failure_is_uncertain_without_rollback',
+  ].map((name) => `common::macos_publication_tests::${name}`),
   'common::producer_tests::owned_existing_stage_publishes_reviewed_bytes_after_pin',
   'common::producer_tests::owned_new_stage_uses_actual_parent_inheritance_and_exclusive_publish',
   'common::producer_tests::private_access_and_new_file_policy_hold_under_child_umasks',
@@ -156,6 +167,7 @@ export function rustPopulation(platform) {
   if (platform === 'darwin')
     platformIgnored = [
       'common::producer_tests::private_umask_child',
+      'common::macos_publication_tests::bounded_post_publication_proof_timing',
       'stage_index::tests::crash_child',
     ];
   else if (platform === 'linux')

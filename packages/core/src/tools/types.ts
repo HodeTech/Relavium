@@ -501,7 +501,8 @@ export interface ToolApprovalRequest {
   readonly unredactedPreview?: ToolActionPreview;
 }
 
-/** The host's verdict. `reject.reason` is an optional, secret-free, display-safe label echoed in the error. */
+/** The host's verdict. An optional reject explanation enters the error; embedding hosts own input protection
+ *  and surfaces treat user diagnostic text as untrusted. The type/code alone guarantees no privacy. */
 export type ToolApprovalDecision =
   | {
       readonly outcome: 'approve';

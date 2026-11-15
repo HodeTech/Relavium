@@ -158,6 +158,7 @@ import {
   errorRecoveryHint,
   contextOverflowRemedy,
   formatToolCall,
+  projectDenialExplanation,
   sanitizeInline,
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
@@ -3873,7 +3874,9 @@ export function makePlainPrinter(
         const fact =
           event.error.code === 'context_overflow'
             ? ` — ${sanitizeInline(event.error.message)}`
-            : '';
+            : recoveryHints && event.error.code === 'tool_denied'
+              ? ` — ${projectDenialExplanation(event.error.message)}`
+              : '';
         io.writeOut(`\n[turn failed: ${event.error.code}${fact}]\n${hintLine}`);
         return;
       }

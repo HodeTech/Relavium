@@ -3635,6 +3635,229 @@ scoped verification-only follow-ups; the prior complete cumulative and separate
 security sittings retain their unchanged production scope. Corrected-head
 Windows, complete CI and scanner checks remain the final merge gate.
 
+### ADR-0127 supplied review and design acceptance (2026-11-15)
+
+**Design accepted; implementation authorization and acceptance pending.**
+The maintainer requested reconciliation of three supplied design reviews,
+acceptance of the corrected documents and a separate approval before product
+implementation. A subsequent instruction added a careful OpenCode/Codex/Claude
+Code comparison before proceeding. That instruction changes the documentation
+work, not the reserved implementation gate.
+
+[ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
+and its [canonical native design](../../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127)
+now make runtime post-rename proof mandatory before success. They separate the
+actual OS-managed parent and actual-user-interaction evidence from synthetic
+probes, restrict last-used admission to the file role, and preserve the existing
+uncertainty/cleanup/journal boundary. The
+[chat design](../../reference/cli/chat-session.md#denial-guidance-design--adr-0127)
+and linked runbooks own denial guidance and reproducible evidence collection.
+
+Supplied review disposition (A/B/C identify the three reports in order):
+
+| Supplied item | Verified disposition |
+|---|---|
+| A1 — runtime versus test-only post-publication proof | Confirmed ambiguity. Native design now requires joined target identity/metadata and parent verification before successful return/settlement; failed proof after rename uses the possible-publication path, never a pre-effect denial or repair/retry. |
+| A2 — real parent MACL evidence | Confirmed underspecification. All four actual host operations must run under a previously observed OS-managed MACL parent without changing its label; unavailable evidence remains an open gate. |
+| A3 — actual create/use/edit | Confirmed coverage gap. A separate controlled actual-user interaction and full edit case records visible names/outcome facts. Synthetic last-used regression remains separate; unsupported names are honest product limits, not ordinary-use passes. |
+| A4, B1, C1 — actionable and consistent denial presentation | Confirmed UX gap. Exact neutral code-based hint, fixed aggregate native explanation, safe-reason parity and a user troubleshooting destination are specified for Home/TUI/continuing plain chat. One-shot/JSON behavior remains separate. |
+| B1/C1 — error-shape assertions | Corrected the reports' premise: `errorRecoveryHint` already accepts code/message/context. `user_rejected` is an approval reason on an error whose public code is still `tool_denied`; the subtype does not survive as a typed presentation field. No message parsing or new discriminator is selected; generic loss of the mode shortcut is explicit. |
+| B2 — parent last-used admission and new-file value origin | Confirmed unjustified expansion. Parent admission removed; a new file preserves only the exact value/absence actually observed on its OS-created template. |
+| B3 — reproducible mechanism evidence | Confirmed missing tracked reproduction. The verification runbook records contributor commands, the exact synthetic name, dated observations and their scope. It distinguishes its context-managed reproduction from the original handle setup and does not claim a new execution. |
+| B4 — source attribution and suffix semantics | Confirmed overstatement. DTS attribution is narrowed to its tentative 2019 observation/UUID setup; no stable MACL inheritance claim is inferred. The exact `#PS` copy/save property rationale is sourced, without broad name admission or value parsing. |
+| B5, C6 — temporary workspace/dependency state | Confirmed roadmap hygiene issue. Temporary working-tree guidance removed; unrelated dependency changes are outside the correction and unchanged. |
+| B6 — terms, four journeys and related decisions | Clarified profile versus object role, named create/overwrite/append/exact-edit explicitly, and tied the native/UI increment to ADR-0120. |
+| C2 — related ADR links | Added ADR-0057 and still-Proposed ADR-0117, without activating its separate return-to-model policy. |
+| C3 — fragment stability | Preserve the historical proposed-section fragment as an explicit alias and link current text to the accepted-design heading. New local fragments are checked alongside document links. |
+| C4 — forward note | Added a dated ADR-0125 amendment pointing at the accepted corrected design and reserved implementation gate; its historical body is retained. |
+| C5 — bounds | Retain the existing bounded metadata observations rather than invent a wider parent allowance or new unproved limit. No implementation claim follows from agreeing the bounds. |
+
+A fresh Terra/high design review found one medium procedure gap: the full
+actual-interaction edit was accidentally conditional on observing last-used.
+That condition is removed; the reviewer reread the corrected unconditional
+success/refusal/attention path with no remaining finding. A separate Sol/high
+security design review and final procedure reread report no security design
+finding. These reviews cover the corrected documents, not implementation or
+upstream binary behavior. Document checks pass whitespace, new local links and
+fragments, one H1 outside fences, and syntax-only parsing of both documented
+Python probes. The probes were not executed in this checkpoint.
+
+The [application investigation](../../analysis/macos-file-write-compatibility-2026-11-15.md)
+pins OpenCode 2.3.0 and Codex CLI 0.167.0 local write paths to destination
+write/truncate behavior. It records the unavailable Claude Code core-writer
+proof, rather than claiming a metadata guarantee from documentation or user
+reports. This establishes a real compatibility tradeoff but does not authorize
+silently replacing Relavium's accepted atomic publication with in-place writes.
+The dated ADR-0127 amendment links that reasoning and retains the real-use gate.
+
+This checkpoint changes documentation only. Existing product/native source,
+assets, effect formats and dependency policy are unchanged. No source build,
+product test, actual-user interaction, platform/consumer acceptance, merge or
+publication is claimed. The maintainer's separate implementation approval is
+the next gate; the current native source can still reproduce the reported denial.
+
+### ADR-0127 further supplied review reconciliation (2026-11-15)
+
+**Corrected design accepted; implementation remains unauthorized and unstarted.**
+The maintainer supplied three further reports and again explicitly required
+waiting for separate implementation approval. Each finding was checked against
+the current source and the existing design rather than adopted as an instruction.
+This follow-up retains one cohesive correction increment and its review gates.
+
+The [native profile](../../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127),
+[diagnostic policy](../../reference/cli/chat-session.md#denial-explanation-trust-and-output-policy),
+approval reference and runbooks now own the refined requirements. The dated
+[ADR-0127 amendment](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
+records the clarification without rewriting earlier decision text. A/B/C below
+refer only to the three reports supplied for this follow-up, in order.
+
+| Supplied item | Verified disposition |
+|---|---|
+| B1 — generic `user.*` includes content-dependent `#C` | Confirmed high-priority design gap in the existing prefix-only native rule. The corrected file role refuses every generic name containing ASCII `#`, including known, unknown, empty and mixed suffixes; unchanged-parent suffix values remain opaque revalidation evidence only. Exact quarantine and last-used rules stay separate. Native refusal and parent non-copying regressions are required. |
+| B2 — not every denial explanation is a fixed host label | Confirmed. The approval UI accepts optional user text which enters the public error message; terminal control stripping is not redaction. The canonical policy retains typed explanations with explicit diagnostic-output scope, existing finite producer redaction before its cap, bounded untrusted Home/TUI/plain rendering and redirected-output/JSON-value fixtures. No subtype is inferred from text and no schema is added. |
+| C1 — new-file size could be taken from the empty template | Confirmed ambiguity. Runtime proof uses the completed pinned payload length, proved against the reviewed output buffer's byte length before publication; security policy still derives from the source/template. Empty, multibyte and full appended output are required controls. |
+| C2 — continuing plain chat lacks a reason line | Confirmed in `drivePlain`; the previous intent was insufficiently explicit. Adding the shared safe explanation before the hint is now a named implementation requirement with presentation tests. Existing source is not claimed to do this. |
+| C3 — hint attributed to ADR-0120 | Confirmed attribution error. The append-only ADR amendment identifies 2.5.H's `errorRecoveryHint` as its origin; ADR-0120 remains related UX context. |
+| C4 — help URL is unavailable before merge | Confirmed delivery dependency. Before an artifact carrying the constant URL is published, the guide must exist on `main` in release ancestry and the URL must resolve. Local source users use the tracked file meanwhile; there is no runtime request or new publication permission. |
+| C5 — reviewer reran the mechanism probes | Retained as a separately attributed supplied observation in the verification runbook, including the no-MACL negative result. The earlier author checkpoint truthfully records that its probes were not executed then. No independently bound product/platform acceptance or benchmark is inferred from the supplied report. |
+| A1/A4 — distinguish accepted design from shipped implementation | Clarified implementation metadata as not authorized or started. Keep the canonical `Status: Accepted` enum rather than invent a composite status; indexes/reference/roadmap preserve the separate implementation gate. |
+| A2/A3, A5, A9/A10 — uncertainty, strict parent proof, exact names and comparison/forward notes | Retained. These reports confirm the selected boundaries; they justify no retry, relaxed validation, generic suffix admission or new product guarantee. |
+| A6 — absent last-used on a new template described as loss | Corrected the premise. Preserving actual absence loses no observed value and authorizes no synthesis or parent copying. A real interaction that produces no name remains missing evidence for that specific gate. |
+| A7/A8 — stage tests or split chat into another ADR | Run evidence in a practical order within the existing cohesive increment. All real-parent/use gates remain required. A separate hint-only ADR or extra implementation/review step adds no distinct decision and is unnecessary. |
+| A/B/C performance recommendations | Require before/after p50/p95 for all four host operations with ordinary and dense supported attributes, plus verifier cost. No measurements exist yet; reject unqualified fastest/least-error rankings. Joined bounded proof still needs fresh post-rename OS reads; no cached proof, skipped check or relaxed guarantee is an optimization. |
+
+The [performance procedure](../../runbooks/verify-macos-write-metadata.md#performance-comparison)
+separates formerly unsupported refusals from comparable successful-write baselines.
+The [subsequent supplied observations](../../runbooks/verify-macos-write-metadata.md#subsequent-supplied-review-observations-2026-11-15)
+preserve probe actor/time/scope without changing the earlier receipt. The generic
+file-suffix regression addresses a preexisting flaw, not a regression introduced
+by the still-unimplemented parent/file split.
+
+A fresh Terra/high focused design review and a separate Sol/high security
+design follow-up each report no actionable finding in the refined canonical
+contracts, ADR and procedures. They independently checked the acknowledged
+source gaps without running product code. Documentation checks cover clean
+whitespace, one H1 outside fences, 740 local path/fragment references across
+13 changed/new Markdown files, syntax-only parsing of both documented Python
+heredocs, and preservation of ADR-0125's original text as an unchanged prefix.
+Product/native/tooling/workflow source is unchanged; the preexisting dependency
+edits retain their recorded hashes. These are design/documentation checks,
+not source or platform acceptance.
+
+This follow-up changes documents only. No product/native code or assets were
+changed, and no source build, native probe, product test or performance run is
+claimed. Implementation, fresh source reviews/security sittings and current-head
+platform/artifact checks remain future gates after maintainer authorization.
+
+### ADR-0127 implementation author verification (2026-11-15)
+
+**Implementation authorized and implemented; independent source review in progress.**
+The maintainer's subsequent "devam edelim" authorizes the corrected design's
+single implementation increment on `development`. Earlier design-only receipts
+retain their actor/time/scope. This increment does not activate ADR-0117/0119.
+
+The native adapter now separates parent evidence from file preservation,
+refuses suffixed generic file attributes, preserves the exact supported last-used
+name/value, and verifies the published payload/parent before successful return.
+Completed UTF-8 payload length is retained independently of source/template size.
+Post-rename proof failure remains possible publication with separate cleanup
+facts; native crash/recovery controls preserve published targets without rollback.
+Home/standalone/plain denial output shares bounded untrusted projection and the
+neutral hint. Optional typed explanations use the existing finite producer
+backstop before capping and explicitly disclose their diagnostic-output scope.
+
+Author verification on macOS 27.0.1, build 26A434, arm64, Node 22.23.1 and local
+APFS passes:
+
+- 18,674 workspace tests (24 declared skips), workspace lint/types and the full
+  workspace build. The source tree's existing unrelated Turbo update remains
+  outside this increment; its recorded workspace/lock hashes are unchanged.
+- All 1,129 acceptance-tool cases, tool types/lint, formatting, test isolation,
+  import/dependency fences and emitted bundle closure. Native input LF pins
+  include the two new contributor benchmark files. The permanent causal cohort
+  is now 481 cases because five plain-printer cases were added; its 71 native
+  children, strict inventory checks and deadlines are unchanged.
+- The current-target native profile's exact 49 Rust parents and eleven Node
+  lifecycle cases. Five declared helper/timing cases remain ignored by that
+  ordinary profile; the contributor timing case was separately executed. The
+  production binary contains neither test-hook nor proof-timing markers.
+- Actual CLI host/registry calls with the reference in-memory journal directly
+  under the observed OS-managed MACL project parent: create, overwrite, append
+  and exact edit all commit in auto and accept-edits. Auto prompts zero times;
+  accept-edits prompts once per operation. Private equality checks establish
+  unchanged parent MACL; no value is copied into a child or diagnostic.
+- Two operator-reported actual interactions on separate host-created controlled
+  files. After VS Code open/close (installed default bundle 1.146.0), names still
+  contain provenance only and full host edit succeeds. After TextEdit open/close
+  (installed system bundle 1.21), the exact last-used name is observed; full host
+  edit commits and a private before/after check confirms byte-identical value.
+  This records the observed interval, not an inference about which component
+  wrote metadata. Successful controlled fixtures are removed afterward.
+
+The current production native SHA-256 is
+`dec1da6da5c676607bd326b4d446ff98756dcace68d9ddb336124f0f2f44a89f`;
+its native source binding is
+`f3c43fc606605051fb2b7b19b03617a63c28894bbc2879ba3ab0da1259c3c4ce`.
+Current-head target/consumer CI remains separate from this local arm64 sitting.
+
+#### Performance investigation and measured limit
+
+The checked-in [contributor procedure](../../runbooks/verify-macos-write-metadata.md#performance-comparison)
+owns reproduction. The earlier source was exported from unchanged development
+HEAD `fd9f3d86` without switching branches and built with its own locked recipe.
+A private comparison bundle explicitly selects that genuine rebuilt earlier
+component (`d1a2adfd4908f5c3185e6f56e0d8e872ece27170f783bbd2ba691c15c9a52f87`)
+or the current component under the same current host, real auto policy and
+reference journal. This substitution is measurement infrastructure, not a
+production fallback or an installed-consumer claim.
+
+Two separate counterbalanced old/new runs contain 100 measured attempts plus
+10 warmups per implementation in every cell: 3,200 measured operations and
+3,520 ordered operation records in total, all successful. No ordered operation
+in these two runs exceeds 100 ms. Each pair reverses execution order on alternate
+attempts. Native-method and whole-operation timestamps are retained privately;
+raw metadata values are excluded. Nearest-rank p50/p95 ranges across the two
+runs are in milliseconds:
+
+| Cohort / operation | Earlier p50 / p95 | Corrected p50 / p95 |
+|---|---|---|
+| Ordinary create | 50.73–52.42 / 53.48–55.53 | 50.81–52.34 / 53.72–55.82 |
+| Ordinary overwrite | 45.53–45.57 / 49.47–50.51 | 45.58–45.61 / 47.59–50.45 |
+| Ordinary append | 45.27–45.44 / 48.21–48.42 | 45.47–45.54 / 48.43–50.34 |
+| Ordinary edit | 44.75–45.75 / 48.54–48.60 | 45.37–46.16 / 47.51–48.57 |
+| Dense create | 54.52–55.50 / 57.46–57.50 | 55.85–56.61 / 58.91–60.69 |
+| Dense overwrite | 56.53–56.68 / 58.61–60.80 | 58.37–58.66 / 61.47–64.45 |
+| Dense append | 55.72–56.26 / 58.65–60.65 | 58.36–58.40 / 61.66–62.44 |
+| Dense edit | 55.59–55.69 / 60.69–62.61 | 57.68–57.69 / 60.48–60.57 |
+
+Dense creation uses 64 bounded parent attributes and actual OS-created child
+policy; dense existing writes also carry 64 supported file attributes. Reviewed
+output is 65,531 bytes, or 65,537 complete bytes for append. Non-create timings
+include the real read/evidence promotion. Setup and post-outcome assertions,
+provider latency and human response time are excluded.
+
+Separate release-test proof measurements, including inactive test-hook checks
+but excluding N-API, report normal new/existing p50 about 0.069/0.048 ms and
+dense new/existing p50 about 0.812/1.516 ms (p95 about 0.983/1.608 ms for dense).
+These are measurements of the proof method, not exact attribution of all
+production latency or AsyncTask queueing.
+
+Earlier fixed-order measurements included p95 samples around 0.5–1.0 seconds
+in some corrected dense cells; other fixed-order and instrumented repetitions
+were quiet. Those results are retained, not discarded. Their cause was not
+established and they did not reproduce in the two matched counterbalanced
+runs. The controlled comparison shows a small measurable cost (up to about
+2.7 ms p50 and 3.7 ms p95 across matched cells), not a demonstrated persistent
+large correction-dependent regression. No fastest-strategy, hard tail-latency
+or environmental-cause claim is made. No proof, flush, bound or safety check was
+removed to obtain these results.
+
+The first implementation commit, two fresh review rounds, any verified
+corrections, and a separate native/privacy security sitting follow this author
+checkpoint. Full target-matrix, installed-consumer and current-head PR checks,
+maintainer merge review and the guide's release-time public-URL check remain
+distinct gates. No merge or publication is claimed.
+
 ## MVP-2 plan — Home-first (2026-11-08)
 
 On 2026-11-08 the maintainer set the CLI's direction (D73): the user types `relavium`, lands in the full-screen

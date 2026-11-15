@@ -419,6 +419,27 @@ it('keeps existing denial reasons as an owned view action', () => {
   );
 });
 
+it('preserves the full typed reason through redaction before the submission cap', () => {
+  let state = { ...initialToolReview('approval'), denial: '' };
+  const credential = `sk-${'C'.repeat(60)}`;
+  for (const input of `${'x '.repeat(140)}${credential}`) {
+    const action = reduceToolReviewKey(state, input, {}, true, undefined, false, 0);
+    if (action.kind !== 'state' || action.state.denial === undefined)
+      throw new Error('missing denial capture');
+    state = { ...action.state, denial: action.state.denial };
+  }
+  const submitted = reduceToolReviewKey(state, '', { return: true }, true, undefined, false, 0);
+  expect(submitted.kind).toBe('deny');
+  expect(JSON.stringify(submitted)).toContain('[REDACTED]');
+  expect(JSON.stringify(submitted)).not.toContain('sk-');
+  const oversized = { ...state, denial: 'x'.repeat(4096) };
+  const overflow = reduceToolReviewKey(oversized, 'x', {}, true, undefined, false, 0);
+  if (overflow.kind !== 'state') throw new Error('missing overflow capture');
+  expect(
+    reduceToolReviewKey(overflow.state, '', { return: true }, true, undefined, false, 0),
+  ).toEqual({ kind: 'deny', reason: 'denial explanation omitted (too long)' });
+});
+
 it.each([
   [78, 2],
   [118, 16],

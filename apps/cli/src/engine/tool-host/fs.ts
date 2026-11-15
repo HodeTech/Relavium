@@ -1297,7 +1297,9 @@ async function prepareWrite(
     } catch (error) {
       if (preparationOwned) await releaseFailedPreparation(nativePrepared);
       if (error instanceof ToolPreparationError) throw error;
-      throw new HostDeniedError('filesystem metadata preparation refused');
+      throw new HostDeniedError(
+        'filesystem metadata preparation refused; permissions or unsupported filesystem metadata may prevent this write',
+      );
     }
     return nativePrepared;
   }

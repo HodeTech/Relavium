@@ -225,3 +225,13 @@ adapter or of an untested native target.
 > publication gates. Quiescent upgrade, exact proof/failure rules and remaining
 > implementation/platform acceptance belong to the
 > [canonical metadata contract](../reference/cli/native-filesystem-metadata.md).
+
+> **Amended 2026-11-15 by accepted [ADR-0127](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md):**
+> The corrected macOS design distinguishes parent-only MACL evidence from
+> replaceable-file metadata, preserves the exact admitted last-used name, and
+> requires runtime verification of the published target before success. The
+> [canonical metadata contract](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127)
+> owns roles, proof/failure rules and real-APFS evidence gates. Design acceptance
+> does not authorize implementation: the maintainer explicitly reserved that
+> next approval. Existing atomicity, journal, privacy and preserve-or-refuse
+> decisions remain intact; no native/platform acceptance is claimed here.

@@ -370,7 +370,7 @@ fn parent_snapshot(
         mode: info.mode(),
         flags,
         acl: capture_acl(parent.as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?,
-        attributes: supported_xattrs(parent.as_raw_fd())?,
+        attributes: supported_xattrs(parent.as_raw_fd(), AttributeRole::Parent)?,
         effective_uid: unsafe { libc::geteuid() },
         effective_gid: unsafe { libc::getegid() },
         groups,
@@ -457,8 +457,33 @@ fn check_write_access(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum AttributeRole {
+    Parent,
+    File,
+}
+
+impl AttributeRole {
+    fn admits(self, name: &[u8]) -> bool {
+        let generic = name.starts_with(b"user.")
+            && name.len() > b"user.".len()
+            && (matches!(self, Self::Parent) || !name.contains(&b'#'));
+        let role_specific = match self {
+            Self::Parent => name == b"com.apple.macl",
+            Self::File => name == b"com.apple.lastuseddate#PS",
+        };
+        // Parent-only bytes are revalidation evidence, never child defaults.
+        // Exact quarantine/last-used exceptions do not admit generic suffixes.
+        name == b"com.apple.quarantine"
+            || name == b"com.apple.provenance"
+            || generic
+            || role_specific
+    }
+}
+
 fn supported_xattrs(
     fd: RawFd,
+    role: AttributeRole,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::profile_api::NativeFailure> {
     use crate::profile_api::NativeFailure;
     let length = unsafe { libc::flistxattr(fd, ptr::null_mut(), 0, 0) };
@@ -483,10 +508,7 @@ fn supported_xattrs(
     }
     let mut total = size;
     for name in names[..names.len() - 1].split(|byte| *byte == 0) {
-        if name != b"com.apple.quarantine"
-            && name != b"com.apple.provenance"
-            && !(name.starts_with(b"user.") && name.len() > b"user.".len())
-        {
+        if !role.admits(name) {
             return Err(NativeFailure::Unsupported);
         }
         if result.len() >= MAX_ATTRIBUTE_COUNT {
@@ -582,7 +604,7 @@ impl crate::profile_api::Profile for MacosProfile {
         check_write_access(path, operation, &before)?;
         let acl = capture_acl(source.as_raw_fd())
             .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?;
-        let attributes = supported_xattrs(source.as_raw_fd())?;
+        let attributes = supported_xattrs(source.as_raw_fd(), AttributeRole::File)?;
         if source_state(source)? != before {
             return Err(crate::profile_api::NativeFailure::Changed);
         }
@@ -602,7 +624,7 @@ impl crate::profile_api::Profile for MacosProfile {
             || capture_acl(source.as_raw_fd())
                 .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?
                 != snapshot.acl
-            || supported_xattrs(source.as_raw_fd())? != snapshot.attributes
+            || supported_xattrs(source.as_raw_fd(), AttributeRole::File)? != snapshot.attributes
         {
             return Err(crate::profile_api::NativeFailure::Changed);
         }
@@ -671,7 +693,7 @@ impl crate::profile_api::Profile for MacosProfile {
             || capture_acl(stage.as_raw_fd())
                 .map_err(|_| crate::profile_api::NativeFailure::Unsupported)?
                 != snapshot.acl
-            || supported_xattrs(stage.as_raw_fd())? != snapshot.attributes
+            || supported_xattrs(stage.as_raw_fd(), AttributeRole::File)? != snapshot.attributes
         {
             return Err(crate::profile_api::NativeFailure::Unsupported);
         }
@@ -923,7 +945,7 @@ impl crate::profile_api::Profile for MacosProfile {
             }
             let acl =
                 capture_acl(guard.file().as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?;
-            let attributes = supported_xattrs(guard.file().as_raw_fd())?;
+            let attributes = supported_xattrs(guard.file().as_raw_fd(), AttributeRole::File)?;
             if observed_mask(host_mask)? != mask {
                 return Err(NativeFailure::Changed);
             }
@@ -966,7 +988,7 @@ impl crate::profile_api::Profile for MacosProfile {
             || before.flags != after.flags
             || after.size != 0
             || capture_acl(file.as_raw_fd()).map_err(|_| NativeFailure::Unsupported)? != acl
-            || supported_xattrs(file.as_raw_fd())? != attributes
+            || supported_xattrs(file.as_raw_fd(), AttributeRole::File)? != attributes
             || observed_mask(host_mask)? != mask
         {
             return Err(NativeFailure::Changed);
@@ -992,7 +1014,7 @@ impl crate::profile_api::Profile for MacosProfile {
             return Err(NativeFailure::Changed);
         }
         let acl = capture_acl(stage.as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?;
-        let attributes = supported_xattrs(stage.as_raw_fd())?;
+        let attributes = supported_xattrs(stage.as_raw_fd(), AttributeRole::File)?;
         if source_state(stage)? != state {
             return Err(NativeFailure::Changed);
         }
@@ -1023,7 +1045,7 @@ impl crate::profile_api::Profile for MacosProfile {
             || state.flags != snapshot.state.flags
             || capture_acl(stage.as_raw_fd()).map_err(|_| NativeFailure::Unsupported)?
                 != snapshot.acl
-            || supported_xattrs(stage.as_raw_fd())? != snapshot.attributes
+            || supported_xattrs(stage.as_raw_fd(), AttributeRole::File)? != snapshot.attributes
         {
             return Err(NativeFailure::Changed);
         }
@@ -1128,4 +1150,295 @@ fn verify_publication_entry(
         return Err(NativeFailure::Changed);
     }
     Ok(())
+}
+
+/// Host-private proof retained by the owned native publication task. No native
+/// state is exposed to the model or used to manufacture a replacement policy.
+pub(crate) struct PublicationProof<'a> {
+    pub payload: &'a std::fs::File,
+    pub parent: &'a std::fs::File,
+    pub parent_path: &'a std::path::Path,
+    pub target: &'a std::ffi::OsStr,
+    pub parent_snapshot: &'a MacosParentSnapshot,
+    pub payload_length: u64,
+    pub mask: Option<u32>,
+}
+
+pub(crate) fn verify_payload_length(
+    payload: &std::fs::File,
+    expected: u64,
+) -> Result<(), crate::profile_api::NativeFailure> {
+    if source_state(payload)?.size != expected {
+        return Err(crate::profile_api::NativeFailure::Changed);
+    }
+    Ok(())
+}
+
+impl PublicationProof<'_> {
+    fn verify(
+        &self,
+        policy: impl FnOnce(&std::path::Path) -> Result<(), crate::profile_api::NativeFailure>,
+    ) -> Result<(), crate::profile_api::NativeFailure> {
+        use crate::profile_api::{NativeFailure, Profile};
+        // Cancellation cannot turn an unverified publication into success.
+        // The caller maps every error from this post-rename cut to uncertainty.
+        #[cfg(test)]
+        {
+            crate::test_hooks::hit("macos-published-before-proof");
+            if crate::test_hooks::fail("macos-post-publish-proof") {
+                return Err(NativeFailure::Unsupported);
+            }
+        }
+        let target = publication_component(self.target)?;
+        verify_publication_entry(self.parent, &target, self.payload)?;
+        verify_payload_length(self.payload, self.payload_length)?;
+        policy(&self.parent_path.join(self.target))?;
+        MacosProfile::recheck_parent(self.parent_snapshot, self.parent, self.mask)?;
+        let named_parent = MacosProfile::open_parent(self.parent_path)?;
+        if MacosProfile::identity(&named_parent)? != MacosProfile::identity(self.parent)? {
+            return Err(NativeFailure::Changed);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn existing(
+        &self,
+        snapshot: &MacosExistingSnapshot,
+    ) -> Result<(), crate::profile_api::NativeFailure> {
+        use crate::profile_api::Profile;
+        self.verify(|path| MacosProfile::verify_existing_stage(snapshot, self.payload, path))
+    }
+
+    pub(crate) fn new_file(
+        &self,
+        snapshot: &MacosNewFileSnapshot,
+    ) -> Result<(), crate::profile_api::NativeFailure> {
+        use crate::profile_api::Profile;
+        self.verify(|path| MacosProfile::verify_inherited_stage(snapshot, self.payload, path))
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    use crate::profile_api::{Profile, WriteOperation};
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "relavium-macos-profile-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ));
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&root)
+                .expect("owned fixture");
+            Self(root)
+        }
+        fn file(&self, name: &str) -> File {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(self.0.join(name))
+                .expect("owned file")
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("owned fixture cleanup");
+        }
+    }
+    fn set_attribute(file: &File, name: &str, value: &[u8]) {
+        let name = std::ffi::CString::new(name).expect("fixture name");
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+    }
+    fn remove_attribute(file: &File, name: &str) {
+        let name = std::ffi::CString::new(name).expect("fixture name");
+        assert_eq!(
+            unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr(), 0) },
+            0
+        );
+    }
+    fn mask() -> u32 {
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "umask"])
+            .output()
+            .expect("mask");
+        assert!(output.status.success());
+        u32::from_str_radix(
+            std::str::from_utf8(&output.stdout)
+                .expect("mask text")
+                .trim(),
+            8,
+        )
+        .expect("mask value")
+    }
+
+    #[test]
+    fn file_suffixes_refuse_while_parent_values_remain_strict_evidence() {
+        let fixture = Fixture::new();
+        let mut source = fixture.file("source");
+        source.write_all(b"before").expect("source bytes");
+        let parent = MacosProfile::open_parent(&fixture.0).expect("parent");
+        for name in [
+            "user.test-content#C",
+            "user.note#N",
+            "user.note#B",
+            "user.note#PS",
+            "user.note#",
+            "user.note#unknown",
+            "user.note#C-c",
+            "user.note#C#PS",
+        ] {
+            set_attribute(&source, name, b"old content assertion");
+            assert!(MacosProfile::capture_existing(
+                &source,
+                &fixture.0.join("source"),
+                WriteOperation::Replace
+            )
+            .is_err());
+            remove_attribute(&source, name);
+            set_attribute(&parent, name, b"opaque parent evidence");
+            let snapshot =
+                MacosProfile::capture_parent(&parent, Some(mask())).expect("parent role");
+            assert!(MacosProfile::recheck_parent(&snapshot, &parent, Some(mask())).is_ok());
+            set_attribute(&parent, name, b"changed evidence");
+            assert!(MacosProfile::recheck_parent(&snapshot, &parent, Some(mask())).is_err());
+            remove_attribute(&parent, name);
+        }
+        set_attribute(&source, "user.note", b"opaque supported value");
+        assert!(MacosProfile::capture_existing(
+            &source,
+            &fixture.0.join("source"),
+            WriteOperation::Replace
+        )
+        .is_ok());
+        set_attribute(&parent, "com.apple.lastuseddate#PS", &[1; 16]);
+        assert!(MacosProfile::capture_parent(&parent, Some(mask())).is_err());
+    }
+
+    #[test]
+    fn exact_role_names_never_grant_cross_role_admission() {
+        assert!(AttributeRole::Parent.admits(b"com.apple.macl"));
+        assert!(!AttributeRole::File.admits(b"com.apple.macl"));
+        assert!(AttributeRole::File.admits(b"com.apple.lastuseddate#PS"));
+        assert!(!AttributeRole::Parent.admits(b"com.apple.lastuseddate#PS"));
+        for role in [AttributeRole::Parent, AttributeRole::File] {
+            assert!(!role.admits(b"com.apple.macl.extra"));
+            assert!(!role.admits(b"com.apple.lastuseddate#PSextra"));
+            assert!(!role.admits(b"user."));
+            assert!(role.admits(b"com.apple.quarantine"));
+        }
+    }
+
+    #[test]
+    fn last_used_file_value_is_preserved_exactly_and_changes_refuse() {
+        let fixture = Fixture::new();
+        let mut source = fixture.file("source");
+        source.write_all(b"before").expect("source bytes");
+        set_attribute(&source, "com.apple.lastuseddate#PS", &[1; 16]);
+        let snapshot = MacosProfile::capture_existing(
+            &source,
+            &fixture.0.join("source"),
+            WriteOperation::Replace,
+        )
+        .expect("file last-used profile");
+        let mut stage = fixture.file("payload");
+        let path = fixture.0.join("payload");
+        MacosProfile::apply_and_verify_existing(&snapshot, &source, &stage, &path)
+            .expect("preserve");
+        stage.write_all("é🙂".as_bytes()).expect("new bytes");
+        MacosProfile::verify_existing_stage(&snapshot, &stage, &path).expect("exact policy");
+        // The complete native equality check above includes the exact opaque value.
+        set_attribute(&stage, "com.apple.lastuseddate#PS", &[2; 16]);
+        assert!(MacosProfile::verify_existing_stage(&snapshot, &stage, &path).is_err());
+        remove_attribute(&stage, "com.apple.lastuseddate#PS");
+        assert!(MacosProfile::verify_existing_stage(&snapshot, &stage, &path).is_err());
+    }
+
+    #[test]
+    fn published_proof_checks_payload_length_identity_metadata_and_parent() {
+        let fixture = Fixture::new();
+        let mut source = fixture.file("source");
+        source
+            .write_all(b"old source has a different size")
+            .expect("old bytes");
+        let snapshot = MacosProfile::capture_existing(
+            &source,
+            &fixture.0.join("source"),
+            WriteOperation::Replace,
+        )
+        .expect("source snapshot");
+        let parent = MacosProfile::open_parent(&fixture.0).expect("parent");
+        let mask = Some(mask());
+        let parent_snapshot = MacosProfile::capture_parent(&parent, mask).expect("parent policy");
+        let mut payload = fixture.file("payload");
+        MacosProfile::apply_and_verify_existing(
+            &snapshot,
+            &source,
+            &payload,
+            &fixture.0.join("payload"),
+        )
+        .expect("stage policy");
+        payload.write_all("é🙂".as_bytes()).expect("reviewed bytes");
+        verify_payload_length(&payload, 6).expect("byte count");
+        MacosProfile::publish_existing(
+            &payload,
+            &parent,
+            std::ffi::OsStr::new("payload"),
+            &parent,
+            std::ffi::OsStr::new("source"),
+        )
+        .expect("actual rename");
+        let proof = PublicationProof {
+            payload: &payload,
+            parent: &parent,
+            parent_path: &fixture.0,
+            target: std::ffi::OsStr::new("source"),
+            parent_snapshot: &parent_snapshot,
+            payload_length: 6,
+            mask,
+        };
+        proof.existing(&snapshot).expect("published proof");
+        payload.set_len(5).expect("controlled size change");
+        assert!(proof.existing(&snapshot).is_err());
+        payload.set_len(6).expect("restore fixture length");
+        set_attribute(&payload, "user.changed#C", b"unsupported");
+        assert!(proof.existing(&snapshot).is_err());
+        remove_attribute(&payload, "user.changed#C");
+        set_attribute(&payload, "com.apple.lastuseddate#PS", &[1; 16]);
+        assert!(proof.existing(&snapshot).is_err());
+        remove_attribute(&payload, "com.apple.lastuseddate#PS");
+        set_attribute(&parent, "user.changed#C", b"changed parent");
+        assert!(proof.existing(&snapshot).is_err());
+        remove_attribute(&parent, "user.changed#C");
+        proof.existing(&snapshot).expect("unchanged fixture again");
+        std::fs::rename(fixture.0.join("source"), fixture.0.join("moved"))
+            .expect("move pinned payload");
+        let replacement = fixture.file("source");
+        replacement.set_len(6).expect("same size foreign identity");
+        assert!(proof.existing(&snapshot).is_err());
+    }
 }

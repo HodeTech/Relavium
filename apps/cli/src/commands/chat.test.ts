@@ -4069,6 +4069,52 @@ describe('makePlainPrinter', () => {
     expect(out()).not.toContain('secret-ish detail'); // only the code + a static hint, never the message
   });
 
+  it.each([
+    'filesystem metadata preparation refused; permissions or unsupported filesystem metadata may prevent this write',
+    'writes are not allowed in ask mode',
+    'tool denied by the user: prefer another approach',
+    'refusing to write inside a protected directory',
+  ])(
+    'prints the actual denial explanation before the neutral hint in continuing plain output: %s',
+    (message) => {
+      const { io, out } = captureIo();
+      makePlainPrinter(io)({
+        type: 'session:turn_completed',
+        ...STAMP,
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        error: { code: 'tool_denied', message, retryable: false },
+      });
+      expect(out()).toContain(`[turn failed: tool_denied — ${message}]`);
+      expect(out().indexOf(message)).toBeLessThan(out().indexOf('Check the reported reason'));
+      expect(out()).toContain('troubleshoot-tool-denials.md');
+      expect(out()).not.toContain('/mode');
+    },
+  );
+
+  it('protects redirected denial text and leaves one-shot code-only output unchanged', () => {
+    const credential = `sk-${'D'.repeat(60)}`;
+    const event = {
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'tool_denied',
+        message: `\u001b]0;title\u0007user: ${credential}\u202e`,
+        retryable: false,
+      },
+    } as const;
+    const continuing = captureIo();
+    makePlainPrinter(continuing.io)(event);
+    expect(continuing.out()).toContain('[REDACTED]');
+    for (const forbidden of ['sk-', '\u001b', '\u0007', '\u202e'])
+      expect(continuing.out()).not.toContain(forbidden);
+    const oneShot = captureIo();
+    makePlainPrinter(oneShot.io, false)(event);
+    expect(oneShot.out()).toBe('\n[turn failed: tool_denied]\n');
+  });
+
   it('renders the /compact·/trim hint for a context-overflow validation, never echoing the message (2.5.H)', () => {
     const { io, out } = captureIo();
     makePlainPrinter(io)({

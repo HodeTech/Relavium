@@ -2,9 +2,10 @@
  * Typed, discriminated errors thrown by the engine-side `ToolRegistry` dispatch (1.T). They mirror the
  * parser/sandbox error pattern (a base class with a stable `code` discriminant, narrowed on `code` and
  * never on `message`) and carry the closed-enum {@link ErrorCode} a run surfaces plus the retryable
- * split owned by docs/standards/error-handling.md. Messages are **secret-free**: they name a tool id, a
- * field, or a policy reason — never an argument VALUE (a resolved command/URL), a host stack, or a
- * secret. The taxonomy + the mapping rationale live in
+ * split owned by docs/standards/error-handling.md. Owned labels never interpolate a resolved argument,
+ * host stack or managed secret. An optional approval explanation is host-supplied diagnostic text;
+ * embedding hosts own its input protection and surfaces treat it as untrusted, not universally secret-free.
+ * The taxonomy + the mapping rationale live in
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#error-taxonomy) and ADR-0037.
  */
 
@@ -69,7 +70,8 @@ export type ToolPolicyDenyReason =
  * the **existing** `tool_denied` run code (already absent from `RETRYABLE_ERROR_CODES`), so a user denial is
  * **fatal, never retried** (re-issuing the same call just re-prompts/re-denies — like a guardrail denial). A
  * distinct class from {@link ToolPolicyError} (a guardrail/grant denial of the engine's OWN policy): this is
- * the user's interactive consent verdict, with its own reason discriminant. The message is secret-free.
+ * the user's interactive consent verdict, with its own reason discriminant. Its message may include a
+ * host-supplied user explanation; the code itself does not establish that text's origin or privacy.
  */
 export class ToolDeniedByUserError extends ToolDispatchError {
   readonly code = 'tool_denied';

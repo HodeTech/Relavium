@@ -96,6 +96,57 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 });
 
 describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
+  it('discloses diagnostic reason output and redacts the submitted approval explanation (ADR-0127)', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const h = mountChat(store);
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+    const pending = store.requestApproval(approvalReq, false);
+    await waitFor(() => (h.lastFrame() ?? '').includes('Review tool operation'));
+    await settleFrames();
+    expect(store.getSnapshot().review?.screen).toBe('card');
+    h.stdin.write('c');
+    await waitFor(() => (h.lastFrame() ?? '').includes('session/redirected diagnostics'));
+    await settleFrames();
+    expect(store.getSnapshot().review?.denial).toBe('');
+    let typed = '';
+    for (const char of `please avoid sk-${'F'.repeat(60)}`) {
+      typed += char;
+      h.stdin.write(char);
+      await waitFor(() => store.getSnapshot().review?.denial === typed);
+      expect(store.getSnapshot().review?.denial).toBe(typed);
+      await settleFrames();
+    }
+    h.stdin.write('\r');
+    await expect(pending).resolves.toEqual({
+      outcome: 'reject',
+      reason: 'please avoid [REDACTED]',
+    });
+  });
+
+  it('renders untrusted denial diagnostics with the neutral hint in the mounted standalone chat', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const h = mountChat(store);
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+    store.apply(turnStarted('2026-11-15T00:00:00.000Z'));
+    store.apply({
+      type: 'session:turn_completed',
+      sessionId: 'sess-1',
+      sequenceNumber: 2,
+      timestamp: '2026-11-15T00:00:01.000Z',
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'tool_denied',
+        message: `user explanation: sk-${'G'.repeat(60)}`,
+        retryable: false,
+      },
+    });
+    await waitFor(() => (h.lastFrame() ?? '').includes('[REDACTED]'));
+    expect(h.lastFrame()).toContain('The tool was denied.');
+    expect(h.lastFrame()).not.toContain('sk-');
+    expect(h.lastFrame()).not.toContain('switch with');
+  });
+
   it('activates after commit and displays a notice delivered by the activation hook', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const onActivated = vi.fn(() => store.notice('External effect needs attention.'));

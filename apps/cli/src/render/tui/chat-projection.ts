@@ -4,7 +4,7 @@ import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
-import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
 import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type {
@@ -28,40 +28,41 @@ export { sanitizeInline, stripTerminalControls };
 /** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
  *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */
 export const MAX_APPROVAL_REASON_CHARS = 300;
+export const MAX_APPROVAL_REASON_INPUT_CHARS = 4096;
+const OMITTED_DENIAL_EXPLANATION = 'denial explanation omitted (too long)';
 
-/**
- * Sanitize + bound a USER-typed denial reason for the approval seam (`[c]`, Step 14): strip terminal/bidi controls
- * and collapse to a single line ({@link sanitizeInline}), trim, and cap the length. Returns `undefined` for an
- * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
- * flows into `ToolApprovalDecision.reject.reason`; it is the user's own text (not a secret they'd hide from
- * themselves), but bounding + control-stripping keep it safe for the error line, logs, and `--json`.
- */
-export function sanitizeApprovalReason(text: string): string | undefined {
-  const clean = sanitizeInline(text).trim();
-  if (clean.length === 0) return undefined;
-  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
-  // Cap by code UNIT, but back off one unit if the boundary splits a surrogate pair (a high surrogate with its
-  // low half beyond the cap) so the truncation never leaves a lone surrogate (a `�` in the error line / --json).
-  // charCodeAt (NOT codePointAt) is REQUIRED here: we must see the raw UTF-16 unit to detect a LONE high surrogate;
-  // codePointAt would combine the pair into one code point, defeating the split-detection.
-  const lastUnit = clean.charCodeAt(MAX_APPROVAL_REASON_CHARS - 1); // NOSONAR — charCodeAt is intentional (lone-surrogate detection)
-  const end =
-    lastUnit >= 0xd800 && lastUnit <= 0xdbff
-      ? MAX_APPROVAL_REASON_CHARS - 1
-      : MAX_APPROVAL_REASON_CHARS;
-  return clean.slice(0, end);
+function capCodeUnits(text: string, maximum: number): string {
+  const lastUnit = text.charCodeAt(maximum - 1); // NOSONAR — inspect a possible split surrogate
+  const end = lastUnit >= 0xd800 && lastUnit <= 0xdbff ? maximum - 1 : maximum;
+  return text.slice(0, end);
+}
+
+/** Mixed host/user diagnostics, never proof of a secret-free origin or permission to retry. */
+export function projectDenialExplanation(message: string): string {
+  if (message.length > 4096) return OMITTED_DENIAL_EXPLANATION;
+  const clean = sanitizeUntrustedInline(message).replace(/\s+/gu, ' ').trim();
+  return clean.length <= 1024 ? clean : `${capCodeUnits(clean, 1023)}…`;
 }
 
 /**
- * Error codes whose `errorMessage` is safe to render in-chat. This leans on a load-bearing project-wide
- * contract, not a two-string allowlist: EVERY `tool_denied` / `tool_unavailable` message across the engine is,
- * by the `ToolDispatchError` reason-only rule (packages/core/src/tools/errors.ts; tool-registry.md §errors), a
- * static host/engine-authored LABEL that never interpolates an argument value, path, URL, or secret — the
- * ADR-0057 approval-floor denials ("not allowed in ask mode (read-only)", "refusing to write inside a protected
- * directory", "fs (read-only in this session)") plus every `ToolPolicyError` / `HostDeniedError` reason. Other
- * codes (validation / execution_failed / …) MAY carry prompt/model context, so only the code is shown for them.
- * A new denial subclass becomes chat-visible automatically once its code is one of these — which is safe
- * precisely because the reason-only contract binds it too (the message is still terminal-sanitized regardless).
+ * Sanitize + bound a USER-typed diagnostic explanation for the approval seam (`[c]`, Step 14).
+ * Run the existing finite secret backstop on the original input before control normalization and capping.
+ * This does not recognize arbitrary personal text or secret fragments. Returns `undefined` for an
+ * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
+ * flows into `ToolApprovalDecision.reject.reason`, including existing error/event/JSON diagnostic copies.
+ */
+export function sanitizeApprovalReason(text: string): string | undefined {
+  if (text.length > MAX_APPROVAL_REASON_INPUT_CHARS) return OMITTED_DENIAL_EXPLANATION;
+  const clean = sanitizeUntrustedInline(text).trim();
+  if (clean.length === 0) return undefined;
+  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
+  return capCodeUnits(clean, MAX_APPROVAL_REASON_CHARS);
+}
+
+/**
+ * Vetted message families. tool_denied can combine fixed host framing with a user's diagnostic explanation;
+ * it always uses bounded untrusted projection. Other codes keep their existing reason/status contracts.
+ * Unknown/tool_failed messages can contain tool/model context and are not echoed.
  */
 const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set([
   'tool_denied',
@@ -71,7 +72,7 @@ const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set([
 
 /**
  * Error codes whose `errorMessage` is a PROVIDER-authored, already-redacted status line safe to render in-chat —
- * distinct from {@link SAFE_MESSAGE_CODES} (static host-authored tool-denial labels) and justified separately.
+ * distinct from {@link SAFE_MESSAGE_CODES} and justified separately.
  * These carry the upstream provider's own error text (`provider_auth` → "402 Insufficient Balance" / "401
  * Invalid API key", `provider_rate_limit` → "429 …", `provider_unavailable` → "503 …", `content_filter` → the
  * moderation reason). Surfacing it is safe because the seam already scrubs secret material at the single
@@ -88,18 +89,16 @@ const PROVIDER_MESSAGE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code +,
- * for the vetted approval-floor codes, its secret-free reason), the turn's token usage, and its duration.
- * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
+ * A one-line per-turn summary: counts/codes and selected diagnostic families, with tool denials protected
+ * as mixed-origin text. The finite backstop does not promise arbitrary user content is nonsensitive.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  // Terminal-sanitize the whitelisted reason (like every other display string here) BEFORE the whitespace
-  // collapse — the whitelisted messages are host-authored ASCII today, but the render boundary must strip any
-  // ANSI/OSC/control byte regardless so the whitelist stays robust to a future producer.
   const reason =
     summary.errorMessage === undefined
       ? ''
-      : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+      : summary.errorCode === 'tool_denied'
+        ? projectDenialExplanation(summary.errorMessage)
+        : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;
@@ -107,12 +106,7 @@ export function formatTurnSummary(summary: TurnSummary): string {
     reason.length > 0 &&
     (SAFE_MESSAGE_CODES.has(summary.errorCode) || PROVIDER_MESSAGE_CODES.has(summary.errorCode))
   ) {
-    // Surface WHY the turn died — the reason is the only place it reaches the user. Two vetted families:
-    // an approval-floor denial (`error: tool_denied — not allowed in ask mode (read-only)`, a static
-    // host-authored label) and a provider status line (`error: provider_auth — 402 Insufficient Balance`, the
-    // upstream message, already secret-scrubbed at the seam). Unlike the run path's final-summary.ts (which
-    // renders errorMessage for every code), the chat path restricts it to these two secret-free sets, since a
-    // chat turn is interactive/lower-trust — every other code (e.g. `tool_failed`) shows only its code.
+    // Explain only vetted families. A denial's fixed framing does not make its optional user text trusted.
     head = `error: ${summary.errorCode} — ${reason}`;
   } else if (summary.errorCode === 'tool_failed') {
     // A tool call ended the turn (a repeated failure spent the correction budget, or a non-recoverable tool
@@ -228,7 +222,7 @@ export function errorRecoveryHint(
       // proceed without it; guide to rephrasing / re-wiring — mirrors the tool_failed no-blind-retry correction.
       return "That tool isn't wired for this session (a host/config gap). The session is still active; rephrase to avoid needing it, or wire the capability and start a fresh session.";
     case 'tool_denied':
-      return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
+      return "The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.";
     case 'budget_exceeded':
       return 'The turn hit the session cost cap — raise `[chat].max_cost_microcents`, or `/clear` to reset the running total. The session is still active.';
     case 'effect_needs_attention':

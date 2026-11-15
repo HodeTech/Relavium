@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-13
+> Last updated: 2026-11-15
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -58,6 +58,72 @@ broader provider/MCP management is MVP-9. The
 owns delivered scope and acceptance evidence.
 
 ## Next work — the CLI MVP
+
+**Active manual-test correction (2026-11-15): design accepted; implementation authorized and in progress.**
+The reported pre-correction code rejected the observed project parent's
+`com.apple.macl` and ordinary test files' `com.apple.lastuseddate#PS` during
+read-only metadata preparation. The generic chat denial hint incorrectly
+attributed that refusal to mode/policy. The maintainer requested a planned
+correction after reviewing the analysis. Historical MVP-3 acceptance does not
+cover these newly observed scenarios.
+
+One cohesive increment is planned, avoiding separate review cycles for each
+attribute or UI string:
+
+1. **Design accepted 2026-11-15:** the supplied review findings have been checked
+   against code and primary sources and reconciled in
+   [ADR-0127](../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md),
+   its [native profile](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127)
+   and [chat guidance](../reference/cli/chat-session.md#denial-guidance-design--adr-0127).
+   The maintainer subsequently granted the separately reserved implementation
+   approval on 2026-11-15. Source work and its acceptance cycle are in progress;
+   design acceptance alone does not certify product/platform behavior.
+   The [supplied-review disposition](phases/phase-2.6-conversational-authoring.md#adr-0127-supplied-review-and-design-acceptance-2026-11-15)
+   records confirmed findings and corrected review assumptions individually.
+   The [further-review disposition](phases/phase-2.6-conversational-authoring.md#adr-0127-further-supplied-review-reconciliation-2026-11-15)
+   adds the generic file-attribute suffix guard, diagnostic trust policy and
+   completed-payload size expectation without granting implementation authority.
+   The [application comparison](../analysis/macos-file-write-compatibility-2026-11-15.md)
+   traces pinned OpenCode/Codex local in-place writers and records Claude Code's
+   unverified writer internals. Their compatibility is not proof of Relavium's
+   atomic replacement/metadata guarantee; no in-place fallback is authorized.
+   The [implementation author checkpoint](phases/phase-2.6-conversational-authoring.md#adr-0127-implementation-author-verification-2026-11-15)
+   records current source, local verification, real operator interactions and
+   the controlled performance comparison; independent source review is in progress.
+2. Add distinct parent/file inspection roles in the macOS adapter; retain
+   bounded parent MACL evidence without transferring it; preserve exact
+   last-used file values, without adding that name to the parent profile. Require
+   the canonical file-role suffix guard; parent-only evidence is never copied.
+   Require
+   joined runtime post-publication target/parent proof before successful
+   settlement; failed proof keeps the existing durable uncertainty path. Correct
+   generic denial guidance and the missing plain explanation, applying the
+   canonical user-diagnostic redaction/output policy without adding an error
+   code or exposing native state; include the linked troubleshooting guide and
+   satisfy its public-URL delivery check.
+   Add native and actual host regressions,
+   including attributed-parent create/overwrite/append/edit, create/use/edit,
+   metadata races, unsupported/refused cases, approval parity and journal state.
+   Require all four host write operations under a real OS-managed MACL parent
+   and a separate actual-user-interaction create/use/edit case; synthetic probes
+   alone cannot close those acceptance gates. Record supported before/after
+   p50/p95 host-path measurements under the
+   [performance evidence requirements](../reference/cli/native-filesystem-metadata.md#performance-evidence-before-implementation-acceptance).
+   The
+   [verification runbook](../runbooks/verify-macos-write-metadata.md)
+   owns reproduction commands and the evidence procedure.
+3. Run affected native/host/UI checks and the required workspace/build checks;
+   regenerate source-bound native assets. Commit the correction, verify/fix
+   findings from two fresh review rounds and a separate native security
+   sitting, then update the canonical acceptance record. Current-head platform,
+   artifact/consumer and PR checks remain required; local APFS success alone
+   does not certify the declared target matrix.
+
+This correction does not activate MVP-4's still-proposed denied-tool feedback
+or interrupted-turn history decisions (ADR-0117/0119). File-level MACL and
+unlisted metadata remain explicit unsupported cases under the accepted design;
+no attribute deletion, broad OS permission change, in-place write or automatic
+retry is part of the correction.
 
 **Checkpoint: MVP-3 is implemented on `development`; MVP-4 is next.**
 MVP-1 and MVP-2 are complete on `main`. The

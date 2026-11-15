@@ -222,6 +222,8 @@ pub struct StagedExisting {
     prepared: PreparedSource,
     stage_directory: File,
     payload: File,
+    #[cfg(target_os = "macos")]
+    payload_length: u64,
     owned: crate::stage_index::OwnedStage<CurrentProfile>,
 }
 
@@ -447,6 +449,8 @@ fn stage_existing(
             "first-payload-verify",
             CurrentProfile::verify_existing_stage(&prepared.snapshot, &payload, &payload_path)
         )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::verify_payload_length(&payload, after.len() as u64)?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -458,6 +462,8 @@ fn stage_existing(
         prepared,
         stage_directory,
         payload,
+        #[cfg(target_os = "macos")]
+        payload_length: after.len() as u64,
         owned,
     })
 }
@@ -496,6 +502,8 @@ fn publish_staged_existing(
             &state.payload,
             &state.owned.stage_path().join("payload"),
         )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::verify_payload_length(&state.payload, state.payload_length)?;
         let target = state
             .prepared
             .path
@@ -509,6 +517,18 @@ fn publish_staged_existing(
             &state.prepared.parent,
             target,
         )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::PublicationProof {
+            payload: &state.payload,
+            parent: &state.prepared.parent,
+            parent_path: &state.prepared.parent_path,
+            target,
+            parent_snapshot: &state.prepared.parent_snapshot,
+            payload_length: state.payload_length,
+            mask,
+        }
+        .existing(&state.prepared.snapshot)
+        .map_err(|_| NativeFailure::PossiblyPublished)?;
         state
             .owned
             .recheck_authority()
@@ -879,11 +899,288 @@ pub struct PreparedNew {
     target: std::ffi::OsString,
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod macos_publication_tests {
+    use super::*;
+    use crate::profile_api::{NativeFailure, NativePrimary};
+    use std::sync::atomic::AtomicBool;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("owned fixture cleanup");
+        }
+    }
+    fn fixture(existing: bool, bytes: &[u8]) -> (Fixture, OwnedPreparedStage, u32) {
+        fixture_with_attributes(existing, bytes, false)
+    }
+    fn dense_attributes(file: &File) {
+        use std::os::fd::AsRawFd;
+        for index in 0..64 {
+            let name = std::ffi::CString::new(format!("user.relavium.bench{index}")).expect("name");
+            let value = b"synthetic-value";
+            assert_eq!(
+                unsafe {
+                    libc::fsetxattr(
+                        file.as_raw_fd(),
+                        name.as_ptr(),
+                        value.as_ptr().cast(),
+                        value.len(),
+                        0,
+                        0,
+                    )
+                },
+                0
+            );
+        }
+    }
+    fn fixture_with_attributes(
+        existing: bool,
+        bytes: &[u8],
+        dense: bool,
+    ) -> (Fixture, OwnedPreparedStage, u32) {
+        let root = std::env::temp_dir().join(format!(
+            "relavium-macos-publication-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .expect("fixture");
+        let fixture = Fixture(root);
+        let home = fixture.0.join("home");
+        drop(CurrentProfile::create_private_directory(&home).expect("private home"));
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "umask"])
+            .output()
+            .expect("mask");
+        assert!(output.status.success());
+        let mask = u32::from_str_radix(
+            std::str::from_utf8(&output.stdout)
+                .expect("mask text")
+                .trim(),
+            8,
+        )
+        .expect("mask value");
+        let parent = CurrentProfile::open_parent(&fixture.0).expect("parent");
+        if dense {
+            dense_attributes(&parent);
+        }
+        let parent_snapshot =
+            CurrentProfile::capture_parent(&parent, Some(mask)).expect("parent policy");
+        let cancellation = AtomicBool::new(false);
+        let state = if existing {
+            let path = fixture.0.join("target");
+            std::fs::write(&path, b"before").expect("source");
+            let source = File::open(&path).expect("source handle");
+            if dense {
+                dense_attributes(&source);
+            }
+            let operation = WriteOperation::Replace;
+            let snapshot =
+                CurrentProfile::capture_existing(&source, &path, operation).expect("source policy");
+            let identity = CurrentProfile::identity(&source).expect("source identity");
+            OwnedPreparedStage::Existing(
+                stage_existing(
+                    PreparedSource {
+                        source,
+                        path,
+                        operation,
+                        snapshot,
+                        identity,
+                        parent,
+                        parent_path: fixture.0.clone(),
+                        parent_snapshot,
+                    },
+                    &home,
+                    b"before",
+                    bytes,
+                    "0123456789abcdef0123456789abcdef",
+                    Some(mask),
+                    &cancellation,
+                )
+                .expect("owned existing stage"),
+            )
+        } else {
+            OwnedPreparedStage::New(
+                stage_new(
+                    PreparedNew {
+                        parent,
+                        parent_path: fixture.0.clone(),
+                        parent_snapshot,
+                        target: "target".into(),
+                    },
+                    &home,
+                    bytes,
+                    "0123456789abcdef0123456789abcdef",
+                    Some(mask),
+                    &cancellation,
+                )
+                .expect("owned new stage"),
+            )
+        };
+        (fixture, state, mask)
+    }
+    fn publish(state: OwnedPreparedStage, mask: u32) -> std::result::Result<(), NativeFailure> {
+        match state {
+            OwnedPreparedStage::Existing(state) => {
+                publish_staged_existing(state, Some(mask), &AtomicBool::new(false))
+            }
+            OwnedPreparedStage::New(state) => {
+                publish_staged_new(state, Some(mask), &AtomicBool::new(false))
+            }
+        }
+    }
+
+    #[test]
+    fn empty_and_multibyte_publication_use_completed_payload_length() {
+        for existing in [false, true] {
+            for bytes in [b"".as_slice(), "é🙂".as_bytes()] {
+                let (fixture, stage, mask) = fixture(existing, bytes);
+                publish(stage, mask).expect("verified publication");
+                assert_eq!(
+                    std::fs::read(fixture.0.join("target")).expect("published bytes"),
+                    bytes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn payload_length_change_refuses_before_publication() {
+        for existing in [false, true] {
+            let (fixture, stage, mask) = fixture(existing, b"reviewed");
+            match &stage {
+                OwnedPreparedStage::Existing(state) => {
+                    state.payload.set_len(2).expect("controlled stage change")
+                }
+                OwnedPreparedStage::New(state) => {
+                    state.payload.set_len(2).expect("controlled stage change")
+                }
+            }
+            assert!(publish(stage, mask).is_err());
+            if existing {
+                assert_eq!(
+                    std::fs::read(fixture.0.join("target")).expect("unchanged"),
+                    b"before"
+                );
+            } else {
+                assert!(!fixture.0.join("target").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn post_publication_failure_is_uncertain_without_rollback() {
+        for existing in [false, true] {
+            let (fixture, stage, mask) = fixture(existing, b"reviewed");
+            crate::test_hooks::inject_failure(Some("macos-post-publish-proof"));
+            let result = publish(stage, mask);
+            crate::test_hooks::inject_failure(None);
+            assert!(matches!(
+                result,
+                Err(NativeFailure::CleanupFacts {
+                    primary: NativePrimary::PossiblyPublished,
+                    uncertain: false
+                })
+            ));
+            assert_eq!(
+                std::fs::read(fixture.0.join("target")).expect("already published"),
+                b"reviewed"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "contributor-only verifier timing; no wall-clock acceptance threshold"]
+    fn bounded_post_publication_proof_timing() {
+        for existing in [false, true] {
+            for dense in [false, true] {
+                let (_fixture, state, mask) =
+                    fixture_with_attributes(existing, &vec![b'x'; 65536], dense);
+                let mut samples = Vec::new();
+                match state {
+                    OwnedPreparedStage::Existing(mut state) => {
+                        CurrentProfile::publish_existing(
+                            &state.payload,
+                            &state.stage_directory,
+                            std::ffi::OsStr::new("payload"),
+                            &state.prepared.parent,
+                            state.prepared.path.file_name().expect("name"),
+                        )
+                        .expect("rename");
+                        let proof = crate::macos::PublicationProof {
+                            payload: &state.payload,
+                            parent: &state.prepared.parent,
+                            parent_path: &state.prepared.parent_path,
+                            target: state.prepared.path.file_name().expect("target"),
+                            parent_snapshot: &state.prepared.parent_snapshot,
+                            payload_length: state.payload_length,
+                            mask: Some(mask),
+                        };
+                        for index in 0..110 {
+                            let started = std::time::Instant::now();
+                            proof
+                                .existing(&state.prepared.snapshot)
+                                .expect("verified published target");
+                            if index >= 10 {
+                                samples.push(started.elapsed().as_nanos());
+                            }
+                        }
+                        state.owned.cleanup().expect("joined cleanup");
+                    }
+                    OwnedPreparedStage::New(mut state) => {
+                        CurrentProfile::publish_new(
+                            &state.payload,
+                            &state.stage_directory,
+                            std::ffi::OsStr::new("payload"),
+                            &state.prepared.parent,
+                            &state.prepared.target,
+                        )
+                        .expect("rename");
+                        let proof = crate::macos::PublicationProof {
+                            payload: &state.payload,
+                            parent: &state.prepared.parent,
+                            parent_path: &state.prepared.parent_path,
+                            target: &state.prepared.target,
+                            parent_snapshot: &state.prepared.parent_snapshot,
+                            payload_length: state.payload_length,
+                            mask: Some(mask),
+                        };
+                        for index in 0..110 {
+                            let started = std::time::Instant::now();
+                            proof
+                                .new_file(&state.snapshot)
+                                .expect("verified published target");
+                            if index >= 10 {
+                                samples.push(started.elapsed().as_nanos());
+                            }
+                        }
+                        state.owned.cleanup().expect("joined cleanup");
+                    }
+                }
+                samples.sort_unstable();
+                println!(
+                    "RELAVIUM_MACOS_PROOF_TIMING:{existing}:{dense}:100:{}:{}",
+                    samples[49], samples[94]
+                );
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct StagedNew {
     prepared: PreparedNew,
     stage_directory: File,
     payload: File,
+    #[cfg(target_os = "macos")]
+    payload_length: u64,
     snapshot: <CurrentProfile as Profile>::NewFileSnapshot,
     owned: crate::stage_index::OwnedStage<CurrentProfile>,
 }
@@ -1052,7 +1349,10 @@ fn stage_new(
         trace_failure!(
             "first-payload-verify",
             CurrentProfile::verify_inherited_stage(&snapshot, &payload, &payload_path)
-        )
+        )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::verify_payload_length(&payload, after.len() as u64)?;
+        Ok(())
     })();
     if let Err(error) = result {
         #[cfg(test)]
@@ -1063,6 +1363,8 @@ fn stage_new(
         prepared,
         stage_directory,
         payload,
+        #[cfg(target_os = "macos")]
+        payload_length: after.len() as u64,
         snapshot,
         owned,
     })
@@ -1096,6 +1398,8 @@ fn publish_staged_new(
             &state.payload,
             &state.owned.stage_path().join("payload"),
         )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::verify_payload_length(&state.payload, state.payload_length)?;
         state.owned.recheck_authority()?;
         CurrentProfile::publish_new(
             &state.payload,
@@ -1104,6 +1408,18 @@ fn publish_staged_new(
             &state.prepared.parent,
             &state.prepared.target,
         )?;
+        #[cfg(target_os = "macos")]
+        crate::macos::PublicationProof {
+            payload: &state.payload,
+            parent: &state.prepared.parent,
+            parent_path: &state.prepared.parent_path,
+            target: &state.prepared.target,
+            parent_snapshot: &state.prepared.parent_snapshot,
+            payload_length: state.payload_length,
+            mask,
+        }
+        .new_file(&state.snapshot)
+        .map_err(|_| NativeFailure::PossiblyPublished)?;
         state
             .owned
             .recheck_authority()
@@ -1736,6 +2052,10 @@ mod producer_crash_tests {
                 crate::test_hooks::checkpoint("child-stage-error");
             }
             let _stage = result.expect("stage new");
+            #[cfg(target_os = "macos")]
+            if crate::test_hooks::selected("macos-published-before-proof") {
+                publish_staged_new(_stage, mask, &cancelled).expect("published proof cut");
+            }
         } else {
             crate::test_hooks::checkpoint("child-source-open");
             let source = open_source(&target).expect("source");
@@ -1774,6 +2094,10 @@ mod producer_crash_tests {
                 crate::test_hooks::checkpoint("child-stage-error");
             }
             let _stage = result.expect("stage existing");
+            #[cfg(target_os = "macos")]
+            if crate::test_hooks::selected("macos-published-before-proof") {
+                publish_staged_existing(_stage, mask, &cancelled).expect("published proof cut");
+            }
         }
         panic!("configured phase was not reached");
     }
@@ -1786,6 +2110,10 @@ mod producer_crash_tests {
             ("partial-payload", true),
         ] {
             native_producer_partial_crash_case(phase, is_new);
+        }
+        #[cfg(target_os = "macos")]
+        for is_new in [false, true] {
+            native_producer_partial_crash_case("macos-published-before-proof", is_new);
         }
     }
 
@@ -1866,10 +2194,17 @@ mod producer_crash_tests {
         let stage = root.join(format!(
             ".relavium-fs-stage-v1.{pid}.00112233445566778899aabbccddeeff"
         ));
-        let length = std::fs::metadata(stage.join("payload"))
-            .expect("pinned payload")
-            .len();
-        if phase == "partial-payload" {
+        let published = phase == "macos-published-before-proof";
+        let length = std::fs::metadata(if published {
+            target.clone()
+        } else {
+            stage.join("payload")
+        })
+        .expect("pinned payload")
+        .len();
+        if published {
+            assert_eq!(length, 1024 * 1024);
+        } else if phase == "partial-payload" {
             assert_eq!(length, 512 * 1024);
         } else {
             assert_eq!(length, 0);
@@ -1877,7 +2212,12 @@ mod producer_crash_tests {
         child.0.kill().expect("kill child");
         child.0.wait().expect("join child");
         reader.join().expect("join receipt reader");
-        if is_new {
+        if published {
+            assert_eq!(
+                std::fs::read(&target).expect("published bytes"),
+                vec![b'x'; 1024 * 1024]
+            );
+        } else if is_new {
             assert!(!target.exists());
         } else {
             assert_eq!(std::fs::read(&target).expect("unchanged target"), b"before");
@@ -1885,6 +2225,12 @@ mod producer_crash_tests {
         let recovered = crate::stage_index::recover::<CurrentProfile>(&home).expect("recovery");
         assert_eq!(recovered.removed, 1);
         assert!(!stage.exists());
+        if published {
+            assert_eq!(
+                std::fs::read(&target).expect("publication survives recovery"),
+                vec![b'x'; 1024 * 1024]
+            );
+        }
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
     fn seed_partial_metadata(_root: &Path, _target: &Path, phase: &str) {

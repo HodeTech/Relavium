@@ -413,44 +413,50 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe('');
   });
 
-  it('[c] typed-reason capture: opens on a pending approval, records the reason, rejects WITH it (Step 14)', async () => {
-    const made = makeSession();
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(made.session),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER); // start the chat
-    await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
+  it.each([
+    ['use the project config instead', 'use the project config instead'],
+    [`please avoid sk-${'E'.repeat(60)}`, 'please avoid [REDACTED]'],
+  ])(
+    '[c] typed-reason capture protects the submitted diagnostic: %s',
+    async (typedReason, expectedReason) => {
+      const made = makeSession();
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER); // start the chat
+      await flush();
+      expect(c.getSnapshot().mode).toBe('chat');
 
-    // Inject a pending per-tool approval (a governed write) into the live session store.
-    const request = {
-      toolId: 'write_file',
-      action: 'fs_write',
-      preview: { path: 'notes.md' },
-    } as const;
-    const pending = made.store.requestApproval(request, true);
+      // Inject a pending per-tool approval (a governed write) into the live session store.
+      const request = {
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: 'notes.md' },
+      } as const;
+      const pending = made.store.requestApproval(request, true);
 
-    // `[c]` opens the typed-reason capture (an empty buffer) — the [y]/[a]/[n] prompt is replaced.
-    c.handleKey('c', {});
-    expect(c.getSnapshot().reasonDraft).toEqual({ text: '', cursor: 0 });
+      // `[c]` opens the typed-reason capture (an empty buffer) — the [y]/[a]/[n] prompt is replaced.
+      c.handleKey('c', {});
+      expect(c.getSnapshot().reasonDraft).toEqual({ text: '', cursor: 0 });
 
-    // Type a reason: a char that would OTHERWISE be an approval answer ('n'/'y') is now ordinary buffer text.
-    type(c, 'use the project config instead');
-    expect(c.getSnapshot().reasonDraft?.text).toBe('use the project config instead');
+      // Type a reason: a char that would OTHERWISE be an approval answer ('n'/'y') is now ordinary buffer text.
+      type(c, typedReason);
+      expect(c.getSnapshot().reasonDraft?.text).toBe(typedReason);
 
-    // Enter submits the reject WITH the sanitized reason; the capture closes.
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().reasonDraft).toBeUndefined();
-    await expect(pending).resolves.toEqual({
-      outcome: 'reject',
-      reason: 'use the project config instead',
-    });
-  });
+      // Enter submits the reject WITH the sanitized reason; the capture closes.
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().reasonDraft).toBeUndefined();
+      await expect(pending).resolves.toEqual({
+        outcome: 'reject',
+        reason: expectedReason,
+      });
+    },
+  );
 
   it('[c] then Esc cancels the reason capture — the approval stays pending, a later [n] plain-rejects (Step 14)', async () => {
     const made = makeSession();

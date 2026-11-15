@@ -1,4 +1,4 @@
-import { sanitizeApprovalReason } from './chat-projection.js';
+import { MAX_APPROVAL_REASON_INPUT_CHARS, sanitizeApprovalReason } from './chat-projection.js';
 import type { ChatKey } from './chat-input.js';
 import {
   projectReviewPage,
@@ -193,7 +193,7 @@ export function toolReviewPage(
           15 -
           headerRows -
           (state.searching ? 2 : 0) -
-          (state.denial === undefined ? 0 : 2) -
+          (state.denial === undefined ? 0 : 3) -
           (state.message === '' ? 0 : 2),
       ),
     ),
@@ -227,8 +227,11 @@ function reduceDenialKey(state: ToolReviewState, input: string, key: ChatKey): R
     const reason = sanitizeApprovalReason(denial);
     return reason === undefined ? { kind: 'deny' } : { kind: 'deny', reason };
   }
-  if (key.backspace || key.delete) return reviewChange(state, { denial: denial.slice(0, -1) });
-  if ([...input].length === 1 && denial.length < 300)
+  if (key.backspace || key.delete)
+    return reviewChange(state, { denial: denial.slice(0, -([...denial].at(-1)?.length ?? 1)) });
+  // Preserve the original submitted explanation through redaction. One overflow
+  // code point makes the submission omit the whole reason rather than echo a raw prefix.
+  if ([...input].length === 1 && denial.length <= MAX_APPROVAL_REASON_INPUT_CHARS)
     return reviewChange(state, { denial: denial + input });
   return { kind: 'none' };
 }

@@ -53,9 +53,8 @@ export interface TurnSummary {
   readonly model?: string;
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
-  /** The classified error message. `formatTurnSummary` renders it ONLY for the vetted secret-free approval-floor
-   *  codes (`tool_denied` / `tool_unavailable`, whose message is a host-supplied label) — other codes' messages
-   *  may carry prompt context, so only `errorCode` is shown for them. */
+  /** Classified diagnostic text. The projection limits display to vetted families and treats tool_denied
+   *  as mixed host/user text requiring bounded untrusted rendering. Unknown tool/model context is not echoed. */
   readonly errorMessage?: string;
 }
 
