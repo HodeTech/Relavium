@@ -1119,7 +1119,7 @@ describe('createSessionPersister', () => {
 
     it.each([
       [
-        'an abort that also carries an error',
+        'an abort stop paired with a failed interruption',
         { stopReason: 'aborted', interruption: { reason: 'failed', code: 'internal' } },
       ],
       [
@@ -1377,14 +1377,9 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('second').catch(() => undefined);
     const after = store.loadFull('sess-1');
     expect(after?.session.totalCostMicrocents).toBe(afterSuccess); // cost did NOT regress to 0 on the error
-    // ADR-0119: the engaged, classified failure is RETAINED — its user message and one interruption row, no answer.
-    expect(after?.messages.map((message) => message.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-      'system',
-    ]);
-    expect(after?.messages.at(-1)?.interruption).toMatchObject({ reason: 'failed' });
+    // ADR-0119: the unscripted provider returned no content at all, so the turn is not retained — nothing the provider
+    // accepted needs remembering, and a refused request must not ride every later request. Only the first exchange stays.
+    expect(after?.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
   it('on cancel after a successful turn: status ended, totals retained, messages untouched', async () => {

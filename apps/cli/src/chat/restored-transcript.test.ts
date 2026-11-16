@@ -483,6 +483,23 @@ describe('ADR-0119 restored interrupted turns', () => {
     }
   });
 
+  it('counts an interrupted unit as two entries in the restore budget, like a completed turn', () => {
+    const entries = restore(interrupted(0, { reason: 'aborted' }), new Map([[0, 'shown']]));
+    // The user line and the dim row: two history entries (the structural tool group is reported separately).
+    expect(entries[0]).toMatchObject({ role: 'notice' });
+    expect(entries[0]?.text).toContain('Restored 2 history entries');
+  });
+
+  it('says a window policy counts permitted turns, interrupted ones included', () => {
+    const entries = restore([row(0, 'user', 'a'), row(1, 'assistant', 'b')], new Map([[0, 'a']]), {
+      type: 'window',
+      window_size: 2,
+    });
+    expect(entries.map((entry) => entry.text).join('\n')).toContain(
+      'only the most recent 2 permitted turns enter the next request',
+    );
+  });
+
   it('does not mistake a crash remnant for an interrupted turn', () => {
     // User + structural rows with NO terminal: ADR-0095's remnant, still omitted from the restored view.
     const remnant = interrupted(0, { reason: 'aborted' }).slice(0, 3);
