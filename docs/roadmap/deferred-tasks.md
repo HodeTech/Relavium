@@ -4176,14 +4176,15 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
 - [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (MVP-3c, ahead of MVP-4).**
   **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); **implemented on
   `development` the same day** (shared field and event, migration `0021`, turn-core history channel, `AgentSession`
-  retention, persister, restored transcript, export, effect-journal disclosure), every new behaviour mutation-checked.
+  retention, persister, restored transcript, export, effect-journal disclosure); the author's chosen mutants are all killed (see the register's "Mutation evidence" — not an exhaustive sweep).
   **Round 1, the separate security sitting, the gates (before the fixes) and a two-provider real sample have run** (see the
   phase register; `smoke:cli-package` and `check:map-controls` are owned by the platform CI legs). **Still owed (D64):** the
   accepting round (no blocker/high/medium finding) and a re-run of the gates after the fixes. Work list in the
   [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16).
   *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
 - [ ] **A way to remove an interrupted turn (the removal path ADR-0119 names).** An Esc after a provider engaged now keeps the
-  user's message — and anything they pasted or `@`-mentioned — in `history.db` and in every later request of the session;
+  user's message — and anything they pasted or `@`-mentioned — in `history.db`, in every later request of the session and
+  in the `/export` file's `metadata.relaviumExport.messages` (and possibly the session title and export file name);
   ADR-0119 points at `/rewind` (2.6.E), which does not exist, and the CLI has no session delete. Until a removal path ships,
   the residual recorded in the security-review sitting stands. Needs: `/rewind` or "discard the last interrupted turn", and
   a decision whether Esc should keep the turn when the user's message carried `@`/`!` content. *(medium · privacy ·

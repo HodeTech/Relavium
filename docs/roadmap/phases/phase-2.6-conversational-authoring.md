@@ -5564,7 +5564,7 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); its D64 reviews and security sitting are owed. MVP-3d is not started.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1 and 2 and two security sittings are done and their fixes are in; the accepting round and the final gates are owed. MVP-3d is not started.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
@@ -5607,6 +5607,26 @@ overflow retry" path a medium; the security sitting showed it cannot occur (over
 tool round), so the concept was deleted rather than patched. One finding is an accepted **residual** for the maintainer: an Esc'd
 turn's user text is now at rest and resent, and its removal path (`/rewind`) does not exist — recorded in the security-review
 sitting and the deferred ledger.
+
+**D64 round 2 (2026-11-16, `development` at d195039d).** Four fresh reviewers — the engine; persistence, resume and the CLI surfaces;
+the honesty of tests and claims; and a second separate security sitting (opus) — found **no blocker or high finding**. The engine
+review reported one **medium** and the honesty review four; the persistence review and the security sitting found none (two and
+four lows). Substantive findings, all addressed: a turn the provider refused for its own content (`context_overflow`,
+`content_filter`, `validation`) with no tool run was retained, so a message larger than the window would fail every later turn —
+compaction and trim never fold the latest exchange; the engine review and the security sitting found it independently, and such a
+turn (and an abort during overflow recovery after one) is now rolled back as before, while the same codes after a tool round keep
+the turn; the persister's fail-closed check, the export's legacy-prefix carry, the summariser's truncation path, the event helper's
+`stopReason` arms and the orphan-code load path had no test (now bound, each mutation-checked); the abort branch's `instanceof`
+is guarded and the live interruption is validated and copied before it reaches the request text; a stored code with no reason now
+fails closed on load; the deferred ledger still carried the broad mutation claim and four reference docs plus three status lines
+still said "owed" or described the old behaviour; the ADR note had an incorrect cancel/counter sentence; and the residual for an
+Esc'd turn's user text now names the `/export` file and the session title. Recorded but **not** changed: a second encoding of a
+denial (`failed` with `tool_denied`) still passes the schema and `CHECK` (the engine never emits it); an older binary reading a
+newer database forgets the turn without leaking or losing data; migration 0021 was amended before release, so a development
+database that ran the earlier draft — including the maintainer's own `history.db`, which the real-provider sample used — keeps the
+weaker "no content" `CHECK` (its row loader still refuses text on an interruption row); and the fatal-failure site's uncertainty
+mark has no trigger a test can produce (defence in depth). The accepting round — a new complete round with no blocker, high or
+medium finding — and a re-run of the gates on the final source are still owed.
 
 **Mutation evidence, stated precisely.** The author's mutants of the new production logic (retention predicate, reason mapping,
 span push, event field, rollback on a refusing sink, resume length check, rebase, abort retention, in-flight outcome, sentence,

@@ -872,7 +872,8 @@ host-recorded display text, never an inferred empty prompt.
 The migration leaves every existing row NULL. Every host user-row insert with
 captured display metadata includes that field in the same transaction. MVP-2
 uses the existing completed-turn transaction; ADR-0119's interruption transaction
-(Accepted, MVP-3c, not yet implemented) inherits this rule.
+(MVP-3c, implemented in migration 0021) inherits this rule: the user row, the structural rows and the interruption row, with
+the display metadata, are one transaction.
 Updates/backfills of historical rows
 are not introduced. Metadata writes and the separate display read reject display
 metadata on non-user roles within their admitted rows.
@@ -1241,6 +1242,7 @@ whose `content` is empty and whose typed `interruption` field is stored in two n
 |---|---|---|
 | `interruption_reason` | text | `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`); only on a `role = 'system'` row; `NULL` on every other row and whenever `compaction_dropped_through_sequence` is set |
 | `interruption_code` | text | the closed `ErrorCode` taxonomy; present **iff** the reason is `failed` |
+| (shape) | — | an interruption row also has empty `content_parts` (`NULL` or `'[]'`): the database refuses text on it, not only the schema |
 
 The row carries no text, tool name, argument or result. It is not a content part: the strict session-only
 content union below is unchanged. `SessionMessage.interruption` is `{ reason, code? }`, strict, and the store
@@ -1254,6 +1256,10 @@ generated table rebuild was rejected: it would drop the ADR-0104 triggers on `se
 root page, and copy rows through a statement that selected columns the old table does not have. The upgrade path
 is pinned by a test that opens a database at the previous migration, adds legacy rows, applies this one, and
 checks the rows, the triggers and the CHECKs.
+
+A migration that has been applied is immutable. Migration 0021 was amended before release to add the "no content" clause; a development
+database that ran the earlier draft keeps the weaker `CHECK` (its row loader still refuses text on an interruption row), and is
+recreated or lived with — drizzle decides what to apply by the journal timestamp, never by a file's text.
 
 #### Session content parts
 

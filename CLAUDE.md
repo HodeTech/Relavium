@@ -80,7 +80,7 @@ and a separate security sitting; final-head platform/consumer/PR gates remain.
 On 2026-11-16 three increments were placed ahead of MVP-4: MVP-3b (the docked approval card, honest chat modes,
 refusals that return to the model — committed on `development`), **MVP-3c** (an interrupted turn stays in the
 session as a content-free marker, [ADR-0119](docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
-implemented locally, its D64 reviews and security sitting owed) and MVP-3d (`ask_user`, ADR first). Their exact status
+implemented locally; D64 rounds 1–2 and two security sittings found no blocker/high, their fixes are in, and the accepting round and final gates are owed) and MVP-3d (`ask_user`, ADR first). Their exact status
 lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).

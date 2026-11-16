@@ -322,7 +322,7 @@ note.
 
 ### Interrupted turns — ADR-0119
 
-**Status: implemented on `development` (MVP-3c, 2026-11-16); its D64 review rounds and security sitting are owed.**
+**Status: implemented on `development` (MVP-3c, 2026-11-16); the accepting D64 round and the final gates are owed (see the phase register).**
 A session-ending cancel, a crash and an unclassified throw are still rolled back and forgotten (below).
 [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
 section owns the contract.
@@ -341,8 +341,12 @@ persister writes the interruption row **iff** the event carries `interruption`.
 
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
 unclassified throw, a refusal before the message was accepted (including the **session hard cap**, whose
-`turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), and a turn in which no provider
-engaged.
+`turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), a turn in which no provider
+engaged, a turn in which the **provider refused the request itself** (`context_overflow`, `content_filter` or
+`validation`) **and no tool was dispatched** (the refused message would otherwise ride every later request, and
+compaction and trim never fold the latest exchange; the same applies to an abort during overflow recovery), a turn in
+which the engine cannot vouch for its tool list (a dispatched call could not be recorded, or an observer or host
+callback faulted), and an abort that coincided with a raw throw.
 
 **Rows.** `user → (assistant(tool_call) → tool)* → system(interruption)`. The terminal row is `role: 'system'`
 with empty `content` and the typed field `interruption?: { reason, code? }` (strict; only on a `system` row,

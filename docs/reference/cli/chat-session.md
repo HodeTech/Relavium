@@ -65,7 +65,8 @@ the existing shared structural history rules with the drop boundary ignored:
 compatible legacy prefixes and the shared projection's trailing legacy context
 even when no later completed exchange exists; expose/reuse that projection support
 instead of copying its state machine into the UI. Omit tool-call preambles, tool rows,
-reasoning and interrupted exchanges. An explicit empty assistant final remains
+reasoning and crash remnants (a user message with structural rows and no terminal row); a retained interrupted turn is
+shown, as described below. An explicit empty assistant final remains
 an empty answer entry and counts toward the restore budget; it has no invented
 usage or stop-reason line. Preserve legacy bare-user prefix/trailing-context
 identities wherever the existing reconstruction preserves them, without counting
@@ -142,7 +143,7 @@ text. Do not display a stored summary as an authored system instruction.
 
 The region labels describe durable restoration, not the next model request.
 Add a policy notice for `memory: none` (earlier conversation is excluded) or
-`memory: window` (only its most recent permitted completed turns are selected;
+`memory: window` (only its most recent permitted turns — an interrupted turn takes one slot — are selected;
 earlier summaries are excluded). Under other policies a retained summary may
 also enter the request as untrusted user context. The
 [memory contract](../contracts/agent-yaml-spec.md#conversational-memory) remains
@@ -471,11 +472,11 @@ before admitting an older unit. A tool-heavy latest completed turn must still
 fit. Report omitted conversation entries and omitted tool calls separately;
 physical wrapping is independently measured. Keep existing legacy-user display
 substitution, empty finals, compaction dividers and model-context projection.
-Once [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) is implemented
-(MVP-3c), a restored **interrupted turn** shows its user message and a fixed dim row, `Interrupted — the user
-stopped it` / `it failed (<code>)` / `a tool call was refused and the turn ended` / `it reached the limit on tool
-rounds`, where an assistant answer would be; it restores no argument, target, diff or result, and counts as one
-logical entry in the restore budget.
+Since [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c), a restored
+**interrupted turn** shows its user message, its structural tool calls and a fixed dim row, `Interrupted — the user
+stopped it` / `it failed (<code>)` / `a tool call was refused and the turn ended` / `it reached a limit on tool use`,
+where an assistant answer would be; it restores no argument, target, diff or result, and counts as two entries in the
+restore budget (the user line and the dim row), like a completed turn.
 Historical unavailable preview/detail content is labelled unavailable, never
 reconstructed from text. This needs no new history payload or migration.
 

@@ -1,6 +1,6 @@
 # ADR-0119: An interrupted turn stays in the session as a content-free marker
 
-- **Status**: Accepted — 2026-11-16, by the maintainer, after a twelve-finding design review (every finding is dispositioned [below](#review-disposition--2026-11-16)). **Implemented 2026-11-16 as MVP-3c (see the [implementation note](#implementation-note--2026-11-16)); the independent review rounds and the security sitting are recorded in the roadmap's MVP-3c section and the security-review sitting**; this ADR's text accepts the design, and the note records where building it differed.
+- **Status**: Accepted — 2026-11-16, by the maintainer, after a twelve-finding design review (every finding is dispositioned [below](#review-disposition--2026-11-16)). **Implemented 2026-11-16 as MVP-3c (see the [implementation note](#implementation-note--2026-11-16)); the review rounds and security sittings run so far, and what is still owed before acceptance, are recorded in the roadmap's MVP-3c section and the security-review sitting**; this ADR's text accepts the design, and the note records where building it differed.
 - **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; **revised 2026-11-16** after the twelve-finding review)
 - **Refines**: [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §1 (a turn is identified by row structure; its terminal row may now be an *interruption row*, which needs one migration — see §2) and §4 (an interrupted turn takes one `window` slot); amends [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)'s abort clause (the rollback is withdrawn for the retained cases below).
 - **Related**: [ADR-0026](0026-session-export-to-workflow.md), [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md), [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) (**not a dependency**, §1), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0123](0123-restored-transcripts-use-host-recorded-display-text.md), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md), [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md), [D67](../roadmap/current.md#wave-gating-decisions)
@@ -300,6 +300,12 @@ here and the original text stays, because accepted ADRs are append-only.
   draft of this implementation reported such a history as "unknown"; review showed the overflow-retry case that would
   have produced it cannot occur (overflow recovery is only attempted before the first tool round), so the concept was
   deleted and the single rule above replaced it.
+- **A turn the provider refused outright is not retained when no tool ran.** §1's "any other classified error" is narrowed:
+  a `context_overflow`, `content_filter` or `validation` error with an empty tool history — and an abort during overflow
+  recovery after such a refusal — rolls the turn back, as before this ADR. Keeping it would resend the refused message in
+  every later request, and compaction and trim never fold the latest exchange, so a pasted file larger than the window
+  would fail each turn until it was displaced (found independently by the engine review and the security sitting). The
+  same codes after a tool round keep the turn: the calls ran, and the user message was accepted.
 - **A host callback or observer fault at a raw emit site is not retained**, the same as an unclassified throw: the engine
   cannot vouch for it. A fault in a tool-event sink after a call executed is retained with that call recorded.
 - **An abort is retained only when the turn ended in a classified turn error** (the turn core's `cancelled`); a raw throw
@@ -312,13 +318,30 @@ here and the original text stays, because accepted ADRs are append-only.
   member cannot carry as a refinement; the persister checks it and fails closed instead of writing a row the event
   contradicts.
 - **Hard-cap parity, stated precisely.** A retained turn is a subset of a counted turn, and a retained turn is always
-  counted. Live also counts engaged turns that are not persisted (an observer fault, an unclassified throw, a
-  session-ending cancel after engagement); a restart does not, and it counts only turns past the last compaction boundary.
-  Both divergences predate this ADR; §3's "live and restored counts agree" holds for retained turns.
+  counted. Live also counts engaged turns that are not persisted (an observer fault, an unclassified throw); a restart
+  does not, and it counts only turns past the last compaction boundary.
+  Both divergences predate this ADR; §3's "live and restored counts agree" holds for retained turns. (A session-ending
+  cancel does not increment the live counter.)
 - **§6.10's "history list" clause** is satisfied by §5's "unchanged": the list shows sessions, not turns.
 - **Export** carries a legacy bare-user prefix that precedes an interrupted turn into the next step's prompt, as it did
   when that turn was rolled back.
 - **The summariser's fixed prompt gained the one line §4 promised.**
-- **Residual accepted pending the maintainer's ruling:** the user's text of an Esc'd turn is now at rest in `history.db`
-  and resent in later requests, and the removal path §Negative names (`/rewind`) does not exist yet. It is recorded in
-  the security-review sitting and the deferred ledger.
+- **The closed vocabulary is enforced at the live seam too:** the interruption is parsed with `SessionInterruptionSchema`
+  and the span keeps a frozen copy, so a code that is not an `ErrorCode` or a value a sink mutates cannot reach the
+  request text; the abort branch's `instanceof` is guarded against a hostile throwable.
+- **A stored code with no reason fails closed on load**, like every other malformed shape. `{ reason: 'failed', code:
+  'tool_denied' }` (a second encoding of a denial; likewise `turn_limit`) is still accepted by the schema and the
+  `CHECK`: the engine only emits `denied`/`turn_limit`, a forged row renders the `failed` phrase, and nothing is gained by a
+  second migration.
+- **Migration 0021 was amended before release** (the "no content" clause) after a development build had applied the first
+  draft. Drizzle applies by journal timestamp, so a database that ran the draft keeps the weaker `CHECK` (the row loader
+  still refuses text on an interruption row); the maintainer's own `history.db` is one, because the real-provider sample
+  ran the built CLI against it. Recreate it, or live with the defence in depth missing there.
+- **An older binary reading a newer database** ignores the new columns and reads the interruption row as an inert system
+  row: a trailing interrupted turn is rolled back, a tool-less one followed by a later turn becomes legacy bare-user
+  context (resent without the note), and its effects are disclosed as `unattributable`. Nothing is lost or leaked; there
+  is no downgrade guard.
+- **Residual accepted pending the maintainer's ruling:** the user's text of an Esc'd turn is now at rest in `history.db`,
+  resent in later requests, written into the `metadata.relaviumExport.messages` of a git-committable `/export` file, and
+  may name the session (title and export file name); the removal path §Negative names (`/rewind`) does not exist yet. It
+  is recorded in the security-review sitting and the deferred ledger.

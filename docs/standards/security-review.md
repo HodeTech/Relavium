@@ -832,7 +832,7 @@ accepted residual.
 |---|---|
 | No stored or attacker-controlled string reaches the model text: the sentence is constants plus a switch over closed sets, tool labels pass `receiptLabel`, the row carries no tool name | `turn-receipts.ts`; byte bound pinned over every `ERROR_CODES` entry in `session-interruption.test.ts` |
 | A forged or tampered row is refused at the schema, by the database `CHECK`s (including "an interruption row carries no content") and on load with a fixed error that does not echo the stored value | `migration-0021-upgrade.test.ts` (CHECKs, and a tampered row loaded with `ignore_check_constraints`), `session-interruption.test.ts` (shared) |
-| Nothing from tool arguments, results, partial answer text, reasoning or provider error text reaches disk, an event, an export or a later request | real-SQLite parity test with argument and result sentinels; persister test for a streamed partial answer |
+| Nothing from tool arguments, results or partial answer text reaches disk, an export or a later request, and the event adds only the closed `interruption` and the content-free `toolHistory` (its `error.message` is unchanged by this increment) | real-SQLite parity test with argument and result sentinels; persister test for a streamed partial answer; the sentence is built only from constants and a closed `ErrorCode` |
 | The note gives the model no authority and replays no effect; later calls take the current approval regime and a fresh durable effect key | engine review; ADR-0098 unchanged |
 | An effect that landed in a retained interrupted turn is still disclosed at resume (`turn_incomplete`) | `session-effect-disclosure.test.ts` |
 | A call that executed is recorded **before** any event is emitted, and a turn whose executed call could not be recorded is not retained (the next request would otherwise say "no tool call was recorded") | `session-interruption.test.ts`, with mutants of the ordering and of the uncertainty rule |
@@ -842,8 +842,15 @@ accepted residual.
 user's message (and its display text, and possibly the session title) to the unencrypted `history.db`, and the text is
 resent in every later request of that session. Before ADR-0119 an aborted turn left nothing. ADR-0119 names `/rewind`
 as the remedy, but `/rewind` (2.6.E) does not exist and the CLI has no session-delete command, so a user who pasted
-something sensitive and pressed Esc has no way to remove it short of abandoning the session. User text, `@` content and
-`!` output remain sensitive data at rest. The removal path is tracked in the
+something sensitive and pressed Esc has no way to remove it short of abandoning the session. The same text also reaches the
+`metadata.relaviumExport.messages` of a `/export` or `chat-export` file — a git-committable file under `.relavium/workflows/`,
+which carries the existing review notice — and, when it was the session's first message, can name the session and that
+file. User text, `@` content and `!` output remain sensitive data at rest.
+
+**Availability finding, fixed.** A turn the provider refused for its own content (`context_overflow`, `content_filter`,
+`validation`) with no tool run was being retained, so a message larger than the window would fail every later turn (the
+latest exchange is never folded by compaction or trim). Such a turn is now rolled back as before; the same codes after a tool
+round keep the turn. The removal path is tracked in the
 [deferred ledger](../roadmap/deferred-tasks.md); until it lands the residual stands.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
