@@ -395,6 +395,20 @@ export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
 export { createToolRegistry } from './tools/registry.js';
 export { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './tools/builtins.js';
+// `ask_user` (ADR-0132): the question/answer contract a host's card implements, and its closed bounds.
+export {
+  ASK_USER_BOUNDS,
+  ASK_USER_MAX_CALLS_PER_TURN,
+  ASK_USER_OWN_ANSWER_GLYPH,
+  plainTextRefusal,
+} from './tools/ask-user.js';
+export type {
+  AskUserAnswer,
+  AskUserDelegate,
+  AskUserQuestion,
+  AskUserQuestionAnswer,
+  AskUserRequest,
+} from './tools/ask-user.js';
 export { DEFAULT_TOOL_RESULT_LIMITS } from './tools/types.js';
 export { markUntrusted, unwrapUntrusted, isUntrusted } from './tools/untrusted.js';
 export {

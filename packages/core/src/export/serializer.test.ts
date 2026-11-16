@@ -210,6 +210,31 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(def.workflow.nodes[1]).toMatchObject({ tools: ['mcp_fs_read'] });
     expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
   });
+  it('omits ask_user from a node’s tools: a workflow node cannot ask a question (ADR-0132 §1)', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'which one' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'ask_user', argsBytes: 90 },
+        { type: 'tool_call', id: 'session-tool:1:1', name: 'read_file', argsBytes: 12 },
+      ]),
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 40, outcome: 'ok' },
+        { type: 'tool_result', toolCallId: 'session-tool:1:1', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(4, 'user', [{ type: 'text', text: 'only a question' }]),
+      msg(5, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'ask_user', argsBytes: 90 },
+      ]),
+      msg(6, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:2:0', resultBytes: 40, outcome: 'ok' },
+      ]),
+      msg(7, 'assistant', [{ type: 'text', text: 'ok' }]),
+    ]);
+    expect(def.workflow.nodes[1]).toMatchObject({ tools: ['read_file'] });
+    expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
+    expect(JSON.stringify(def.workflow.nodes)).not.toContain('ask_user');
+  });
   it('maps assistant turns to a linear agent-node chain (input → turn-n → output) with edges', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'hello' }]),

@@ -21,7 +21,21 @@ import {
 import { z } from 'zod';
 
 import {
+  ASK_USER_DESCRIPTION,
+  ASK_USER_LLM_PARAMS,
+  ASK_USER_MAX_CALLS_PER_TURN,
+  AskUserAnswerError,
+  AskUserArgsSchema,
+  askUserDisplaySummaryOf,
+  buildAnsweredResult,
+  notAskedResult,
+  skippedResult,
+  type AskUserAnswer,
+  type AskUserRequest,
+} from './ask-user.js';
+import {
   ToolArgsInvalidError,
+  ToolExecutionError,
   ToolPolicyError,
   ToolUnavailableError,
   ToolPreparationError,
@@ -69,6 +83,8 @@ interface BuiltinSpec<A> {
   /** The dispatch-context delegate this tool needs, so a filter can stop advertising it — see `ToolDef`. */
   readonly requiresDelegate?: ToolDelegateName;
   readonly requiresFsMethod?: ToolDef['requiresFsMethod'];
+  /** A content-free summary in place of the derived one — see `ToolDef.displaySummary`. */
+  readonly displaySummary?: (result: unknown) => string;
   readonly preview?: (args: A) => ToolPreview;
   readonly prepare?: (
     args: A,
@@ -94,6 +110,7 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
     ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
     ...(spec.requiresFsMethod === undefined ? {} : { requiresFsMethod: spec.requiresFsMethod }),
+    ...(spec.displaySummary === undefined ? {} : { displaySummary: spec.displaySummary }),
     ...(spec.preview === undefined ? {} : { preview: spec.preview }),
     ...(spec.prepare === undefined ? {} : { prepare: spec.prepare }),
     dispatch: spec.dispatch,
@@ -1163,6 +1180,60 @@ const invokeAgentTool = defineBuiltin({
   },
 });
 
+/** A host failure that must end the turn and must not be retried — a retry would reopen the card. */
+function askUserFault(message: string, cause?: unknown): ToolExecutionError {
+  return new ToolExecutionError('ask_user', message, cause, {
+    recoverable: false,
+    retryable: false,
+  });
+}
+
+// ask_user (ADR-0132) — delegate-backed like invoke_agent / read_media, and NOT governed: it mutates nothing outside the
+// process, so it has no action class, no approval, no effect journal entry and no `always`. A surface with nobody to
+// answer wires no delegate and the tool is never offered; the dispatch guard below stays authoritative.
+const askUserTool = defineBuiltin<AskUserRequest>({
+  id: 'ask_user',
+  description: ASK_USER_DESCRIPTION,
+  args: AskUserArgsSchema,
+  llmVisibleParams: ASK_USER_LLM_PARAMS,
+  policy: MEDIA_POLICY,
+  requiresDelegate: 'askUser',
+  // The result carries the person's own words, so its event/observer summary is a closed phrase (ADR-0132 §6). No
+  // `preview` either: the question appears on the card and in the host's transcript entry, never on the tool row.
+  displaySummary: askUserDisplaySummaryOf,
+  dispatch: async (args, _host, ctx) => {
+    const ask = ctx.askUser;
+    if (ask === undefined) throw new ToolUnavailableError('ask_user', 'askUser');
+    const turn = ctx.askUserTurn;
+    // The session supplies the delegate and the per-turn state together; one without the other is a wiring fault.
+    if (turn === undefined) throw askUserFault('ask_user is wired without its per-turn state');
+    if (turn.skipped) return notAskedResult('skipped_earlier');
+    if (turn.opened >= ASK_USER_MAX_CALLS_PER_TURN) return notAskedResult('limit');
+    turn.opened += 1;
+    let answer: AskUserAnswer;
+    try {
+      answer = await ask(args, ctx.signal);
+    } catch (cause) {
+      // A stop (Esc / Ctrl-C at the card, or a sealed store) is a CANCEL: the registry routes it. Any other failure
+      // is a host fault and is fatal.
+      if (ctx.signal?.aborted === true || (cause instanceof Error && cause.name === 'AbortError'))
+        throw cause;
+      throw askUserFault('the question could not be shown', cause);
+    }
+    if (answer.kind === 'skipped') {
+      turn.skipped = true;
+      return skippedResult();
+    }
+    if (answer.kind !== 'answered') throw askUserFault('the host returned an unknown answer');
+    try {
+      return buildAnsweredResult(args, answer);
+    } catch (cause) {
+      if (cause instanceof AskUserAnswerError) throw askUserFault(cause.message, cause);
+      throw cause;
+    }
+  },
+});
+
 /* ------------------------------------------------------------------------------------------------ *
  * The catalog.
  * ------------------------------------------------------------------------------------------------ */
@@ -1192,6 +1263,7 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
   notifyTool,
   readMediaTool,
   invokeAgentTool,
+  askUserTool,
 ] as readonly ToolDef[];
 
 /** The built-in tool ids (sorted), for grant construction and tests. */

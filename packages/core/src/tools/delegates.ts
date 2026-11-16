@@ -7,7 +7,7 @@ import type { ToolDef, ToolDispatchContext } from './types.js';
  * one line-by-line, the session path returns one from a builder), and asking for the whole shape would tie
  * this predicate to fields it has no business reading.
  */
-export type ToolDelegates = Pick<ToolDispatchContext, 'invokeAgent' | 'mediaRead'>;
+export type ToolDelegates = Pick<ToolDispatchContext, 'invokeAgent' | 'mediaRead' | 'askUser'>;
 
 /**
  * Whether the dispatch-context DELEGATE a tool needs will actually be present (`CR-73`).
@@ -34,6 +34,10 @@ export function delegateAvailable(def: ToolDef, ctx: ToolDelegates): boolean {
       return ctx.invokeAgent !== undefined;
     case 'mediaRead':
       return ctx.mediaRead !== undefined;
+    case 'askUser':
+      // The delegate alone is not enough to run the tool (it also needs the per-turn state), but it is what decides
+      // whether anyone can answer — and the session always supplies the two together.
+      return ctx.askUser !== undefined;
     default: {
       // Exhaustiveness guard, not defensive padding: a new `ToolDelegateName` must fail to COMPILE here rather
       // than silently fall through to "available" and re-open `CR-73` for the tool that added it.

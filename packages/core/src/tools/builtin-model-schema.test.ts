@@ -50,6 +50,7 @@ const SHAPES: readonly Shape[] = [
   { id: 'notify', properties: ['title', 'body'], required: ['title', 'body'] },
   { id: 'read_media', properties: ['handle'], required: ['handle'] },
   { id: 'invoke_agent', properties: ['nodeId', 'input'], required: ['nodeId'] },
+  { id: 'ask_user', properties: ['questions'], required: ['questions'] },
 ];
 
 function builtin(id: string): ToolDef {

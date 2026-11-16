@@ -23,6 +23,7 @@ import type {
   ToolActionClass,
 } from '@relavium/shared';
 
+import type { AskUserDelegate, AskUserTurnState } from './ask-user.js';
 import type { Untrusted } from './untrusted.js';
 
 // Re-export the canonical FS scope tier (`'sandboxed' | 'project' | 'full'`, constants.ts) rather than
@@ -599,6 +600,18 @@ export interface ToolDispatchContext {
   /** Engine delegate for `read_media` byte delivery (1.AF/D12) — reuses `ExecutionHost.mediaStore` + the
    *  `media_references` store; NOT a {@link ToolHost} I/O capability (mirrors {@link invokeAgent}). */
   readonly mediaRead?: MediaReadAccess;
+  /**
+   * Engine delegate for `ask_user` ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)):
+   * the host's card. Present only on a surface with a person at it; absent ⇒ the tool is never offered. NOT a
+   * {@link ToolHost} capability (mirrors {@link invokeAgent}). A delegated child agent never inherits it.
+   */
+  readonly askUser?: AskUserDelegate;
+  /**
+   * The per-turn state `ask_user` enforces its ceiling and "a skip closes questions" from. Built once per session turn
+   * and carried by reference (a shallow copy of this context shares it), so it is turn-scoped, not module-scoped.
+   * It travels WITH {@link askUser}: a delegate without it is a wiring fault the tool refuses.
+   */
+  readonly askUserTurn?: AskUserTurnState;
   /** The model-facing result-bounding ceilings. */
   readonly limits?: ToolResultLimits;
   /**
@@ -656,14 +669,21 @@ export function modelVisibleDescription(def: {
 /**
  * The dispatch-context delegates a built-in can require — see {@link ToolDef.requiresDelegate}.
  *
- * A closed union rather than a `string`: the two members are the two optional delegate fields on
+ * A closed union rather than a `string`: the members are the optional delegate fields on
  * {@link ToolDispatchContext}, and a typo in a free string would silently mean "requires nothing".
  */
-export type ToolDelegateName = 'invokeAgent' | 'mediaRead';
+export type ToolDelegateName = 'invokeAgent' | 'mediaRead' | 'askUser';
 
 export interface ToolDef<Args = unknown, Result = unknown> {
   /** Closed pure field selection; absent means name-only, never enumerate effective arguments. */
   readonly preview?: (args: Args) => ToolPreview;
+  /**
+   * The content-free `agent:tool_result.outputSummary` / live-observer summary, in place of the one the registry derives
+   * from the bounded result ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) §6).
+   * A pure, total function of THIS tool's own result and nothing else — never its arguments — returning a closed phrase.
+   * Absent for every tool but `ask_user`, whose result carries the person's own words and must not ride the event stream.
+   */
+  readonly displaySummary?: (result: Result) => string;
   /** Trusted first-party filesystem declaration; invocation is read-only and precedes approval. */
   readonly prepare?: (
     args: Args,

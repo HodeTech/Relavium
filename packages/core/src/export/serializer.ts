@@ -65,7 +65,11 @@ function textOf(content: readonly SessionContentPart[]): string {
     .join('\n\n');
 }
 
-/** The tool names invoked in a turn — the `tool_call` parts of an assistant message's content. */
+/**
+ * The tool names invoked in a turn — the `tool_call` parts of an assistant message's content. `ask_user` is left out:
+ * a workflow node cannot ask a question (its counterpart is `human_gate`), so naming it in a node's `tools:` would be
+ * an inert grant that claims a capability the exported workflow does not have (ADR-0132 §1).
+ */
 function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
   return content
     .filter(
@@ -73,7 +77,7 @@ function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
         part.type === 'tool_call',
     )
     .map((part) => part.name)
-    .filter((name) => name !== 'unknown_tool');
+    .filter((name) => name !== 'unknown_tool' && name !== 'ask_user');
 }
 
 /**

@@ -110,6 +110,14 @@ function asReplayEnvelope(
     outputMapping: decoded.outputMapping,
   };
 }
+/** Run a tool's own display-summary function; a throw yields a fixed phrase, never the exception's text. */
+function contentFreeSummary(summarize: (result: unknown) => string, result: unknown): string {
+  try {
+    return summarize(result);
+  } catch {
+    return 'completed';
+  }
+}
 let nextLiveCall = 0;
 function observe(ctx: ToolDispatchContext, event: ToolLiveEvent): void {
   // This display-only observer cannot influence admission, receipts or effect truth.
@@ -560,6 +568,11 @@ async function dispatch(
           host,
           ctx.signal,
         );
+        // A tool whose result carries a person's own words supplies its own content-free summary (ADR-0132 §6); the
+        // derived one would be a masked, truncated COPY of those words. It replaces the summary only — never the
+        // value the model receives.
+        if (def.displaySummary !== undefined)
+          bounded = { ...bounded, summary: contentFreeSummary(def.displaySummary, output) };
         if (
           def.source === 'builtin' &&
           def.id === 'read_file' &&

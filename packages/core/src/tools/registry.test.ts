@@ -226,7 +226,7 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     expect(reg.has('read_file')).toBe(true);
     expect(reg.has('nope')).toBe(false);
     expect(reg.list()).toEqual(BUILTIN_TOOL_IDS);
-    expect(reg.list()).toHaveLength(16);
+    expect(reg.list()).toHaveLength(17);
   });
 
   it('rejects a duplicate tool id at construction', () => {

@@ -84,6 +84,7 @@ import type {
   ToolRegistry,
 } from '../tools/types.js';
 import { modelVisibleDescription } from '../tools/types.js';
+import { newAskUserTurnState, type AskUserDelegate } from '../tools/ask-user.js';
 import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
@@ -344,6 +345,13 @@ export interface SessionDeps {
   readonly reserveEffectTurnKey: (sessionId: string) => number;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
+  /**
+   * The host's question card for `ask_user` ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)).
+   * Optional capability: a surface with a person at it wires it; absent ⇒ the tool is never offered (`CR-73`). Each
+   * turn's dispatch context gets it together with a fresh per-turn state, so the per-turn ceiling and "a skip closes
+   * questions" hold on every surface.
+   */
+  readonly askUser?: AskUserDelegate;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits?: AgentTurnLimits;
   /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); 0/absent ⇒ the default. */
@@ -1348,6 +1356,11 @@ export class AgentSession {
         ? {}
         : { onToolLiveEvent: turnPolicy.onToolLiveEvent }),
       gateApproved: false, // a chat loop provides no human gate — git_commit stays denied (parity with 1.O)
+      // ADR-0132: the delegate and its per-turn state travel together, built ONCE per session turn (this method runs
+      // once before the tool loop), so an overflow-recovery re-run shares the state and nothing is held in a module.
+      ...(this.#deps.askUser === undefined
+        ? {}
+        : { askUser: this.#deps.askUser, askUserTurn: newAskUserTurnState() }),
       // ADR-0057: a set mode policy ACTIVATES the interactive-approval regime — a governed (write/process/
       // egress) dispatch then requires the host's `confirm` decision, fail-closed when `confirm` is absent
       // (`approval: {}`). No policy ⇒ no `approval` key ⇒ the workflow author-trust floor, unchanged.
