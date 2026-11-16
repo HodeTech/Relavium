@@ -36,7 +36,11 @@ import {
 import { BudgetPauseError } from './budget-governor.js';
 import { createAbortController } from './execution-host.js';
 import { reconstructSessionState } from './session-resume.js';
-import { renderInterruptionSentence, receiptsFromToolHistory } from './turn-receipts.js';
+import {
+  RECEIPT_NOTICE_INCOMPLETE,
+  renderInterruptionSentence,
+  receiptsFromToolHistory,
+} from './turn-receipts.js';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -82,7 +86,7 @@ const failure: StreamChunk[] = [
   },
 ];
 
-type Script = StreamChunk[] | (() => AsyncGenerator<StreamChunk>);
+type Script = StreamChunk[] | ((signal: LlmRequest['signal']) => AsyncGenerator<StreamChunk>);
 
 async function* streamOf(chunks: readonly StreamChunk[]): AsyncGenerator<StreamChunk> {
   await Promise.resolve();
@@ -188,7 +192,7 @@ function rig(
     stream: (request) => {
       requests.push(request);
       const script = scripts[call++] ?? [];
-      return typeof script === 'function' ? script() : streamOf(script);
+      return typeof script === 'function' ? script(request.signal) : streamOf(script);
     },
     contextLimit: () => 1_000_000,
     managesOwnContext: () => false,
@@ -303,7 +307,7 @@ describe('which turns are retained (ADR-0119 §1)', () => {
       result: { outcome: 'ok' },
     });
     expect(terminal?.toolHistory?.[1]).toMatchObject({
-      call: { name: 'read_file' },
+      call: { name: 'read_file', argsBytes: 2 },
       result: { outcome: 'cancelled', resultBytes: 0 },
     });
 
@@ -498,6 +502,99 @@ describe('which turns are retained (ADR-0119 §1)', () => {
       expect((requests.at(-1)?.messages ?? []).map(textOf).join('|')).toBe('a shorter request');
     },
   );
+
+  it.each([
+    ['rate_limit', 'provider_rate_limit'],
+    ['timeout', 'provider_unavailable'],
+    ['auth', 'provider_auth'],
+  ] as const)(
+    'rolls back a request that ended with %s before the provider returned any content, whatever the error code',
+    async (kind, code) => {
+      // A deterministic refusal can arrive under ANY code (a token-per-minute 429 for a large paste, a timeout on a slow
+      // prefill), so the rule is whether the provider ACCEPTED the request, not which error came back.
+      const refusal: StreamChunk[] = [
+        { type: 'error', error: { kind, retryable: true, provider: 'anthropic', message: 'no' } },
+      ];
+      const { session, events, requests } = rig([refusal, refusal, refusal, textTurn('answer')]);
+      session.start();
+      await session.sendMessage('a huge pasted file');
+      const [terminal] = terminals(events);
+      expect(terminal).toMatchObject({ stopReason: 'error', error: { code } });
+      expect(terminal?.interruption).toBeUndefined();
+      const before = requests.length;
+      await session.sendMessage('a shorter request');
+      expect(
+        requests
+          .slice(before)
+          .flatMap((request) => request.messages.map(textOf))
+          .join('|'),
+      ).not.toContain('a huge pasted file');
+    },
+  );
+
+  it('rolls back an Esc that arrives before the provider returned any content, and keeps one that arrives after', async () => {
+    const silent = latch();
+    const early = rig([
+      // The request was sent and the provider has said nothing; an abort then surfaces as the adapter's cancelled error,
+      // exactly as a real fetch abort does. No content chunk ever arrives.
+      async function* (signal) {
+        silent.open();
+        await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve()));
+        yield {
+          type: 'error',
+          error: { kind: 'cancelled', retryable: false, provider: 'anthropic', message: 'aborted' },
+        } satisfies StreamChunk;
+      },
+      textTurn('later'),
+    ]);
+    early.session.start();
+    const running = early.session.sendMessage('first request');
+    await silent.promise;
+    early.session.abort();
+    await running;
+    expect(terminals(early.events)[0]).toMatchObject({ stopReason: 'aborted' });
+    expect(terminals(early.events)[0]?.interruption).toBeUndefined();
+    await early.session.sendMessage('second request');
+    expect((early.requests.at(-1)?.messages ?? []).map(textOf).join('|')).toBe('second request');
+  });
+
+  it('retains a turn whose overflow RETRY streamed content and then failed: the retry shows the provider accepted it', async () => {
+    const overflow: StreamChunk[] = [
+      {
+        type: 'error',
+        error: {
+          kind: 'context_overflow',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'too long',
+        },
+      },
+    ];
+    const midFailure: StreamChunk[] = [
+      { type: 'text_delta', text: 'PARTIAL' },
+      {
+        type: 'error',
+        error: { kind: 'unknown', retryable: false, provider: 'anthropic', message: 'dropped' },
+      },
+    ];
+    // Two completed turns give recovery something to fold; turn 3 overflows with no content, compaction runs, and the
+    // retry returns content before failing.
+    const { session, events } = rig([
+      textTurn('r1'),
+      textTurn('r2'),
+      overflow,
+      textTurn('SUMMARY'),
+      midFailure,
+      textTurn('later'),
+    ]);
+    session.start();
+    await session.sendMessage('q1');
+    await session.sendMessage('q2');
+    await session.sendMessage('q3 overflows once');
+    expect(events.some((event) => event.type === 'session:compacted')).toBe(true);
+    const turns = terminals(events);
+    expect(turns.at(-1)?.interruption).toEqual({ reason: 'failed', code: 'internal' });
+  });
 
   it('keeps a refusal that comes after a tool round: the calls ran, so the turn is retained', async () => {
     const refusal: StreamChunk[] = [
@@ -728,6 +825,53 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     const dropped = await run(2);
     expect(dropped.text).not.toContain('q2 interrupted');
     expect(dropped.text).not.toContain('interrupted before it was answered');
+  });
+
+  it('keeps a retained turn out of reach of a sink that mutates the event it was handed', async () => {
+    const entered = latch();
+    const release = latch();
+    const { session, requests } = rig([midStream(entered.open, release.promise), textTurn('ok')], {
+      deps: {
+        emit: (event) => {
+          if (event.type === 'session:turn_completed' && event.interruption !== undefined)
+            Object.assign(event.interruption, { reason: 'denied' });
+        },
+      },
+    });
+    session.start();
+    const running = session.sendMessage('first request');
+    await entered.promise;
+    session.abort();
+    release.open();
+    await running;
+    await session.sendMessage('second request');
+    // The span holds its own frozen copy: the mutated event cannot change what the model is told.
+    const text = textOf(requests.at(-1)?.messages[0]);
+    expect(text).toContain('the user stopped it');
+    expect(text).not.toContain('a tool call was refused');
+  });
+
+  it('under window 1 keeps the newest interrupted turn in place of an older completed one', async () => {
+    const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 1 } });
+    const entered = latch();
+    const release = latch();
+    const { session, requests } = rig(
+      [textTurn('r1'), midStream(entered.open, release.promise), textTurn('r3')],
+      { agent },
+    );
+    session.start();
+    await session.sendMessage('q1 completed');
+    const running = session.sendMessage('q2 interrupted');
+    await entered.promise;
+    session.abort();
+    release.open();
+    await running;
+    await session.sendMessage('q3');
+    const text = (requests.at(-1)?.messages ?? []).map(textOf).join('|');
+    // One slot: the interrupted turn takes it; the older completed turn is out. (Zero slots would show q1 instead.)
+    expect(text).toContain('q2 interrupted');
+    expect(text).toContain('the user stopped it');
+    expect(text).not.toContain('q1 completed');
   });
 
   it('retains two consecutive interrupted turns and folds all three user messages into one', async () => {
@@ -1284,6 +1428,9 @@ describe('live and restored requests agree (ADR-0119 §3)', () => {
     const text = textOf(restored.requests[0]?.messages[0]);
     expect(text).toContain('Tool calls made before the interruption may not be listed.');
     expect(text).not.toContain('No tool call was recorded for it.');
+    // ADR-0128's single request notice applies to a degraded interrupted turn, exactly once.
+    expect(text).toContain(RECEIPT_NOTICE_INCOMPLETE);
+    expect(text.split(RECEIPT_NOTICE_INCOMPLETE)).toHaveLength(2);
   });
 
   it('evicts the same oldest receipts live and restored when interrupted turns share the budget', async () => {

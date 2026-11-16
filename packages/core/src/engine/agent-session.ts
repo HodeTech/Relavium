@@ -463,29 +463,6 @@ export class SessionStateError extends RelaviumError {
   }
 }
 
-/**
- * Codes by which the provider refused the REQUEST itself (ADR-0119 implementation note): a turn that ends in one of these
- * with no tool dispatched is not retained, because keeping the refused message would resend it in every later request.
- */
-const REQUEST_REFUSAL_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  'context_overflow',
-  'content_filter',
-  'validation',
-]);
-
-/** The provider refused the request itself and nothing was dispatched (see {@link REQUEST_REFUSAL_CODES}). */
-function isRequestRefusal(
-  error: unknown,
-  toolHistory: readonly SessionToolHistoryEntry[] | undefined,
-): boolean {
-  if ((toolHistory?.length ?? 0) > 0) return false;
-  try {
-    return error instanceof AgentTurnError && REQUEST_REFUSAL_CODES.has(error.code);
-  } catch {
-    return false;
-  }
-}
-
 /** `instanceof` through a guard: a hostile throwable's prototype accessors must not escape the settling path. */
 function isClassifiedTurnError(error: unknown): boolean {
   try {
@@ -644,11 +621,13 @@ export class AgentSession {
          */
         readonly toolHistoryUncertain?: boolean;
         /**
-         * `true` when the provider refused the REQUEST itself and no tool was dispatched (an overflow, a content
-         * filter, a validation error). The turn is not retained, whether it then ends in that error or in an abort
-         * during overflow recovery: the refused message would otherwise ride every later request.
+         * `true` once the provider returned any non-error chunk: it ACCEPTED the request. A turn that ended before that —
+         * a refusal under any error code (overflow, a content filter, a validation error, a token-per-minute 429), a
+         * timeout, or an Esc before the first chunk — is not retained: the message may be one the provider will refuse
+         * again, and keeping it would resend it in every later request while compaction and trim, which never fold the
+         * latest exchange, could not remove it. Rolled back, exactly as before ADR-0119.
          */
-        readonly requestRefused?: boolean;
+        readonly contentReceived?: boolean;
       }
     | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
@@ -1079,13 +1058,7 @@ export class AgentSession {
           this.#lastEngagedUsage ?? { input: 0, output: 0 };
         // Only a classified turn error is retained as an abort. A raw throw that raced the Esc cannot vouch for its
         // tool list (ADR-0119 §1), exactly like an unclassified throw outside an abort.
-        if (
-          failedAccounting?.engaged === true &&
-          failedAccounting.observerFailure === undefined &&
-          failedAccounting.toolHistoryUncertain !== true &&
-          failedAccounting.requestRefused !== true &&
-          isClassifiedTurnError(err)
-        ) {
+        if (this.#mayRetain() && isClassifiedTurnError(err)) {
           this.#completeInterruptedTurn('aborted', abortUsage, undefined, { reason: 'aborted' });
         } else {
           this.#rollbackPendingUser();
@@ -1220,24 +1193,28 @@ export class AgentSession {
   }
 
   /**
+   * The accounting half of ADR-0119's retention rule, shared by the abort branch and {@link #interruptionFor} so the two
+   * can never drift: a provider engaged AND accepted the request (it returned content), no host or observer fault was
+   * recorded, and the turn's tool list can vouch for itself.
+   */
+  #mayRetain(): boolean {
+    const accounting = this.#failedTurnAccounting;
+    return (
+      accounting?.engaged === true &&
+      accounting.contentReceived === true &&
+      accounting.observerFailure === undefined &&
+      accounting.toolHistoryUncertain !== true
+    );
+  }
+
+  /**
    * The ADR-0119 retention predicate for a CLASSIFIED error: the session accepted the message (it is pending),
    * a provider engaged (the predicate the hard cap already uses), and the error is classified. `tool_denied` and the
    * within-turn `turn_limit` get their own reasons; every other code is `failed` with that code. `undefined` ⇒ the
    * turn is rolled back as before.
    */
   #interruptionFor(code: ErrorCode): SessionInterruption | undefined {
-    const accounting = this.#failedTurnAccounting;
-    if (
-      this.#pendingUser === undefined ||
-      accounting?.engaged !== true ||
-      accounting.toolHistoryUncertain === true
-    )
-      return undefined;
-    // The provider refused the REQUEST itself and no tool ran: the message is the cause, and keeping it would resend it
-    // in every later request — compaction and trim never fold the latest exchange, so a pasted file larger than the
-    // window would fail each turn until it was displaced. Nothing happened that the model must be told about (the
-    // ADR's hazard is dispatched calls), so the turn is rolled back, as it was before ADR-0119.
-    if (accounting.requestRefused === true) return undefined;
+    if (this.#pendingUser === undefined || !this.#mayRetain()) return undefined;
     if (code === 'tool_denied') return { reason: 'denied' };
     if (code === 'turn_limit') return { reason: 'turn_limit' };
     return { reason: 'failed', code };
@@ -2108,7 +2085,7 @@ export class AgentSession {
       // ADR-0119: a failure before the first tool round never created a history, which means "none dispatched".
       toolHistory: outcome.toolHistory ?? [],
       ...(outcome.toolHistoryUncertain === true ? { toolHistoryUncertain: true } : {}),
-      ...(isRequestRefusal(outcome.error, outcome.toolHistory) ? { requestRefused: true } : {}),
+      ...(outcome.contentReceived === true ? { contentReceived: true } : {}),
       ...(outcome.failureOrigin === 'observer'
         ? { observerFailure: { error: outcome.error } }
         : {}),
@@ -2147,8 +2124,10 @@ export class AgentSession {
             // retry restarts the engine's tool ordinals, so the two lists could not be merged by id if that ever
             // changed: should the first attempt ever have dispatched a call, the turn cannot vouch for its list.
             toolHistory: retry.toolHistory ?? [],
-            // The retry decides it: the request was accepted if the retry dispatched anything or failed differently.
-            ...(isRequestRefusal(retry.error, retry.toolHistory) ? { requestRefused: true } : {}),
+            // Overflow recovery only runs when the first attempt returned no content, so the retry decides it.
+            ...(outcome.contentReceived === true || retry.contentReceived === true
+              ? { contentReceived: true }
+              : {}),
             ...((outcome.toolHistory?.length ?? 0) > 0 ||
             outcome.toolHistoryUncertain === true ||
             retry.toolHistoryUncertain === true

@@ -673,7 +673,10 @@ async function streamOneTurn(
   for await (const chunk of chain.stream(request)) {
     // An error alone may be a local pre-egress refusal. Every other actual provider chunk proves
     // engagement before a host readiness/sink fault can prevent the chain's AttemptRecord.
-    if (chunk.type !== 'error') usage.engaged = true;
+    if (chunk.type !== 'error') {
+      usage.engaged = true;
+      usage.contentReceived = true;
+    }
     if (
       chunk.type === 'stop' &&
       chunk.usage.kind === 'complete' &&
@@ -1539,6 +1542,8 @@ export type CapturedAgentTurnOutcome =
        * (ADR-0119). The session does not retain such a turn.
        */
       readonly toolHistoryUncertain?: true;
+      /** `true` when the provider returned at least one non-error chunk: it accepted the request (ADR-0119). */
+      readonly contentReceived?: true;
     };
 
 /** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
@@ -1738,6 +1743,7 @@ export async function captureAgentTurnOutcome(
       ...(acc.toolHistory !== undefined && uncertainHistories.has(acc.toolHistory)
         ? { toolHistoryUncertain: true as const }
         : {}),
+      ...(acc.contentReceived === true ? { contentReceived: true as const } : {}),
     };
   } finally {
     try {
@@ -1799,6 +1805,13 @@ interface TurnUsageAccumulator {
   input: number;
   output: number;
   engaged: boolean;
+  /**
+   * `true` once the provider returned ANY non-error stream chunk for this turn — proof that it ACCEPTED the request.
+   * A turn that ended before this (a refusal under whatever error code, a timeout, an Esc before the first chunk) was
+   * never taken up by the model, so a session does not retain it (ADR-0119): keeping a request the provider may refuse
+   * would resend it in every later request. Distinct from `engaged`, which a request that was merely sent also sets.
+   */
+  contentReceived?: boolean;
   /** Exact, call-local consumer provenance; an error class alone cannot authorise retries or a gate. */
   observerFailure?: { readonly error: unknown };
   /** A core attempt callback may also fail during internal admission settlement. */
