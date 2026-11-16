@@ -246,4 +246,16 @@ describe('migration 0021 — interruption rows (ADR-0119)', () => {
     expect(refusal).toBeInstanceOf(SessionMessageBoundaryError);
     expect(String((refusal as Error).message)).not.toContain('SECRET-INJECTED-TEXT');
   });
+
+  it('refuses to load a row that carries an interruption code but no reason (it would otherwise vanish silently)', () => {
+    const opened = openOld();
+    migrate(opened.db, { migrationsFolder });
+    const store = createSessionStore(opened.db);
+    opened.sqlite.pragma('ignore_check_constraints = ON');
+    opened.sqlite
+      .prepare(insertSql)
+      .run('orphan-code', 'legacy', 0, 'user', JSON.stringify([]), null, null, 'tool_failed', 0);
+    opened.sqlite.pragma('ignore_check_constraints = OFF');
+    expect(() => store.loadMessages('legacy')).toThrow(SessionMessageBoundaryError);
+  });
 });

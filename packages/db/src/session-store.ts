@@ -274,6 +274,10 @@ export function toSessionMessageRow(
 export function fromSessionMessageRow(
   row: Omit<SessionMessageRow, 'userDisplayText'>,
 ): SessionMessage {
+  // ADR-0119: a code with no reason is the one malformed interruption shape that would otherwise vanish without a
+  // signal (the object below is built only when a reason exists), so it is refused here like every other forgery.
+  if (row.interruptionReason === null && row.interruptionCode !== null)
+    throw new SessionMessageBoundaryError('message_invalid');
   const candidate = {
     id: row.id,
     sessionId: row.sessionId,
