@@ -153,14 +153,20 @@ export function sessionToWorkflow(
   let previousNodeId = 'input';
   let turnIndex = 0;
 
+  // Legacy bare-user context that precedes an interrupted turn folds into the NEXT step's prompt, as it did when that
+  // turn was rolled back and never stored.
+  let carriedPrefix: readonly SessionMessage[] = [];
   for (const turn of completedSessionTurns(ordered, false)) {
     // ADR-0119: an interrupted turn was never answered, so deriving a workflow never turns it into a step. It stays
     // in `metadata.relaviumExport.messages` (its interruption row marks it as interrupted, with its tool structure).
-    if (turn.interruption !== undefined) continue;
+    if (turn.interruption !== undefined) {
+      carriedPrefix = [...carriedPrefix, ...turn.legacyUserPrefix];
+      continue;
+    }
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
     const prompt = neutralizeInterpolation(
-      [...turn.legacyUserPrefix, turn.user]
+      [...carriedPrefix, ...turn.legacyUserPrefix, turn.user]
         .map((message) => textOf(message.content))
         .filter((text) => text.length > 0)
         .join('\n\n'),
@@ -173,6 +179,7 @@ export function sessionToWorkflow(
       ...(prompt.length > 0 ? { prompt_template: prompt } : {}),
       ...(tools.length > 0 ? { tools } : {}),
     };
+    carriedPrefix = [];
     nodes.push(node);
     edges.push({ from: previousNodeId, to: nodeId });
     previousNodeId = nodeId;

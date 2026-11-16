@@ -263,7 +263,7 @@ export function interruptionPhrase(interruption: SessionInterruption): string {
     case 'denied':
       return 'a tool call was refused and the turn ended';
     case 'turn_limit':
-      return 'it reached the limit on tool rounds';
+      return 'it reached a limit on tool use';
   }
 }
 

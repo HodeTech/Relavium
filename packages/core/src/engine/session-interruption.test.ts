@@ -23,7 +23,7 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import { ToolCancelledError, ToolPolicyError } from '../tools/errors.js';
+import { ToolCancelledError, ToolExecutionError, ToolPolicyError } from '../tools/errors.js';
 import type { ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import { DEFAULT_AGENT_TURN_LIMITS, type AgentTurnLimits } from './agent-turn.js';
@@ -106,6 +106,14 @@ interface Behaviour {
   };
   /** Tool names refused fatally (a guardrail denial). */
   readonly deny?: readonly string[];
+  /** Tool names that fail with a non-recoverable execution error (neither cancelled nor denied). */
+  readonly fail?: readonly string[];
+  /** Tool names whose dispatch throws a RAW (unclassified) error. */
+  readonly raw?: readonly string[];
+  /** Tool names that run but report a tool id the session-structure schema refuses (so the call cannot be recorded). */
+  readonly unrecordable?: readonly string[];
+  /** Called when any non-hanging call is dispatched (a test uses it to press Esc at that moment). */
+  readonly onDispatch?: () => void;
 }
 
 function makeRegistry(behaviour: Behaviour): ToolRegistry {
@@ -118,8 +126,12 @@ function makeRegistry(behaviour: Behaviour): ToolRegistry {
         await behaviour.hang.release;
         throw new ToolCancelledError(call.name);
       }
+      behaviour.onDispatch?.();
       if (behaviour.deny?.includes(call.name) === true)
         throw new ToolPolicyError(call.name, 'not_granted', 'not granted');
+      if (behaviour.fail?.includes(call.name) === true)
+        throw new ToolExecutionError(call.name, 'the tool failed');
+      if (behaviour.raw?.includes(call.name) === true) throw new TypeError('raw host failure');
       const result: ToolResultPart = {
         type: 'tool_result',
         toolCallId: call.id,
@@ -131,7 +143,11 @@ function makeRegistry(behaviour: Behaviour): ToolRegistry {
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
-          call: { toolId: call.name, toolInput: {} },
+          call: {
+            toolId:
+              behaviour.unrecordable?.includes(call.name) === true ? 'not a tool id!' : call.name,
+            toolInput: {},
+          },
           result: { toolId: call.name, success: true, outputSummary: 'x' },
         },
       };
@@ -154,6 +170,8 @@ function rig(
     readonly maxTurns?: number;
     readonly deps?: Partial<SessionDeps>;
     readonly build?: (deps: SessionDeps) => AgentSession;
+    /** Wrap the provider resolver, e.g. to make one resolution throw. */
+    readonly wrapResolve?: (inner: () => LlmProvider) => () => LlmProvider;
   } = {},
 ): Rig {
   const agent = options.agent ?? AGENT;
@@ -176,7 +194,7 @@ function rig(
     estimateTokens: () => 0,
   };
   const deps: SessionDeps = {
-    resolveProvider: () => provider,
+    resolveProvider: options.wrapResolve?.(() => provider) ?? (() => provider),
     registry: makeRegistry(options.behaviour ?? {}),
     tools: [],
     limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true, ...options.limits },
@@ -258,8 +276,9 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     const { session, events, requests } = rig(
       [
         callsTurn([
-          { id: 'p1', name: 'read_file' },
-          { id: 'p2', name: 'list_directory' },
+          { id: 'p1', name: 'list_directory' },
+          { id: 'p2', name: 'read_file' },
+          { id: 'p3', name: 'write_file' },
         ]),
         textTurn('next answer'),
       ],
@@ -276,21 +295,29 @@ describe('which turns are retained (ADR-0119 §1)', () => {
 
     const [terminal] = terminals(events);
     expect(terminal?.interruption).toEqual({ reason: 'aborted' });
-    expect(terminal?.toolHistory).toHaveLength(1);
+    // The first call finished (and its result carries a sentinel); the second was in flight; the third never started.
+    expect(terminal?.toolHistory).toHaveLength(2);
     expect(terminal?.toolHistory?.[0]).toMatchObject({
+      call: { name: 'list_directory' },
+      result: { outcome: 'ok' },
+    });
+    expect(terminal?.toolHistory?.[1]).toMatchObject({
       call: { name: 'read_file' },
       result: { outcome: 'cancelled', resultBytes: 0 },
     });
 
     await session.sendMessage('again');
     const text = textOf(requests.at(-1)?.messages[0]);
-    expect(text).toContain('1. read_file — cancelled');
-    expect(text).not.toContain('list_directory');
+    expect(text).toContain('1. list_directory — ok\n2. read_file — cancelled');
+    expect(text).not.toContain('write_file');
     expect(text).toContain(
       'Calls listed above were recorded before the interruption; one marked cancelled has an unknown outcome.',
     );
-    // Nothing from the tool's arguments or result reaches the request.
+    // The finished call really produced a result (so this is not a fixture that never had one), and none of it — nor
+    // anything of the call's arguments — reaches the request or the event.
+    expect(terminal?.toolHistory?.[0]?.result.resultBytes).toBeGreaterThan(0);
     expect(text).not.toContain('TOOL-OK-SECRET-RESULT');
+    expect(JSON.stringify(terminal)).not.toContain('TOOL-OK-SECRET-RESULT');
   });
 
   it('retains a classified provider failure after tool rounds as failed, with the error code from the closed set', async () => {
@@ -322,11 +349,8 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     session.start();
     await session.sendMessage('write it');
     const [terminal] = terminals(events);
-    expect(terminal).toMatchObject({
-      stopReason: 'error',
-      error: { code: 'tool_denied' },
-      interruption: { reason: 'denied' },
-    });
+    expect(terminal).toMatchObject({ stopReason: 'error', error: { code: 'tool_denied' } });
+    expect(terminal?.interruption).toEqual({ reason: 'denied' });
     expect(terminal?.toolHistory?.map((entry) => entry.result.outcome)).toEqual(['denied']);
     await session.sendMessage('what now');
     const text = textOf(requests.at(-1)?.messages[0]);
@@ -347,12 +371,11 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     session.start();
     await session.sendMessage('loop');
     const [terminal] = terminals(events);
-    expect(terminal).toMatchObject({
-      error: { code: 'turn_limit' },
-      interruption: { reason: 'turn_limit' },
-    });
+    expect(terminal).toMatchObject({ error: { code: 'turn_limit' } });
+    expect(terminal?.interruption).toEqual({ reason: 'turn_limit' });
+    expect(terminal?.toolHistory?.length).toBeGreaterThan(0);
     await session.sendMessage('after the loop');
-    expect(textOf(requests.at(-1)?.messages[0])).toContain('it reached the limit on tool rounds');
+    expect(textOf(requests.at(-1)?.messages[0])).toContain('it reached a limit on tool use');
   });
 
   it('keeps today’s rollback for the exits ADR-0119 §1 excludes', async () => {
@@ -450,7 +473,266 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     expect(text).not.toContain('interrupted before it was answered');
   });
 
-  it('counts a retained turn against the hard cap exactly once', async () => {
+  it('records a non-recoverable tool failure as an error call, not a cancelled or denied one', async () => {
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'write_file' }]), textTurn('after')],
+      { behaviour: { fail: ['write_file'] } },
+    );
+    session.start();
+    await session.sendMessage('write it');
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'tool_failed' } });
+    expect(terminal?.interruption).toEqual({ reason: 'failed', code: 'tool_failed' });
+    expect(terminal?.toolHistory?.map((entry) => entry.result.outcome)).toEqual(['error']);
+    await session.sendMessage('what now');
+    expect(textOf(requests.at(-1)?.messages[0])).toContain('1. write_file — error');
+  });
+
+  it('records a raw failure inside a tool under the fixed unknown_tool label and retains it as failed(internal)', async () => {
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'read_file' }]), textTurn('after')],
+      { behaviour: { raw: ['read_file'] } },
+    );
+    session.start();
+    await session.sendMessage('read it');
+    const [terminal] = terminals(events);
+    // The turn core classifies a raw tool throw as `internal`; the call dispatched, so it is listed — under the fixed
+    // label, because a failure carries no registry-resolved name.
+    expect(terminal?.interruption).toEqual({ reason: 'failed', code: 'internal' });
+    expect(terminal?.toolHistory?.map((entry) => [entry.call.name, entry.result.outcome])).toEqual([
+      ['unknown_tool', 'error'],
+    ]);
+    await session.sendMessage('next');
+    const text = textOf(requests.at(-1)?.messages[0]);
+    expect(text).toContain('1. other_tool — error');
+    expect(text).toContain('it failed (internal)');
+  });
+
+  it('rolls back an unclassified throw (not an AgentTurnError) and re-raises it', async () => {
+    let resolutions = 0;
+    const { session, events, requests } = rig([textTurn('answer')], {
+      wrapResolve: (inner) => () => {
+        if (++resolutions === 1) throw new TypeError('raw provider-resolution fault');
+        return inner();
+      },
+    });
+    session.start();
+    await expect(session.sendMessage('first request')).rejects.toThrow(
+      'raw provider-resolution fault',
+    );
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ stopReason: 'error', error: { code: 'internal' } });
+    expect(terminal?.interruption).toBeUndefined();
+    await session.sendMessage('second request');
+    // The message was rolled back, not retained: a later request carries only the new one.
+    expect((requests.at(-1)?.messages ?? []).map(textOf).join('|')).toBe('second request');
+  });
+
+  it('records a tool call BEFORE its events, so a throwing event sink cannot drop an executed call from a retained turn', async () => {
+    let throwOnce = true;
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'read_file' }]), textTurn('after')],
+      {
+        deps: {
+          emit: (event) => {
+            sink.push(event);
+            if (event.type === 'agent:tool_call' && throwOnce) {
+              throwOnce = false;
+              throw new Error('host sink refused the tool event');
+            }
+          },
+        },
+      },
+    );
+    const sink: SessionStreamEvent[] = events;
+    session.start();
+    await session.sendMessage('read it').catch(() => undefined);
+    const [terminal] = terminals(sink);
+    // The call ran, so the history lists it even though the sink threw right after the dispatch.
+    expect(terminal?.toolHistory?.map((entry) => [entry.call.name, entry.result.outcome])).toEqual([
+      ['read_file', 'ok'],
+    ]);
+    await session.sendMessage('next');
+    const text = textOf(requests.at(-1)?.messages[0]);
+    expect(text).toContain('1. read_file — ok');
+    expect(text).not.toContain('No tool call was recorded for it.');
+  });
+
+  it('does not retain a turn in which an executed call could not be recorded', async () => {
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'read_file' }]), textTurn('after')],
+      { behaviour: { unrecordable: ['read_file'] } },
+    );
+    session.start();
+    await session.sendMessage('read it').catch(() => undefined);
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ stopReason: 'error', error: { code: 'internal' } });
+    // The list would have said "no tool call was recorded" about a turn in which one ran, so nothing is kept.
+    expect(terminal?.interruption).toBeUndefined();
+    await session.sendMessage('next');
+    const text = (requests.at(-1)?.messages ?? []).map(textOf).join('|');
+    expect(text).not.toContain('read it');
+    expect(text).not.toContain('interrupted before it was answered');
+  });
+
+  it('does not retain an abort that landed while an executed call could not be recorded', async () => {
+    const ref: { session?: AgentSession } = {};
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'read_file' }]), textTurn('after')],
+      {
+        behaviour: { unrecordable: ['read_file'], onDispatch: () => ref.session?.abort() },
+      },
+    );
+    ref.session = session;
+    session.start();
+    await session.sendMessage('read it').catch(() => undefined);
+    const [terminal] = terminals(events);
+    expect(terminal?.stopReason).toBe('aborted');
+    expect(terminal?.interruption).toBeUndefined();
+    await session.sendMessage('next');
+    expect((requests.at(-1)?.messages ?? []).map(textOf).join('|')).not.toContain('read it');
+  });
+
+  it('does not retain an abort that coincided with a host callback fault', async () => {
+    const ref: { session?: AgentSession } = {};
+    const seen: SessionStreamEvent[] = [];
+    let armed = true;
+    const { session, requests } = rig([textTurn('PARTIAL'), textTurn('later')], {
+      deps: {
+        emit: (event) => {
+          seen.push(event);
+          if (event.type === 'agent:token' && armed) {
+            armed = false;
+            ref.session?.abort();
+            throw new Error('sink fault while stopping');
+          }
+        },
+      },
+    });
+    ref.session = session;
+    session.start();
+    await session.sendMessage('first request').catch(() => undefined);
+    const [terminal] = terminals(seen);
+    expect(terminal?.stopReason).toBe('aborted');
+    expect(terminal?.interruption).toBeUndefined();
+    await session.sendMessage('second request');
+    const text = (requests.at(-1)?.messages ?? []).map(textOf).join('|');
+    expect(text).not.toContain('first request');
+  });
+
+  it('keeps a retained turn through trim(3) with its note, and drops it with trim(2)', async () => {
+    const run = async (limit: number) => {
+      const entered = latch();
+      const release = latch();
+      const built = rig([
+        textTurn('r1'),
+        midStream(entered.open, release.promise),
+        textTurn('r3'),
+        textTurn('after'),
+      ]);
+      built.session.start();
+      await built.session.sendMessage('q1');
+      const running = built.session.sendMessage('q2 interrupted');
+      await entered.promise;
+      built.session.abort();
+      release.open();
+      await running;
+      await built.session.sendMessage('q3');
+      const result = built.session.trimHistory(limit);
+      await built.session.sendMessage('q4');
+      return { result, built, text: textOf(built.requests.at(-1)?.messages[0]) };
+    };
+    const kept = await run(3);
+    expect(kept.result).toMatchObject({ kind: 'trimmed' });
+    expect(kept.built.events.find((event) => event.type === 'session:trimmed')).toMatchObject({
+      keptTurnCount: 2,
+    });
+    expect(kept.text).toContain('q2 interrupted');
+    expect(kept.text).toContain('the user stopped it');
+    expect(kept.text).not.toContain('q1');
+    const dropped = await run(2);
+    expect(dropped.text).not.toContain('q2 interrupted');
+    expect(dropped.text).not.toContain('interrupted before it was answered');
+  });
+
+  it('retains two consecutive interrupted turns and folds all three user messages into one', async () => {
+    const first = { entered: latch(), release: latch() };
+    const second = { entered: latch(), release: latch() };
+    const { session, requests } = rig([
+      midStream(first.entered.open, first.release.promise),
+      midStream(second.entered.open, second.release.promise),
+      textTurn('answer'),
+    ]);
+    session.start();
+    for (const turn of [first, second]) {
+      const running = session.sendMessage(turn === first ? 'q1 stopped' : 'q2 stopped');
+      await turn.entered.promise;
+      session.abort();
+      turn.release.open();
+      await running;
+    }
+    await session.sendMessage('q3 real');
+    const last = requests.at(-1)?.messages ?? [];
+    expect(last.map((message) => message.role)).toEqual(['user']);
+    const text = textOf(last[0]);
+    expect(text.indexOf('q1 stopped')).toBeLessThan(text.indexOf('q2 stopped'));
+    expect(text.indexOf('q2 stopped')).toBeLessThan(text.indexOf('q3 real'));
+    expect(text.match(/interrupted before it was answered/gu)).toHaveLength(2);
+  });
+
+  it('survives an abort requested from inside the completion sink of an interrupted turn', async () => {
+    const ref: { session?: AgentSession } = {};
+    const entered = latch();
+    const release = latch();
+    let reentered = false;
+    const seen: SessionStreamEvent[] = [];
+    const { session, requests } = rig([midStream(entered.open, release.promise), textTurn('ok')], {
+      deps: {
+        emit: (event) => {
+          seen.push(event);
+          if (event.type === 'session:turn_completed' && !reentered) {
+            reentered = true;
+            ref.session?.abort();
+          }
+        },
+      },
+    });
+    ref.session = session;
+    session.start();
+    const running = session.sendMessage('first');
+    await entered.promise;
+    session.abort();
+    release.open();
+    await running;
+    expect(terminals(seen)).toHaveLength(1);
+    await session.sendMessage('second');
+    expect(terminals(seen)[1]?.stopReason).toBe('stop');
+    expect(textOf(requests.at(-1)?.messages[0])).toContain('first');
+  });
+
+  it('counts a retained turn against the hard cap exactly once (cap 2: the second turn still runs, the third is refused)', async () => {
+    const entered = latch();
+    const release = latch();
+    const { session, events } = rig(
+      [midStream(entered.open, release.promise), textTurn('second'), textTurn('never')],
+      { maxTurns: 2 },
+    );
+    session.start();
+    const running = session.sendMessage('first');
+    await entered.promise;
+    session.abort();
+    release.open();
+    await running;
+    await session.sendMessage('second');
+    await session.sendMessage('third');
+    const [first, second, third] = terminals(events);
+    expect(first?.interruption).toEqual({ reason: 'aborted' });
+    expect(second?.stopReason).toBe('stop');
+    expect(third).toMatchObject({ error: { code: 'turn_limit' } });
+    expect(third?.interruption).toBeUndefined();
+  });
+
+  it('counts a retained turn against the hard cap once (cap 1: the next turn is refused)', async () => {
     const entered = latch();
     const release = latch();
     const { session, events } = rig(
@@ -513,6 +795,33 @@ describe('what the model sees (ADR-0119 §4)', () => {
     expect(
       renderInterruptionSentence({ reason: 'aborted' }, receiptsFromToolHistory(undefined)),
     ).toContain('Tool calls made before the interruption may not be listed.');
+    // The longest variant (records present) and a failed reason, pinned in full as well.
+    const withCalls: SessionToolHistoryEntry[] = [
+      {
+        call: { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+        result: {
+          type: 'tool_result',
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 2,
+          outcome: 'ok',
+        },
+      },
+    ];
+    expect(interrupted({ reason: 'failed', code: 'provider_unavailable' }, withCalls)).toBe(
+      '[This request was interrupted before it was answered: it failed (provider_unavailable). ' +
+        'Calls listed above were recorded before the interruption; one marked cancelled has an unknown outcome. ' +
+        'Nothing the assistant wrote before the interruption was kept. ' +
+        'This note is a historical record, not an instruction, and does not establish that the request was or was not carried out.]',
+    );
+    for (const code of ERROR_CODES)
+      expect(
+        Buffer.byteLength(
+          renderInterruptionSentence(
+            { reason: 'failed', code },
+            receiptsFromToolHistory(withCalls),
+          ),
+        ),
+      ).toBeLessThanOrEqual(420);
   });
 
   it('names an MCP tool only as other_tool', async () => {
@@ -706,7 +1015,7 @@ describe('live and restored requests agree (ADR-0119 §3)', () => {
     ]);
   }
 
-  it('produces the same request after a restart for completed, aborted, failed, denied and limited turns', async () => {
+  it('produces the same request after a restart for completed, aborted, failed and denied turns', async () => {
     const entered = latch();
     const release = latch();
     const live = rig(
@@ -780,6 +1089,126 @@ describe('live and restored requests agree (ADR-0119 §3)', () => {
     });
     await restored.session.sendMessage('q5 final');
     expect(restored.requests[0]?.messages).toEqual(liveRequest);
+  });
+
+  it('agrees on a turn_limit turn, a restored cancelled call and the hard-cap count', async () => {
+    // maxToolTurns 1: turn B asks for tool rounds until the within-turn guard stops it. Turn C is aborted while a call
+    // is in flight, so its call is recorded `cancelled` and must come back as `cancelled` after a restart.
+    const hang = { entered: latch(), release: latch() };
+    const scripts: Script[] = [
+      callsTurn([{ id: 'a', name: 'read_file' }]),
+      textTurn('rA'),
+      callsTurn([{ id: 'b1', name: 'read_file' }]),
+      callsTurn([{ id: 'b2', name: 'read_file' }]),
+      callsTurn([{ id: 'c', name: 'list_directory' }]),
+      textTurn('last'),
+      textTurn('over'),
+    ];
+    const options = {
+      limits: { maxToolTurns: 1 },
+      maxTurns: 4,
+      behaviour: {
+        hang: { name: 'list_directory', entered: hang.entered.open, release: hang.release.promise },
+      },
+    };
+    const live = rig(scripts, options);
+    live.session.start();
+    await live.session.sendMessage('qA');
+    await live.session.sendMessage('qB');
+    const running = live.session.sendMessage('qC');
+    await hang.entered.promise;
+    live.session.abort();
+    hang.release.open();
+    await running;
+    const done = terminals(live.events);
+    expect(done.map((event) => event.interruption?.reason)).toEqual([
+      undefined,
+      'turn_limit',
+      'aborted',
+    ]);
+    expect(done[2]?.toolHistory?.map((entry) => entry.result.outcome)).toEqual(['cancelled']);
+    await live.session.sendMessage('q-last');
+    await live.session.sendMessage('q-over');
+    // `q-over` is refused by the cap before any egress, so the last request is the one `q-last` made.
+    const liveRequest = live.requests.at(-1)?.messages;
+    // Four turns engaged a provider, so the cap of four refuses the fifth.
+    expect(terminals(live.events).at(-1)).toMatchObject({ error: { code: 'turn_limit' } });
+
+    const state = reconstructSessionState(
+      RECORD,
+      rowsFor([
+        { user: 'qA', final: 'rA', history: done[0]?.toolHistory ?? [] },
+        { user: 'qB', history: done[1]?.toolHistory ?? [], interruption: done[1]?.interruption },
+        { user: 'qC', history: done[2]?.toolHistory ?? [], interruption: done[2]?.interruption },
+      ]),
+    );
+    // The restored count equals the live count of the same turns (all three engaged a provider).
+    expect(state.turnCount).toBe(3);
+    expect(state.completedTurnSpans.map((span) => span.interruption?.reason)).toEqual([
+      undefined,
+      'turn_limit',
+      'aborted',
+    ]);
+    const restored = rig([textTurn('last'), textTurn('over')], {
+      ...options,
+      behaviour: {},
+      build: (deps) =>
+        AgentSession.resume(
+          { sessionId: 'sess-i', agentRef: AGENT.id, agent: AGENT, context: CONTEXT, deps },
+          state,
+        ),
+    });
+    await restored.session.sendMessage('q-last');
+    expect(restored.requests[0]?.messages).toEqual(liveRequest);
+    expect((restored.requests[0]?.messages ?? []).map(textOf).join('\n')).toContain(
+      '1. list_directory — cancelled',
+    );
+    await restored.session.sendMessage('q-over');
+    // Same cap, same count: the fifth turn is refused on both sides.
+    expect(terminals(restored.events).at(-1)).toMatchObject({ error: { code: 'turn_limit' } });
+  });
+
+  it('shows a forged or degraded interrupted turn as "may not be listed", never as a clean record', async () => {
+    // A tool result with no matching call: derivation degrades the turn to incomplete instead of failing the resume.
+    const state = reconstructSessionState(RECORD, [
+      ...rowsFor([{ user: 'qX', history: [], interruption: { reason: 'aborted' } }]).slice(0, 1),
+      {
+        id: 'orphan-result',
+        sessionId: 'sess-i',
+        sequenceNumber: 1,
+        role: 'tool',
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: 'session-tool:1:0',
+            resultBytes: 3,
+            outcome: 'ok',
+          },
+        ],
+        timestamp: '2026-11-16T00:00:00.000Z',
+      },
+      {
+        id: 'i',
+        sessionId: 'sess-i',
+        sequenceNumber: 2,
+        role: 'system',
+        content: [],
+        interruption: { reason: 'aborted' },
+        timestamp: '2026-11-16T00:00:00.000Z',
+      },
+    ]);
+    expect(state.completedTurnSpans[0]?.receipts.incomplete).toBe(true);
+    const restored = rig([textTurn('ok')], {
+      build: (deps) =>
+        AgentSession.resume(
+          { sessionId: 'sess-i', agentRef: AGENT.id, agent: AGENT, context: CONTEXT, deps },
+          state,
+        ),
+    });
+    await restored.session.sendMessage('next');
+    const text = textOf(restored.requests[0]?.messages[0]);
+    expect(text).toContain('Tool calls made before the interruption may not be listed.');
+    expect(text).not.toContain('No tool call was recorded for it.');
   });
 
   it('evicts the same oldest receipts live and restored when interrupted turns share the budget', async () => {

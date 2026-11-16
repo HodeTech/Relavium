@@ -1311,19 +1311,22 @@ async function dispatchToolCalls(
               ),
             );
           } catch {
-            /* the original failure stays primary */
+            // The original failure stays primary, but a dispatched call that could not be listed makes the list
+            // uncertain, and an uncertain list is not retained.
+            uncertainHistories.add(history);
           }
         }
         throw fatal;
       }
       const part = failure.content.find((entry) => entry.type === 'tool_result');
       if (id !== undefined && part?.type === 'tool_result') {
-        history.push(
+        const recordedPart = part;
+        recordDispatchedCallOrThrow(history, () =>
           sessionToolHistoryEntry(
             id,
             name,
             call,
-            part,
+            recordedPart,
             [],
             err instanceof ToolDispatchError && err.code === 'tool_denied' ? 'denied' : 'error',
           ),
@@ -1334,6 +1337,24 @@ async function dispatchToolCalls(
       continue;
     }
     succeeded += 1;
+    // ADR-0119: the call has run, so it is recorded BEFORE any event is emitted. A sink that throws on the events
+    // below must not leave an executed call out of a retained turn's history, which would tell the next request that
+    // no tool call was recorded for a turn in which one ran.
+    const part = unwrapUntrusted(outcome.toolResult);
+    // A failure to record is held until the call's own event has been emitted (observers must see a call that ran), then
+    // fails the turn; the history is marked uncertain so the session does not retain such a turn.
+    const recording =
+      id === undefined
+        ? undefined
+        : recordDispatchedCall(history, () =>
+            sessionToolHistoryEntry(
+              id,
+              outcome.events.call.toolId,
+              call,
+              part,
+              unwrapUntrusted(outcome.mediaAttachments),
+            ),
+          );
     // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
     // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
     // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
@@ -1345,17 +1366,7 @@ async function dispatchToolCalls(
       toolInput: outcome.events.call.toolInput,
       attemptNumber,
     });
-    const part = unwrapUntrusted(outcome.toolResult);
-    if (id !== undefined)
-      history.push(
-        sessionToolHistoryEntry(
-          id,
-          outcome.events.call.toolId,
-          call,
-          part,
-          unwrapUntrusted(outcome.mediaAttachments),
-        ),
-      );
+    if (recording !== undefined) throw recording.failure;
     results.push({ role: 'tool', content: [part] });
     // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
     // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
@@ -1380,6 +1391,41 @@ async function dispatchToolCalls(
     results.push(attachment);
   }
   return { messages: results, correctable, succeeded };
+}
+
+/**
+ * Histories in which a call that DISPATCHED could not be recorded (ADR-0119). Such a list cannot vouch for itself — it
+ * would say "no tool call was recorded" about a turn in which one ran — so a failed outcome reports it as uncertain and
+ * the session does not retain the turn. A `WeakSet` keyed by the very array the driver appends to keeps the marker out
+ * of every signature between the dispatcher and the capture.
+ */
+const uncertainHistories = new WeakSet<readonly SessionToolHistoryEntry[]>();
+
+/**
+ * Record a dispatched call. A failure to build the entry marks the history uncertain and is RETURNED rather than thrown,
+ * so a caller that owes observers an event for the call can emit it first and then fail the turn with this error — a
+ * call that ran must still be visible on the stream (the PR 90 contract), whether or not it could be recorded.
+ */
+function recordDispatchedCall(
+  history: SessionToolHistoryEntry[],
+  build: () => SessionToolHistoryEntry,
+): { readonly failure: unknown } | undefined {
+  try {
+    history.push(build());
+    return undefined;
+  } catch (failure) {
+    uncertainHistories.add(history);
+    return { failure };
+  }
+}
+
+/** {@link recordDispatchedCall} for a path that emits no event for the call: a failure fails the turn at once. */
+function recordDispatchedCallOrThrow(
+  history: SessionToolHistoryEntry[],
+  build: () => SessionToolHistoryEntry,
+): void {
+  const recording = recordDispatchedCall(history, build);
+  if (recording !== undefined) throw recording.failure;
 }
 
 /**
@@ -1488,6 +1534,11 @@ export type CapturedAgentTurnOutcome =
       readonly usage: { readonly input: number; readonly output: number };
       /** Calls that dispatched before the failure, content-free; absent when the driver never started. */
       readonly toolHistory?: readonly SessionToolHistoryEntry[];
+      /**
+       * `true` when a call that dispatched could not be recorded, so {@link toolHistory} cannot vouch for itself
+       * (ADR-0119). The session does not retain such a turn.
+       */
+      readonly toolHistoryUncertain?: true;
     };
 
 /** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
@@ -1684,6 +1735,9 @@ export async function captureAgentTurnOutcome(
       engaged: acc.engaged,
       usage: knownUsage,
       ...(acc.toolHistory === undefined ? {} : { toolHistory: [...acc.toolHistory] }),
+      ...(acc.toolHistory !== undefined && uncertainHistories.has(acc.toolHistory)
+        ? { toolHistoryUncertain: true as const }
+        : {}),
     };
   } finally {
     try {

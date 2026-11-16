@@ -24,7 +24,9 @@ import {
   receiptBlockBytes,
   receiptLabel,
   receiptsFromToolHistory,
+  renderInterruptionSentence,
   renderReceiptNotice,
+  renderTurnBlock,
   renderTurnReceiptBlock,
   retainTurnReceipts,
   type ReceiptOutcome,
@@ -722,5 +724,89 @@ describe('oversized-message summarisation never clips a record', () => {
     const out = run(1_400, false);
     expect(out).not.toContain(RECEIPT_NOTICE_LEGEND);
     expect(out).not.toContain(RECEIPT_NOTICE_INCOMPLETE);
+  });
+});
+
+describe('interrupted turns (ADR-0119)', () => {
+  const interruptedTurnOf = (...inner: SessionMessage[]): CompletedSessionTurn => {
+    const user = row('user', text('q'));
+    const terminal: SessionMessage = {
+      ...row('system', []),
+      interruption: { reason: 'aborted' },
+    };
+    return {
+      user,
+      terminal,
+      messages: [user, ...inner, terminal],
+      legacyUserPrefix: [],
+      interruption: { reason: 'aborted' },
+    };
+  };
+
+  it('derives KNOWN-empty receipts for an interrupted turn with no structural rows, ambiguous for a completed one', () => {
+    expect(deriveTurnReceipts([interruptedTurnOf()])[0]).toEqual(KNOWN_EMPTY_RECEIPTS);
+    // A completed turn with no rows may predate receipts, so it stays ambiguous (ADR-0128).
+    expect(deriveTurnReceipts([turnOf()])[0]?.incomplete).toBe(true);
+  });
+
+  it('derives the recorded calls of an interrupted turn from its structural rows', () => {
+    const [derived] = deriveTurnReceipts([
+      interruptedTurnOf(
+        ...pairRows([entry('a', 'read_file'), entry('b', 'write_file', 'cancelled')]),
+      ),
+    ]);
+    expect(derived?.records).toEqual([record('read_file'), record('write_file', 'cancelled')]);
+    expect(derived?.incomplete).toBe(false);
+  });
+
+  it('degrades a malformed interrupted turn to incomplete instead of failing', () => {
+    const orphan = row('tool', [
+      { type: 'tool_result', toolCallId: 'x', resultBytes: 1, outcome: 'ok' },
+    ]);
+    const [derived] = deriveTurnReceipts([interruptedTurnOf(orphan)]);
+    expect(derived?.incomplete).toBe(true);
+    expect(derived?.records).toEqual([]);
+  });
+
+  it('appends the sentence after the receipts block, and leaves a completed turn untouched', () => {
+    const recorded = receipts([record('read_file')]);
+    const interrupted = renderTurnBlock({ receipts: recorded, interruption: { reason: 'denied' } });
+    expect(interrupted).toBe(
+      `${renderTurnReceiptBlock(recorded)}\n\n${renderInterruptionSentence({ reason: 'denied' }, recorded)}`,
+    );
+    expect(renderTurnBlock({ receipts: recorded })).toBe(renderTurnReceiptBlock(recorded));
+    // No records: the sentence alone, separated from the user text.
+    expect(
+      renderTurnBlock({ receipts: KNOWN_EMPTY_RECEIPTS, interruption: { reason: 'aborted' } }),
+    ).toBe(`\n\n${renderInterruptionSentence({ reason: 'aborted' }, KNOWN_EMPTY_RECEIPTS)}`);
+  });
+
+  it('picks the calls clause from the receipts state, so it cannot contradict the list above it', () => {
+    const aborted = { reason: 'aborted' } as const;
+    expect(renderInterruptionSentence(aborted, receipts([record('read_file')]))).toContain(
+      'Calls listed above were recorded',
+    );
+    expect(renderInterruptionSentence(aborted, KNOWN_EMPTY_RECEIPTS)).toContain(
+      'No tool call was recorded for it.',
+    );
+    expect(renderInterruptionSentence(aborted, OMITTED_RECEIPTS)).toContain(
+      'Tool calls made before the interruption may not be listed.',
+    );
+  });
+
+  it('admits a valid supplied interruption and refuses any that is not the closed shape', () => {
+    const base = { start: 0, end: 1, receipts: receipts([]) };
+    expect(admitSuppliedSpans([{ ...base, interruption: { reason: 'aborted' } }])).toEqual([
+      { ...base, interruption: { reason: 'aborted' } },
+    ]);
+    for (const bad of [
+      { reason: 'failed' },
+      { reason: 'aborted', code: 'tool_failed' },
+      { reason: 'exploded' },
+      { reason: 'aborted', extra: true },
+      'aborted',
+      null,
+    ])
+      expect(admitSuppliedSpans([{ ...base, interruption: bad }])).toBeUndefined();
   });
 });

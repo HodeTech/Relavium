@@ -599,12 +599,13 @@ export class AgentSession {
         readonly engaged: boolean;
         readonly usage: { readonly input: number; readonly output: number };
         readonly observerFailure?: { readonly error: unknown };
-        /**
-         * The settled, content-free tool history of the failed attempt (ADR-0119). `[]` is KNOWN empty; absent is
-         * UNKNOWN (an overflow retry after the first attempt already dispatched calls), which the request
-         * renders as "may not be listed" rather than claiming none.
-         */
+        /** The settled, content-free tool history of the failed attempt (ADR-0119); `[]` means none dispatched. */
         readonly toolHistory?: readonly SessionToolHistoryEntry[] | undefined;
+        /**
+         * `true` when a call that dispatched is NOT in {@link toolHistory}, so the list cannot vouch for itself and the
+         * turn is not retained: the next request would otherwise say no call was recorded for a turn in which one ran.
+         */
+        readonly toolHistoryUncertain?: boolean;
       }
     | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
@@ -1033,7 +1034,14 @@ export class AgentSession {
         if (failedAccounting?.engaged === true) this.#turnCount += 1;
         const abortUsage = failedAccounting?.usage ??
           this.#lastEngagedUsage ?? { input: 0, output: 0 };
-        if (failedAccounting?.engaged === true && failedAccounting.observerFailure === undefined) {
+        // Only a classified turn error is retained as an abort. A raw throw that raced the Esc cannot vouch for its
+        // tool list (ADR-0119 §1), exactly like an unclassified throw outside an abort.
+        if (
+          failedAccounting?.engaged === true &&
+          failedAccounting.observerFailure === undefined &&
+          failedAccounting.toolHistoryUncertain !== true &&
+          err instanceof AgentTurnError
+        ) {
           this.#completeInterruptedTurn('aborted', abortUsage, undefined, { reason: 'aborted' });
         } else {
           this.#rollbackPendingUser();
@@ -1084,7 +1092,9 @@ export class AgentSession {
 
   /**
    * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
-   * already rolled the user message back and ruled out a cancel-during-turn.
+   * already ruled out a cancel-during-turn; this method rolls the user message back, or — for an engaged turn that
+   * ended in a classified error whose tool list can vouch for itself — RETAINS it as an interrupted turn
+   * (ADR-0119).
    * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
    *   when canonical accounting proves provider engagement and reporting its real EA2 usage.
    * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
@@ -1172,7 +1182,12 @@ export class AgentSession {
    * turn is rolled back as before.
    */
   #interruptionFor(code: ErrorCode): SessionInterruption | undefined {
-    if (this.#pendingUser === undefined || this.#failedTurnAccounting?.engaged !== true)
+    const accounting = this.#failedTurnAccounting;
+    if (
+      this.#pendingUser === undefined ||
+      accounting?.engaged !== true ||
+      accounting.toolHistoryUncertain === true
+    )
       return undefined;
     if (code === 'tool_denied') return { reason: 'denied' };
     if (code === 'turn_limit') return { reason: 'turn_limit' };
@@ -1193,16 +1208,15 @@ export class AgentSession {
     interruption: SessionInterruption,
   ): void {
     const start = this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
-    // The accounting records an unknown history as absent and a known-empty one as `[]` (see the field's comment).
-    const accounting = this.#failedTurnAccounting;
-    const toolHistory = accounting?.toolHistory;
+    // Callers retain only when the history can vouch for itself, so a missing list means none dispatched.
+    const toolHistory = this.#failedTurnAccounting?.toolHistory ?? [];
     if (start < 0) {
       this.#emitTurnCompleted(stopReason, tokensUsed, error);
       return;
     }
     try {
       this.#emitTurnCompleted(stopReason, tokensUsed, error, {
-        toolHistory: toolHistory ?? [],
+        toolHistory,
         interruption,
       });
     } catch (sinkFailure) {
@@ -2039,6 +2053,7 @@ export class AgentSession {
       usage: outcome.usage,
       // ADR-0119: a failure before the first tool round never created a history, which means "none dispatched".
       toolHistory: outcome.toolHistory ?? [],
+      ...(outcome.toolHistoryUncertain === true ? { toolHistoryUncertain: true } : {}),
       ...(outcome.failureOrigin === 'observer'
         ? { observerFailure: { error: outcome.error } }
         : {}),
@@ -2072,11 +2087,16 @@ export class AgentSession {
           this.#failedTurnAccounting = {
             engaged: outcome.engaged || retry.engaged,
             usage,
-            // The retry restarts the engine's tool ordinals, so the two attempts' histories cannot be merged. If the
-            // first attempt had already dispatched calls the retry's list is incomplete: report it as UNKNOWN.
-            ...((outcome.toolHistory?.length ?? 0) > 0
-              ? {}
-              : { toolHistory: retry.toolHistory ?? [] }),
+            // Overflow recovery is only attempted before the first tool round (`recoverableOverflow` requires
+            // `!turnCommitted`), so the first attempt dispatched nothing and the retry's list is the whole turn's. The
+            // retry restarts the engine's tool ordinals, so the two lists could not be merged by id if that ever
+            // changed: should the first attempt ever have dispatched a call, the turn cannot vouch for its list.
+            toolHistory: retry.toolHistory ?? [],
+            ...((outcome.toolHistory?.length ?? 0) > 0 ||
+            outcome.toolHistoryUncertain === true ||
+            retry.toolHistoryUncertain === true
+              ? { toolHistoryUncertain: true }
+              : {}),
             ...(retry.failureOrigin === 'observer'
               ? { observerFailure: { error: retry.error } }
               : {}),
