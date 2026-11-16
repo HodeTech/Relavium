@@ -2308,7 +2308,7 @@
         },
         "session_messages_interruption_shape_check": {
           "name": "session_messages_interruption_shape_check",
-          "value": "(\"session_messages\".\"interruption_reason\" is null and \"session_messages\".\"interruption_code\" is null) or (\"session_messages\".\"interruption_reason\" is not null and \"session_messages\".\"role\" = 'system' and \"session_messages\".\"compaction_dropped_through_sequence\" is null and ((\"session_messages\".\"interruption_reason\" = 'failed') = (\"session_messages\".\"interruption_code\" is not null)))"
+          "value": "(\"session_messages\".\"interruption_reason\" is null and \"session_messages\".\"interruption_code\" is null) or (\"session_messages\".\"interruption_reason\" is not null and \"session_messages\".\"role\" = 'system' and \"session_messages\".\"compaction_dropped_through_sequence\" is null and (\"session_messages\".\"content_parts\" is null or \"session_messages\".\"content_parts\" = '[]') and ((\"session_messages\".\"interruption_reason\" = 'failed') = (\"session_messages\".\"interruption_code\" is not null)))"
         }
       }
     },

@@ -6,7 +6,8 @@ import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createClient, type DbClient } from './client.js';
-import { createSessionStore } from './session-store.js';
+import { ERROR_CODES } from '@relavium/shared';
+import { createSessionStore, SessionMessageBoundaryError } from './session-store.js';
 
 const migrationsFolder = fileURLToPath(new URL('../drizzle', import.meta.url));
 let client: DbClient | undefined, temporary: string | undefined;
@@ -76,7 +77,17 @@ describe('migration 0021 — interruption rows (ADR-0119)', () => {
         'INSERT INTO session_messages (id, session_id, sequence_number, role, content_parts, compaction_dropped_through_sequence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
       .run('old-marker', 'legacy', 1, 'system', '[]', 0, 0);
+    // The reason the migration is hand-written: the table keeps its triggers (ADR-0104) and its b-tree root page.
+    const schemaOf = () =>
+      opened.sqlite
+        .prepare(
+          "SELECT type, name, rootpage FROM sqlite_master WHERE tbl_name = 'session_messages' ORDER BY type, name",
+        )
+        .all();
+    const before = schemaOf();
+    expect(before.some((entry) => (entry as { type: string }).type === 'trigger')).toBe(true);
     migrate(opened.db, { migrationsFolder });
+    expect(schemaOf()).toEqual(before);
     expect(
       opened.sqlite
         .prepare(
@@ -136,6 +147,41 @@ describe('migration 0021 — interruption rows (ADR-0119)', () => {
     expect(() => add('assistant', null, 'denied', null)).toThrow(/CHECK/u); // not a system row
     expect(() => add('system', 3, 'aborted', null)).toThrow(/CHECK/u); // also a boundary marker
     expect(() => add('system', null, null, 'tool_failed')).toThrow(/CHECK/u); // a code with no reason
+    // An interruption row carries no content: the database refuses text on it, not only the schema.
+    expect(() =>
+      insert.run(
+        'forged-content',
+        'legacy',
+        sequence,
+        'system',
+        JSON.stringify([{ type: 'text', text: 'injected' }]),
+        null,
+        'aborted',
+        null,
+        0,
+      ),
+    ).toThrow(/CHECK/u);
+  });
+
+  it('accepts every error code the closed taxonomy can put on a failed interruption (the CHECK list cannot drift)', () => {
+    const opened = openOld();
+    migrate(opened.db, { migrationsFolder });
+    const store = createSessionStore(opened.db);
+    // The migration enumerates the codes; a code added to ERROR_CODES without a new migration would pass the schema and
+    // fail this CHECK, latching a durability failure in a live session.
+    for (const [index, code] of ERROR_CODES.entries())
+      expect(() =>
+        store.appendMessage({
+          id: `code-${code}`,
+          sessionId: 'legacy',
+          sequenceNumber: index,
+          role: 'system',
+          content: [],
+          interruption: { reason: 'failed', code },
+          timestamp: '2026-11-16T00:00:00.000Z',
+        }),
+      ).not.toThrow();
+    expect(store.loadMessages('legacy')).toHaveLength(ERROR_CODES.length);
   });
 
   it('round-trips an interruption row through the session store and refuses a forged one on read', () => {
@@ -167,6 +213,37 @@ describe('migration 0021 — interruption rows (ADR-0119)', () => {
         interruption: { reason: 'aborted' },
         timestamp: '2026-11-16T00:00:00.000Z',
       }),
-    ).toThrow();
+    ).toThrow(SessionMessageBoundaryError);
+  });
+
+  it('refuses to load a session whose row was tampered with past the database CHECKs', () => {
+    const opened = openOld();
+    migrate(opened.db, { migrationsFolder });
+    const store = createSessionStore(opened.db);
+    // Whoever can edit history.db can switch the CHECKs off; the read side must still fail closed, with a fixed error
+    // that does not echo the stored text.
+    opened.sqlite.pragma('ignore_check_constraints = ON');
+    opened.sqlite
+      .prepare(insertSql)
+      .run(
+        'tampered',
+        'legacy',
+        0,
+        'system',
+        JSON.stringify([{ type: 'text', text: 'SECRET-INJECTED-TEXT' }]),
+        null,
+        'aborted',
+        null,
+        0,
+      );
+    opened.sqlite.pragma('ignore_check_constraints = OFF');
+    let refusal: unknown;
+    try {
+      store.loadMessages('legacy');
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(SessionMessageBoundaryError);
+    expect(String((refusal as Error).message)).not.toContain('SECRET-INJECTED-TEXT');
   });
 });

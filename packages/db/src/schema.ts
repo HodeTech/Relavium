@@ -567,7 +567,7 @@ export const sessionMessages = sqliteTable(
     // compaction boundary marker; and the code is present exactly when the reason is 'failed'.
     check(
       'session_messages_interruption_shape_check',
-      sql`(${t.interruptionReason} is null and ${t.interruptionCode} is null) or (${t.interruptionReason} is not null and ${t.role} = 'system' and ${t.compactionDroppedThroughSequence} is null and ((${t.interruptionReason} = 'failed') = (${t.interruptionCode} is not null)))`,
+      sql`(${t.interruptionReason} is null and ${t.interruptionCode} is null) or (${t.interruptionReason} is not null and ${t.role} = 'system' and ${t.compactionDroppedThroughSequence} is null and (${t.contentParts} is null or ${t.contentParts} = '[]') and ((${t.interruptionReason} = 'failed') = (${t.interruptionCode} is not null)))`,
     ),
   ],
 );
