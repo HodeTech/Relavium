@@ -12,11 +12,7 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  ASK_USER_MAX_CALLS_PER_TURN,
-  type AskUserAnswer,
-  type AskUserDelegate,
-} from '../tools/ask-user.js';
+import { type AskUserAnswer, type AskUserDelegate } from '../tools/ask-user.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { createToolRegistry } from '../tools/registry.js';
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
@@ -234,22 +230,18 @@ describe('a question through the real tool loop (ADR-0132 §3, §5, §6)', () =>
     expect(received[1]).toContain('"reason":"skipped_earlier"');
   });
 
-  it('opens at most three cards in a turn; the fourth call in the response is not_asked', async () => {
+  it('has no per-turn card ceiling: a response may carry several questions and each opens its card', async () => {
     const delegate = vi.fn<AskUserDelegate>(() => Promise.resolve(answered('alpha.ts')));
-    const { session, requests } = rig(
-      [asks(ASK_USER_MAX_CALLS_PER_TURN + 1), textTurn('done')],
-      delegate,
-    );
+    const { session, requests } = rig([asks(5), textTurn('done')], delegate);
     session.start();
     await session.sendMessage('go');
-    expect(delegate).toHaveBeenCalledTimes(ASK_USER_MAX_CALLS_PER_TURN);
+    expect(delegate).toHaveBeenCalledTimes(5);
     const received = toolResultsIn(requests[1]);
-    expect(received).toHaveLength(ASK_USER_MAX_CALLS_PER_TURN + 1);
-    expect(received.at(-1)).toContain('"reason":"limit"');
-    expect(received.slice(0, -1).every((text) => text.includes('"status":"answered"'))).toBe(true);
+    expect(received).toHaveLength(5);
+    expect(received.every((text) => text.includes('"status":"answered"'))).toBe(true);
   });
 
-  it('the count is per TURN: the next turn may ask again, and an earlier skip does not carry over', async () => {
+  it('a skip closes questions for ITS turn only: the next turn may ask again', async () => {
     const delegate = vi.fn<AskUserDelegate>(() => Promise.resolve({ kind: 'skipped' }));
     const { session } = rig([asks(1), textTurn('one'), asks(1), textTurn('two')], delegate);
     session.start();

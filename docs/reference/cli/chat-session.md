@@ -743,7 +743,7 @@ key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-
   person's time, not the turn's: the busy line reads `Waiting for your answer <time> · Esc stops the turn` and the turn's active time
   excludes the wait ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) §6).
 - **It opens in every mode**, `auto` and `plan` included; no mode answers a question, and there is **no timeout**.
-- **`Esc` and `Ctrl-C` at the card stop the turn**, as at an approval card; `s` skips the call. A session-ending cancel (`/cancel`,
+- **`Esc` and `Ctrl-C` at the card stop the turn**, as at an approval card; `Ctrl+S` skips the call (no bare letter is a command — typing starts your own answer). A session-ending cancel (`/cancel`,
   `Ctrl-C` outside a card) ends the session as everywhere else.
 - **It appears only on a surface with a person at it**: the standalone chat and the Home wire the delegate; a plain, `--json` or
   one-shot surface wires none, and the model is then never offered the tool.
@@ -751,8 +751,11 @@ key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-
   (the person's own text in quotes), or `Skipped the agent's question: <header>` (`questions: <header> · <header>` for several). It lives in the live transcript and the terminal's own
   scrollback only. The durable row is the content-free tool structure, so a **resumed** session shows the bare `ask_user` tool row, and a
   later turn sees an `ask_user` receipt and nothing of the answer.
-- **A paste goes into the own-answer field** when it is open (one line, cut nowhere: a paste that would pass 500 characters is refused whole),
-  and is otherwise dropped — never the composer.
+- **Several questions are tabs** (`←`/`→`, Tab / Shift+Tab) ending in a **Review** tab that lists every answer and sends them; one question has
+  neither. **Typing anywhere starts your own answer**; in a multi-select question `Enter` in the field *saves* the text and the question stays open
+  until the next `Enter` confirms it. The key table is in the [contract](../shared-core/built-in-tools.md#ask-the-user--mvp-3d).
+- **A paste goes into the own-answer field** — opening it if the list is showing (one line, cut nowhere: a paste that would pass 500 characters is
+  refused whole) — and is ignored on the Review tab; it never reaches the composer.
 
 ## Tool availability
 

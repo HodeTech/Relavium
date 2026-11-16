@@ -123,13 +123,16 @@ and fixed: **`Question from the agent · not an approval`**, in cyan, never the
 approval card's `Approval needed` in warning yellow. Its keys are the question keys, never `[y]`/`[a]`/`[n]`.
 
 Keys (the table with every edge — first question, nothing chosen, empty text — is in the
-contract): `↑`/`↓` move the highlight (which starts on the first option; nothing is
-pre-chosen); `1`–`4` choose that option, and in a multi-select question *toggle* it;
+contract; this paragraph is the amended form, see the 2026-11-16 first-test note at the end): `↑`/`↓` move the highlight (which
+starts on the first option; nothing is pre-chosen); `1`–`4` choose that option, and in a multi-select question *toggle* it;
 `Space` toggles in a multi-select question; `Enter` confirms, and a multi-select question
-with nothing ticked and no text of its own is refused with a hint; `←` returns to the
-previous question; selecting the type-your-own row opens a one-line field. **`s` skips the
-whole call** — the model receives `skipped`, the turn continues, and answers already given
-are discarded. **`Esc` and `Ctrl-C` stop the turn**, exactly as at an approval card
+with nothing ticked and no text of its own is refused with a hint. **Anything printable starts the
+person's own answer** (type-to-start): no bare letter is a command, so typing — an `s` included — never
+skips. A call with several questions shows them as **tabs** the person moves between freely with `←`/`→`,
+ending in a **Review** tab that lists every answer and is the only place a multi-question call is sent;
+a call with one question has neither. In a multi-select question, saving the person's text is separate
+from confirming the question. **`Ctrl+S` skips the whole call** — the model receives `skipped`, the turn
+continues, and answers already given are discarded. **`Esc` and `Ctrl-C` stop the turn**, exactly as at an approval card
 ([ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) is the accepted source;
 ADR-0115, still Proposed, will refine `Ctrl-C` outside a card, not at one); the busy line's "Esc stops the turn" therefore stays true and ADR-0129 §6 needs
 no amendment. The card owns the keyboard as the approval card does: it is routed before the
@@ -159,7 +162,7 @@ while a question is pending rejects it with an `AbortError`; it never resolves i
 
 - **Every outcome except a stop is a successful, non-error result:** `answered`, `skipped`,
   and `not_asked` (a card was not shown because an earlier skip closed questions for the
-  turn, or the per-turn ceiling was reached). Each carries a fixed message where the model
+  turn). Each carries a fixed message where the model
   needs one. They are **not** denials: ADR-0117's text ("ask the user what they prefer")
   would be circular here.
 - **The recorded outcome is `ok`.** A result that ran to completion is progress for the
@@ -167,11 +170,10 @@ while a question is pending rejects it with an `AbortError`; it never resolves i
   exists for rounds in which nothing ran, and a question the person answered is not one.
   Repeated `not_asked` results cost a provider round each and end at the existing tool-round
   limit, like any repeated successful call.
-- **A skip closes questions for the rest of that turn, and at most three calls open a
-  card per turn.** The engine owns both, so every surface behaves alike: the per-turn state
-  (`opened`, `skipped`) lives on the dispatch context the session builds once per turn, and
-  only a call that actually invokes the delegate counts. Calls refused at validation count
-  for nothing.
+- **A skip closes questions for the rest of that turn.** The engine owns it, so every surface
+  behaves alike: the per-turn state (`skipped`) lives on the dispatch context the session
+  builds once per turn. There is **no count of cards per turn** (amended 2026-11-16: the first
+  draft capped it at three — see the first-test note at the end).
 - **Stopped while a card is open** (`Esc`/`Ctrl-C`): the turn core records the call
   `cancelled` — ADR-0128's "execution state unknown" — and ADR-0119 retains the turn as
   `aborted` when its rule says so, which it does here (a card means the provider already
@@ -247,7 +249,7 @@ safety property does not depend on the model complying: no answer reaches an app
 - **Larger ceilings with paging.** Rejected: scroll state inside a consent-adjacent card for
   questions that should be one line.
 - **Let the model supply or suppress the type-your-own row.** Rejected: it could trap the person.
-- **Partial answers.** Deferred: one clear rule (`s` skips the call) beats a half-filled form.
+- **Partial answers.** Deferred: one clear rule (`Ctrl+S` skips the call) beats a half-filled form. (A multi-question call can still be sent only once every question is answered; the Review tab never sends a hole.)
 - **Render the question as markdown.** Rejected: links, emphasis and fences are an
   authority-forging surface in a consent-adjacent card.
 
@@ -288,7 +290,7 @@ code. Severities are the reviewers', re-judged.
 | Finding | Disposition |
 |---|---|
 | The worst-case card (512-byte question, 256-byte description) needs ~18–24 rows against a budget of 12 (every review; **blocker/high**) | **Fixed.** Ceilings re-derived from the row budget (§2); hard wrap; a test at 80×24. |
-| `Esc` declines while it stops the turn everywhere else (three reviews; high) | **Fixed by the maintainer's ruling:** `Esc`/`Ctrl-C` stop; `s` skips (§3). The busy line and ADR-0129 §6 stay true. |
+| `Esc` declines while it stops the turn everywhere else (three reviews; high) | **Fixed by the maintainer's ruling:** `Esc`/`Ctrl-C` stop; skipping has its own key (§3; `s` at first, `Ctrl+S` after the first test). The busy line and ADR-0129 §6 stay true. |
 | A model label can clone the host's "Other" row; labels can forge `1)`/`[x]`; no fixed "not an approval" line | **Fixed** (§2, §3): own glyph, unnumbered, reserved labels, marker-prefix refusal, a fixed rule row. Look-alike letters accepted (ADR-0120). |
 | The delegate has no carrier, and the CLI's `wiredToolIds` is a second advertise gate (two reviews) | **Fixed** (§1, §7): `SessionDeps.askUser`, the `ToolDelegates` pick, both `narrowToWired` calls, one boolean. |
 | "The engine owns" the ceiling and skip with no mechanism; refusals as `isError` have no producer (two reviews) | **Fixed** (§5): per-turn state on the dispatch context; every non-stop outcome is a successful result, so no error class is needed. |
@@ -341,3 +343,26 @@ structural guarantee answer it); a delegate that ignores its abort signal makes 
 hook); the tool's own `signal.aborted` check duplicates the registry's cancel routing (a redundant defence); `Esc` at a card with
 no `onAbort` wired does nothing (production always wires it); `Ctrl+T` is consumed by an open card, so a long expanded thinking
 panel that blocks the card in the inline renderer cannot be collapsed until the terminal is enlarged. The guard that keeps the mouse wheel and selection from acting while a card is open (a cosmetic parity with the approval card) is not covered by a test.
+
+### First manual test — 2026-11-16 (the maintainer's amendments)
+
+The maintainer used the first build and asked for four changes; each is an amendment to the text above, and the
+[contract](../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d) carries the current form.
+
+- **`s` could not be the skip key.** Typing an answer that contained an `s` skipped the question: a bare letter that is a command
+  collides with free text. Skip is now **`Ctrl+S`**, and — the other half of the same defect — **typing anywhere on the list starts the
+  person's own answer** (type-to-start), so no bare letter is a command at all. A pasted or fast-typed chunk is text too.
+- **Multi-select with an own text.** Saving the text and confirming the question were one `Enter`, so the person who ticked options and
+  then typed a note moved on before they had finished. In a multi-select question the field now **saves** the text and the question stays
+  open ("Saved. Press Enter to continue"); the next `Enter` confirms. Backspace on saved text reopens it; an empty `Enter` takes it back.
+  In a single-select question the text is the answer, so it still moves on.
+- **Moving between questions.** `←` was the only way, and a question could not be looked at before the one ahead of it was answered. A call
+  with several questions is now **tabs**: `←`/`→` (and Tab / Shift+Tab) move between them freely without answering, a strip shows which
+  are answered, and a **Review** tab lists every answer as it will be sent and is where the call is sent — never with a hole (it goes to the
+  first unanswered question instead). A one-question call is unchanged: no tabs, no review.
+- **The ceiling of three cards a turn is removed.** It was this ADR's own conservative default, not a requirement. The engine already
+  bounds a turn (16 tool rounds, 16 calls per response), one call carries four questions, and the person has an instant turn-wide circuit
+  breaker — a skip closes every further question this turn. A fixed ceiling only stopped a task that genuinely needed more answers.
+  `not_asked` now has the single reason `skipped_earlier`.
+
+Also recorded: host text (hints, the own-row note) is no longer drawn behind the gutter — the gutter means only "the agent wrote this".

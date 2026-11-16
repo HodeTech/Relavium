@@ -22,8 +22,11 @@ function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknow
       return { bold: true };
     case 'highlight':
       return color ? { color: 'cyan', bold: true } : { bold: true };
+    case 'chosen':
+      return colorProps(color, 'green');
     case 'description':
     case 'own':
+    case 'pending':
       return dimProps(color);
     case 'hint':
       return colorProps(color, 'yellow');

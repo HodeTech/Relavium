@@ -248,9 +248,9 @@ describe('what the card says', () => {
     expect(displayWidth(view.rule)).toBeLessThanOrEqual(COLUMNS - 1);
   });
 
-  it('shows the header with `n of m` for several questions and without it for one', () => {
+  it('shows the header with the tab strip for several questions and without it for one', () => {
     expect(projectQuestionCard(initialQuestionCard(request), COLUMNS).body[0]?.text).toBe(
-      'Pick  1 of 2',
+      'Pick  [○] ○ · Review',
     );
     const one = initialQuestionCard({ questions: [request.questions[0] ?? request.questions[1]!] });
     expect(projectQuestionCard(one, COLUMNS).body[0]?.text).toBe('Pick');
@@ -297,7 +297,7 @@ describe('what the card says', () => {
       { ...initialQuestionCard(request), hint: 'Pick one.' },
       COLUMNS,
     );
-    expect(view.body.at(-1)).toMatchObject({ tone: 'hint', text: '│ Pick one.' });
+    expect(view.body.at(-1)).toMatchObject({ tone: 'hint', text: '  Pick one.' }); // host text: no gutter
   });
 
   it('shows the open field with a block cursor and the tail of a long line, and a counter near the limit', () => {
@@ -327,17 +327,23 @@ describe('what the card says', () => {
   it('keeps the key rows to two: the answer keys, then the stop keys', () => {
     const state = initialQuestionCard(request);
     const first = projectQuestionCard(state, COLUMNS).keys;
-    expect(first[0]).toMatch(/1-4 or Enter choose/);
-    expect(first[0]).toMatch(/s skip all/);
-    expect(first[0]).not.toMatch(/back/);
+    expect(first[0]).toBe(
+      '↑↓ move · Enter choose · type your own · ←→ questions · Ctrl+S skip all',
+    );
+    expect(first[0]).not.toMatch(/\bs skip/); // no bare letter is a command
     expect(first[1]).toBe('Esc or Ctrl-C stops the turn');
     const second = projectQuestionCard({ ...state, index: 1 }, COLUMNS).keys[0];
-    expect(second).toMatch(/Space or 1-4 tick/);
-    expect(second).toMatch(/← back/);
+    expect(second).toBe('↑↓ move · Space tick · Enter continue · ←→ questions · Ctrl+S skip all');
     const inField = projectQuestionCard({ ...state, field: { text: '', cursor: 0 } }, COLUMNS)
       .keys[0];
-    expect(inField).toMatch(/Enter accept/);
-    expect(inField).not.toMatch(/s skip/); // `s` is a letter in the field
+    expect(inField).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    const review = projectQuestionCard({ ...state, index: 2 }, COLUMNS).keys[0];
+    expect(review).toBe('Enter send answers · ←→ questions · Ctrl+S skip all');
+    // A one-question call has no tabs, so its legend does not mention them.
+    const one = initialQuestionCard({ questions: [request.questions[0]!] });
+    expect(projectQuestionCard(one, COLUMNS).keys[0]).toBe(
+      '↑↓ move · Enter choose · type your own · Ctrl+S skip all',
+    );
   });
 
   it('never offers the approval keys', () => {
@@ -416,5 +422,112 @@ describe('answers guide, they do not block (ADR-0132 §6, security sitting)', ()
     const guided = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
     expect(guided).toBe('Esc or Ctrl-C stops the turn · an answer is guidance, not a veto');
     expect(displayWidth(guided)).toBeLessThanOrEqual(COLUMNS - 2);
+  });
+});
+
+describe('the Review tab (ADR-0132 §3)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which file?',
+        multiSelect: false,
+        options: [
+          { label: 'alpha.ts', description: 'The first file' },
+          { label: 'beta.ts', description: 'The second file' },
+        ],
+      },
+      {
+        header: 'Also',
+        question: 'Which more?',
+        multiSelect: true,
+        options: [
+          { label: 'one', description: 'Number one' },
+          { label: 'two', description: 'Number two' },
+        ],
+      },
+      {
+        header: 'Last',
+        question: 'And?',
+        multiSelect: false,
+        options: [
+          { label: 'yes', description: 'Yes' },
+          { label: 'no', description: 'No' },
+        ],
+      },
+    ],
+  };
+
+  const answered = () => {
+    let state = initialQuestionCard(request);
+    const press = (input: string, key = {}) => {
+      const action = reduceQuestionKey(state, input, key, true);
+      if (action.kind === 'state') state = action.state;
+    };
+    press('1');
+    press('2');
+    press('', { return: true });
+    for (const char of 'my own') press(char); // type-to-start on the last question
+    press('', { return: true });
+    return state;
+  };
+
+  it('lists every question with its answer, the way it will be sent', () => {
+    const view = projectQuestionCard(answered(), COLUMNS);
+    const rows = view.body.map((row) => row.text);
+    expect(rows[0]).toBe('Review your answers  ● ● ● · [Review]');
+    expect(rows[1]).toBe('● 1 Pick → alpha.ts');
+    expect(rows[2]).toBe('● 2 Also → two');
+    expect(rows[3]).toBe('● 3 Last → “my own”');
+    expect(rows.at(-1)).toBe('Enter sends them · ←→ or 1-3 to change one');
+  });
+
+  it('marks an unanswered question and shows the note the reducer left', () => {
+    const state = initialQuestionCard(request);
+    const review = { ...state, index: 3, hint: 'Question 1 is not answered yet.' };
+    const rows = projectQuestionCard(review, COLUMNS).body;
+    expect(rows[1]).toMatchObject({ text: '○ 1 Pick → not answered yet', tone: 'pending' });
+    expect(rows.at(-1)).toMatchObject({ text: 'Question 1 is not answered yet.', tone: 'hint' });
+  });
+
+  it('fits: at most a title, four answers and a note, every row inside the card width', () => {
+    const four: AskUserRequest = {
+      questions: Array.from({ length: 4 }, (_, i) => ({
+        header: 'h'.repeat(24),
+        question: `q${String(i)}`,
+        multiSelect: true,
+        options: [
+          { label: 'l'.repeat(60), description: 'a' },
+          { label: 'm'.repeat(60), description: 'b' },
+        ],
+      })),
+    };
+    let state = { ...initialQuestionCard(four), index: 4 };
+    state = {
+      ...state,
+      entries: state.entries.map((entry) => ({ ...entry, ticked: [0, 1], own: 'o'.repeat(500) })),
+    };
+    const view = projectQuestionCard(state, COLUMNS);
+    expect(view.body.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS);
+    for (const row of view.body) expect(displayWidth(row.text)).toBeLessThanOrEqual(COLUMNS - 2);
+  });
+
+  it('the tab strip fills in as questions are answered and brackets the tab on screen', () => {
+    const state = initialQuestionCard(request);
+    expect(projectQuestionCard(state, COLUMNS).body[0]?.text).toBe('Pick  [○] ○ ○ · Review');
+    const after = {
+      ...state,
+      index: 1,
+      entries: state.entries.map((e, i) => (i === 0 ? { ...e, ticked: [0] } : e)),
+    };
+    expect(projectQuestionCard(after, COLUMNS).body[0]?.text).toBe('Also  ● [○] ○ · Review');
+  });
+
+  it('colours a chosen option differently from a plain one and from the highlight', () => {
+    const state = initialQuestionCard(request);
+    const entries = state.entries.map((e, i) => (i === 0 ? { ...e, ticked: [1] } : e));
+    const rows = projectQuestionCard({ ...state, entries }, COLUMNS).body;
+    expect(rows.find((row) => row.text.includes('beta.ts'))?.tone).toBe('chosen');
+    expect(rows.find((row) => row.text.includes('alpha.ts'))?.tone).toBe('highlight');
   });
 });

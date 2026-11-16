@@ -23,7 +23,6 @@ import { z } from 'zod';
 import {
   ASK_USER_DESCRIPTION,
   ASK_USER_LLM_PARAMS,
-  ASK_USER_MAX_CALLS_PER_TURN,
   AskUserAnswerError,
   AskUserAnswerSchema,
   AskUserArgsSchema,
@@ -1209,8 +1208,6 @@ const askUserTool = defineBuiltin<AskUserRequest>({
     // The session supplies the delegate and the per-turn state together; one without the other is a wiring fault.
     if (turn === undefined) throw askUserFault('ask_user is wired without its per-turn state');
     if (turn.skipped) return notAskedResult('skipped_earlier');
-    if (turn.opened >= ASK_USER_MAX_CALLS_PER_TURN) return notAskedResult('limit');
-    turn.opened += 1;
     let answer: AskUserAnswer;
     try {
       answer = await ask(args, ctx.signal);

@@ -319,7 +319,7 @@ interface ToolDispatchContext {
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
   readonly askUser?: AskUserDelegate;      // engine delegate (ask_user, ADR-0132): the host's question card; absent ⇒ the tool is never offered
-  readonly askUserTurn?: AskUserTurnState; // the per-turn ceiling / skip state, built once per session turn and shared by reference; travels WITH askUser
+  readonly askUserTurn?: AskUserTurnState; // the per-turn skip state (no card count), built once per session turn and shared by reference; travels WITH askUser
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
   readonly beforeDispatch?: (toolId: ToolId) => void; // synchronous trusted admission immediately before actual dispatch
   readonly signal?: AbortSignalLike;
@@ -518,7 +518,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 | `read_clipboard` / `notify` | `host.os` | — |
 | `mcp_call` | `host.mcp` | server URL runs the same SSRF primitive (0029(d); 2.R) |
 | `invoke_agent` | `ctx.invokeAgent` (engine delegate) | pure orchestration — no `ToolHost` I/O |
-| `ask_user` | `ctx.askUser` (engine delegate) + `ctx.askUserTurn` | a question to the person, not governed; per-turn ceiling and skip state — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) |
+| `ask_user` | `ctx.askUser` (engine delegate) + `ctx.askUserTurn` | a question to the person, not governed; per-turn skip state — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) |
 
 **Binary / media results.** A tool returning binary or media content (a `read_file` on a non-text file,
 a media `http_request` body) returns a **durable media handle** (`tool_result.media`,

@@ -4,9 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ASK_USER_BOUNDS,
   ASK_USER_DESCRIPTION,
-  ASK_USER_LIMIT_TEXT,
   ASK_USER_LLM_PARAMS,
-  ASK_USER_MAX_CALLS_PER_TURN,
   ASK_USER_OWN_ANSWER_GLYPH,
   AskUserAnswerSchema,
   AskUserArgsSchema,
@@ -107,7 +105,6 @@ describe('the ceilings are the numbers the card was derived from (ADR-0132 §2)'
       optionsPerQuestion: 4,
       ownTextCodePoints: 500,
     });
-    expect(ASK_USER_MAX_CALLS_PER_TURN).toBe(3);
   });
 });
 
@@ -288,11 +285,6 @@ describe('ask_user model-visible contract', () => {
     expect(ASK_USER_DESCRIPTION).toContain('state any decision you rely on in your reply');
   });
 
-  it('pins the per-turn ceiling to the word in the fixed text', () => {
-    expect(ASK_USER_MAX_CALLS_PER_TURN).toBe(3);
-    expect(ASK_USER_LIMIT_TEXT).toContain('three question calls');
-  });
-
   it('advertises the same bounds in the JSON schema as the validator enforces', () => {
     const text = JSON.stringify(ASK_USER_LLM_PARAMS);
     for (const bound of [
@@ -448,7 +440,6 @@ describe('ask_user display summary — content-free (ADR-0132 §6)', () => {
       'answered 2 questions',
     ],
     [{ status: 'skipped', message: 'm' }, 'skipped'],
-    [{ status: 'not_asked', reason: 'limit', message: 'm' }, 'not asked'],
     [{ status: 'not_asked', reason: 'skipped_earlier', message: 'm' }, 'not asked'],
   ])('maps %j to %s', (result, summary) => {
     expect(askUserDisplaySummaryOf(result)).toBe(summary);
@@ -502,7 +493,7 @@ describe('ask_user dispatch (ADR-0132 §1, §4, §5)', () => {
       registry().dispatch(call(args(question({ question: 'two\nlines' }))), context),
     ).rejects.toBeInstanceOf(ToolArgsInvalidError);
     expect(delegate).not.toHaveBeenCalled();
-    expect(state.opened).toBe(0);
+    expect(state.skipped).toBe(false);
   });
 
   it('returns the answer as a successful result and hands the delegate the VALIDATED request and the signal', async () => {
@@ -515,7 +506,7 @@ describe('ask_user dispatch (ADR-0132 §1, §4, §5)', () => {
       answers: [{ header: 'Pick', selected: ['Beta'] }],
     });
     expect(unwrapUntrusted(outcome.toolResult).isError).toBeUndefined();
-    expect(state).toEqual({ opened: 1, skipped: false });
+    expect(state).toEqual({ skipped: false });
     const [request, signal] = delegate.mock.calls[0] ?? [];
     expect(request?.questions[0]?.multiSelect).toBe(false); // the default was applied
     expect(signal).toBe(controller.signal);
@@ -554,28 +545,27 @@ describe('ask_user dispatch (ADR-0132 §1, §4, §5)', () => {
     expect(delegate).toHaveBeenCalledTimes(1);
   });
 
-  it('opens at most three cards per turn; the fourth call is not_asked and shows nothing', async () => {
+  it('has NO per-turn card ceiling: as many questions as the task needs, and only a skip closes them', async () => {
     const delegate = vi.fn<AskUserDelegate>(() => Promise.resolve(answered(['Alpha'])));
     const { state, context } = wired(delegate);
-    for (let n = 0; n < ASK_USER_MAX_CALLS_PER_TURN; n += 1)
+    for (let n = 0; n < 40; n += 1)
       expect(resultOf(await registry().dispatch(call(args()), context))).toMatchObject({
         status: 'answered',
       });
-    const fourth = await registry().dispatch(call(args()), context);
-    expect(resultOf(fourth)).toMatchObject({ status: 'not_asked', reason: 'limit' });
-    expect(unwrapUntrusted(fourth.toolResult).isError).toBeUndefined();
-    expect(delegate).toHaveBeenCalledTimes(ASK_USER_MAX_CALLS_PER_TURN);
-    expect(state.opened).toBe(ASK_USER_MAX_CALLS_PER_TURN);
+    expect(delegate).toHaveBeenCalledTimes(40);
+    expect(state).toEqual({ skipped: false });
   });
 
-  it('a fresh turn state starts the count over (the state is the turn’s, not the tool’s)', async () => {
-    const delegate = vi.fn<AskUserDelegate>(() => Promise.resolve(answered(['Alpha'])));
+  it('a fresh turn state is open again after a skip (the state is the turn’s, not the tool’s)', async () => {
+    const delegate = vi.fn<AskUserDelegate>(() => Promise.resolve({ kind: 'skipped' }));
     const turnOne = wired(delegate);
-    for (let n = 0; n < ASK_USER_MAX_CALLS_PER_TURN + 1; n += 1)
-      await registry().dispatch(call(args()), turnOne.context);
+    await registry().dispatch(call(args()), turnOne.context);
+    expect(resultOf(await registry().dispatch(call(args()), turnOne.context))).toMatchObject({
+      status: 'not_asked',
+    });
     const turnTwo = wired(delegate);
     expect(resultOf(await registry().dispatch(call(args()), turnTwo.context))).toMatchObject({
-      status: 'answered',
+      status: 'skipped',
     });
   });
 

@@ -260,11 +260,16 @@ bounds above make each part fit: a code point is never wider in columns than it 
 line is **hard-wrapped by display width** (not word-wrapped), so a line takes `⌈width / 78⌉` rows and an over-long word is
 broken, not cut. A terminal smaller than 80×24 gets the approval card's "too small" state; only the stop keys work.
 The rule row reads **`Question from the agent · not an approval`** (fixed host text, cyan where colour is on — never the
-approval card's yellow `Approval needed`). One question is shown at a time, with `n of m` in the progress row. Every row of
+approval card's yellow `Approval needed`). **A call with one question has no tabs.** A call with several shows them as **tabs** — one dot
+per question (`●` answered, `○` not yet, the tab on screen in brackets) and a final **Review** tab — in the progress row, and the person moves
+between them freely. Every row of
 model-authored text (the question, the highlighted option's description) is drawn **behind the host's gutter `│ `** — the glyph is
 refused inside model text, so the renderer owns column 0 of every wrapped line; the usable width of those rows is two columns
 narrower, which the bounds already allow (a code point is never wider in columns than in bytes, and 150 bytes fit two 76-column
 rows). In `accept-edits` and `auto`, where no card follows a write, the stop row also reads `· an answer is guidance, not a veto`.
+The **Review** tab lists every question with its answer exactly as it will be sent (`● 2 Also → one, “my text”`, `○ 3 Last → not answered yet`) and a
+line saying what `Enter` does; it is shorter than a question tab, so it always fits. Host text (hints, the own-answer note) is **not** behind the gutter —
+the gutter always means "the agent wrote this".
 
 **Delegate** (`SessionDeps.askUser`, copied into the dispatch context): `(request, signal) => Promise<AskUserAnswer>`.
 `request` is the validated questions. The answer is `{ kind: 'answered', answers: [{ selected: string[], other?: string }] }`
@@ -281,17 +286,17 @@ that is sealed or closed while a question is pending rejects it with an `AbortEr
 | Case | Model-facing result |
 | --- | --- |
 | Answered | `{ "status": "answered", "answers": [{ "header", "selected": [<labels>], "other"? }] }` — one entry per question in order; `selected` is empty when only text of the person's own was given; `other` is present only when given, one line, secret-shaped runs masked |
-| Skipped (`s`) | `{ "status": "skipped", "message": "The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn." }` |
+| Skipped (`Ctrl+S`) | `{ "status": "skipped", "message": "The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn." }` |
 | After a skip, same turn | `{ "status": "not_asked", "reason": "skipped_earlier", "message": "The user already skipped a question in this turn, so no question was shown. Continue with your best judgment, or ask in your reply." }` |
-| Over the per-turn ceiling | `{ "status": "not_asked", "reason": "limit", "message": "This turn already used its three question calls, so no question was shown. Continue with your best judgment, or ask in your reply." }` |
 | Stopped (`Esc`, `Ctrl-C`) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
 | No delegate | the typed `tool_unavailable` (a throw, not a result; the tool is not offered in that case) |
 
-A skip closes questions for the rest of the turn, and **at most three calls open a card per turn**; both are enforced
-inside the tool from per-turn state (`opened`, `skipped`) on the dispatch context the session builds once per turn, so
-every surface behaves alike. Only a call that invokes the delegate counts; a call refused at validation counts for
-nothing. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
-§1 each one **resets** the correction budget; repeated `not_asked` results end at the existing tool-round limit.
+A skip closes questions for the rest of the turn. That is enforced inside the tool from per-turn state (`skipped`) on the dispatch
+context the session builds once per turn, so every surface behaves alike. There is **no count of cards per turn**: a turn is already
+bounded by the engine (16 tool rounds, 16 calls per response), a call carries up to four questions, and the person holds an instant,
+turn-wide circuit breaker — `Ctrl+S` ends every further question this turn. A fixed ceiling would only stop a task that genuinely needs more
+answers. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
+§1 each one **resets** the correction budget.
 A session-ending cancel (`/cancel`, `Ctrl-C` outside a card, the process signals) and a crash roll the turn back
 (ADR-0119); only `Esc`/`Ctrl-C` **at the card** abort the turn and retain it.
 
@@ -300,20 +305,25 @@ has been acknowledged visible — the approval card's measured-frame acknowledge
 opens, moves to its next question, or is resized or resumed from suspend — **and has been on screen for 250 ms**, so a held or
 auto-repeating key cannot answer a question the person has not had time to read; the stop keys always work and never wait):
 
-| Key | In the list | In the text field |
-| --- | --- | --- |
-| `↑` / `↓` | move the highlight (no wrap; it starts on the first option, and nothing is pre-chosen) | `↑` returns to the list, keeping the text |
-| `1`–`4` | single-select: choose that option and advance; multi-select: toggle it; a digit with no such option is ignored | typed as text |
-| `Space` | multi-select: toggle the highlighted option; single-select: ignored | typed as text |
-| `Enter` | single-select: choose the highlighted option and advance; multi-select: confirm and advance — refused with a hint when nothing is ticked and no text was given; on the `✎` row: open the field | non-empty: accept the text — it ends the question in either kind, and in a multi-select question the ticks already made are sent with it; empty: return to the list **and clear** any text accepted earlier (and the draft), so a multi-select question can go back to ticks only |
-| `←` | previous question, keeping its answer; ignored on the first question | moves the cursor |
-| `s` | skip the whole call; answers given so far are discarded | typed as text |
-| `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** |
+| Key | On a question | In the text field | On the Review tab |
+| --- | --- | --- | --- |
+| `↑` / `↓` | move the highlight (no wrap; it starts on the first option, and nothing is pre-chosen) | `↑` returns to the list, keeping the text as a draft | — |
+| `←` / `→` (`Shift+Tab` / `Tab`) | previous / next question **without answering**; `→` from the last question opens Review; ignored when the call has one question | `←` / `→` move the cursor | `←` back to the last question |
+| `1`–`4` | single-select: choose that option and move on; multi-select: toggle it; a digit with no such option is ignored | typed as text | `1`–`n` jump to that question |
+| `Space` | multi-select: toggle the highlighted option; single-select and the `✎` row: ignored | typed as text | — |
+| **any other printable key** (letters, punctuation, a pasted or fast-typed chunk) | **starts the person's own answer**: the field opens on the `✎` row with that text, wherever the highlight was | typed as text | — |
+| `Enter` | single-select: choose the highlighted option and move on; multi-select: **confirm** the question (needs a tick or text; otherwise a hint) and move on; on the `✎` row: open the field — except in a multi-select question whose text is already saved, where it confirms | non-empty: **save** the text. Single-select: it is the answer, move on. Multi-select: it is **saved and counts, but the question stays open** (a note says so) — the person may keep picking, and the next `Enter` confirms. Empty: back to the list and **clear** any saved text and draft | all answered: **send**. Otherwise: go to the first unanswered question with a note — a hole is never sent |
+| `Backspace` | on the `✎` row with saved text: reopen the field to edit it | deletes | — |
+| `Ctrl+S` | **skip the whole call**; answers given so far are discarded | skip | skip |
+| `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** | **stop the turn** |
 
-To tick more *after* typing, leave the field with `↑` (the draft is kept), tick, and reopen the field to accept. The last question's confirmation submits at once. The person's text is one line of at most 500 code points: control
+No bare letter is a command, so typing — including an `s` — never skips. A one-question call sends from the question itself (there is no
+Review tab); a call with several questions sends only from Review, so every answer can be seen and changed first.
+
+The person's text is one line of at most 500 code points: control
 sequences are removed and newlines become spaces on paste; a paste that would pass the limit is refused whole, not cut,
 and a counter shows `n/500` from 400. While the `✎` row is highlighted the description row reads that the text is **sent
-to the model**. A highlighted row and a chosen row are drawn differently.
+to the model**. A highlighted row, a chosen row and a plain row are drawn differently (a chosen row is green where colour is on).
 
 **What is recorded.** The durable session row is the ordinary tool structure: the call's argument byte count and the
 result's byte count and outcome — no question, no label, no answer. `agent:tool_result.outputSummary` comes from a pure,

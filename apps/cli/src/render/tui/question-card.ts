@@ -4,9 +4,10 @@
  * guarantee the ADR rests on — the worst admissible call fits the twelve-row card at 80×24 — is a unit test over this
  * function, not a hope about a layout engine.
  *
- * The body is at most nine rows: progress/header (1) + question (≤ 2) + options (≤ 4) + the host's own-answer row (1) + the
- * highlighted row's description or hint (1). Every model-authored line is HARD-wrapped by display width (never word-wrapped,
- * because word wrapping can spend a third row on 150 bytes), so an over-long unbroken word is broken, not cut.
+ * A question tab's body is at most nine rows: progress/header (1) + question (≤ 2) + options (≤ 4) + the host's own-answer row
+ * (1) + the highlighted row's description or hint (1). The Review tab is shorter (a title, one row per question, a hint). Every
+ * model-authored line is HARD-wrapped by display width (never word-wrapped, because word wrapping can spend a third row on 150
+ * bytes), so an over-long unbroken word is broken, not cut — and every row of model text sits behind the host's gutter `│ `.
  */
 
 import { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH } from '@relavium/core';
@@ -14,6 +15,10 @@ import { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH } from '@relavium/core';
 import {
   currentEntry,
   currentQuestion,
+  hasReview,
+  isAnswered,
+  isReview,
+  questionCount,
   type QuestionCardState,
   type QuestionEntry,
 } from './question-card-model.js';
@@ -26,11 +31,13 @@ export type QuestionRowTone =
   | 'header'
   | 'question'
   | 'option'
+  | 'chosen'
   | 'highlight'
   | 'own'
   | 'description'
   | 'hint'
-  | 'field';
+  | 'field'
+  | 'pending';
 
 export interface QuestionCardRow {
   readonly text: string;
@@ -46,7 +53,7 @@ export interface QuestionCardView {
 
 const RULE_LABEL = ' Question from the agent · not an approval ';
 const OWN_PLACEHOLDER = 'Type your own answer…';
-const OWN_DESCRIPTION = 'Type your own answer. It is sent to the model.';
+const OWN_DESCRIPTION = 'Just start typing — it is sent to the model.';
 const STOP_ROW = 'Esc or Ctrl-C stops the turn';
 /**
  * Said only where a write needs no card (`accept-edits`, `auto`): there an answer is the person's only lever and it is not a
@@ -56,7 +63,8 @@ const GUIDE_NOTE = ' · an answer is guidance, not a veto';
 /**
  * The host's gutter. EVERY row of model-authored text (the question, the highlighted description) starts with it, and the
  * glyph is refused inside model text, so column 0 of a wrapped line belongs to the renderer: a forged option row can neither
- * begin at the start of the question nor at any later wrap boundary.
+ * begin at the start of the question nor at any later wrap boundary. Host text (hints, the own-row note) is NOT behind it, so
+ * the gutter always means "the agent wrote this".
  */
 const GUTTER = '│ ';
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -112,7 +120,7 @@ function tail(text: string, width: number): string {
   return `…${out}`;
 }
 
-/** The first `width` columns of `text`, with a trailing ellipsis when it was cut — for the accepted own text shown in a row. */
+/** The first `width` columns of `text`, with a trailing ellipsis when it was cut. */
 function head(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
   let out = '';
@@ -131,6 +139,15 @@ function mark(multiSelect: boolean, chosen: boolean): string {
   return chosen ? '(•)' : '( )';
 }
 
+/** The tab strip: one dot per question (filled once answered, bracketed when on screen) and the Review tab. */
+function tabs(state: QuestionCardState): string {
+  const dots = state.request.questions.map((_, index) => {
+    const dot = isAnswered(state, index) ? '●' : '○';
+    return state.index === index ? `[${dot}]` : dot;
+  });
+  return `${dots.join(' ')} · ${isReview(state) ? '[Review]' : 'Review'}`;
+}
+
 function optionRow(
   state: QuestionCardState,
   entry: QuestionEntry,
@@ -139,10 +156,11 @@ function optionRow(
 ): QuestionCardRow {
   const question = currentQuestion(state);
   const option = question.options[index];
+  const chosen = entry.ticked.includes(index);
   const cursor = entry.highlight === index ? '›' : ' ';
-  const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, entry.ticked.includes(index))} `;
+  const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
   const text = hardWrap(`${prefix}${option?.label ?? ''}`, width)[0] ?? '';
-  return { text, tone: entry.highlight === index ? 'highlight' : 'option' };
+  return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
 }
 
 function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): QuestionCardRow {
@@ -163,8 +181,30 @@ function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): 
   const label = entry.own ?? OWN_PLACEHOLDER;
   return {
     text: `${prefix}${head(label, room)}`,
-    tone: entry.highlight === index ? 'highlight' : 'own',
+    tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'own',
   };
+}
+
+/** What a question's answer reads as on the Review tab: the chosen labels, then the person's own text in quotes. */
+function summaryOf(state: QuestionCardState, index: number): string {
+  const question = state.request.questions[index];
+  const entry = state.entries[index];
+  if (question === undefined || entry === undefined) return '';
+  const labels = [...entry.ticked]
+    .sort((a, b) => a - b)
+    .flatMap((optionIndex) => {
+      const option = question.options[optionIndex];
+      return option === undefined ? [] : [option.label];
+    });
+  return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
+}
+
+/** Pick the legend parts that fit, dropping the least important optional ones first; the essentials always stay. */
+function legend(essentials: readonly string[], optional: readonly string[], width: number): string {
+  const join = (extra: readonly string[]): string => [...essentials, ...extra].join(' · ');
+  let keep = [...optional];
+  while (keep.length > 0 && displayWidth(join(keep)) > width) keep = keep.slice(0, -1);
+  return head(join(keep), width);
 }
 
 function keyRows(
@@ -172,18 +212,49 @@ function keyRows(
   columns: number,
   guideNote: boolean,
 ): readonly [string, string] {
-  const question = currentQuestion(state);
-  const back = state.index > 0 ? ' · ← back' : '';
-  const first =
-    state.field === undefined
-      ? question.multiSelect
-        ? `↑↓ move · Space or 1-4 tick · Enter confirm · s skip all${back}`
-        : `↑↓ move · 1-4 or Enter choose · s skip all${back}`
-      : 'Enter accept · ↑ back to the list';
-  return [
-    head(first, columns - 2),
-    head(guideNote ? `${STOP_ROW}${GUIDE_NOTE}` : STOP_ROW, columns - 2),
+  const width = columns - 2;
+  const several = hasReview(state);
+  let first: string;
+  if (isReview(state)) {
+    first = legend(['Enter send answers', '←→ questions', 'Ctrl+S skip all'], [], width);
+  } else if (state.field !== undefined) {
+    first = legend(['Enter save', '↑ back to the list', 'Ctrl+S skip all'], [], width);
+  } else if (currentQuestion(state).multiSelect) {
+    first = legend(
+      ['↑↓ move', 'Space tick', 'Enter continue'],
+      [...(several ? ['←→ questions'] : []), 'Ctrl+S skip all'],
+      width,
+    );
+  } else {
+    first = legend(
+      ['↑↓ move', 'Enter choose'],
+      ['type your own', ...(several ? ['←→ questions'] : []), 'Ctrl+S skip all'],
+      width,
+    );
+  }
+  return [first, head(guideNote ? `${STOP_ROW}${GUIDE_NOTE}` : STOP_ROW, width)];
+}
+
+/** The Review tab: every answer on one row, the way it will be sent, and what to do next. */
+function projectReview(state: QuestionCardState, width: number): readonly QuestionCardRow[] {
+  const rows: QuestionCardRow[] = [
+    { text: head(`Review your answers  ${tabs(state)}`, width), tone: 'header' },
   ];
+  state.request.questions.forEach((question, index) => {
+    const answered = isAnswered(state, index);
+    const line = `${answered ? '●' : '○'} ${String(index + 1)} ${question.header} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    rows.push({ text: head(line, width), tone: answered ? 'chosen' : 'pending' });
+  });
+  rows.push({
+    text: head(
+      state.hint === undefined
+        ? `Enter sends them · ←→ or 1-${String(questionCount(state))} to change one`
+        : state.hint,
+      width,
+    ),
+    tone: state.hint === undefined ? 'description' : 'hint',
+  });
+  return rows;
 }
 
 /** Project the card. `columns` is the terminal width; the drawable width is two less (the card's own margin). */
@@ -194,10 +265,12 @@ export function projectQuestionCard(
 ): QuestionCardView {
   const width = Math.max(1, columns - 2);
   const gutterWidth = displayWidth(GUTTER);
+  const keys = keyRows(state, columns, options.guideNote === true);
+  if (isReview(state))
+    return { rule: questionRule(columns), body: projectReview(state, width), keys };
   const question = currentQuestion(state);
   const entry = currentEntry(state);
-  const total = state.request.questions.length;
-  const progress = total > 1 ? `  ${String(state.index + 1)} of ${String(total)}` : '';
+  const progress = hasReview(state) ? `  ${tabs(state)}` : '';
   const body: QuestionCardRow[] = [
     { text: hardWrap(`${question.header}${progress}`, width)[0] ?? '', tone: 'header' },
     ...hardWrap(question.question, width - gutterWidth).map(
@@ -207,18 +280,16 @@ export function projectQuestionCard(
     ownRow(state, entry, width),
   ];
   const ownIndex = question.options.length;
-  const describe =
-    state.hint ??
-    (entry.highlight === ownIndex
-      ? OWN_DESCRIPTION
-      : (question.options[entry.highlight]?.description ?? ''));
-  body.push({
-    text: `${GUTTER}${head(describe, Math.max(1, width - gutterWidth))}`,
-    tone: state.hint === undefined ? 'description' : 'hint',
-  });
-  return {
-    rule: questionRule(columns),
-    body,
-    keys: keyRows(state, columns, options.guideNote === true),
-  };
+  const highlighted = question.options[entry.highlight];
+  if (state.hint !== undefined) {
+    body.push({ text: `  ${head(state.hint, Math.max(1, width - 2))}`, tone: 'hint' });
+  } else if (entry.highlight === ownIndex || highlighted === undefined) {
+    body.push({ text: `  ${head(OWN_DESCRIPTION, Math.max(1, width - 2))}`, tone: 'description' });
+  } else {
+    body.push({
+      text: `${GUTTER}${head(highlighted.description, Math.max(1, width - gutterWidth))}`,
+      tone: 'description',
+    });
+  }
+  return { rule: questionRule(columns), body, keys };
 }

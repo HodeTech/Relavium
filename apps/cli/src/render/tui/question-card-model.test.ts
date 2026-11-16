@@ -5,7 +5,11 @@ import type { ChatKey } from './chat-input.js';
 import {
   buildAnswer,
   currentEntry,
+  firstUnanswered,
+  hasReview,
   initialQuestionCard,
+  isAnswered,
+  isReview,
   ownTextOf,
   pasteIntoQuestion,
   reduceQuestionKey,
@@ -24,16 +28,26 @@ const multi = { header: 'Many', question: 'Which ones?', multiSelect: true, opti
 
 const requestOf = (...questions: AskUserRequest['questions']): AskUserRequest => ({ questions });
 
-const ARROW = {
+const K = {
   up: { upArrow: true },
   down: { downArrow: true },
   left: { leftArrow: true },
+  right: { rightArrow: true },
   enter: { return: true },
   esc: { escape: true },
   backspace: { backspace: true },
+  tab: { tab: true },
+  shiftTab: { tab: true, shift: true },
+  ctrl: { ctrl: true },
 } satisfies Record<string, ChatKey>;
 
-/** Apply a key; return the action, and the next state when the action carries one. */
+type Step = string | ChatKey | readonly [string, ChatKey];
+
+function isPair(step: Step): step is readonly [string, ChatKey] {
+  return Array.isArray(step);
+}
+
+/** Apply one key; return the action, and the next state when the action carries one. */
 function press(
   state: QuestionCardState,
   input: string,
@@ -44,18 +58,23 @@ function press(
   return { action, state: action.kind === 'state' ? action.state : state };
 }
 
-/** Apply a sequence of keys, returning the final state and the last action. */
+/** Apply a sequence: a string is a typed key, a key object a special key, a tuple `[input, key]` both. */
 function run(
   start: QuestionCardState,
-  keys: readonly (string | ChatKey)[],
+  steps: readonly Step[],
 ): { action: QuestionKeyAction; state: QuestionCardState } {
   let state = start;
   let action: QuestionKeyAction = { kind: 'none' };
-  for (const key of keys) {
-    ({ action, state } = typeof key === 'string' ? press(state, key) : press(state, '', key));
+  for (const step of steps) {
+    if (typeof step === 'string') ({ action, state } = press(state, step));
+    else if (isPair(step)) ({ action, state } = press(state, step[0], step[1]));
+    else ({ action, state } = press(state, '', step));
   }
   return { action, state };
 }
+
+const typed = (text: string): Step[] => [...text];
+const downs = (count: number): Step[] => Array<Step>(count).fill(K.down);
 
 const submitted = (result: { action: QuestionKeyAction }) => {
   if (result.action.kind !== 'submit')
@@ -63,48 +82,81 @@ const submitted = (result: { action: QuestionKeyAction }) => {
   return result.action.answer;
 };
 
+/** Move the highlight to the own-answer row of a three-option question. */
+const toOwnRow = downs(OPTIONS.length);
+
 describe('the stop keys (ADR-0132 §3, ADR-0115)', () => {
   it.each([
-    ['Esc', '', ARROW.esc],
-    ['Ctrl-C', 'c', { ctrl: true }],
+    ['Esc', '', K.esc],
+    ['Ctrl-C', 'c', K.ctrl],
   ])(
-    '%s stops the turn from the list, from the field, and before the frame is acknowledged',
+    '%s stops the turn from the list, the field, the review tab and before the frame is acknowledged',
     (_n, input, key) => {
-      const start = initialQuestionCard(requestOf(single));
-      expect(reduceQuestionKey(start, input, key, true).kind).toBe('stop');
-      expect(reduceQuestionKey(start, input, key, false).kind).toBe('stop');
-      const open = run(start, [
-        { downArrow: true },
-        { downArrow: true },
-        { downArrow: true },
-        ARROW.enter,
-      ]).state;
-      expect(open.field).toBeDefined();
-      expect(reduceQuestionKey(open, input, key, true).kind).toBe('stop');
+      const two = initialQuestionCard(requestOf(single, single));
+      const inField = run(two, ['x']).state;
+      expect(inField.field).toBeDefined();
+      const onReview = run(two, [K.right, K.right]).state;
+      expect(isReview(onReview)).toBe(true);
+      for (const state of [two, inField, onReview]) {
+        expect(reduceQuestionKey(state, input, key, true).kind).toBe('stop');
+        expect(reduceQuestionKey(state, input, key, false).kind).toBe('stop');
+      }
     },
   );
 
-  it('Ctrl-anything-else and Alt chords do nothing (the card is not a shell)', () => {
+  it('every other Ctrl or Alt chord does nothing (the card is not a shell)', () => {
     const start = initialQuestionCard(requestOf(single));
     expect(reduceQuestionKey(start, 'a', { ctrl: true }, true).kind).toBe('none');
     expect(reduceQuestionKey(start, 'x', { meta: true }, true).kind).toBe('none');
-    expect(reduceQuestionKey(start, 's', { ctrl: true }, true).kind).toBe('none');
+  });
+});
+
+describe('Ctrl+S skips — and no bare letter ever does', () => {
+  it('skips the whole call from the list, from the open field and from the review tab', () => {
+    const two = initialQuestionCard(requestOf(single, single));
+    expect(press(two, 's', K.ctrl).action.kind).toBe('skip');
+    expect(press(run(two, ['x']).state, 's', K.ctrl).action.kind).toBe('skip');
+    expect(press(run(two, [K.right, K.right]).state, 's', K.ctrl).action.kind).toBe('skip');
+  });
+
+  it('discards answers already given', () => {
+    const answered = run(initialQuestionCard(requestOf(single, single)), ['1']).state;
+    expect(isAnswered(answered, 0)).toBe(true);
+    expect(press(answered, 's', K.ctrl).action.kind).toBe('skip');
+  });
+
+  it('a bare `s` is TEXT: it starts the own-answer field, and inside the field it is a letter', () => {
+    const start = initialQuestionCard(requestOf(single));
+    const started = press(start, 's');
+    expect(started.action.kind).toBe('state');
+    expect(started.state.field?.text).toBe('s');
+    const sentence = run(start, typed('so it is fine')).state;
+    expect(sentence.field?.text).toBe('so it is fine');
+    expect(submitted(run(sentence, [K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: [], other: 'so it is fine' }],
+    });
+  });
+
+  it('does not skip before the frame is acknowledged and settled', () => {
+    const start = initialQuestionCard(requestOf(single));
+    expect(reduceQuestionKey(start, 's', K.ctrl, false).kind).toBe('none');
   });
 });
 
 describe('typed-ahead keys cannot choose (the measured-frame guard)', () => {
-  it.each(['1', 's', ' '])('ignores %j until the frame is acknowledged', (input) => {
-    const start = initialQuestionCard(requestOf(single));
+  it.each(['1', 'x', ' '])('ignores %j until the frame is acknowledged', (input) => {
+    const start = initialQuestionCard(requestOf(single, single));
     expect(reduceQuestionKey(start, input, {}, false).kind).toBe('none');
-    expect(reduceQuestionKey(start, '', ARROW.enter, false).kind).toBe('none');
-    expect(reduceQuestionKey(start, '', ARROW.down, false).kind).toBe('none');
+    expect(reduceQuestionKey(start, '', K.enter, false).kind).toBe('none');
+    expect(reduceQuestionKey(start, '', K.down, false).kind).toBe('none');
+    expect(reduceQuestionKey(start, '', K.right, false).kind).toBe('none');
   });
 });
 
 describe('a single-select question', () => {
   it('starts on the first option with nothing chosen', () => {
-    const start = initialQuestionCard(requestOf(single));
-    expect(currentEntry(start)).toEqual({
+    expect(currentEntry(initialQuestionCard(requestOf(single)))).toEqual({
       highlight: 0,
       ticked: [],
       own: undefined,
@@ -112,7 +164,7 @@ describe('a single-select question', () => {
     });
   });
 
-  it('a digit chooses that option and submits the last question', () => {
+  it('a digit chooses that option and sends a one-question call', () => {
     expect(submitted(run(initialQuestionCard(requestOf(single)), ['2']))).toEqual({
       kind: 'answered',
       answers: [{ selected: ['Beta'] }],
@@ -120,182 +172,315 @@ describe('a single-select question', () => {
   });
 
   it('Enter chooses the HIGHLIGHTED option, not the first', () => {
-    const answer = submitted(
-      run(initialQuestionCard(requestOf(single)), [ARROW.down, ARROW.enter]),
-    );
-    expect(answer).toEqual({ kind: 'answered', answers: [{ selected: ['Beta'] }] });
+    expect(submitted(run(initialQuestionCard(requestOf(single)), [K.down, K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Beta'] }],
+    });
   });
 
   it('ignores a digit with no such option, and Space', () => {
     const start = initialQuestionCard(requestOf(single));
-    expect(press(start, '4').action.kind).toBe('none');
-    expect(press(start, '9').action.kind).toBe('none');
-    expect(press(start, '0').action.kind).toBe('none');
-    expect(press(start, ' ').action.kind).toBe('none');
+    for (const input of ['4', '9', '0', ' ']) expect(press(start, input).action.kind).toBe('none');
   });
 
-  it('the highlight stops at both ends (no wrap), and the own row is one past the last option', () => {
+  it('the highlight stops at both ends, and the own row is one past the last option', () => {
     const start = initialQuestionCard(requestOf(single));
-    expect(currentEntry(run(start, [ARROW.up]).state).highlight).toBe(0);
-    const down = run(start, Array<ChatKey>(10).fill(ARROW.down)).state;
-    expect(currentEntry(down).highlight).toBe(OPTIONS.length);
+    expect(currentEntry(run(start, [K.up]).state).highlight).toBe(0);
+    expect(currentEntry(run(start, downs(10)).state).highlight).toBe(OPTIONS.length);
   });
 
-  it('`←` is ignored on the first question', () => {
-    expect(press(initialQuestionCard(requestOf(single)), '', ARROW.left).action.kind).toBe('none');
+  it('a one-question call has no tabs and no review: ← and → do nothing', () => {
+    const start = initialQuestionCard(requestOf(single));
+    expect(hasReview(start)).toBe(false);
+    for (const key of [K.left, K.right, K.tab, K.shiftTab])
+      expect(press(start, '', key).action.kind).toBe('none');
   });
 });
 
-describe('a multi-select question', () => {
-  const start = () => initialQuestionCard(requestOf(multi));
+describe('typing starts the own answer — anywhere on the list (type-to-start)', () => {
+  const start = () => initialQuestionCard(requestOf(single));
 
-  it('digits and Space TOGGLE, and neither advances', () => {
-    const afterDigit = press(start(), '1');
-    expect(afterDigit.action.kind).toBe('state');
-    expect(currentEntry(afterDigit.state).ticked).toEqual([0]);
-    const again = press(afterDigit.state, '1');
-    expect(currentEntry(again.state).ticked).toEqual([]);
-    const bySpace = run(start(), [ARROW.down, ' ']);
-    expect(currentEntry(bySpace.state).ticked).toEqual([1]);
+  it('a letter on ANY row opens the field with that letter and moves the highlight to the own row', () => {
+    const fromTop = press(start(), 'h');
+    expect(fromTop.state.field?.text).toBe('h');
+    expect(currentEntry(fromTop.state).highlight).toBe(OPTIONS.length);
+    expect(run(start(), [K.down, 'h']).state.field?.text).toBe('h');
   });
 
-  it('Enter with nothing ticked and no text is refused with a hint, and nothing advances', () => {
-    const result = press(start(), '', ARROW.enter);
-    expect(result.action.kind).toBe('state');
-    expect(result.state.hint).toMatch(/at least one/i);
-    expect(result.state.index).toBe(0);
+  it('punctuation and non-Latin letters start it too', () => {
+    for (const input of ['?', '-', 'ş', '漢', '😀'])
+      expect(press(start(), input).state.field?.text).toBe(input);
   });
 
-  it('Enter confirms the ticks, in option order whatever order they were ticked', () => {
-    const answer = submitted(run(start(), ['3', '1', ARROW.enter]));
-    expect(answer).toEqual({ kind: 'answered', answers: [{ selected: ['Alpha', 'Gamma'] }] });
+  it('a digit is still a shortcut (it picks an option) and Space does not start the field', () => {
+    expect(press(start(), '4').action.kind).toBe('none');
+    expect(press(start(), ' ').action.kind).toBe('none');
+    expect(submitted(press(start(), '2'))).toBeDefined();
   });
 
-  it('Space on the own row is ignored', () => {
-    const onOwn = run(start(), Array<ChatKey>(3).fill(ARROW.down)).state;
-    expect(press(onOwn, ' ').action.kind).toBe('none');
+  it('a chunk of fast typing is text, even if it contains digits', () => {
+    expect(press(start(), '12 files').state.field?.text).toBe('12 files');
+  });
+
+  it('Enter on the own row opens an empty field; Backspace on SAVED text reopens it for editing', () => {
+    const open = run(start(), [...toOwnRow, K.enter]).state;
+    expect(open.field).toEqual({ text: '', cursor: 0 });
+    const two = initialQuestionCard(requestOf(single, single));
+    const saved = run(two, [...typed('hi'), K.enter, K.left]).state;
+    expect(currentEntry(saved).own).toBe('hi');
+    expect(run(saved, [...toOwnRow, K.backspace]).state.field?.text).toBe('hi');
+  });
+
+  it('typing past the limit is refused with a hint on the list too', () => {
+    const refused = press(start(), 'x'.repeat(ASK_USER_BOUNDS.ownTextCodePoints + 1));
+    expect(refused.state.field).toBeUndefined();
+    expect(refused.state.hint).toMatch(/limit/i);
   });
 });
 
 describe('the own-answer field', () => {
   const open = (request: AskUserRequest) =>
-    run(initialQuestionCard(request), [
-      ...Array<ChatKey>(OPTIONS.length).fill(ARROW.down),
-      ARROW.enter,
-    ]).state;
+    run(initialQuestionCard(request), [...toOwnRow, K.enter]).state;
 
-  it('opens on Enter at the own row, empty', () => {
-    expect(open(requestOf(single)).field).toEqual({ text: '', cursor: 0 });
-  });
-
-  it('typed characters — including `s` and digits — are text, not commands', () => {
-    const typed = run(open(requestOf(single)), ['s', '1', ' ', 'x']).state;
-    expect(typed.field?.text).toBe('s1 x');
+  it('typed characters — letters, digits, `s` — are text, not commands', () => {
+    expect(run(open(requestOf(single)), typed('s1 x')).state.field?.text).toBe('s1 x');
   });
 
   it('Enter accepts non-empty text as THE answer of a single-select question', () => {
-    const answer = submitted(run(open(requestOf(single)), ['h', 'i', ARROW.enter]));
-    expect(answer).toEqual({ kind: 'answered', answers: [{ selected: [], other: 'hi' }] });
+    expect(submitted(run(open(requestOf(single)), [...typed('hi'), K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: [], other: 'hi' }],
+    });
   });
 
   it('Enter on empty or blank text returns to the list and changes nothing', () => {
-    const result = run(open(requestOf(single)), [' ', ' ', ARROW.enter]);
+    const result = run(open(requestOf(single)), [' ', ' ', K.enter]);
     expect(result.action.kind).toBe('state');
     expect(result.state.field).toBeUndefined();
     expect(currentEntry(result.state).own).toBeUndefined();
   });
 
-  it('in a multi-select question the text is sent WITH the ticks already made, and ends the question', () => {
-    const typed = run(initialQuestionCard(requestOf(multi)), [
-      '2',
-      ARROW.down,
-      ARROW.down,
-      ARROW.down,
-      ARROW.enter,
-      'o',
-      'k',
-      ARROW.enter,
-    ]);
-    expect(submitted(typed)).toEqual({
-      kind: 'answered',
-      answers: [{ selected: ['Beta'], other: 'ok' }],
-    });
-  });
-
-  it('to tick more AFTER typing, leave the field with `↑` (the draft is kept), tick, and come back to accept', () => {
-    const typedFirst = run(open(requestOf(multi)), ['o', 'k', ARROW.up]).state;
-    expect(typedFirst.field).toBeUndefined();
-    const ticked = run(typedFirst, ['3']).state;
-    expect(currentEntry(ticked).ticked).toEqual([2]);
-    const back = run(ticked, [ARROW.down, ARROW.down, ARROW.down, ARROW.enter]).state;
-    expect(back.field?.text).toBe('ok');
-    expect(submitted(run(back, [ARROW.enter]))).toEqual({
-      kind: 'answered',
-      answers: [{ selected: ['Gamma'], other: 'ok' }],
-    });
-  });
-
-  it('a multi-select question with only own text is a valid answer', () => {
-    expect(submitted(run(open(requestOf(multi)), ['o', 'k', ARROW.enter]))).toEqual({
-      kind: 'answered',
-      answers: [{ selected: [], other: 'ok' }],
-    });
-  });
-
-  it('choosing an option after typing own text in a single-select question REPLACES it (one answer, never two)', () => {
-    const afterOwn = run(open(requestOf(single, single)), ['h', 'i', ARROW.enter]).state; // question 1 answered, now on 2
-    const back = run(afterOwn, [ARROW.left]).state;
-    expect(back.entries[0]).toMatchObject({ own: 'hi' });
-    const rechosen = run(back, ['1']).state;
-    expect(rechosen.entries[0]).toMatchObject({ ticked: [0], own: undefined });
-  });
-
   it('`↑` leaves the field keeping the draft, and reopening restores it', () => {
-    const left = run(open(requestOf(single)), ['d', 'r', ARROW.up]).state;
+    const left = run(open(requestOf(single)), [...typed('dr'), K.up]).state;
     expect(left.field).toBeUndefined();
     expect(currentEntry(left).draft).toBe('dr');
-    const reopened = run(left, [ARROW.enter]).state;
-    expect(reopened.field?.text).toBe('dr');
+    expect(run(left, [K.enter]).state.field?.text).toBe('dr');
   });
 
   it('the cursor moves inside the field (`←` is not "previous question" there)', () => {
-    const state = run(open(requestOf(single)), ['a', 'b', ARROW.left, 'X']).state;
+    const state = run(open(requestOf(single, single)), [...typed('ab'), K.left, 'X']).state;
     expect(state.field?.text).toBe('aXb');
     expect(state.index).toBe(0);
   });
 
   it('Shift+Enter does not insert a newline: the field is one line', () => {
-    const state = run(open(requestOf(single)), ['a', { return: true, shift: true }, 'b']).state;
-    expect(state.field?.text).toBe('ab');
+    expect(
+      run(open(requestOf(single)), ['a', { return: true, shift: true }, 'b']).state.field?.text,
+    ).toBe('ab');
   });
 
   it('holds the person’s text to its limit: a keystroke past it is refused with a hint, nothing is cut', () => {
     const limit = ASK_USER_BOUNDS.ownTextCodePoints;
-    let state = open(requestOf(single));
-    state = pasteIntoQuestion(state, 'a'.repeat(limit), true);
-    expect(state.field?.text.length).toBe(limit);
-    const refused = press(state, 'b');
+    const filled = pasteIntoQuestion(open(requestOf(single)), 'a'.repeat(limit), true);
+    expect(filled.field?.text.length).toBe(limit);
+    const refused = press(filled, 'b');
     expect(refused.state.field?.text.length).toBe(limit);
     expect(refused.state.hint).toMatch(/limit/i);
   });
 });
 
-describe('pasting into the field', () => {
-  const field = () =>
-    run(initialQuestionCard(requestOf(single)), [
-      ...Array<ChatKey>(OPTIONS.length).fill(ARROW.down),
-      ARROW.enter,
-    ]).state;
+describe('a multi-select question: saving text is not confirming the question', () => {
+  const start = () => initialQuestionCard(requestOf(multi));
 
-  it('inserts one line: line breaks become spaces and terminal sequences are removed', () => {
-    const state = pasteIntoQuestion(field(), 'a\r\nb\u001b[31mred\u001b[0m\tc', true);
+  it('digits and Space TOGGLE, and neither advances', () => {
+    const afterDigit = press(start(), '1');
+    expect(currentEntry(afterDigit.state).ticked).toEqual([0]);
+    expect(currentEntry(press(afterDigit.state, '1').state).ticked).toEqual([]);
+    expect(currentEntry(run(start(), [K.down, ' ']).state).ticked).toEqual([1]);
+  });
+
+  it('Enter with nothing ticked and no text is refused with a hint', () => {
+    const result = press(start(), '', K.enter);
+    expect(result.action.kind).toBe('state');
+    expect(result.state.hint).toMatch(/at least one/i);
+  });
+
+  it('Enter confirms the ticks, in option order whatever order they were ticked', () => {
+    expect(submitted(run(start(), ['3', '1', K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Alpha', 'Gamma'] }],
+    });
+  });
+
+  it('THE PERSON’S CASE: tick options, type own text, Enter SAVES it and stays; the next Enter confirms', () => {
+    const afterTick = run(start(), ['2']).state;
+    const typedOwn = run(afterTick, [...toOwnRow, K.enter, ...typed('and this one')]).state;
+    expect(typedOwn.field?.text).toBe('and this one');
+    const saved = press(typedOwn, '', K.enter);
+    // Saving the text did NOT move on: still on this question, ticks kept, the text counted.
+    expect(saved.action.kind).toBe('state');
+    expect(saved.state.field).toBeUndefined();
+    expect(currentEntry(saved.state)).toMatchObject({ own: 'and this one', ticked: [1] });
+    expect(saved.state.hint).toMatch(/Saved/);
+    // The second Enter confirms the whole question — and sends a one-question call.
+    expect(submitted(press(saved.state, '', K.enter))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Beta'], other: 'and this one' }],
+    });
+  });
+
+  it('after saving text the person can keep picking: ticks added later are sent with it', () => {
+    const saved = run(start(), [...typed('mine'), K.enter]).state;
+    const more = run(saved, [K.up, K.up, K.up, ' ']).state; // up to the first option, tick it
+    expect(submitted(run(more, [K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Alpha'], other: 'mine' }],
+    });
+  });
+
+  it('text alone is a valid multi-select answer', () => {
+    expect(submitted(run(start(), [...typed('ok'), K.enter, K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: [], other: 'ok' }],
+    });
+  });
+
+  it('an empty field on Enter takes saved text back, so the question can return to ticks only', () => {
+    const saved = run(start(), ['1', ...toOwnRow, K.enter, ...typed('x'), K.enter]).state;
+    expect(currentEntry(saved).own).toBe('x');
+    const reopened = run(saved, [K.backspace]).state; // Backspace on the own row reopens the field with 'x'
+    expect(reopened.field?.text).toBe('x');
+    const cleared = run(reopened, [K.backspace, K.enter]).state; // delete the 'x', Enter on empty
+    expect(currentEntry(cleared)).toMatchObject({ own: undefined, draft: undefined });
+    // The highlight is still on the own row, where Enter opens the field; from any option Enter confirms the question.
+    expect(submitted(run(cleared, [K.up, K.enter]))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Alpha'] }],
+    });
+  });
+
+  it('Space on the own row is ignored', () => {
+    expect(press(run(start(), toOwnRow).state, ' ').action.kind).toBe('none');
+  });
+
+  it('choosing an option after typing own text in a SINGLE-select question replaces it (one answer, never two)', () => {
+    const two = initialQuestionCard(requestOf(single, single));
+    const afterOwn = run(two, [...typed('hi'), K.enter]).state; // Q1 answered with text, now on Q2
+    const back = run(afterOwn, [K.left]).state;
+    expect(back.entries[0]).toMatchObject({ own: 'hi' });
+    expect(run(back, ['1']).state.entries[0]).toMatchObject({ ticked: [0], own: undefined });
+  });
+});
+
+describe('several questions are tabs, ending in a Review tab (ADR-0132 §3)', () => {
+  const three = () => initialQuestionCard(requestOf(single, multi, single));
+
+  it('has tabs and a review once there is more than one question', () => {
+    expect(hasReview(three())).toBe(true);
+    expect(isReview(three())).toBe(false);
+  });
+
+  it('`→` and `←` browse the questions WITHOUT answering them, and Tab / Shift+Tab do the same', () => {
+    const second = run(three(), [K.right]).state;
+    expect(second.index).toBe(1);
+    expect(isAnswered(second, 0)).toBe(false);
+    expect(run(second, [K.left]).state.index).toBe(0);
+    expect(run(three(), [K.tab]).state.index).toBe(1);
+    expect(run(three(), [K.tab, K.shiftTab]).state.index).toBe(0);
+    expect(press(three(), '', K.left).action.kind).toBe('none'); // nothing before the first
+  });
+
+  it('`→` from the last question shows the Review tab, and no further', () => {
+    const review = run(three(), [K.right, K.right, K.right]).state;
+    expect(isReview(review)).toBe(true);
+    expect(press(review, '', K.right).action.kind).toBe('none');
+  });
+
+  it('answering a question moves to the next tab, and answering the LAST one shows the Review tab — it does not send', () => {
+    const afterFirst = run(three(), ['1']);
+    expect(afterFirst.state.index).toBe(1);
+    expect(afterFirst.action.kind).toBe('state');
+    const afterSecond = run(afterFirst.state, ['2', K.enter]);
+    expect(afterSecond.state.index).toBe(2);
+    const afterThird = run(afterSecond.state, ['1']);
+    expect(afterThird.action.kind).toBe('state');
+    expect(isReview(afterThird.state)).toBe(true);
+  });
+
+  it('Review: Enter sends when everything is answered', () => {
+    const review = run(three(), ['1', '2', K.enter, '1']).state;
+    expect(submitted(press(review, '', K.enter))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: ['Alpha'] }, { selected: ['Beta'] }, { selected: ['Alpha'] }],
+    });
+  });
+
+  it('Review: Enter with an unanswered question goes to it, with a note — it never sends a hole', () => {
+    const skipped = run(three(), [K.right, K.right, '1']).state; // only Q3 answered; now on Review
+    expect(isReview(skipped)).toBe(true);
+    expect(firstUnanswered(skipped)).toBe(0);
+    const result = press(skipped, '', K.enter);
+    expect(result.action.kind).toBe('state');
+    expect(result.state.index).toBe(0);
+    expect(result.state.hint).toMatch(/Question 1 is not answered/);
+  });
+
+  it('Review: a digit jumps to that question, `←` goes back to the last, and typing does nothing', () => {
+    const review = run(three(), ['1', '2', K.enter, '1']).state;
+    expect(press(review, '2').state.index).toBe(1);
+    expect(press(review, '', K.left).state.index).toBe(2);
+    expect(press(review, 'x').action.kind).toBe('none');
+    expect(press(review, '9').action.kind).toBe('none');
+  });
+
+  it('answers can be changed before sending: go back, choose again, and return to the review', () => {
+    const review = run(three(), ['1', '2', K.enter, '1']).state;
+    const changed = run(review, ['1', '3']).state; // jump to Q1, choose option 3 → moves on to Q2
+    expect(changed.index).toBe(1);
+    expect(changed.entries[0]).toMatchObject({ ticked: [2] });
+  });
+
+  it('every browsing key keeps the answers already given', () => {
+    const state = run(three(), ['2', K.right, K.left, K.left]).state;
+    expect(isAnswered(state, 0)).toBe(true);
+    expect(state.entries[0]).toMatchObject({ ticked: [1] });
+  });
+
+  it('typing on the list of a multi-question call starts the own answer for THAT question', () => {
+    const second = run(three(), [K.right]).state;
+    expect(press(second, 'q').state.field?.text).toBe('q');
+    expect(press(second, 'q').state.index).toBe(1);
+  });
+
+  it('a field left open does not follow you to another tab', () => {
+    const opened = run(three(), ['x']).state;
+    expect(opened.field).toBeDefined();
+    expect(run(opened, [K.up, K.right]).state.field).toBeUndefined();
+  });
+
+  it('the answer is not built until the Review tab sends it', () => {
+    expect(run(three(), ['1']).action.kind).toBe('state');
+  });
+});
+
+describe('pasting (ADR-0132 §3)', () => {
+  const fieldState = () =>
+    run(initialQuestionCard(requestOf(single)), [...toOwnRow, K.enter]).state;
+
+  it('into the open field inserts one line: line breaks become spaces and terminal sequences are removed', () => {
+    const state = pasteIntoQuestion(fieldState(), 'a\r\nb\u001b[31mred\u001b[0m\tc', true);
     expect(state.field?.text).toBe('a bred c');
-    expect(state.field?.text).not.toContain('\u001b');
+    expect(state.field?.text).not.toContain(String.fromCharCode(27));
+  });
+
+  it('on the LIST starts the own-answer field with the pasted text, as typing would', () => {
+    const state = pasteIntoQuestion(initialQuestionCard(requestOf(single)), 'pasted words', true);
+    expect(state.field?.text).toBe('pasted words');
   });
 
   it('refuses a paste that would pass the limit WHOLE, leaving the text untouched', () => {
     const base = pasteIntoQuestion(
-      field(),
+      fieldState(),
       'x'.repeat(ASK_USER_BOUNDS.ownTextCodePoints - 2),
       true,
     );
@@ -305,46 +490,19 @@ describe('pasting into the field', () => {
   });
 
   it('counts an astral character once', () => {
-    const state = pasteIntoQuestion(field(), '😀'.repeat(ASK_USER_BOUNDS.ownTextCodePoints), true);
+    const state = pasteIntoQuestion(
+      fieldState(),
+      '😀'.repeat(ASK_USER_BOUNDS.ownTextCodePoints),
+      true,
+    );
     expect([...(state.field?.text ?? '')].length).toBe(ASK_USER_BOUNDS.ownTextCodePoints);
   });
 
-  it('is ignored with no field open, or before the frame is acknowledged', () => {
-    const list = initialQuestionCard(requestOf(single));
-    expect(pasteIntoQuestion(list, 'hello', true)).toBe(list);
-    const open = field();
+  it('is ignored before the frame is acknowledged and on the Review tab', () => {
+    const open = fieldState();
     expect(pasteIntoQuestion(open, 'hello', false)).toBe(open);
-  });
-});
-
-describe('several questions', () => {
-  const two = () => initialQuestionCard(requestOf(single, multi));
-
-  it('advances through them and submits one entry per question, in order', () => {
-    const answer = submitted(run(two(), ['1', '2', '3', ARROW.enter]));
-    expect(answer).toEqual({
-      kind: 'answered',
-      answers: [{ selected: ['Alpha'] }, { selected: ['Beta', 'Gamma'] }],
-    });
-  });
-
-  it('`←` returns to the previous question keeping its answer, and the answer can be changed', () => {
-    const second = run(two(), ['1']).state;
-    expect(second.index).toBe(1);
-    const back = run(second, [ARROW.left]).state;
-    expect(back.index).toBe(0);
-    expect(currentEntry(back).ticked).toEqual([0]);
-    const answer = submitted(run(back, ['3', '1', ARROW.enter]));
-    expect(answer).toMatchObject({ answers: [{ selected: ['Gamma'] }, { selected: ['Alpha'] }] });
-  });
-
-  it('`s` skips the whole call and discards answers already given', () => {
-    const second = run(two(), ['1']).state;
-    expect(press(second, 's').action.kind).toBe('skip');
-  });
-
-  it('the answer is not built until the last question is confirmed', () => {
-    expect(run(two(), ['1']).action.kind).toBe('state');
+    const review = run(initialQuestionCard(requestOf(single, single)), [K.right, K.right]).state;
+    expect(pasteIntoQuestion(review, 'hello', true)).toBe(review);
   });
 });
 
@@ -362,36 +520,19 @@ describe('ownTextOf — the person’s text as one clean line', () => {
   });
 });
 
-describe('buildAnswer', () => {
-  it('reports own text only when it was accepted', () => {
-    const start = initialQuestionCard(requestOf(single));
-    expect(buildAnswer(start)).toEqual({ kind: 'answered', answers: [{ selected: [] }] });
+describe('isAnswered and buildAnswer', () => {
+  it('a single-select question needs exactly one of a choice or text; a multi-select at least one', () => {
+    const state = initialQuestionCard(requestOf(single, multi));
+    expect(isAnswered(state, 0)).toBe(false);
+    expect(isAnswered(state, 1)).toBe(false);
+    expect(isAnswered(run(state, ['1']).state, 0)).toBe(true);
+    expect(isAnswered(run(state, [K.right, '1']).state, 1)).toBe(true);
   });
-});
 
-describe('taking back text the person accepted (review)', () => {
-  const open = (request: AskUserRequest) =>
-    run(initialQuestionCard(request), [
-      ...Array<ChatKey>(OPTIONS.length).fill(ARROW.down),
-      ARROW.enter,
-    ]).state;
-
-  it('an empty field on Enter clears accepted own text and its draft — a multi-select question can return to ticks only', () => {
-    // Accept own text in a two-question call (so the first question stays open to revisit), come back, empty it.
-    const two = requestOf(multi, single);
-    let state = run(open(two), ['o', 'k', ARROW.enter]).state;
-    expect(state.index).toBe(1); // typing your own answer ends the question
-    state = run(state, [ARROW.left]).state;
-    expect(currentEntry(state).own).toBe('ok');
-    state = run(state, [ARROW.enter]).state; // the highlight is on the own row: reopen with 'ok'
-    expect(state.field?.text).toBe('ok');
-    state = run(state, [ARROW.backspace, ARROW.backspace]).state;
-    state = run(state, [ARROW.enter]).state; // empty Enter
-    expect(state.field).toBeUndefined();
-    expect(currentEntry(state)).toMatchObject({ own: undefined, draft: undefined });
-    state = run(state, [ARROW.up, ' ']).state; // tick an option
-    const answer = submitted(run(state, [ARROW.enter, '1']));
-    expect(answer).toMatchObject({ answers: [{ selected: [expect.any(String)] }, {}] });
-    expect((answer as { answers: { other?: string }[] }).answers[0]?.other).toBeUndefined();
+  it('reports own text only when it was saved', () => {
+    expect(buildAnswer(initialQuestionCard(requestOf(single)))).toEqual({
+      kind: 'answered',
+      answers: [{ selected: [] }],
+    });
   });
 });

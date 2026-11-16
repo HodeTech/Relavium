@@ -27,9 +27,6 @@ export const ASK_USER_BOUNDS = {
   ownTextCodePoints: 500,
 } as const;
 
-/** At most this many calls open a card in one turn; a further call is `not_asked` (ADR-0132 §5). */
-export const ASK_USER_MAX_CALLS_PER_TURN = 3;
-
 /** The host's own last row; no model label may stand in for it (ADR-0132 §2). */
 export const ASK_USER_OWN_ANSWER_GLYPH = '✎';
 
@@ -285,19 +282,21 @@ export type AskUserDelegate = (
 ) => Promise<AskUserAnswer>;
 
 /**
- * The per-turn state the tool enforces its ceiling and "a skip closes questions" from (ADR-0132 §5). Built ONCE per
- * session turn by the session and carried by reference on the dispatch context, so every surface behaves alike and
- * nothing is held in a module (which would leak across sessions).
+ * The per-turn state the tool enforces "a skip closes questions" from (ADR-0132 §5). Built ONCE per session turn by the
+ * session and carried by reference on the dispatch context, so every surface behaves alike and nothing is held in a module
+ * (which would leak across sessions).
+ *
+ * There is deliberately NO count of cards per turn. A turn is already bounded by the engine (16 tool rounds, 16 calls per
+ * response), a call carries up to four questions, and the person holds an instant, turn-wide circuit breaker: a skip closes
+ * every further question this turn. A fixed ceiling would only stop a task that genuinely needs more answers.
  */
 export interface AskUserTurnState {
-  /** Calls that invoked the delegate this turn. A call refused at validation counts for nothing. */
-  opened: number;
   /** The person skipped a question this turn: no further card is shown. */
   skipped: boolean;
 }
 
 export function newAskUserTurnState(): AskUserTurnState {
-  return { opened: 0, skipped: false };
+  return { skipped: false };
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -308,9 +307,6 @@ export const ASK_USER_SKIPPED_TEXT =
   'The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn.';
 export const ASK_USER_SKIPPED_EARLIER_TEXT =
   'The user already skipped a question in this turn, so no question was shown. Continue with your best judgment, or ask in your reply.';
-// The word is pinned to {@link ASK_USER_MAX_CALLS_PER_TURN} by a test, so the text cannot drift from the ceiling.
-export const ASK_USER_LIMIT_TEXT =
-  'This turn already used its three question calls, so no question was shown. Continue with your best judgment, or ask in your reply.';
 
 export type AskUserResult =
   | {
@@ -324,16 +320,12 @@ export type AskUserResult =
   | { readonly status: 'skipped'; readonly message: string }
   | {
       readonly status: 'not_asked';
-      readonly reason: 'skipped_earlier' | 'limit';
+      readonly reason: 'skipped_earlier';
       readonly message: string;
     };
 
-export function notAskedResult(reason: 'skipped_earlier' | 'limit'): AskUserResult {
-  return {
-    status: 'not_asked',
-    reason,
-    message: reason === 'limit' ? ASK_USER_LIMIT_TEXT : ASK_USER_SKIPPED_EARLIER_TEXT,
-  };
+export function notAskedResult(reason: 'skipped_earlier'): AskUserResult {
+  return { status: 'not_asked', reason, message: ASK_USER_SKIPPED_EARLIER_TEXT };
 }
 
 export function skippedResult(): AskUserResult {
@@ -359,7 +351,7 @@ const AskUserResultSchema = z.discriminatedUnion('status', [
   z
     .object({
       status: z.literal('not_asked'),
-      reason: z.enum(['skipped_earlier', 'limit']),
+      reason: z.literal('skipped_earlier'),
       message: z.string(),
     })
     .strict(),

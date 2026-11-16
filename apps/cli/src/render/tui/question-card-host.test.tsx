@@ -298,7 +298,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('One  1 of 3'));
+      await vi.waitFor(() => expect(f.text()).toContain('One  [○] ○ ○ · Review'));
       await settle();
       // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
       // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
@@ -309,6 +309,149 @@ describe.each(['chat', 'home'] as const)(
       await vi.waitFor(() => expect(f.store.getSnapshot().question?.index).toBe(1));
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
       expect(f.store.getSnapshot().question?.index).toBe(1); // not 2, and not submitted
+      f.store.sealToolPreviews();
+      await expect(answer).rejects.toMatchObject({ name: 'AbortError' });
+    });
+  },
+);
+
+describe.each(['chat', 'home'] as const)(
+  'the question card, driven the way a person drives it, %s (ADR-0132 §3)',
+  (host) => {
+    const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 320));
+    const THREE: AskUserRequest = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which file?',
+          multiSelect: false,
+          options: [
+            { label: 'alpha.ts', description: 'The first file' },
+            { label: 'beta.ts', description: 'The second file' },
+          ],
+        },
+        {
+          header: 'Also',
+          question: 'Which more?',
+          multiSelect: true,
+          options: [
+            { label: 'one', description: 'Number one' },
+            { label: 'two', description: 'Number two' },
+          ],
+        },
+        {
+          header: 'Last',
+          question: 'And finally?',
+          multiSelect: false,
+          options: [
+            { label: 'yes', description: 'Yes' },
+            { label: 'no', description: 'No' },
+          ],
+        },
+      ],
+    };
+    const CTRL_S = String.fromCharCode(19);
+    const RIGHT = String.fromCharCode(27) + '[C';
+    const LEFT = String.fromCharCode(27) + '[D';
+    const DOWN = String.fromCharCode(27) + '[B';
+
+    /** Type one key and let the frame and the settle window pass, as a person pausing between keys does. */
+    const tap = async (
+      f: { input: { push: (text: string) => void } },
+      key: string,
+    ): Promise<void> => {
+      f.input.push(key);
+      await settle();
+    };
+
+    it('Ctrl+S skips the whole call — and a typed `s` is just a letter', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestQuestion(QUESTION);
+      await vi.waitFor(() => expect(f.text()).toContain('Question from the agent'));
+      await settle();
+      f.input.push('s'); // starts the own-answer field; it must NOT skip
+      await vi.waitFor(() => expect(f.store.getSnapshot().question?.field?.text).toBe('s'));
+      expect(f.store.getSnapshot().question).toBeDefined();
+      f.input.push(CTRL_S);
+      expect(await answer).toEqual({ kind: 'skipped' });
+      expect(f.errors).toEqual([]);
+    });
+
+    it('browses the questions with the arrow keys, shows the Review tab, and sends only from it', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestQuestion(THREE);
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○] ○ ○ · Review'));
+      await settle();
+      await tap(f, RIGHT); // look at question 2 without answering question 1
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  ○ [○] ○ · Review'),
+      );
+      await tap(f, RIGHT);
+      await tap(f, RIGHT); // the Review tab
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Review your answers') ?? '').toContain(
+          '○ 1 Pick → not answered yet',
+        ),
+      );
+      await tap(f, '\r'); // Enter with holes: goes to the first unanswered question, with a note
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  [○]'),
+      );
+      await tap(f, '2'); // beta.ts → question 2
+      await tap(f, '1'); // multi-select: tick "one" …
+      await tap(f, '\r'); // … and confirm → question 3
+      await tap(f, '1'); // yes → the Review tab, which does NOT send
+      expect(f.store.getSnapshot().question?.index).toBe(3);
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Review your answers') ?? '').toContain('● 2 Also → one'),
+      );
+      f.input.push('\r');
+      expect(await answer).toEqual({
+        kind: 'answered',
+        answers: [{ selected: ['beta.ts'] }, { selected: ['one'] }, { selected: ['yes'] }],
+      });
+      expect(f.errors).toEqual([]);
+    });
+
+    it('multi-select with options AND own text: Enter saves the text and stays, the next Enter confirms', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestQuestion({ questions: [THREE.questions[1]!] });
+      await vi.waitFor(() => expect(f.text()).toContain('Which more?'));
+      await settle();
+      await tap(f, '2'); // tick "two"
+      await tap(f, DOWN);
+      await tap(f, DOWN);
+      f.input.push('n'); // just start typing on the own-answer row
+      await vi.waitFor(() => expect(f.store.getSnapshot().question?.field?.text).toBe('n'));
+      f.input.push('ote');
+      await vi.waitFor(() => expect(f.store.getSnapshot().question?.field?.text).toBe('note'));
+      await settle();
+      f.input.push('\r'); // SAVES the text — the question is still open
+      await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
+      expect(f.store.getSnapshot().question).toBeDefined();
+      await vi.waitFor(() => expect(f.lastFrameWith('Saved.') ?? '').toContain('[x] ✎ note'));
+      await settle();
+      f.input.push('\r'); // the second Enter confirms the question
+      expect(await answer).toEqual({
+        kind: 'answered',
+        answers: [{ selected: ['two'], other: 'note' }],
+      });
+    });
+
+    it('← goes back to a question and the answer given there is still shown', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestQuestion(THREE);
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○]'));
+      await settle();
+      await tap(f, '1'); // alpha.ts → question 2
+      await tap(f, LEFT);
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Which file?') ?? '').toContain('(•) alpha.ts'),
+      );
       f.store.sealToolPreviews();
       await expect(answer).rejects.toMatchObject({ name: 'AbortError' });
     });

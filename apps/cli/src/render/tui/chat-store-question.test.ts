@@ -96,7 +96,7 @@ describe('requestQuestion (ADR-0132 §3, §4)', () => {
     const pending = store.requestQuestion(REQUEST);
     settle();
     store.bindQuestionVisibility(() => true);
-    store.handleReviewInput('s', {});
+    store.handleReviewInput('s', { ctrl: true });
     expect(await outcome(pending)).toEqual({ ok: true, answer: { kind: 'skipped' } });
     expect(store.getSnapshot().question).toBeUndefined();
   });
@@ -228,7 +228,7 @@ describe('the transcript entry (ADR-0132 §6)', () => {
     const pending = store.requestQuestion(REQUEST);
     settle();
     store.bindQuestionVisibility(() => true);
-    store.handleReviewInput('s', {});
+    store.handleReviewInput('s', { ctrl: true });
     await pending;
     expect(notices(store)[0]).toMatch(/Skipped the agent's question: Pick/);
   });
@@ -303,7 +303,7 @@ describe('a question must be on screen long enough to read before a key counts (
     expect(store.handleReviewInput('c', { ctrl: true })).toBe('abort');
   });
 
-  it('a HELD Enter cannot answer every question with its first option: each new question is a new frame that must settle', async () => {
+  it('a HELD Enter cannot answer every question with its first option: each new tab is a new frame that must settle', async () => {
     const store = newStore();
     const pending = store.requestQuestion(THREE);
     store.bindQuestionVisibility(() => true);
@@ -319,7 +319,12 @@ describe('a question must be on screen long enough to read before a key counts (
     store.handleReviewInput('', { return: true });
     expect(store.getSnapshot().question?.index).toBe(2);
     settle();
-    store.handleReviewInput('', { return: true });
+    store.handleReviewInput('', { return: true }); // answers question 3: the REVIEW tab shows, nothing is sent yet
+    expect(store.getSnapshot().question?.index).toBe(3);
+    store.handleReviewInput('', { return: true }); // held: the Review tab has not settled
+    expect(store.getSnapshot().question).toBeDefined();
+    settle();
+    store.handleReviewInput('', { return: true }); // the person reviewed it and sends
     expect(await outcome(pending)).toMatchObject({
       ok: true,
       answer: {
@@ -341,9 +346,9 @@ describe('a question must be on screen long enough to read before a key counts (
     const next = store.getSnapshot().questionFrame;
     expect(next).toBeDefined();
     expect(next).not.toBe(opening);
-    store.handleReviewInput('s', {}); // ignored: the new frame has not settled
+    store.handleReviewInput('s', { ctrl: true }); // ignored: the new frame has not settled
     settle();
-    store.handleReviewInput('s', {});
+    store.handleReviewInput('s', { ctrl: true });
     await pending;
     expect(store.getSnapshot().questionFrame).toBeUndefined();
   });

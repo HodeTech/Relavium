@@ -340,7 +340,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    also covers what the earlier design omitted — **multiple choice with free text and multi-select** — on the
    engine's existing pause machine and a docked, keyboard-owning card that is a sibling of ADR-0129's approval card (the native prompt
    host was weighed and rejected in the ADR); a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
-   is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `s` skips; the question and answer
+   is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `Ctrl+S` skips (typing starts your own answer; several questions are tabs with a Review tab; no per-turn card ceiling); the question and answer
    are not stored; an answer is never consent. **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
    docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and command-level wiring tests.
    **One four-reviewer round and a separate security sitting are done; their findings (one medium and several lows from each) are fixed**,

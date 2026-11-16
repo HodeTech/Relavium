@@ -971,7 +971,7 @@ sensitive-read floors).
 - **Todo/plan tool** — a structured, session-scoped task list the model maintains, rendered as a live TUI
   checklist (persists across compaction); ungoverned (no host arm).
 - **`ask_user`** — *(Superseded in its timeout, key and shape details by [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md),
-  Accepted 2026-11-16: no timeout, `Esc` stops the turn and `s` skips, multi-select, one to four questions, the answer is not stored.
+  Accepted 2026-11-16: no timeout, `Esc` stops the turn and `Ctrl+S` skips, multi-select, tabs with a Review tab, one to four questions, the answer is not stored.
   The text below is the original plan.)* a structured mid-turn question (options + free text) on interactive surfaces via a
   keyboard-owning overlay; typed `tool_unavailable` on non-interactive surfaces; workflows keep
   `human_gate`. When the agent emits `ask_user` mid-turn, the engine **pauses the turn** (stops
