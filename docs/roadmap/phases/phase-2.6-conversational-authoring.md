@@ -5566,7 +5566,7 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the gates pass on the final source (`56c63ab0`) and the maintainer's acceptance is owed. MVP-3d: [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted; implementation in progress.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the gates pass on the final source (`56c63ab0`) and the maintainer's acceptance is owed. MVP-3d: [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; the D64 rounds, a security sitting and the gates are owed.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
@@ -5690,7 +5690,7 @@ maintainer's call. Nothing is pushed. Earlier receipts keep their scoped meaning
 reviews (the dispositions are in the ADR), with its tool contract in [built-in-tools.md](../../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d).
 The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** (the
 durable row stays the content-free tool structure; no migration), and **`Esc` stops the turn** (skipping a question has its own key, `s`).
-Implementation follows (see below). What follows is the brief the ADR answers. Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
+**Implemented (2026-11-16):** `packages/core/src/tools/ask-user.ts` (schema, delegate, per-turn state, fixed texts, answer validation), the tool in `builtins.ts`, `ToolDef.displaySummary` in the registry, `SessionDeps.askUser`, and the export rule; in the CLI the pure card model and layout (`question-card-model.ts`, `question-card.ts`), the store's `requestQuestion`, the ink host mounted in the chat and Home, and `chat/ask-user-port.ts` feeding both advertise gates from one option. What follows is the brief the ADR answers. Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the
 engine pausing the turn and returning the answer as the tool result, a configurable five-minute timeout, `tool_unavailable`
 without a terminal, `human_gate` for workflows) **omits multiple choice with multi-select**, and the ADR must settle: the

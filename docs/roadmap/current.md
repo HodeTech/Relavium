@@ -341,7 +341,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    engine's existing pause machine and a docked, keyboard-owning card built on ADR-0129's layout and the native
    prompt host; a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
    is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `s` skips; the question and answer
-   are not stored; an answer is never consent. Implementation is in progress
+   are not stored; an answer is never consent. **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
+   docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and wiring tests; the D64 rounds,
+   the separate security sitting and the gate run are still owed
    (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a

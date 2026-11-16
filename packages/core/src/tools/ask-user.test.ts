@@ -85,6 +85,24 @@ function resultOf(outcome: { toolResult: Untrusted<ToolResultPart> }): unknown {
 
 /* --- the argument schema --- */
 
+describe('the ceilings are the numbers the card was derived from (ADR-0132 §2)', () => {
+  it('pins every ceiling as a LITERAL, so a change here cannot slip past tests that read the constant', () => {
+    // The 80×24 card has nine body rows: header 1 + question ≤ 2 + options ≤ 4 + own row 1 + description 1. These numbers
+    // are what make each part that size; `apps/cli/src/render/tui/question-card.test.ts` proves the layout for them. Change
+    // one only together with the card and ADR-0132 §2.
+    expect(ASK_USER_BOUNDS).toEqual({
+      headerBytes: 24,
+      questionBytes: 150,
+      labelBytes: 60,
+      descriptionBytes: 72,
+      questionsPerCall: 4,
+      optionsPerQuestion: 4,
+      ownTextCodePoints: 500,
+    });
+    expect(ASK_USER_MAX_CALLS_PER_TURN).toBe(3);
+  });
+});
+
 describe('ask_user arguments — bounds (ADR-0132 §2)', () => {
   it('accepts a minimal call and defaults multiSelect to false', () => {
     const parsed = parse(args());
@@ -611,9 +629,14 @@ describe('ask_user dispatch (ADR-0132 §1, §4, §5)', () => {
     const hostile = (): Promise<AskUserAnswer> =>
       Promise.resolve(JSON.parse('{"kind":"approved"}') as AskUserAnswer);
     const { context } = wired(hostile);
-    await expect(registry().dispatch(call(args()), context)).rejects.toBeInstanceOf(
-      ToolExecutionError,
-    );
+    const error = await registry()
+      .dispatch(call(args()), context)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ToolExecutionError);
+    // Fatal AND not retryable: a registry-wrapped stray TypeError would be `recoverable` for an ungoverned tool, which on a
+    // chat surface feeds the failure back to the model and lets it reopen the card.
+    expect((error as ToolExecutionError).retryable).toBe(false);
+    expect((error as ToolExecutionError).recoverable).toBe(false);
   });
 
   it('is not governed: the approval hook is never consulted, whatever the regime, and nothing is journaled', async () => {
