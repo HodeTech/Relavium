@@ -823,10 +823,11 @@ Steps 9–19 remain unstarted; the PR owns the final live results.
 
 ### Sitting: interrupted turns on the resume path — ADR-0119 (2026-11-16)
 
-A separate security sitting read the MVP-3c diff (an engaged turn that ends by the abort or a classified error now
-stays in the session as the user's message, content-free tool structure and one typed interruption row). It found no
-blocker, high or medium finding. Four low findings were recorded; the three that are defects were fixed, and one is an
-accepted residual.
+Three separate security sittings read the MVP-3c diff (an engaged turn that ends by the abort or a classified error now
+stays in the session as the user's message, content-free tool structure and one typed interruption row): round 1 (no blocker,
+high or medium; four lows, three fixed and one accepted residual), round 2 (no blocker, high or medium; two lows and the
+availability case below, fixed code by code) and round 3 (one medium — the same availability defect under other codes —
+fixed as the fact rule below). The controls below hold across the three.
 
 | Control | Evidence |
 |---|---|
@@ -847,10 +848,12 @@ something sensitive and pressed Esc has no way to remove it short of abandoning 
 which carries the existing review notice — and, when it was the session's first message, can name the session and that
 file. User text, `@` content and `!` output remain sensitive data at rest.
 
-**Availability finding, fixed.** A turn the provider refused for its own content (`context_overflow`, `content_filter`,
-`validation`) with no tool run was being retained, so a message larger than the window would fail every later turn (the
-latest exchange is never folded by compaction or trim). Such a turn is now rolled back as before; the same codes after a tool
-round keep the turn. The removal path is tracked in the
+**Availability finding, fixed in two steps.** A turn the provider refused for its own content with no tool run was being
+retained, so a message larger than the window would fail every later turn and survive a resume (the latest exchange is never
+folded by compaction or trim). The first fix keyed on three error codes; the round-3 sitting showed the same defect under other
+codes (a token-per-minute `429`, a timeout) and for an Esc before the refusal arrived. The rule is now the fact, not a code
+list: a turn is retained only if the provider returned at least one stream chunk, so a refusal under any code, an Esc before
+the first chunk and an Esc during overflow recovery are all rolled back as before ADR-0119. The removal path is tracked in the
 [deferred ledger](../roadmap/deferred-tasks.md); until it lands the residual stands.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)

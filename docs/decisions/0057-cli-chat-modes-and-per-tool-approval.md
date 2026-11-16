@@ -267,3 +267,12 @@ future feature, deferral or claim of merge-commit execution.
 > its historical design-checkpoint meaning. The
 > [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
 > remains open and requires fresh acceptance; no merge or publication is claimed.
+
+## Update — 2026-11-16
+
+[ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) was implemented as MVP-3c on 2026-11-16. The
+"Amended 2026-11-16 … (implementation owed, MVP-3c)" note above records the design at the time it was accepted; the
+abort clause's rollback is now withdrawn in the code for a turn the provider accepted (it returned content), as that ADR
+and its implementation note describe. An abort before any content, a session-ending cancel and the other exclusions it
+lists still roll the turn back.
+

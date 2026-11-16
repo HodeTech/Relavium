@@ -289,7 +289,8 @@ here and the original text stays, because accepted ADRs are append-only.
 - **The migration is hand-written and additive** (two `ALTER TABLE … ADD COLUMN`, each with its own column `CHECK`).
   A generated table rebuild was rejected: it would drop the ADR-0104 triggers on `session_messages`, move the table's root
   page and copy rows through a statement that selected columns the old table lacks. The shape `CHECK` also requires an
-  interruption row's `content_parts` to be empty, so the database refuses text on it and not only the schema. An upgrade
+  interruption row's `content_parts` to be empty, so the database refuses text in the structured body and not only the schema
+  (the denormalised `content` text column is not constrained; the row loader refuses text there). An upgrade
   test pins that the triggers and the root page survive the upgrade.
 - **An effect that landed in a retained interrupted turn is still disclosed at resume as `turn_incomplete`.** The
   interrupted turn stays out of the "completed calls" set the disclosure joins on, so keeping the turn for the model
@@ -300,12 +301,16 @@ here and the original text stays, because accepted ADRs are append-only.
   draft of this implementation reported such a history as "unknown"; review showed the overflow-retry case that would
   have produced it cannot occur (overflow recovery is only attempted before the first tool round), so the concept was
   deleted and the single rule above replaced it.
-- **A turn the provider refused outright is not retained when no tool ran.** §1's "any other classified error" is narrowed:
-  a `context_overflow`, `content_filter` or `validation` error with an empty tool history — and an abort during overflow
-  recovery after such a refusal — rolls the turn back, as before this ADR. Keeping it would resend the refused message in
-  every later request, and compaction and trim never fold the latest exchange, so a pasted file larger than the window
-  would fail each turn until it was displaced (found independently by the engine review and the security sitting). The
-  same codes after a tool round keep the turn: the calls ran, and the user message was accepted.
+- **A turn is retained only if the provider ACCEPTED the request — it returned at least one stream chunk.** §1's "a provider
+  engaged" is narrowed from "a request was sent" to "the provider answered". A turn that ended before any content — a
+  refusal under whatever code (`context_overflow`, `content_filter`, `validation`, a token-per-minute `429`, a timeout) or an
+  Esc before the first chunk, including an Esc during overflow recovery — is rolled back as before this ADR. Keeping it would
+  resend a message the provider may refuse again in every later request, and compaction and trim never fold the latest
+  exchange, so a pasted file larger than the window would fail every later turn and survive a resume (found by the engine
+  review and the round-2 sitting as a code-by-code rule, then by the round-3 sitting as the same defect under other codes and
+  an early Esc; the fix is the fact, not a code list). The hard-cap counter is unchanged: the request was sent, so the turn is
+  still counted. A real-provider Esc that lands before the first token is therefore rolled back, which the earlier sample
+  (taken before this rule) showed retained.
 - **A host callback or observer fault at a raw emit site is not retained**, the same as an unclassified throw: the engine
   cannot vouch for it. A fault in a tool-event sink after a call executed is retained with that call recorded.
 - **An abort is retained only when the turn ended in a classified turn error** (the turn core's `cancelled`); a raw throw
@@ -328,7 +333,9 @@ here and the original text stays, because accepted ADRs are append-only.
 - **The summariser's fixed prompt gained the one line §4 promised.**
 - **The closed vocabulary is enforced at the live seam too:** the interruption is parsed with `SessionInterruptionSchema`
   and the span keeps a frozen copy, so a code that is not an `ErrorCode` or a value a sink mutates cannot reach the
-  request text; the abort branch's `instanceof` is guarded against a hostile throwable.
+  request text (a test mutates the emitted event and checks the next request; the parse itself has no producible failing
+  input and is defence in depth); the abort branch's `instanceof` is guarded against a hostile throwable (also defence in
+  depth, with no producible trigger). One predicate decides retention for the abort branch and the error branch.
 - **A stored code with no reason fails closed on load**, like every other malformed shape. `{ reason: 'failed', code:
   'tool_denied' }` (a second encoding of a denial; likewise `turn_limit`) is still accepted by the schema and the
   `CHECK`: the engine only emits `denied`/`turn_limit`, a forged row renders the `failed` phrase, and nothing is gained by a

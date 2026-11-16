@@ -5611,11 +5611,10 @@ sitting and the deferred ledger.
 **D64 round 2 (2026-11-16, `development` at d195039d).** Four fresh reviewers — the engine; persistence, resume and the CLI surfaces;
 the honesty of tests and claims; and a second separate security sitting (opus) — found **no blocker or high finding**. The engine
 review reported one **medium** and the honesty review four; the persistence review and the security sitting found none (two and
-four lows). Substantive findings, all addressed: a turn the provider refused for its own content (`context_overflow`,
-`content_filter`, `validation`) with no tool run was retained, so a message larger than the window would fail every later turn —
-compaction and trim never fold the latest exchange; the engine review and the security sitting found it independently, and such a
-turn (and an abort during overflow recovery after one) is now rolled back as before, while the same codes after a tool round keep
-the turn; the persister's fail-closed check, the export's legacy-prefix carry, the summariser's truncation path, the event helper's
+four lows). Substantive findings, all addressed: a turn the provider refused for its own content with no tool run was
+retained, so a message larger than the window would fail every later turn — compaction and trim never fold the latest exchange;
+the engine review and the security sitting found it independently, and the first fix rolled such turns back by error code
+(superseded by the round-3 rule below); the persister's fail-closed check, the export's legacy-prefix carry, the summariser's truncation path, the event helper's
 `stopReason` arms and the orphan-code load path had no test (now bound, each mutation-checked); the abort branch's `instanceof`
 is guarded and the live interruption is validated and copied before it reaches the request text; a stored code with no reason now
 fails closed on load; the deferred ledger still carried the broad mutation claim and four reference docs plus three status lines
@@ -5627,6 +5626,26 @@ database that ran the earlier draft — including the maintainer's own `history.
 weaker "no content" `CHECK` (its row loader still refuses text on an interruption row); and the fatal-failure site's uncertainty
 mark has no trigger a test can produce (defence in depth). The accepting round — a new complete round with no blocker, high or
 medium finding — and a re-run of the gates on the final source are still owed.
+
+**D64 round 3 (2026-11-16, `development` at 2c301678).** Four fresh reviewers again — engine, persistence/resume/CLI, tests and
+claims, and a third separate security sitting (opus). The engine and persistence reviews found **no blocker, high or medium**
+(three lows each at most: a retention condition written twice, an Esc on an approval card recorded `cancelled` although nothing
+ran, a code-less `failed` accepted by the event helper, a migration sentence one column short, an event with no pending user not
+latched); a 20,000-set fuzz of the projections and a faithful copy of the persister's staging found no disagreement. The security
+sitting found **one medium**: the round-2 rule rolled a no-tool turn back only when its *final error code* was one of three, so
+the same defect remained for a refusal reported under another code (a token-per-minute `429`, a timeout) and for an Esc that
+arrived before the refusal, and the stuck state survived a resume. The honesty review found **two mediums**: five canonical
+reference lines still described the old contract, and a defence the ADR note claimed (live-seam validation and copy) had no test.
+All fixed: a turn is now retained only if the provider **accepted the request — returned at least one stream chunk** (an
+engine-level fact, not a code list; one predicate serves the abort and error branches), a refusal under any code, an Esc before
+the first chunk and an Esc during overflow recovery roll back as before, each bound by a test and mutation-checked; the
+overflow retry's content decides for the retried attempt; the event helper requires a code for `failed`; the five reference lines,
+ADR-0057's pointer (a dated update) and the remaining status lines are corrected; tests now bind the window slot, the degraded
+turn's single notice, the restored unit size and the window notice wording. Recorded and **not** changed: the abort branch's
+`instanceof` classification and the live parse have no producible failing input (defence in depth), a stored `content` column on
+an interruption row is not covered by the `CHECK` (the loader refuses it), and an Esc at an approval card is recorded `cancelled`
+("outcome unknown") although the tool never ran (ADR-0128's vocabulary; deferred). A fourth round, on the final source, accepts
+or rejects the increment.
 
 **Mutation evidence, stated precisely.** The author's mutants of the new production logic (retention predicate, reason mapping,
 span push, event field, rollback on a refusing sink, resume length check, rebase, abort retention, in-flight outcome, sentence,
@@ -5643,12 +5662,13 @@ usage-coverage inventory 481 → 486 — its drift predates this increment — a
 serializer test) and a shared test-table typing fix found by the gate. The workspace tests under `CI=true GITHUB_ACTIONS=true`
 and `coverage:enforced` pass. **The gates are re-run after the round-1 fixes before the round that accepts the increment.**
 
-**Real-provider sample (2026-11-16).** The built CLI was driven through a pseudo-terminal with the keychain's own keys (deepseek-flash
+**Real-provider sample (2026-11-16, before the round-1 fixes, at 5f1af19b).** The built CLI was driven through a pseudo-terminal with the keychain's own keys (deepseek-flash
 and claude-haiku-5-5, about $0.001 in total): a request to read six files, Esc after the tool calls, then "which files did you read?".
 Both sessions persisted `user → call/result pairs (sizes and outcomes only) → interruption row(aborted)`, and both models answered
 from the note, correctly and without inventing a result ("one/six successful read calls are recorded, the files and contents are
 unknown, results were discarded"). One more run aborted 78 ms after the send, before any token: the request had been sent, so the turn
-was retained with no calls and the model said none were recorded. Not sampled with a real provider: a classified failure, a denial and
+was retained with no calls and the model said none were recorded — **a case the round-3 rule now rolls back** (the provider had
+returned nothing). Not sampled with a real provider: a classified failure, a denial and
 the tool-round limit (covered by the session-level tests).
 
 Not yet done: the round that accepts the increment (a new complete cumulative round with no blocker, high or medium finding) and the

@@ -330,8 +330,8 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    migration and store, the turn core's error channel and `cancelled` entry for an in-flight call, retention and
    request rendering, resume, compaction/trim/window/reseat, the restored transcript and export, with live-versus-
    restored parity tests. **Implemented on `development` (2026-11-16)** with unit, session-level, persister, restored-
-   transcript, export and real-SQLite parity tests. D64 round 1 and the separate security sitting found no blocker/high
-   finding and their fixes are in; **the accepting round (a new complete round with no blocker/high/medium finding) and a
+   transcript, export and real-SQLite parity tests. D64 rounds 1–3 and three separate security sittings found no
+   blocker/high finding and their fixes are in; **the accepting round (a new complete round with no blocker/high/medium finding) and a
    re-run of the gates are still owed** — see the phase register. ADR-0115 is not a
    dependency. Session-ending cancellation and process death keep today's rollback (ADR-0098's disclosure at resume).
    **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's

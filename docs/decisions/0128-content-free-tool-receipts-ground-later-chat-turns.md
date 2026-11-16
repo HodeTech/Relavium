@@ -294,6 +294,7 @@ indicative figures in the Consequences above (the body is left as accepted):
 ADR-0119 was accepted and implemented as MVP-3c on 2026-11-16, which closes the gap the fourth negative consequence above
 names for the cases it covers: an engaged turn that ended by the abort or a classified error now keeps its recorded
 calls (including a `cancelled` entry for a call in flight) and a fixed interruption note. A session-ending
-cancellation, a crash and an unclassified throw still leave no receipt. The correction still resolves no side effect it
+cancellation, a crash, an unclassified throw, an observer or host fault, an unrecordable call and a turn before any provider
+content still leave no receipt (the full list is in ADR-0119's implementation note). The correction still resolves no side effect it
 cannot see.
 

@@ -107,14 +107,16 @@ Hosts use these getters before progress or bound validation; the engine remains 
 
 `reconstructSessionState(record, messages)` returns a text-only, unfolded `SessionResumeState`.
 Alongside its messages, costs and turn counter, it supplies required `completedTurnSpans`: ordered,
-non-overlapping `{ start, end }` indices into that message array, with exclusive `end`. Each span
-starts with a user and contains either that user alone for an empty final, or the user plus its final
-assistant text. Structural durable rows are excluded. Legacy text remains outside spans rather than
+non-overlapping `{ start, end, receipts, interruption? }` indices into that message array, with exclusive `end`. Each
+span starts with a user and contains either that user alone for an empty final or for a retained interrupted turn (whose span
+then carries the `interruption` and must be exactly one message long), or the user plus its final assistant text.
+Structural durable rows are excluded. Legacy text remains outside spans rather than
 being invented into a completed turn. The current pending user is tracked separately during a send.
 Build resume state with this helper; `AgentSession.resume` validates span bounds, roles and text-only
 parts before host cost callbacks, refuses invalid metadata with `SessionStateError` code
 `invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
-a failed, aborted or cancelled turn creates none.
+a turn that ends in a session-ending cancel, an unclassified throw, an observer fault or a refusal before any content
+creates none, while a retained interrupted turn (below) creates a one-message span.
 
 ### Content-free action receipts — ADR-0128
 
@@ -129,11 +131,11 @@ is fabricated. CR-70's raw-content carrying remains separately deferred. The
 acceptance cases live in the ADR and are not restated here.
 
 - **Source and identity.** A completed turn's receipt records come from exactly
-  two sources: the typed `SessionToolHistoryEntry[]` the turn returns on
+  three sources: the typed `SessionToolHistoryEntry[]` the turn returns on
   successful completion (the `toolHistory` field, already Zod-parsed and
   content-free; never `agent:tool_call`/`agent:tool_result` events, summaries or
-  any other payload), or the completed durable turn's structural row pairs on
-  resume/reseat. A record is one adjacent `assistant(tool_call)` + `tool(tool_result)`
+  any other payload), the same typed list carried on the failed `session:turn_completed` of a **retained interrupted
+  turn** (ADR-0119), or the durable turn's structural row pairs on resume/reseat. A record is one adjacent `assistant(tool_call)` + `tool(tool_result)`
   pair whose engine-form ids match. Pairing and uniqueness are validated **within
   one completed turn's inspected rows only**; an id is never used across turns and
   is never rendered, so a session-wide uniqueness property is neither needed nor
@@ -295,8 +297,10 @@ acceptance cases live in the ADR and are not restated here.
   structural evidence; a model reseat follows the same reconstruction. This
   introduces no live raw-content handoff. Since ADR-0119 (MVP-3c) an engaged turn that
   ended by abort, a fatal denial or another classified error keeps its recorded calls
-  and a fixed interruption note; a session-ending cancel, a crash and an unclassified
-  throw still create no receipt even when a tool ran (the user-facing disclosure is
+  and a fixed interruption note; the cases listed under *Not retained* in
+  [Interrupted turns](#interrupted-turns--adr-0119) (a session-ending cancel, a crash, an unclassified throw, an observer
+  or host fault, an unrecordable call, a turn before any provider content) still create no receipt even when a tool ran
+  (the user-facing disclosure is
   [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)
   invariant 4); [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
   (Accepted 2026-11-16, MVP-3c) owns that gap — see
@@ -342,11 +346,12 @@ persister writes the interruption row **iff** the event carries `interruption`.
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
 unclassified throw, a refusal before the message was accepted (including the **session hard cap**, whose
 `turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), a turn in which no provider
-engaged, a turn in which the **provider refused the request itself** (`context_overflow`, `content_filter` or
-`validation`) **and no tool was dispatched** (the refused message would otherwise ride every later request, and
-compaction and trim never fold the latest exchange; the same applies to an abort during overflow recovery), a turn in
-which the engine cannot vouch for its tool list (a dispatched call could not be recorded, or an observer or host
-callback faulted), and an abort that coincided with a raw throw.
+engaged, a turn that ended **before the provider returned any content** — a refusal under any error code
+(`context_overflow`, `content_filter`, `validation`, a token-per-minute `429`, a timeout), an Esc before the first stream
+chunk, or an Esc during overflow recovery (the provider never accepted the request, and keeping it would resend a message
+it may refuse again in every later request; compaction and trim never fold the latest exchange) — a turn in which the
+engine cannot vouch for its tool list (a dispatched call could not be recorded, or an observer or host callback
+faulted), and an abort that coincided with a raw throw.
 
 **Rows.** `user → (assistant(tool_call) → tool)* → system(interruption)`. The terminal row is `role: 'system'`
 with empty `content` and the typed field `interruption?: { reason, code? }` (strict; only on a `system` row,
@@ -619,8 +624,8 @@ field; the persister's legacy compatibility does not weaken the current producer
 successful empty final as a user row alone. A bare user immediately followed by another user retains
 its text in resumed/reseated context, matching the old projection. It prefixes the next completed
 export prompt and has its own compaction/trim boundary slot. It does not create a terminal row or add
-to the reconstructed hard turn cap. The final bare user still rolls back, and interrupted structural
-exchanges stay excluded. Legacy prefix text without a later terminal remains resumed context and
+to the reconstructed hard turn cap. The final bare user still rolls back, and unterminated structural
+exchanges (crash remnants, which have no terminal row) stay excluded. Legacy prefix text without a later terminal remains resumed context and
 export metadata; it does not invent an exported node. Explicit empty-terminal turns retain their
 ordinary distinct identity. No historical row is rewritten.
 The legacy rollback is a read projection: a later append can make a previously trailing bare user
@@ -653,10 +658,10 @@ changes as a consequence of this addition.
 
 Every host user-row insert path that has captured display text writes it in the
 same transaction as that user row. MVP-2 uses the completed-turn transaction;
-if [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
-(Accepted, MVP-3c) is implemented, its interruption transaction inherits this rule. Metadata validation
-is role-restricted, not restricted to a successful-turn status; this does not
-activate interrupted-turn persistence now. No optional
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+(MVP-3c, implemented) interruption transaction inherits this rule: a retained interrupted turn writes its user row, its
+structural rows and its interruption row, with the display metadata, in one transaction. Metadata validation
+is role-restricted, not restricted to a successful-turn status. No optional
 denormalized `content` metadata is repurposed: that remains checked against
 canonical content. The host explicitly supplies display text captured before
 expansion, even for a plain prompt. A caller without that representation leaves

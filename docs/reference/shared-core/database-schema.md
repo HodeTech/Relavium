@@ -1242,7 +1242,7 @@ whose `content` is empty and whose typed `interruption` field is stored in two n
 |---|---|---|
 | `interruption_reason` | text | `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`); only on a `role = 'system'` row; `NULL` on every other row and whenever `compaction_dropped_through_sequence` is set |
 | `interruption_code` | text | the closed `ErrorCode` taxonomy; present **iff** the reason is `failed` |
-| (shape) | — | an interruption row also has empty `content_parts` (`NULL` or `'[]'`): the database refuses text on it, not only the schema |
+| (shape) | — | an interruption row also has empty `content_parts` (`NULL` or `'[]'`): the database refuses text in the structured body, not only the schema (the denormalised `content` column is not constrained; the row loader refuses text there) |
 
 The row carries no text, tool name, argument or result. It is not a content part: the strict session-only
 content union below is unchanged. `SessionMessage.interruption` is `{ reason, code? }`, strict, and the store
