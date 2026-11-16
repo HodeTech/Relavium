@@ -415,15 +415,12 @@ describe('W7 compaction authority, policy and atomic recovery controls', () => {
         await h.session.sendMessage('next-unique');
         const request = h.requests.at(-1);
         if (request === undefined) throw new Error('missing request');
-        // ADR-0119: the engaged, classified failure is RETAINED — the request carries the user's message and the
-        // fixed interruption note (with the closed code), never a partial answer.
-        expect(terminal).toMatchObject({
-          interruption: { reason: 'failed', code: 'context_overflow' },
-        });
-        expect(body(request)).toContain('pending-unique');
-        expect(body(request)).toContain(
-          'This request was interrupted before it was answered: it failed (context_overflow).',
-        );
+        // ADR-0119 implementation note: the provider refused the request itself and no tool ran, so the turn is rolled
+        // back exactly as before. Keeping it would resend the refused message in every later request.
+        expect(terminal).toMatchObject({ error: { code: 'context_overflow' } });
+        expect((terminal as { interruption?: unknown }).interruption).toBeUndefined();
+        expect(body(request)).not.toContain('pending-unique');
+        expect(body(request)).not.toContain('interrupted before it was answered');
         expect(body(request)).toContain('latest');
         expect(body(request)).toContain('next-unique');
       } else expect(terminal).toMatchObject({ stopReason: 'stop' });
@@ -580,15 +577,12 @@ describe('W7 atomic compaction cancellation at every entry', () => {
             await h.session.sendMessage('next-unique');
             const nextRequests = h.requests.filter((r) => body(r).includes('next-unique'));
             expect(nextRequests.length).toBeGreaterThan(0);
-            // A turn no provider engaged in is rolled back; an engaged one (overflow recovery, where the first
-            // attempt reached the provider) is retained as an interrupted turn (ADR-0119) and stays visible.
+            // A turn no provider engaged in is rolled back, and so is one the provider refused outright and then
+            // aborted during overflow recovery (ADR-0119 implementation note): the refused message must not ride
+            // every later request.
             if (!after && entry !== 'manual')
-              for (const request of nextRequests) {
-                if (entry === 'recovery') {
-                  expect(body(request)).toContain('pending-unique');
-                  expect(body(request)).toContain('the user stopped it');
-                } else expect(body(request)).not.toContain('pending-unique');
-              }
+              for (const request of nextRequests)
+                expect(body(request)).not.toContain('pending-unique');
           }
         });
 });

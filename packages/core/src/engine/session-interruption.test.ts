@@ -33,6 +33,7 @@ import {
   type SessionDeps,
   type SessionStreamEvent,
 } from './agent-session.js';
+import { BudgetPauseError } from './budget-governor.js';
 import { createAbortController } from './execution-host.js';
 import { reconstructSessionState } from './session-resume.js';
 import { renderInterruptionSentence, receiptsFromToolHistory } from './turn-receipts.js';
@@ -471,6 +472,80 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     expect(text).toContain('next');
     expect(text).not.toContain('refused turn');
     expect(text).not.toContain('interrupted before it was answered');
+  });
+
+  it.each([
+    ['context_overflow', 'context_overflow'],
+    ['content_filter', 'content_filter'],
+    ['bad_request', 'validation'],
+  ] as const)(
+    'rolls back a request the provider refused outright (%s) when no tool ran, so the refused message is not resent',
+    async (kind, code) => {
+      const refusal: StreamChunk[] = [
+        {
+          type: 'error',
+          error: { kind, retryable: false, provider: 'anthropic', message: 'refused' },
+        },
+      ];
+      const { session, events, requests } = rig([refusal, textTurn('answer')]);
+      session.start();
+      await session.sendMessage('a huge pasted file');
+      const [terminal] = terminals(events);
+      expect(terminal).toMatchObject({ stopReason: 'error', error: { code } });
+      expect(terminal?.interruption).toBeUndefined();
+      await session.sendMessage('a shorter request');
+      // Only the new message is sent: the refused one is gone, exactly as it was before ADR-0119.
+      expect((requests.at(-1)?.messages ?? []).map(textOf).join('|')).toBe('a shorter request');
+    },
+  );
+
+  it('keeps a refusal that comes after a tool round: the calls ran, so the turn is retained', async () => {
+    const refusal: StreamChunk[] = [
+      {
+        type: 'error',
+        error: {
+          kind: 'content_filter',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'refused',
+        },
+      },
+    ];
+    const { session, events, requests } = rig([
+      callsTurn([{ id: 'p1', name: 'read_file' }]),
+      refusal,
+      textTurn('after'),
+    ]);
+    session.start();
+    await session.sendMessage('read it');
+    const [terminal] = terminals(events);
+    expect(terminal?.interruption).toEqual({ reason: 'failed', code: 'content_filter' });
+    expect(terminal?.toolHistory?.map((entry) => entry.result.outcome)).toEqual(['ok']);
+    await session.sendMessage('next');
+    expect(textOf(requests.at(-1)?.messages[0])).toContain('1. read_file — ok');
+  });
+
+  it('retains a budget pause that follows a tool round as failed(budget_exceeded) with its calls listed', async () => {
+    let egress = 0;
+    const { session, events, requests } = rig(
+      [callsTurn([{ id: 'p1', name: 'read_file' }]), textTurn('never'), textTurn('after')],
+      {
+        deps: {
+          preEgress: () => {
+            if (++egress === 2) throw new BudgetPauseError(900, 1000, 90);
+            return undefined;
+          },
+        },
+      },
+    );
+    session.start();
+    await session.sendMessage('read it, then keep going');
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'budget_exceeded' } });
+    expect(terminal?.interruption).toEqual({ reason: 'failed', code: 'budget_exceeded' });
+    expect(terminal?.toolHistory?.map((entry) => entry.result.outcome)).toEqual(['ok']);
+    await session.sendMessage('next');
+    expect(textOf(requests.at(-1)?.messages[0])).toContain('it failed (budget_exceeded)');
   });
 
   it('records a non-recoverable tool failure as an error call, not a cancelled or denied one', async () => {

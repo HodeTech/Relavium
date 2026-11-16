@@ -727,6 +727,44 @@ describe('oversized-message summarisation never clips a record', () => {
   });
 });
 
+describe('summariser input for an interrupted turn (ADR-0119)', () => {
+  const user = (value: string): LlmMessage => ({
+    role: 'user',
+    content: [{ type: 'text', text: value }],
+  });
+  const evidence = {
+    receipts: receipts([record('write_file', 'cancelled')]),
+    interruption: { reason: 'aborted' as const },
+  };
+  const render = (message: LlmMessage): string =>
+    message.content.map((p) => (p.type === 'text' ? p.text : '')).join('');
+
+  it('appends the receipts block and the sentence after the user text', () => {
+    const out = render(renderConversationToSummarise(undefined, [user('q')], [evidence]));
+    expect(out).toContain('User: q');
+    expect(out).toContain('1. write_file — cancelled');
+    expect(out).toContain('interrupted before it was answered: the user stopped it');
+  });
+
+  it('keeps the sentence, with its calls clause following the dropped receipts, when a message must be truncated', () => {
+    const prepare = (message: LlmMessage): PreparedAgentTurnRequest =>
+      ({ text: render(message) }) as unknown as PreparedAgentTurnRequest;
+    const chunk = prepareCompactionChunk(
+      [user('x'.repeat(10_000))],
+      0,
+      undefined,
+      prepare,
+      // Fits only once the records are dropped, never once the sentence is: the sentence is a fixed few hundred bytes.
+      (prepared) => (prepared as unknown as { text: string }).text.length <= 900,
+      [evidence],
+    );
+    const out = (chunk.prepared as unknown as { text: string }).text;
+    expect(out).not.toContain('write_file');
+    expect(out).toContain('interrupted before it was answered: the user stopped it');
+    expect(out).toContain('Tool calls made before the interruption may not be listed.');
+  });
+});
+
 describe('interrupted turns (ADR-0119)', () => {
   const interruptedTurnOf = (...inner: SessionMessage[]): CompletedSessionTurn => {
     const user = row('user', text('q'));

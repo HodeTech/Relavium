@@ -145,6 +145,42 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(kept?.at(-1)).toMatchObject({ role: 'system', interruption: { reason: 'aborted' } });
   });
 
+  it('carries legacy bare-user context that precedes an interrupted turn into the next step, once (ADR-0119)', () => {
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'stopped halfway' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'tool', [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:2:0',
+          resultBytes: 0,
+          outcome: 'cancelled',
+        },
+      ]),
+      { ...msg(4, 'system', []), interruption: { reason: 'aborted' as const } },
+      msg(5, 'user', [{ type: 'text', text: 'real request' }]),
+      msg(6, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(7, 'user', [{ type: 'text', text: 'third request' }]),
+      msg(8, 'assistant', [{ type: 'text', text: 'ok' }]),
+    ]);
+    expect(exported.workflow.nodes.map((node) => node.id)).toEqual([
+      'input',
+      'turn-1',
+      'turn-2',
+      'output',
+    ]);
+    // The interrupted turn is no step, but the legacy context before it still reaches the next prompt…
+    expect(exported.workflow.nodes[1]).toMatchObject({
+      prompt_template: 'legacy context\n\nreal request',
+    });
+    // …exactly once: the step after it does not repeat it, and the interrupted turn's own text is in no prompt.
+    expect(exported.workflow.nodes[2]).toMatchObject({ prompt_template: 'third request' });
+    expect(JSON.stringify(exported.workflow.nodes)).not.toContain('stopped halfway');
+  });
+
   it('exports completed empty finals and old compacted tool history, omitting the unresolved marker from grants', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'old' }]),
