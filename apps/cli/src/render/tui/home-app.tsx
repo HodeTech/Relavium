@@ -1,5 +1,6 @@
 import { createMeasuredFrameAcknowledgement } from './measured-frame-acknowledgement.js';
 import { ToolReviewHost } from './tool-review-view.js';
+import { QuestionCardHost } from './question-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
@@ -232,6 +233,13 @@ function ChatRegion(
         size={props.reviewSize}
         hasCustody={props.reviewCustody}
         clipboard={props.reviewClipboard}
+        color={color}
+      />
+      {/* The docked `ask_user` question card (ADR-0132) — where the approval card sits, never both at once. */}
+      <QuestionCardHost
+        store={props.store}
+        size={props.reviewSize}
+        hasCustody={props.reviewCustody}
         color={color}
       />
       {props.palette !== undefined && (

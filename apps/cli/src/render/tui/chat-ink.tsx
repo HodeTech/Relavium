@@ -1,5 +1,6 @@
 import type { ToolDisplay } from './tool-display.js';
 import { ToolReviewHost } from './tool-review-view.js';
+import { QuestionCardHost } from './question-card-view.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
@@ -1271,6 +1272,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
     const snap = props.store.getSnapshot();
+    // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
+    if (snap.question !== undefined) {
+      props.store.pasteIntoQuestion(pasted);
+      return;
+    }
     const editable = pasteIsEditable({
       running: snap.state.status === 'running',
       shellBusy: shellBusyRef.current,
@@ -1833,6 +1839,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           size={{ cols: windowSize.columns, rows: windowSize.rows }}
           hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
           clipboard={props.reviewClipboard}
+          color={color}
+        />
+        {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
+        <QuestionCardHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
           color={color}
         />
         {palette !== undefined && (

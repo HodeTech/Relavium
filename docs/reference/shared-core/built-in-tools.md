@@ -215,7 +215,7 @@ an unbound legacy write.
 
 > **Accepted — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md); MVP-3d.**
 > This section is the contract; the decisions (the delegate, the pause, what is and is not recorded, why an answer is
-> never consent) are the ADR's. The tool is not in the catalog table below until it ships.
+> never consent) are the ADR's.
 
 `ask_user` pauses the turn, shows the person a host-drawn card and returns their selection. It dispatches through the
 `askUser` engine **delegate**, not a host arm: a surface with no person to answer wires none, and the tool is then never
@@ -292,12 +292,12 @@ has been acknowledged visible — the approval card's measured-frame acknowledge
 | `↑` / `↓` | move the highlight (no wrap; it starts on the first option, and nothing is pre-chosen) | `↑` returns to the list, keeping the text |
 | `1`–`4` | single-select: choose that option and advance; multi-select: toggle it; a digit with no such option is ignored | typed as text |
 | `Space` | multi-select: toggle the highlighted option; single-select: ignored | typed as text |
-| `Enter` | single-select: choose the highlighted option and advance; multi-select: confirm and advance — refused with a hint when nothing is ticked and no text was given; on the `✎` row: open the field | non-empty: accept the text (single-select: the answer and advance; multi-select: keep it and return to the list); empty: return to the list |
+| `Enter` | single-select: choose the highlighted option and advance; multi-select: confirm and advance — refused with a hint when nothing is ticked and no text was given; on the `✎` row: open the field | non-empty: accept the text — it ends the question in either kind, and in a multi-select question the ticks already made are sent with it; empty: return to the list |
 | `←` | previous question, keeping its answer; ignored on the first question | moves the cursor |
 | `s` | skip the whole call; answers given so far are discarded | typed as text |
 | `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** |
 
-The last question's confirmation submits at once. The person's text is one line of at most 500 code points: control
+To tick more *after* typing, leave the field with `↑` (the draft is kept), tick, and reopen the field to accept. The last question's confirmation submits at once. The person's text is one line of at most 500 code points: control
 sequences are removed and newlines become spaces on paste; a paste that would pass the limit is refused whole, not cut,
 and a counter shows `n/500` from 400. While the `✎` row is highlighted the description row reads that the text is **sent
 to the model**. A highlighted row and a chosen row are drawn differently.
@@ -339,6 +339,7 @@ decision you rely on in your reply, because later turns do not see the answer.
 | `notify` | Send a native desktop notification (title, body, optional action buttons). | `void` | Lets an agent request attention mid-run without blocking the run. |
 | `mcp_call` | Connect to a registered MCP server and invoke one of its tools by name. | the MCP tool result as JSON | Server resolved from config; see [mcp-integration.md](mcp-integration.md). |
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
+| `ask_user` | Ask the person one to four structured questions mid-turn (two to four options each, multi-select, always a type-your-own row) and return the selection. | `{ status: 'answered', answers }`, `{ status: 'skipped' }` or `{ status: 'not_asked' }` — see [Ask the user](#ask-the-user--mvp-3d) | **Not governed** (no approval, effect or cache) and never a permission. Dispatches through the `askUser` engine delegate, so it is offered **only** on a surface with a person at it (the standalone chat and the Home); a workflow node or a one-shot run never sees it. |
 | `read_media` | Read a produced/received media asset by its durable `media://sha256-…` handle (**whole handle** — no byte range), so a media-capable model can look at it. | a short **text descriptor** (mime type, byte length, handle) as the `tool_result`; the media itself arrives as a top-level `media` part on a **marked, engine-synthesized `user` message** appended right after it ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1) | **Scope-set authz** — the requesting `session`/`workspace` must be in the handle's `allowedScopes` ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1); knowing a sha256 is **not** authorization; read-only (bypasses the action gate), secret-free `media_scope_denied`. The tool never touches bytes: it authorizes a handle and describes it, and the chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1), so a failover or a resume re-resolves from the canonical handle. The synthesized message carries a fixed engine-authored preamble naming the tool — it must never present as the user's own words. Because the media rides the ordinary media-INPUT rail it is bounded by it: `read_media` **refuses** a video, a PDF (never inline at any size) or an image/audio handle over `INLINE_MEDIA_CEILING`, with a correctable `invalid_args` naming the limit — so the model picks another handle instead of the next request dying on a schema error after the tool has already run. A response's tool calls may deliver at most `ADMISSION_CEILINGS.mediaAttachmentsPerResponse` attachments, refused by the engine before the seam's own per-message cap. All of a response's attachments arrive on **one** synthesized message appended after the FINAL tool result — after every one of them, never interleaved between two — a tool result must stay contiguous with its siblings or the providers reject the turn. And a model that does not accept image input refuses the turn rather than being handed a descriptor for something it never received. *(The delivery path ships as of `W5`/`CR-50`. The host `MediaReadAccess` delegate and the `session`/`workspace` scope population remain unwired in production — see [deferred-tasks.md](../../roadmap/deferred-tasks.md); absent the delegate the tool fails closed with `tool_unavailable`.)* |
 
 > **Where each tool runs.** `http_request` and `web_search` need the host's egress arm, `read_clipboard` and
@@ -350,7 +351,8 @@ decision you rely on in your reply, because later turns do not see the answer.
 > wires that arm only when an inline agent declares `mcp_servers`, so `mcp_call` without a declared server still
 > fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked. `invoke_agent`
 > and `read_media` are outside this check: they need an engine delegate rather than a host arm, no path wires either
-> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing.
+> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing. `ask_user` is the third
+> delegate-backed tool: wired only by the interactive chat surfaces, so a grant of it on a workflow node is inert in the same way.
 
 > **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 

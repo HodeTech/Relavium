@@ -29,7 +29,7 @@ reasoning_effort: string    # optional: off | low | medium | high | max (ADR-006
 input_schema: object        # optional JSON Schema for the agent's expected input shape
 output_schema: object       # optional JSON Schema for the agent's produced output shape
 
-tools: string[]             # tool ids this agent may call (built-in, mcp, plugin)
+tools: string[]             # tool ids this agent may call (built-in, mcp, plugin). `ask_user` is offered only on an interactive chat surface; in a workflow node it is inert
 mcp_servers: McpServerRef[] # optional MCP servers this agent consumes
 memory:                     # optional conversational memory policy
   type: none | window | summary

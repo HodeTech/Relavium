@@ -107,6 +107,7 @@ import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/session-view-model.js';
 import { createMentionReader } from '../render/tui/mention.js';
 import {
@@ -1199,9 +1200,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           freshModel !== undefined
             ? [freshModel, effectiveChat?.defaultProvider]
             : [config.chat.defaultModel, config.chat.defaultProvider];
+        // The Home is always a terminal with a person at it: it can always ask (ADR-0132).
+        const askPort = createAskUserPort();
+        askPort.bind(store);
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
             startingMode: start.startingMode,
+            ...askUserOption(askPort, true),
             operatorHomeDir: homeDir,
             ...(deps.outputStoreFactory === undefined
               ? {}
@@ -1349,6 +1354,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // (never to repeat). `onBudgetWarning` alone used to be guarded; the other two closed over the later `const
         // store` and would TDZ-crash under the same condition it was protected against.
         const storeRef: { current?: ChatStoreController } = {};
+        const askPort = createAskUserPort();
         const pendingNotes: string[] = [];
         const noteToStore = (text: string): void => {
           if (storeRef.current !== undefined) storeRef.current.notice(text);
@@ -1359,6 +1365,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildResumedSession ?? buildResumedChatSession)({
             startingMode: start.startingMode,
+            ...askUserOption(askPort, true),
             operatorHomeDir: homeDir,
             ...(deps.outputStoreFactory === undefined
               ? {}
@@ -1450,6 +1457,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
           assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
           storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+          askPort.bind(store);
           // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
           // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
           for (const note of pendingNotes) store.notice(note);

@@ -757,7 +757,10 @@ reproducible; snapshots satisfying current authored validation round-trip):
   Structural tool preambles/results do not create nodes. An interrupted exchange is omitted from the chain
   and remains in the full metadata. Each `agent` node carries `agent_ref` = the session's `agentSlug`;
   `prompt_template` = the user text, with interpolation openers neutralised (omitted if empty);
-  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids.
+  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids, **except `ask_user`**
+  ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) §1): a workflow node cannot ask a question
+  (its counterpart is `human_gate`), so naming it would be an inert grant claiming a capability the workflow lacks. The agent
+  snapshot the export carries is left faithful, and a node that only asked questions has no `tools`.
   The fixed unresolved `unknown_tool` marker never becomes a grant. No
   `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
   user adds on the canvas, not replay fields.

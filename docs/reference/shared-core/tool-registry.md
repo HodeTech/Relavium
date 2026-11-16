@@ -313,6 +313,8 @@ interface ToolDispatchContext {
   // see Secret argument provenance below before activating a future mapped path.
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
+  readonly askUser?: AskUserDelegate;      // engine delegate (ask_user, ADR-0132): the host's question card; absent ⇒ the tool is never offered
+  readonly askUserTurn?: AskUserTurnState; // the per-turn ceiling / skip state, built once per session turn and shared by reference; travels WITH askUser
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
   readonly beforeDispatch?: (toolId: ToolId) => void; // synchronous trusted admission immediately before actual dispatch
   readonly signal?: AbortSignalLike;
@@ -323,7 +325,12 @@ interface ToolDispatchContext {
 config block ([node-types.md](node-types.md) `tool_config` / `agent_config`) — that is where the
 config-only VALUES and the `input_mapping` / `output_mapping` come from. `invokeAgent` is an
 **engine-provided delegate**, not a `ToolHost` capability — `invoke_agent` is pure orchestration
-(dispatch another node by id), no platform I/O, no full router selection this phase.
+(dispatch another node by id), no platform I/O, no full router selection this phase. `askUser` is likewise a delegate: it carries
+the host's card for `ask_user`, which the tool awaits like the approval hook but which is **not governed** (no action class,
+approval, effect journal entry or cache). A `ToolDef` that dispatches through a delegate declares it in `requiresDelegate`
+(`invokeAgent` / `mediaRead` / `askUser`), and a surface that wires none never offers the tool. A tool may also declare
+`displaySummary`, a pure function of its own result that replaces the derived `outputSummary` (only `ask_user` does, because its
+result carries the person's words). The contract is [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d).
 
 ### The per-tool approval seam (`ConfirmActionHook`, ADR-0057 EA3)
 
@@ -506,6 +513,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 | `read_clipboard` / `notify` | `host.os` | — |
 | `mcp_call` | `host.mcp` | server URL runs the same SSRF primitive (0029(d); 2.R) |
 | `invoke_agent` | `ctx.invokeAgent` (engine delegate) | pure orchestration — no `ToolHost` I/O |
+| `ask_user` | `ctx.askUser` (engine delegate) + `ctx.askUserTurn` | a question to the person, not governed; per-turn ceiling and skip state — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) |
 
 **Binary / media results.** A tool returning binary or media content (a `read_file` on a non-text file,
 a media `http_request` body) returns a **durable media handle** (`tool_result.media`,

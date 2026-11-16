@@ -29,7 +29,8 @@ const DEFAULT_CHAT_SYSTEM_PROMPT =
   'unambiguous replacements and inspect tool results; never claim an edit succeeded without evidence. ' +
   'If a tool or write is unavailable or refused, explain that plainly rather than trying another way around ' +
   'the restriction. You have no command execution, network or ambient OS tools. ' +
-  'When a request is ambiguous, ask a brief clarifying question.';
+  'When a request is ambiguous and the user can answer with a choice, use the ask_user tool if it is available; ' +
+  'otherwise ask a brief clarifying question in plain text.';
 
 /**
  * ADR-0116's editing/search grant, enabled after the prepared-write approval surface (ADR-0120).
@@ -44,6 +45,9 @@ export const DEFAULT_CHAT_TOOLS: readonly string[] = [
   'find_files',
   'write_file',
   'edit_file',
+  // ADR-0132: a structured question to the person. Not a governed action and never a permission; it is offered only
+  // where the driver wired a question card, so the grant is inert on a non-interactive surface.
+  'ask_user',
 ];
 
 /**

@@ -487,7 +487,7 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 | Mode | Advertised tools | A governed action (write / command / network / clipboard) |
 | --- | --- | --- |
 | `ask` (default) | every granted tool | **a card, every time** — `[y]` once · `[a]` always for this tool this session · `[n]` deny and continue · `[c]` deny with a reason · `[v]` full view · `Esc` stops the turn |
-| `plan` | granted read-only tools (the built-in agent has read/list/git status/search/find) | **refused** with a fixed mode text that **returns to the model** ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); nothing is asked or changed |
+| `plan` | granted **non-governed** tools (the built-in agent has read/list/git status/search/find, and `ask_user` where a card can answer) | **refused** with a fixed mode text that **returns to the model** ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); nothing is asked or changed |
 | `accept-edits` | every granted tool | a **file edit inside the workspace is applied without a card** (its transcript row keeps the target and diff statistics); a command, network call, ambient OS action, protected path or delivered saved result still gets a card |
 | `auto` | every granted tool | **auto-approved** for granted actions; hard protected-path and scope refusals remain (a protected target falls back to a card that can never be remembered) |
 
@@ -732,6 +732,27 @@ the producer/display caps, oversize omission and redirected plain output. Check
 the producer's JSON/error value as well as TUI/Home/plain projections; do not
 claim complete detection of arbitrary secrets from a successful finite fixture.
 No additional error family becomes displayable.
+
+## The question card — MVP-3d ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md))
+
+The model can ask the person a structured question mid-turn with the built-in `ask_user` tool; the tool contract (arguments, bounds,
+key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d). What this surface adds:
+
+- **It is a docked card where the approval card sits**, below the live region, with the conversation still on screen above it. The
+  rule reads `Question from the agent · not an approval`; the keys are the question keys, never `[y]`/`[a]`/`[n]`. An open card is the
+  person's time, not the turn's: the busy line reads `Waiting for your answer <time> · Esc stops the turn` and the turn's active time
+  excludes the wait ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) §6).
+- **It opens in every mode**, `auto` and `plan` included; no mode answers a question, and there is **no timeout**.
+- **`Esc` and `Ctrl-C` at the card stop the turn**, as at an approval card; `s` skips the call. A session-ending cancel (`/cancel`,
+  `Ctrl-C` outside a card) ends the session as everywhere else.
+- **It appears only on a surface with a person at it**: the standalone chat and the Home wire the delegate; a plain, `--json` or
+  one-shot surface wires none, and the model is then never offered the tool.
+- **The transcript keeps a record**, built from the answer the card holds: `Asked: <header> — <question>` and `→ <choice>` per question
+  (the person's own text in quotes), or `Skipped the agent's question: <header>`. It lives in the live transcript and the terminal's own
+  scrollback only. The durable row is the content-free tool structure, so a **resumed** session shows the bare `ask_user` tool row, and a
+  later turn sees an `ask_user` receipt and nothing of the answer.
+- **A paste goes into the own-answer field** when it is open (one line, cut nowhere: a paste that would pass 500 characters is refused whole),
+  and is otherwise dropped — never the composer.
 
 ## Tool availability
 

@@ -1910,6 +1910,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
       // and the `[c]` reason capture. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
+      // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
+      if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;
       doctorRunId += 1; // an append clears a stale `/doctor` report + invalidates an in-flight run, like a typed edit
       history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)

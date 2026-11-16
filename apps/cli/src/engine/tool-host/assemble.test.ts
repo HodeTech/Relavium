@@ -376,19 +376,36 @@ describe('wiredToolIds (advertise-filter)', () => {
     ).toEqual(['invoke_agent']);
   });
 
-  it('CR-73: the two delegate-backed built-ins actually DECLARE their delegate', () => {
+  it('ADR-0132: ask_user is dropped unless the caller declares the askUser delegate — the SECOND advertise gate', () => {
+    // `narrowToWired` applies this list to the EFFECTIVE grant; the engine's `delegateAvailable` is the first gate. If this
+    // one did not know the delegate, the tool would vanish from the grant on an interactive driver that wired it.
+    expect(wiredToolIds(['read_file', 'ask_user'], fsHost, defs)).toEqual(['read_file']);
+    expect(wiredToolIds(['read_file', 'ask_user'], fsHost, defs, { delegates: [] })).toEqual([
+      'read_file',
+    ]);
+    expect(
+      wiredToolIds(['read_file', 'ask_user'], fsHost, defs, { delegates: ['askUser'] }),
+    ).toEqual(['read_file', 'ask_user']);
+    // Declaring a DIFFERENT delegate does not light it up.
+    expect(
+      wiredToolIds(['ask_user'], fsHost, defs, { delegates: ['mediaRead', 'invokeAgent'] }),
+    ).toEqual([]);
+  });
+
+  it('CR-73: the delegate-backed built-ins actually DECLARE their delegate', () => {
     // The filter is only as good as the declaration it reads. A built-in that forgets `requiresDelegate`
     // falls through to `true` and is advertised again — which is exactly the state CR-73 found. Asserting on
     // the catalog (not on a fixture) is what makes a future delegate-backed tool fail here until it declares.
     const byId = new Map(BUILTIN_TOOLS.map((d) => [d.id, d]));
     expect(byId.get('invoke_agent')?.requiresDelegate).toBe('invokeAgent');
     expect(byId.get('read_media')?.requiresDelegate).toBe('mediaRead');
+    expect(byId.get('ask_user')?.requiresDelegate).toBe('askUser');
     // And nothing else claims one — a stray declaration would silently un-advertise a working tool.
     expect(
       BUILTIN_TOOLS.filter((d) => d.requiresDelegate !== undefined)
         .map((d) => d.id)
         .sort(),
-    ).toEqual(['invoke_agent', 'read_media']);
+    ).toEqual(['ask_user', 'invoke_agent', 'read_media']);
   });
 
   it('keeps os tools (read_clipboard/notify) even when host.os is absent — the EA1 backstop is their gate', () => {

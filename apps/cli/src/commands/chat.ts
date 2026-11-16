@@ -163,6 +163,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
@@ -775,9 +776,12 @@ async function chatCommandBody(
     // fail-loud exit-2 CliError, cause stripped) before the session is live.
     const prepare = async (host?: SessionHostOwner) => {
       const start = startingModes.resolve(deps.global.cwd);
+      const askPort = createAskUserPort();
+      askPort.bind(store);
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildSession ?? buildChatSession)({
           startingMode: start.startingMode,
+          ...askUserOption(askPort, chatIsInteractive(deps.io, deps.global)),
           operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
           chat: {
@@ -1286,9 +1290,11 @@ async function chatResumeCommandBody(
         prompt: createConsentPrompter(),
       });
       const start = startingModes.resolve(originalCwd);
+      const askPort = createAskUserPort();
       const build = (workOwner?: SessionWorkOwner) =>
         (deps.buildResumedSession ?? buildResumedChatSession)({
           startingMode: start.startingMode,
+          ...askUserOption(askPort, chatIsInteractive(deps.io, deps.global)),
           operatorHomeDir: homeDir,
           ...(workOwner === undefined ? {} : { workOwner }),
           chat: {
@@ -1351,6 +1357,7 @@ async function chatResumeCommandBody(
         restored,
         true,
       ));
+      askPort.bind(store);
       const turns = resumed.resumeState.turnCount;
       // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
       // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
@@ -2307,9 +2314,11 @@ async function buildFreshChatWiring(
   // the SAME freshness guarantee `readEffectiveDefault()` gives the default model (and the Home already gives
   // pricing). Non-fatal (empty map on a read fault). Empty ⇒ omitted (unknown models degrade to allow, unchanged).
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
+  const askPort = createAskUserPort();
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildSession({
       startingMode: start.startingMode,
+      ...askUserOption(askPort, chatIsInteractive(deps.io, deps.global)),
       operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
       chat: {
@@ -2361,6 +2370,7 @@ async function buildFreshChatWiring(
     undefined,
     transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
   );
+  askPort.bind(store);
   // A re-drive (`/clear`/reseat) runs INSIDE the hoisted alt buffer, so the MCP-skipped diagnostic routes to the fresh
   // session's transcript (`store.notice`) rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3).
   for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
@@ -2668,9 +2678,11 @@ async function buildReseatWiring(
   // Re-read the user-pricing overlay FRESH from the shared db (mirrors buildFreshChatWiring) so a mid-session
   // `models pricing` write applies to the reseated session. Empty ⇒ omitted (unknown models degrade to allow).
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
+  const askPort = createAskUserPort();
   const build = (workOwner?: SessionWorkOwner) =>
     deps.buildResumedSession({
       startingMode: start.startingMode,
+      ...askUserOption(askPort, chatIsInteractive(deps.io, deps.global)),
       operatorHomeDir: deps.homeDir,
       ...(workOwner === undefined ? {} : { workOwner }),
       chat: {
@@ -2726,6 +2738,7 @@ async function buildReseatWiring(
     }
     throw err;
   }
+  askPort.bind(seeded.store);
   // A reseat re-drive runs INSIDE the hoisted alt buffer — route the MCP-skipped diagnostic to the reseated session's
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);

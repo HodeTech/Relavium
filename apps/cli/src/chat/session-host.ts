@@ -19,6 +19,7 @@ import {
   type EffortGateResult,
   reconstructSessionState,
   RunEventBus,
+  type AskUserDelegate,
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
@@ -110,6 +111,12 @@ const SESSION_DURABILITY_FAILURE =
 export interface BuildChatSessionOptions {
   /** CLI-private resolved start; its invocation authority is never persisted in session state. */
   readonly startingMode?: ChatModeSelection;
+  /**
+   * The `ask_user` question card ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)). Present
+   * only on a surface with a person at it: it reaches `SessionDeps.askUser` AND the `wiredToolIds` delegate list from this ONE
+   * value, so the engine's advertise gate and the CLI's cannot disagree. Absent ⇒ the tool is never offered.
+   */
+  readonly askUser?: AskUserDelegate;
   /** Resolved operator home, explicitly supplied by production surfaces. */
   readonly operatorHomeDir?: string;
   /** Explicit resource factory for hermetic embeddings and tests. */
@@ -363,6 +370,7 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'startingMode'
+  | 'askUser'
   | 'chat'
   | 'maxTokensEstimate'
   | 'deadlineTimer'
@@ -856,6 +864,7 @@ function buildSessionRuntime(
     // "empty/absent ⇒ run_command disabled"). Extended with the `[chat].allowed_commands` `!`-shell allowlist
     // (ADR-0061) — see `chatToolPolicy` above. A 2.5.E/ADR-0057 per-mode allowlist flows through automatically.
     toolPolicy: chatToolPolicy,
+    ...(opts.askUser === undefined ? {} : { askUser: opts.askUser }),
     // Interactive-surface turn bounds: recover from a host tool EXECUTION failure (a file-not-found read, a
     // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
@@ -1163,7 +1172,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     const attached: { handle?: SessionHandle } = {};
     const whenReady = (): Promise<void> =>
       attached.handle?.whenConsumersReady() ?? Promise.resolve();
-    const wired = narrowToWired(withMcpGrant(agent, mcp), host, deps.tools);
+    const wired = narrowToWired(
+      withMcpGrant(agent, mcp),
+      host,
+      deps.tools,
+      opts.askUser !== undefined,
+    );
     const sessionAgent =
       opts.oneShot === true
         ? wired
@@ -1287,8 +1301,16 @@ function narrowToWired(
   agent: AgentDefinition,
   host: ToolHost,
   defs: readonly ToolDef[],
+  canAsk: boolean,
 ): AgentDefinition {
-  return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
+  // The SECOND advertise gate (the first is the engine's `delegateAvailable`, per turn): without `askUser` in this list the
+  // tool is dropped from the effective grant even on a driver that wired the delegate (ADR-0132 §1).
+  return {
+    ...agent,
+    tools: wiredToolIds(agent.tools ?? [], host, defs, {
+      delegates: canAsk ? ['askUser'] : [],
+    }),
+  };
 }
 
 /**
@@ -1338,6 +1360,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
   | 'startingMode'
+  | 'askUser'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'operatorHomeDir'
@@ -1498,7 +1521,7 @@ export async function buildResumedChatSession(
     // would have shipped the bound on one of the two ways a chat starts.
     const attached: { handle?: SessionHandle } = {};
     const sessionAgent = withChatOutputDefault(
-      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools, opts.askUser !== undefined),
       chatOutputSettings(opts.chat),
       officialEndpointOf(deps),
     );

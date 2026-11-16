@@ -1128,6 +1128,28 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(2);
   });
 
+  it('ADR-0132: a resumed session gets both ask_user gates from the same option, and neither without it', async () => {
+    // The resumed builder has its own delegate site and its own grant-narrowing site; a regression in either would leave
+    // a resumed chat unable to ask (or asking where no one can answer) while a fresh one behaved.
+    for (const interactive of [true, false]) {
+      const { providers, requests } = capturingResolver([textTurn('continued')]);
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record(),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers,
+        toolHost: {},
+        consentGate: () => Promise.resolve(new Map()),
+        ...(interactive ? { askUser: () => Promise.resolve({ kind: 'skipped' as const }) } : {}),
+      });
+      await built.session.sendMessage('continue');
+      expect((requests[0]?.tools ?? []).some((tool) => tool.name === 'ask_user')).toBe(interactive);
+      built.session.cancel();
+      await built.recordedEvents;
+    }
+  });
+
   it('forwards the same configured fallback into the resumed session and its governor', async () => {
     const built = await buildResumedChatSession({
       chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
@@ -3058,5 +3080,78 @@ describe('ADR-0126 interrupted effect disclosure', () => {
     );
     f.built.session.cancel();
     await f.built.recordedEvents;
+  });
+});
+
+describe('the ask_user wiring (ADR-0132 §1): one boolean feeds both advertise gates', () => {
+  const asksUser = (requests: readonly LlmRequest[]): boolean =>
+    requests.some((request) => (request.tools ?? []).some((tool) => tool.name === 'ask_user'));
+
+  it('is offered to the model, and kept in the effective grant, when the driver wires the question delegate', async () => {
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({
+      providers,
+      toolHost: {},
+      askUser: () => Promise.resolve({ kind: 'skipped' }),
+    });
+    built.session.start();
+    await built.session.sendMessage('hello');
+    // BOTH gates kept it: the CLI's (`wiredToolIds`, which narrows the EFFECTIVE grant) and the engine's
+    // (`delegateAvailable`). Drop either and the tool is not in the request.
+    expect(asksUser(requests)).toBe(true);
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+
+  it('is neither offered nor kept when no delegate is wired (a non-interactive driver), though the default agent is granted it', async () => {
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({ providers, toolHost: {} });
+    // The ORIGINAL agent keeps the author's full grant (it is what is persisted and exported); only the effective one narrows.
+    expect(built.agent.tools).toContain('ask_user');
+    built.session.start();
+    await built.session.sendMessage('hello');
+    expect(asksUser(requests)).toBe(false);
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+
+  it('runs a real question through the session: the delegate is called and its answer reaches the model', async () => {
+    const delegate = vi.fn(() =>
+      Promise.resolve({ kind: 'answered' as const, answers: [{ selected: ['alpha.ts'] }] }),
+    );
+    const args = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which file?',
+          options: [
+            { label: 'alpha.ts', description: 'The first file' },
+            { label: 'beta.ts', description: 'The second file' },
+          ],
+        },
+      ],
+    };
+    const { providers, requests } = capturingResolver([
+      [
+        { type: 'tool_call_start', id: 'ask-1', name: 'ask_user' },
+        { type: 'tool_call_delta', id: 'ask-1', argsJsonDelta: JSON.stringify(args) },
+        { type: 'tool_call_end', id: 'ask-1' },
+        {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
+      ],
+      textTurn('alpha it is'),
+    ]);
+    const built = await build({ providers, toolHost: {}, askUser: delegate });
+    built.session.start();
+    await built.session.sendMessage('which file?');
+    expect(delegate).toHaveBeenCalledTimes(1);
+    const second = JSON.stringify(requests[1]?.messages ?? []);
+    expect(second).toContain('alpha.ts');
+    expect(second).toContain('answered');
+    built.session.cancel();
+    await built.recordedEvents;
   });
 });

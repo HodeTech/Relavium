@@ -1,8 +1,12 @@
-import type {
-  SessionStreamHandleEvent,
-  ToolApprovalRequest,
-  ToolApprovalLiveContext,
-  ToolLiveEvent,
+import {
+  plainTextRefusal,
+  ASK_USER_BOUNDS,
+  type AskUserAnswer,
+  type AskUserRequest,
+  type SessionStreamHandleEvent,
+  type ToolApprovalRequest,
+  type ToolApprovalLiveContext,
+  type ToolLiveEvent,
 } from '@relavium/core';
 
 import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
@@ -13,9 +17,16 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import type { ToolDisplay } from './tool-display.js';
+import {
+  initialQuestionCard,
+  pasteIntoQuestion,
+  reduceQuestionKey,
+  type QuestionCardState,
+} from './question-card-model.js';
+import { questionTranscriptText } from './question-card-record.js';
 import type { ChatKey } from './chat-input.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
-import type { Memory, ReasoningEffort } from '@relavium/shared';
+import type { AbortSignalLike, Memory, ReasoningEffort } from '@relavium/shared';
 import { MarkdownStream } from '../markdown/index.js';
 import { TerminalStream } from '../terminal-stream.js';
 
@@ -84,6 +95,12 @@ export interface ChatStoreSnapshot {
   /** The in-flight approval prompt, if a governed tool dispatch is awaiting the user's decision. */
   readonly approval: PendingApproval | undefined;
   readonly review: ToolReviewState | undefined;
+  /**
+   * The open `ask_user` card ([ADR-0132](../../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), if the
+   * model asked the person a question. A NEW object on every change, so the measured-frame acknowledgement can tell one frame
+   * of it from the next by identity.
+   */
+  readonly question: QuestionCardState | undefined;
   readonly toolDisplays: ReadonlyMap<string, ToolDisplay>;
   readonly tick: number;
   readonly color: boolean;
@@ -147,6 +164,16 @@ export interface ChatStoreController extends ChatStore {
   requestApproval: ApprovalPrompt;
   /** Answer the in-flight approval (the input handler's `[y]/[a]/[n]` decision) — a no-op if none is pending. */
   answerApproval: (answer: ApprovalAnswer) => void;
+  /**
+   * The `ask_user` delegate the session is given on an interactive driver (ADR-0132): publish the question card and RESOLVE with
+   * the person's answer or a skip. Honors the abort signal — a stop while pending REJECTS with an `AbortError` so the call is
+   * recorded cancelled, never resolved as a skip — and so does a sealed store. At most one overlay is pending at a time.
+   */
+  requestQuestion: (request: AskUserRequest, signal?: AbortSignalLike) => Promise<AskUserAnswer>;
+  /** Insert a bracketed paste into the open question's own-answer field; `true` when a question is open (the paste is consumed). */
+  pasteIntoQuestion: (text: string) => boolean;
+  /** Bind whether the question card's exact frame has been acknowledged visible (the host component owns the measurement). */
+  bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
 }
 
 /**
@@ -185,6 +212,15 @@ export function createChatStore(
   let approval: PendingApproval | undefined;
   // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
+  // The open `ask_user` card and the settle pair of its pending promise (ADR-0132).
+  let question: QuestionCardState | undefined;
+  let pendingQuestion:
+    | {
+        readonly resolve: (answer: AskUserAnswer) => void;
+        readonly reject: (reason: Error) => void;
+      }
+    | undefined;
+  let questionVisible: (() => boolean) | undefined;
   let review: ToolReviewState | undefined;
   let toolDisplays = new Map<string, ToolDisplay>();
   let sealed = false;
@@ -202,6 +238,7 @@ export function createChatStore(
     reasoningVisible,
     approval,
     review,
+    question,
     toolDisplays,
     tick: tickCount,
     color,
@@ -215,6 +252,7 @@ export function createChatStore(
       reasoningVisible,
       approval,
       review,
+      question,
       toolDisplays,
       tick: tickCount,
       color,
@@ -306,6 +344,23 @@ export function createChatStore(
     };
   };
 
+  /** Settle the open question with the person's answer (or a skip) and leave a record of it in the transcript. */
+  const settleQuestionWith = (answer: AskUserAnswer): void => {
+    const open = question;
+    const settling = pendingQuestion;
+    if (open === undefined || settling === undefined) return;
+    question = undefined;
+    pendingQuestion = undefined;
+    state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
+    // The transcript entry is built from the answer the card already holds — never from an event (ADR-0132 §6).
+    state = appendNotice(
+      state,
+      stripTerminalControls(questionTranscriptText(open.request, answer)),
+    );
+    settling.resolve(answer);
+    flush();
+  };
+
   return {
     applyToolLiveEvent: (event) => {
       if (sealed) return;
@@ -328,6 +383,15 @@ export function createChatStore(
       review = undefined;
       reviewPage = undefined;
       settleApproval?.({ outcome: 'reject' });
+      // A question still open when the store seals is a CANCEL, never a skip (ADR-0132 §4): the call must be recorded
+      // cancelled and the turn left to its own ending, not told the person declined.
+      if (pendingQuestion !== undefined) {
+        const rejecting = pendingQuestion;
+        question = undefined;
+        pendingQuestion = undefined;
+        state = approvalClosed(state, Date.now());
+        rejecting.reject(abortError());
+      }
       flush();
     },
     openDetails: () => {
@@ -367,6 +431,28 @@ export function createChatStore(
       }
     },
     handleReviewInput: (input, key) => {
+      // An open question card owns the keyboard (ADR-0132 §3): the stop keys abort the turn, a choosing key is applied only
+      // once the card's exact frame has been acknowledged visible, and every other key is consumed.
+      if (question !== undefined) {
+        const action = reduceQuestionKey(question, input, key, questionVisible?.() === true);
+        switch (action.kind) {
+          case 'stop':
+            return 'abort';
+          case 'state':
+            question = action.state;
+            flush();
+            break;
+          case 'submit':
+            settleQuestionWith(action.answer);
+            break;
+          case 'skip':
+            settleQuestionWith({ kind: 'skipped' });
+            break;
+          case 'none':
+            break;
+        }
+        return 'handled';
+      }
       if (review === undefined) return undefined;
       const calls = [...toolDisplays.values()];
       const action = reduceToolReviewKey(
@@ -571,7 +657,82 @@ export function createChatStore(
       settleApproval(answer);
       flush();
     },
+    requestQuestion: (request, signal) =>
+      new Promise<AskUserAnswer>((resolve, reject) => {
+        // One overlay at a time, and never on a sealed store or an already-stopped turn: those are CANCELS.
+        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
+          reject(abortError());
+          return;
+        }
+        if (signal?.aborted === true) {
+          reject(abortError());
+          return;
+        }
+        // Defence in depth: the engine hands over only a validated request, so this is unreachable through the session. A
+        // request that is not plain text would be drawn in the product's own chrome, so it is refused as a host fault.
+        const fault = unshowableRequest(request);
+        if (fault !== undefined) {
+          reject(new Error(fault));
+          return;
+        }
+        const onAbort = (): void => {
+          if (pendingQuestion === undefined) return;
+          question = undefined;
+          pendingQuestion = undefined;
+          state = approvalClosed(state, Date.now());
+          reject(abortError());
+          flush();
+        };
+        signal?.addEventListener('abort', onAbort);
+        pendingQuestion = {
+          resolve: (answer) => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve(answer);
+          },
+          reject: (reason) => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(reason);
+          },
+        };
+        question = initialQuestionCard(request);
+        state = approvalOpened(state, Date.now());
+        flush();
+      }),
+    pasteIntoQuestion: (text) => {
+      if (question === undefined) return false;
+      const next = pasteIntoQuestion(question, text, questionVisible?.() === true);
+      if (next !== question) {
+        question = next;
+        flush();
+      }
+      return true;
+    },
+    bindQuestionVisibility: (visible) => {
+      questionVisible = visible;
+    },
   };
+}
+
+/** Why a request cannot be shown faithfully, or `undefined` when every model-authored string is plain text within its bound. */
+function unshowableRequest(request: AskUserRequest): string | undefined {
+  if (request.questions.length < 1 || request.questions.length > ASK_USER_BOUNDS.questionsPerCall)
+    return 'the question request is empty or too long';
+  for (const question of request.questions) {
+    const strings: readonly (readonly [string, number])[] = [
+      [question.header, ASK_USER_BOUNDS.headerBytes],
+      [question.question, ASK_USER_BOUNDS.questionBytes],
+      ...question.options.flatMap((option): readonly (readonly [string, number])[] => [
+        [option.label, ASK_USER_BOUNDS.labelBytes],
+        [option.description, ASK_USER_BOUNDS.descriptionBytes],
+      ]),
+    ];
+    if (question.options.length < 2 || question.options.length > ASK_USER_BOUNDS.optionsPerQuestion)
+      return 'a question has the wrong number of options';
+    for (const [text, bound] of strings)
+      if (plainTextRefusal(text, bound) !== undefined)
+        return 'the question is not plain text within its bounds';
+  }
+  return undefined;
 }
 
 /** An `AbortError`-named error so a pending-approval rejection is classified as a CANCEL by the registry's
