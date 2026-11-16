@@ -25,6 +25,7 @@ import {
   ASK_USER_LLM_PARAMS,
   ASK_USER_MAX_CALLS_PER_TURN,
   AskUserAnswerError,
+  AskUserAnswerSchema,
   AskUserArgsSchema,
   askUserDisplaySummaryOf,
   buildAnsweredResult,
@@ -1220,11 +1221,14 @@ const askUserTool = defineBuiltin<AskUserRequest>({
         throw cause;
       throw askUserFault('the question could not be shown', cause);
     }
+    // Validate the SHAPE before reading anything from it: a host is code this module does not control, and a stray `null` or
+    // a string where an array belongs must be a fatal host fault, not a TypeError the registry would wrap as recoverable.
+    if (!AskUserAnswerSchema.safeParse(answer).success)
+      throw askUserFault('the host returned a malformed answer');
     if (answer.kind === 'skipped') {
       turn.skipped = true;
       return skippedResult();
     }
-    if (answer.kind !== 'answered') throw askUserFault('the host returned an unknown answer');
     try {
       return buildAnsweredResult(args, answer);
     } catch (cause) {

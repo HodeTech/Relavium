@@ -1056,6 +1056,22 @@ describe('createAgentNodeExecutor — a delegate-backed tool is not OFFERED with
     expect(toolNames()).toEqual(['read_file']);
   });
 
+  it('ADR-0132: a workflow node granted `ask_user` is never offered it — no run-path seam supplies the delegate', async () => {
+    const ASK_USER = BUILTIN_TOOLS.find((d) => d.id === 'ask_user');
+    if (ASK_USER === undefined) throw new Error('the ask_user built-in is missing');
+    const { provider: p, toolNames } = recordingProvider();
+    const exec = createAgentNodeExecutor(deps(p, { tools: [ASK_USER, READ_FILE] }));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({}),
+        resolvedAgent: { ...AGENT, tools: ['ask_user', 'read_file'] },
+      }),
+    );
+    expect((await exec.execute(ctx)).kind).toBe('completed');
+    expect(toolNames()).toEqual(['read_file']); // inert, exactly as `invoke_agent` is
+  });
+
   it('the predicate offers it again once a delegate IS present — the drop is by reason, not by id', () => {
     // The negative control, at the predicate rather than through the executor, because **the run path has no
     // seam to supply the delegate through**: `agent-runner.ts`'s `dispatchContext` literal has no

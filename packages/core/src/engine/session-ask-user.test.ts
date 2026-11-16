@@ -322,6 +322,31 @@ describe('a stop at the card (ADR-0132 §5, ADR-0119)', () => {
     });
   });
 
+  it('a SESSION-ENDING cancel with a card open keeps the ADR-0119 rollback: nothing is retained', async () => {
+    let openCard = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      openCard = resolve;
+    });
+    const delegate: AskUserDelegate = (_request, signal) =>
+      new Promise((_resolve, reject) => {
+        openCard();
+        signal?.addEventListener('abort', () => {
+          const error = new Error('stopped');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    const { session, events } = rig([asks(1), textTurn('never')], delegate);
+    session.start();
+    const running = session.sendMessage('which file?');
+    await opened;
+    session.cancel(); // the session ends — not a turn abort
+    await running.catch(() => undefined);
+    const completed = events.filter((event) => event.type === 'session:turn_completed');
+    expect(completed.every((event) => event.interruption === undefined)).toBe(true);
+    expect(events.some((event) => event.type === 'session:cancelled')).toBe(true);
+  });
+
   it('a delegate that fails (not a stop) ends the turn with a classified error and is never retried', async () => {
     const delegate = vi.fn<AskUserDelegate>(() => Promise.reject(new Error('the card crashed')));
     const { session, events } = rig([asks(1), textTurn('never')], delegate);

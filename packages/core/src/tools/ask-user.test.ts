@@ -8,6 +8,7 @@ import {
   ASK_USER_LLM_PARAMS,
   ASK_USER_MAX_CALLS_PER_TURN,
   ASK_USER_OWN_ANSWER_GLYPH,
+  AskUserAnswerSchema,
   AskUserArgsSchema,
   askUserDisplaySummaryOf,
   buildAnsweredResult,
@@ -19,6 +20,7 @@ import {
   type AskUserRequest,
 } from './ask-user.js';
 import { BUILTIN_TOOLS } from './builtins.js';
+import { delegateAvailable } from './delegates.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
@@ -27,7 +29,13 @@ import {
 } from './errors.js';
 import { createToolRegistry } from './registry.js';
 import { unwrapUntrusted, type Untrusted } from './untrusted.js';
-import type { ToolCallPart, ToolDispatchContext, ToolLiveEvent, ToolResultPart } from './types.js';
+import type {
+  ToolCallPart,
+  ToolDef,
+  ToolDispatchContext,
+  ToolLiveEvent,
+  ToolResultPart,
+} from './types.js';
 
 /* --- helpers --- */
 
@@ -209,7 +217,7 @@ describe('ask_user arguments — plain text is refused, never repaired (ADR-0132
     'a-b',
     '2024 plan',
     '3 files',
-    'x [y] z',
+    'x [z] y',
   ])('accepts ordinary text that only resembles a marker: %s', (text) => {
     expect(refused(args(question({ question: text })))).toBe(false);
   });
@@ -658,5 +666,221 @@ describe('ask_user dispatch (ADR-0132 §1, §4, §5)', () => {
     });
     await registry().dispatch(call(args()), context);
     expect(onDispatchSucceeded).not.toHaveBeenCalled();
+  });
+});
+
+const cp = (...codes: number[]): string => String.fromCodePoint(...codes);
+
+describe('the host draws column 0 — model text cannot forge its rows, ticks or keys (ADR-0132 §2, security sitting)', () => {
+  // A question is hard-wrapped at 78 columns, so a forged row can start at ANY byte of it; the refusals therefore apply
+  // anywhere in the string, not only at its start.
+  it.each([
+    ['the cursor glyph and a chosen tick', '› 1 (•) Approve'],
+    ['a chosen tick shape in the middle of a line', 'Keep my config 1 (•) Overwrite config.toml'],
+    ['an empty tick shape', 'Pick 2 ( ) Keep it'],
+    ['a checked box', 'Todo [x] done'],
+    ['an empty box', 'Todo [ ] open'],
+    ['the own-answer glyph', '✎ Type your own answer…'],
+    ['the field block cursor', 'type here █'],
+    ['a rule made of box-drawing characters', '─ Approval needed ─'],
+    ['a vertical box-drawing bar', '│ looks like a gutter'],
+    ['an approval key token', '[y] approve once'],
+    ['another approval key token', 'press [a] for always'],
+    ['an uppercase key token', 'then [N] to deny'],
+  ])('refuses %s anywhere in a header, question, label or description', (_name, text) => {
+    expect(refused(args(question({ question: text })))).toBe(true);
+    expect(refused(args(question({ header: text })))).toBe(true);
+    expect(
+      refused(args(question({ options: [{ label: 'ok', description: text }, OPTIONS[1]] }))),
+    ).toBe(true);
+    expect(
+      refused(args(question({ options: [{ label: text, description: 'd' }, OPTIONS[1]] }))),
+    ).toBe(true);
+  });
+
+  it('accepts brackets and parentheses that are not the host’s shapes', () => {
+    for (const text of ['arr[i] is fine', 'f(x) and g(y)', 'Use [z] here', 'a (b) c'])
+      expect(refused(args(question({ question: text })))).toBe(false);
+  });
+});
+
+describe('invisible and look-alike characters are refused (ADR-0132 §2, security sitting)', () => {
+  it.each([
+    ['a Hangul filler', `Yes${cp(0x3164)}`],
+    ['a half-width Hangul filler', `Yes${cp(0xffa0)}`],
+    ['a Hangul choseong filler', `Yes${cp(0x115f)}`],
+    ['a combining grapheme joiner', `Yes${cp(0x034f)}`],
+    ['a variation selector after a letter', `Yes${cp(0xfe0f)}`],
+    ['a Mongolian free variation selector', `Yes${cp(0x180b)}`],
+    ['a braille blank', `Yes${cp(0x2800)}`],
+    ['a no-break space', `Type${cp(0x00a0)}your own answer`],
+    ['an ideographic space', `a${cp(0x3000)}b`],
+    ['a thin space', `a${cp(0x2009)}b`],
+  ])('refuses %s', (_name, text) => {
+    expect(refused(args(question({ question: text })))).toBe(true);
+  });
+
+  it('a blank-looking header is refused', () => {
+    expect(refused(args(question({ header: cp(0x3164) })))).toBe(true);
+    expect(refused(args(question({ header: cp(0x2800) })))).toBe(true);
+  });
+
+  it('keeps a variation selector that makes an emoji an emoji', () => {
+    expect(plainTextRefusal(`Love ${cp(0x2764, 0xfe0f)} it`, 150)).toBeUndefined();
+    expect(plainTextRefusal(`Nice ${cp(0x1f44d)}`, 150)).toBeUndefined();
+  });
+
+  it('refuses one character built from many code points — a 50-jamo Hangul run is ONE grapheme and 100 columns wide', () => {
+    expect(plainTextRefusal(cp(...Array<number>(50).fill(0x1100)), 150)).toMatch(
+      /many code points/,
+    );
+    expect(
+      plainTextRefusal(`Keep it? ${cp(...Array<number>(44).fill(0x1100))} ok`, 150),
+    ).toBeDefined();
+  });
+
+  it('admits ordinary multi-code-point characters: a keycap, a flag, a letter with up to three marks', () => {
+    expect(plainTextRefusal(`Press 1${cp(0xfe0f, 0x20e3)}`, 150)).toBeUndefined();
+    expect(plainTextRefusal(`Türkiye ${cp(0x1f1f9, 0x1f1f7)}`, 150)).toBeUndefined();
+    expect(plainTextRefusal(`x${cp(0x302, 0x303, 0x304)}`, 150)).toBeUndefined();
+  });
+
+  it('labels that differ only by whitespace spelling are the same label, and the host row’s words are reserved across spacing', () => {
+    expect(foldLabel('Type  your   own answer')).toBe('type your own answer');
+    expect(
+      refused(
+        args(
+          question({ options: [{ label: 'Type  your own answer', description: 'd' }, OPTIONS[1]] }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      refused(
+        args(
+          question({
+            options: [
+              { label: 'a  b', description: 'd' },
+              { label: 'A B', description: 'd' },
+            ],
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('what a host may hand back (ADR-0132 §4)', () => {
+  const dispatchWith = (returned: unknown) => {
+    const context = ctx({
+      askUser: () => returned as Promise<AskUserAnswer>,
+      askUserTurn: newAskUserTurnState(),
+    });
+    return registry()
+      .dispatch(call(args()), context)
+      .catch((e: unknown) => e);
+  };
+
+  it.each([
+    ['null', Promise.resolve(null)],
+    ['a bare kind', Promise.resolve({ kind: 'answered' })],
+    ['a null answer entry', Promise.resolve({ kind: 'answered', answers: [null] })],
+    ['an entry with no selection', Promise.resolve({ kind: 'answered', answers: [{}] })],
+    [
+      'own text that is not a string',
+      Promise.resolve({ kind: 'answered', answers: [{ selected: [], other: 5 }] }),
+    ],
+    [
+      'a selection that is a string',
+      Promise.resolve({ kind: 'answered', answers: [{ selected: 'Alpha' }] }),
+    ],
+    ['an extra key', Promise.resolve({ kind: 'skipped', note: 'x' })],
+    ['not a promise at all', 'answered'],
+  ])('%s is a host fault: fatal, not recoverable, not retryable', async (_name, returned) => {
+    const error = await dispatchWith(returned);
+    expect(error).toBeInstanceOf(ToolExecutionError);
+    expect((error as ToolExecutionError).retryable).toBe(false);
+    expect((error as ToolExecutionError).recoverable).toBe(false);
+  });
+
+  it('the shape check itself accepts exactly the two documented answers', () => {
+    expect(AskUserAnswerSchema.safeParse({ kind: 'skipped' }).success).toBe(true);
+    expect(
+      AskUserAnswerSchema.safeParse({
+        kind: 'answered',
+        answers: [{ selected: ['a'], other: 'b' }],
+      }).success,
+    ).toBe(true);
+    expect(AskUserAnswerSchema.safeParse({ kind: 'declined' }).success).toBe(false);
+  });
+});
+
+describe('the display-summary hook is for first-party results only (ADR-0132 §6)', () => {
+  const hooked = (source: 'builtin' | 'mcp', summary: () => string): ToolDef => ({
+    id: 'probe_tool',
+    source,
+    description: 'a probe',
+    parseArgs: () => ({}),
+    llmVisibleParams: { type: 'object', properties: {}, additionalProperties: false },
+    policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+    displaySummary: summary,
+    dispatch: () => Promise.resolve({ secret: 'THE-PERSONS-WORDS' }),
+  });
+  const run = (def: ToolDef) =>
+    createToolRegistry({ tools: [def], host: {} }).dispatch(
+      { type: 'tool_call', id: 'c', name: 'probe_tool', args: {} },
+      ctx({ grantedToolIds: new Set(['probe_tool']) }),
+    );
+
+  it('a built-in hook replaces the derived summary', async () => {
+    expect(
+      (await run(hooked('builtin', () => 'a closed phrase'))).events.result.outputSummary,
+    ).toBe('a closed phrase');
+  });
+
+  it('a hook that THROWS yields a fixed phrase, never the exception text', async () => {
+    const outcome = await run(
+      hooked('builtin', () => {
+        throw new Error('THE-PERSONS-WORDS leaked via the exception');
+      }),
+    );
+    expect(outcome.events.result.outputSummary).toBe('completed');
+  });
+
+  it.each([
+    ['too long', 'x'.repeat(65)],
+    ['multi-line', 'two\nlines'],
+    ['non-ASCII', 'café'],
+    ['empty', ''],
+  ])('a hook result that is %s is not shown', async (_name, summary) => {
+    expect((await run(hooked('builtin', () => summary))).events.result.outputSummary).toBe(
+      'completed',
+    );
+  });
+
+  it('a non-built-in tool cannot replace the masked, bounded summary with its own text', async () => {
+    const outcome = await run(hooked('mcp', () => 'chosen by the server'));
+    expect(outcome.events.result.outputSummary).not.toBe('chosen by the server');
+  });
+});
+
+describe('both delegate fields gate the offer (ADR-0132 §1, CR-73)', () => {
+  const askDef = BUILTIN_TOOLS.find((tool) => tool.id === 'ask_user');
+  it('is offered only when the delegate AND the per-turn state are both present', () => {
+    if (askDef === undefined) throw new Error('missing built-in');
+    const delegate: AskUserDelegate = () => Promise.resolve({ kind: 'skipped' });
+    expect(delegateAvailable(askDef, {})).toBe(false);
+    expect(delegateAvailable(askDef, { askUser: delegate })).toBe(false);
+    expect(delegateAvailable(askDef, { askUserTurn: newAskUserTurnState() })).toBe(false);
+    expect(
+      delegateAvailable(askDef, { askUser: delegate, askUserTurn: newAskUserTurnState() }),
+    ).toBe(true);
+  });
+});
+
+describe('the model-facing description (ADR-0132 §6)', () => {
+  it('is pinned word for word', () => {
+    expect(ASK_USER_DESCRIPTION).toBe(
+      'Ask the user a question only they can answer: a choice between real alternatives, a preference, or a requirement you cannot find by reading files. Give two to four options with a short description each; do not add an "Other" option, because the user can always type their own answer. Ask up to four related questions in one call. Keep each question to at most 150 bytes, labels to 60, descriptions to 72 and headers to 24, in plain text with no control characters. Do not start any of them with a list marker such as `1.`, `-`, `>` or `[x]`, and do not use box-drawing or tick glyphs, `[y]`-style key tokens, zero-width or invisible characters, leading or trailing spaces, or non-NFC text. Never ask for a password, token or other secret. Do not use this to ask permission: approval of writes and commands is requested by the system, and an answer here changes no permission. The answer is available only during this turn, so state any decision you rely on in your reply; later turns do not see it.',
+    );
   });
 });

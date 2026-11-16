@@ -41,10 +41,41 @@ export const ASK_USER_OWN_ANSWER_GLYPH = '✎';
 // zero-width characters and joiners, tag characters, the byte-order mark), line and paragraph separators,
 // private-use, unassigned and unpaired-surrogate code points.
 const FORBIDDEN_CODE_POINT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cs}\p{Cn}]/u;
+// Invisible or zero-width code points that are NOT format characters (Hangul filler, combining grapheme joiner, variation
+// selectors, Mongolian free variation selectors, …): `string-width` counts them 0 columns while a terminal may draw them wide,
+// and two labels differing only by one render identically. A variation selector-16 after a pictographic base is what makes an
+// emoji an emoji, so exactly that is admitted. The braille blank is not default-ignorable but draws as nothing.
+const EMOJI_PRESENTATION = new RegExp(
+  `(?<=\\p{Extended_Pictographic})${String.fromCodePoint(0xfe0f)}|${String.fromCodePoint(0xfe0f)}(?=${String.fromCodePoint(0x20e3)})`,
+  'gu',
+);
+const INVISIBLE_LETTER = new RegExp(
+  `[\\p{Default_Ignorable_Code_Point}${String.fromCodePoint(0x2800)}]`,
+  'u',
+);
+// Only the ASCII space separates words: every other space (no-break, ideographic, thin, …) can pass for one and for a
+// differently-spelled twin of the same label.
+const NON_ASCII_SPACE = /\p{Zs}/u;
 const COMBINING_RUN = /\p{M}{4,}/u;
+/** A single grapheme cluster built from more than this many code points is refused (a 50-jamo Hangul run is ONE grapheme). */
+const MAX_CODE_POINTS_PER_GRAPHEME = 4;
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 // A marker a list could draw, which a model could use to impersonate the host's own numbers and ticks.
 const LIST_MARKER_PREFIX =
   /^(?:[0-9]{1,2}[.)](?:\s|$)|\[[ xX*✓✔]?\]|\([ xX*•]?\)|[-*•·▪‣◦>](?:\s|$))/u;
+// The host's own drawing, refused ANYWHERE in model text — not only at the start: a question is hard-wrapped, so a forged
+// row can begin at any byte. The cursor, the own-answer glyph, the field's block cursor, the box-drawing range the rules
+// are made of, the exact tick shapes of a row, and the approval card's single-key tokens.
+const HOST_GLYPH = /[›✎█─-╿]/u;
+const HOST_TICK_SHAPE = /\((?:•| )\)|\[(?:[xX]| )\]/u;
+const APPROVAL_KEY_TOKEN = /\[[yYaAnNcCvV]\]/u;
+
+/** True when some grapheme cluster of `value` is built from more than {@link MAX_CODE_POINTS_PER_GRAPHEME} code points. */
+function hasOversizedGrapheme(value: string): boolean {
+  for (const { segment } of GRAPHEMES.segment(value))
+    if ([...segment].length > MAX_CODE_POINTS_PER_GRAPHEME) return true;
+  return false;
+}
 
 /** The reason a model-authored string is refused, or `undefined` when it can be shown exactly as written. */
 export function plainTextRefusal(value: string, maxBytes: number): string | undefined {
@@ -54,10 +85,17 @@ export function plainTextRefusal(value: string, maxBytes: number): string | unde
     return `must contain at most ${maxBytes} UTF-8 bytes`;
   if (FORBIDDEN_CODE_POINT.test(value))
     return 'must be plain text without control or format characters';
+  if (INVISIBLE_LETTER.test(value.replace(EMOJI_PRESENTATION, '')))
+    return 'must not contain invisible characters';
+  if (NON_ASCII_SPACE.test(value.replaceAll(' ', '')))
+    return 'must separate words with an ordinary space only';
   if (COMBINING_RUN.test(value)) return 'must not stack more than three combining marks';
+  if (hasOversizedGrapheme(value)) return 'must not build one character from many code points';
   if (value.normalize('NFC') !== value) return 'must be NFC-normalised';
   if (value !== value.trim()) return 'must not start or end with whitespace';
-  if (LIST_MARKER_PREFIX.test(value)) return 'must not start with a list or tick marker';
+  if (LIST_MARKER_PREFIX.test(value)) return 'must not start with a list marker';
+  if (HOST_GLYPH.test(value) || HOST_TICK_SHAPE.test(value) || APPROVAL_KEY_TOKEN.test(value))
+    return "must not draw the host's own glyphs, tick shapes or approval keys";
   return undefined;
 }
 
@@ -70,7 +108,7 @@ function plainText(maxBytes: number): z.ZodType<string, z.ZodTypeDef, unknown> {
 
 /** The comparison key for label uniqueness and reservation: NFC, trimmed, locale-independently case-folded. */
 export function foldLabel(label: string): string {
-  return label.normalize('NFC').trim().toLowerCase();
+  return label.normalize('NFC').trim().toLowerCase().replace(/\s+/gu, ' ');
 }
 
 const ReservedLabel = (label: string): boolean => {
@@ -198,7 +236,9 @@ export const ASK_USER_DESCRIPTION =
   'add an "Other" option, because the user can always type their own answer. Ask up to four related questions in one ' +
   `call. Keep each question to at most ${ASK_USER_BOUNDS.questionBytes} bytes, labels to ${ASK_USER_BOUNDS.labelBytes}, ` +
   `descriptions to ${ASK_USER_BOUNDS.descriptionBytes} and headers to ${ASK_USER_BOUNDS.headerBytes}, in plain text ` +
-  'with no control characters. Never ask for a password, token or other secret. Do not use this to ask permission: ' +
+  'with no control characters. Do not start any of them with a list marker such as `1.`, `-`, `>` or `[x]`, and do not ' +
+  'use box-drawing or tick glyphs, `[y]`-style key tokens, zero-width or invisible characters, leading or trailing ' +
+  'spaces, or non-NFC text. Never ask for a password, token or other secret. Do not use this to ask permission: ' +
   'approval of writes and commands is requested by the system, and an answer here changes no permission. The answer ' +
   'is available only during this turn, so state any decision you rely on in your reply; later turns do not see it.';
 
@@ -216,6 +256,24 @@ export interface AskUserQuestionAnswer {
 export type AskUserAnswer =
   | { readonly kind: 'answered'; readonly answers: readonly AskUserQuestionAnswer[] }
   | { readonly kind: 'skipped' };
+
+/**
+ * The shape check on what a host returns. A host is code we do not control from this module (a desktop or editor surface is
+ * another team's), and a stray `null`, a string where an array belongs or a non-promise would otherwise surface as a raw
+ * `TypeError` that the registry wraps as RECOVERABLE and RETRYABLE — which on a chat surface hands the model a failure it may
+ * answer by reopening the card. Used only as a validator: the typed answer the host returned is what is read afterwards.
+ */
+export const AskUserAnswerSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('answered'),
+      answers: z.array(
+        z.object({ selected: z.array(z.string()), other: z.string().optional() }).strict(),
+      ),
+    })
+    .strict(),
+  z.object({ kind: z.literal('skipped') }).strict(),
+]);
 
 /**
  * The host's question delegate (`SessionDeps.askUser`). It resolves, or rejects with an `AbortError`; any other

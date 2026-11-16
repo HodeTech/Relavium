@@ -113,7 +113,9 @@ function asReplayEnvelope(
 /** Run a tool's own display-summary function; a throw yields a fixed phrase, never the exception's text. */
 function contentFreeSummary(summarize: (result: unknown) => string, result: unknown): string {
   try {
-    return summarize(result);
+    const summary = summarize(result);
+    // A hook returns a short closed phrase. Anything else — long, multi-line, non-ASCII — is not one, and is not shown.
+    return /^[\x20-\x7e]{1,64}$/u.test(summary) ? summary : 'completed';
   } catch {
     return 'completed';
   }
@@ -571,7 +573,7 @@ async function dispatch(
         // A tool whose result carries a person's own words supplies its own content-free summary (ADR-0132 §6); the
         // derived one would be a masked, truncated COPY of those words. It replaces the summary only — never the
         // value the model receives.
-        if (def.displaySummary !== undefined)
+        if (def.displaySummary !== undefined && def.source === 'builtin')
           bounded = { ...bounded, summary: contentFreeSummary(def.displaySummary, output) };
         if (
           def.source === 'builtin' &&
