@@ -475,7 +475,7 @@ describe('ADR-0119 restored interrupted turns', () => {
       [{ reason: 'aborted' }, 'Interrupted — the user stopped it'],
       [{ reason: 'failed', code: 'provider_auth' }, 'Interrupted — it failed (provider_auth)'],
       [{ reason: 'denied' }, 'Interrupted — a tool call was refused and the turn ended'],
-      [{ reason: 'turn_limit' }, 'Interrupted — it reached the limit on tool rounds'],
+      [{ reason: 'turn_limit' }, 'Interrupted — it reached a limit on tool use'],
     ];
     for (const [interruption, expected] of cases) {
       const entries = restore(interrupted(0, interruption), new Map([[0, 'shown']]));
@@ -486,7 +486,19 @@ describe('ADR-0119 restored interrupted turns', () => {
   it('does not mistake a crash remnant for an interrupted turn', () => {
     // User + structural rows with NO terminal: ADR-0095's remnant, still omitted from the restored view.
     const remnant = interrupted(0, { reason: 'aborted' }).slice(0, 3);
-    const entries = restore(remnant, new Map([[0, 'shown']]));
+    const looked: number[][] = [];
+    const entries = restoreSessionTranscript({
+      messages: remnant,
+      memory: undefined,
+      transcriptBound: FULLSCREEN_TRANSCRIPT_BOUND,
+      readDisplay: (sequences) => {
+        looked.push([...sequences]);
+        return new Map([[0, 'shown']]);
+      },
+    });
+    // The remnant is invisible: no interrupted row, no user line, and no display lookup for its sequence.
     expect(JSON.stringify(entries)).not.toContain('Interrupted —');
+    expect(entries.some((entry) => entry.role === 'user')).toBe(false);
+    expect(looked.flat()).not.toContain(0);
   });
 });

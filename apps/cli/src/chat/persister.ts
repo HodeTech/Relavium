@@ -14,6 +14,7 @@ import {
 } from '@relavium/db';
 import {
   completedSessionTurns,
+  interruptionMatchesTurnCompleted,
   type AgentSessionRecord,
   type SessionContext,
   type SessionMessage,
@@ -415,6 +416,13 @@ export function createSessionPersister(
         return;
       }
       case 'session:turn_completed':
+        // ADR-0119: the interruption row is written iff the event carries `interruption`, so the persister must not
+        // trust one the event contradicts (an engine bug). Fail closed and loudly, like any failed durable write: the
+        // latch stops further egress and the user is told, instead of persisting a row the event disagrees with.
+        if (!interruptionMatchesTurnCompleted(event))
+          persistDurably(() => {
+            throw new Error('a retained turn\u2019s interruption contradicts its completion event');
+          });
         // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
         // `stopReason:'aborted'`, ADR-0057) are rolled back by the engine (`#messages.pop()`), so persisting
         // their rows would orphan a user message with no in-memory counterpart on chat-resume. Gating on

@@ -1086,7 +1086,7 @@ describe('createSessionPersister', () => {
       expect(persister.hasSavedTurns).toBe(false);
     });
 
-    it('persists an abort that landed after a provider engaged, and none that landed before one', async () => {
+    it('persists an abort that landed after a provider engaged', async () => {
       const { built, persister } = await setup(
         scriptedResolver([
           [
@@ -1113,6 +1113,94 @@ describe('createSessionPersister', () => {
         'system',
       ]);
       expect(full?.messages.at(-1)?.interruption).toEqual({ reason: 'aborted' });
+    });
+
+    it('rolls the whole turn back when the transaction fails on its LAST row (a real database failure, not a mocked store)', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      const realWriteTurn = store.writeTurn.bind(store);
+      // Give the interruption row the user row's sequence number: the user, call and result rows insert fine and the
+      // LAST insert violates the (session, sequence) uniqueness, so only a real transaction rollback leaves nothing.
+      vi.spyOn(store, 'writeTurn').mockImplementationOnce((input) =>
+        realWriteTurn({
+          ...input,
+          messages: input.messages.map((entry, index, all) =>
+            index === all.length - 1
+              ? { ...entry, message: { ...entry.message, sequenceNumber: 0 } }
+              : entry,
+          ),
+        }),
+      );
+      persister.beginUserTurn('read it');
+      await built.session.sendMessage('read it');
+      expect(store.loadMessages('sess-1')).toHaveLength(0);
+      expect(persister.durabilityFailure).toBeInstanceOf(Error);
+      expect(persister.hasSavedTurns).toBe(false);
+    });
+
+    it('stores no partial answer text for an aborted turn', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([textTurn('PARTIAL-VISIBLE-ANSWER and more words')]),
+      );
+      persister.start();
+      built.session.start();
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (event.type === 'agent:token') built.session.abort();
+      });
+      persister.beginUserTurn('stop while you talk');
+      await built.session.sendMessage('stop while you talk');
+      unsubscribe();
+      const rows = store.loadMessages('sess-1');
+      expect(rows.map((row) => row.role)).toEqual(['user', 'system']);
+      expect(rows[1]?.interruption).toEqual({ reason: 'aborted' });
+      expect(JSON.stringify(rows)).not.toContain('PARTIAL-VISIBLE-ANSWER');
+    });
+
+    it('counts an interrupted-only session as having saved turns when it is adopted', async () => {
+      const first = await setup(scriptedResolver(toolThenFailure()));
+      first.persister.start();
+      first.built.session.start();
+      first.persister.beginUserTurn('read it');
+      await first.built.session.sendMessage('read it');
+      first.persister.close();
+      const adopted = await setup(scriptedResolver([]), undefined, 'adopt');
+      adopted.persister.start();
+      expect(adopted.persister.hasSavedTurns).toBe(true);
+      adopted.persister.close();
+    });
+
+    it('maps a trim boundary over an interrupted turn: the retained suffix keeps it, a resume sees it', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([textTurn('r1'), ...toolThenFailure(), textTurn('r3')]),
+      );
+      persister.start();
+      built.session.start();
+      for (const text of ['q1', 'q2 interrupted', 'q3']) {
+        persister.beginUserTurn(text);
+        await built.session.sendMessage(text);
+      }
+      // 5 in-memory messages (q1 a1 q2 q3 a3): keeping 3 keeps q2's turn and q3's, and drops q1's.
+      expect(built.session.trimHistory(3)).toMatchObject({ kind: 'trimmed' });
+      const messages = store.loadMessages('sess-1');
+      const marker = messages.find((message) => message.compaction !== undefined);
+      const q1Terminal = messages.find(
+        (message) => message.role === 'assistant' && message.content[0]?.type === 'text',
+      );
+      expect(marker?.compaction?.droppedThroughSequence).toBe(q1Terminal?.sequenceNumber);
+      const state = reconstructSessionState(
+        store.loadFull('sess-1')?.session as AgentSessionRecord,
+        messages,
+      );
+      expect(state.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'q2 interrupted' },
+        { type: 'text', text: 'q3' },
+        { type: 'text', text: 'r3' },
+      ]);
+      expect(state.completedTurnSpans.map((span) => span.interruption?.reason)).toEqual([
+        'failed',
+        undefined,
+      ]);
     });
 
     it('maps a later compaction boundary over the interruption row as a turn slot', async () => {
