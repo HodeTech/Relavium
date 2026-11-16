@@ -70,7 +70,7 @@ stateDiagram-v2
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
 | **sendMessage** | Append the pending user to the **working transcript**, run one assistant turn through the shared turn core (streaming + tool-call loop), and retain the final assistant **text** on success. The host atomically persists the completed turn's [durable messages](#session-messages), including content-free tool structure and an explicit terminal even for empty final text. Working context excludes tool pairs; carrying them to a later request is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). The request instead carries bounded, content-free [receipts](#content-free-action-receipts--adr-0128) of earlier completed turns' recorded calls and outcomes ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)). |
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
-| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), and return to `idle`. A turn a provider had engaged in is **retained** as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md): the event carries `interruption: { reason: 'aborted' }`); one aborted before any provider engaged rolls its pending user message back. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
+| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), and return to `idle`. A turn the provider had already **accepted** (it returned at least one stream chunk) is **retained** as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md): the event carries `interruption: { reason: 'aborted' }`); an abort before the provider returned anything rolls its pending user message back (see [Interrupted turns](#interrupted-turns--adr-0119), *Not retained*). **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
@@ -326,12 +326,12 @@ note.
 
 ### Interrupted turns — ADR-0119
 
-**Status: implemented on `development` (MVP-3c, 2026-11-16); the accepting D64 round and the final gates are owed (see the phase register).**
+**Status: implemented on `development` (MVP-3c, 2026-11-16); D64 rounds 1–4 are done; the final gate run and the maintainer's acceptance are owed (see the phase register).**
 A session-ending cancel, a crash and an unclassified throw are still rolled back and forgotten (below).
 [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
 section owns the contract.
 
-**What is retained.** A turn the session accepted, in which a provider engaged (the predicate that counts a turn
+**What is retained.** A turn the session accepted, in which a provider engaged and returned content (engagement is the predicate that counts a turn
 against the hard cap), that ended by the turn-level abort or a classified error. The engine says so on the event:
 `session:turn_completed.interruption = { reason, code? }`, together with the additive `toolHistory`. The
 persister writes the interruption row **iff** the event carries `interruption`.
@@ -346,12 +346,15 @@ persister writes the interruption row **iff** the event carries `interruption`.
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
 unclassified throw, a refusal before the message was accepted (including the **session hard cap**, whose
 `turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), a turn in which no provider
-engaged, a turn that ended **before the provider returned any content** — a refusal under any error code
+engaged, a non-streaming (media-out) turn — it has no chunk stream, so it is never retained — a turn that ended **before the provider returned any content** — a refusal under any error code
 (`context_overflow`, `content_filter`, `validation`, a token-per-minute `429`, a timeout), an Esc before the first stream
 chunk, or an Esc during overflow recovery (the provider never accepted the request, and keeping it would resend a message
 it may refuse again in every later request; compaction and trim never fold the latest exchange) — a turn in which the
 engine cannot vouch for its tool list (a dispatched call could not be recorded, or an observer or host callback
-faulted), and an abort that coincided with a raw throw.
+faulted), an abort that coincided with a raw throw, and a turn that ended in `context_overflow` with no tool run (the message
+does not fit the window, even if the error arrives after the first chunk, and resending it plus the note would overflow every
+later turn). A refusal the adapter reports as a *stop reason* rather than an error (a blocked prompt that "completes" with an
+empty answer) is a completed turn and is kept, as it was before this increment.
 
 **Rows.** `user → (assistant(tool_call) → tool)* → system(interruption)`. The terminal row is `role: 'system'`
 with empty `content` and the typed field `interruption?: { reason, code? }` (strict; only on a `system` row,

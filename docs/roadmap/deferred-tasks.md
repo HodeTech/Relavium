@@ -2313,7 +2313,12 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
         allowance to the model it was quoted for, and expiring it, stay deferred behind that refusal.
       *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
 
-- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* Recorded
+- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* **NARROWED
+      2026-11-16 by [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c, implemented,
+      acceptance pending): a turn the provider accepted that ends by the abort or a classified error is now persisted as the
+      user's message, its structural pairs and one interruption row; what still persists nothing is listed in that ADR's
+      implementation note and the session spec's *Not retained* list — read the paragraph below as the pre-ADR-0119
+      record.** Recorded
       2026-09-18, because [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md)'s Negative
       section calls it "recorded as a residual" and no record existed. The engine rolls the user message back and
       the persister writes no row, so a turn that dispatched a tool and then failed leaves no transcript trace at
@@ -4190,7 +4195,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
 - [ ] **ADR-0119 — hardening: latch an interruption event that arrives with no pending user message.** The persister fails
   closed on a contradictory event but writes nothing, without a latch, when `interruption` is set and `beginUserTurn` was never
   called (completed turns behave the same today; every production caller calls it). *(low · apps/cli/src/chat/persister.ts)*
-- [ ] **A way to remove an interrupted turn (the removal path ADR-0119 names).** An Esc after a provider engaged now keeps the
+- [ ] **A way to remove an interrupted turn (the removal path ADR-0119 names).** An Esc after the provider returned its first chunk now keeps the
   user's message — and anything they pasted or `@`-mentioned — in `history.db`, in every later request of the session and
   in the `/export` file's `metadata.relaviumExport.messages` (and possibly the session title and export file name);
   ADR-0119 points at `/rewind` (2.6.E), which does not exist, and the CLI has no session delete. Until a removal path ships,

@@ -839,7 +839,7 @@ fixed as the fact rule below). The controls below hold across the three.
 | A call that executed is recorded **before** any event is emitted, and a turn whose executed call could not be recorded is not retained (the next request would otherwise say "no tool call was recorded") | `session-interruption.test.ts`, with mutants of the ordering and of the uncertainty rule |
 | The restored transcript's "Interrupted" row is built from the closed phrase table, never from stored text | `restored-transcript.test.ts` |
 
-**Accepted residual (maintainer's to rule).** An Esc after a provider engaged — nearly every Esc — now writes the
+**Accepted residual (maintainer's to rule).** An Esc after the provider returned its first chunk — nearly every Esc past the first token — now writes the
 user's message (and its display text, and possibly the session title) to the unencrypted `history.db`, and the text is
 resent in every later request of that session. Before ADR-0119 an aborted turn left nothing. ADR-0119 names `/rewind`
 as the remedy, but `/rewind` (2.6.E) does not exist and the CLI has no session-delete command, so a user who pasted

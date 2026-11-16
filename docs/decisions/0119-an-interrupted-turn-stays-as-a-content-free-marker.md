@@ -308,7 +308,11 @@ here and the original text stays, because accepted ADRs are append-only.
   resend a message the provider may refuse again in every later request, and compaction and trim never fold the latest
   exchange, so a pasted file larger than the window would fail every later turn and survive a resume (found by the engine
   review and the round-2 sitting as a code-by-code rule, then by the round-3 sitting as the same defect under other codes and
-  an early Esc; the fix is the fact, not a code list). The hard-cap counter is unchanged: the request was sent, so the turn is
+  an early Esc; the fix is the fact, not a code list). A `context_overflow` with no tool run is also rolled back when it
+  arrives AFTER the first chunk: it is a statement about the message's size, and resending the message plus the note and
+  the next one would overflow every later turn. A non-streaming media-out turn has no chunk stream and is never retained.
+  A refusal an adapter reports as a stop reason (a blocked prompt that "completes" with an empty answer) is a completed
+  turn and is kept, as before this ADR (pre-existing). The hard-cap counter is unchanged: the request was sent, so the turn is
   still counted. A real-provider Esc that lands before the first token is therefore rolled back, which the earlier sample
   (taken before this rule) showed retained.
 - **A host callback or observer fault at a raw emit site is not retained**, the same as an unclassified throw: the engine

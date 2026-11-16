@@ -5564,14 +5564,14 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1 and 2 and two security sittings are done and their fixes are in; the accepting round and the final gates are owed. MVP-3d is not started.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the final gate run and the maintainer's acceptance are owed. MVP-3d is not started.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
 review table. The material changes: the marker is a typed `interruption` row field stored in two `CHECK`-constrained columns
 (one migration), **not** a new content part; the turn core carries the settled tool history out of an error path and records an
 in-flight call as `cancelled` (ADR-0128's "unknown", its first live producer); the model sees ADR-0128's receipts block plus one
-fixed, pinned sentence with no tool names of its own; a turn is retained only when a provider engaged, so the live and restored
+fixed, pinned sentence with no tool names of its own; a turn is retained only when a provider engaged and (the round-3 rule) accepted the request, so the live and restored
 hard-cap counts agree; session-ending cancellation, process death and unclassified throws keep today's rollback; ADR-0115 is not
 a dependency. Work list: shared schema and `session:turn_completed.interruption`; the migration and store; the turn core's
 channel and `cancelled` entry; `AgentSession` retention and spans; request rendering and receipt byte accounting; resume and
@@ -5611,7 +5611,7 @@ sitting and the deferred ledger.
 **D64 round 2 (2026-11-16, `development` at d195039d).** Four fresh reviewers — the engine; persistence, resume and the CLI surfaces;
 the honesty of tests and claims; and a second separate security sitting (opus) — found **no blocker or high finding**. The engine
 review reported one **medium** and the honesty review four; the persistence review and the security sitting found none (two and
-four lows). Substantive findings, all addressed: a turn the provider refused for its own content with no tool run was
+four lows; the round-2 sitting rated the refused-turn availability defect low where the engine review rated it medium). Substantive findings, all addressed: a turn the provider refused for its own content with no tool run was
 retained, so a message larger than the window would fail every later turn — compaction and trim never fold the latest exchange;
 the engine review and the security sitting found it independently, and the first fix rolled such turns back by error code
 (superseded by the round-3 rule below); the persister's fail-closed check, the export's legacy-prefix carry, the summariser's truncation path, the event helper's
@@ -5644,9 +5644,9 @@ ADR-0057's pointer (a dated update) and the remaining status lines are corrected
 turn's single notice, the restored unit size and the window notice wording. Recorded and **not** changed: the abort branch's
 `instanceof` classification and the live parse have no producible failing input (defence in depth), a stored `content` column on
 an interruption row is not covered by the `CHECK` (the loader refuses it), and an Esc at an approval card is recorded `cancelled`
-("outcome unknown") although the tool never ran (ADR-0128's vocabulary; deferred). A fourth round, on the final source, accepts
-or rejects the increment.
+("outcome unknown") although the tool never ran (ADR-0128's vocabulary; deferred). A fourth round, on the final source, follows.
 
+**D64 round 4 (2026-11-16, `development` at 65812b07).** Four fresh reviewers again. The engine and persistence reviews found **no blocker, high or medium** (two lows each: stale "engaged" comments, the media-out path never setting `contentReceived`); a fuzz of 20,000–60,000 row sequences per generator and a 21-row forged-loader probe found no disagreement, and the loader, migration, persister, disclosure and export paths held. The security sitting found **no blocker, high or medium** and two lows: a `context_overflow` that arrives after the first chunk with no tool run shows the message sits at the window edge and would overflow every later turn (now rolled back — a narrow rule, because overflow is a statement about the message's size, not about the model's work), and a refusal the adapter reports as a *stop reason* (a blocked prompt) completes as a normal turn and is kept, as before this increment (a pre-existing behaviour; the contract text now says so). The honesty review found **one medium** — the round-3 "provider accepted" rule had not reached the spec's `abort` row, the SSE schema, `chat-session.md` and three code comments, which still said an Esc after the request was *sent* is kept — fixed with the lows (a mismatched status line, a ledger entry left unnarrowed, a test title, a broken link, tests for a reasoning-first stream, the tool-calls-per-response ceiling, a pre-egress refusal and the overflow-after-content rule). Recorded, not changed: non-streaming media-out turns are never retained (no chunk stream; no tool loop; rollback is the safe default and the spec says so); a lone `stop` chunk counts as content (the provider answered with a terminal; the chain's separate "content committed" notion is stricter). The gates are re-run on the final source after these fixes.
 **Mutation evidence, stated precisely.** The author's mutants of the new production logic (retention predicate, reason mapping,
 span push, event field, rollback on a refusing sink, resume length check, rebase, abort retention, in-flight outcome, sentence,
 calls clause, summariser, reconstruct, export, the uncertainty rule and its two call sites, the recording order, the persister
