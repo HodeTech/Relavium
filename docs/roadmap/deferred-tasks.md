@@ -4177,17 +4177,17 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); **implemented on
   `development` the same day** (shared field and event, migration `0021`, turn-core history channel, `AgentSession`
   retention, persister, restored transcript, export, effect-journal disclosure), every new behaviour mutation-checked.
-  **Gates and a two-provider real sample have run** (see the phase register; `smoke:cli-package` and `check:map-controls`
-  are owned by the platform CI legs). **Still owed (D64):** two independent review rounds with no blocker/high/medium
-  finding and a separate resume-path security sitting. Work list in the
+  **Round 1, the separate security sitting, the gates (before the fixes) and a two-provider real sample have run** (see the
+  phase register; `smoke:cli-package` and `check:map-controls` are owned by the platform CI legs). **Still owed (D64):** the
+  accepting round (no blocker/high/medium finding) and a re-run of the gates after the fixes. Work list in the
   [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16).
   *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
-- [ ] **ADR-0128 — a SUCCESSFUL turn after an overflow retry lists only the retry's tool calls.** Found while building
-  ADR-0119: the retry restarts the engine's tool ordinals, so the two attempts' histories cannot be merged by id, and
-  the success path keeps the retry's list alone — calls the first attempt had already dispatched are not listed, and
-  the request does not say so. ADR-0119's failed path reports such a history as unknown ("may not be listed"); give the
-  success path the same disclosure (mark the turn's receipts incomplete when the first attempt dispatched calls).
-  *(low · packages/core/src/engine/agent-session.ts `#runTurn`)*
+- [ ] **A way to remove an interrupted turn (the removal path ADR-0119 names).** An Esc after a provider engaged now keeps the
+  user's message — and anything they pasted or `@`-mentioned — in `history.db` and in every later request of the session;
+  ADR-0119 points at `/rewind` (2.6.E), which does not exist, and the CLI has no session delete. Until a removal path ships,
+  the residual recorded in the security-review sitting stands. Needs: `/rewind` or "discard the last interrupted turn", and
+  a decision whether Esc should keep the turn when the user's message carried `@`/`!` content. *(medium · privacy ·
+  docs/standards/security-review.md, apps/cli/src/chat/persister.ts)*
 - [ ] **`ask_user` — a structured mid-turn question with options, free text and multi-select (MVP-3d, after MVP-3c).**
   Decided 2026-11-16 to move up from "after v0.2.1". Nothing is implemented; the design in the phase register omits
   multi-select. Starts with an ADR (shape, engine pause, interrupted-pause recording, docked card, sanitization, "an answer

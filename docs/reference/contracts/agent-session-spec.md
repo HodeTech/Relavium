@@ -336,7 +336,7 @@ persister writes the interruption row **iff** the event carries `interruption`.
 |---|---|---|
 | `stopReason: 'aborted'`, no error | `aborted` | absent |
 | `error.code = tool_denied` | `denied` | absent |
-| `error.code = turn_limit` from the within-turn `maxToolTurns` guard | `turn_limit` | absent |
+| `error.code = turn_limit` from a within-turn limit (the `maxToolTurns` guard, the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
 | any other classified error | `failed` | the `ErrorCode` literal |
 
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
@@ -353,7 +353,7 @@ rollback. The interruption row's sequence is the turn's boundary slot; `resumabl
 message only. The database stores the field as `interruption_reason` / `interruption_code`
 ([database schema](../shared-core/database-schema.md#interruption-rows--adr-0119)).
 
-**Request grammar.** The turn's user message is followed, in the same text part and separated by a blank line, by
+**Request grammar.** The turn's user message is followed, in a separate text part that begins with a blank line, by
 (1) ADR-0128's receipts block when the turn recorded calls, then (2) this fixed sentence (at most 420 bytes; not
 subject to the receipt caps; never an "applied" claim):
 
@@ -366,7 +366,7 @@ subject to the receipt caps; never an "applied" claim):
 | `aborted` | `the user stopped it` |
 | `failed` | `it failed (<code>)` |
 | `denied` | `a tool call was refused and the turn ended` |
-| `turn_limit` | `it reached the limit on tool rounds` |
+| `turn_limit` | `it reached a limit on tool use` — any within-turn limit that raises `turn_limit` (tool rounds, tool calls in one response, media attachments), never the session's hard turn cap |
 
 | The turn's receipts | `<calls sentence>` |
 |---|---|
@@ -566,6 +566,7 @@ interface SessionMessage {
   content: SessionContentPart[];          // session-only durable union: structural tools, handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
+  interruption?: { reason: 'aborted' | 'failed' | 'denied' | 'turn_limit'; code?: ErrorCode };  // ADR-0119: present ONLY on the empty-content role:'system' terminal row of a retained interrupted turn; code iff reason is 'failed' (mirrors session_messages.interruption_reason / interruption_code)
   timestamp: string;                      // ISO 8601
 }
 ```
@@ -596,7 +597,7 @@ recovers. This supplements the governor's settlement barrier.
 The dispatch check runs
 after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
-Errors and aborts commit no transcript; their billed cost remains real.
+An error or abort commits no completed exchange; a turn the engine **retains** ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), below) is stored as the user message, its structural pairs and one interruption row instead, and every other one commits nothing. Billed cost remains real either way.
 
 Resume, model reseat, export, boundary mapping and effect disclosure share the pure structural history
 projection in `@relavium/shared`; existing core exports remain available. `completedSessionTurns`

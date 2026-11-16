@@ -840,6 +840,8 @@ pattern). Cascades from `agent_sessions`.
 | `finish_reason` | TEXT | NULL |
 | `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
 | `compaction_dropped_through_sequence` | INTEGER | NULL — ADR-0062: set ONLY on a `role='system'` compaction/trim boundary marker; the durable `sequence_number` through which older messages are superseded (resume drops rows at/below it). Additive nullable column (migration 0006); NULL on every normal transcript row |
+| `interruption_reason` | TEXT | NULL — ADR-0119 (migration 0021): set ONLY on the empty-content `role='system'` terminal row of a retained interrupted turn; `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`) |
+| `interruption_code` | TEXT | NULL — ADR-0119 (migration 0021): the closed `ErrorCode` taxonomy; present **iff** `interruption_reason = 'failed'` |
 | `created_at` | INTEGER | NOT NULL |
 
 ```sql
@@ -1247,7 +1249,7 @@ refuses a row that violates the column rules at its boundary as well as in the d
 
 **The migration is hand-written and additive.** Two `ALTER TABLE … ADD COLUMN` statements, each carrying its own
 column `CHECK`; the cross-column rules (a `failed` reason iff a code; a reason only on a `system` row without a
-compaction marker) are column constraints on `interruption_reason`, which SQLite accepts on `ADD COLUMN`. A
+compaction marker) are column constraints (the cross-column shape rule is attached to `interruption_code`, the later of the two added columns, because it names both), which SQLite accepts on `ADD COLUMN`. A
 generated table rebuild was rejected: it would drop the ADR-0104 triggers on `session_messages`, move the table's
 root page, and copy rows through a statement that selected columns the old table does not have. The upgrade path
 is pinned by a test that opens a database at the previous migration, adds legacy rows, applies this one, and

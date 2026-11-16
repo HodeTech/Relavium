@@ -5581,19 +5581,47 @@ sitting.
 
 **MVP-3c implementation status (2026-11-16).** Built across shared, db, core and the CLI: the strict `interruption` field and
 `session:turn_completed.interruption`; migration `0021` (hand-written, additive); the turn core's settled tool history on a
-failed outcome and the `cancelled` entry for an in-flight call; `AgentSession` retention in exactly three branches (abort,
-classified error, never cancel/no-engagement/unclassified/observer fault); request rendering through `renderTurnBlock`; resume
-admission (an interruption span is one message); the summariser input and prompt line; the persister's single interruption row
-and boundary slot; the restored transcript's fixed dim row; export skipping an interrupted turn as a workflow step; and the
-effect-journal disclosure keeping such an effect `turn_incomplete`. Evidence so far: core 5,257, shared 1,572 and db tests
-pass locally; every new behaviour was mutation-checked (all mutants killed).
+failed outcome and the `cancelled` entry for an in-flight call; `AgentSession` retention in two sites (the abort branch and
+`#settleTurnError`; a session-ending cancel, a crash, an unclassified throw, an observer fault and a no-engagement turn are
+rolled back as before); request rendering through `renderTurnBlock`; resume admission (an interruption span is one message);
+the summariser input and prompt line; the persister's single interruption row and boundary slot; the restored transcript's fixed
+dim row; export skipping an interrupted turn as a workflow step; and the effect-journal disclosure keeping such an effect
+`turn_incomplete`. [ADR-0119's implementation note](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md#implementation-note--2026-11-16)
+records where building it corrected or refined the ADR.
 
-**Gates run (2026-11-16, `development` at 8541074c).** `pnpm run ci` ran every step; two stopped locally and are owned by the
-four-platform CI legs: `smoke:cli-package` and `check:map-controls` end in `INCOMPLETE` (the local native-asset inventory is not
-`release-complete`; `smoke:cli-package` was shown to fail identically at the pre-MVP-3c commit c7031781). All other steps pass,
-including `check:wire/usage/fs/secrets-mutations` after two pinned inventories were moved for the added tests (usage-coverage
-486 cases; three export controls at 26) and a shared test-table typing fix found by the gate. The workspace tests under
-`CI=true GITHUB_ACTIONS=true` and `coverage:enforced` pass.
+**D64 round 1 (2026-11-16, `development` at 5f1af19b).** Four read-only reviewers — the engine; persistence, resume and the CLI
+surfaces; the honesty of tests and claims; and a separate security sitting (the one opus run) — found **no blocker or high
+finding**. Substantive findings, all addressed: a retained turn could omit a call that had already executed when an event sink
+threw between dispatch and recording (the call is now recorded first, and a turn whose executed call cannot be recorded is
+not retained); `turn_limit` also covers the tool-calls-per-response and media-attachment ceilings (the phrase is now `it reached
+a limit on tool use`); a raw throw that raced an Esc was retained as an abort (now only a classified turn error is); the shape
+`CHECK` did not require an interruption row to be empty; legacy bare-user context before an interrupted turn dropped out of
+export; stale rollback wording remained in four reference docs; two accepted ADR sentences had been rewritten in place instead
+of corrected by a dated note; the mutation claim was broader than what had been run; the `481 → 486` usage-coverage pin was
+attributed to this increment when the drift predates it (earlier commits changed cohort files; none changed here); and tests were
+missing or hollow for several cases (an observer fault with an abort, a non-recoverable tool failure, a real unclassified throw,
+`trim`, two consecutive interrupted turns, a reentrant abort, `turn_limit` and restored `cancelled` parity, the hard-cap count,
+a real transaction failure on the interruption row, a partial streamed answer, reseat, argument sentinels, the migration's
+trigger/root-page preservation and its drift against `ERROR_CODES`). Three reviewers called an "unknown tool history after an
+overflow retry" path a medium; the security sitting showed it cannot occur (overflow recovery is only attempted before the first
+tool round), so the concept was deleted rather than patched. One finding is an accepted **residual** for the maintainer: an Esc'd
+turn's user text is now at rest and resent, and its removal path (`/rewind`) does not exist — recorded in the security-review
+sitting and the deferred ledger.
+
+**Mutation evidence, stated precisely.** The author's mutants of the new production logic (retention predicate, reason mapping,
+span push, event field, rollback on a refusing sink, resume length check, rebase, abort retention, in-flight outcome, sentence,
+calls clause, summariser, reconstruct, export, the uncertainty rule and its two call sites, the recording order, the persister
+gate, row type, boundary slot and argument passing, the restored row and its phrase, the content `CHECK`) are all killed by the
+tests; one mutant (the observer-fault check in the abort branch) is redundant with the classified-error check and is killed only
+when both are removed. This is the mutants the author chose, not an exhaustive sweep.
+
+**Gates run (2026-11-16, `development` at 8541074c, before the round-1 fixes).** `pnpm run ci` ran every step; two stopped locally
+and are owned by the four-platform CI legs: `smoke:cli-package` and `check:map-controls` end in `INCOMPLETE` (the local
+native-asset inventory is not `release-complete`; `smoke:cli-package` was shown to fail identically at the pre-MVP-3c commit
+c7031781). All other steps pass, including `check:wire/usage/fs/secrets-mutations` after the pinned inventories were moved (the
+usage-coverage inventory 481 → 486 — its drift predates this increment — and three export controls 25 → 26 for the one added
+serializer test) and a shared test-table typing fix found by the gate. The workspace tests under `CI=true GITHUB_ACTIONS=true`
+and `coverage:enforced` pass. **The gates are re-run after the round-1 fixes before the round that accepts the increment.**
 
 **Real-provider sample (2026-11-16).** The built CLI was driven through a pseudo-terminal with the keychain's own keys (deepseek-flash
 and claude-haiku-5-5, about $0.001 in total): a request to read six files, Esc after the tool calls, then "which files did you read?".
@@ -5603,8 +5631,8 @@ unknown, results were discarded"). One more run aborted 78 ms after the send, be
 was retained with no calls and the model said none were recorded. Not sampled with a real provider: a classified failure, a denial and
 the tool-round limit (covered by the session-level tests).
 
-Not yet done: the two D64 review rounds and the separate security sitting. Earlier receipts keep their scoped meaning and are not
-replaced by this paragraph.
+Not yet done: the round that accepts the increment (a new complete cumulative round with no blocker, high or medium finding) and the
+re-run gates. Earlier receipts keep their scoped meaning and are not replaced by this paragraph.
 
 **MVP-3d — `ask_user`.** Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the

@@ -147,11 +147,8 @@ narrow disclosure footprint.
 - **A turn that failed, was aborted or was fatally denied leaves no receipt even
   when a tool already ran**, and the model is not told: ADR-0098 invariant 4
   discloses it to the *user* ("check the target before sending again"), not to the
-  model. This gap was open until ADR-0119, which was implemented as MVP-3c on
-  2026-11-16: an engaged turn that ended by abort or a classified error now keeps
-  its recorded calls and a fixed interruption note. A session-ending cancel, a crash
-  and an unclassified throw still leave no receipt. The correction does not resolve
-  side effects it cannot see.
+  model. This gap stays open until ADR-0119 is accepted and implemented. The
+  correction does not resolve side effects it cannot see.
 - **Eviction can churn a stable prompt prefix.** Dropping the oldest retained
   block rewrites an early user message, which invalidates a cached prefix from
   that point. It happens only in a saturated session; below the caps blocks are
@@ -291,4 +288,12 @@ indicative figures in the Consequences above (the body is left as accepted):
 > a degraded one gets this ADR's single request notice and no second one; an in-flight call at the interruption is
 > recorded `cancelled` ("execution state unknown", defined here), making `cancelled` live for the first time.
 > This ADR's text is otherwise unchanged.
+
+## Update — 2026-11-16
+
+ADR-0119 was accepted and implemented as MVP-3c on 2026-11-16, which closes the gap the third negative consequence above
+names for the cases it covers: an engaged turn that ended by the abort or a classified error now keeps its recorded
+calls (including a `cancelled` entry for a call in flight) and a fixed interruption note. A session-ending
+cancellation, a crash and an unclassified throw still leave no receipt. The correction still resolves no side effect it
+cannot see.
 

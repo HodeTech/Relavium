@@ -821,6 +821,31 @@ The [supplemental source register](../roadmap/phases/phase-2.5.5-hardening-and-r
 retains both actual failed Windows attempts and final-head publication criteria.
 Steps 9–19 remain unstarted; the PR owns the final live results.
 
+### Sitting: interrupted turns on the resume path — ADR-0119 (2026-11-16)
+
+A separate security sitting read the MVP-3c diff (an engaged turn that ends by the abort or a classified error now
+stays in the session as the user's message, content-free tool structure and one typed interruption row). It found no
+blocker, high or medium finding. Four low findings were recorded; the three that are defects were fixed, and one is an
+accepted residual.
+
+| Control | Evidence |
+|---|---|
+| No stored or attacker-controlled string reaches the model text: the sentence is constants plus a switch over closed sets, tool labels pass `receiptLabel`, the row carries no tool name | `turn-receipts.ts`; byte bound pinned over every `ERROR_CODES` entry in `session-interruption.test.ts` |
+| A forged or tampered row is refused at the schema, by the database `CHECK`s (including "an interruption row carries no content") and on load with a fixed error that does not echo the stored value | `migration-0021-upgrade.test.ts` (CHECKs, and a tampered row loaded with `ignore_check_constraints`), `session-interruption.test.ts` (shared) |
+| Nothing from tool arguments, results, partial answer text, reasoning or provider error text reaches disk, an event, an export or a later request | real-SQLite parity test with argument and result sentinels; persister test for a streamed partial answer |
+| The note gives the model no authority and replays no effect; later calls take the current approval regime and a fresh durable effect key | engine review; ADR-0098 unchanged |
+| An effect that landed in a retained interrupted turn is still disclosed at resume (`turn_incomplete`) | `session-effect-disclosure.test.ts` |
+| A call that executed is recorded **before** any event is emitted, and a turn whose executed call could not be recorded is not retained (the next request would otherwise say "no tool call was recorded") | `session-interruption.test.ts`, with mutants of the ordering and of the uncertainty rule |
+| The restored transcript's "Interrupted" row is built from the closed phrase table, never from stored text | `restored-transcript.test.ts` |
+
+**Accepted residual (maintainer's to rule).** An Esc after a provider engaged — nearly every Esc — now writes the
+user's message (and its display text, and possibly the session title) to the unencrypted `history.db`, and the text is
+resent in every later request of that session. Before ADR-0119 an aborted turn left nothing. ADR-0119 names `/rewind`
+as the remedy, but `/rewind` (2.6.E) does not exist and the CLI has no session-delete command, so a user who pasted
+something sensitive and pressed Esc has no way to remove it short of abandoning the session. User text, `@` content and
+`!` output remain sensitive data at rest. The removal path is tracked in the
+[deferred ledger](../roadmap/deferred-tasks.md); until it lands the residual stands.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

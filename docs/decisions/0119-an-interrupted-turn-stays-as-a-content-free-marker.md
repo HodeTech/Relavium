@@ -1,6 +1,6 @@
 # ADR-0119: An interrupted turn stays in the session as a content-free marker
 
-- **Status**: Accepted — 2026-11-16, by the maintainer, after a twelve-finding design review (every finding is dispositioned [below](#review-disposition--2026-11-16)). **The implementation, two independent review rounds with no blocker/high/medium finding, and a separate security sitting on the resume path (D64) are owed**; this ADR accepts the design, not the code.
+- **Status**: Accepted — 2026-11-16, by the maintainer, after a twelve-finding design review (every finding is dispositioned [below](#review-disposition--2026-11-16)). **Implemented 2026-11-16 as MVP-3c (see the [implementation note](#implementation-note--2026-11-16)); the independent review rounds and the security sitting are recorded in the roadmap's MVP-3c section and the security-review sitting**; this ADR's text accepts the design, and the note records where building it differed.
 - **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; **revised 2026-11-16** after the twelve-finding review)
 - **Refines**: [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §1 (a turn is identified by row structure; its terminal row may now be an *interruption row*, which needs one migration — see §2) and §4 (an interrupted turn takes one `window` slot); amends [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)'s abort clause (the rollback is withdrawn for the retained cases below).
 - **Related**: [ADR-0026](0026-session-export-to-workflow.md), [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md), [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) (**not a dependency**, §1), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0123](0123-restored-transcripts-use-host-recorded-display-text.md), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md), [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md), [D67](../roadmap/current.md#wave-gating-decisions)
@@ -158,7 +158,7 @@ part by the same projection as ADR-0128's receipts:
 | none, and incomplete (evicted or degraded) | `Tool calls made before the interruption may not be listed.` |
 
 The sentence is at most 420 bytes and is **not** subject to ADR-0128's receipt caps (it is the point of this
-ADR); `receiptBlockBytes` does not count it either, so the receipt budget measures receipts alone. The exact
+ADR); its bytes are counted by `receiptBlockBytes` only so a turn's block size stays truthful. The exact
 strings are pinned in [agent-session-spec.md](../reference/contracts/agent-session-spec.md#interrupted-turns--adr-0119).
 
 **The memory policy still decides the request.** With `memory` omitted or `summary` the block is in the
@@ -278,22 +278,47 @@ but not live.
 
 ## Implementation note — 2026-11-16
 
-Built as MVP-3c on `development`. The decisions above held; building them settled these points, none of which
-changes a rule:
+Built as MVP-3c on `development`. The decisions above held. Building them, and the independent reviews and the
+separate security sitting that followed, settled these points; where one corrects a sentence above, the correction is
+here and the original text stays, because accepted ADRs are append-only.
 
-- **The migration is hand-written and additive** (two `ALTER TABLE … ADD COLUMN`, each with its own column
-  `CHECK`). A generated table rebuild was rejected because it would drop the ADR-0104 triggers on
-  `session_messages` and copy rows through a statement that selected columns the old table lacks.
+- **Correction to §4.** The interruption sentence is **not** counted by `receiptBlockBytes`; the receipt budget measures
+  receipts alone. (§4 said the opposite; the code, the spec and the tests say this.)
+- **Correction to §2's channel.** The settled tool history rides on the turn core's accumulator and its captured failed
+  outcome (`CapturedAgentTurnOutcome.toolHistory`), not on `AgentTurnError.toolHistory`. Behaviour is as §2 describes.
+- **The migration is hand-written and additive** (two `ALTER TABLE … ADD COLUMN`, each with its own column `CHECK`).
+  A generated table rebuild was rejected: it would drop the ADR-0104 triggers on `session_messages`, move the table's root
+  page and copy rows through a statement that selected columns the old table lacks. The shape `CHECK` also requires an
+  interruption row's `content_parts` to be empty, so the database refuses text on it and not only the schema. An upgrade
+  test pins that the triggers and the root page survive the upgrade.
 - **An effect that landed in a retained interrupted turn is still disclosed at resume as `turn_incomplete`.** The
-  interrupted turn stays out of the "completed calls" set the disclosure joins on, so keeping the turn for the
-  model does not silence the user's notice; this is exactly what happened when the turn was rolled back.
-- **An overflow retry that follows a first attempt which already dispatched calls reports its history as unknown**
-  (`may not be listed`) rather than a list that omits those calls: the retry restarts the engine's tool ordinals,
-  so the two attempts' histories cannot be merged by id.
-- **A turn whose failure was a host callback or observer fault is not retained**, the same as an unclassified
-  throw: the engine cannot vouch for it.
-- **The summariser's fixed prompt gained the one line §4 promised**, and the interruption sentence is not counted
-  by `receiptBlockBytes`, so the receipt budget measures receipts alone.
-- **Acceptance owed (D64):** two independent review rounds with no blocker, high or medium finding, and a
-  separate security sitting on the resume path. Nothing in this note is a receipt for either.
-
+  interrupted turn stays out of the "completed calls" set the disclosure joins on, so keeping the turn for the model
+  does not silence the user's notice; this is what happened when the turn was rolled back.
+- **A turn is retained only if its tool list can vouch for itself.** An executed call is recorded **before** any event is
+  emitted, so a sink that throws cannot drop it; a turn in which a dispatched call could not be recorded is **not
+  retained** (the next request would otherwise say "no tool call was recorded" about a turn in which one ran). An earlier
+  draft of this implementation reported such a history as "unknown"; review showed the overflow-retry case that would
+  have produced it cannot occur (overflow recovery is only attempted before the first tool round), so the concept was
+  deleted and the single rule above replaced it.
+- **A host callback or observer fault at a raw emit site is not retained**, the same as an unclassified throw: the engine
+  cannot vouch for it. A fault in a tool-event sink after a call executed is retained with that call recorded.
+- **An abort is retained only when the turn ended in a classified turn error** (the turn core's `cancelled`); a raw throw
+  that raced the Esc is not retained.
+- **`turn_limit` covers every within-turn limit that raises it** — the `maxToolTurns` guard, the tool-calls-per-response
+  ceiling and the media-attachment ceiling — never the session's hard cap. The phrase is therefore `it reached a limit on
+  tool use`; the table in §4 shows the earlier wording and the [spec](../reference/contracts/agent-session-spec.md#interrupted-turns--adr-0119)
+  is canonical.
+- **Event consistency.** `interruptionMatchesTurnCompleted` (shared) states the cross-field rule a discriminated-union
+  member cannot carry as a refinement; the persister checks it and fails closed instead of writing a row the event
+  contradicts.
+- **Hard-cap parity, stated precisely.** A retained turn is a subset of a counted turn, and a retained turn is always
+  counted. Live also counts engaged turns that are not persisted (an observer fault, an unclassified throw, a
+  session-ending cancel after engagement); a restart does not, and it counts only turns past the last compaction boundary.
+  Both divergences predate this ADR; §3's "live and restored counts agree" holds for retained turns.
+- **§6.10's "history list" clause** is satisfied by §5's "unchanged": the list shows sessions, not turns.
+- **Export** carries a legacy bare-user prefix that precedes an interrupted turn into the next step's prompt, as it did
+  when that turn was rolled back.
+- **The summariser's fixed prompt gained the one line §4 promised.**
+- **Residual accepted pending the maintainer's ruling:** the user's text of an Esc'd turn is now at rest in `history.db`
+  and resent in later requests, and the removal path §Negative names (`/rewind`) does not exist yet. It is recorded in
+  the security-review sitting and the deferred ledger.
