@@ -970,7 +970,9 @@ sensitive-read floors).
   current read_file/list_directory glob options into a first-class discovery tool.
 - **Todo/plan tool** — a structured, session-scoped task list the model maintains, rendered as a live TUI
   checklist (persists across compaction); ungoverned (no host arm).
-- **`ask_user`** — a structured mid-turn question (options + free text) on interactive surfaces via a
+- **`ask_user`** — *(Superseded in its timeout, key and shape details by [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md),
+  Accepted 2026-11-16: no timeout, `Esc` stops the turn and `s` skips, multi-select, one to four questions, the answer is not stored.
+  The text below is the original plan.)* a structured mid-turn question (options + free text) on interactive surfaces via a
   keyboard-owning overlay; typed `tool_unavailable` on non-interactive surfaces; workflows keep
   `human_gate`. When the agent emits `ask_user` mid-turn, the engine **pauses the turn** (stops
   streaming, holds the in-flight state), renders the overlay, waits for user input, then **resumes**
@@ -5564,7 +5566,7 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the final gate run and the maintainer's acceptance are owed. MVP-3d is not started.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the gates pass on the final source (`56c63ab0`) and the maintainer's acceptance is owed. MVP-3d: [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted; implementation in progress.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
@@ -5671,10 +5673,24 @@ was retained with no calls and the model said none were recorded — **a case th
 returned nothing). Not sampled with a real provider: a classified failure, a denial and
 the tool-round limit (covered by the session-level tests).
 
-Not yet done: the round that accepts the increment (a new complete cumulative round with no blocker, high or medium finding) and the
-re-run gates. Earlier receipts keep their scoped meaning and are not replaced by this paragraph.
+**Gates run on the final source (2026-11-16, `development` at `56c63ab0`).** Every step of the `pnpm run ci` chain, run one by one, exited
+0: test isolation, `ci:workspaces`, `db:sync-check`, tools typecheck and lint, build + `format:check`, the fence, engine-deps and
+bundle-closure checks, the five smoke checks (`cli-bootstrap`, `cli`, `media-packaging`, `overflow-capture`, `budget-replay`),
+`test:acceptance-tools` and the four mutation controls (wire, usage, fs, secrets); `coverage:enforced` passed. The first
+`CI=true GITHUB_ACTIONS=true` workspace-test step reported 0 in one second because turbo replayed 11 cached results (`CI` is not in its cache
+key), so it proved nothing; it was **re-run with `--force`** — 12 tasks, none cached, all passed (shared 1,585, core 5,296, db 1,139, CLI 8,021
+with 14 skipped, and the other packages). `smoke:cli-package` and `check:map-controls` still end in `INCOMPLETE` locally (the native-asset
+inventory; identical at `c7031781`) and are owned by the four-platform CI legs.
 
-**MVP-3d — `ask_user`.** Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
+Not yet done: the maintainer's acceptance. Round 4's findings were fixed and judged by the author to leave no blocker, high or medium
+finding, but **no fifth round was run on those fixes**; whether round 4 plus its fixes satisfies D64's "one new complete round" is the
+maintainer's call. Nothing is pushed. Earlier receipts keep their scoped meaning and are not replaced by this paragraph.
+
+**MVP-3d — `ask_user`.** **[ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted (2026-11-16)** after four independent design
+reviews (the dispositions are in the ADR), with its tool contract in [built-in-tools.md](../../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d).
+The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** (the
+durable row stays the content-free tool structure; no migration), and **`Esc` stops the turn** (skipping a question has its own key, `s`).
+Implementation follows (see below). What follows is the brief the ADR answers. Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the
 engine pausing the turn and returning the answer as the tool result, a configurable five-minute timeout, `tool_unavailable`
 without a terminal, `human_gate` for workflows) **omits multiple choice with multi-select**, and the ADR must settle: the

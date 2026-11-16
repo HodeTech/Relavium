@@ -330,16 +330,19 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    migration and store, the turn core's error channel and `cancelled` entry for an in-flight call, retention and
    request rendering, resume, compaction/trim/window/reseat, the restored transcript and export, with live-versus-
    restored parity tests. **Implemented on `development` (2026-11-16)** with unit, session-level, persister, restored-
-   transcript, export and real-SQLite parity tests. D64 rounds 1–3 and three separate security sittings found no
-   blocker/high finding and their fixes are in; **the accepting round (a new complete round with no blocker/high/medium finding) and a
-   re-run of the gates are still owed** — see the phase register. ADR-0115 is not a
+   transcript, export and real-SQLite parity tests. D64 rounds 1–4 and four separate security sittings found no
+   blocker/high finding and their fixes are in; the gates pass on the final source (`56c63ab0`; the two
+   platform-owned steps stay `INCOMPLETE` locally). **The maintainer's acceptance is owed** — no fifth round was run on
+   round 4's fixes — see the phase register. ADR-0115 is not a
    dependency. Session-ending cancellation and process death keep today's rollback (ADR-0098's disclosure at resume).
    **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's
    structured mid-turn question moves up from "after v0.2.1" into its own increment. It starts with an ADR that
    also covers what the earlier design omitted — **multiple choice with free text and multi-select** — on the
    engine's existing pause machine and a docked, keyboard-owning card built on ADR-0129's layout and the native
-   prompt host; a new terminal sink for untrusted content, so D64's rigor tier applies. Not started; its ADR is the
-   first step (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
+   prompt host; a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
+   is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `s` skips; the question and answer
+   are not stored; an answer is never consent. Implementation is in progress
+   (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
    pending approval rejecting it (MVP-A12; row 11b split); the rest of the denials returned to the model

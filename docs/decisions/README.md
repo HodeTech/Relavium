@@ -175,6 +175,7 @@ flowchart TD
 | 0129 | [The approval card is docked, bounded and says only what matters](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) | Accepted | 2026-11-16 |
 | 0130 | [Chat modes say what they do — `ask` asks, `plan` reads, `accept-edits` accepts](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md) | Accepted | 2026-11-16 |
 | 0131 | [A round that made progress resets the correction budget, and a line range past the end of a file is clipped](0131-a-round-that-made-progress-resets-the-correction-budget.md) | Accepted | 2026-11-16 |
+| 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted | 2026-11-16 |
 
 ## Creating a new ADR
 
