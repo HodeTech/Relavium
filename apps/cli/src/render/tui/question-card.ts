@@ -48,6 +48,17 @@ const RULE_LABEL = ' Question from the agent · not an approval ';
 const OWN_PLACEHOLDER = 'Type your own answer…';
 const OWN_DESCRIPTION = 'Type your own answer. It is sent to the model.';
 const STOP_ROW = 'Esc or Ctrl-C stops the turn';
+/**
+ * Said only where a write needs no card (`accept-edits`, `auto`): there an answer is the person's only lever and it is not a
+ * veto — nothing in the card otherwise tells them the agent may still act (ADR-0132 §6).
+ */
+const GUIDE_NOTE = ' · an answer is guidance, not a veto';
+/**
+ * The host's gutter. EVERY row of model-authored text (the question, the highlighted description) starts with it, and the
+ * glyph is refused inside model text, so column 0 of a wrapped line belongs to the renderer: a forged option row can neither
+ * begin at the start of the question nor at any later wrap boundary.
+ */
+const GUTTER = '│ ';
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const ASCII_LINE = /^[\x20-\x7e]*$/u;
 
@@ -156,7 +167,11 @@ function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): 
   };
 }
 
-function keyRows(state: QuestionCardState, columns: number): readonly [string, string] {
+function keyRows(
+  state: QuestionCardState,
+  columns: number,
+  guideNote: boolean,
+): readonly [string, string] {
   const question = currentQuestion(state);
   const back = state.index > 0 ? ' · ← back' : '';
   const first =
@@ -165,20 +180,28 @@ function keyRows(state: QuestionCardState, columns: number): readonly [string, s
         ? `↑↓ move · Space or 1-4 tick · Enter confirm · s skip all${back}`
         : `↑↓ move · 1-4 or Enter choose · s skip all${back}`
       : 'Enter accept · ↑ back to the list';
-  return [head(first, columns - 2), STOP_ROW];
+  return [
+    head(first, columns - 2),
+    head(guideNote ? `${STOP_ROW}${GUIDE_NOTE}` : STOP_ROW, columns - 2),
+  ];
 }
 
 /** Project the card. `columns` is the terminal width; the drawable width is two less (the card's own margin). */
-export function projectQuestionCard(state: QuestionCardState, columns: number): QuestionCardView {
+export function projectQuestionCard(
+  state: QuestionCardState,
+  columns: number,
+  options: { readonly guideNote?: boolean } = {},
+): QuestionCardView {
   const width = Math.max(1, columns - 2);
+  const gutterWidth = displayWidth(GUTTER);
   const question = currentQuestion(state);
   const entry = currentEntry(state);
   const total = state.request.questions.length;
   const progress = total > 1 ? `  ${String(state.index + 1)} of ${String(total)}` : '';
   const body: QuestionCardRow[] = [
     { text: hardWrap(`${question.header}${progress}`, width)[0] ?? '', tone: 'header' },
-    ...hardWrap(question.question, width).map(
-      (text): QuestionCardRow => ({ text, tone: 'question' }),
+    ...hardWrap(question.question, width - gutterWidth).map(
+      (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),
     ...question.options.map((_, index) => optionRow(state, entry, index, width)),
     ownRow(state, entry, width),
@@ -190,8 +213,12 @@ export function projectQuestionCard(state: QuestionCardState, columns: number): 
       ? OWN_DESCRIPTION
       : (question.options[entry.highlight]?.description ?? ''));
   body.push({
-    text: `  ${head(describe, Math.max(1, width - 2))}`,
+    text: `${GUTTER}${head(describe, Math.max(1, width - gutterWidth))}`,
     tone: state.hint === undefined ? 'description' : 'hint',
   });
-  return { rule: questionRule(columns), body, keys: keyRows(state, columns) };
+  return {
+    rule: questionRule(columns),
+    body,
+    keys: keyRows(state, columns, options.guideNote === true),
+  };
 }

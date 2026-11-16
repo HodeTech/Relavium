@@ -20,6 +20,7 @@ import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
   pasteIntoQuestion,
+  QUESTION_SETTLE_MS,
   reduceQuestionKey,
   type QuestionCardState,
 } from './question-card-model.js';
@@ -101,6 +102,12 @@ export interface ChatStoreSnapshot {
    * of it from the next by identity.
    */
   readonly question: QuestionCardState | undefined;
+  /**
+   * Identity of the FRAME the question card is showing — a fresh object when the card opens, when it moves to its next question,
+   * and when the terminal is resized or resumed from suspend. The measured-frame acknowledgement is keyed on it, so each of
+   * those needs its own proof that the frame was flushed, and a blocked card recovers when the terminal grows.
+   */
+  readonly questionFrame: object | undefined;
   readonly toolDisplays: ReadonlyMap<string, ToolDisplay>;
   readonly tick: number;
   readonly color: boolean;
@@ -221,6 +228,15 @@ export function createChatStore(
       }
     | undefined;
   let questionVisible: (() => boolean) | undefined;
+  let questionFrame: object | undefined;
+  let questionFrameAt = 0;
+  const mintQuestionFrame = (): void => {
+    questionFrame = {};
+    questionFrameAt = Date.now();
+  };
+  // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
+  const questionAcceptsKeys = (): boolean =>
+    questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
   let review: ToolReviewState | undefined;
   let toolDisplays = new Map<string, ToolDisplay>();
   let sealed = false;
@@ -239,6 +255,7 @@ export function createChatStore(
     approval,
     review,
     question,
+    questionFrame,
     toolDisplays,
     tick: tickCount,
     color,
@@ -253,6 +270,7 @@ export function createChatStore(
       approval,
       review,
       question,
+      questionFrame,
       toolDisplays,
       tick: tickCount,
       color,
@@ -350,6 +368,7 @@ export function createChatStore(
     const settling = pendingQuestion;
     if (open === undefined || settling === undefined) return;
     question = undefined;
+    questionFrame = undefined;
     pendingQuestion = undefined;
     state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
     // The transcript entry is built from the answer the card already holds — never from an event (ADR-0132 §6).
@@ -388,6 +407,7 @@ export function createChatStore(
       if (pendingQuestion !== undefined) {
         const rejecting = pendingQuestion;
         question = undefined;
+        questionFrame = undefined;
         pendingQuestion = undefined;
         state = approvalClosed(state, Date.now());
         rejecting.reject(abortError());
@@ -408,6 +428,11 @@ export function createChatStore(
       }
     },
     invalidateToolReview: () => {
+      // A resize or a resume from suspend: the open question's frame must be measured and flushed again.
+      if (question !== undefined) {
+        mintQuestionFrame();
+        flush();
+      }
       if (review !== undefined) {
         review = { ...review, reveal: false, inspected: [] };
         reviewPage = undefined;
@@ -434,11 +459,13 @@ export function createChatStore(
       // An open question card owns the keyboard (ADR-0132 §3): the stop keys abort the turn, a choosing key is applied only
       // once the card's exact frame has been acknowledged visible, and every other key is consumed.
       if (question !== undefined) {
-        const action = reduceQuestionKey(question, input, key, questionVisible?.() === true);
+        const action = reduceQuestionKey(question, input, key, questionAcceptsKeys());
         switch (action.kind) {
           case 'stop':
             return 'abort';
           case 'state':
+            // The next question is a new frame the person has not seen: it needs its own acknowledgement and settle time.
+            if (action.state.index !== question.index) mintQuestionFrame();
             question = action.state;
             flush();
             break;
@@ -608,7 +635,9 @@ export function createChatStore(
     },
     requestApproval: (request, cacheable, signal, live) =>
       new Promise<ApprovalAnswer>((resolve, reject) => {
-        if (sealed || settleApproval !== undefined) {
+        // One overlay at a time, in BOTH directions: an approval under an open question card would be unreachable, because the
+        // card consumes every key. (Tool calls dispatch sequentially, so this is unreachable today; the guard keeps it so.)
+        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
           reject(abortError());
           return;
         }
@@ -678,6 +707,7 @@ export function createChatStore(
         const onAbort = (): void => {
           if (pendingQuestion === undefined) return;
           question = undefined;
+          questionFrame = undefined;
           pendingQuestion = undefined;
           state = approvalClosed(state, Date.now());
           reject(abortError());
@@ -695,12 +725,13 @@ export function createChatStore(
           },
         };
         question = initialQuestionCard(request);
+        mintQuestionFrame();
         state = approvalOpened(state, Date.now());
         flush();
       }),
     pasteIntoQuestion: (text) => {
       if (question === undefined) return false;
-      const next = pasteIntoQuestion(question, text, questionVisible?.() === true);
+      const next = pasteIntoQuestion(question, text, questionAcceptsKeys());
       if (next !== question) {
         question = next;
         flush();

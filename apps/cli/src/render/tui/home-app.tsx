@@ -591,7 +591,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       mouse !== undefined &&
       altChat &&
       props.nativePrompt?.getSnapshot().active !== true &&
-      controller.getSnapshot().session?.store.getSnapshot().review === undefined
+      controller.getSnapshot().session?.store.getSnapshot().review === undefined &&
+      controller.getSnapshot().session?.store.getSnapshot().question === undefined
     ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);

@@ -20,7 +20,9 @@ import {
   type DbClient,
 } from '@relavium/db';
 import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavium/shared';
+import type { AskUserDelegate, AskUserRequest } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { render as renderInk, type Instance } from 'ink';
 import { createElement, isValidElement } from 'react';
 
@@ -32,6 +34,7 @@ import {
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import type { ChatStoreController } from '../render/tui/chat-store.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
@@ -1273,6 +1276,75 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     // THE FIX: the provider is NOT the stale startup 'openai' — it is undefined (⇒ inferred to anthropic), coupled
     // to the same read that supplied the model. Before M5 this was 'openai' and the turn 404'd.
     expect(builtProviders.at(-1)).toBeUndefined();
+
+    props.controller.handleKey('c', CTRL_C);
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0132: the Home gives a fresh chat AND a /models-reseated chat the question delegate, each bound to its own store', async () => {
+    // The Home is always a terminal with a person at it, and its fresh and reseat builders are separate call sites: a missing
+    // option or a missing `bind` on either leaves that session unable to ask. Asking through the delegate the session was
+    // built with must draw a card on the store the Home put on screen.
+    const askRequest: AskUserRequest = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which file?',
+          multiSelect: false,
+          options: [
+            { label: 'alpha.ts', description: 'The first file' },
+            { label: 'beta.ts', description: 'The second file' },
+          ],
+        },
+      ],
+    };
+    const drawsACard = async (
+      store: ChatStoreController | undefined,
+      delegate: AskUserDelegate | undefined,
+    ): Promise<boolean> => {
+      if (store === undefined || delegate === undefined) return false;
+      const pending = delegate(askRequest).catch(() => undefined);
+      const drawn = store.getSnapshot().question?.request === askRequest;
+      store.sealToolPreviews();
+      await pending;
+      return drawn;
+    };
+    let freshAsk: AskUserDelegate | undefined;
+    let reseatAsk: AskUserDelegate | undefined;
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), {
+      providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
+      buildSession: (options) => {
+        freshAsk = options.askUser;
+        return buildChatSession(options);
+      },
+      buildResumedSession: (options) => {
+        reseatAsk = options.askUser;
+        return buildResumedChatSession(options);
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    type(props, 'first');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
+    const first = props.controller.getSnapshot().session;
+    expect(freshAsk).toBeDefined();
+    expect(await drawsACard(first?.store, freshAsk)).toBe(true);
+
+    props.controller.handleKey('/', {});
+    type(props, 'models');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    type(props, 'claude-opus-4-8');
+    props.controller.handleKey('', ENTER);
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first));
+    expect(reseatAsk).toBeDefined();
+    expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
 
     props.controller.handleKey('c', CTRL_C);
     await flush();

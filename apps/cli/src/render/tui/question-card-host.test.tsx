@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AskUserRequest } from '@relavium/core';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import type { ClipboardWriter } from '../clipboard.js';
-import { createSuspendPort, type SuspendPort } from '../suspend.js';
+import type { SuspendPort } from '../suspend.js';
 import { createChatStore } from './chat-store.js';
 import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
@@ -153,7 +153,8 @@ function fixture(
 }
 
 describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)', (host) => {
-  const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 60));
+  // A choosing key counts only after the question has been on screen QUESTION_SETTLE_MS (250 ms); settle just past it.
+  const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 320));
 
   it('is drawn where the approval card is, with the conversation still on screen above it, and says it is not an approval', async () => {
     const f = fixture(host, true, false);
@@ -205,6 +206,11 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await vi.waitFor(() =>
       expect(f.store.getSnapshot().question?.field?.text).toBe('my own words'),
     );
+    await settle();
+    // Drawn once — in the card's field. Had the paste ALSO reached the composer (this fixture's store is idle, so the composer
+    // is open), the words would appear a second time on the prompt line.
+    const withPaste = f.lastFrameWith('my own words') ?? '';
+    expect(withPaste.match(/my own words/gu)).toHaveLength(1);
     f.input.push('\r');
     expect(await answer).toEqual({
       kind: 'answered',
@@ -228,3 +234,83 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await expect(answer).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
+
+describe.each(['chat', 'home'] as const)(
+  'the question card in the INLINE renderer, %s (ADR-0132)',
+  (host) => {
+    const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 320));
+
+    it('is drawn and answers without the alternate screen', async () => {
+      const f = fixture(host, false, false);
+      await f.ready();
+      const answer = f.store.requestQuestion(QUESTION);
+      await vi.waitFor(() => expect(f.text()).toContain('Question from the agent'));
+      await settle();
+      f.input.push('1');
+      expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['alpha.ts'] }] });
+      expect(f.errors).toEqual([]);
+    });
+
+    it('a card too tall for the terminal recovers when the terminal is enlarged — it is not a dead end', async () => {
+      const f = fixture(host, false, false);
+      await f.ready();
+      // A long agentic turn: many live tool rows push the docked card below the bottom edge of an 80×24 inline frame.
+      for (let n = 0; n < 16; n += 1)
+        f.store.applyToolLiveEvent({
+          phase: 'started',
+          callId: `c${String(n)}`,
+          toolId: 'read_file',
+        });
+      const answer = f.store.requestQuestion(QUESTION);
+      await vi.waitFor(() =>
+        expect(
+          f.text().includes('Question unavailable') || f.text().includes('Question from the agent'),
+        ).toBe(true),
+      );
+      await settle();
+      f.resize(100, 70); // enlarge
+      await settle();
+      await vi.waitFor(() => expect(f.text()).toContain('Question from the agent'));
+      await settle();
+      f.input.push('2');
+      expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['beta.ts'] }] });
+    });
+  },
+);
+
+describe.each(['chat', 'home'] as const)(
+  'several questions in one call, %s (ADR-0132 §3)',
+  (host) => {
+    const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 320));
+    const THREE: AskUserRequest = {
+      questions: ['One', 'Two', 'Three'].map((header) => ({
+        header,
+        question: `${header}?`,
+        multiSelect: false,
+        options: [
+          { label: `${header}-a`, description: 'first' },
+          { label: `${header}-b`, description: 'second' },
+        ],
+      })),
+    };
+
+    it('a burst of Enter keys answers only the question the person has had time to see', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answer = f.store.requestQuestion(THREE);
+      await vi.waitFor(() => expect(f.text()).toContain('One  1 of 3'));
+      await settle();
+      // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
+      // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
+      for (let n = 0; n < 3; n += 1) {
+        f.input.push('\r');
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      }
+      await vi.waitFor(() => expect(f.store.getSnapshot().question?.index).toBe(1));
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(f.store.getSnapshot().question?.index).toBe(1); // not 2, and not submitted
+      f.store.sealToolPreviews();
+      await expect(answer).rejects.toMatchObject({ name: 'AbortError' });
+    });
+  },
+);

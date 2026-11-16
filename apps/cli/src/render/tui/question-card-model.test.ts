@@ -30,6 +30,7 @@ const ARROW = {
   left: { leftArrow: true },
   enter: { return: true },
   esc: { escape: true },
+  backspace: { backspace: true },
 } satisfies Record<string, ChatKey>;
 
 /** Apply a key; return the action, and the next state when the action carries one. */
@@ -365,5 +366,32 @@ describe('buildAnswer', () => {
   it('reports own text only when it was accepted', () => {
     const start = initialQuestionCard(requestOf(single));
     expect(buildAnswer(start)).toEqual({ kind: 'answered', answers: [{ selected: [] }] });
+  });
+});
+
+describe('taking back text the person accepted (review)', () => {
+  const open = (request: AskUserRequest) =>
+    run(initialQuestionCard(request), [
+      ...Array<ChatKey>(OPTIONS.length).fill(ARROW.down),
+      ARROW.enter,
+    ]).state;
+
+  it('an empty field on Enter clears accepted own text and its draft — a multi-select question can return to ticks only', () => {
+    // Accept own text in a two-question call (so the first question stays open to revisit), come back, empty it.
+    const two = requestOf(multi, single);
+    let state = run(open(two), ['o', 'k', ARROW.enter]).state;
+    expect(state.index).toBe(1); // typing your own answer ends the question
+    state = run(state, [ARROW.left]).state;
+    expect(currentEntry(state).own).toBe('ok');
+    state = run(state, [ARROW.enter]).state; // the highlight is on the own row: reopen with 'ok'
+    expect(state.field?.text).toBe('ok');
+    state = run(state, [ARROW.backspace, ARROW.backspace]).state;
+    state = run(state, [ARROW.enter]).state; // empty Enter
+    expect(state.field).toBeUndefined();
+    expect(currentEntry(state)).toMatchObject({ own: undefined, draft: undefined });
+    state = run(state, [ARROW.up, ' ']).state; // tick an option
+    const answer = submitted(run(state, [ARROW.enter, '1']));
+    expect(answer).toMatchObject({ answers: [{ selected: [expect.any(String)] }, {}] });
+    expect((answer as { answers: { other?: string }[] }).answers[0]?.other).toBeUndefined();
   });
 });

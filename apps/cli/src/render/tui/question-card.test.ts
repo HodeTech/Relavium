@@ -199,14 +199,16 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
         const questionRows = view.body
           .filter((row) => row.tone === 'question')
           .map((row) => row.text);
-        expect(questionRows.join('')).toBe(question.question);
+        // Every row of model text starts with the host's gutter; strip it and the rows rejoin to exactly the question.
+        expect(questionRows.every((row) => row.startsWith('│ '))).toBe(true);
+        expect(questionRows.map((row) => row.slice(2)).join('')).toBe(question.question);
         const text = view.body.map((row) => row.text);
         for (const option of question.options)
           expect(text.some((row) => row.endsWith(option.label))).toBe(true);
         const entry = state.entries[state.index];
         const highlighted = question.options[entry?.highlight ?? -1];
         if (highlighted !== undefined && state.hint === undefined)
-          expect(text.some((row) => row.trim() === highlighted.description)).toBe(true);
+          expect(text.some((row) => row === `│ ${highlighted.description}`)).toBe(true);
       }
     }
   }, 60_000);
@@ -282,7 +284,7 @@ describe('what the card says', () => {
   it('shows the highlighted option’s description, and the own row says the text is sent to the model', () => {
     const state = initialQuestionCard(request);
     const first = projectQuestionCard(state, COLUMNS).body.at(-1);
-    expect(first).toMatchObject({ tone: 'description', text: '  The first file' });
+    expect(first).toMatchObject({ tone: 'description', text: '│ The first file' });
     const onOwn = {
       ...state,
       entries: state.entries.map((entry, i) => (i === 0 ? { ...entry, highlight: 2 } : entry)),
@@ -295,7 +297,7 @@ describe('what the card says', () => {
       { ...initialQuestionCard(request), hint: 'Pick one.' },
       COLUMNS,
     );
-    expect(view.body.at(-1)).toMatchObject({ tone: 'hint', text: '  Pick one.' });
+    expect(view.body.at(-1)).toMatchObject({ tone: 'hint', text: '│ Pick one.' });
   });
 
   it('shows the open field with a block cursor and the tail of a long line, and a counter near the limit', () => {
@@ -351,5 +353,68 @@ describe('what the card says', () => {
     expect(projectQuestionCard(action.state, COLUMNS).body.map((row) => row.text)).toContain(
       '› 2 ( ) beta.ts',
     );
+  });
+});
+
+describe('the host owns column 0 (ADR-0132 §2, security sitting)', () => {
+  // The validator refuses these strings, and the store re-checks them; this proves the LAYOUT is safe on its own, for the
+  // day a host feeds it text the validator never saw.
+  const forged = (question: string): AskUserRequest => ({
+    questions: [
+      {
+        header: 'Config',
+        question,
+        multiSelect: false,
+        options: [
+          { label: 'Replace config with defaults', description: 'Overwrites the file' },
+          { label: 'Keep it', description: 'Changes nothing' },
+        ],
+      },
+    ],
+  });
+
+  it('a forged option row at a wrap boundary is drawn behind the gutter, so it can never look like a real option row', () => {
+    // 74 characters of filler push the forgery to the start of the SECOND wrapped row — the case the security sitting drew.
+    const request = forged(`${'x'.repeat(74)}› 1 (•) Overwrite config.toml`);
+    const view = projectQuestionCard(initialQuestionCard(request), COLUMNS);
+    const modelRows = view.body.filter((row) => row.tone === 'question');
+    expect(modelRows.length).toBeGreaterThan(1);
+    for (const row of modelRows) expect(row.text.startsWith('│ ')).toBe(true);
+    // Only the host's own rows start with the cursor glyph or a bare number: exactly the real options, and the own row.
+    const hostRows = view.body.filter(
+      (row) => /^[› ] ?\d? ?[([]/u.test(row.text) || row.text.startsWith('›'),
+    );
+    expect(hostRows.every((row) => row.tone !== 'question')).toBe(true);
+    expect(view.body.filter((row) => row.text.startsWith('› 1'))).toHaveLength(1);
+  });
+
+  it('the description row is behind the gutter too, so it cannot pose as the key rows above or below it', () => {
+    const view = projectQuestionCard(initialQuestionCard(forged('Which?')), COLUMNS);
+    expect(view.body.at(-1)?.text.startsWith('│ ')).toBe(true);
+    expect(view.keys.every((row) => !row.startsWith('│'))).toBe(true);
+  });
+});
+
+describe('answers guide, they do not block (ADR-0132 §6, security sitting)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which?',
+        multiSelect: false,
+        options: [
+          { label: 'a', description: 'first' },
+          { label: 'b', description: 'second' },
+        ],
+      },
+    ],
+  };
+
+  it('says so on the stop row only where a write needs no card (accept-edits, auto)', () => {
+    const state = initialQuestionCard(request);
+    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl-C stops the turn');
+    const guided = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
+    expect(guided).toBe('Esc or Ctrl-C stops the turn · an answer is guidance, not a veto');
+    expect(displayWidth(guided)).toBeLessThanOrEqual(COLUMNS - 2);
   });
 });

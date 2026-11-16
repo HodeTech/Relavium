@@ -1400,6 +1400,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         const mouse = read.kind === 'event' ? read.event : undefined;
         const overlayOwnsKeyboard =
           props.store.getSnapshot().review !== undefined ||
+          props.store.getSnapshot().question !== undefined ||
           reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
           searchRef.current !== undefined ||

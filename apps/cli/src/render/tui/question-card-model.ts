@@ -55,6 +55,13 @@ export type QuestionKeyAction =
   | { readonly kind: 'stop' }
   | { readonly kind: 'none' };
 
+/**
+ * How long a question is on screen before any choosing key counts. The measured-frame acknowledgement proves the frame was
+ * flushed to the terminal, not that a person could read it: a held or auto-repeating Enter would otherwise answer every
+ * remaining question with its first option within milliseconds. The stop keys never wait.
+ */
+export const QUESTION_SETTLE_MS = 250;
+
 const HINT_NOTHING_CHOSEN = 'Pick at least one option, or type your own answer.';
 const HINT_LIMIT = `Limit reached: ${String(ASK_USER_BOUNDS.ownTextCodePoints)} characters.`;
 
@@ -233,8 +240,13 @@ function reduceFieldKey(
     };
   if (key.return === true && key.shift !== true) {
     const text = ownTextOf(field.text);
+    // An empty field is how a person TAKES BACK text they had accepted: it clears it (and the draft), so a multi-select
+    // question can return to ticks only.
     if (text.length === 0)
-      return { kind: 'state', state: withEntry(state, { draft: undefined }, { field: undefined }) };
+      return {
+        kind: 'state',
+        state: withEntry(state, { draft: undefined, own: undefined }, { field: undefined }),
+      };
     const accepted = withEntry(
       state,
       {
