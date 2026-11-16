@@ -1427,7 +1427,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
 /**
  * Assemble a RESUMED `relavium chat` session (2.N) over `AgentSession.resume`: rebind the session's frozen
  * agent + context from the loaded record, reconstruct its in-flight state from the persisted transcript
- * ({@link reconstructSessionState} — text-only, with a trailing unanswered turn rolled back), and wire the
+ * ({@link reconstructSessionState} — text-only; a crash remnant is rolled back, and a retained interrupted turn resumes as its user message, ADR-0119), and wire the
  * SAME platform-capability runtime a fresh session uses. The resumed session lands directly at idle and does
  * NOT re-emit `session:started`; the next `sendMessage` continues the conversation. A session with no stored
  * `agentSnapshot` cannot be rebound and is a clean invalid invocation (exit 2).

@@ -70,7 +70,7 @@ export const SessionMessageSchema = z
     compaction: z.object({ droppedThroughSequence: nonNegativeInt }).strict().optional(),
     /**
      * Present ONLY on an **interruption row** (`role: 'system'`, empty `content`,
-     * [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)): the terminal row of a
+     * [ADR-0119](../../../docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)): the terminal row of a
      * retained aborted/failed/denied/`turn_limit` turn. A closed reason and, for `failed`, a closed `ErrorCode` —
      * stored in the `interruption_reason`/`interruption_code` columns. Never together with `compaction`.
      */

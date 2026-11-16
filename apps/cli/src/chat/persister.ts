@@ -423,12 +423,12 @@ export function createSessionPersister(
           persistDurably(() => {
             throw new Error('a retained turn\u2019s interruption contradicts its completion event');
           });
-        // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
-        // `stopReason:'aborted'`, ADR-0057) are rolled back by the engine (`#messages.pop()`), so persisting
-        // their rows would orphan a user message with no in-memory counterpart on chat-resume. Gating on
-        // BOTH (`error === undefined && stopReason !== 'aborted'`) keeps the durable transcript to completed
-        // exchanges, matching the engine. But the session COST (the cumulative from cost:updated) is real
-        // even for a failed/aborted turn — the engine never decrements it — so flush the row UNCONDITIONALLY
+        // A COMPLETED exchange, or a turn the engine RETAINED as interrupted (ADR-0119: the event carries
+        // `interruption`), writes MESSAGES. Any other ERROR or ABORTED turn (EA7, `stopReason:'aborted'`,
+        // ADR-0057) is rolled back by the engine, so persisting its rows would orphan a user message with no
+        // in-memory counterpart on chat-resume; the gate below (`interruption !== undefined || (error === undefined
+        // && stopReason !== 'aborted')`) keeps the durable transcript equal to what the engine kept. The session
+        // COST (the cumulative from cost:updated) is real even for a failed/aborted turn — the engine never decrements it — so flush the row UNCONDITIONALLY
         // so a resumed budget governor seeds from the true spend (ADR-0028), not an understated one. The
         // token COLUMNS, by contrast, are NOT accumulated on a non-persisted turn (gated with the messages).
         // (EA2/ADR-0055 delivers a real, non-zero `tokensUsed` on a failed/aborted turn, but those tokens
@@ -437,12 +437,12 @@ export function createSessionPersister(
         // beginUserTurn before sendMessage); gating the whole exchange on it prevents an orphaned assistant
         // row with no preceding user row.
         //
-        // ADR-0119 narrows that: the engine now RETAINS a turn it accepted, a provider engaged in, and that ended by
-        // the turn-level abort or a classified error. It says so by setting `interruption` on this event, and the
-        // persister writes the user message, the content-free tool structure and one interruption row iff that field
-        // is present — the engine and the store cannot disagree, because the store never re-derives the predicate.
-        // Everything else (a session-ending cancel emits no event; an unclassified throw, a turn with no engaged
-        // provider, the hard cap) still persists no messages.
+        // ADR-0119 narrows that: the engine now RETAINS a turn it accepted, that the provider accepted (it returned
+        // content), and that ended by the turn-level abort or a classified error. It says so by setting `interruption`
+        // on this event, and the persister writes the user message, the content-free tool structure and one
+        // interruption row iff that field is present — the engine and the store cannot disagree, because the store
+        // never re-derives the predicate. Everything else (a session-ending cancel emits no event; an unclassified
+        // throw, a refusal or Esc before any provider content, the hard cap) still persists no messages.
         if (
           (event.interruption !== undefined ||
             (event.error === undefined && event.stopReason !== 'aborted')) &&
