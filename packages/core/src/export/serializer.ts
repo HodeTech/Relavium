@@ -139,6 +139,31 @@ function workflowIdFor(record: AgentSessionRecord): string {
 }
 
 /**
+ * The message as the export carries it (ADR-0133): a tool row's stored `ask` record — what an `ask_user` card asked and what the
+ * person answered — is conversation content of a kind an export never carries (like a tool's output, it is not provenance of the
+ * workflow, and a workflow file is meant to be committed and shared). The result part is rebuilt from an explicit allow-list of the
+ * structural fields, so a field added to it later is not exported by accident. Everything else is exported as persisted.
+ */
+function withoutQuestionRecords(message: SessionMessage): SessionMessage {
+  if (!message.content.some((part) => part.type === 'tool_result' && part.ask !== undefined))
+    return message;
+  return {
+    ...message,
+    content: message.content.map((part) =>
+      part.type === 'tool_result' && part.ask !== undefined
+        ? {
+            type: 'tool_result' as const,
+            toolCallId: part.toolCallId,
+            resultBytes: part.resultBytes,
+            outcome: part.outcome,
+            ...(part.media === undefined ? {} : { media: part.media }),
+          }
+        : part,
+    ),
+  };
+}
+
+/**
  * Map a persisted session + its ordered transcript into a linear-chain scaffold `WorkflowDefinition`
  * (ADR-0026). Deterministic — the same `record` + `messages` always produce the same definition (no
  * wall-clock / randomness). Frozen agent entries are preserved; historical entries which no longer pass
@@ -201,7 +226,7 @@ export function sessionToWorkflow(
       ...(record.title === undefined ? {} : { title: record.title }),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      messages: ordered,
+      messages: ordered.map(withoutQuestionRecords),
     },
   };
 

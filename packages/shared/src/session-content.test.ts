@@ -5,11 +5,14 @@ import { SessionMessageSchema } from './session.js';
 import {
   createSessionToolCallId,
   parseSessionToolCallId,
+  SESSION_ASK_BOUNDS,
+  SessionAskRecordSchema,
   SessionContentPartSchema,
   SessionToolCallPartSchema,
   SessionToolResultPartSchema,
   SessionToolHistorySchema,
 } from './session-content.js';
+import { utf8ByteLength } from './bytes.js';
 
 const call = { type: 'tool_call', id: 'session-tool:7:0', name: 'read_file', argsBytes: 12 };
 const result = { type: 'tool_result', toolCallId: call.id, resultBytes: 4, outcome: 'ok' };
@@ -185,5 +188,176 @@ describe('engine-assigned session tool-call id', () => {
   ])('refuses noncanonical id %s', (id) => {
     expect(parseSessionToolCallId(id)).toBeUndefined();
     expect(SessionToolCallPartSchema.safeParse({ ...call, id }).success).toBe(false);
+  });
+});
+
+describe('the question record of an ask_user call (ADR-0133)', () => {
+  const askCall = { ...call, name: 'ask_user' };
+  const answered = {
+    status: 'answered',
+    items: [
+      { header: 'Scope', question: 'Which module should change?', selected: ['alpha'] },
+      { header: 'Note', question: 'Anything else?', selected: [], other: 'keep the API stable' },
+    ],
+  };
+  const skipped = { status: 'skipped', items: [{ header: 'Scope', question: 'Which module?' }] };
+  const askResult = { ...result, ask: answered };
+
+  it('admits an answered record (a choice, text, or both) and a skipped one', () => {
+    expect(SessionAskRecordSchema.parse(answered)).toEqual(answered);
+    expect(SessionAskRecordSchema.parse(skipped)).toEqual(skipped);
+    const both = {
+      status: 'answered',
+      items: [{ header: 'H', question: 'Q?', selected: ['a'], other: 'and more' }],
+    };
+    expect(SessionAskRecordSchema.safeParse(both).success).toBe(true);
+  });
+
+  it('refuses an answered item with no answer and a skipped item with one', () => {
+    for (const record of [
+      { status: 'answered', items: [{ header: 'H', question: 'Q?' }] },
+      { status: 'answered', items: [{ header: 'H', question: 'Q?', selected: [] }] },
+      { status: 'skipped', items: [{ header: 'H', question: 'Q?', selected: ['a'] }] },
+      { status: 'skipped', items: [{ header: 'H', question: 'Q?', other: 'x' }] },
+      { status: 'skipped', items: [{ header: 'H', question: 'Q?', selected: [] }] },
+    ])
+      expect(SessionAskRecordSchema.safeParse(record).success).toBe(false);
+  });
+
+  it('is strict, non-empty and bounded in questions', () => {
+    expect(SessionAskRecordSchema.safeParse({ ...skipped, extra: 1 }).success).toBe(false);
+    expect(
+      SessionAskRecordSchema.safeParse({
+        status: 'skipped',
+        items: [{ ...skipped.items[0], x: 1 }],
+      }).success,
+    ).toBe(false);
+    expect(SessionAskRecordSchema.safeParse({ status: 'skipped', items: [] }).success).toBe(false);
+    const item = { header: 'H', question: 'Q?' };
+    const many = (count: number) => ({
+      status: 'skipped',
+      items: Array.from({ length: count }, () => item),
+    });
+    expect(
+      SessionAskRecordSchema.safeParse(many(SESSION_ASK_BOUNDS.questionsPerRecord)).success,
+    ).toBe(true);
+    expect(
+      SessionAskRecordSchema.safeParse(many(SESSION_ASK_BOUNDS.questionsPerRecord + 1)).success,
+    ).toBe(false);
+  });
+
+  it('pins the byte and code-point ceilings to literal numbers', () => {
+    expect(SESSION_ASK_BOUNDS).toEqual({
+      headerBytes: 24,
+      questionBytes: 150,
+      labelBytes: 60,
+      questionsPerRecord: 4,
+      optionsPerQuestion: 4,
+      ownTextCodePoints: 500,
+    });
+    const record = (item: object) => ({
+      status: 'answered',
+      items: [{ header: 'H', question: 'Q?', selected: ['a'], ...item }],
+    });
+    const edge = (field: string, limit: number) => {
+      expect(SessionAskRecordSchema.safeParse(record({ [field]: 'x'.repeat(limit) })).success).toBe(
+        true,
+      );
+      expect(
+        SessionAskRecordSchema.safeParse(record({ [field]: 'x'.repeat(limit + 1) })).success,
+      ).toBe(false);
+    };
+    edge('header', 24);
+    edge('question', 150);
+    expect(SessionAskRecordSchema.safeParse(record({ selected: ['x'.repeat(60)] })).success).toBe(
+      true,
+    );
+    expect(SessionAskRecordSchema.safeParse(record({ selected: ['x'.repeat(61)] })).success).toBe(
+      false,
+    );
+    expect(
+      SessionAskRecordSchema.safeParse(record({ selected: ['a', 'b', 'c', 'd', 'e'] })).success,
+    ).toBe(false);
+    // Bytes, not code units: a 3-byte glyph repeated past the budget is refused although it is few characters.
+    expect(utf8ByteLength('€'.repeat(9))).toBeGreaterThan(24);
+    expect(SessionAskRecordSchema.safeParse(record({ header: '€'.repeat(9) })).success).toBe(false);
+    expect(SessionAskRecordSchema.safeParse(record({ header: '€'.repeat(8) })).success).toBe(true);
+    // The own text is bounded in CODE POINTS (an astral character is one).
+    const own = (text: string) =>
+      SessionAskRecordSchema.safeParse(record({ selected: undefined, other: text })).success;
+    expect(own('x'.repeat(500))).toBe(true);
+    expect(own('x'.repeat(501))).toBe(false);
+    expect(own('😀'.repeat(500))).toBe(true);
+    expect(own('😀'.repeat(501))).toBe(false);
+  });
+
+  it('refuses control characters, separators and unpaired surrogates in every string', () => {
+    const bad = [
+      'a\nb',
+      'a\tb',
+      `a${String.fromCharCode(27)}[31mb`,
+      `a${String.fromCharCode(0x2028)}b`,
+      `a${String.fromCharCode(0x2029)}b`,
+      `a${String.fromCharCode(0xd800)}b`,
+    ];
+    for (const text of bad) {
+      for (const field of ['header', 'question', 'other'])
+        expect(
+          SessionAskRecordSchema.safeParse({
+            status: 'answered',
+            items: [
+              {
+                header: 'H',
+                question: 'Q?',
+                selected: field === 'other' ? undefined : ['a'],
+                other: field === 'other' ? text : undefined,
+                ...(field === 'other' ? {} : { [field]: text }),
+              },
+            ],
+          }).success,
+        ).toBe(false);
+      expect(
+        SessionAskRecordSchema.safeParse({
+          status: 'answered',
+          items: [{ header: 'H', question: 'Q?', selected: [text] }],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      SessionAskRecordSchema.safeParse({
+        status: 'skipped',
+        items: [{ header: '', question: 'Q?' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rides on a tool result and is read back by the strict part and message schemas', () => {
+    expect(SessionToolResultPartSchema.parse(askResult)).toEqual(askResult);
+    expect(SessionContentPartSchema.parse(askResult)).toEqual(askResult);
+    const row = {
+      id: 'm',
+      sessionId: 's',
+      sequenceNumber: 4,
+      role: 'tool',
+      content: [askResult],
+      timestamp: '2026-11-16T00:00:00.000Z',
+    };
+    expect(SessionMessageSchema.parse(row).content).toEqual([askResult]);
+    expect(
+      SessionToolResultPartSchema.safeParse({ ...askResult, ask: { ...answered, extra: 1 } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('is accepted in a history entry only for a successful ask_user call', () => {
+    expect(SessionToolHistorySchema.parse([{ call: askCall, result: askResult }])).toEqual([
+      { call: askCall, result: askResult },
+    ]);
+    expect(SessionToolHistorySchema.safeParse([{ call, result: askResult }]).success).toBe(false); // read_file
+    for (const outcome of ['error', 'denied', 'cancelled'])
+      expect(
+        SessionToolHistorySchema.safeParse([{ call: askCall, result: { ...askResult, outcome } }])
+          .success,
+      ).toBe(false);
   });
 });

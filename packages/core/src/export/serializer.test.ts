@@ -218,7 +218,32 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
         { type: 'tool_call', id: 'session-tool:1:1', name: 'read_file', argsBytes: 12 },
       ]),
       msg(2, 'tool', [
-        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 40, outcome: 'ok' },
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 40,
+          outcome: 'ok',
+          // The rebuilt row keeps its other structural fields, media included.
+          media: [
+            {
+              type: 'media',
+              mimeType: 'image/png',
+              source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+            },
+          ],
+          // ADR-0133: the stored question record is conversation content; an export carries none of it.
+          ask: {
+            status: 'answered',
+            items: [
+              {
+                header: 'Pick',
+                question: 'QUESTION-WORDS-NOT-EXPORTED',
+                selected: [],
+                other: 'ANSWER-WORDS-NOT-EXPORTED',
+              },
+            ],
+          },
+        },
         { type: 'tool_result', toolCallId: 'session-tool:1:1', resultBytes: 4, outcome: 'ok' },
       ]),
       msg(3, 'assistant', [{ type: 'text', text: 'done' }]),
@@ -234,6 +259,8 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(def.workflow.nodes[1]).toMatchObject({ tools: ['read_file'] });
     expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
     expect(JSON.stringify(def.workflow.nodes)).not.toContain('ask_user');
+    expect(JSON.stringify(def)).not.toContain('NOT-EXPORTED');
+    expect(JSON.stringify(def)).toContain(`media://sha256-${'a'.repeat(64)}`);
   });
   it('maps assistant turns to a linear agent-node chain (input → turn-n → output) with edges', () => {
     const def = sessionToWorkflow(session(), [

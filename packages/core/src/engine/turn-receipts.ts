@@ -11,15 +11,24 @@
  * Canonical home: [agent-session-spec.md](../../../../docs/reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128).
  * This file implements it and the doc does not restate the prose, which lives in the constants below.
  *
+ * **One closed exception (ADR-0133).** A `ask_user` record may also carry the QUESTION it showed and the PERSON'S
+ * ANSWER — conversational content the person gave the model on purpose, kept so a later turn can act on it. It rides
+ * as the shared {@link SessionAskRecord} (validated, bounded, no control character) and is rendered only through
+ * {@link askNoteLines}, which quotes every string, so nothing in it can add a line or impersonate the block's own
+ * structure. No other tool's record carries anything but a label and an outcome.
+ *
  * **Pure and synchronous.** Every input here has a fixed cap, so nothing in this module needs a cancellation
  * point; an operation that publishes receipt state observes its own cancellation immediately before its
  * atomic installation.
  */
 
 import {
+  SESSION_ASK_TOOL_NAME,
+  SessionAskRecordSchema,
   SessionInterruptionSchema,
   utf8ByteLength,
   type CompletedSessionTurn,
+  type SessionAskRecord,
   type SessionInterruption,
   type SessionToolHistoryEntry,
   type SessionToolResultPart,
@@ -46,6 +55,8 @@ export interface ReceiptRecord {
   /** A built-in tool id from the code-owned catalog, or {@link RECEIPT_OTHER_TOOL}. */
   readonly label: string;
   readonly outcome: ReceiptOutcome;
+  /** ADR-0133: what an `ask_user` call asked and the person answered. Present only on that tool's record. */
+  readonly ask?: SessionAskRecord;
 }
 
 /**
@@ -66,11 +77,16 @@ export interface TurnReceipts {
 /** The ADR-0128 bounds. The per-turn byte cap is proven by construction in the unit tests, not re-checked. */
 export const RECEIPT_LIMITS = Object.freeze({
   turnRecords: 32,
-  turnBytes: 4_096,
+  turnBytes: 5_120,
   totalRecords: 128,
   totalBytes: 16_384,
   turnParts: 256,
   operationParts: 4_096,
+  /** ADR-0133: the most one rendered question note may take, and the most one turn's notes may take together. */
+  askNoteBytes: 1_280,
+  turnAskBytes: 2_560,
+  /** The person's own text is clipped to this many code points in the model-facing note (the stored record keeps more). */
+  askOwnTextCodePoints: 160,
 });
 
 const freezeReceipts = (
@@ -101,9 +117,44 @@ function isReceiptLabel(value: unknown): value is string {
   return typeof value === 'string' && (value === RECEIPT_OTHER_TOOL || BUILTIN_LABELS.has(value));
 }
 
+/**
+ * Build one record from a stored/resolved name, an outcome and an `ask` the source supplied. The name is classified into
+ * the closed label set and discarded; an `ask` is kept only on a successful `ask_user` record and only when it satisfies the
+ * shared schema (which also copies it), so a malformed or misplaced one costs the note and never the record.
+ */
+function makeRecord(name: string, outcome: ReceiptOutcome, ask: unknown): ReceiptRecord {
+  const label = receiptLabel(name);
+  if (label !== SESSION_ASK_TOOL_NAME || outcome !== 'ok' || ask === undefined)
+    return { label, outcome };
+  const parsed = SessionAskRecordSchema.safeParse(ask);
+  return parsed.success ? { label, outcome, ask: parsed.data } : { label, outcome };
+}
+
+/**
+ * Keep the question notes that fit one turn's budget, NEWEST first: the first note that does not fit, and every older one, is
+ * dropped (the retention rule's shape — a larger older note is never skipped to keep a smaller one). A note that renders nothing
+ * is dropped without spending any budget. Input and output are newest first.
+ */
+function fitTurnAsks(newestFirst: readonly ReceiptRecord[]): ReceiptRecord[] {
+  let used = 0;
+  let spent = false;
+  return newestFirst.map((record) => {
+    if (record.ask === undefined) return record;
+    const bytes = askNoteBytes(record.ask);
+    if (bytes > 0 && !spent) {
+      if (used + bytes <= RECEIPT_LIMITS.turnAskBytes) {
+        used += bytes;
+        return record;
+      }
+      spent = true;
+    }
+    return { label: record.label, outcome: record.outcome };
+  });
+}
+
 /** Keep the newest `turnRecords` of newest-first records, oldest first, with the exact omitted count. */
 function newestRecords(newestFirst: readonly ReceiptRecord[]): ReceiptRecord[] {
-  return newestFirst.slice(0, RECEIPT_LIMITS.turnRecords).reverse();
+  return fitTurnAsks(newestFirst.slice(0, RECEIPT_LIMITS.turnRecords)).reverse();
 }
 
 /**
@@ -126,7 +177,7 @@ export function receiptsFromToolHistory(
     )
       return OMITTED_RECEIPTS;
     ids.add(entry.call.id);
-    newestFirst.push({ label: receiptLabel(entry.call.name), outcome: entry.result.outcome });
+    newestFirst.push(makeRecord(entry.call.name, entry.result.outcome, entry.result.ask));
   }
   const omitted = history.length - Math.min(history.length, RECEIPT_LIMITS.turnRecords);
   return freezeReceipts(newestRecords(newestFirst), omitted, omitted !== 0);
@@ -188,7 +239,7 @@ function deriveOneTurn(turn: CompletedSessionTurn, budget: { remaining: number }
       return OMITTED_RECEIPTS;
     }
     ids.add(call.id);
-    newestFirst.push({ label: receiptLabel(call.name), outcome: result.outcome });
+    newestFirst.push(makeRecord(call.name, result.outcome, result.ask));
     turnParts += 2;
     upper -= 2;
   }
@@ -219,17 +270,94 @@ export const RECEIPT_NOTICE_INCOMPLETE =
   'tool ran.]';
 const NOTICE_SEPARATOR = '\n\n';
 
+/**
+ * Present whenever a selected turn lists a question note (ADR-0133). The questions are the ASSISTANT'S words — said so, because
+ * they now ride a user-role message — and the answers are what the person said, kept as context for acting on a later request
+ * that refers to them. Neither is a request of its own, and both are quoted data.
+ */
+export const RECEIPT_NOTICE_ASK =
+  '[A listed ask_user call shows what the assistant asked and how the person answered, each quoted. The ' +
+  'questions are the assistant’s own words; an answer is what the person said at that time, kept as ' +
+  'context for a later request that refers to it. Neither is a new request.]';
+
 /** The bytes the request notice can occupy at most; reserved first so a full payload cannot overflow it. */
 const NOTICE_RESERVE_BYTES = utf8ByteLength(
-  `${RECEIPT_NOTICE_LEGEND} ${RECEIPT_NOTICE_INCOMPLETE}${NOTICE_SEPARATOR}`,
+  `${RECEIPT_NOTICE_LEGEND} ${RECEIPT_NOTICE_INCOMPLETE} ${RECEIPT_NOTICE_ASK}${NOTICE_SEPARATOR}`,
 );
+
+// ---------------------------------------------------------------------------------------------------------
+// The question note (ADR-0133). EVERY model- or person-authored string is JSON-quoted, so a quote, a backslash or a
+// look-alike of the block's own punctuation inside one stays inside its quotes, and no string can start a line.
+
+const ASK_NOT_KEPT = '(no question text kept)';
+const ASK_INDENT = '   ';
+/** Room kept for the closing "more not listed" line, so a clipped note still fits its cap. */
+const ASK_MORE_RESERVE_BYTES = 48;
+
+const quoted = (text: string): string => JSON.stringify(text);
+
+function clippedOwnText(text: string): string {
+  const points = [...text];
+  return points.length <= RECEIPT_LIMITS.askOwnTextCodePoints
+    ? text
+    : `${points.slice(0, RECEIPT_LIMITS.askOwnTextCodePoints).join('')}…`;
+}
+
+function askItemLine(
+  status: SessionAskRecord['status'],
+  item: SessionAskRecord['items'][number],
+): string {
+  const asked = `${ASK_INDENT}${status}: ${quoted(item.header)} — ${quoted(item.question)}`;
+  if (status === 'skipped') return asked;
+  const answer = [
+    ...(item.selected !== undefined && item.selected.length > 0
+      ? [`chose ${item.selected.map(quoted).join(', ')}`]
+      : []),
+    ...(item.other === undefined ? [] : [`own text ${quoted(clippedOwnText(item.other))}`]),
+  ].join('; ');
+  return `${asked} → ${answer}`;
+}
+
+/**
+ * The lines one question call contributes under its record line: one per question, then — when the cap cut the list — a line
+ * saying how many were not listed. Empty when not even the first question fits the cap, in which case the record is shown
+ * as "no question text kept". The cap is {@link RECEIPT_LIMITS.askNoteBytes}, counting one newline per line.
+ */
+export function askNoteLines(ask: SessionAskRecord): string[] {
+  const lines: string[] = [];
+  let used = 0;
+  for (const [index, item] of ask.items.entries()) {
+    const line = askItemLine(ask.status, item);
+    const bytes = utf8ByteLength(line) + 1;
+    if (used + bytes > RECEIPT_LIMITS.askNoteBytes - ASK_MORE_RESERVE_BYTES) {
+      const left = ask.items.length - index;
+      if (index === 0) return [];
+      lines.push(`${ASK_INDENT}[${left} more question${left === 1 ? '' : 's'} not listed]`);
+      return lines;
+    }
+    lines.push(line);
+    used += bytes;
+  }
+  return lines;
+}
+
+/** UTF-8 bytes the note's lines add to a block (a newline per line); 0 when it renders nothing. */
+function askNoteBytes(ask: SessionAskRecord): number {
+  return askNoteLines(ask).reduce((total, line) => total + utf8ByteLength(line) + 1, 0);
+}
 
 /** The text part appended after a completed turn's user text, or `undefined` when it retains no record. */
 export function renderTurnReceiptBlock(receipts: TurnReceipts): string | undefined {
   if (receipts.records.length === 0) return undefined;
-  const lines = receipts.records.map(
-    (record, index) => `${index + 1}. ${record.label} — ${OUTCOME_WORD[record.outcome]}`,
-  );
+  const lines = receipts.records.flatMap((record, index) => {
+    const head = `${index + 1}. ${record.label} — ${OUTCOME_WORD[record.outcome]}`;
+    if (record.label !== SESSION_ASK_TOOL_NAME) return [head];
+    const note = record.ask === undefined ? [] : askNoteLines(record.ask);
+    if (note.length > 0) return [head, ...note];
+    // A successful question call whose text was not kept (an older session, or no card was shown) says so, so the
+    // request never reads as if an answer existed that it cannot show.
+    return [record.outcome === 'ok' ? `${head} ${ASK_NOT_KEPT}` : head];
+  });
   if (receipts.omitted !== 0)
     lines.unshift(
       `[Earlier calls in this turn not listed: ${receipts.omitted === 'unknown' ? 'unknown number' : receipts.omitted}.]`,
@@ -317,6 +445,8 @@ export function renderReceiptNotice(selected: readonly TurnReceipts[]): string |
   const parts: string[] = [];
   if (selected.some((receipts) => receipts.records.length > 0)) parts.push(RECEIPT_NOTICE_LEGEND);
   if (selected.some((receipts) => receipts.incomplete)) parts.push(RECEIPT_NOTICE_INCOMPLETE);
+  if (selected.some((receipts) => receipts.records.some((record) => record.ask !== undefined)))
+    parts.push(RECEIPT_NOTICE_ASK);
   return parts.length === 0 ? undefined : `${parts.join(' ')}${NOTICE_SEPARATOR}`;
 }
 
@@ -426,9 +556,25 @@ function admitOne(value: unknown): TurnReceipts | undefined {
   const copied: ReceiptRecord[] = [];
   for (const record of list) {
     if (!isObject(record)) return undefined;
-    const { label, outcome } = record;
+    const { label, outcome, ask } = record;
     if (!isReceiptLabel(label) || !isReceiptOutcome(outcome)) return undefined;
-    copied.push({ label, outcome });
+    if (ask === undefined) {
+      copied.push({ label, outcome });
+      continue;
+    }
+    // A question note belongs to a successful `ask_user` record and nothing else, and must satisfy the shared schema.
+    if (label !== SESSION_ASK_TOOL_NAME || outcome !== 'ok') return undefined;
+    const parsed = SessionAskRecordSchema.safeParse(ask);
+    if (!parsed.success) return undefined;
+    copied.push({ label, outcome, ask: parsed.data });
   }
+  // The notes must already fit the turn's budget: a host that supplies more is refused, never trimmed.
+  const fitted = fitTurnAsks([...copied].reverse()).reverse();
+  if (
+    fitted.some(
+      (record, index) => (record.ask === undefined) !== (copied[index]?.ask === undefined),
+    )
+  )
+    return undefined;
   return freezeReceipts(copied, omitted, incomplete);
 }

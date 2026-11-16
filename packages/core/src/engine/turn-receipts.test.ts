@@ -1,6 +1,7 @@
 import type { LlmMessage } from '@relavium/llm';
 import type {
   CompletedSessionTurn,
+  SessionAskRecord,
   SessionMessage,
   SessionToolHistoryEntry,
 } from '@relavium/shared';
@@ -16,10 +17,12 @@ import {
   RECEIPT_BLOCK_CLOSING,
   RECEIPT_BLOCK_OPENING,
   RECEIPT_LIMITS,
+  RECEIPT_NOTICE_ASK,
   RECEIPT_NOTICE_INCOMPLETE,
   RECEIPT_NOTICE_LEGEND,
   RECEIPT_OTHER_TOOL,
   admitSuppliedSpans,
+  askNoteLines,
   deriveTurnReceipts,
   receiptBlockBytes,
   receiptLabel,
@@ -34,6 +37,7 @@ import {
   type TurnReceipts,
 } from './turn-receipts.js';
 import { BUILTIN_TOOL_IDS } from '../tools/builtins.js';
+import { utf8ByteLength } from '@relavium/shared';
 
 const record = (label: string, outcome: ReceiptOutcome = 'ok'): ReceiptRecord => ({
   label,
@@ -656,6 +660,22 @@ describe('summariser input carries the same projection', () => {
     expect(out.endsWith('Assistant: a1')).toBe(true);
   });
 
+  it('hands the summariser the question and the answer, so a summary can keep a decision the person made', () => {
+    const ask: SessionAskRecord = {
+      status: 'answered',
+      items: [{ header: 'Scope', question: 'Which module?', selected: ['alpha'] }],
+    };
+    const out = render(
+      renderConversationToSummarise(
+        undefined,
+        [user('q1'), assistant('a1')],
+        [{ receipts: receipts([{ label: 'ask_user', outcome: 'ok', ask }]) }, undefined],
+      ),
+    );
+    expect(out).toContain('   answered: "Scope" — "Which module?" → chose "alpha"');
+    expect(out).toContain(RECEIPT_NOTICE_ASK);
+  });
+
   it('keeps a turn whose user text is empty when it still has records', () => {
     const out = render(
       renderConversationToSummarise(
@@ -846,5 +866,408 @@ describe('interrupted turns (ADR-0119)', () => {
       null,
     ])
       expect(admitSuppliedSpans([{ ...base, interruption: bad }])).toBeUndefined();
+  });
+});
+
+describe('the question note of an ask_user record (ADR-0133)', () => {
+  const answered = (
+    items: readonly { header?: string; question?: string; selected?: string[]; other?: string }[],
+  ): SessionAskRecord => ({
+    status: 'answered',
+    items: items.map((item) => ({ header: 'Scope', question: 'Which module?', ...item })),
+  });
+  const skipped: SessionAskRecord = {
+    status: 'skipped',
+    items: [{ header: 'Scope', question: 'Which module?' }],
+  };
+  const askRecord = (ask?: SessionAskRecord, outcome: ReceiptOutcome = 'ok'): ReceiptRecord => ({
+    label: 'ask_user',
+    outcome,
+    ...(ask === undefined ? {} : { ask }),
+  });
+  const askEntry = (id: string, ask: SessionAskRecord | undefined, name = 'ask_user') => {
+    const base = entry(id, name);
+    return { call: base.call, result: { ...base.result, ...(ask === undefined ? {} : { ask }) } };
+  };
+
+  describe('rendering', () => {
+    it('lists one quoted line per question under its record, with the choice and the own text', () => {
+      const ask = answered([
+        { selected: ['alpha'], other: 'keep the API' },
+        { header: 'Tests', question: 'Add tests?', selected: ['yes', 'later'] },
+      ]);
+      expect(renderTurnReceiptBlock(receipts([askRecord(ask), record('read_file')]))).toBe(
+        [
+          `\n\n${RECEIPT_BLOCK_OPENING}`,
+          '1. ask_user — ok',
+          '   answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API"',
+          '   answered: "Tests" — "Add tests?" → chose "yes", "later"',
+          '2. read_file — ok',
+          RECEIPT_BLOCK_CLOSING,
+        ].join('\n'),
+      );
+    });
+
+    it('lists a skipped call as the questions asked and no answer', () => {
+      expect(renderTurnReceiptBlock(receipts([askRecord(skipped)]))).toBe(
+        [
+          `\n\n${RECEIPT_BLOCK_OPENING}`,
+          '1. ask_user — ok',
+          '   skipped: "Scope" — "Which module?"',
+          RECEIPT_BLOCK_CLOSING,
+        ].join('\n'),
+      );
+    });
+
+    it('says so when a successful ask_user record kept no text, and adds nothing to a failed one', () => {
+      expect(renderTurnReceiptBlock(receipts([askRecord()]))).toContain(
+        '1. ask_user — ok (no question text kept)',
+      );
+      for (const outcome of ['error', 'denied', 'cancelled'] as const)
+        expect(renderTurnReceiptBlock(receipts([askRecord(undefined, outcome)]))).toContain(
+          `1. ask_user — ${outcome}\n`,
+        );
+      // Another tool's record never gets the phrase.
+      expect(renderTurnReceiptBlock(receipts([record('read_file')]))).not.toContain('no question');
+    });
+
+    it('JSON-quotes every string, so a quote, a backslash or a look-alike row stays inside its quotes', () => {
+      const nasty = '" — "x" → chose "a"\\ 2. read_file — ok';
+      const lines = askNoteLines(answered([{ header: 'H"', question: nasty, other: nasty }]));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toBe(
+        `   answered: "H\\"" — ${JSON.stringify(nasty)} → own text ${JSON.stringify(nasty)}`,
+      );
+      expect(lines[0]).not.toContain('\n');
+      // The block, read line by line, has no line that is not the opening, a numbered record, an indented note or the closing.
+      const block =
+        renderTurnReceiptBlock(receipts([askRecord(answered([{ question: nasty }]))])) ?? '';
+      for (const line of block.split('\n').filter((entryLine) => entryLine.length > 0))
+        expect(
+          line === RECEIPT_BLOCK_OPENING ||
+            line === RECEIPT_BLOCK_CLOSING ||
+            /^1\. ask_user — ok$/u.test(line) ||
+            line.startsWith('   answered: '),
+        ).toBe(true);
+    });
+
+    it("clips the person's own text at 160 code points with an ellipsis, by code point", () => {
+      const limit = RECEIPT_LIMITS.askOwnTextCodePoints;
+      expect(limit).toBe(160);
+      const exact = askNoteLines(answered([{ selected: [], other: 'x'.repeat(limit) }]))[0] ?? '';
+      expect(exact).toContain(`"${'x'.repeat(limit)}"`);
+      const over =
+        askNoteLines(answered([{ selected: [], other: 'x'.repeat(limit + 1) }]))[0] ?? '';
+      expect(over).toContain(`"${'x'.repeat(limit)}…"`);
+      const astral =
+        askNoteLines(answered([{ selected: [], other: '😀'.repeat(limit + 5) }]))[0] ?? '';
+      expect(astral).toContain(`"${'😀'.repeat(limit)}…"`);
+    });
+
+    it('lists the questions that fit the per-note cap and counts the rest', () => {
+      expect(RECEIPT_LIMITS.askNoteBytes).toBe(1_280);
+      const long = 'q'.repeat(150);
+      const four = answered(
+        Array.from({ length: 4 }, (_, index) => ({
+          header: `H${String(index)}`,
+          question: long,
+          selected: [],
+          other: 'o'.repeat(160),
+        })),
+      );
+      const lines = askNoteLines(four);
+      expect(lines.at(-1)).toMatch(/^ {3}\[\d more questions? not listed\]$/u);
+      const listed = lines.length - 1;
+      expect(listed).toBeGreaterThan(0);
+      expect(listed).toBeLessThan(4);
+      expect(lines.at(-1)).toContain(`${String(4 - listed)} more`);
+      const bytes = lines.reduce((total, line) => total + Buffer.byteLength(line) + 1, 0);
+      expect(bytes).toBeLessThanOrEqual(RECEIPT_LIMITS.askNoteBytes);
+      // Singular for exactly one left.
+      const three = askNoteLines(
+        answered(
+          Array.from({ length: 4 }, (_, index) => ({
+            header: `H${String(index)}`,
+            question: 'q'.repeat(100),
+            selected: ['x'.repeat(60), 'y'.repeat(60), 'z'.repeat(60)],
+          })),
+        ),
+      );
+      expect(three.at(-1)).toMatch(/\[1 more question not listed\]/u);
+    });
+  });
+
+  describe('live source', () => {
+    it('keeps the record of a successful ask_user entry, and only that', () => {
+      const ask = answered([{ selected: ['alpha'] }]);
+      const [kept] = receiptsFromToolHistory([askEntry('session-tool:1:0', ask)]).records;
+      expect(kept).toEqual({ label: 'ask_user', outcome: 'ok', ask });
+      // Another tool cannot smuggle one in, nor can a failed question call.
+      expect(
+        receiptsFromToolHistory([askEntry('session-tool:1:0', ask, 'read_file')]).records[0],
+      ).toEqual({ label: 'read_file', outcome: 'ok' });
+      const failed = askEntry('session-tool:1:0', ask);
+      expect(
+        receiptsFromToolHistory([
+          { call: failed.call, result: { ...failed.result, outcome: 'error' } },
+        ]).records[0],
+      ).toEqual({ label: 'ask_user', outcome: 'error' });
+    });
+
+    it('drops a malformed note and keeps the record', () => {
+      const bad = { status: 'answered', items: [] } as unknown as SessionAskRecord;
+      expect(receiptsFromToolHistory([askEntry('session-tool:1:0', bad)]).records).toEqual([
+        { label: 'ask_user', outcome: 'ok' },
+      ]);
+    });
+
+    it('keeps a copy, so a later edit of the history cannot change a request', () => {
+      const ask = answered([{ selected: ['alpha'] }]);
+      const [kept] = receiptsFromToolHistory([askEntry('session-tool:1:0', ask)]).records;
+      expect(kept?.ask).not.toBe(ask);
+      expect(kept?.ask).toEqual(ask);
+    });
+
+    it("spends one turn's note budget NEWEST first and drops the first note that does not fit and every older one", () => {
+      expect(RECEIPT_LIMITS.turnAskBytes).toBe(2_560);
+      const big = answered(
+        Array.from({ length: 3 }, (_, index) => ({
+          header: `B${String(index)}`,
+          question: 'q'.repeat(150),
+          selected: [],
+          other: 'o'.repeat(160),
+        })),
+      );
+      const small = answered([{ selected: ['a'] }]);
+      const noteBytes = askNoteLines(big).reduce(
+        (sum, line) => sum + Buffer.byteLength(line) + 1,
+        0,
+      );
+      expect(noteBytes).toBeGreaterThan(1_000);
+      expect(noteBytes).toBeLessThanOrEqual(RECEIPT_LIMITS.askNoteBytes);
+      expect(noteBytes * 2 + 200).toBeLessThanOrEqual(RECEIPT_LIMITS.turnAskBytes);
+      expect(noteBytes * 3).toBeGreaterThan(RECEIPT_LIMITS.turnAskBytes);
+      // Oldest first: small(old), big, big, small(new). Walking newest first: small fits, big fits, big fits,
+      // only two bigs fit (2 × ~1050 + the small ≤ 2560), the third does not.
+      const result = receiptsFromToolHistory([
+        askEntry('session-tool:1:0', small),
+        askEntry('session-tool:1:1', big),
+        askEntry('session-tool:1:2', big),
+        askEntry('session-tool:1:3', big),
+        askEntry('session-tool:1:4', small),
+      ]);
+      expect(result.records.map((entryRecord) => entryRecord.ask !== undefined)).toEqual([
+        false, // the oldest small note: older than the first that did not fit — never skipped to keep a smaller one
+        false, // the third big (counting from the newest) did not fit
+        true,
+        true,
+        true,
+      ]);
+      expect(result.incomplete).toBe(false);
+    });
+  });
+
+  describe('restored source', () => {
+    it('derives the note from the stored result row', () => {
+      const ask = answered([{ selected: ['alpha'] }]);
+      const turn = turnOf(...pairRows([askEntry('session-tool:3:0', ask)]));
+      expect(deriveTurnReceipts([turn])[0]?.records).toEqual([
+        { label: 'ask_user', outcome: 'ok', ask },
+      ]);
+    });
+
+    it('ignores a note on any other tool, on a failed call, and a malformed one — the record survives', () => {
+      const ask = answered([{ selected: ['alpha'] }]);
+      const failed = askEntry('session-tool:3:1', ask);
+      const turn = turnOf(
+        ...pairRows([
+          askEntry('session-tool:3:0', ask, 'write_file'),
+          { call: failed.call, result: { ...failed.result, outcome: 'cancelled' } },
+          askEntry('session-tool:3:2', {
+            status: 'answered',
+            items: [],
+          } as unknown as SessionAskRecord),
+        ]),
+      );
+      expect(deriveTurnReceipts([turn])[0]?.records).toEqual([
+        { label: 'write_file', outcome: 'ok' },
+        { label: 'ask_user', outcome: 'cancelled' },
+        { label: 'ask_user', outcome: 'ok' },
+      ]);
+    });
+
+    it('applies the same per-turn budget as the live source, so a resumed request matches the live one', () => {
+      const big = answered(
+        Array.from({ length: 3 }, (_, index) => ({
+          header: `B${String(index)}`,
+          question: 'q'.repeat(150),
+          selected: [],
+          other: 'o'.repeat(160),
+        })),
+      );
+      const entries = [0, 1, 2, 3].map((index) => askEntry(`session-tool:5:${String(index)}`, big));
+      const live = receiptsFromToolHistory(entries);
+      const restored = deriveTurnReceipts([turnOf(...pairRows(entries))])[0];
+      expect(restored).toEqual(live);
+      expect(renderTurnReceiptBlock(restored ?? OMITTED_RECEIPTS)).toBe(
+        renderTurnReceiptBlock(live),
+      );
+    });
+  });
+
+  describe('the notice', () => {
+    it('adds its sentence exactly when a selected turn lists a note', () => {
+      const plain = receipts([record('read_file')]);
+      const noted = receipts([askRecord(answered([{ selected: ['a'] }]))]);
+      expect(renderReceiptNotice([plain])).toBe(`${RECEIPT_NOTICE_LEGEND}\n\n`);
+      expect(renderReceiptNotice([plain, noted])).toBe(
+        `${RECEIPT_NOTICE_LEGEND} ${RECEIPT_NOTICE_ASK}\n\n`,
+      );
+      expect(renderReceiptNotice([receipts([askRecord()])])).toBe(`${RECEIPT_NOTICE_LEGEND}\n\n`);
+      expect(renderReceiptNotice([receipts([askRecord(skipped)], 3)])).toBe(
+        `${RECEIPT_NOTICE_LEGEND} ${RECEIPT_NOTICE_INCOMPLETE} ${RECEIPT_NOTICE_ASK}\n\n`,
+      );
+    });
+
+    it('says an answer is context for a later request and not a request of its own', () => {
+      expect(RECEIPT_NOTICE_ASK).toContain('each quoted');
+      expect(RECEIPT_NOTICE_ASK).toContain('questions are the assistant’s own words');
+      expect(RECEIPT_NOTICE_ASK).toContain('Neither is a new request');
+    });
+  });
+
+  describe('the byte bounds', () => {
+    it('raised the per-turn cap because the worst admissible block can pass 4,096 bytes', () => {
+      // The longest block the bounds admit: 30 question records with no text kept, two records whose notes fill the
+      // per-turn note budget, and the "unknown number omitted" line — every part counted from the same constants.
+      const bare = utf8ByteLength('32. ask_user — ok (no question text kept)') + 1;
+      const heads = 2 * (utf8ByteLength('31. ask_user — ok') + 1);
+      const omitted =
+        utf8ByteLength('[Earlier calls in this turn not listed: unknown number.]') + 1;
+      const wrappers = utf8ByteLength(`\n\n${RECEIPT_BLOCK_OPENING}\n${RECEIPT_BLOCK_CLOSING}`) + 1;
+      const worst = 30 * bare + RECEIPT_LIMITS.turnAskBytes + heads + omitted + wrappers;
+      expect(worst).toBeGreaterThan(4_096);
+      expect(RECEIPT_LIMITS.turnBytes).toBe(5_120);
+      expect(worst).toBeLessThanOrEqual(RECEIPT_LIMITS.turnBytes);
+    });
+
+    it('shows no note when not even the first question fits the cap', () => {
+      const giant = answered([
+        {
+          header: 'H',
+          question: 'q'.repeat(150),
+          selected: Array.from({ length: 4 }, () => '"'.repeat(60)),
+          other: '😀'.repeat(160),
+        },
+      ]);
+      expect(askNoteLines(giant)).toEqual([]);
+      const block = renderTurnReceiptBlock(receipts([askRecord(giant)])) ?? '';
+      expect(block).toContain('1. ask_user — ok (no question text kept)');
+      expect(block).not.toContain('more question');
+    });
+
+    it('keeps the worst admissible turn block within the per-turn cap', () => {
+      const longest = [...BUILTIN_TOOL_IDS].sort((a, b) => b.length - a.length)[0] ?? '';
+      const heavy = answered(
+        Array.from({ length: 4 }, (_, index) => ({
+          header: `H${String(index)}`,
+          question: '"'.repeat(150),
+          selected: [],
+          other: '"'.repeat(160),
+        })),
+      );
+      // 32 records: as many question records as exist (each with the largest note that survives the budget) and the
+      // rest the longest built-in id, every one cancelled, with unknown omitted earlier calls.
+      const worst = receiptsFromToolHistory(
+        Array.from({ length: 33 }, (_, index) =>
+          index % 2 === 0
+            ? askEntry(`session-tool:9:${String(index)}`, heavy)
+            : entry(`session-tool:9:${String(index)}`, longest, 'cancelled'),
+        ),
+      );
+      expect(worst.records).toHaveLength(32);
+      expect(receiptBlockBytes(worst)).toBeLessThanOrEqual(RECEIPT_LIMITS.turnBytes);
+      // And all 32 as question records with no text kept — the longest head the grammar can print.
+      const bare = receipts(
+        Array.from({ length: 32 }, () => askRecord(undefined, 'ok')),
+        'unknown',
+      );
+      expect(receiptBlockBytes(bare)).toBeLessThanOrEqual(RECEIPT_LIMITS.turnBytes);
+      // 32 question records each with a (small) note: the per-turn note budget bounds the total.
+      const small = answered([{ selected: ['a'] }]);
+      const many = receiptsFromToolHistory(
+        Array.from({ length: 32 }, (_, index) =>
+          askEntry(`session-tool:9:${String(index)}`, small),
+        ),
+      );
+      expect(receiptBlockBytes(many)).toBeLessThanOrEqual(RECEIPT_LIMITS.turnBytes);
+    });
+
+    it('counts a note against the retention budget, so a note-heavy turn evicts older blocks by bytes', () => {
+      const heavy = receiptsFromToolHistory(
+        Array.from({ length: 2 }, (_, index) =>
+          askEntry(
+            `session-tool:2:${String(index)}`,
+            answered([{ question: 'q'.repeat(150), selected: [], other: 'o'.repeat(160) }]),
+          ),
+        ),
+      );
+      const bytes = receiptBlockBytes(heavy);
+      expect(bytes).toBeGreaterThan(600);
+      const span = (n: number, r: TurnReceipts) => ({ start: n * 2, end: n * 2 + 2, receipts: r });
+      const spans = Array.from({ length: 40 }, (_, index) => span(index, heavy));
+      const retained = retainTurnReceipts(spans);
+      const kept = retained.filter((entrySpan) => entrySpan.receipts.records.length > 0).length;
+      expect(kept).toBeLessThan(40);
+      expect(kept).toBeGreaterThan(0);
+      const total = retained.reduce(
+        (sum, entrySpan) => sum + receiptBlockBytes(entrySpan.receipts),
+        0,
+      );
+      expect(total).toBeLessThanOrEqual(RECEIPT_LIMITS.totalBytes);
+    });
+  });
+
+  describe('admitting a host-supplied note', () => {
+    const geometry = { start: 0, end: 2 };
+    const ask = answered([{ selected: ['alpha'] }]);
+
+    it('admits a valid note on a successful ask_user record, as a frozen-list copy', () => {
+      const supplied = receipts([askRecord(ask)]);
+      const [admitted] = admitSuppliedSpans([{ ...geometry, receipts: supplied }]) ?? [];
+      expect(admitted?.receipts.records).toEqual([askRecord(ask)]);
+      expect(admitted?.receipts.records[0]?.ask).not.toBe(ask);
+    });
+
+    it.each([
+      ['a note on another tool', receipts([{ ...record('read_file'), ask }])],
+      ['a note on a failed question call', receipts([askRecord(ask, 'error')])],
+      [
+        'a malformed note',
+        receipts([askRecord({ status: 'answered', items: [] } as unknown as SessionAskRecord)]),
+      ],
+      [
+        'a note with an unknown field',
+        receipts([askRecord({ ...ask, extra: 1 } as unknown as SessionAskRecord)]),
+      ],
+      [
+        'notes over the per-turn budget',
+        receipts(
+          Array.from({ length: 3 }, () =>
+            askRecord(
+              answered(
+                Array.from({ length: 3 }, () => ({
+                  question: 'q'.repeat(150),
+                  selected: [],
+                  other: 'o'.repeat(160),
+                })),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ])('refuses %s', (_name, bad) => {
+      expect(admitSuppliedSpans([{ ...geometry, receipts: bad }])).toBeUndefined();
+    });
   });
 });

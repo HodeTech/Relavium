@@ -61,6 +61,10 @@ interface ToolDef<Args = unknown, Result = unknown> {
   // A pure function of THIS tool's own result that replaces the derived `outputSummary` (built-ins only, ≤ 64 printable ASCII
   // characters, else `completed`); `ask_user` is the one user, because its result carries the person's words (ADR-0132 §6).
   readonly displaySummary?: (result: Result) => string;
+  // A pure, total function of the VALIDATED args and THIS tool's own result that builds the question record the call leaves in the
+  // session (built-ins only; the registry re-validates it against `SessionAskRecordSchema` and drops it on a throw or a refusal).
+  // `ask_user` is the one user (ADR-0133); its output rides `ToolDispatchOutcome.ask`, never an event.
+  readonly askRecord?: (args: Args, result: Result) => SessionAskRecord | undefined;
   readonly effect?: (args: Args) => EffectTier | undefined;
   readonly duplicationBenign?: boolean; // trusted built-ins only; see effect-journal.md §3
 
@@ -335,7 +339,10 @@ the host's card for `ask_user`, which the tool awaits like the approval hook but
 approval, effect journal entry or cache). A `ToolDef` that dispatches through a delegate declares it in `requiresDelegate`
 (`invokeAgent` / `mediaRead` / `askUser`), and a surface that wires none never offers the tool. A tool may also declare
 `displaySummary`, a pure function of its own result that replaces the derived `outputSummary` (only `ask_user` does, because its
-result carries the person's words). The contract is [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d).
+result carries the person's words), and `askRecord`, a pure function of its validated arguments and its own result that builds the
+record of what the person was asked and answered ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)):
+built-ins only, re-validated by the registry, delivered on the optional `ToolDispatchOutcome.ask` and from there into the typed
+`SessionToolHistoryEntry` (never an event payload). The contract is [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d).
 
 ### The per-tool approval seam (`ConfirmActionHook`, ADR-0057 EA3)
 

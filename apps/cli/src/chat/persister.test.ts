@@ -761,6 +761,77 @@ describe('createSessionPersister', () => {
     expect(full?.session.totalCostMicrocents).toBe(1300);
   });
 
+  describe('a /models reseat is durable before its first completed turn', () => {
+    const stored = (
+      built: {
+        sessionId: string;
+        agent: AgentSessionRecord['agentSnapshot'];
+        context: AgentSessionRecord['context'];
+      },
+      model: string,
+    ): AgentSessionRecord => ({
+      id: built.sessionId,
+      agentSlug: built.agent?.id ?? 'chat',
+      ...(built.agent === undefined ? {} : { agentSnapshot: { ...built.agent, model } }),
+      context: built.context,
+      status: 'ended',
+      totalInputTokens: 7,
+      totalOutputTokens: 11,
+      totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+
+    it('writes the switched model to the adopted row when it differs, keeping its totals and title', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession({ ...stored(built, 'a-model-the-person-left'), title: 'My chat' });
+      persister.start();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe(built.agent.model);
+      expect(after?.title).toBe('My chat');
+      expect(after?.totalCostMicrocents).toBe(1300);
+      expect(after?.totalInputTokens).toBe(7);
+      persister.close();
+    });
+
+    it('writes it when only the provider differs (the same model name under another provider)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      const row = stored(built, built.agent.model);
+      store.createSession({
+        ...row,
+        ...(row.agentSnapshot === undefined
+          ? {}
+          : { agentSnapshot: { ...row.agentSnapshot, provider: 'openai' as const } }),
+      });
+      expect(built.agent.provider).not.toBe('openai');
+      persister.start();
+      expect(store.loadFull(built.sessionId)?.session.agentSnapshot?.provider).toBe(
+        built.agent.provider,
+      );
+      persister.close();
+    });
+
+    it('leaves the row untouched on a plain resume (same model and provider)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession(stored(built, built.agent.model));
+      persister.start();
+      expect(store.loadFull(built.sessionId)?.session.updatedAt).toBe('2026-06-24T00:00:00.000Z');
+      expect(store.loadFull(built.sessionId)?.session.status).toBe('ended');
+      persister.close();
+    });
+
+    it('does not stop a resume when that write fails: the first completed turn rewrites the row', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession(stored(built, 'a-model-the-person-left'));
+      vi.spyOn(store, 'updateSession').mockImplementation(() => {
+        throw new Error('SQLITE_BUSY');
+      });
+      expect(() => persister.start()).not.toThrow();
+      persister.close();
+    });
+  });
+
   it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {
     // Simulate 2.N resume: a row with prior totals already exists; start() adopts it and hydrates the totals.
     const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5, 'adopt');

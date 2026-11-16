@@ -9,7 +9,12 @@
  * new terminal sink, so the rules below REFUSE what they cannot show faithfully rather than repair it.
  */
 
-import { utf8ByteLength, type AbortSignalLike } from '@relavium/shared';
+import {
+  SessionAskRecordSchema,
+  utf8ByteLength,
+  type AbortSignalLike,
+  type SessionAskRecord,
+} from '@relavium/shared';
 import { z } from 'zod';
 
 import { redactSecretShapedText } from './bounding.js';
@@ -236,8 +241,9 @@ export const ASK_USER_DESCRIPTION =
   'with no control characters. Do not start any of them with a list marker such as `1.`, `-`, `>` or `[x]`, and do not ' +
   'use box-drawing or tick glyphs, `[y]`-style key tokens, zero-width or invisible characters, leading or trailing ' +
   'spaces, or non-NFC text. Never ask for a password, token or other secret. Do not use this to ask permission: ' +
-  'approval of writes and commands is requested by the system, and an answer here changes no permission. The answer ' +
-  'is available only during this turn, so state any decision you rely on in your reply; later turns do not see it.';
+  'approval of writes and commands is requested by the system, and an answer here changes no permission. Your ' +
+  'question and the answer are kept with the conversation, so later turns can refer back to them (a long answer ' +
+  'may be shortened); still state any decision you rely on in your reply.';
 
 /* ------------------------------------------------------------------------------------------------ *
  * The delegate contract and the per-turn state.
@@ -442,4 +448,53 @@ export function buildAnsweredResult(
     };
   });
   return { status: 'answered', answers };
+}
+
+/* ------------------------------------------------------------------------------------------------ *
+ * The durable record (ADR-0133) — what the person was asked and what they answered, kept with the session.
+ * ------------------------------------------------------------------------------------------------ */
+
+/**
+ * The question record a call leaves in the session, or `undefined` when no card was shown (`not_asked`) or the call is not
+ * this tool's. Built from the VALIDATED request and the model-facing result — never from the host's raw answer — so the
+ * person's text is the masked text the model itself received, and every chosen label is one the question offered, listed in
+ * the order the card offered them. Total: it never throws, and a record that does not satisfy the shared schema is dropped
+ * rather than stored (the call's result is unaffected either way).
+ */
+export function askUserRecord(
+  request: AskUserRequest,
+  result: unknown,
+): SessionAskRecord | undefined {
+  try {
+    const parsed = AskUserResultSchema.safeParse(result);
+    if (!parsed.success || parsed.data.status === 'not_asked') return undefined;
+    if (parsed.data.status === 'skipped')
+      return SessionAskRecordSchema.parse({
+        status: 'skipped',
+        items: request.questions.map(({ header, question }) => ({ header, question })),
+      });
+    const { answers } = parsed.data;
+    if (answers.length !== request.questions.length) return undefined;
+    return SessionAskRecordSchema.parse({
+      status: 'answered',
+      items: request.questions.map(({ header, question, options }, index) => {
+        const given = answers[index];
+        const chosen = new Set(given?.selected);
+        const selected = options.map((option) => option.label).filter((label) => chosen.has(label));
+        // Masking can lengthen a run (`[redacted]` is ten characters), so the text is clipped to the stored ceiling.
+        const other =
+          given?.other === undefined
+            ? undefined
+            : [...given.other].slice(0, ASK_USER_BOUNDS.ownTextCodePoints).join('');
+        return {
+          header,
+          question,
+          selected,
+          ...(other === undefined || other.length === 0 ? {} : { other }),
+        };
+      }),
+    });
+  } catch {
+    return undefined;
+  }
 }

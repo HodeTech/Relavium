@@ -2720,6 +2720,7 @@ describe('chatCommand', () => {
     expect(intros[1]).toContain(
       'content-free records of earlier tool calls (tool name and outcome)',
     );
+    expect(intros[1]).toContain('what you were asked and how you answered'); // ADR-0133
     expect(intros[1]).toContain('@-attached file contents included');
 
     const full = store.loadFull('id-0');

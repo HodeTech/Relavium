@@ -1,6 +1,6 @@
 # ADR-0132: The model can ask the user a structured question mid-turn, and an answer is never consent
 
-- **Status**: Accepted — 2026-11-16, by the maintainer, after four independent design reviews (their findings and dispositions are in the review table at the end). The maintainer ruled three forks: **no timeout**, **the answer is not stored**, and **Esc stops the turn** (skipping a question has its own key).
+- **Status**: Accepted — 2026-11-16, by the maintainer, after four independent design reviews (their findings and dispositions are in the review table at the end). The maintainer ruled three forks: **no timeout**, **the answer is not stored**, and **Esc stops the turn** (skipping a question has its own key). **The "not stored" ruling was reversed the same day by the maintainer: see [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), which supersedes §6's "Not stored" paragraph.**
 - **Date**: 2026-11-16
 - **Refines**: the Phase 2.6 toolbelt row for `ask_user` ([phase register](../roadmap/phases/phase-2.6-conversational-authoring.md)) — it **replaces** that row's five-minute timeout, its single-choice shape and its `Esc`-dismisses behaviour. [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) had deferred the mid-turn pause to "a separate later ADR"; this is it.
 - **Related**: [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) (the interrupt keys; the question card follows its approval row), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [ADR-0122](0122-the-home-is-the-interactive-product.md), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md), [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md), [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md), [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md), [built-in tools](../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d) (the contract)
@@ -183,6 +183,11 @@ while a question is pending rejects it with an `AbortError`; it never resolves i
 
 ### 6. The answer is never at rest, and never consent
 
+> **Superseded 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** The question and the answer ARE stored
+> with the session (an optional `ask` record on the result part, no migration) and later turns and a resumed session see them. The
+> paragraph below is kept as the decision it was; read it only for the reasoning ADR-0133 reverses. `outputSummary` stays a closed
+> phrase, and everything else in §6 — "an answer is never consent" included — stands.
+
 **Not stored** (maintainer, 2026-11-16). The durable record is what ADR-0095/0098 already
 write for every tool: the call's argument byte count, the result's byte count and outcome.
 No new column, no migration, no shared schema change, and the person's text never reaches
@@ -243,6 +248,7 @@ safety property does not depend on the model complying: no answer reaches an app
   with writes, in `auto` — and would skip unseen on a terminal too small to draw the card.
 - **Store the question and answer.** Rejected by the maintainer for now: it would put the
   person's text in `history.db` and reopen ADR-0095/0128. A later ADR can add it with a migration.
+  *(Reversed the same day: [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores it, with no migration.)*
 - **Repair model text (escape, flatten, truncate).** Rejected: an escape marker inflates a
   line past its row, truncation answers a question nobody finished reading, and ADR-0117's
   explanation rule cuts at 300. Refusing makes the card's content exactly the model's.
@@ -260,13 +266,13 @@ safety property does not depend on the model complying: no answer reaches an app
 - A choice costs one keystroke instead of a turn, and the model gets a structured answer.
 - Nothing about consent changes: the approval path is not touched, the card says it is not an
   approval, and the safety property holds against a model that tries to use the question as one.
-- No migration, no shared schema or event change; a surface without a person never sees the tool.
+- No migration, no shared schema or event change; a surface without a person never sees the tool. *(ADR-0133 adds one optional shared-schema field and still no migration.)*
 
 ### Negative
 
 - **The answer lives only in the turn.** Resume shows a bare tool row and a later turn cannot
   see the answer, nor whether there was one. Mitigation: the tool description says so; a
-  stored form is a later ADR.
+  stored form is a later ADR. *(No longer true: [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).)*
 - **The ceilings are tight** (a 150-byte question, 60-byte labels). A model that exceeds one
   is refused and retries. Mitigation: the model-facing description states them.
 - **A new sink for model-authored text in the product's own chrome.** The security sitting is
@@ -366,3 +372,7 @@ The maintainer used the first build and asked for four changes; each is an amend
   `not_asked` now has the single reason `skipped_earlier`.
 
 Also recorded: host text (hints, the own-row note) is no longer drawn behind the gutter — the gutter means only "the agent wrote this".
+
+### Reversal of "not stored" — 2026-11-16
+
+After the first manual test the maintainer ruled the other way: store the question and only the answer to it, and show both after `chat resume`. The earlier privacy reason was overstated — `history.db` already holds the person's messages, and ADR-0095/0098 keep out a tool's *output*, which an `ask_user` exchange is not. [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) records the decision, the stored shape, how a later turn and a resumed session see it, and the residual it accepts.

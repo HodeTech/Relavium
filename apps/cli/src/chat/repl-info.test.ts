@@ -186,6 +186,14 @@ describe('modelSwitchNotice — the mid-session /models marker', () => {
     expect(marker).not.toContain('Prior tool calls and their results');
   });
 
+  it("says the question tool's question and answer cross the switch too (ADR-0133)", () => {
+    // The new model — possibly another provider — receives what the person was asked and answered; the notice must
+    // not understate that as "names and outcomes".
+    expect(modelSwitchNotice('a', 'b')).toContain(
+      'for the question tool what you were asked and how you answered',
+    );
+  });
+
   it('does NOT understate what the new model sees — an @-attached file DOES carry', () => {
     // The old wording ("not prior tool calls or file contents") reads as "my @-attached file is invisible to the new
     // model". It is not: chat.ts frames the file into the user message text, and the reseat replays that text.

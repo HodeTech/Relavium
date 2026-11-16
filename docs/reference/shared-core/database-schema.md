@@ -1271,6 +1271,7 @@ and replaces raw tool values with the following structural parts:
 |---|---|---|
 | `tool_call` (assistant row) | `type`, `id`, `name`, `argsBytes` | Registry-resolved tool id, or fixed `unknown_tool`; UTF-8 bytes of the JSON arguments issued by the model. No arguments, signatures, provider ids or digests |
 | `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result (0 when the result is absent), rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
+| `tool_result` optional `ask` | `status`, `items[]` (`header`, `question`, `selected?`, `other?`) | **The one tool whose result row keeps content** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)): an `ask_user` call that showed a card with outcome `ok` keeps what the person was asked and answered — one-line strings, 1–4 items, the person's own text masked and at most 500 code points. Its fields and bounds are in [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d). `content_parts` is a JSON column, so this needs no migration |
 
 An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
 `source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
@@ -1283,7 +1284,8 @@ still use the fixed marker. A recovered policy denial remains
 completed-turn transcript. Byte measurement preserves native JSON encoding, including string/key
 escaping, and counts deeply nested plain JSON iteratively when native serialization exceeds the
 call stack; structural metadata does not prevent correction of valid model JSON. Generic durable
-run/event/IPC tool parts retain their existing shape.
+run/event/IPC tool parts retain their existing shape. Every other tool's parts remain content-free:
+no tool output, argument or digest is stored, whatever the tool returned.
 
 The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
 a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part

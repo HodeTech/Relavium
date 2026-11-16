@@ -325,17 +325,47 @@ sequences are removed and newlines become spaces on paste; a paste that would pa
 and a counter shows `n/500` from 400. While the `✎` row is highlighted the description row reads that the text is **sent
 to the model**. A highlighted row, a chosen row and a plain row are drawn differently (a chosen row is green where colour is on).
 
-**What is recorded.** The durable session row is the ordinary tool structure: the call's argument byte count and the
-result's byte count and outcome — no question, no label, no answer. `agent:tool_result.outputSummary` comes from a pure,
-optional display-summary function on the tool definition (`ToolDef.displaySummary`, given the tool's result and nothing
-else; **honoured for built-in tools only**, its result must be a short single line of printable ASCII (at most 64 characters) or the
-fixed phrase `completed` is shown instead, and a throw is contained the same way; every other tool keeps the derived summary):
-`answered N question(s)`, `skipped` or `not asked`. The tool defines
-**no `preview`**, so its tool row shows the name only; the question and the choice appear in the transcript entry the host
-builds from the answer it holds ([chat-session.md](../cli/chat-session.md)). `agent:tool_call.toolInput` carries the
-sanitised arguments as it does for every tool. The receipt label is `ask_user`, so a later turn sees "`ask_user` ok" and
-nothing of the answer — not even whether it was answered or skipped. An answer guides the model and never restricts it:
-in `accept-edits` and `auto` no card follows a write.
+**What is recorded** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)).
+The durable session row is the ordinary tool structure (the call's argument byte count; the result's byte count and outcome)
+**plus one optional `ask` record on the result part** — and only on a successful `ask_user` call that showed a card (an answered
+or skipped one; a stopped, failed or never-shown call leaves none). The record is what the person was asked and what they
+answered, and nothing else:
+
+| Field | Content |
+|---|---|
+| `status` | `answered` or `skipped` |
+| `items[]` (1–4, in question order) | `header` (≤ 24 B), `question` (≤ 150 B), and for an answered item `selected` (the chosen labels, in the order the question offered them; ≤ 4, each ≤ 60 B) and/or `other` (the person's own text, masked of secret-shaped runs by the engine, ≤ 500 code points) |
+
+Never recorded: the options that were not chosen, the option descriptions, the `multiSelect` flag, the model's call id or any
+argument byte beyond these. Every string is one line without a control character, line or paragraph separator or unpaired
+surrogate; the shape is the strict `SessionAskRecordSchema` in `@relavium/shared`, checked when the row is written and when it
+is read, and a record is accepted in a history entry only for an `ask_user` call with outcome `ok`. There is **no SQL
+migration**: `content_parts` is a JSON column.
+
+The record is built by `ToolDef.askRecord` (a pure, total function of the validated arguments and the tool's own result; **honoured
+for built-in tools only**; a throw or a record the schema refuses costs the record, never the result). It travels in the typed
+`SessionToolHistoryEntry` of `session:turn_completed.toolHistory` — the channel a surface persists session rows from — and in no
+other event: `agent:tool_result.outputSummary` is still a closed phrase from a pure, optional display-summary function on the tool
+definition (`ToolDef.displaySummary`, given the tool's result and nothing else; honoured for built-in tools only, its result must be a
+short single line of printable ASCII (at most 64 characters) or the fixed phrase `completed` is shown instead, and a throw is
+contained the same way; every other tool keeps the derived summary): `answered N question(s)`, `skipped` or `not asked`.
+`agent:tool_call.toolInput` carries the sanitised arguments as it does for every tool. A surface that logs events wholesale must
+treat `toolHistory` as conversation content, as it treats the person's own messages. A session export (`/export`, `chat-export`) drops the field from the exported rows. The tool defines **no `preview`**, so its tool
+row shows the name only; the question and the choice appear in the transcript entry the host builds from the answer it holds, and
+a resumed session rebuilds the same entry from the stored record ([chat-session.md](../cli/chat-session.md)).
+
+**What a later turn sees.** The record is carried by the ADR-0128 receipt of the call and rendered under it, quoted:
+
+```
+1. ask_user — ok
+   answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API stable"
+```
+
+([agent-session-spec.md](../contracts/agent-session-spec.md#content-free-action-receipts--adr-0128) owns the format, the
+bounds and the retention rule). The same text is built from the rows after a resume, so a resumed session's first request
+carries exactly what the live one did. An `ask_user` record whose text was not kept (an older row, a call that showed no card,
+a note past the budget) reads `ask_user — ok (no question text kept)`. An answer guides the model and never restricts it: in
+`accept-edits` and `auto` no card follows a write, and a recorded answer is context for a later request, not a new request.
 
 **Model-facing description** (code-owned; the exact words are pinned by a test): ask a question only the user can answer —
 a choice between real alternatives, a preference, a requirement that cannot be found by reading; give two to four options
@@ -345,7 +375,7 @@ only); the plain-text rules a refusal would otherwise hide (the registry reports
 no leading list marker, no box-drawing or tick glyphs, no `[y]`-style key tokens, no zero-width or invisible characters, no
 leading or trailing spaces, NFC only; ask up to four related questions in one call; never ask for a password, token or other
 secret; do not use it to ask permission, because approval of writes and commands is requested by the system and an answer here
-changes no permission; and state any decision you rely on in your reply, because later turns do not see the answer.
+changes no permission; and know that the question and the answer are kept with the conversation (a long answer may be shortened), so later turns can refer back to them — while still stating any decision relied on in the reply.
 
 ## The built-in tools
 

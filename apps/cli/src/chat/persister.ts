@@ -595,6 +595,21 @@ export function createSessionPersister(
         hasSavedTurns = completedSessionTurns(messages, false).length > 0;
         realMessageSeqs.push(...resumableMessageSequences(messages));
         turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
+        // A `/models` reseat builds a NEW session over this SAME row, and what a later resume reads is the row's agent
+        // snapshot. Without this write the row names the OLD model until the first completed turn, so a process that
+        // dies before then resumes on a model the person had already left. Written only when the model or provider
+        // differs, so a plain resume leaves the row (and its `updatedAt`) untouched. Best effort: a lock timeout here must
+        // not stop a resume, and the first completed turn writes the same row.
+        if (
+          existing.agentSnapshot?.model !== deps.agent.model ||
+          existing.agentSnapshot?.provider !== deps.agent.provider
+        ) {
+          try {
+            deps.store.updateSession(record('active'));
+          } catch {
+            /* the next completed turn rewrites the row */
+          }
+        }
       }
       const loadedCoverage = deps.usageStore.loadCoverage(deps.sessionId);
       if (loadedCoverage === undefined) throw new Error('session coverage is unavailable');

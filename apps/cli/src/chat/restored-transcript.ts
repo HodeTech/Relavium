@@ -1,11 +1,14 @@
 import { interruptionPhrase } from '@relavium/core';
 import {
   projectSessionHistory,
+  SESSION_ASK_TOOL_NAME,
   type Memory,
+  type SessionAskRecord,
   type SessionInterruption,
   type SessionMessage,
 } from '@relavium/shared';
 import { stripTerminalControls } from '../render/sanitize.js';
+import { askRecordTranscriptText } from '../render/tui/question-card-record.js';
 import {
   INLINE_TRANSCRIPT_BOUND,
   type TranscriptBound,
@@ -29,11 +32,16 @@ interface Unit {
   readonly interruption?: SessionInterruption;
   readonly tools?: readonly ToolCallView[];
   readonly omittedCalls?: number;
+  /** ADR-0133: the stored question records of this turn's `ask_user` calls, in call order (at most {@link MAX_RESTORED_ASKS}). */
+  readonly asks?: readonly SessionAskRecord[];
+  readonly omittedAsks?: number;
 }
+/** The most question records one restored turn shows; the rest are counted, like omitted tool calls. */
+const MAX_RESTORED_ASKS = 16;
 /** Correlate only already-retained structural identities inside this completed turn. */
 function structuralTools(
   messages: readonly SessionMessage[],
-): Pick<Unit, 'tools' | 'omittedCalls'> {
+): Pick<Unit, 'tools' | 'omittedCalls' | 'asks' | 'omittedAsks'> {
   const calls = messages.flatMap((message) =>
     message.content.filter((part) => part.type === 'tool_call'),
   );
@@ -46,7 +54,20 @@ function structuralTools(
     const outcome = restoredToolOutcome(matching);
     return { id: call.id, toolId: call.name, resolved: true, outcome };
   });
-  return { tools, omittedCalls: Math.max(0, unique.length - tools.length) };
+  // ADR-0133: the question record of a successful `ask_user` call — read only from the result paired with an ask_user call.
+  const records = unique.flatMap((call) => {
+    if (call.name !== SESSION_ASK_TOOL_NAME) return [];
+    const matching = results.filter((result) => result.toolCallId === call.id);
+    const ask =
+      matching.length === 1 && matching[0]?.outcome === 'ok' ? matching[0].ask : undefined;
+    return ask === undefined ? [] : [ask];
+  });
+  return {
+    tools,
+    omittedCalls: Math.max(0, unique.length - tools.length),
+    asks: records.slice(0, MAX_RESTORED_ASKS),
+    omittedAsks: Math.max(0, records.length - MAX_RESTORED_ASKS),
+  };
 }
 function restoredToolOutcome(
   matching: readonly { readonly outcome?: string }[],
@@ -89,8 +110,10 @@ export function restoreSessionTranscript(options: {
   ]);
   units.push(...projection.trailingLegacyUsers.map((user) => ({ user })));
   const conversationSize = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
+  const askEntries = (unit: Unit): number =>
+    (unit.asks?.length ?? 0) + ((unit.omittedAsks ?? 0) > 0 ? 1 : 0);
   const size = (unit: Unit): number =>
-    conversationSize(unit) + Math.ceil((unit.tools?.length ?? 0) / 4);
+    conversationSize(unit) + Math.ceil((unit.tools?.length ?? 0) / 4) + askEntries(unit);
   const total = units.reduce((count, unit) => count + conversationSize(unit), 0);
   const totalCalls = units.reduce(
     (count, unit) => count + (unit.tools?.length ?? 0) + (unit.omittedCalls ?? 0),
@@ -211,6 +234,11 @@ export function restoreSessionTranscript(options: {
         calls: unit.tools ?? [],
         omitted: unit.omittedCalls ?? 0,
       });
+    // ADR-0133: what the person was asked and answered, rebuilt from the stored record — where the live card left it.
+    for (const ask of unit.asks ?? [])
+      entries.push(notice(stripTerminalControls(askRecordTranscriptText(ask))));
+    if ((unit.omittedAsks ?? 0) > 0)
+      entries.push(notice(`${unit.omittedAsks} more saved questions are not shown.`));
     // ADR-0119: an interrupted turn has no answer. Show its fixed dim row where the answer would be, built from the
     // closed phrase table — never from stored text — so it restores no argument, target, diff or result.
     if (unit.interruption !== undefined)

@@ -35,6 +35,7 @@ import type {
   OutputModality,
   ReasoningEffort,
   StopReason,
+  SessionAskRecord,
   SessionToolHistoryEntry,
   UsageDisposition,
 } from '@relavium/shared';
@@ -1053,6 +1054,7 @@ function sessionToolHistoryEntry(
   result: ToolResultPart,
   media: readonly DurableMediaPart[] = [],
   outcome: SessionToolHistoryEntry['result']['outcome'] = result.isError === true ? 'error' : 'ok',
+  ask?: SessionAskRecord,
 ): SessionToolHistoryEntry {
   const parsed = SessionToolHistoryEntrySchema.safeParse({
     call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
@@ -1061,6 +1063,7 @@ function sessionToolHistoryEntry(
       toolCallId: id,
       resultBytes: jsonBytes(result.result),
       outcome,
+      ...(ask === undefined ? {} : { ask }),
       ...(media.length === 0
         ? {}
         : {
@@ -1356,6 +1359,8 @@ async function dispatchToolCalls(
               call,
               part,
               unwrapUntrusted(outcome.mediaAttachments),
+              undefined,
+              outcome.ask,
             ),
           );
     // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload

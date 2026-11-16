@@ -340,8 +340,11 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    also covers what the earlier design omitted — **multiple choice with free text and multi-select** — on the
    engine's existing pause machine and a docked, keyboard-owning card that is a sibling of ADR-0129's approval card (the native prompt
    host was weighed and rejected in the ADR); a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
-   is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `Ctrl+S` skips (typing starts your own answer; several questions are tabs with a Review tab; no per-turn card ceiling); the question and answer
-   are not stored; an answer is never consent. **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
+   is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `Ctrl+S` skips (typing starts your own answer; several questions are tabs with a Review tab; no per-turn card ceiling); an answer is never consent. **The question and the answer ARE stored with the session — [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)
+   (2026-11-16) reversed ADR-0132's "not stored" after the first manual test:** an optional `ask` record on the tool-result row (no migration),
+   carried by the ADR-0128 receipt so a later turn, a resumed session and a `/compact` summary all see it, and rebuilt in the restored
+   transcript; implemented and locally tested, its D64 round and security sitting owed (the model-authored question text now rides a
+   user-role message — the named residual). **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
    docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and command-level wiring tests.
    **One four-reviewer round and a separate security sitting are done; their findings (one medium and several lows from each) are fixed**,
    including a forged option row the sitting drew at a wrap boundary. The accepting round (a new round with no blocker/high/medium finding)

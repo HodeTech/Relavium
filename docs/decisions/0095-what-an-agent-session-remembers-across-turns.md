@@ -23,6 +23,11 @@
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) ·
   [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
 
+> **Amended 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** The "content-free tool structure" of §1 has one exception: the result part of a successful
+> `ask_user` call that showed a card carries an optional `ask` record — the question and the person's answer, bounded and
+> schema-validated — and the request projection of §4 renders it under that call's receipt (ADR-0128, amended). Every other tool's
+> row is unchanged.
+
 > **Landing note 2026-10-02 — W7 step 5 request memory.** The development implementation now
 > enforces §4 request selection and typed engine/CLI history-operation refusals, copies/freezes the
 > instance's policy and applies its permission to the existing after-turn trigger. Explicit completed-turn

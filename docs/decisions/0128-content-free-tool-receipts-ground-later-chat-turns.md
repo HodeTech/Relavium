@@ -298,3 +298,12 @@ cancellation, a crash, an unclassified throw, an observer or host fault, an unre
 content still leave no receipt (the full list is in ADR-0119's implementation note). The correction still resolves no side effect it
 cannot see.
 
+## Update — 2026-11-16 (question notes)
+
+[ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) adds one bounded exception to "a label and an outcome, nothing else". A receipt record may carry the `ask_user` question
+and the person's answer as the shared `SessionAskRecord`, rendered **under** the record's line with every string JSON-quoted. Per-turn
+note budget 2,560 bytes (newest first), one note at most 1,280 bytes, own text clipped to 160 code points in the note; the per-turn byte
+cap rises from 4,096 to 5,120 so that it still cannot bind by construction; the request notice gains a sentence saying the questions are
+the assistant's words and neither they nor the answers are a request. Every other tool's record is unchanged, and the closed-vocabulary
+rule still holds for the label and the outcome. The request-text format, the bounds and the retention rule are in
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128).

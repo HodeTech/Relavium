@@ -17,6 +17,8 @@ import {
   type RetainedEffectEnvelope,
   extractHttpsHost,
   isEffectConflictError,
+  SessionAskRecordSchema,
+  type SessionAskRecord,
   type ToolActionClass,
 } from '@relavium/shared';
 
@@ -118,6 +120,24 @@ function contentFreeSummary(summarize: (result: unknown) => string, result: unkn
     return /^[\x20-\x7e]{1,64}$/u.test(summary) ? summary : 'completed';
   } catch {
     return 'completed';
+  }
+}
+/**
+ * Run a first-party tool's question-record hook (ADR-0133). The hook is pure and total, but it runs inside the dispatch of a
+ * call that has already happened, so a throw must cost the record and nothing else: the result the model receives is unchanged.
+ * The record is re-validated here against the shared schema, the same one the stored row is parsed with.
+ */
+function questionRecord(
+  def: ToolDef,
+  args: unknown,
+  result: unknown,
+): SessionAskRecord | undefined {
+  if (def.askRecord === undefined || def.source !== 'builtin') return undefined;
+  try {
+    const parsed = SessionAskRecordSchema.safeParse(def.askRecord(args, result));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
   }
 }
 let nextLiveCall = 0;
@@ -466,6 +486,7 @@ async function dispatch(
   let outputMapped: unknown;
   let bounded: Awaited<ReturnType<typeof boundForModel>>;
   let mediaAttachments: readonly DurableMediaPart[] = [];
+  let ask: SessionAskRecord | undefined;
   const publish = (value: ToolPreview): ToolApprovalLiveContext => {
     preview = Object.freeze({
       ...value,
@@ -575,6 +596,8 @@ async function dispatch(
         // value the model receives.
         if (def.displaySummary !== undefined && def.source === 'builtin')
           bounded = { ...bounded, summary: contentFreeSummary(def.displaySummary, output) };
+        // The person's own words are kept with the session (ADR-0133) — in the typed tool history only, never on an event.
+        ask = questionRecord(def, args, output);
         if (
           def.source === 'builtin' &&
           def.id === 'read_file' &&
@@ -607,6 +630,7 @@ async function dispatch(
         toolResult: markUntrusted(toolResult),
         mediaAttachments: markUntrusted(mediaAttachments),
         truncated: bounded.truncated,
+        ...(ask === undefined ? {} : { ask }),
         events: {
           call: {
             toolId: def.id,

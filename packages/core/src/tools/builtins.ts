@@ -15,6 +15,7 @@ import {
   MediaMimeTypeSchema,
   mediaModalityOf,
   scopeSetIncludes,
+  type SessionAskRecord,
   utf8ByteLength,
   extractHttpsHost,
 } from '@relavium/shared';
@@ -27,6 +28,7 @@ import {
   AskUserAnswerSchema,
   AskUserArgsSchema,
   askUserDisplaySummaryOf,
+  askUserRecord,
   buildAnsweredResult,
   notAskedResult,
   skippedResult,
@@ -85,6 +87,8 @@ interface BuiltinSpec<A> {
   readonly requiresFsMethod?: ToolDef['requiresFsMethod'];
   /** A content-free summary in place of the derived one — see `ToolDef.displaySummary`. */
   readonly displaySummary?: (result: unknown) => string;
+  /** The question record this call leaves in the session — see `ToolDef.askRecord`. */
+  readonly askRecord?: (args: A, result: unknown) => SessionAskRecord | undefined;
   readonly preview?: (args: A) => ToolPreview;
   readonly prepare?: (
     args: A,
@@ -111,6 +115,7 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
     ...(spec.requiresFsMethod === undefined ? {} : { requiresFsMethod: spec.requiresFsMethod }),
     ...(spec.displaySummary === undefined ? {} : { displaySummary: spec.displaySummary }),
+    ...(spec.askRecord === undefined ? {} : { askRecord: spec.askRecord }),
     ...(spec.preview === undefined ? {} : { preview: spec.preview }),
     ...(spec.prepare === undefined ? {} : { prepare: spec.prepare }),
     dispatch: spec.dispatch,
@@ -1201,6 +1206,9 @@ const askUserTool = defineBuiltin<AskUserRequest>({
   // The result carries the person's own words, so its event/observer summary is a closed phrase (ADR-0132 §6). No
   // `preview` either: the question appears on the card and in the host's transcript entry, never on the tool row.
   displaySummary: askUserDisplaySummaryOf,
+  // ADR-0133: what the person was asked and answered is kept with the session, so a later turn and a resumed session can
+  // ground on it. The event/observer summary above stays a closed phrase; the record travels only in the typed tool history.
+  askRecord: askUserRecord,
   dispatch: async (args, _host, ctx) => {
     const ask = ctx.askUser;
     if (ask === undefined) throw new ToolUnavailableError('ask_user', 'askUser');

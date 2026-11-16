@@ -35,6 +35,12 @@
 >   that ran BEFORE the upgrade are not zeroed retroactively — only a `VACUUM` would reclaim them. Point 3's "until
 >   the run's terminal sweep" becomes honest under the same rule.
 
+> **Scoped 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** "A session's transcript … hold[s] no tool result" stays true of every tool's OUTPUT. One
+> tool's result row now also keeps a bounded record of the CONVERSATION it carried: what an `ask_user` card asked and what the
+> person answered (one-line strings, the person's text masked of secret-shaped runs and at most 500 code points). It is the
+> person's own words, of the same class as the chat messages the database already holds as user data (point 2 above); it is
+> deleted with the session and zeroed like any row (`secure_delete`, WAL truncation).
+
 ## Context
 
 Phase-2 workstream **2.H** wires durable CLI run history to `~/.relavium/history.db`

@@ -127,13 +127,15 @@ tool calls beside those turns' text. Receipts are a projection of the durable
 structure [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1
 already stores. They are not carried tool content: no argument, result, path,
 stored id or byte size survives into the request, and no tool-protocol message
-is fabricated. CR-70's raw-content carrying remains separately deferred. The
+is fabricated. (One bounded exception, [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md):
+the record of a successful `ask_user` call also carries the question and the person's answer —
+see *Question notes* below. It is conversation, not tool output.) CR-70's raw-content carrying remains separately deferred. The
 acceptance cases live in the ADR and are not restated here.
 
 - **Source and identity.** A completed turn's receipt records come from exactly
   three sources: the typed `SessionToolHistoryEntry[]` the turn returns on
   successful completion (the `toolHistory` field, already Zod-parsed and
-  content-free; never `agent:tool_call`/`agent:tool_result` events, summaries or
+  content-free but for the `ask_user` question record, ADR-0133; never `agent:tool_call`/`agent:tool_result` events, summaries or
   any other payload), the same typed list carried on the failed `session:turn_completed` of a **retained interrupted
   turn** (ADR-0119), or the durable turn's structural row pairs on resume/reseat. A record is one adjacent `assistant(tool_call)` + `tool(tool_result)`
   pair whose engine-form ids match. Pairing and uniqueness are validated **within
@@ -215,9 +217,46 @@ acceptance cases live in the ADR and are not restated here.
   projection, preserving the association even for empty-final turns. Receipt
   text is host-authored from closed vocabularies, so it carries no
   `Untrusted<string>` brand (the brand protects free-form strings such as the
-  compaction summary, which receipts never contain); it must still be placed only
+  compaction summary, which receipts never contain — but for the question notes
+  below, which are bounded, schema-validated and quoted instead, and which
+  ADR-0133 explains are not branded); it must still be placed only
   in user-role positions, behind [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md)'s
   role boundary, never in `system` and never in an assistant message.
+- **Question notes — ADR-0133.** One exception to "a label and an outcome, nothing
+  else": the record of a successful `ask_user` call may carry the shared
+  `SessionAskRecord` — the questions the person was shown and their answers
+  (the field list is in [built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d)).
+  It is validated against the strict schema when a record is built (live, derived
+  from rows, or host-supplied), kept only on a successful `ask_user` record, and
+  rendered **under** that record's line, one indented line per question, with
+  **every string JSON-quoted** so a quote, a backslash or a look-alike of the
+  block's own punctuation stays inside its quotes and no string can start a line:
+
+  ```
+  1. ask_user — ok
+     answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API stable"
+     skipped: "Scope" — "Which module?"            (a skipped call: the questions only)
+  ```
+
+  A successful `ask_user` record without a note reads
+  `<n>. ask_user — ok (no question text kept)`; a failed or cancelled one gets
+  nothing added. Bounds, applied identically to the live source, derivation from
+  rows and admission: one call's note at most **1,280 bytes** (questions that do
+  not fit are replaced by one `[N more questions not listed]` line; a note whose
+  first question does not fit is not shown), the person's own text clipped to
+  **160 code points** with `…` in the note (the stored record keeps up to 500),
+  and one turn's notes at most **2,560 bytes** together, spent newest first — the
+  first note that does not fit, and every older one in the turn, is dropped. A
+  host-supplied note over its budget is refused, never trimmed. Notes count
+  toward the per-turn and total byte caps, so retention evicts a note-heavy block
+  by the same newest-first rule, and the summariser sees the same text. The
+  request notice gains one fixed sentence, present whenever a selected turn lists
+  a note, saying that the questions are the **assistant's** words (they now ride a
+  user-role message), that an answer is what the person said at that time, and
+  that neither is a new request. The question text is model-authored: it is
+  bounded and plain-text-only at ingestion, quoted here, and framed as
+  historical data, which is the whole mitigation for a poisoned question (the
+  person saw the card when it was asked).
 - **Selection.** First apply the existing memory policy: `none` includes no
   prior receipts, turn blocks or request notice; `window` includes only its
   selected turns and evaluates incompleteness over those turns only;
@@ -234,9 +273,10 @@ acceptance cases live in the ADR and are not restated here.
      per turn and 4,096 parts per operation, always at whole-record boundaries.
      Uninspected detail is unknown: that turn is marked incomplete. Never scan
      past the budget to count.
-  2. *Per turn*: retain at most the newest 32 records and 4,096 UTF-8 bytes,
-     counting wrappers and omission line; older records of the turn are omitted
-     whole, in order, never partially truncated.
+  2. *Per turn*: retain at most the newest 32 records and 5,120 UTF-8 bytes
+     (4,096 before [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)
+     added question notes), counting wrappers, notes and omission line; older
+     records of the turn are omitted whole, in order, never partially truncated.
   3. *Across turns*: walk turns newest first and retain each turn's block whole
      while the running total stays within **128 records and 16,384 UTF-8 bytes**
      after reserving the request notice's fixed bytes. The first block that does
@@ -318,7 +358,7 @@ summariser integration, and the reseat notice). The independent review rounds,
 the separate security sitting and the measured request-size results the ADR
 requires are still owed; no merge or publication is claimed. Measured: the legend
 is 409 bytes and the gap sentence 109 bytes; a block is 148 bytes for one record
-and 791 for 32 (worst case 1,232, so the 4,096-byte per-turn cap cannot bind);
+and 791 for 32 (worst case 1,232, so the 4,096-byte per-turn cap could not bind; with ADR-0133's question notes the by-construction worst is under 4,300 bytes, hence 5,120);
 the 128-record cap binds first from about two calls per turn (107 turns of
 evidence at one call per turn, 32 at four); projection and retention cost under
 0.1 ms per 1,000 turns and derivation about 1 ms. See the ADR's implementation
@@ -592,7 +632,7 @@ remains handle-only; tool attachments carry only handle metadata, never result f
 The generic `DurableContentPart` used by run/event/IPC positions is unchanged.
 
 `SessionMessage` is mapped into the seam's `LlmMessage`, rather than copied. The next turn sees the
-text projection plus content-free [receipts](#content-free-action-receipts--adr-0128): carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
+text projection plus content-free [receipts](#content-free-action-receipts--adr-0128) (and the `ask_user` question notes under them, ADR-0133): carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
 no vendor SDK type crosses the seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)).
 A completed turn persists its user row, ordered structural call/result rows, and one terminal
 assistant row containing a text part, even when that text is empty. The additive `toolHistory`
@@ -783,7 +823,7 @@ reproducible; snapshots satisfying current authored validation round-trip):
   When no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
-- **`metadata`** — the full persisted transcript, including content-free tool structure, under a single reserved key: `metadata.relaviumExport = { source:
+- **`metadata`** — the full persisted transcript, including content-free tool structure — **except the stored `ask_user` question records** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)): a tool row's `ask` field is dropped from the exported rows, because an exported workflow is meant to be committed and shared and a question/answer is not provenance of it — under a single reserved key: `metadata.relaviumExport = { source:
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map

@@ -20,6 +20,7 @@ import type {
   FsScopeTier,
   MediaSource,
   Scope,
+  SessionAskRecord,
   ToolActionClass,
 } from '@relavium/shared';
 
@@ -684,6 +685,13 @@ export interface ToolDef<Args = unknown, Result = unknown> {
    * Absent for every tool but `ask_user`, whose result carries the person's own words and must not ride the event stream.
    */
   readonly displaySummary?: (result: Result) => string;
+  /**
+   * The question record this call leaves in the session ([ADR-0133](../../../../docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)),
+   * built from the VALIDATED args and this tool's own result. Total and pure; `undefined` for a call that has nothing to
+   * keep. Built-ins only, and absent for every tool but `ask_user`: a record is the one place a person's own words enter a
+   * session row, so the registry runs the hook of a first-party tool and no other.
+   */
+  readonly askRecord?: (args: Args, result: Result) => SessionAskRecord | undefined;
   /** Trusted first-party filesystem declaration; invocation is read-only and precedes approval. */
   readonly prepare?: (
     args: Args,
@@ -844,6 +852,8 @@ export interface ToolDispatchOutcome {
   readonly mediaAttachments: Untrusted<readonly DurableMediaPart[]>;
   /** Whether the model-facing result was truncated (full output spilled to `outputStore`). */
   readonly truncated: boolean;
+  /** The question record of an `ask_user` call that showed a card (ADR-0133); absent for every other call. */
+  readonly ask?: SessionAskRecord;
   /** Sanitized payloads the bus envelopes into `agent:tool_call` / `agent:tool_result`. */
   readonly events: { readonly call: ToolCallEventData; readonly result: ToolResultEventData };
 }

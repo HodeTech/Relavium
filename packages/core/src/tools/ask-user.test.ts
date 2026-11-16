@@ -1,4 +1,4 @@
-import { unwiredEffectJournal, type ToolPolicy } from '@relavium/shared';
+import { SESSION_ASK_BOUNDS, unwiredEffectJournal, type ToolPolicy } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,7 +9,10 @@ import {
   AskUserAnswerSchema,
   AskUserArgsSchema,
   askUserDisplaySummaryOf,
+  askUserRecord,
   buildAnsweredResult,
+  notAskedResult,
+  skippedResult,
   foldLabel,
   newAskUserTurnState,
   plainTextRefusal,
@@ -283,6 +286,8 @@ describe('ask_user model-visible contract', () => {
     expect(ASK_USER_DESCRIPTION).toContain('Never ask for a password, token or other secret');
     expect(ASK_USER_DESCRIPTION).toContain('Do not use this to ask permission');
     expect(ASK_USER_DESCRIPTION).toContain('state any decision you rely on in your reply');
+    expect(ASK_USER_DESCRIPTION).toContain('kept with the conversation');
+    expect(ASK_USER_DESCRIPTION).not.toContain('do not see it');
   });
 
   it('advertises the same bounds in the JSON schema as the validator enforces', () => {
@@ -870,7 +875,226 @@ describe('both delegate fields gate the offer (ADR-0132 §1, CR-73)', () => {
 describe('the model-facing description (ADR-0132 §6)', () => {
   it('is pinned word for word', () => {
     expect(ASK_USER_DESCRIPTION).toBe(
-      'Ask the user a question only they can answer: a choice between real alternatives, a preference, or a requirement you cannot find by reading files. Give two to four options with a short description each; do not add an "Other" option, because the user can always type their own answer. Ask up to four related questions in one call. Keep each question to at most 150 bytes, labels to 60, descriptions to 72 and headers to 24, in plain text with no control characters. Do not start any of them with a list marker such as `1.`, `-`, `>` or `[x]`, and do not use box-drawing or tick glyphs, `[y]`-style key tokens, zero-width or invisible characters, leading or trailing spaces, or non-NFC text. Never ask for a password, token or other secret. Do not use this to ask permission: approval of writes and commands is requested by the system, and an answer here changes no permission. The answer is available only during this turn, so state any decision you rely on in your reply; later turns do not see it.',
+      'Ask the user a question only they can answer: a choice between real alternatives, a preference, or a requirement you cannot find by reading files. Give two to four options with a short description each; do not add an "Other" option, because the user can always type their own answer. Ask up to four related questions in one call. Keep each question to at most 150 bytes, labels to 60, descriptions to 72 and headers to 24, in plain text with no control characters. Do not start any of them with a list marker such as `1.`, `-`, `>` or `[x]`, and do not use box-drawing or tick glyphs, `[y]`-style key tokens, zero-width or invisible characters, leading or trailing spaces, or non-NFC text. Never ask for a password, token or other secret. Do not use this to ask permission: approval of writes and commands is requested by the system, and an answer here changes no permission. Your question and the answer are kept with the conversation, so later turns can refer back to them (a long answer may be shortened); still state any decision you rely on in your reply.',
     );
+  });
+});
+
+describe('the question record a call leaves in the session (ADR-0133)', () => {
+  const request = (...questions: Record<string, unknown>[]): AskUserRequest =>
+    parse(args(...questions));
+  const multi = (overrides: Record<string, unknown> = {}) =>
+    question({ multiSelect: true, header: 'Many', question: 'Which ones?', ...overrides });
+
+  it("pins the stored ceilings to the tool's own argument bounds", () => {
+    expect(SESSION_ASK_BOUNDS).toMatchObject({
+      headerBytes: ASK_USER_BOUNDS.headerBytes,
+      questionBytes: ASK_USER_BOUNDS.questionBytes,
+      labelBytes: ASK_USER_BOUNDS.labelBytes,
+      questionsPerRecord: ASK_USER_BOUNDS.questionsPerCall,
+      optionsPerQuestion: ASK_USER_BOUNDS.optionsPerQuestion,
+      ownTextCodePoints: ASK_USER_BOUNDS.ownTextCodePoints,
+    });
+  });
+
+  it('records each question with its answer, the header and question as asked', () => {
+    const asked = request(question(), multi());
+    const result = buildAnsweredResult(asked, {
+      kind: 'answered',
+      answers: [{ selected: ['Beta'] }, { selected: ['Alpha'], other: 'and a third' }],
+    });
+    expect(askUserRecord(asked, result)).toEqual({
+      status: 'answered',
+      items: [
+        { header: 'Pick', question: 'Which one?', selected: ['Beta'] },
+        { header: 'Many', question: 'Which ones?', selected: ['Alpha'], other: 'and a third' },
+      ],
+    });
+  });
+
+  it('lists the chosen labels in the ORDER THE QUESTION OFFERED THEM, whatever order the host sent', () => {
+    const asked = request(multi());
+    const result = buildAnsweredResult(asked, {
+      kind: 'answered',
+      answers: [{ selected: ['Beta', 'Alpha'] }],
+    });
+    expect(askUserRecord(asked, result)).toMatchObject({
+      items: [{ selected: ['Alpha', 'Beta'] }],
+    });
+  });
+
+  it('records an own-text-only answer with an empty choice list', () => {
+    const asked = request(question());
+    const result = buildAnsweredResult(asked, {
+      kind: 'answered',
+      answers: [{ selected: [], other: '  my own words  ' }],
+    });
+    expect(askUserRecord(asked, result)).toEqual({
+      status: 'answered',
+      items: [{ header: 'Pick', question: 'Which one?', selected: [], other: 'my own words' }],
+    });
+  });
+
+  it('records the text the model received — masked — never the raw one', () => {
+    const asked = request(question());
+    const secret = 'sk-ant-api03-' + 'A'.repeat(40);
+    const result = buildAnsweredResult(asked, {
+      kind: 'answered',
+      answers: [{ selected: [], other: `use key ${secret}` }],
+    });
+    const record = askUserRecord(asked, result);
+    expect(JSON.stringify(record)).not.toContain(secret);
+    expect(JSON.stringify(record)).toContain('[redacted]');
+  });
+
+  it('clips masked text that grew past the stored ceiling instead of dropping the record', () => {
+    const asked = request(question());
+    const result = {
+      status: 'answered' as const,
+      answers: [
+        { header: 'Pick', selected: [], other: 'x'.repeat(ASK_USER_BOUNDS.ownTextCodePoints + 25) },
+      ],
+    };
+    const record = askUserRecord(asked, result);
+    expect([...(record?.items[0]?.other ?? '')]).toHaveLength(ASK_USER_BOUNDS.ownTextCodePoints);
+  });
+
+  it('drops an empty own-text field and keeps the choice made with it', () => {
+    const asked = request(question());
+    const record = askUserRecord(asked, {
+      status: 'answered',
+      answers: [{ header: 'Pick', selected: ['Alpha'], other: '' }],
+    });
+    expect(record).toEqual({
+      status: 'answered',
+      items: [{ header: 'Pick', question: 'Which one?', selected: ['Alpha'] }],
+    });
+  });
+
+  it('records a skip as the questions asked, and a call that showed no card as nothing', () => {
+    const asked = request(question(), multi());
+    expect(askUserRecord(asked, skippedResult())).toEqual({
+      status: 'skipped',
+      items: [
+        { header: 'Pick', question: 'Which one?' },
+        { header: 'Many', question: 'Which ones?' },
+      ],
+    });
+    expect(askUserRecord(asked, notAskedResult('skipped_earlier'))).toBeUndefined();
+  });
+
+  it("is total: anything that is not this tool's result, or does not match the request, records nothing", () => {
+    const asked = request(question());
+    for (const junk of [
+      undefined,
+      null,
+      7,
+      'answered',
+      [],
+      {},
+      { status: 'answered' },
+      { status: 'nope' },
+    ])
+      expect(askUserRecord(asked, junk)).toBeUndefined();
+    // An answer count that does not match the questions asked.
+    expect(askUserRecord(asked, { status: 'answered', answers: [] })).toBeUndefined();
+    expect(
+      askUserRecord(asked, {
+        status: 'answered',
+        answers: [
+          { header: 'Pick', selected: ['Alpha'] },
+          { header: 'Pick', selected: ['Alpha'] },
+        ],
+      }),
+    ).toBeUndefined();
+    // An answered item with neither a choice nor text is not an answer.
+    expect(
+      askUserRecord(asked, { status: 'answered', answers: [{ header: 'Pick', selected: [] }] }),
+    ).toBeUndefined();
+  });
+
+  it('rides the dispatch outcome for an answered and a skipped call, and not for one that showed no card', async () => {
+    const state = newAskUserTurnState();
+    const delegate: AskUserDelegate = () => Promise.resolve(answered(['Beta']));
+    const context = ctx({ askUser: delegate, askUserTurn: state });
+    const outcome = await registry().dispatch(call(args()), context);
+    expect(outcome.ask).toEqual({
+      status: 'answered',
+      items: [{ header: 'Pick', question: 'Which one?', selected: ['Beta'] }],
+    });
+    state.skipped = true;
+    expect((await registry().dispatch(call(args()), context)).ask).toBeUndefined();
+    const skipper = ctx({
+      askUser: () => Promise.resolve({ kind: 'skipped' }),
+      askUserTurn: newAskUserTurnState(),
+    });
+    expect((await registry().dispatch(call(args()), skipper)).ask).toMatchObject({
+      status: 'skipped',
+    });
+  });
+
+  it('never rides an event: the call and result events stay content-free', async () => {
+    const words = 'ONLY-IN-THE-TYPED-HISTORY';
+    const context = ctx({
+      askUser: () =>
+        Promise.resolve({ kind: 'answered', answers: [{ selected: [], other: words }] }),
+      askUserTurn: newAskUserTurnState(),
+    });
+    const outcome = await registry().dispatch(call(args()), context);
+    expect(outcome.ask?.items[0]?.other).toBe(words);
+    expect(JSON.stringify(outcome.events)).not.toContain(words);
+  });
+});
+
+describe('the question-record hook is for first-party tools only (ADR-0133)', () => {
+  const hooked = (source: 'builtin' | 'mcp', record: () => unknown): ToolDef =>
+    ({
+      id: 'probe_tool',
+      source,
+      description: 'a probe',
+      parseArgs: () => ({}),
+      llmVisibleParams: { type: 'object', properties: {}, additionalProperties: false },
+      policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+      askRecord: record,
+      dispatch: () => Promise.resolve({ ok: true }),
+    }) as unknown as ToolDef;
+  const run = (def: ToolDef) =>
+    createToolRegistry({ tools: [def], host: {} }).dispatch(
+      { type: 'tool_call', id: 'c', name: 'probe_tool', args: {} },
+      ctx({ grantedToolIds: new Set(['probe_tool']) }),
+    );
+  const valid = { status: 'skipped', items: [{ header: 'H', question: 'Q?' }] };
+
+  it("a built-in hook's valid record rides the outcome", async () => {
+    expect((await run(hooked('builtin', () => valid))).ask).toEqual(valid);
+  });
+
+  it('a non-built-in tool cannot attach a record, valid or not', async () => {
+    expect((await run(hooked('mcp', () => valid))).ask).toBeUndefined();
+  });
+
+  it('a hook that throws costs the record and nothing else', async () => {
+    const outcome = await run(
+      hooked('builtin', () => {
+        throw new Error('boom');
+      }),
+    );
+    expect(outcome.ask).toBeUndefined();
+    expect(unwrapUntrusted(outcome.toolResult).result).toEqual({ ok: true });
+  });
+
+  it.each([
+    ['not an object', 'x'],
+    [
+      'over the byte ceiling',
+      { status: 'skipped', items: [{ header: 'h'.repeat(25), question: 'Q?' }] },
+    ],
+    [
+      'carrying a control character',
+      { status: 'skipped', items: [{ header: 'H', question: 'a\nb' }] },
+    ],
+    ['an unknown field', { ...valid, extra: 1 }],
+  ])('a record that is %s is dropped, not stored', async (_name, record) => {
+    expect((await run(hooked('builtin', () => record))).ask).toBeUndefined();
   });
 });

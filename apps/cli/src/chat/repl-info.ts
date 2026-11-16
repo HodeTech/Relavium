@@ -222,6 +222,10 @@ export function clearedNotice(oldSessionId: string): string {
  * only" would be false the other way round. The wording therefore says exactly what is and is not carried: tool
  * arguments and results (including a file a tool read) are not; content-free records of tool names and outcomes are.
  *
+ * **ADR-0133 (2026-11-16) refines it once more, in the same direction.** The question tool's record also carries the
+ * question and the person's answer, so a reseat hands that text to the NEW model — possibly another provider. Saying
+ * only "names and outcomes" would understate what leaves, the dangerous direction to be wrong in; the wording names it.
+ *
  * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
  * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
  * into the transcript.
@@ -229,8 +233,9 @@ export function clearedNotice(oldSessionId: string): string {
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
     `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
-    `transcript plus content-free records of earlier tool calls (tool name and outcome). Prior tool arguments and ` +
-    `results (including files a tool read) are not carried; text you sent — @-attached file contents included — is.`
+    `transcript plus content-free records of earlier tool calls (tool name and outcome), and for the question tool ` +
+    `what you were asked and how you answered. Prior tool arguments and results (including files a tool read) are ` +
+    `not carried; text you sent — @-attached file contents included — is.`
   );
 }
 

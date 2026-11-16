@@ -3,6 +3,7 @@ import {
   projectSessionHistory,
   resumableSessionMessages,
   type AgentSessionRecord,
+  type SessionAskRecord,
   type Memory,
   type SessionMessage,
 } from '@relavium/shared';
@@ -517,5 +518,138 @@ describe('ADR-0119 restored interrupted turns', () => {
     expect(JSON.stringify(entries)).not.toContain('Interrupted —');
     expect(entries.some((entry) => entry.role === 'user')).toBe(false);
     expect(looked.flat()).not.toContain(0);
+  });
+});
+
+describe('ADR-0133 restored question records', () => {
+  const answered: SessionAskRecord = {
+    status: 'answered',
+    items: [
+      { header: 'Scope', question: 'Which module?', selected: ['alpha'] },
+      { header: 'Note', question: 'Anything else?', selected: [], other: 'keep the API' },
+    ],
+  };
+  const skipped: SessionAskRecord = {
+    status: 'skipped',
+    items: [{ header: 'Scope', question: 'Which module?' }],
+  };
+  /** One turn: the user, one call/result row pair per tool (the persister's shape), the answer. */
+  function turnWith(
+    calls: readonly {
+      name: string;
+      ask?: SessionAskRecord;
+      outcome?: 'ok' | 'error' | 'cancelled';
+    }[],
+    start = 0,
+  ): SessionMessage[] {
+    const rows: SessionMessage[] = [row(start, 'user', 'original private user')];
+    calls.forEach((call, slot) => {
+      const id = `session-tool:1:${String(slot)}`;
+      rows.push({
+        ...row(start + 1 + slot * 2, 'assistant', ''),
+        content: [{ type: 'tool_call', id, name: call.name, argsBytes: 10 }],
+      });
+      rows.push({
+        ...row(start + 2 + slot * 2, 'tool', ''),
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: id,
+            resultBytes: 20,
+            outcome: call.outcome ?? 'ok',
+            ...(call.ask === undefined ? {} : { ask: call.ask }),
+          },
+        ],
+      });
+    });
+    rows.push(row(start + 1 + calls.length * 2, 'assistant', 'the final answer'));
+    return rows;
+  }
+  const texts = (entries: ReturnType<typeof restore>): string[] =>
+    entries.map((entry) => (entry.role === 'tools' ? '[tools]' : entry.text));
+
+  it("rebuilds the card's transcript entry where the live one stood: after the tool row, before the answer", () => {
+    const entries = restore(
+      turnWith([{ name: 'ask_user', ask: answered }]),
+      new Map([[0, 'my request']]),
+    );
+    const list = texts(entries);
+    const at = list.findIndex((text) => text.startsWith('Asked: Scope'));
+    expect(at).toBeGreaterThan(0);
+    expect(list[at - 1]).toBe('[tools]');
+    expect(list[at]).toBe(
+      'Asked: Scope — Which module?\n  → alpha\nAsked: Note — Anything else?\n  → “keep the API”',
+    );
+    expect(list[at + 1]).toBe('the final answer');
+    expect(entries[at]?.role).toBe('notice');
+  });
+
+  it('rebuilds a skip as the live card words it', () => {
+    const list = texts(restore(turnWith([{ name: 'ask_user', ask: skipped }])));
+    expect(list).toContain("Skipped the agent's question: Scope");
+  });
+
+  it('one entry per question call, in call order', () => {
+    const second: SessionAskRecord = {
+      status: 'answered',
+      items: [{ header: 'Tests', question: 'Add tests?', selected: ['yes'] }],
+    };
+    const list = texts(
+      restore(
+        turnWith([
+          { name: 'ask_user', ask: answered },
+          { name: 'read_file' },
+          { name: 'ask_user', ask: second },
+        ]),
+      ),
+    );
+    const asks = list.filter((text) => text.startsWith('Asked:'));
+    expect(asks).toHaveLength(2);
+    expect(asks[1]).toBe('Asked: Tests — Add tests?\n  → yes');
+  });
+
+  it('reads a record only from an ask_user call that succeeded', () => {
+    const list = texts(
+      restore(
+        turnWith([
+          { name: 'write_file', ask: answered }, // a forged row: another tool cannot carry a question record
+          { name: 'ask_user', ask: answered, outcome: 'cancelled' },
+          { name: 'ask_user', ask: answered, outcome: 'error' },
+          { name: 'ask_user' }, // no card was shown (or an older session): nothing to rebuild
+        ]),
+      ),
+    );
+    expect(list.some((text) => text.startsWith('Asked:') || text.startsWith('Skipped'))).toBe(
+      false,
+    );
+  });
+
+  it('shows at most sixteen records of a turn and counts the rest', () => {
+    const many = Array.from({ length: 20 }, () => ({ name: 'ask_user', ask: skipped }));
+    const list = texts(restore(turnWith(many)));
+    expect(list.filter((text) => text.startsWith('Skipped the agent')).length).toBe(16);
+    expect(list).toContain('4 more saved questions are not shown.');
+  });
+
+  it('counts the entries in the restore budget, so the display cap still holds', () => {
+    const turns = Array.from({ length: 60 }, (_, index) =>
+      turnWith([{ name: 'ask_user', ask: answered }], index * 4),
+    ).flat();
+    const entries = restoreSessionTranscript({
+      messages: turns,
+      memory: undefined,
+      transcriptBound: INLINE_TRANSCRIPT_BOUND,
+      readDisplay: () => new Map(),
+    });
+    // 60 turns × (user + assistant + 1 tool row group + 1 question notice) cannot all fit a 200-entry inline cap.
+    expect(entries.length).toBeLessThanOrEqual(200);
+    expect(entries.length).toBeGreaterThan(100);
+  });
+
+  it("keeps the question's words out of the structural tool row", () => {
+    const entries = restore(turnWith([{ name: 'ask_user', ask: answered }]));
+    const tools = entries.find((entry) => entry.role === 'tools');
+    expect(JSON.stringify(tools)).not.toContain('Which module?');
+    expect(JSON.stringify(tools)).not.toContain('keep the API');
   });
 });

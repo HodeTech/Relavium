@@ -5,6 +5,11 @@
 - **Refines**: [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §1 (a turn is identified by row structure; its terminal row may now be an *interruption row*, which needs one migration — see §2) and §4 (an interrupted turn takes one `window` slot); amends [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)'s abort clause (the rollback is withdrawn for the retained cases below).
 - **Related**: [ADR-0026](0026-session-export-to-workflow.md), [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md), [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) (**not a dependency**, §1), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0123](0123-restored-transcripts-use-host-recorded-display-text.md), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md), [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md), [D67](../roadmap/current.md#wave-gating-decisions)
 
+> **Scoped 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** An interrupted turn's
+> "content-free structure" keeps its meaning for every tool but one: an `ask_user` call that showed a card and returned `ok` before the
+> turn was interrupted carries its question record on its result row, as in a completed turn. A stopped card itself (`cancelled`)
+> records nothing.
+
 ## Context
 
 [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §1 persists a **completed** turn as

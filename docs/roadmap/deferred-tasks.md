@@ -4206,8 +4206,16 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   multi-select, free text, a docked card in the chat and the Home, and no timeout. Still owed before it counts as done: the accepting
   D64 round (a new complete round with no blocker, high or medium finding), the full gate and a real-provider sample, and the
   maintainer's acceptance. Follow-ups recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
-  like `invoke_agent`); a stored question/answer form if resume needs it (a new ADR and migration); `Esc` at a card when a driver
-  wires no `onAbort`; letting `Ctrl+T` pass through an open card. *(medium · product · docs/decisions/0132-…)*
+  like `invoke_agent`); `Esc` at a card when a driver wires no `onAbort`; letting `Ctrl+T` pass through an open card.
+  *(The stored question/answer form this item once listed is done: [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), no migration — its own D64 round and security sitting are owed, the named residual being model-authored question text in a user-role block.)* *(medium · product · docs/decisions/0132-…)*
+- [ ] **Resume audit lows (2026-11-16, from the `chat resume` report).** None blocks a resume; each is a wording or small-state gap. (1) On a resumed
+  session every plain chat turn is "ambiguous" (ADR-0128's choice), so the model gets the 109-byte "some earlier tool activity may not be listed" sentence
+  even when no tool ever ran — an ADR-0128 amendment to tell a turn that predates receipts from one that has none. (2) After `/compact` or `/trim` the
+  resumed turn count shrinks, so the hard `max_turns` limit that fires on turn 4 live does not on resume, and the banner says "1 earlier turn".
+  (3) A `/effort` override is lost on a plain resume (document it, or persist it on the row). (4) *(done 2026-11-16: a `/models` reseat now writes the
+  switched model to the adopted row when the persister starts.)* (5) A second process opening the same session fails on the `UNIQUE` row rather than saying it
+  is open elsewhere. (6) An agent whose MCP server is gone makes the session unresumable. (7) `@` attachments are re-sent every turn (a context-size risk).
+  *(low · resume · apps/cli/src/chat, packages/core/src/engine/session-resume.ts)*
 - [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
   predicate also covers credential stores, which the rule keeps fatal; split the two and design the
   allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*

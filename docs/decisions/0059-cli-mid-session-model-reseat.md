@@ -148,3 +148,11 @@ arguments and results (including files a tool read) are not carried; only conten
 names and outcomes are; text the user sent, `@`-attached file contents included, is. Note 4's correction
 stands, and the new wording must not repeat its error in the opposite direction. Until the implementation
 step lands, the current notice is accurate. The body above is unchanged.
+
+## ADR-0133 forward note — 2026-11-16
+
+[ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores what an `ask_user` card asked and how the person
+answered, and a reseat carries it to the new model — possibly another provider — beside the receipts. The disclosure therefore also says
+so: *for the question tool, what you were asked and how you answered*. Saying only "names and outcomes" would understate what leaves, the
+direction note 4 warns against. The body above is unchanged.
+

@@ -971,7 +971,7 @@ sensitive-read floors).
 - **Todo/plan tool** — a structured, session-scoped task list the model maintains, rendered as a live TUI
   checklist (persists across compaction); ungoverned (no host arm).
 - **`ask_user`** — *(Superseded in its timeout, key and shape details by [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md),
-  Accepted 2026-11-16: no timeout, `Esc` stops the turn and `Ctrl+S` skips, multi-select, tabs with a Review tab, one to four questions, the answer is not stored.
+  Accepted 2026-11-16: no timeout, `Esc` stops the turn and `Ctrl+S` skips, multi-select, tabs with a Review tab, one to four questions; the question and answer are stored with the session, [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).
   The text below is the original plan.)* a structured mid-turn question (options + free text) on interactive surfaces via a
   keyboard-owning overlay; typed `tool_unavailable` on non-interactive surfaces; workflows keep
   `human_gate`. When the agent emits `ask_user` mid-turn, the engine **pauses the turn** (stops
@@ -5688,8 +5688,7 @@ maintainer's call. Nothing is pushed. Earlier receipts keep their scoped meaning
 
 **MVP-3d — `ask_user`.** *(The paragraph below keeps the original brief for the record; where it says keys `1`–`9`, "`Esc` returning a 'declined' result", the native prompt host, a five-minute timeout or "nothing model-initiated exists", [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) and its contract are the current design.)* **[ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted (2026-11-16)** after four independent design
 reviews (the dispositions are in the ADR), with its tool contract in [built-in-tools.md](../../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d).
-The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** (the
-durable row stays the content-free tool structure; no migration), and **`Esc` stops the turn** (skipping a question has its own key, `s`).
+The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** *(reversed the same day: [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores them in an optional `ask` record on the result row, still with no migration, and later turns and a resumed session see them)*, and **`Esc` stops the turn** (skipping a question has its own key, `s`).
 **Implemented (2026-11-16):** `packages/core/src/tools/ask-user.ts` (schema, delegate, per-turn state, fixed texts, answer validation), the tool in `builtins.ts`, `ToolDef.displaySummary` in the registry, `SessionDeps.askUser`, and the export rule; in the CLI the pure card model and layout (`question-card-model.ts`, `question-card.ts`), the store's `requestQuestion`, the ink host mounted in the chat and Home, and `chat/ask-user-port.ts` feeding both advertise gates from one option. What follows is the brief the ADR answers. Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the
 engine pausing the turn and returning the answer as the tool result, a configurable five-minute timeout, `tool_unavailable`
