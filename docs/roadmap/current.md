@@ -338,12 +338,14 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's
    structured mid-turn question moves up from "after v0.2.1" into its own increment. It starts with an ADR that
    also covers what the earlier design omitted — **multiple choice with free text and multi-select** — on the
-   engine's existing pause machine and a docked, keyboard-owning card built on ADR-0129's layout and the native
-   prompt host; a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
+   engine's existing pause machine and a docked, keyboard-owning card that is a sibling of ADR-0129's approval card (the native prompt
+   host was weighed and rejected in the ADR); a new terminal sink for untrusted content, so D64's rigor tier applies. **[ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)
    is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `s` skips; the question and answer
    are not stored; an answer is never consent. **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
-   docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and wiring tests; the D64 rounds,
-   the separate security sitting and the gate run are still owed
+   docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and command-level wiring tests.
+   **One four-reviewer round and a separate security sitting are done; their findings (one medium and several lows from each) are fixed**,
+   including a forged option row the sitting drew at a wrap boundary. The accepting round (a new round with no blocker/high/medium finding)
+   and the gate run are still owed
    (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
@@ -447,7 +449,7 @@ release (Wave 4b → MVP-10). After the MVP, a wave takes up whatever of its ite
 
 **Remaining product lanes after v0.2.1 (phase 2.6, ordered):** sub-agents and the rest of orchestration
 (2.6.N → 2.6.O/2.6.P, Waves 6–7); `/rewind`/`/fork` and persisted input history (2.6.E); `todo` and `ask_user`
-(2.6.M, ADR row 9 part 2); syntax highlighting (ADR row 11 part 2); settings, themes and `en`+`tr` (2.6.L,
+(2.6.M, ADR row 9 part 2; **`ask_user` moved up to MVP-3d** — [ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md), implemented, awaiting acceptance); syntax highlighting (ADR row 11 part 2); settings, themes and `en`+`tr` (2.6.L,
 Wave 5a/5b); onboarding v2's account stub (2.6.J); history retention and delete (D33, Wave 4b); scope-line items
 only after a phase amendment and an ADR.
 

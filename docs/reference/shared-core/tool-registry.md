@@ -56,6 +56,11 @@ interface ToolDef<Args = unknown, Result = unknown> {
     ctx: ToolDispatchContext,
   ) => Promise<ToolPreparedCall<Result>>;
   readonly requiresFsMethod?: 'findFiles' | 'searchFiles' | 'prepareWrite';
+  // The dispatch-context delegate this tool needs; a surface that wires none is never offered the tool (CR-73).
+  readonly requiresDelegate?: 'invokeAgent' | 'mediaRead' | 'askUser';
+  // A pure function of THIS tool's own result that replaces the derived `outputSummary` (built-ins only, ≤ 64 printable ASCII
+  // characters, else `completed`); `ask_user` is the one user, because its result carries the person's words (ADR-0132 §6).
+  readonly displaySummary?: (result: Result) => string;
   readonly effect?: (args: Args) => EffectTier | undefined;
   readonly duplicationBenign?: boolean; // trusted built-ins only; see effect-journal.md §3
 

@@ -241,10 +241,16 @@ model-facing description):
 truncated) when it: contains a control character (which includes ESC, so every terminal sequence — and a newline or
 tab), a line or paragraph separator, a format character (bidirectional controls, zero-width characters and joiners,
 tag characters, the byte-order mark), a private-use, unassigned or unpaired-surrogate code point, or a run of more than
-three combining marks; is not NFC; has leading or trailing whitespace; or begins with a marker a list could draw
-(`1.`, `2)`, `[x]`, `[ ]`, `( )`, a bullet). A **label** must also be unique within its question after NFC, trimming and
-a locale-independent case fold, must not fold to `other`, must not contain `type your own`, and must not begin with `✎`.
-Look-alike letters (a Cyrillic `а`) are not detected — [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+three combining marks; contains a **default-ignorable or invisible** code point (a Hangul filler, a combining grapheme joiner,
+a variation selector, the braille blank — only the variation selector-16 that makes an emoji an emoji, or precedes a keycap, is
+admitted); uses any space but the ordinary one; builds one character (grapheme) from more than four code points; is not NFC;
+has leading or trailing whitespace; or begins with a marker a list could draw (`1.`, `2)`, `[x]`, `[ ]`, `( )`, a bullet). The
+host's own drawing is refused **anywhere** in the string, not only at its start — the cursor `›`, the own-answer glyph `✎`, the
+field cursor `█`, the box-drawing range `─`–`╿` (including the gutter `│`), the tick shapes `(•)`, `( )`, `[x]`, `[ ]`, and the
+approval card's key tokens `[y]`, `[a]`, `[n]`, `[c]`, `[v]` — because a question is hard-wrapped and a forged row can start at any
+byte. A **label** must also be unique within its question after NFC, trimming, whitespace collapse and a locale-independent
+lower-casing (`toLowerCase`; no `ß`/`ς` folding), must not fold to `other`, must not contain `type your own`, and must not begin
+with `✎`. Look-alike letters (a Cyrillic `а`) are not detected — [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
 accepts that residual.
 
 **Layout.** The host adds a final **type-your-own-answer** row (`✎`, unnumbered, not a model label). At the 80×24
@@ -253,15 +259,20 @@ header (1), question (≤ 2), options (≤ 4), the type-your-own row (1), the hi
 bounds above make each part fit: a code point is never wider in columns than it is in bytes, and every model-authored
 line is **hard-wrapped by display width** (not word-wrapped), so a line takes `⌈width / 78⌉` rows and an over-long word is
 broken, not cut. A terminal smaller than 80×24 gets the approval card's "too small" state; only the stop keys work.
-The rule row reads **`Question from the agent · not an approval`** (fixed, neutral colour). One question is shown at a
-time, with `n of m` in the progress row.
+The rule row reads **`Question from the agent · not an approval`** (fixed host text, cyan where colour is on — never the
+approval card's yellow `Approval needed`). One question is shown at a time, with `n of m` in the progress row. Every row of
+model-authored text (the question, the highlighted option's description) is drawn **behind the host's gutter `│ `** — the glyph is
+refused inside model text, so the renderer owns column 0 of every wrapped line; the usable width of those rows is two columns
+narrower, which the bounds already allow (a code point is never wider in columns than in bytes, and 150 bytes fit two 76-column
+rows). In `accept-edits` and `auto`, where no card follows a write, the stop row also reads `· an answer is guidance, not a veto`.
 
 **Delegate** (`SessionDeps.askUser`, copied into the dispatch context): `(request, signal) => Promise<AskUserAnswer>`.
 `request` is the validated questions. The answer is `{ kind: 'answered', answers: [{ selected: string[], other?: string }] }`
 — one entry per question, `selected` the chosen option labels — or `{ kind: 'skipped' }`. The engine re-validates an
-answer (the count, that every `selected` is one of that question's labels, at most one for a single-select question
-unless text of its own is given, at least one `selected` or an `other`, and `other` one line of at most 500 code
-points); a malformed answer is a host fault. The delegate **resolves, or rejects with an `AbortError`**; any other
+answer: its **shape** first (a strict schema, before anything is read from it — a `null`, a string where an array belongs or a
+non-promise is a host fault, never a stray `TypeError`), then the count, that every `selected` is one of that question's
+labels, that a **single-select question carries exactly one of a label or its own text, never both**, that a multi-select question
+carries at least one label or text, and that `other` is one line of at most 500 code points; a malformed answer is a host fault. The delegate **resolves, or rejects with an `AbortError`**; any other
 failure — a malformed answer included — is fatal and **not retryable**, because a retry would reopen the card. A store
 that is sealed or closed while a question is pending rejects it with an `AbortError`.
 
@@ -285,14 +296,16 @@ A session-ending cancel (`/cancel`, `Ctrl-C` outside a card, the process signals
 (ADR-0119); only `Esc`/`Ctrl-C` **at the card** abort the turn and retain it.
 
 **Keys** (the card is routed before the composer and before `Shift+Tab`, and ignores choosing keys until its exact frame
-has been acknowledged visible — the approval card's measured-frame acknowledgement; the stop keys always work):
+has been acknowledged visible — the approval card's measured-frame acknowledgement, keyed on a **frame the store mints** when the card
+opens, moves to its next question, or is resized or resumed from suspend — **and has been on screen for 250 ms**, so a held or
+auto-repeating key cannot answer a question the person has not had time to read; the stop keys always work and never wait):
 
 | Key | In the list | In the text field |
 | --- | --- | --- |
 | `↑` / `↓` | move the highlight (no wrap; it starts on the first option, and nothing is pre-chosen) | `↑` returns to the list, keeping the text |
 | `1`–`4` | single-select: choose that option and advance; multi-select: toggle it; a digit with no such option is ignored | typed as text |
 | `Space` | multi-select: toggle the highlighted option; single-select: ignored | typed as text |
-| `Enter` | single-select: choose the highlighted option and advance; multi-select: confirm and advance — refused with a hint when nothing is ticked and no text was given; on the `✎` row: open the field | non-empty: accept the text — it ends the question in either kind, and in a multi-select question the ticks already made are sent with it; empty: return to the list |
+| `Enter` | single-select: choose the highlighted option and advance; multi-select: confirm and advance — refused with a hint when nothing is ticked and no text was given; on the `✎` row: open the field | non-empty: accept the text — it ends the question in either kind, and in a multi-select question the ticks already made are sent with it; empty: return to the list **and clear** any text accepted earlier (and the draft), so a multi-select question can go back to ticks only |
 | `←` | previous question, keeping its answer; ignored on the first question | moves the cursor |
 | `s` | skip the whole call; answers given so far are discarded | typed as text |
 | `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** |
@@ -305,7 +318,9 @@ to the model**. A highlighted row and a chosen row are drawn differently.
 **What is recorded.** The durable session row is the ordinary tool structure: the call's argument byte count and the
 result's byte count and outcome — no question, no label, no answer. `agent:tool_result.outputSummary` comes from a pure,
 optional display-summary function on the tool definition (`ToolDef.displaySummary`, given the tool's result and nothing
-else; every other tool keeps the derived summary): `answered N question(s)`, `skipped` or `not asked`. The tool defines
+else; **honoured for built-in tools only**, its result must be a short single line of printable ASCII (at most 64 characters) or the
+fixed phrase `completed` is shown instead, and a throw is contained the same way; every other tool keeps the derived summary):
+`answered N question(s)`, `skipped` or `not asked`. The tool defines
 **no `preview`**, so its tool row shows the name only; the question and the choice appear in the transcript entry the host
 builds from the answer it holds ([chat-session.md](../cli/chat-session.md)). `agent:tool_call.toolInput` carries the
 sanitised arguments as it does for every tool. The receipt label is `ask_user`, so a later turn sees "`ask_user` ok" and
@@ -315,10 +330,12 @@ in `accept-edits` and `auto` no card follows a write.
 **Model-facing description** (code-owned; the exact words are pinned by a test): ask a question only the user can answer —
 a choice between real alternatives, a preference, a requirement that cannot be found by reading; give two to four options
 with a short description each and do not add an "Other" option, because the user can always type their own answer; the
-limits (a question of at most 150 bytes, labels of at most 60, descriptions of at most 72, plain text only); ask up to four
-related questions in one call; never ask for a password, token or other secret; do not use it to ask permission, because
-approval of writes and commands is requested by the system and an answer here changes no permission; and state any
-decision you rely on in your reply, because later turns do not see the answer.
+limits (a question of at most 150 bytes, labels of at most 60, descriptions of at most 72, headers of at most 24, plain text
+only); the plain-text rules a refusal would otherwise hide (the registry reports only the field path of an invalid argument):
+no leading list marker, no box-drawing or tick glyphs, no `[y]`-style key tokens, no zero-width or invisible characters, no
+leading or trailing spaces, NFC only; ask up to four related questions in one call; never ask for a password, token or other
+secret; do not use it to ask permission, because approval of writes and commands is requested by the system and an answer here
+changes no permission; and state any decision you rely on in your reply, because later turns do not see the answer.
 
 ## The built-in tools
 

@@ -119,8 +119,8 @@ fixed "not an approval" chrome and the structural guarantee of §6 answer the se
 ### 3. The card says what it is, and its keys are not the approval keys
 
 The card is docked in place of the composer (ADR-0129 §1). Its rule row is host-authored
-and fixed: **`Question from the agent · not an approval`**, in the neutral colour, never the
-approval card's `Approval needed`. Its keys are the question keys, never `[y]`/`[a]`/`[n]`.
+and fixed: **`Question from the agent · not an approval`**, in cyan, never the
+approval card's `Approval needed` in warning yellow. Its keys are the question keys, never `[y]`/`[a]`/`[n]`.
 
 Keys (the table with every edge — first question, nothing chosen, empty text — is in the
 contract): `↑`/`↓` move the highlight (which starts on the first option; nothing is
@@ -130,16 +130,18 @@ with nothing ticked and no text of its own is refused with a hint; `←` returns
 previous question; selecting the type-your-own row opens a one-line field. **`s` skips the
 whole call** — the model receives `skipped`, the turn continues, and answers already given
 are discarded. **`Esc` and `Ctrl-C` stop the turn**, exactly as at an approval card
-(ADR-0115); the busy line's "Esc stops the turn" therefore stays true and ADR-0129 §6 needs
+([ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) is the accepted source;
+ADR-0115, still Proposed, will refine `Ctrl-C` outside a card, not at one); the busy line's "Esc stops the turn" therefore stays true and ADR-0129 §6 needs
 no amendment. The card owns the keyboard as the approval card does: it is routed before the
 composer and before `Shift+Tab`, and it ignores choosing keys until its exact frame has been
 acknowledged visible (the measured-frame acknowledgement the approval card already uses), so a
 key typed ahead of the card cannot choose; the stop keys work at all times.
 
 The field says, in the row where the highlighted option's description would be, that the
-text is **sent to the model**. The person's text is bounded and passed through the same
-finite secret-shaped-text backstop the `[c]` denial reason uses; the model's tool description
-tells it never to ask for a secret.
+text is **sent to the model**. The person's text is bounded and passed through a finite
+secret-shaped-text backstop — the engine's own (`redactSecretShapedText`, applied where the answer is
+validated, so every surface gets it), equivalent in intent to the one the `[c]` denial reason uses but
+not the same implementation; the model's tool description tells it never to ask for a secret.
 
 ### 4. The pause is the approval pause, with no clock
 
@@ -309,3 +311,33 @@ Accepted by the maintainer. The increment touches a consent-adjacent path and ad
 terminal sink for untrusted content, so [D64](../roadmap/current.md)'s rigor tier applies:
 one new complete cumulative round with no blocker, high or medium finding, and a separate
 security sitting, before the maintainer accepts the implementation.
+
+### Implementation and its reviews — 2026-11-16
+
+Built as the ADR says, with these deviations from the text accepted above, each found by the implementation's own review
+rounds (four independent reviewers — engine, CLI, documents-and-tests honesty, and a separate security sitting on a stronger
+model) and each recorded in the [contract](../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d):
+
+- **The own-answer field ends the question in both kinds.** The accepted contract said a multi-select field returned to the
+  list; in use that left `Enter` reopening the field, so accepting text now ends the question and the ticks already made are sent
+  with it. `↑` leaves the field keeping a draft, which is how a person ticks more after typing. An **empty** `Enter` clears
+  text accepted earlier, so a multi-select question can return to ticks only.
+- **The host owns column 0.** The security sitting forged a convincing option row at a wrap boundary using plain ASCII, which
+  §2's start-of-string marker rule could not stop. Model rows now sit behind a host gutter `│ `, and the host's own glyphs, tick
+  shapes and the approval keys are refused **anywhere** in model text. The same sitting found that default-ignorable and
+  non-ASCII-space characters defeated the "invisible characters are refused" promise, and that one grapheme can be 100 columns
+  wide: both are now refused, with a four-code-point cap per grapheme.
+- **A key needs a settled frame.** The measured-frame acknowledgement proves a flush, not that a person could read the card, so a
+  held Enter answered every question with its first option. A choosing key now also waits 250 ms after a question first shows; the
+  store mints a new frame token for each question and on every resize or resume, so a blocked card recovers when the terminal is
+  enlarged and a key typed right after `fg` cannot choose. The stop keys never wait.
+- **A skip is not a veto, and the card now says so** in `accept-edits` and `auto`, where no card follows a write.
+- **The host's answer is shape-checked before it is read**, `displaySummary` is honoured for built-ins only and clamped, and both
+  delegate fields (`askUser` and `askUserTurn`) gate the offer.
+- **The plain-text rules are stated to the model**, because the registry reports only the field path of an invalid argument.
+
+Recorded and **not** changed: look-alike letters (accepted by ADR-0120); an approval-sounding header (the fixed rule row and the
+structural guarantee answer it); a delegate that ignores its abort signal makes `Esc` dead (the same trust model as the approval
+hook); the tool's own `signal.aborted` check duplicates the registry's cancel routing (a redundant defence); `Esc` at a card with
+no `onAbort` wired does nothing (production always wires it); `Ctrl+T` is consumed by an open card, so a long expanded thinking
+panel that blocks the card in the inline renderer cannot be collapsed until the terminal is enlarged. The guard that keeps the mouse wheel and selection from acting while a card is open (a cosmetic parity with the approval card) is not covered by a test.

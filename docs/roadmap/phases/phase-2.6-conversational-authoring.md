@@ -5686,7 +5686,7 @@ Not yet done: the maintainer's acceptance. Round 4's findings were fixed and jud
 finding, but **no fifth round was run on those fixes**; whether round 4 plus its fixes satisfies D64's "one new complete round" is the
 maintainer's call. Nothing is pushed. Earlier receipts keep their scoped meaning and are not replaced by this paragraph.
 
-**MVP-3d — `ask_user`.** **[ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted (2026-11-16)** after four independent design
+**MVP-3d — `ask_user`.** *(The paragraph below keeps the original brief for the record; where it says keys `1`–`9`, "`Esc` returning a 'declined' result", the native prompt host, a five-minute timeout or "nothing model-initiated exists", [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) and its contract are the current design.)* **[ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted (2026-11-16)** after four independent design
 reviews (the dispositions are in the ADR), with its tool contract in [built-in-tools.md](../../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d).
 The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** (the
 durable row stays the content-free tool structure; no migration), and **`Esc` stops the turn** (skipping a question has its own key, `s`).

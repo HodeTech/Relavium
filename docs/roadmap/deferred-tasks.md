@@ -4202,10 +4202,12 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   the residual recorded in the security-review sitting stands. Needs: `/rewind` or "discard the last interrupted turn", and
   a decision whether Esc should keep the turn when the user's message carried `@`/`!` content. *(medium · privacy ·
   docs/standards/security-review.md, apps/cli/src/chat/persister.ts)*
-- [ ] **`ask_user` — a structured mid-turn question with options, free text and multi-select (MVP-3d, after MVP-3c).**
-  Decided 2026-11-16 to move up from "after v0.2.1". Nothing is implemented; the design in the phase register omits
-  multi-select. Starts with an ADR (shape, engine pause, interrupted-pause recording, docked card, sanitization, "an answer
-  is never consent"). *(medium · product · ADR row 9 part 2, 2.6.M)*
+- [ ] **`ask_user` — a structured mid-turn question (MVP-3d; ADR-0132 Accepted, implemented on `development`).** Built with
+  multi-select, free text, a docked card in the chat and the Home, and no timeout. Still owed before it counts as done: the accepting
+  D64 round (a new complete round with no blocker, high or medium finding), the full gate and a real-provider sample, and the
+  maintainer's acceptance. Follow-ups recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
+  like `invoke_agent`); a stored question/answer form if resume needs it (a new ADR and migration); `Esc` at a card when a driver
+  wires no `onAbort`; letting `Ctrl+T` pass through an open card. *(medium · product · docs/decisions/0132-…)*
 - [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
   predicate also covers credential stores, which the rule keeps fatal; split the two and design the
   allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*

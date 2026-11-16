@@ -34,7 +34,7 @@ distrust in a consent system.
 | Mode | The model is offered | A governed action (write, command, network, ambient OS) |
 |---|---|---|
 | `ask` (default) | every granted tool | **a card, every time** — `[y]` once · `[a]` always for this tool this session · `[n]` deny · `[c]` deny with a reason |
-| `plan` | read-only tools only | **refused with a fixed message that returns to the model** (ADR-0117); nothing is asked, nothing changes |
+| `plan` | read-only tools only *(see the note below)* | **refused with a fixed message that returns to the model** (ADR-0117); nothing is asked, nothing changes |
 | `accept-edits` | every granted tool | a **file edit inside the workspace is applied without a card**; every other class still gets a card |
 | `auto` | every granted tool | approved for granted actions; unchanged |
 
@@ -136,3 +136,7 @@ approval path are owed before the increment is accepted. The first two decisions
 (the mode table and the `ask` default) were taken by the maintainer after the
 survey recorded in
 [the approval-card and mode analysis](../analysis/approval-card-and-chat-modes-2026-11-16.md).
+
+> Amended 2026-11-16: [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md) refines the `plan` row. `plan` hides the
+> **governed** tools; `ask_user` is not governed, so a `plan` session on a surface with a person at it is also offered `ask_user`, and its
+> card opens in every mode. Nothing else in this ADR changes.
