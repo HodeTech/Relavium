@@ -260,6 +260,14 @@ describe('interruptionMatchesTurnCompleted — the cross-field rule (ADR-0119)',
     ['a denial under another code', 'error', { reason: 'denied' }, 'tool_failed'],
     ['a limit under another code', 'error', { reason: 'turn_limit' }, 'tool_denied'],
     ['an error turn with no error at all', 'error', { reason: 'denied' }, undefined],
+    [
+      'a failure on an abort stop with its code',
+      'aborted',
+      { reason: 'failed', code: 'tool_failed' },
+      'tool_failed',
+    ],
+    ['a denial on a normal stop with its code', 'stop', { reason: 'denied' }, 'tool_denied'],
+    ['a limit on an abort stop with its code', 'aborted', { reason: 'turn_limit' }, 'turn_limit'],
   ] as const)('refuses %s', (_name, stopReason, interruption, code) => {
     expect(check(stopReason, interruption, code)).toBe(false);
   });
