@@ -4177,8 +4177,9 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); **implemented on
   `development` the same day** (shared field and event, migration `0021`, turn-core history channel, `AgentSession`
   retention, persister, restored transcript, export, effect-journal disclosure), every new behaviour mutation-checked.
-  **Still owed (D64):** two independent review rounds with no blocker/high/medium finding, a separate resume-path
-  security sitting, the full `pnpm run ci` and coverage gates, and a real-provider sample. Work list in the
+  **Gates and a two-provider real sample have run** (see the phase register; `smoke:cli-package` and `check:map-controls`
+  are owned by the platform CI legs). **Still owed (D64):** two independent review rounds with no blocker/high/medium
+  finding and a separate resume-path security sitting. Work list in the
   [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16).
   *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
 - [ ] **ADR-0128 — a SUCCESSFUL turn after an overflow retry lists only the retry's tool calls.** Found while building

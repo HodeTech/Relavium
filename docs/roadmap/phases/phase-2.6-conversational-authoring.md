@@ -5586,9 +5586,25 @@ classified error, never cancel/no-engagement/unclassified/observer fault); reque
 admission (an interruption span is one message); the summariser input and prompt line; the persister's single interruption row
 and boundary slot; the restored transcript's fixed dim row; export skipping an interrupted turn as a workflow step; and the
 effect-journal disclosure keeping such an effect `turn_incomplete`. Evidence so far: core 5,257, shared 1,572 and db tests
-pass locally; every new behaviour was mutation-checked (all mutants killed). Not yet done: the two D64 review rounds, the
-separate security sitting, the full `pnpm run ci` and coverage gates, and a real-provider sample. Earlier receipts keep their
-scoped meaning and are not replaced by this paragraph.
+pass locally; every new behaviour was mutation-checked (all mutants killed).
+
+**Gates run (2026-11-16, `development` at 8541074c).** `pnpm run ci` ran every step; two stopped locally and are owned by the
+four-platform CI legs: `smoke:cli-package` and `check:map-controls` end in `INCOMPLETE` (the local native-asset inventory is not
+`release-complete`; `smoke:cli-package` was shown to fail identically at the pre-MVP-3c commit c7031781). All other steps pass,
+including `check:wire/usage/fs/secrets-mutations` after two pinned inventories were moved for the added tests (usage-coverage
+486 cases; three export controls at 26) and a shared test-table typing fix found by the gate. The workspace tests under
+`CI=true GITHUB_ACTIONS=true` and `coverage:enforced` pass.
+
+**Real-provider sample (2026-11-16).** The built CLI was driven through a pseudo-terminal with the keychain's own keys (deepseek-flash
+and claude-haiku-5-5, about $0.001 in total): a request to read six files, Esc after the tool calls, then "which files did you read?".
+Both sessions persisted `user → call/result pairs (sizes and outcomes only) → interruption row(aborted)`, and both models answered
+from the note, correctly and without inventing a result ("one/six successful read calls are recorded, the files and contents are
+unknown, results were discarded"). One more run aborted 78 ms after the send, before any token: the request had been sent, so the turn
+was retained with no calls and the model said none were recorded. Not sampled with a real provider: a classified failure, a denial and
+the tool-round limit (covered by the session-level tests).
+
+Not yet done: the two D64 review rounds and the separate security sitting. Earlier receipts keep their scoped meaning and are not
+replaced by this paragraph.
 
 **MVP-3d — `ask_user`.** Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the

@@ -331,8 +331,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    request rendering, resume, compaction/trim/window/reseat, the restored transcript and export, with live-versus-
    restored parity tests. **Implemented on `development` (2026-11-16)** with unit, session-level, persister, restored-
    transcript, export and real-SQLite parity tests, each behaviour mutation-checked; **D64's rigor tier is still owed** (a
-   resume path): two independent review rounds with no blocker/high/medium finding and a separate security sitting,
-   then the full `pnpm run ci` and coverage gates. ADR-0115 is not a
+   resume path): two independent review rounds with no blocker/high/medium finding and a separate security sitting.
+   The full `pnpm run ci` steps (all but the two platform-owned packaging checks), the CI-environment tests, coverage and a
+   two-provider real sample have run — see the phase register. ADR-0115 is not a
    dependency. Session-ending cancellation and process death keep today's rollback (ADR-0098's disclosure at resume).
    **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's
    structured mid-turn question moves up from "after v0.2.1" into its own increment. It starts with an ADR that
