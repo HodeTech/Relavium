@@ -260,6 +260,7 @@ describe('interruptionMatchesTurnCompleted — the cross-field rule (ADR-0119)',
     ['a denial under another code', 'error', { reason: 'denied' }, 'tool_failed'],
     ['a limit under another code', 'error', { reason: 'turn_limit' }, 'tool_denied'],
     ['an error turn with no error at all', 'error', { reason: 'denied' }, undefined],
+    ['a failure with neither a code nor an error', 'error', { reason: 'failed' }, undefined],
     [
       'a failure on an abort stop with its code',
       'aborted',

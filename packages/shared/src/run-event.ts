@@ -1211,7 +1211,11 @@ export function interruptionMatchesTurnCompleted(event: {
     case 'aborted':
       return event.stopReason === 'aborted' && event.error === undefined;
     case 'failed':
-      return event.stopReason === 'error' && event.error?.code === interruption.code;
+      return (
+        event.stopReason === 'error' &&
+        interruption.code !== undefined &&
+        event.error?.code === interruption.code
+      );
     case 'denied':
       return event.stopReason === 'error' && event.error?.code === 'tool_denied';
     case 'turn_limit':
