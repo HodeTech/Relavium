@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { SessionInterruptionSchema, SessionTurnCompletedEventSchema } from './run-event.js';
+import {
+  interruptionMatchesTurnCompleted,
+  SessionInterruptionSchema,
+  SessionTurnCompletedEventSchema,
+} from './run-event.js';
 import { SessionMessageSchema, type SessionMessage } from './session.js';
 import {
   completedSessionTurns,
@@ -221,5 +225,42 @@ describe('turn identity with an interruption row (ADR-0119 §3)', () => {
       'aborted',
       'failed',
     ]);
+  });
+});
+
+describe('interruptionMatchesTurnCompleted — the cross-field rule (ADR-0119)', () => {
+  const error = (code: string) => ({ code, message: 'x', retryable: false }) as never;
+  const check = (stopReason: string, interruption: unknown, code?: string) =>
+    interruptionMatchesTurnCompleted({
+      stopReason,
+      ...(code === undefined ? {} : { error: error(code) }),
+      ...(interruption === undefined ? {} : { interruption }),
+    } as never);
+
+  it('accepts an event without an interruption, whatever else it carries', () => {
+    expect(check('stop', undefined)).toBe(true);
+    expect(check('error', undefined, 'tool_failed')).toBe(true);
+  });
+  it('accepts each reason on the event shape the engine emits for it', () => {
+    expect(check('aborted', { reason: 'aborted' })).toBe(true);
+    expect(check('error', { reason: 'failed', code: 'tool_failed' }, 'tool_failed')).toBe(true);
+    expect(check('error', { reason: 'denied' }, 'tool_denied')).toBe(true);
+    expect(check('error', { reason: 'turn_limit' }, 'turn_limit')).toBe(true);
+  });
+  it.each([
+    ['an abort that also carries an error', 'aborted', { reason: 'aborted' }, 'cancelled'],
+    ['an abort on a normal stop', 'stop', { reason: 'aborted' }, undefined],
+    ['a failure on a normal stop', 'stop', { reason: 'failed', code: 'tool_failed' }, undefined],
+    [
+      'a failure naming another code',
+      'error',
+      { reason: 'failed', code: 'tool_failed' },
+      'internal',
+    ],
+    ['a denial under another code', 'error', { reason: 'denied' }, 'tool_failed'],
+    ['a limit under another code', 'error', { reason: 'turn_limit' }, 'tool_denied'],
+    ['an error turn with no error at all', 'error', { reason: 'denied' }, undefined],
+  ] as const)('refuses %s', (_name, stopReason, interruption, code) => {
+    expect(check(stopReason, interruption, code)).toBe(false);
   });
 });

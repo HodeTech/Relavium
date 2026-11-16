@@ -1190,6 +1190,34 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionTrimmedEventSchema,
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+
+/**
+ * ADR-0119's cross-field rule for `session:turn_completed`, which a `discriminatedUnion` member cannot carry as a
+ * refinement (it would make the member a ZodEffects and break the union — the `RunEventSchema` precedent): a retained
+ * turn's `interruption` must agree with the event it rides on. `aborted` is the user-initiated abort (`stopReason:
+ * 'aborted'`, no error); every other reason is an error turn whose `error.code` is the one the reason names (`failed`
+ * carries its own code; `denied` is `tool_denied`; `turn_limit` is `turn_limit`). An event without `interruption` is
+ * always consistent. The persister writes the interruption row iff the event carries one, so it checks this first and
+ * fails closed on a disagreement instead of persisting a row the event contradicts.
+ */
+export function interruptionMatchesTurnCompleted(event: {
+  readonly stopReason: z.infer<typeof SessionStopReasonSchema>;
+  readonly error?: { readonly code: z.infer<typeof ErrorCodeSchema> } | undefined;
+  readonly interruption?: SessionInterruption | undefined;
+}): boolean {
+  const interruption = event.interruption;
+  if (interruption === undefined) return true;
+  switch (interruption.reason) {
+    case 'aborted':
+      return event.stopReason === 'aborted' && event.error === undefined;
+    case 'failed':
+      return event.stopReason === 'error' && event.error?.code === interruption.code;
+    case 'denied':
+      return event.stopReason === 'error' && event.error?.code === 'tool_denied';
+    case 'turn_limit':
+      return event.stopReason === 'error' && event.error?.code === 'turn_limit';
+  }
+}
 export type SessionCompactingEvent = z.infer<typeof SessionCompactingEventSchema>;
 export type SessionCompactedEvent = z.infer<typeof SessionCompactedEventSchema>;
 export type SessionCompactionFailedEvent = z.infer<typeof SessionCompactionFailedEventSchema>;
