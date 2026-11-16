@@ -99,7 +99,10 @@ export {
 } from '@relavium/shared';
 export type { CompletedSessionTurn } from '@relavium/shared';
 
-/** Reconstruct only completed surviving turns; empty finals count, interrupted tool loops roll back. */
+/**
+ * Reconstruct the surviving turns: completed ones (empty finals count) and retained interrupted turns (ADR-0119, a user
+ * message ended by an interruption row). A crash remnant — a user row with structural rows and no terminal — rolls back.
+ */
 export function reconstructSessionState(
   record: AgentSessionRecord,
   messages: readonly SessionMessage[],

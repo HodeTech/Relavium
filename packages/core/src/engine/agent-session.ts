@@ -1036,11 +1036,12 @@ export class AgentSession {
       // `budget_exceeded` by `#settleTurnError` below (a session has no pause/resume gate machinery), and an
       // unclassified throw is settled and re-raised.
       //
-      // ADR-0119 narrows "roll back" to the turns that did NOT engage a provider or ended in a way the engine cannot
-      // vouch for: a turn the session accepted, a provider engaged in, and that ended by the turn-level abort or a
-      // classified error is RETAINED instead — its user message stays, with the content-free structure of the tools it
-      // dispatched, and the terminal event carries the `interruption` the persister writes. Every other exit still
-      // rolls back exactly as before, so the decision to retain lives in these three branches and nowhere else.
+      // ADR-0119 narrows "roll back" to the turns that never reached the provider's answer or ended in a way the engine
+      // cannot vouch for: a turn the session accepted, that the provider ACCEPTED (it returned content), and that ended by
+      // the turn-level abort or a classified error is RETAINED instead — its user message stays, with the content-free
+      // structure of the tools it dispatched, and the terminal event carries the `interruption` the persister writes.
+      // Every other exit — including an Esc or a refusal before the first chunk — still rolls back exactly as before,
+      // so the decision to retain lives in `#mayRetain` and the two branches that call it, and nowhere else.
       if (this.#statusIs('cancelled')) {
         // cancel-during-turn: session:cancelled is the terminal, and a session-ending cancel keeps today's rollback.
         this.#rollbackPendingUser();
@@ -1109,9 +1110,9 @@ export class AgentSession {
 
   /**
    * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
-   * already ruled out a cancel-during-turn; this method rolls the user message back, or — for an engaged turn that
-   * ended in a classified error whose tool list can vouch for itself — RETAINS it as an interrupted turn
-   * (ADR-0119).
+   * already ruled out a cancel-during-turn; this method rolls the user message back, or — for a turn the provider
+   * accepted that ended in a classified error whose tool list can vouch for itself — RETAINS it as an interrupted
+   * turn (ADR-0119).
    * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
    *   when canonical accounting proves provider engagement and reporting its real EA2 usage.
    * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
@@ -1209,12 +1210,18 @@ export class AgentSession {
 
   /**
    * The ADR-0119 retention predicate for a CLASSIFIED error: the session accepted the message (it is pending),
-   * a provider engaged (the predicate the hard cap already uses), and the error is classified. `tool_denied` and the
-   * within-turn `turn_limit` get their own reasons; every other code is `failed` with that code. `undefined` ⇒ the
-   * turn is rolled back as before.
+   * {@link #mayRetain} holds (the provider accepted the request and the tool list can vouch for itself), and the error
+   * is classified. `tool_denied` and the within-turn `turn_limit` get their own reasons; every other code is `failed`
+   * with that code. `undefined` ⇒ the turn is rolled back as before.
    */
   #interruptionFor(code: ErrorCode): SessionInterruption | undefined {
     if (this.#pendingUser === undefined || !this.#mayRetain()) return undefined;
+    // A context overflow in a turn that ran no tool says the MESSAGE does not fit the window — even when it arrives after
+    // the first chunk (a provider that streams until the window is exhausted). Keeping it would resend that message,
+    // plus the note and the next one, strictly larger than the request that overflowed, so every later turn would
+    // overflow and compaction and trim, which never fold the latest exchange, could not remove it. Rolled back.
+    if (code === 'context_overflow' && (this.#failedTurnAccounting?.toolHistory?.length ?? 0) === 0)
+      return undefined;
     if (code === 'tool_denied') return { reason: 'denied' };
     if (code === 'turn_limit') return { reason: 'turn_limit' };
     return { reason: 'failed', code };
@@ -1295,9 +1302,10 @@ export class AgentSession {
    * (unlike {@link cancel}, which is terminal). It aborts the turn's signal; the turn core then throws on
    * the abort and the `sendMessage` catch settles the turn as **one** `session:turn_completed{stopReason:
    * 'aborted'}` (no `error` — it is user-initiated, not a failure), and returns `#status` to `idle` so the next
-   * `sendMessage` continues the conversation. A turn a provider had engaged in is RETAINED as an interrupted turn
-   * (ADR-0119: the user message stays, with the content-free structure of the tools it dispatched, and the event
-   * carries `interruption`); one that was aborted before any provider engaged rolls its user message back. A **late** abort that
+   * `sendMessage` continues the conversation. A turn the provider had already ACCEPTED (it returned at least one stream
+   * chunk) is RETAINED as an interrupted turn (ADR-0119: the user message stays, with the content-free structure of the
+   * tools it dispatched, and the event carries `interruption`); one aborted before the provider returned anything rolls
+   * its user message back. A **late** abort that
    * lands after the turn already RESOLVED is a no-op — that turn completes normally (its reply is kept), so
    * a just-finished reply is never discarded. No-op unless a turn is in flight (`running`); a `cancel()`
    * already in progress wins (terminal precedence). There is **no** new session status.

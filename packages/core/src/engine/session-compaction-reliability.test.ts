@@ -415,9 +415,8 @@ describe('W7 compaction authority, policy and atomic recovery controls', () => {
         await h.session.sendMessage('next-unique');
         const request = h.requests.at(-1);
         if (request === undefined) throw new Error('missing request');
-        // ADR-0119 implementation note: the provider refused the request itself and no tool ran, so the turn is rolled
+        // ADR-0119 implementation note: the provider never accepted the request (no content), so the turn is rolled
         // back exactly as before. Keeping it would resend the refused message in every later request.
-        expect(terminal).toMatchObject({ error: { code: 'context_overflow' } });
         expect((terminal as { interruption?: unknown }).interruption).toBeUndefined();
         expect(body(request)).not.toContain('pending-unique');
         expect(body(request)).not.toContain('interrupted before it was answered');

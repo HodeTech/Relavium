@@ -532,7 +532,7 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     },
   );
 
-  it('rolls back an Esc that arrives before the provider returned any content, and keeps one that arrives after', async () => {
+  it('rolls back an Esc that arrives before the provider returned any content', async () => {
     const silent = latch();
     const early = rig([
       // The request was sent and the provider has said nothing; an abort then surfaces as the adapter's cancelled error,
@@ -594,6 +594,71 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     expect(events.some((event) => event.type === 'session:compacted')).toBe(true);
     const turns = terminals(events);
     expect(turns.at(-1)?.interruption).toEqual({ reason: 'failed', code: 'internal' });
+  });
+
+  it('rolls back a context overflow that arrives AFTER the first chunk when no tool ran: the message does not fit the window', async () => {
+    const overflowAfterContent: StreamChunk[] = [
+      { type: 'text_delta', text: 'PARTIAL' },
+      {
+        type: 'error',
+        error: {
+          kind: 'context_overflow',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'window exhausted',
+        },
+      },
+    ];
+    const { session, events, requests } = rig([overflowAfterContent, textTurn('answer')]);
+    session.start();
+    await session.sendMessage('a message at the edge of the window');
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'context_overflow' } });
+    expect(terminal?.interruption).toBeUndefined();
+    await session.sendMessage('a short follow-up');
+    expect((requests.at(-1)?.messages ?? []).map(textOf).join('|')).toBe('a short follow-up');
+  });
+
+  it('counts any first chunk as the provider accepting the request, a reasoning chunk included', async () => {
+    const reasoningThenFailure: StreamChunk[] = [
+      { type: 'reasoning_start', id: 'r1' },
+      {
+        type: 'error',
+        error: { kind: 'unknown', retryable: false, provider: 'anthropic', message: 'dropped' },
+      },
+    ];
+    const { session, events } = rig([reasoningThenFailure, textTurn('later')]);
+    session.start();
+    await session.sendMessage('think about it');
+    expect(terminals(events)[0]?.interruption).toEqual({ reason: 'failed', code: 'internal' });
+  });
+
+  it('retains the tool-calls-per-response limit as turn_limit with nothing dispatched', async () => {
+    const many = Array.from({ length: 64 }, (_, index) => ({ id: `c${index}`, name: 'read_file' }));
+    const { session, events } = rig([callsTurn(many), textTurn('later')]);
+    session.start();
+    await session.sendMessage('read everything at once');
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'turn_limit' } });
+    expect(terminal?.interruption).toEqual({ reason: 'turn_limit' });
+    // The ceiling is checked before the first dispatch, so no call ran and none is listed.
+    expect(terminal?.toolHistory).toEqual([]);
+  });
+
+  it('rolls back a pre-egress budget refusal: no request was sent, so nothing is retained', async () => {
+    const { session, events, requests } = rig([textTurn('never'), textTurn('later')], {
+      deps: {
+        preEgress: () => {
+          throw new BudgetPauseError(900, 1000, 90);
+        },
+      },
+    });
+    session.start();
+    await session.sendMessage('refused before egress');
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'budget_exceeded' } });
+    expect(terminal?.interruption).toBeUndefined();
+    expect(requests).toHaveLength(0);
   });
 
   it('keeps a refusal that comes after a tool round: the calls ran, so the turn is retained', async () => {
