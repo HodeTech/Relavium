@@ -1069,7 +1069,7 @@ describe('createSessionPersister', () => {
       });
     });
 
-    it('LATCHES a failed interrupted-turn write: no partial turn, no phantom sequence, the user is told', async () => {
+    it('LATCHES a failed interrupted-turn write: nothing is written, the failure is latched and the user is told', async () => {
       const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
       persister.start();
       built.session.start();
@@ -1077,10 +1077,12 @@ describe('createSessionPersister', () => {
       vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
         throw boom;
       });
-      persister.beginUserTurn('read it');
+      persister.beginUserTurn('read it', 'read it (display)');
       await built.session.sendMessage('read it');
-      // All of the turn or none of it: not the user row, not the call/result pairs, not the interruption row.
+      // All of the turn or none of it: not the user row, not the call/result pairs, not the interruption row, and
+      // not the display text that would have ridden the same transaction.
       expect(store.loadMessages('sess-1')).toHaveLength(0);
+      expect([...store.loadUserDisplayTexts('sess-1', [0])]).toEqual([]);
       expect(persister.durabilityFailure).toBe(boom);
       expect(listenerNotes.join('\n')).toMatch(/database is locked/);
       expect(persister.hasSavedTurns).toBe(false);
@@ -1114,6 +1116,43 @@ describe('createSessionPersister', () => {
       ]);
       expect(full?.messages.at(-1)?.interruption).toEqual({ reason: 'aborted' });
     });
+
+    it.each([
+      [
+        'an abort that also carries an error',
+        { stopReason: 'aborted', interruption: { reason: 'failed', code: 'internal' } },
+      ],
+      [
+        'a failure naming another code than the error',
+        {
+          stopReason: 'error',
+          error: { code: 'tool_failed', message: 'x', retryable: false },
+          interruption: { reason: 'failed', code: 'internal' },
+        },
+      ],
+      [
+        'an interruption on a normal stop',
+        { stopReason: 'stop', interruption: { reason: 'aborted' } },
+      ],
+    ] as const)(
+      'fails closed instead of writing an interruption row its event contradicts (%s)',
+      async (_name, shape) => {
+        const { built, persister } = await setup(scriptedResolver([]));
+        persister.start();
+        built.session.start();
+        persister.beginUserTurn('a request');
+        // A synthetic completion event through the host's own sink: the bus validates the schema, which cannot carry
+        // the cross-field rule, so the persister is the check that stands between the event and the database.
+        built.emitSessionEvent({
+          type: 'session:turn_completed',
+          tokensUsed: { input: 1, output: 1 },
+          ...shape,
+        } as never);
+        expect(store.loadMessages('sess-1')).toHaveLength(0);
+        expect(persister.durabilityFailure?.message).toMatch(/contradicts/u);
+        expect(listenerNotes.join('\n')).toMatch(/contradicts/u);
+      },
+    );
 
     it('rolls the whole turn back when the transaction fails on its LAST row (a real database failure, not a mocked store)', async () => {
       const { built, persister } = await setup(scriptedResolver(toolThenFailure()));

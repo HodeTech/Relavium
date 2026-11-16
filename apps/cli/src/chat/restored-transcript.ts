@@ -145,7 +145,7 @@ export function restoreSessionTranscript(options: {
     options.memory?.type === 'none'
       ? 'Memory policy: none — earlier conversation is excluded from the next request.'
       : options.memory?.type === 'window'
-        ? `Memory policy: window — only the most recent ${options.memory.window_size} permitted completed turns enter the next request; earlier summaries are excluded.`
+        ? `Memory policy: window — only the most recent ${options.memory.window_size} permitted turns enter the next request; earlier summaries are excluded.`
         : undefined;
   let budget = 1 + (policy === undefined ? 0 : 1),
     legacy = false,
