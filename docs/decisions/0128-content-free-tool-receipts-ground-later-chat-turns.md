@@ -307,3 +307,7 @@ cap rises from 4,096 to 5,120 so that it still cannot bind by construction; the 
 the assistant's words and neither they nor the answers are a request. Every other tool's record is unchanged, and the closed-vocabulary
 rule still holds for the label and the outcome. The request-text format, the bounds and the retention rule are in
 [agent-session-spec.md](../reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128).
+
+The notice reserve now includes that sentence's 273 bytes **unconditionally** — a session that never asks a question pays it too — so the
+"Reach" figure above is **105 turns** of evidence at one call per turn after ADR-0133, not 107 (the budget the blocks share shrinks by 274
+bytes of 16,384).

@@ -98,7 +98,7 @@ function messageText(message: LlmMessage): string {
  * whose user message is `foldable[i]` (ADR-0128), plus — for an interrupted turn — its interruption (ADR-0119):
  * the same bounded projection a request carries, so the summary can account for earlier recorded tool calls and
  * for a turn that ended without an answer. The receipt block, the interruption sentence and the single notice
- * are code-owned closed-vocabulary text, appended AFTER the message text and never flattened into it, which is
+ * are code-owned text (the question notes inside the block are quoted model/person strings, ADR-0133), appended AFTER the message text and never flattened into it, which is
  * what keeps oversized-message truncation from clipping a record.
  */
 export function renderConversationToSummarise(

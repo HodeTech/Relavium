@@ -876,6 +876,7 @@ describe('the question note of an ask_user record (ADR-0133)', () => {
     status: 'answered',
     items: items.map((item) => ({ header: 'Scope', question: 'Which module?', ...item })),
   });
+  // A row written before a skip stopped keeping its question text still carries one; every consumer must ignore it.
   const skipped: SessionAskRecord = {
     status: 'skipped',
     items: [{ header: 'Scope', question: 'Which module?' }],
@@ -908,12 +909,12 @@ describe('the question note of an ask_user record (ADR-0133)', () => {
       );
     });
 
-    it('lists a skipped call as the questions asked and no answer', () => {
+    it('lists a skipped call by its headers only, ignoring any question text a stored row carries', () => {
       expect(renderTurnReceiptBlock(receipts([askRecord(skipped)]))).toBe(
         [
           `\n\n${RECEIPT_BLOCK_OPENING}`,
           '1. ask_user — ok',
-          '   skipped: "Scope" — "Which module?"',
+          '   skipped: "Scope"',
           RECEIPT_BLOCK_CLOSING,
         ].join('\n'),
       );
@@ -929,6 +930,11 @@ describe('the question note of an ask_user record (ADR-0133)', () => {
         );
       // Another tool's record never gets the phrase.
       expect(renderTurnReceiptBlock(receipts([record('read_file')]))).not.toContain('no question');
+      // An answered item that lost its question text is a shape the schema refuses, reachable only by a direct call: it still
+      // lists its header and the answer rather than throwing or printing `undefined`.
+      expect(
+        askNoteLines({ status: 'answered', items: [{ header: 'Scope', selected: ['alpha'] }] }),
+      ).toEqual(['   answered: "Scope" → chose "alpha"']);
     });
 
     it('JSON-quotes every string, so a quote, a backslash or a look-alike row stays inside its quotes', () => {
@@ -1137,9 +1143,12 @@ describe('the question note of an ask_user record (ADR-0133)', () => {
   });
 
   describe('the byte bounds', () => {
-    it('raised the per-turn cap because the worst admissible block can pass 4,096 bytes', () => {
-      // The longest block the bounds admit: 30 question records with no text kept, two records whose notes fill the
-      // per-turn note budget, and the "unknown number omitted" line — every part counted from the same constants.
+    it('raised the per-turn cap because the by-construction worst-case BOUND can pass 4,096 bytes', () => {
+      // An analytic upper bound, not a block anyone can build: 30 question records with no text kept, two records whose
+      // notes fill the per-turn note budget exactly, two-digit numbering throughout and the "unknown number omitted"
+      // line, every part counted from the same constants. The longest block actually constructible from real notes
+      // measured 4,072 bytes (D64 round), under the old cap — the raise keeps "the cap cannot bind" provable by
+      // construction rather than by measurement.
       const bare = utf8ByteLength('32. ask_user — ok (no question text kept)') + 1;
       const heads = 2 * (utf8ByteLength('31. ask_user — ok') + 1);
       const omitted =
@@ -1149,6 +1158,60 @@ describe('the question note of an ask_user record (ADR-0133)', () => {
       expect(worst).toBeGreaterThan(4_096);
       expect(RECEIPT_LIMITS.turnBytes).toBe(5_120);
       expect(worst).toBeLessThanOrEqual(RECEIPT_LIMITS.turnBytes);
+    });
+
+    it('reads an own-text-only answer without an empty choice clause (the most common shape)', () => {
+      expect(askNoteLines(answered([{ selected: [], other: 'mine' }]))).toEqual([
+        '   answered: "Scope" — "Which module?" → own text "mine"',
+      ]);
+    });
+
+    // The "[N more questions not listed]" line is reserved INSIDE the per-note cap. A fixture that stops short of the cap never
+    // enters the window where the reserve matters, so this walks the shape space — quote-, backslash- and multibyte-heavy
+    // strings, every question and own-text length — and asserts the cap on every one, requiring that the window was entered.
+    it('never lets a note exceed the per-note cap, whatever mix of long, quote-heavy and multibyte strings it holds', () => {
+      const fit = (unit: string, maxBytes: number): string =>
+        unit.repeat(Math.floor(maxBytes / utf8ByteLength(unit)));
+      let reserveMatters = 0;
+      for (const unit of ['q', '"', '\\', 'é', '€', '😀'])
+        for (let questionBytes = 100; questionBytes <= 150; questionBytes++)
+          for (let ownCodePoints = 0; ownCodePoints <= 160; ownCodePoints += 3) {
+            const item = (index: number) => ({
+              header: `H${String(index)}`,
+              question: fit(unit, questionBytes),
+              selected: ownCodePoints % 2 === 0 ? [fit(unit, 60)] : [],
+              ...(ownCodePoints > 0 ? { other: unit.repeat(ownCodePoints) } : {}),
+            });
+            const lines = askNoteLines(
+              answered(Array.from({ length: 4 }, (_, index) => item(index))),
+            );
+            const bytes = lines.reduce((total, line) => total + utf8ByteLength(line) + 1, 0);
+            expect(bytes).toBeLessThanOrEqual(RECEIPT_LIMITS.askNoteBytes);
+            // The reserve matters exactly when k whole lines would fill the cap's top 48 bytes while a fourth does not fit.
+            const one = utf8ByteLength(askNoteLines(answered([item(0)]))[0] ?? '') + 1;
+            const k = Math.floor(RECEIPT_LIMITS.askNoteBytes / one);
+            if (k < 4 && k * one > RECEIPT_LIMITS.askNoteBytes - 48) reserveMatters++;
+          }
+      expect(reserveMatters).toBeGreaterThan(0);
+    });
+
+    // The reserve for the notice now includes the ask sentence, charged to every session. The retained blocks AND the request
+    // notice must still fit the total budget together, with question notes present.
+    it('keeps the retained blocks and the request notice inside the total byte budget', () => {
+      const ask: SessionAskRecord = answered([{ selected: ['alpha'] }]);
+      const spans = Array.from({ length: 200 }, (_, index) => ({
+        start: index * 2,
+        end: index * 2 + 2,
+        receipts: receipts([askRecord(ask)]),
+      }));
+      const retained = retainTurnReceipts(spans);
+      const kept = retained.filter((span) => span.receipts.records.length > 0).length;
+      expect(kept).toBeGreaterThan(50);
+      expect(kept).toBeLessThan(200);
+      const blocks = retained.reduce((sum, span) => sum + receiptBlockBytes(span.receipts), 0);
+      const notice = renderReceiptNotice(retained.map((span) => span.receipts)) ?? '';
+      expect(notice).toContain(RECEIPT_NOTICE_ASK);
+      expect(blocks + utf8ByteLength(notice)).toBeLessThanOrEqual(RECEIPT_LIMITS.totalBytes);
     });
 
     it('shows no note when not even the first question fits the cap', () => {

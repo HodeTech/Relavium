@@ -398,7 +398,10 @@ export class AskUserAnswerError extends Error {
   }
 }
 
-const OWN_TEXT_FORBIDDEN = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+// Control characters, line and paragraph separators and UNPAIRED surrogates. The stored record's schema refuses the same
+// set (`ASK_FORBIDDEN`): a host answer the model could be given but the record could not hold would silently cost the whole
+// call's record (D64 round), so the engine refuses it here as a host fault instead.
+const OWN_TEXT_FORBIDDEN = /[\p{Cc}\p{Zl}\p{Zp}\p{Cs}]/u;
 
 /**
  * Check the host's answer against the request and build the model-facing result. The person's own text is masked of
@@ -468,10 +471,12 @@ export function askUserRecord(
   try {
     const parsed = AskUserResultSchema.safeParse(result);
     if (!parsed.success || parsed.data.status === 'not_asked') return undefined;
+    // A skip ends the whole call from any tab, so most of its questions may never have been shown: only their headers (which
+    // the transcript entry lists) are kept, never question text the person did not see.
     if (parsed.data.status === 'skipped')
       return SessionAskRecordSchema.parse({
         status: 'skipped',
-        items: request.questions.map(({ header, question }) => ({ header, question })),
+        items: request.questions.map(({ header }) => ({ header })),
       });
     const { answers } = parsed.data;
     if (answers.length !== request.questions.length) return undefined;

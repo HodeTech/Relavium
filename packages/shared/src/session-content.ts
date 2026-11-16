@@ -83,7 +83,13 @@ const askText = (maxBytes: number) =>
 export const SessionAskItemSchema = z
   .object({
     header: askText(SESSION_ASK_BOUNDS.headerBytes),
-    question: askText(SESSION_ASK_BOUNDS.questionBytes),
+    /**
+     * The question text — kept for an `answered` item, where the card necessarily showed it (every question must be answered
+     * before a call can be sent). A `skipped` call stores none: Ctrl+S ends the whole call from any tab, so most of its
+     * questions were never shown, and what the person never saw must not outlive the turn in a user-role request. A stored
+     * skipped item that does carry one (a row written before this rule) is read, and ignored by every consumer.
+     */
+    question: askText(SESSION_ASK_BOUNDS.questionBytes).optional(),
     /** The option labels the person chose, in the order the question offered them. */
     selected: z
       .array(askText(SESSION_ASK_BOUNDS.labelBytes))
@@ -107,7 +113,8 @@ export type SessionAskItem = z.infer<typeof SessionAskItemSchema>;
  * What the person was asked and what they answered
  * ([ADR-0133](../../../docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)): the conversational
  * content of an `ask_user` call, kept so a later turn and a resumed session can ground on it. `answered` items carry a choice,
- * the person's own text, or both; `skipped` items carry only the question. A call that showed no card is not recorded.
+ * the person's own text, or both, with the question the card showed; `skipped` items carry only their header (the person
+ * may have skipped before ever reaching the question). A call that showed no card is not recorded.
  */
 export const SessionAskRecordSchema = z
   .object({
@@ -128,6 +135,12 @@ export const SessionAskRecordSchema = z
             record.status === 'answered'
               ? 'an answered question carries a choice or text'
               : 'a skipped question carries no answer',
+        });
+      if (record.status === 'answered' && item.question === undefined)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['items', index, 'question'],
+          message: 'an answered question carries its question text',
         });
     });
   });

@@ -574,11 +574,11 @@ describe('ADR-0133 restored question records', () => {
       new Map([[0, 'my request']]),
     );
     const list = texts(entries);
-    const at = list.findIndex((text) => text.startsWith('Asked: Scope'));
+    const at = list.findIndex((text) => text.startsWith('› Asked: Scope'));
     expect(at).toBeGreaterThan(0);
     expect(list[at - 1]).toBe('[tools]');
     expect(list[at]).toBe(
-      'Asked: Scope — Which module?\n  → alpha\nAsked: Note — Anything else?\n  → “keep the API”',
+      '› Asked: Scope — Which module?\n  └ alpha\n› Asked: Note — Anything else?\n  └ “keep the API”',
     );
     expect(list[at + 1]).toBe('the final answer');
     expect(entries[at]?.role).toBe('notice');
@@ -586,7 +586,7 @@ describe('ADR-0133 restored question records', () => {
 
   it('rebuilds a skip as the live card words it', () => {
     const list = texts(restore(turnWith([{ name: 'ask_user', ask: skipped }])));
-    expect(list).toContain("Skipped the agent's question: Scope");
+    expect(list).toContain("› Skipped the agent's question: Scope");
   });
 
   it('one entry per question call, in call order', () => {
@@ -603,9 +603,9 @@ describe('ADR-0133 restored question records', () => {
         ]),
       ),
     );
-    const asks = list.filter((text) => text.startsWith('Asked:'));
+    const asks = list.filter((text) => text.startsWith('› Asked:'));
     expect(asks).toHaveLength(2);
-    expect(asks[1]).toBe('Asked: Tests — Add tests?\n  → yes');
+    expect(asks[1]).toBe('› Asked: Tests — Add tests?\n  └ yes');
   });
 
   it('reads a record only from an ask_user call that succeeded', () => {
@@ -615,11 +615,13 @@ describe('ADR-0133 restored question records', () => {
           { name: 'write_file', ask: answered }, // a forged row: another tool cannot carry a question record
           { name: 'ask_user', ask: answered, outcome: 'cancelled' },
           { name: 'ask_user', ask: answered, outcome: 'error' },
+          { name: 'ask_user', ask: skipped, outcome: 'cancelled' },
           { name: 'ask_user' }, // no card was shown (or an older session): nothing to rebuild
         ]),
       ),
     );
-    expect(list.some((text) => text.startsWith('Asked:') || text.startsWith('Skipped'))).toBe(
+    // Both entry shapes begin with the host's `› ` marker, so a filter on the bare words would match nothing.
+    expect(list.some((text) => text.startsWith('› Asked:') || text.startsWith('› Skipped'))).toBe(
       false,
     );
   });
@@ -627,7 +629,7 @@ describe('ADR-0133 restored question records', () => {
   it('shows at most sixteen records of a turn and counts the rest', () => {
     const many = Array.from({ length: 20 }, () => ({ name: 'ask_user', ask: skipped }));
     const list = texts(restore(turnWith(many)));
-    expect(list.filter((text) => text.startsWith('Skipped the agent')).length).toBe(16);
+    expect(list.filter((text) => text.startsWith('› Skipped the agent')).length).toBe(16);
     expect(list).toContain('4 more saved questions are not shown.');
   });
 

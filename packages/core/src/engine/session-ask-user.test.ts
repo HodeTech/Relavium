@@ -1,6 +1,6 @@
 /**
  * ADR-0132 through a real `AgentSession` and the real registry: when the tool is offered, what the model receives,
- * what rides the event stream, the per-turn ceiling and "a skip closes questions" on the real tool loop, and what a stop
+ * what rides the event stream, "a skip closes questions" on the real tool loop, and what a stop
  * at the card does to the turn. The pure schema/answer rules are pinned in `tools/ask-user.test.ts`.
  */
 import type { CapabilityFlags, LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
@@ -217,7 +217,7 @@ describe('a question through the real tool loop (ADR-0132 §3, §5, §6)', () =>
     });
   });
 
-  it('records a skip as the questions asked, and a not-shown call as nothing', async () => {
+  it('records a skip as the headers asked, never their question text, and a not-shown call as nothing', async () => {
     const skipped = rig([asks(2), textTurn('done')], () => Promise.resolve({ kind: 'skipped' }));
     skipped.session.start();
     await skipped.session.sendMessage('go');
@@ -227,7 +227,7 @@ describe('a question through the real tool loop (ADR-0132 §3, §5, §6)', () =>
     expect(history).toHaveLength(2);
     expect(history?.[0]?.result.ask).toEqual({
       status: 'skipped',
-      items: [{ header: 'Pick', question: 'Which file?' }],
+      items: [{ header: 'Pick' }],
     });
     // The second call showed no card (a skip closes questions for the turn): there is nothing to keep.
     expect(history?.[1]?.result.ask).toBeUndefined();
@@ -326,14 +326,16 @@ describe('what a later turn sees (ADR-0133, ADR-0128)', () => {
     expect(text).not.toContain('The first file');
   });
 
-  it('lists a skipped question as skipped, with the question', async () => {
+  it('lists a skipped question as skipped by its header only, never the question text', async () => {
     const { session, requests } = rig([asks(1), textTurn('ok'), textTurn('next')], () =>
       Promise.resolve({ kind: 'skipped' }),
     );
     session.start();
     await session.sendMessage('which file?');
     await session.sendMessage('and then?');
-    expect(userText(requests[2])).toContain('   skipped: "Pick" — "Which file?"\n');
+    expect(userText(requests[2])).toContain('   skipped: "Pick"\n');
+    // What the person skipped past is never replayed to the model as theirs (it may not have been shown to them).
+    expect(userText(requests[2])).not.toContain('"Which file?"');
   });
 
   it('keeps the answer for several later turns, so a later request can refer back to it', async () => {

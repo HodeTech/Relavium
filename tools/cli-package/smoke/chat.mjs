@@ -117,10 +117,28 @@ export async function assertInstalledChat(context) {
   const observed = calls().slice(before);
   const dispatches = observed.filter((call) => call.operation === 'sdk-fetch');
   assert.equal(dispatches.length, 2);
+  // ADR-0128: a live turn carries no receipt text, and after a resume a turn with zero tool rows is ambiguous (no
+  // completeness marker exists), so the first request after the resume opens with ONE fixed notice, once.
+  const resumedNotice =
+    '[Some earlier tool activity may not be listed here. A turn without records is not evidence that no tool ran.]';
   assert.ok(
-    dispatches[1].body.messages.some(
+    dispatches[0].body.messages.some(
       (message) => message.role === 'user' && message.content === prompts[0],
     ),
+    'The live request must carry the prompt with no receipt notice',
+  );
+  assert.ok(
+    dispatches[1].body.messages.some(
+      (message) =>
+        message.role === 'user' && message.content === `${resumedNotice}\n\n${prompts[0]}`,
+    ),
+    'The resumed request must carry the first prompt behind the one fixed ADR-0128 notice',
+  );
+  assert.ok(
+    dispatches[1].body.messages.some(
+      (message) => message.role === 'user' && message.content === prompts[1],
+    ),
+    'The new prompt of the resumed session must stay plain',
   );
   assert.ok(
     dispatches[1].body.messages.some(

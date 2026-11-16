@@ -282,6 +282,26 @@ export function createSessionPersister(
   });
 
   /**
+   * True when another persister has adopted this session's row for a DIFFERENT model or provider — a build-first
+   * `/models` reseat (the Home): the row's agent snapshot is then no longer this persister's own, and its terminal write
+   * would put the old model back. A failed read means "not superseded": the terminal write stays the default, and a failure
+   * there is surfaced by the durable-write path as before.
+   */
+  const supersededByReseat = (): boolean => {
+    let stored: AgentSessionRecord | undefined;
+    try {
+      stored = deps.store.loadSession(deps.sessionId);
+    } catch {
+      return false;
+    }
+    const agent = stored?.agentSnapshot;
+    return (
+      agent !== undefined &&
+      (agent.model !== deps.agent.model || agent.provider !== deps.agent.provider)
+    );
+  };
+
+  /**
    * Persist one COMPLETED exchange: stage its rows, write them and the session row in one transaction, then —
    * and only then — adopt the staged state in memory. Extracted from `onEvent`'s `session:turn_completed` arm
    * so that arm reads as one decision (persist or just flush) rather than carrying the whole staging protocol
@@ -528,6 +548,11 @@ export function createSessionPersister(
         // exactly when a leak is worst.
         try {
           persistDurably(() => {
+            // The Home's `/models` reseat is BUILD-first: the new session's persister adopts this row (and names the new
+            // model on it) BEFORE the old session is torn down. This persister's terminal write would then put the OLD
+            // model and an `ended` status back on a row that a live session still owns — the very window the adopt write
+            // exists to close. A persister whose agent is no longer the row's agent has been superseded: it writes nothing.
+            if (supersededByReseat()) return;
             deps.store.updateSession(record('ended'));
           });
         } finally {

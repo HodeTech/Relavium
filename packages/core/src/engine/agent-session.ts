@@ -348,8 +348,8 @@ export interface SessionDeps {
   /**
    * The host's question card for `ask_user` ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)).
    * Optional capability: a surface with a person at it wires it; absent ⇒ the tool is never offered (`CR-73`). Each
-   * turn's dispatch context gets it together with a fresh per-turn state, so the per-turn ceiling and "a skip closes
-   * questions" hold on every surface.
+   * turn's dispatch context gets it together with a fresh per-turn state, so "a skip closes questions" holds on every
+   * surface (there is deliberately no count of cards per turn: the engine's tool-round and per-response ceilings bound it).
    */
   readonly askUser?: AskUserDelegate;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -621,7 +621,7 @@ export class AgentSession {
         readonly engaged: boolean;
         readonly usage: { readonly input: number; readonly output: number };
         readonly observerFailure?: { readonly error: unknown };
-        /** The settled, content-free tool history of the failed attempt (ADR-0119); `[]` means none dispatched. */
+        /** The settled tool history of the failed attempt, structure only (ADR-0119; a retained `ask_user` call also carries its question record, ADR-0133); `[]` means none dispatched. */
         readonly toolHistory?: readonly SessionToolHistoryEntry[] | undefined;
         /**
          * `true` when a call that dispatched is NOT in {@link toolHistory}, so the list cannot vouch for itself and the
@@ -1018,7 +1018,7 @@ export class AgentSession {
       const completedStart =
         this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
       if (completedStart >= 0) {
-        // ADR-0128: the typed content-free `toolHistory` becomes this turn's receipts, and the same retention
+        // ADR-0128: the typed `toolHistory` (structure only, plus an `ask_user` call's question record, ADR-0133) becomes this turn's receipts, and the same retention
         // rule a restart applies evicts the oldest block if the payload would now exceed its cap. The span is
         // pushed only AFTER the completion sink accepted the turn, so a rejected turn leaves no receipts.
         this.#completedTurnSpans.push({
@@ -1237,7 +1237,7 @@ export class AgentSession {
 
   /**
    * Complete a RETAINED interrupted turn (ADR-0119): the user message stays in the transcript, the terminal event
-   * carries the content-free `toolHistory` and the `interruption` (the persister writes the interruption row iff the
+   * carries the `toolHistory` (structure only, plus an `ask_user` question record) and the `interruption` (the persister writes the interruption row iff the
    * event carries it, so the engine and the store cannot disagree), and the turn becomes a one-message span whose
    * receipts and interruption the request projection renders. The span is pushed only AFTER the completion sink
    * accepted the turn, exactly as for a completed turn; a sink that throws leaves the transcript rolled back.

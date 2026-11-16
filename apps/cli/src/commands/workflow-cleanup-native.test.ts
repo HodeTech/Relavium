@@ -58,10 +58,13 @@ describe('actual workflow cleanup failures behind the shared physical signal dea
         }
       });
       let watchdogFired = false;
+      // Hang bound only, never a witness: the semantic proof is the exit code and the in-child elapsed window below.
+      // The full-suite CI-env run starved this child's start-up past the former 9 s (the same mode took 3.9 s alone,
+      // 4.6 s under 18 busy cores, 7.8 s then 9.0 s in the gate), so the bound gets headroom; nothing it guards moves.
       const watchdog = setTimeout(() => {
         watchdogFired = true;
         child.kill('SIGKILL');
-      }, 9000);
+      }, 25_000);
       try {
         const result = await Promise.race([
           closed.then((exit) => ({ kind: 'closed' as const, exit })),
@@ -101,6 +104,6 @@ describe('actual workflow cleanup failures behind the shared physical signal dea
         rmSync(root, { recursive: true, force: true });
       }
     },
-    12000,
+    35_000,
   );
 });

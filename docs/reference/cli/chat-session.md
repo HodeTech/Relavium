@@ -747,10 +747,11 @@ key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-
   `Ctrl-C` outside a card) ends the session as everywhere else.
 - **It appears only on a surface with a person at it**: the standalone chat and the Home wire the delegate; a plain, `--json` or
   one-shot surface wires none, and the model is then never offered the tool.
-- **The transcript keeps a record**, built from the answer the card holds: `Asked: <header> — <question>` and `→ <choice>` per question
-  (the person's own text in quotes), or `Skipped the agent's question: <header>` (`questions: <header> · <header>` for several). The
+- **The transcript keeps a record**, built from the answer the card holds: `› Asked: <header> — <question>` and `  └ <choice>` per
+  question (the person's own text in quotes), or `› Skipped the agent's question: <header>` (`questions: <header> · <header>` for several; a skipped call stores and lists its headers only, never the question text, because the person may have skipped before reaching it).
+  The host's rows start with `›` / `└`, glyphs the plain-text rules refuse in model text, so a long question cannot forge one at a wrap boundary. The
   question and the answer are **also stored with the session** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)):
-  a **resumed** session rebuilds the same entry from the stored record, right after the `ask_user` tool row and before the answer, and a
+  a **resumed** session rebuilds the entry, in the same wording, from the stored record, right after the `ask_user` tool row and before the answer, and a
   later turn — live or after a resume — sees the question and the answer under the `ask_user` receipt
   ([built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d) owns the record, the session spec owns the request text). A
   resumed turn shows at most 16 such entries and counts the rest; each counts toward the restore budget.

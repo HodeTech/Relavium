@@ -238,22 +238,37 @@ export async function assertInstalledWorkflows(context) {
             usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
           },
         ],
+        // ADR-0117/0130: a refusal returns to the model as the call's result, so the model is called again.
+        [
+          { type: 'text_delta', text: 'The write was refused.' },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+          },
+        ],
       ],
     }),
   );
   const effectRows = query('SELECT * FROM run_effects');
   const deniedWrite = await invokeCli(
     ['agent', 'run', agent, '--fixture', cassette, '--json'],
-    1,
+    0,
     'synthetic effect prompt\n',
     // Read-only preparation on older macOS needs the same exact owned mask query
     // as the successful write fixture; model process execution remains forbidden.
     { RELAVIUM_PACKAGE_SMOKE_WRITE: '1' },
   );
-  assert.ok(
-    ndjson(deniedWrite.stdout).some(
-      (event) => event.type === 'session:turn_completed' && event.error?.code === 'tool_denied',
-    ),
+  // The noninteractive governed write is refused, the refusal goes back to the model, and the turn ends normally.
+  const deniedEvents = ndjson(deniedWrite.stdout);
+  assert.ok(deniedEvents.some((event) => event.type === 'agent:approval_requested'));
+  const deniedTurns = deniedEvents.filter((event) => event.type === 'session:turn_completed');
+  assert.equal(deniedTurns.length, 1);
+  assert.equal(deniedTurns[0].error, undefined);
+  assert.equal(deniedTurns[0].stopReason, 'stop');
+  assert.deepEqual(
+    deniedTurns[0].toolHistory.map((entry) => [entry.call.name, entry.result.outcome]),
+    [['write_file', 'denied']],
   );
   assert.equal(existsSync(join(home, 'must-not-exist.txt')), false);
   assert.deepEqual(

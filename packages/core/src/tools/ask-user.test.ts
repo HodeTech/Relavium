@@ -390,6 +390,22 @@ describe('ask_user answers (ADR-0132 §3, contract "Delegate")', () => {
       'own text with a line separator',
       { kind: 'answered', answers: [{ selected: ['Alpha'] }, { selected: [], other: 'a\u2028b' }] },
     ],
+    // The stored record's schema refuses an unpaired surrogate; an answer the model could be given but the record could not
+    // hold would silently cost the whole call's record, so it is a host fault here (D64 round).
+    [
+      'own text with an unpaired surrogate',
+      {
+        kind: 'answered',
+        answers: [{ selected: ['Alpha'] }, { selected: [], other: 'lone\ud800' }],
+      },
+    ],
+    [
+      'more answers than questions',
+      {
+        kind: 'answered',
+        answers: [{ selected: ['Alpha'] }, { selected: ['Alpha'] }, { selected: ['Alpha'] }],
+      },
+    ],
   ] satisfies [string, AskUserAnswer][])('refuses %s as a host fault', (_name, answer) => {
     expect(() => buildAnsweredResult(request, asAnswered(answer))).toThrow();
   });
@@ -971,14 +987,12 @@ describe('the question record a call leaves in the session (ADR-0133)', () => {
     });
   });
 
-  it('records a skip as the questions asked, and a call that showed no card as nothing', () => {
+  it('records a skip as the headers asked, never their question text, and a call that showed no card as nothing', () => {
     const asked = request(question(), multi());
+    // Ctrl+S ends the whole call from any tab, so the question text of a skipped call may never have been shown.
     expect(askUserRecord(asked, skippedResult())).toEqual({
       status: 'skipped',
-      items: [
-        { header: 'Pick', question: 'Which one?' },
-        { header: 'Many', question: 'Which ones?' },
-      ],
+      items: [{ header: 'Pick' }, { header: 'Many' }],
     });
     expect(askUserRecord(asked, notAskedResult('skipped_earlier'))).toBeUndefined();
   });

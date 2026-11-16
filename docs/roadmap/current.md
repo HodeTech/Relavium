@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-15
+> Last updated: 2026-11-16
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -343,12 +343,19 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    is Accepted (2026-11-16) after four design reviews:** a delegate-backed, ungoverned tool; no timeout; `Esc` stops the turn and `Ctrl+S` skips (typing starts your own answer; several questions are tabs with a Review tab; no per-turn card ceiling); an answer is never consent. **The question and the answer ARE stored with the session — [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)
    (2026-11-16) reversed ADR-0132's "not stored" after the first manual test:** an optional `ask` record on the tool-result row (no migration),
    carried by the ADR-0128 receipt so a later turn, a resumed session and a `/compact` summary all see it, and rebuilt in the restored
-   transcript; implemented and locally tested, its D64 round and security sitting owed (the model-authored question text now rides a
-   user-role message — the named residual). **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
+   transcript; implemented and locally tested, its cumulative round, separate security sitting and focused corrective sitting done (the
+   model-authored question text now rides a user-role message — the named residual; results below). **Implemented on `development` (2026-11-16)** — the core tool, delegate and per-turn state, the
    docked card in the standalone chat and the Home, both advertise gates — with unit, session, real-ink and command-level wiring tests.
    **One four-reviewer round and a separate security sitting are done; their findings (one medium and several lows from each) are fixed**,
-   including a forged option row the sitting drew at a wrap boundary. The accepting round (a new round with no blocker/high/medium finding)
-   and the gate run are still owed
+   including a forged option row the sitting drew at a wrap boundary. **ADR-0133's cumulative round and its separate security sitting then ran
+   (2026-11-16):** the round's findings are fixed; the sitting found one medium — a skipped multi-question call stored the text of questions the
+   person never saw and replayed it in a user-role message — fixed so a skip stores headers only, and three lows, deferred with notes
+   ([ADR-0133 amendments](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), [deferred-tasks.md](deferred-tasks.md));
+   a focused corrective sitting on that fix found no blocker, high or medium. **The full gate passes on the final source** (the tree at
+   `ebe8b361` plus the uncommitted corrections: 21 steps, 19,365 tests plus 25 skipped, 1,129 acceptance-tool cases, the 487-case usage cohort,
+   the fs/secrets/wire mutation controls and the enforced coverage run). No fresh general round ran on the last fixes, and the installed-CLI
+   smoke and the map-controls check are CI-owned; whether the corrective sitting and these gates satisfy D64's "one new complete round", and
+   the final-head platform checks, are the maintainer's call. The maintainer's acceptance is owed
    (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a

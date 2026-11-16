@@ -5566,7 +5566,7 @@ be reached with a person present.
 
 ### MVP-3c — the failed turn stays, and MVP-3d — `ask_user` (2026-11-16)
 
-Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the gates pass on the final source (`56c63ab0`) and the maintainer's acceptance is owed. MVP-3d: [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; the D64 rounds, a security sitting and the gates are owed.**
+Maintainer decisions of 2026-11-16. **MVP-3c is implemented on `development` (2026-11-16); D64 rounds 1–4 and four security sittings are done and their fixes are in; the gates pass on the final source (`56c63ab0`) and the maintainer's acceptance is owed. MVP-3d: [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`, and [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) (the question and answer are stored with the session) is implemented with it. ADR-0132's own design/implementation reviews and security sitting are recorded in it. ADR-0133's D64 cumulative round ran on 2026-11-16 (five independent reviewers: core data path, card UI, resume/reseat, test honesty with mutations, documents); its findings are fixed on `development`. Owed: ADR-0133's separate security sitting, the final-head gates, and the maintainer's acceptance. No merge or publication is claimed.**
 
 **MVP-3c — [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), Accepted.** A twelve-finding
 design review read the Proposed ADR against the code and contracts; each finding was verified and dispositioned in the ADR's
@@ -5688,7 +5688,7 @@ maintainer's call. Nothing is pushed. Earlier receipts keep their scoped meaning
 
 **MVP-3d — `ask_user`.** *(The paragraph below keeps the original brief for the record; where it says keys `1`–`9`, "`Esc` returning a 'declined' result", the native prompt host, a five-minute timeout or "nothing model-initiated exists", [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) and its contract are the current design.)* **[ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted (2026-11-16)** after four independent design
 reviews (the dispositions are in the ADR), with its tool contract in [built-in-tools.md](../../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d).
-The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** *(reversed the same day: [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores them in an optional `ask` record on the result row, still with no migration, and later turns and a resumed session see them)*, and **`Esc` stops the turn** (skipping a question has its own key, `s`).
+The maintainer ruled the forks: **no timeout** (the earlier design's five minutes is dropped), the **question and answer are not stored** *(reversed the same day: [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores them in an optional `ask` record on the result row, still with no migration, and later turns and a resumed session see them)*, and **`Esc` stops the turn** (skipping a question has its own key: `s` as ruled, `Ctrl+S` since the first manual test — a bare `s` is the first letter of a person's own answer).
 **Implemented (2026-11-16):** `packages/core/src/tools/ask-user.ts` (schema, delegate, per-turn state, fixed texts, answer validation), the tool in `builtins.ts`, `ToolDef.displaySummary` in the registry, `SessionDeps.askUser`, and the export rule; in the CLI the pure card model and layout (`question-card-model.ts`, `question-card.ts`), the store's `requestQuestion`, the ink host mounted in the chat and Home, and `chat/ask-user-port.ts` feeding both advertise gates from one option. What follows is the brief the ADR answers. Decided: its own increment after MVP-3c and ahead of MVP-4 (it had been "after v0.2.1"). It begins with
 an ADR, because the Phase 2.6 design (a structured mid-turn question with options and free text, a keyboard-owning overlay, the
 engine pausing the turn and returning the answer as the tool result, a configurable five-minute timeout, `tool_unavailable`
@@ -5701,4 +5701,21 @@ non-interactive behaviour; and that an answer is **never consent** (no `always`,
 exist today: the native prompt host (select with hints, text, masked, directory picker — host-initiated only, no multi-select),
 the approval store's promise-and-overlay primitive, the engine's per-tool approval pause, and the workflow `human_gate`
 (`input` kind). Nothing model-initiated exists.
+
+**ADR-0133 — review and gate record (2026-11-16, `development` at `ebe8b361` plus uncommitted corrections).** A cumulative round on the
+stored-question source, a separate security sitting (opus, read-only, probes against the built packages) and a focused corrective sitting
+ran; the findings and their dispositions are in the ADR's amendments. The sitting found **one medium** — a skipped multi-question call
+(`Ctrl+S` from any tab) stored every question's text although most were never shown, and the receipt note replayed it in a user-role message
+across resume and a `/models` reseat — fixed so a skipped call stores `{ header }` only (`SessionAskItemSchema.question` is optional,
+required on an answered item; a stored skipped row that still carries one is read and ignored by every consumer), and **three lows**, deferred
+with notes in [deferred-tasks.md](../deferred-tasks.md). The corrective sitting found **no blocker, high or medium**; its three lows are
+documented (ADR amendment 7; the "host shows every question before it returns `answered`" invariant is now in
+[built-in-tools.md](../../reference/shared-core/built-in-tools.md)). It also exposed a stale test filter in the restored-transcript test, fixed
+with a mutation-proven row. The gate on the final source passes: 21 steps, 911 test files / 19,365 tests passed plus 25 skipped, 1,129
+acceptance-tool cases, the 487-case usage cohort and the fs, secrets and wire mutation controls; the enforced coverage run is green. Three
+load-sensitive timeouts the gate exposed (the seed stream tests, the run-close watchdog, the db stage wait) got headroom on hang bounds only;
+the db case stays at the 15 s policy ceiling, so heavy local load can still trip it. **Not claimed:** no fresh general round on the last fixes
+(whether the corrective sitting plus the gates satisfy D64's "one new complete round" is the maintainer's call); the installed-CLI smoke
+(`smoke:cli-package`) and `check:map-controls` are CI-owned; the escaping design the sitting's third low names is unmeasured. The maintainer's
+acceptance is owed; nothing is pushed by this record.
 

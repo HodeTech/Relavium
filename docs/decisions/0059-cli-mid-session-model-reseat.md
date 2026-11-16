@@ -155,4 +155,3 @@ step lands, the current notice is accurate. The body above is unchanged.
 answered, and a reseat carries it to the new model — possibly another provider — beside the receipts. The disclosure therefore also says
 so: *for the question tool, what you were asked and how you answered*. Saying only "names and outcomes" would understate what leaves, the
 direction note 4 warns against. The body above is unchanged.
-

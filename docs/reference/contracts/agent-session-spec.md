@@ -187,8 +187,10 @@ acceptance cases live in the ADR and are not restated here.
   rows, since no live session path can yet emit it. Receipts grant no policy,
   filesystem, approval, replay or retry authority for any value.
 - **Render grammar.** Every receipt string is built from code-owned constants and
-  the closed vocabularies above, so request text is a pure function of the
-  closed record type. Two kinds of text part exist:
+  the closed vocabularies above — except the question notes of an `ask_user`
+  record (ADR-0133, the "Question notes" bullet below), whose model- and
+  person-authored strings are each JSON-quoted and bounded — so request text is a
+  pure function of the closed record type. Two kinds of text part exist:
 
   1. *A turn block*, one text part appended after that completed turn's user text
      in the same user-role message, only when the turn retains at least one
@@ -235,7 +237,7 @@ acceptance cases live in the ADR and are not restated here.
   ```
   1. ask_user — ok
      answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API stable"
-     skipped: "Scope" — "Which module?"            (a skipped call: the questions only)
+     skipped: "Scope"                              (a skipped call: the headers only, never a question text)
   ```
 
   A successful `ask_user` record without a note reads
@@ -359,8 +361,8 @@ the separate security sitting and the measured request-size results the ADR
 requires are still owed; no merge or publication is claimed. Measured: the legend
 is 409 bytes and the gap sentence 109 bytes; a block is 148 bytes for one record
 and 791 for 32 (worst case 1,232, so the 4,096-byte per-turn cap could not bind; with ADR-0133's question notes the by-construction worst is under 4,300 bytes, hence 5,120);
-the 128-record cap binds first from about two calls per turn (107 turns of
-evidence at one call per turn, 32 at four); projection and retention cost under
+the 128-record cap binds first from about two calls per turn (105 turns of
+evidence at one call per turn — 107 before ADR-0133 reserved 274 more bytes for the fixed notice in every session — and 32 at four); projection and retention cost under
 0.1 ms per 1,000 turns and derivation about 1 ms. See the ADR's implementation
 note.
 

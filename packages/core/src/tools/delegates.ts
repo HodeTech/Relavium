@@ -38,8 +38,8 @@ export function delegateAvailable(def: ToolDef, ctx: ToolDelegates): boolean {
     case 'mediaRead':
       return ctx.mediaRead !== undefined;
     case 'askUser':
-      // The tool needs BOTH: the delegate decides whether anyone can answer, and the per-turn state is what enforces the
-      // ceiling. A surface that wires only one would be offered a tool whose every call is a wiring fault (`CR-73`).
+      // The tool needs BOTH: the delegate decides whether anyone can answer, and the per-turn state is what enforces
+      // "a skip closes questions". A surface that wires only one would be offered a tool whose every call is a wiring fault (`CR-73`).
       return ctx.askUser !== undefined && ctx.askUserTurn !== undefined;
     default: {
       // Exhaustiveness guard, not defensive padding: a new `ToolDelegateName` must fail to COMPILE here rather

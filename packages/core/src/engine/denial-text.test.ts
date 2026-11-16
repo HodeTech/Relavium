@@ -30,7 +30,7 @@ describe('denial text (ADR-0117 §2)', () => {
   });
 
   it('flattens controls, bidi overrides and line separators and bounds the length', () => {
-    const hostile = `line one\nline two‮\u0007${String.fromCharCode(0x2028)}end`;
+    const hostile = `line one\nline two${String.fromCharCode(0x202e)}\u0007${String.fromCharCode(0x2028)}end`;
     const flat = boundedExplanation(hostile);
     expect(flat).toBe('line one line two end');
     const long = boundedExplanation('x'.repeat(DENIAL_EXPLANATION_MAX * 2));

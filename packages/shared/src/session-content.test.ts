@@ -206,6 +206,9 @@ describe('the question record of an ask_user call (ADR-0133)', () => {
   it('admits an answered record (a choice, text, or both) and a skipped one', () => {
     expect(SessionAskRecordSchema.parse(answered)).toEqual(answered);
     expect(SessionAskRecordSchema.parse(skipped)).toEqual(skipped);
+    // A skip as the writer now stores it: headers only, since the person may never have been shown the question.
+    const headersOnly = { status: 'skipped', items: [{ header: 'Scope' }, { header: 'Tests' }] };
+    expect(SessionAskRecordSchema.parse(headersOnly)).toEqual(headersOnly);
     const both = {
       status: 'answered',
       items: [{ header: 'H', question: 'Q?', selected: ['a'], other: 'and more' }],
@@ -213,8 +216,10 @@ describe('the question record of an ask_user call (ADR-0133)', () => {
     expect(SessionAskRecordSchema.safeParse(both).success).toBe(true);
   });
 
-  it('refuses an answered item with no answer and a skipped item with one', () => {
+  it('refuses an answered item with no answer or no question text, and a skipped item with an answer', () => {
     for (const record of [
+      // The card necessarily showed an answered question, so the record must keep it.
+      { status: 'answered', items: [{ header: 'H', selected: ['a'] }] },
       { status: 'answered', items: [{ header: 'H', question: 'Q?' }] },
       { status: 'answered', items: [{ header: 'H', question: 'Q?', selected: [] }] },
       { status: 'skipped', items: [{ header: 'H', question: 'Q?', selected: ['a'] }] },

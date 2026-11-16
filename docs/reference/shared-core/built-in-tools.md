@@ -279,7 +279,11 @@ non-promise is a host fault, never a stray `TypeError`), then the count, that ev
 labels, that a **single-select question carries exactly one of a label or its own text, never both**, that a multi-select question
 carries at least one label or text, and that `other` is one line of at most 500 code points; a malformed answer is a host fault. The delegate **resolves, or rejects with an `AbortError`**; any other
 failure — a malformed answer included — is fatal and **not retryable**, because a retry would reopen the card. A store
-that is sealed or closed while a question is pending rejects it with an `AbortError`.
+that is sealed or closed while a question is pending rejects it with an `AbortError`. **A host must show the person every question of a
+call before it resolves `answered`**: the stored record keeps each answered question's text on exactly that basis
+([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) amendment 7). A host that cannot show
+them all resolves `skipped` (stored as headers only) or rejects with an `AbortError`. Only the CLI's docked card wires a delegate today, and it
+satisfies this by requiring an answer on every question's own acknowledged frame.
 
 **Result** (the model-facing value; every case below is a successful, non-error result and is recorded `ok`):
 
@@ -334,7 +338,7 @@ answered, and nothing else:
 | Field | Content |
 |---|---|
 | `status` | `answered` or `skipped` |
-| `items[]` (1–4, in question order) | `header` (≤ 24 B), `question` (≤ 150 B), and for an answered item `selected` (the chosen labels, in the order the question offered them; ≤ 4, each ≤ 60 B) and/or `other` (the person's own text, masked of secret-shaped runs by the engine, ≤ 500 code points) |
+| `items[]` (1–4, in question order) | `header` (≤ 24 B); for an **answered** item also `question` (≤ 150 B — required, the card necessarily showed it), and `selected` (the chosen labels, in the order the question offered them; ≤ 4, each ≤ 60 B) and/or `other` (the person's own text, masked of secret-shaped runs by the engine, ≤ 500 code points). A **skipped** item stores its `header` only: `Ctrl+S` ends the whole call from any tab, so a question the person never reached must not outlive the turn ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) amendment 7). A stored skipped item that still carries a `question` is read and ignored. |
 
 Never recorded: the options that were not chosen, the option descriptions, the `multiSelect` flag, the model's call id or any
 argument byte beyond these. Every string is one line without a control character, line or paragraph separator or unpaired

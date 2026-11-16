@@ -38,8 +38,12 @@
 > **Scoped 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** "A session's transcript … hold[s] no tool result" stays true of every tool's OUTPUT. One
 > tool's result row now also keeps a bounded record of the CONVERSATION it carried: what an `ask_user` card asked and what the
 > person answered (one-line strings, the person's text masked of secret-shaped runs and at most 500 code points). It is the
-> person's own words, of the same class as the chat messages the database already holds as user data (point 2 above); it is
-> deleted with the session and zeroed like any row (`secure_delete`, WAL truncation).
+> person's own words, of the same class as the chat messages the database already holds as user data (point 2 above). It leaves with
+> its session row like any row, and a page it frees is zeroed in the main file (`secure_delete`). **Write-ahead-log residue is not
+> cleared by that delete:** only a successful `wal_checkpoint(TRUNCATE)` clears it, which today runs only after the effect-privacy
+> clear and its sweeps, and no history-delete path exists yet. The history-delete work (D33) must add its own checkpoint before it
+> can claim a deleted answer is gone from disk. *(Corrected 2026-11-16, D64 round: the first wording of this note claimed WAL
+> truncation on a plain delete.)*
 
 ## Context
 

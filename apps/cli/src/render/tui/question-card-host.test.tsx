@@ -179,6 +179,27 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(f.errors).toEqual([]);
   });
 
+  // ADR-0132 §6: in a mode where the agent may act on the next call without asking, an answer is guidance, not a veto, and the
+  // card says so. The wording is wired from the live mode in the view, so only a mounted host can see it go missing.
+  it.each([
+    ['ask', false],
+    ['plan', false],
+    ['accept-edits', true],
+    ['auto', true],
+  ] as const)('shows the "guidance, not a veto" note in %s mode: %s', async (mode, shown) => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    f.store.setMode(mode);
+    const answer = f.store.requestQuestion(QUESTION);
+    await vi.waitFor(() => expect(f.text()).toContain('Question from the agent'));
+    await settle();
+    const frame = f.lastFrameWith('Question from the agent') ?? '';
+    if (shown) expect(frame).toContain('an answer is guidance, not a veto');
+    else expect(frame).not.toContain('guidance, not a veto');
+    f.input.push('1');
+    await answer;
+  });
+
   it('records the answer in the transcript and removes the card', async () => {
     const f = fixture(host, true, false);
     await f.ready();

@@ -29,5 +29,9 @@ describe('seeded incremental markdown stream (99173)', () => {
         ).toBe(expected.match(/ +END$/)?.[0]);
       }
     },
+    // Under the full-suite CI-env run the first batch (cold start included) measured 4.5-5.3 s against Vitest's 5 s default
+    // (the same batch alone takes 0.7 s). The oracle and every assertion are unchanged; only the finite fixture deadline gets
+    // headroom, as the sibling incremental-stream scale cases do.
+    15_000,
   );
 });

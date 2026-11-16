@@ -261,6 +261,23 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(JSON.stringify(def.workflow.nodes)).not.toContain('ask_user');
     expect(JSON.stringify(def)).not.toContain('NOT-EXPORTED');
     expect(JSON.stringify(def)).toContain(`media://sha256-${'a'.repeat(64)}`);
+    // The rebuilt row is exactly the allow-listed structure: pairing id, size, outcome and media, and nothing else.
+    const exported = (
+      def.workflow.metadata?.['relaviumExport'] as { messages: SessionMessage[] } | undefined
+    )?.messages;
+    expect(exported?.[2]?.content[0]).toEqual({
+      type: 'tool_result',
+      toolCallId: 'session-tool:1:0',
+      resultBytes: 40,
+      outcome: 'ok',
+      media: [
+        {
+          type: 'media',
+          mimeType: 'image/png',
+          source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+        },
+      ],
+    });
   });
   it('maps assistant turns to a linear agent-node chain (input → turn-n → output) with edges', () => {
     const def = sessionToWorkflow(session(), [

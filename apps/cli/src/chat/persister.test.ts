@@ -821,6 +821,38 @@ describe('createSessionPersister', () => {
       persister.close();
     });
 
+    // The Home's `/models` reseat is build-first: the NEW persister adopts the row (naming the new model) and only then is
+    // the old session torn down, whose persister handles `session:cancelled`. The old persister used to write its own
+    // (old) model and `ended` back, undoing the adopt write. These two tests drive that order against the real store; the
+    // adopt write itself is simulated by writing the row the new persister writes.
+    it('does not put the old model back when the old session ends after a build-first reseat (the Home order)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const row = store.loadFull(built.sessionId)?.session;
+      expect(row?.agentSnapshot?.model).toBe(built.agent.model);
+      // What the new persister's adopt write leaves on the row: the switched model, still active.
+      store.updateSession({
+        ...(row as AgentSessionRecord),
+        agentSnapshot: { ...built.agent, model: 'the-model-the-person-switched-to' },
+        status: 'active',
+      });
+      built.session.cancel(); // the old session's teardown: its persister handles `session:cancelled`
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe('the-model-the-person-switched-to');
+      expect(after?.status).toBe('active');
+    });
+
+    it('still marks the session ended when the row names its own model (the standalone teardown-first order)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      built.session.cancel();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.status).toBe('ended');
+      expect(after?.agentSnapshot?.model).toBe(built.agent.model);
+    });
+
     it('does not stop a resume when that write fails: the first completed turn rewrites the row', async () => {
       const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
       store.createSession(stored(built, 'a-model-the-person-left'));

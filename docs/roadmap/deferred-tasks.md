@@ -4213,9 +4213,46 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   even when no tool ever ran — an ADR-0128 amendment to tell a turn that predates receipts from one that has none. (2) After `/compact` or `/trim` the
   resumed turn count shrinks, so the hard `max_turns` limit that fires on turn 4 live does not on resume, and the banner says "1 earlier turn".
   (3) A `/effort` override is lost on a plain resume (document it, or persist it on the row). (4) *(done 2026-11-16: a `/models` reseat now writes the
-  switched model to the adopted row when the persister starts.)* (5) A second process opening the same session fails on the `UNIQUE` row rather than saying it
+  switched model to the adopted row when the persister starts, and — D64 round — the OLD persister no longer writes its model and `ended` back over it when the Home's build-first reseat tears the old session down.)* (5) A second process opening the same session fails on the `UNIQUE` row rather than saying it
   is open elsewhere. (6) An agent whose MCP server is gone makes the session unresumable. (7) `@` attachments are re-sent every turn (a context-size risk).
   *(low · resume · apps/cli/src/chat, packages/core/src/engine/session-resume.ts)*
+- [ ] **ADR-0132/0133 — lows from the D64 cumulative round (2026-11-16).** The round's mediums are fixed; these lows are recorded, none blocks.
+  *Card UI:* the model's `header` and the Review tab's rows are drawn at column 0, outside the host gutter, so a header such as `● ● · [Review]`
+  can imitate the tab strip (the accepted "approval-sounding header" residual, not the option rows); the own-answer field draws its block cursor at
+  the end while `←`/`→` move the real one; the Review tab ellipsises long answers although the contract says "exactly as it will be sent"; the settle
+  clock is wall-clock `Date.now()` (use `performance.now()`); typing or opening the field refuses the 500th character (`>=`); the `n/500` counter
+  threshold and the Esc/Ctrl-C key-to-abort chain have no mounted-host test; the abort listener's removal on settle is unpinned. *Core/shared:* the stored
+  part's `outcome === 'ok'` half of the pairing could be a part-level refine (three consumers re-check it, so it is inert); `new Intl.Segmenter` is
+  built at module load in `ask-user.ts` (a runtime without it would fail the whole `@relavium/core` import; construct it lazily); the model-facing
+  description does not mention that older answers can be evicted from view; a `not_asked` second call reads `ask_user — ok (no question text kept)`
+  (wording); `askUserRecord` clips own text by code unit before the schema (an astral split would drop the record). *Resume/persister:* the bare
+  `catch` around the adopt write swallows every error with no latch, and the adopt write (like every flush) resets `exported_workflow_path` and an
+  `exported` status; the restore notice still says "targets, previews, results and diff statistics are unavailable" next to answers it now shows, and
+  "N more saved questions" counts calls, not questions. *Tests:* ±1 boundaries at the 2,560-byte turn budget and the 1,232 line limit, duplicate
+  result rows, the omitted-line entry in the restore budget, the empty-`other` refine, and an interrupted turn that kept an answered question have
+  no committed test. *Docs:* the stored `ask` shape's field table is split between `built-in-tools.md`, `database-schema.md` and ADR-0133 §1 (keep one
+  home); ADR-0133's commit (`ebe8b361`) has no scope or trailer and bundles the reseat-durability fix its message does not mention.
+  *(low · apps/cli/src/render/tui, packages/core/src/tools/ask-user.ts, apps/cli/src/chat)*
+- [ ] **ADR-0133 — lows from the separate security sitting (2026-11-16).** The sitting's one medium (a skipped call stored question text the
+  person never saw) is fixed — amendment 7; these three lows are recorded, none blocks. (1) *Look-alike host glyphs (amendment 9):* the entry's
+  `› ` / `  └ ` rows are protected by refusing the exact glyphs; a look-alike the rules do not refuse (U+23BF `⎿`, U+23A3, U+221F, U+231E, U+276F,
+  U+FF1E, `»`) can open a continuation row of a long wrapped question and read as a host row, live and restored, when the break lands on the
+  right column. Display only. Give the entry's continuation rows a hanging indent or gutter as the card has, or widen the refused set (one home:
+  `HOST_GLYPH` in `packages/core/src/tools/ask-user.ts`). (2) *A quoted string can read as more of the note (amendment 8):* a model question
+  containing `→ chose “…”; own text “…` plus a look-alike quote reads as an answer clause inside its own JSON string; the compaction prompt
+  (`authored-system-prompt.ts`) calls a recorded answer "the user's decision", so a summary may restate it as one. Escape `→` and the quote
+  look-alikes (U+201C–U+201F, U+FF02, U+2033, U+3003, U+05F4) in the note's strings, or refuse them in model text, and reword the prompt so only
+  the recorded answer counts. Escaping a 3-byte character to 6 bytes is the same 2× as an escaped quote, but re-run the per-note cap sweep when it is built. (3) *The masker's
+  `&` boundary (amendment 10; existing behaviour):* `password=Tr0ub4dor&3xyz` is stored as `[redacted]&3xyz`. Treat under the masker acceptance
+  bar, with the other masker items. *Not examined by the sitting:* real terminal and font rendering of the look-alikes, how a live model reacts
+  to planted text, the standalone `chat` reseat ordering and two-process leases, the inline renderer's scrollback, and the desktop and VS Code
+  surfaces (none exists). The corrective sitting on the fix (also no blocker/high/medium) adds: (4) the headers of tabs a person never reached
+  stay in the model's view after a skip (ADR-0133 amendment 7(a)); keep the first header plus a count, or only the visited headers (the
+  answer type would have to report them). (5) The ask notice sentence says the note shows "what the assistant asked and how the person
+  answered", which reads slightly off for a header-only skip note; rewording it changes the ADR-0128 notice bytes and the pinned reserve
+  (795), so do it with the next notice change. (6) An unpaired surrogate in the person's own text now fails the turn as a host fault instead of
+  silently dropping the record; the CLI cannot produce one (input is decoded from UTF-8), so it matters only to a future host.
+  *(low · apps/cli/src/render/tui, packages/core/src/engine/turn-receipts.ts, packages/core/src/tools/ask-user.ts)*
 - [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
   predicate also covers credential stores, which the rule keeps fatal; split the two and design the
   allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*

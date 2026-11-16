@@ -231,6 +231,10 @@ describe('incremental markdown stream', () => {
       expect(stream.geometryWork.measuredUnits).toBeLessThan(source.length * 8 + cycles * 256);
       expect(stream.geometryWork.sourceUnits).toBeLessThan(source.length * 20 + cycles * 512);
     },
+    // CI coverage measured the 200-cycle callback at 5.086 s against Vitest's 5 s default (25/50/100 cycles took
+    // 0.5/1.0/2.1 s). Every draw, oracle and work bound is unchanged; only the finite fixture deadline is given headroom,
+    // as the adjacent reverse-backtick scale cohort already is.
+    15_000,
   );
 
   it('shares canonical delimiter decisions for live tab geometry across every short split', () => {

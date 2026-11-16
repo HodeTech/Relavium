@@ -243,7 +243,10 @@ describe('an ask_user question and its answer survive a resume (ADR-0133)', () =
     expect(JSON.stringify(rows)).not.toContain('The second file');
   });
 
-  it('is byte-identical to the live request for the same conversation', async () => {
+  // Scoped on purpose: ADR-0128 makes a turn with no tool rows AMBIGUOUS after a resume (no completeness marker exists), so a
+  // conversation that also holds a text-only turn adds one fixed notice to the resumed request and not to the live one. The
+  // claim pinned here is about the ask_user note: with no text-only turn in the history the two requests are the same bytes.
+  it('is byte-identical to the live request for a conversation with no text-only turn', async () => {
     // One conversation, persisted after its first exchange; the live request for the second exchange is captured BEFORE
     // that second exchange is persisted, and the resumed request is built from the rows of the first exchange only.
     const liveRequests: LlmRequest[] = [];
@@ -282,10 +285,14 @@ describe('an ask_user question and its answer survive a resume (ADR-0133)', () =
     await say({ built, persister }, 'act on my answer');
     persister.close();
     built.session.cancel();
+    // The equality is not vacuous: BOTH requests carry the answered note, so dropping it on either path would show.
+    const note = 'answered: "Pick" — "Which file?" → chose "beta.ts"';
+    expect(userTexts(liveSecond).join('\n')).toContain(note);
+    expect(userTexts(resumedRequests.at(-1)).join('\n')).toContain(note);
     expect(resumedRequests.at(-1)?.messages).toEqual(liveSecond?.messages);
   });
 
-  it('carries a skipped question the same way', async () => {
+  it('carries a skipped question the same way, by its header only', async () => {
     const requests: LlmRequest[] = [];
     const live = await liveSession(
       [askTurn('c1'), textTurn('ok, my call'), textTurn('next')],
@@ -298,9 +305,9 @@ describe('an ask_user question and its answer survive a resume (ADR-0133)', () =
     const resumedRequests: LlmRequest[] = [];
     const next = await resumed([textTurn('next')], resumedRequests, answers({ kind: 'skipped' }));
     await say(next, 'and now?');
-    expect(userTexts(resumedRequests.at(-1)).join('\n')).toContain(
-      '   skipped: "Pick" — "Which file?"',
-    );
+    const resumedText = userTexts(resumedRequests.at(-1)).join('\n');
+    expect(resumedText).toContain('   skipped: "Pick"\n');
+    expect(resumedText).not.toContain('"Which file?"');
     next.persister.close();
     next.built.session.cancel();
   });
@@ -321,6 +328,8 @@ describe('an ask_user question and its answer survive a resume (ADR-0133)', () =
       transcriptBound: FULLSCREEN_TRANSCRIPT_BOUND,
       readDisplay: () => new Map(),
     });
-    expect(entries.map((entry) => entry.text)).toContain('Asked: Pick — Which file?\n  → beta.ts');
+    expect(entries.map((entry) => entry.text)).toContain(
+      '› Asked: Pick — Which file?\n  └ beta.ts',
+    );
   });
 });

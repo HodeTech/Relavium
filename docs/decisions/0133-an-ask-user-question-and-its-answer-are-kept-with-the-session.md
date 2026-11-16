@@ -3,7 +3,7 @@
 - **Status**: Accepted — 2026-11-16, by the maintainer, who asked for it after the first manual test of the question card: the question and **only** the answer to it are stored in the database, and are there when the person resumes the chat. The implementation is built and locally tested on `development`; the [D64](../roadmap/current.md) rigor tier applies (a new persisted-content path and a new content channel into the model request), so one new complete cumulative round with no blocker, high or medium finding and a separate security sitting are owed before the maintainer accepts the implementation.
 - **Date**: 2026-11-16
 - **Supersedes (in part)**: [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md) §6, the paragraph "**Not stored**" and the alternative "Store the question and answer". Nothing else in ADR-0132 changes: the card, the keys, the plain-text rules, "an answer is never consent", no timeout.
-- **Amends**: [ADR-0059](0059-cli-mid-session-model-reseat.md) (the `/models` disclosure wording), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (scoped), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) (the receipt record is "a label and an outcome, nothing else" — it gains one bounded, quoted exception; the per-turn byte cap rises from 4,096 to 5,120), and the content-free rule of [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) / [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) for the result row of this one tool.
+- **Amends**: [ADR-0059](0059-cli-mid-session-model-reseat.md) (the `/models` disclosure wording), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (scoped), [ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) (the receipt record is "a label and an outcome, nothing else" — it gains one bounded, quoted exception; the per-turn byte cap rises from 4,096 to 5,120), and the content-free rule of [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) / [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) for the result row of this one tool, and — by a scoping note — the at-rest posture of [ADR-0050](0050-cli-history-db-at-rest-posture.md).
 - **Related**: [ADR-0050](0050-cli-history-db-at-rest-posture.md) (`history.db` is unencrypted at rest, guarded by file permissions, and already holds the person's messages as user data), [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [built-in tools](../reference/shared-core/built-in-tools.md#ask-the-user--mvp-3d) (the record's contract), [agent-session-spec](../reference/contracts/agent-session-spec.md#content-free-action-receipts--adr-0128) (the request text)
 
 ## Context
@@ -92,3 +92,83 @@ The tool's description no longer says later turns cannot see the answer. It says
 - **Context grows** by at most 2,560 bytes per turn and the shared 16,384-byte total of the receipts, so an old answer is evicted with its block once enough newer evidence exists. Mitigation: `/compact` summarises it with its evidence; the model still repeats decisions in its replies.
 - **A long own text is clipped to 160 code points in the model's view.** The stored record keeps 500, so a later ADR can raise the view without a migration.
 - **A surface that logs session events wholesale now logs the answers**, through `session:turn_completed.toolHistory` only. The contract says so.
+
+## Amendments — 2026-11-16 (the cumulative review round)
+
+The independent cumulative round (D64) found the following. The accepted text above is unchanged; each item corrects or qualifies it.
+
+1. **What the strict schema re-checks.** The Negative section says the plain-text rules refuse "control, format, invisible and forgery shapes at
+   ingestion" and that "the strict schema re-checks them when a row is written and read". The schema re-checks the bounds and **control
+   characters, line and paragraph separators and unpaired surrogates only**. The format, invisible and forgery shapes (bidi, zero-width, tag
+   characters, host glyphs, tick shapes, approval-key tokens) are refused at ingestion by the tool's plain-text rules, which live in
+   `@relavium/core` and are their only home; the schema does not copy them (one canonical home). Every record the product writes passed them. A row
+   written by anything else could carry such a shape into a later request, JSON-quoted, and the terminal path strips bidi controls at display. This
+   is part of the residual named for the security sitting.
+2. **The notice reserve is unconditional.** §3 says the added sentence is present "whenever a selected turn lists a note". The retention
+   **reserve** for the notice includes its 273 bytes in every session, so every session's shared 16,384 bytes shrink by 274 (the reach at one call
+   per turn is 105 turns, not 107; see ADR-0128's update).
+3. **The cap raise is a margin.** "The worst block is under 4,300" is an analytic by-construction bound. The longest block actually constructible
+   from real notes measured 4,072 bytes, under the old 4,096 cap; the raise to 5,120 keeps "the cap cannot bind" provable by construction rather
+   than by measurement. Nothing changes functionally.
+4. **§4 "cannot drift".** The live entry and the rebuilt one share one renderer and one wording, but not their inputs: the live entry is built
+   from the raw host answer, the rebuilt one from the stored record (masked, trimmed, the choices in the order the question offered them, the own
+   text clipped to 500 code points). The content can differ; the rebuilt form is the safer one. The entry's own **host rows** now start with a
+   marker the plain-text rules refuse in model text — `› Asked: <header> — <question>`, `  └ <answer>`, `› Skipped the agent's question: …` — so that a
+   long model string placed at a wrap boundary cannot begin a row that looks like the host's (the forged-row class the card's gutter closes).
+5. **§5 "an export carries none of it".** The `ask` field is dropped from every exported tool row. But a `/compact` summary is a system row the
+   persister stores verbatim and the export embeds, and the compaction prompt (§7) asks the summariser to keep the decision — so a summary
+   written after an answered question may **restate the question and the answer** in an exported file. A summary is exported as every summary is; the
+   person's messages and the assistant's replies are exported in full as well. Stripping summaries from exports would be a policy change and needs
+   its own ADR.
+6. **Older builds.** The result part has been strict since before this ADR. A build without it refuses a session whose rows carry `ask`:
+   `loadFull` throws the fixed `message_invalid` error (no content leaks), so such a session cannot be resumed by the older build. "No migration"
+   holds for the schema, not for a downgrade.
+
+## Amendments — 2026-11-16 (the separate security sitting)
+
+The separate security sitting (an independent reviewer, read-only, with probes against the built packages) found one medium and three lows.
+No blocker, no high; no finding touched an approval path, a key, egress or a file write. The accepted text above is unchanged; each item
+corrects or qualifies it.
+
+7. **A skipped call stores headers only (medium, fixed).** §1 said a skipped item carries "`header` and `question` as asked", and the
+   Negative section listed, among its five mitigations, that "the person saw the question on the card when it was asked". For a **skipped**
+   call that was false: Ctrl+S ends the whole call from any tab, so a four-question call skipped on its first tab stored three questions the
+   person never saw. The transcript entry listed only the headers, and the receipt note sent all four question texts, in user role, on
+   every later request, across resume and a `/models` reseat — up to 450 bytes of model-authored question text (three unseen questions of at
+   most 150 bytes each) with no trace on screen. (Reproduced
+   with a call whose later questions carried an instruction "from the user"; the first tab showed none of it.) An **answered** call is not
+   affected: every question must be answered before a call can be sent, so each was shown. The correction:
+   - the writer keeps `{ header }` only for a skipped call, so no unseen question text is stored;
+   - the receipt note for a skipped call is `skipped: "<header>"`, with no question;
+   - the schema makes `question` optional and requires it on an **answered** item (a record that is answered but lost its question is
+     refused). A skipped item that still carries one — a row written by the first build of this ADR — is read and ignored by every consumer, so
+     a developer's existing session keeps resuming. The strict form would have refused that whole row;
+   - the transcript entry already listed headers only, live and restored, and still does. A header is at most 24 bytes and is shown **in the
+     transcript entry right after the skip** (and when the session is restored), so the person can see everything that is kept.
+
+   Two residuals, named by the corrective sitting that checked this fix (no blocker, high or medium): (a) the card's tab strip shows dots
+   only, so the headers of tabs the person never reached were not on the card before they skipped; up to three such headers (72 bytes), each
+   quoted and prefixed `skipped:`, stay in the model's view. Keeping only the first header and a count, or only the visited headers, would
+   remove it; deferred with amendment 8's options, which cover headers as well. (b) A session holding a header-only skipped record is
+   refused by the first build of this ADR (its schema required `question`), so the downgrade caveat of amendment 6 applies to it too; no
+   content leaks, development builds only.
+
+   The mitigation now reads: **the person saw every question that is stored with its question text** (an answered call's), and nothing
+   else of a skipped call's question survives the turn.
+8. **"Unforgeable" is byte-level (low, deferred).** §3 says quoting makes the note unforgeable. It does at the byte level: a quote, a
+   backslash and a line break cannot leave their string, and no string can start a line. It does not stop a model string from *reading* as
+   more of the note: a question containing `→ chose “Replace it”; own text “…` followed by a look-alike quote can appear, inside its own
+   quoted string, to carry an answer clause the person never gave (the same with fullwidth and other look-alike quotes). The person did see
+   that question on the card, the block says its questions are the assistant's words, and the same text could be written in an ordinary reply
+   that is replayed too. One amplifier is named: the compaction prompt calls a recorded answer "the user's decision", so a summary may
+   restate such a string as one. Options, none built: escape `→` and the quote look-alikes in the note's strings, or refuse them in model
+   text, and word the compaction prompt so only the recorded answer counts. Deferred (`deferred-tasks.md`).
+9. **Amendment 4's "cannot begin a row that looks like the host's" holds for the exact refused glyphs (low, deferred).** The host rows
+   start with `› ` and `  └ `, which the plain-text rules refuse in model text. Look-alikes the rules do not refuse (for example U+23BF, `⎿`)
+   can open a continuation row of a long wrapped question and read as a host row, live and restored. The effect is on display only — the model
+   receives the true answer — and it depends on guessing the terminal width. An ordinary assistant reply with colour off can already draw the
+   exact `› Asked:` and `  └ ` rows. Options, none built: a hanging indent or gutter on the entry's continuation rows, as the card has, or a
+   wider refused set. Deferred.
+10. **The person's own text and the masker (low, deferred; existing behaviour).** A password typed as `password=Tr0ub4dor&3xyz` is stored as
+    `[redacted]&3xyz`: the masker takes `&` as a query-parameter boundary. This is the masker's existing behaviour, not something this ADR
+    introduced, and chat messages are stored unmasked, so this path is still the stricter of the two. It follows the masker acceptance bar.

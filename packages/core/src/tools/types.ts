@@ -608,7 +608,7 @@ export interface ToolDispatchContext {
    */
   readonly askUser?: AskUserDelegate;
   /**
-   * The per-turn state `ask_user` enforces its ceiling and "a skip closes questions" from. Built once per session turn
+   * The per-turn state `ask_user` enforces "a skip closes questions" from (it keeps no count of cards). Built once per session turn
    * and carried by reference (a shallow copy of this context shares it), so it is turn-scoped, not module-scoped.
    * It travels WITH {@link askUser}: a delegate without it is a wiring fault the tool refuses.
    */
