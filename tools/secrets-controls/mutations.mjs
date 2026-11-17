@@ -1795,7 +1795,7 @@ export const mutations = [
   control(
     'startup-repository-auto-refusal',
     'packages/shared/src/config.ts',
-    "export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto']);",
+    "export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto', 'accept-edits']);",
     'export const RepositoryChatModeSchema = ChatModeSchema;',
     ['packages/shared/src/config-chat-mode.test.ts'],
     16,

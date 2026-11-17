@@ -24,9 +24,13 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 
-/** Only operator defaults may select auto; repository defaults deny or prompt for governed actions. */
+/**
+ * Only operator defaults may select `auto` or `accept-edits`. Both dispatch `fs_write` without a review
+ * card (ADR-0130 §3), so a committed repository file must not be able to start a chat in either one —
+ * repository defaults deny or prompt for governed actions.
+ */
 export const ChatModeSchema = z.enum(CHAT_MODES);
-export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto']);
+export const RepositoryChatModeSchema = ChatModeSchema.exclude(['auto', 'accept-edits']);
 
 /** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
