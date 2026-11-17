@@ -448,8 +448,15 @@ Rust and TypeScript recognize only those exact magic/byte pairs. TypeScript
 may use valid v1 identities to exclude artifacts, but v2 recovery never grants
 v1 automatic deletion authority. Unknown/mismatched pairs, reserved bytes,
 malformed lengths/UTF-8/owners/locators/identities or unreadable committed
-records fail the entire trusted inventory closed; they are never skipped.
-Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
+records fail the entire trusted inventory closed; they are never skipped. A
+committed record that vanishes mid-scan (a concurrent write completing removes
+it) makes the whole scan run again — at most three attempts inside the same
+two-second deadline, so a snapshot never mixes two states — and an inventory
+whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
+`.prepare` (for example a producer's `.prepare` to `.record` promotion) is
+skipped without a retry: a point-in-time inventory cannot be exact for an
+uncommitted artifact, and the path-based stage-directory floor does not depend
+on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
 uncommitted meanings. Physical v1 directory/stage names are namespace names,
 not evidence of the record protocol. No mutable flag upgrades an old record.
 
@@ -832,7 +839,8 @@ The following initial mechanism observations retain their historical scope;
 phrases about pending integration describe those probe checkpoints. The
 Accepted ADR-0126 refinement authorizes its dependent implementation; later
 source changes require their own actual platform, package, independent-review
-and security acceptance. Current correction and fresh acceptance remain open.
+and security acceptance. The correction's local acceptance is recorded in the
+roadmap register; final-head acceptance remains open.
 
 The Windows test-only rename-parameter cohort measures 68 fixed private-fixture
 combinations: 48 Win32 comparisons, twelve relative NT class-65 observations

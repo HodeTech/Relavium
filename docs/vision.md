@@ -137,7 +137,7 @@ editor, file browser, or terminal — it refines that boundary without reversing
   visual design, local execution, multi-model routing, and multi-agent
   orchestration in one product.
 
-The full positioning and competitor matrix lives in [uvp.md](uvp.md).
+The full positioning lives in [uvp.md](uvp.md).
 
 ## Killer Features (Phase 1)
 

@@ -179,9 +179,10 @@ acceptance cases live in the ADR and are not restated here.
   | `cancelled` | `cancelled` | A recorded cancellation. | Whether the call executed or had any effect: the execution state is unknown. |
 
   Today's producers write `ok`, `error` and `denied` into completed turns
-  (`denied` only for a refusal fed back to the model, currently the
-  `media_scope_denied` read refusal; ADR-0117, still Proposed, will add user and
-  approval refusals through the same value). No producer writes `cancelled` into a
+  (`denied` for a refusal fed back to the model: the `media_scope_denied` read
+  refusal and, since MVP-3b ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)),
+  every user, approval and mode refusal — the engine records `denied` for any
+  `tool_denied` dispatch error). No producer writes `cancelled` into a
   completed turn, yet the schema accepts it and a restored row can carry it; it
   is rendered as specified and tested at the projection level and from restored
   rows, since no live session path can yet emit it. Receipts grant no policy,
@@ -368,7 +369,7 @@ note.
 
 ### Interrupted turns — ADR-0119
 
-**Status: implemented on `development` (MVP-3c, 2026-11-16); D64 rounds 1–4 are done; the final gate run and the maintainer's acceptance are owed (see the phase register).**
+**Status: implemented on `development` (MVP-3c, 2026-11-16); D64 rounds 1–4 are done and the final gate run passed (see the phase register); the maintainer's acceptance is owed.**
 A session-ending cancel, a crash and an unclassified throw are still rolled back and forgotten (below).
 [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
 section owns the contract.

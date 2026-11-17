@@ -489,3 +489,7 @@ history and grants no automatic effect retry or whole-wave completion.
 > are separate facts; no new tier, session replay or retry authority is added.
 > The [native contract](../reference/cli/native-filesystem-metadata.md#fixed-failure-facts-and-caller-outcomes)
 > owns the fixed host boundary and outcome table.
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17.** The "implementation pending in MVP-3 Step 2" note above has since landed: MVP-3 Step 2 was implemented and accepted on `development` on 2026-11-12 (see `docs/reference/shared-core/effect-journal.md`). Final-head gates remain with the maintainer.

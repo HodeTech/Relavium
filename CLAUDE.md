@@ -64,8 +64,9 @@ source actions or verified remote dispositions, including reviewed rescan follow
 Final-head scanner/platform
 checks and maintainer review govern PR #99's merge.
 The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
-owns exact evidence and limits. MVP-4 is the next implementation milestone;
-its pending ADR approvals remain required. No merge or npm publication is claimed.
+owns exact evidence and limits. MVP-3b, MVP-3c and MVP-3d are placed ahead
+of MVP-4; MVP-4 follows, with its pending ADR approvals required. No merge or
+npm publication is claimed.
 **PR #99 review follow-up (2026-11-13): implementation and local review complete.**
 The [final development source checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
 records runtime/UX, native lifetime, delivery and scanner corrections and their
@@ -78,10 +79,11 @@ The subsequent [ADR-0127 manual-test correction](docs/roadmap/phases/phase-2.6-c
 is implemented and locally accepted on `development` after two review rounds
 and a separate security sitting; final-head platform/consumer/PR gates remain.
 On 2026-11-16 three increments were placed ahead of MVP-4: MVP-3b (the docked approval card, honest chat modes,
-refusals that return to the model — committed on `development`), **MVP-3c** (an interrupted turn stays in the
+refusals that return to the model — committed on `development`; on 2026-11-17 an external-review correction round, a D64 round and four separate security sittings followed — the last one after every approval answer key became a Ctrl chord (`Ctrl+Y`/`Ctrl+G`+Enter/`Ctrl+N`/`Ctrl+R`) — and the gates pass on the final source; the
+final-head platform checks and the maintainer's acceptance are owed), **MVP-3c** (an interrupted turn stays in the
 session as a content-free marker, [ADR-0119](docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
 implemented locally; D64 rounds 1–4 and four security sittings found no blocker/high, their fixes are in, the gates pass on the final source, and the maintainer's acceptance is owed) and MVP-3d (`ask_user`;
-[ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; [ADR-0133](docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) (2026-11-16) stores the question and the answer with the session so later turns and `chat resume` see them; ADR-0132's own design/implementation reviews and security sitting are recorded in it, and ADR-0133's D64 cumulative round, separate security sitting (one medium, fixed) and focused corrective sitting (clean) ran on 2026-11-16 with their fixes on `development`, and the full gate passes on the final source — the final-head platform checks and the maintainer's acceptance are owed). Their exact status
+[ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; [ADR-0133](docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) (2026-11-16) stores the question and the answer with the session so later turns and `chat resume` see them; ADR-0132's own design/implementation reviews and security sitting are recorded in it, and ADR-0133's D64 cumulative round, separate security sitting (one medium, fixed) and focused corrective sitting (no blocker, high or medium) ran on 2026-11-16 with their fixes on `development`, and the full gate passes on the final source — the final-head platform checks and the maintainer's acceptance are owed). Their exact status
 lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).

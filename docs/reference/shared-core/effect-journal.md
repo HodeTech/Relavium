@@ -42,12 +42,12 @@ tier 1 may use the words "exactly once".
 Tiers 1 and 2 are **reserved and specified, not occupied**. No shipping capability offers a receipt lookup and
 no tool injects an idempotency key. A document that says otherwise is wrong, not aspirational.
 
-MVP-3 Step 2 implementation is in progress on `development`. The shared/core/DB
-replay changes are present in the uncommitted implementation; their review,
-security and acceptance gates remain open. The all-write durability and native
-metadata requirements in [ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
-remain subject to that decision's design-acceptance gate. This reference states
-the required completion contract, not accepted native support.
+MVP-3 Step 2 (the shared/core/DB replay changes) is implemented and accepted on
+`development` (2026-11-12; see "Retained evidence and early inspection — MVP-3"
+below). The all-write durability and native metadata requirements in
+[ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+(Accepted) were implemented with MVP-3 Step 3; the roadmap register
+([current.md](../../roadmap/current.md)) owns what remains open at the final head.
 
 ## 2. The five identities, and why none of them is "the key"
 
@@ -327,7 +327,7 @@ the call would be a second crash window rather than fewer.
 
 ## 7. Ordering, and what happens when each step fails
 
-For MVP-3 prepared filesystem calls, whose Step 2 implementation is in progress,
+For MVP-3 prepared filesystem calls, whose Step 2 is implemented and accepted,
 the refined ordering and saved-result confirmation are in
 [the registry contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
 The earlier read-only inspection changes no new-effect prepare/settle boundary;

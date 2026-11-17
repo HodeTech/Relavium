@@ -51,7 +51,7 @@ session discovery/resume with visible history.
 
 The built-in chat agent still starts in `ask` with read-only tools. Editing,
 searching and trustworthy write previews are MVP-3; non-allowlisted command
-approval and interruption/recovery are MVP-4. The Home now covers first-run,
+approval, the interrupt keymap and turn ceilings are MVP-4 (the failed-turn marker landed in MVP-3c). The Home now covers first-run,
 project and session journeys. Full workflow/run/gate management is MVP-8, and
 broader provider/MCP management is MVP-9. The
 [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
@@ -129,7 +129,7 @@ unlisted metadata remain explicit unsupported cases under the accepted design;
 no attribute deletion, broad OS permission change, in-place write or automatic
 retry is part of the correction.
 
-**Checkpoint: MVP-3 is implemented on `development`; MVP-4 is next.**
+**Checkpoint: MVP-3 is implemented on `development`; MVP-3b/3c/3d are placed ahead of MVP-4.**
 MVP-1 and MVP-2 are complete on `main`. The
 [MVP-3 implementation checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 closes all three development steps and their review/security corrections;
@@ -204,6 +204,25 @@ removes an unsupported scheduler-dependent success assumption while preserving
 the real publication/no-clobber proof and unchanged runtime contracts.
 ADR-0121 and other pending MVP-4/release
 decisions are not implicitly accepted by this correction work.
+
+**PR #99 independent review (2026-11-17): corrections implemented, local gate passed.**
+Three pasted reports (about 150 claims) were verified claim by claim; about a third
+were refuted or are behaviour an Accepted ADR chose. The real findings are fixed on
+`development` on top of `a15c8f8e`: a repository config layer can no longer choose
+`accept-edits`; the approval card opens on the first changed line and offers no `[a]`
+when a change is not drawn; every approval answer key is a Ctrl chord (`Ctrl+Y`,
+`Ctrl+G` then Enter, `Ctrl+N`, `Ctrl+R` — a bare letter answers nothing, so typing can never resolve a card) behind a layered guard; `list_directory` no longer resolves a link's target. One new
+four-reviewer D64 round (one high, three mediums, all fixed) and three separate security
+sittings (every finding fixed) ran; the last medium's fix was verified by the third
+sitting's own reproductions, not by a fourth sitting. The 21-step gate on the final
+source passes (19,834 tests: 19,809 passed, 25 conditional skips; 1,129 acceptance-tool
+cases; usage cohort 487; the enforced coverage run) after one stale-test correction the
+first run exposed; the chord change was verified afterwards (19,945 tests: 19,920 passed,
+25 skips, the affected gate steps re-run) and by a further separate security sitting with no
+blocker, high or medium finding. The [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)
+owns the details and what is not claimed. The native adapter findings are their own
+increment after this round; final-head platform, scanner and PR checks and the
+maintainer's acceptance are owed.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
@@ -311,7 +330,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    **MVP-3b — Approval card v2, honest modes and refusals that return (2026-11-16, ahead of MVP-4).**
    Added by the maintainer after a real session showed the approval screen replacing the conversation, the
    default mode refusing instead of asking, and a long turn dying on its fourth unrelated slip. Delivered on
-   `development`, reviews and the separate security sitting owed (D64, an approval path):
+   `development`; its D64 round and separate security sittings ran on 2026-11-17 (the PR #99 correction record below):
    [ADR-0129](../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) (a docked,
    bounded card that says only what matters), [ADR-0130](../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)
    (`ask` asks and is the default, `plan` is read-only, `accept-edits` accepts file edits, `auto` unchanged),
@@ -352,7 +371,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    person never saw and replayed it in a user-role message — fixed so a skip stores headers only, and three lows, deferred with notes
    ([ADR-0133 amendments](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), [deferred-tasks.md](deferred-tasks.md));
    a focused corrective sitting on that fix found no blocker, high or medium. **The full gate passes on the final source** (the tree at
-   `ebe8b361` plus the uncommitted corrections: 21 steps, 19,365 tests plus 25 skipped, 1,129 acceptance-tool cases, the 487-case usage cohort,
+   `ebe8b361` plus the corrections committed as `a15c8f8e`: 21 steps, 19,365 tests plus 25 skipped, 1,129 acceptance-tool cases, the 487-case usage cohort,
    the fs/secrets/wire mutation controls and the enforced coverage run). No fresh general round ran on the last fixes, and the installed-CLI
    smoke and the map-controls check are CI-owned; whether the corrective sitting and these gates satisfy D64's "one new complete round", and
    the final-head platform checks, are the maintainer's call. The maintainer's acceptance is owed
@@ -408,7 +427,7 @@ MVP-1 and MVP-2 are complete on `main`; MVP-3 implementation is complete on
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
 the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115 and
-0121, each accepted before its implementation (ADR-0117 and ADR-0119 were accepted 2026-11-16). ADR-0116/0120 are accepted; MVP-3
+0121 (and 0118 for MVP-4, 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0117 and ADR-0119 were accepted 2026-11-16). ADR-0116/0120 are accepted; MVP-3
 keeps their pre-build design and post-implementation security gates. All open
 obligations are in [deferred-tasks.md](deferred-tasks.md).
 
@@ -641,7 +660,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D59 | MVP | Release path under the interim guard | ✅ **Ruled 2026-11-04 — option B:** a superseding pre-1.0 release ADR publishes the smoke-verified package-test tarball from a trusted `v*` tag on `main` with a green `ci` at that commit; no archived encrypted maps for those releases; custody becomes mandatory again at 1.0 or when 9c/9d land. The guard stays in force until that ADR is Accepted and its guard change passes a security sitting |
 | D60 | MVP | `LICENSE` §2 grants no usage right without a written agreement | ✅ **Ruled 2026-11-04 — unchanged.** Recorded risk for the published package |
 | D61 | Gate 0 | `development`→`main` checkpoint before the MVP | ✅ **Ruled 2026-11-04 — yes,** a scoped checkpoint PR right after this reset; merging is the maintainer's action · **Done 2026-11-04:** PR #96 merged as `b3cf117e` ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) |
-| D62 | MVP-3 | Default chat agent posture | ✅ **Ruled 2026-11-04:** read/search/find plus `write_file`/`edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) plus `run_command` under D63; egress stays opt-in; the default mode stays `ask` with a `[chat].default_mode` setting and a one-time hint. Needs an ADR-0057 amendment and a security review |
+| D62 | MVP-3 | Default chat agent posture | ✅ **Ruled 2026-11-04:** read/search/find plus `write_file`/`edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) plus `run_command` under D63; egress stays opt-in; the default mode stays `ask` with a `[chat].default_mode` setting and a one-time hint. Needs an ADR-0057 amendment and a security review. *(Updated 2026-11-16 by [ADR-0130](../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md): the edit tools are offered in `ask` with a card on every call; `accept-edits` applies workspace file edits without a card; a repository config layer cannot choose `accept-edits`.)* |
 | D63 | MVP-4 | `run_command` approval semantics | ✅ **Ruled 2026-11-04:** a typed card for any non-allowlisted command — once, session or remember; remembered grants live outside the repository in operator-owned config keyed by project root; accept-edits keeps prompting; headless stays fail-closed. New ADR (amends ADR-0029(a)/0061/0063) and a security sitting |
 | D64 | MVP | Acceptance bar for MVP increments | ✅ **Ruled 2026-11-04 — tiered** (see [Next work](#next-work--the-cli-mvp)) |
 | D65 | MVP | Paused Wave 3 increments' user-visible pieces | ✅ **Ruled 2026-11-04:** six recorded splits (10b, 15a, 15c, 11b, 16b, 17a) and #61 move into the MVP; Steps 12/14 stay paused |

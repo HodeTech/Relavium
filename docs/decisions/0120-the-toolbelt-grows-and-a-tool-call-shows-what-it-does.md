@@ -369,3 +369,7 @@ owns scope, steps and the remaining implementation/security acceptance gates.
 > limits — is unchanged. Also amended by [ADR-0131](0131-a-round-that-made-progress-resets-the-correction-budget.md):
 > a line range whose end is past the last line is clipped, not refused.
 
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17.** The "implementation pending in MVP-3 Step 2" note above has since landed: MVP-3 Step 2 was implemented and accepted on `development` on 2026-11-12 (see `docs/reference/shared-core/effect-journal.md`). Final-head gates remain with the maintainer.

@@ -361,3 +361,7 @@ here and the original text stays, because accepted ADRs are append-only.
   resent in later requests, written into the `metadata.relaviumExport.messages` of a git-committable `/export` file, and
   may name the session (title and export file name); the removal path §Negative names (`/rewind`) does not exist yet. It
   is recorded in the security-review sitting and the deferred ledger.
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Residual named 2026-11-17.** A turn that ran a tool and then ended in `context_overflow` is retained (the retention rule above), and the last completed span is never foldable. When the retained message itself leaves almost no room (within a few hundred tokens of the window), `/compact` returns `nothing_to_compact`, `/trim` returns `nothing_to_trim`, and every later turn overflows again until `/clear`. Reproduced with a scripted provider; it needs a message that fit round 1 but not round 2. If old history rather than the retained message caused the overflow, `/compact` recovers. A fix would let compaction fold a trailing span whose interruption code is `context_overflow`, which needs a summarizer that can chunk an oversize message; it is not done. The rule is unchanged.

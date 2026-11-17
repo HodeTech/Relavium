@@ -4207,7 +4207,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   D64 round (a new complete round with no blocker, high or medium finding), the full gate and a real-provider sample, and the
   maintainer's acceptance. Follow-ups recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
   like `invoke_agent`); `Esc` at a card when a driver wires no `onAbort`; letting `Ctrl+T` pass through an open card.
-  *(The stored question/answer form this item once listed is done: [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), no migration — its own D64 round and security sitting are owed, the named residual being model-authored question text in a user-role block.)* *(medium · product · docs/decisions/0132-…)*
+  *(The stored question/answer form this item once listed is done: [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), no migration — its D64 round, separate security sitting and a focused corrective sitting have run (2026-11-16); the named residual is model-authored question text in a user-role block.)* *(medium · product · docs/decisions/0132-…)*
 - [ ] **Resume audit lows (2026-11-16, from the `chat resume` report).** None blocks a resume; each is a wording or small-state gap. (1) On a resumed
   session every plain chat turn is "ambiguous" (ADR-0128's choice), so the model gets the 109-byte "some earlier tool activity may not be listed" sentence
   even when no tool ever ran — an ADR-0128 amendment to tell a turn that predates receipts from one that has none. (2) After `/compact` or `/trim` the
@@ -4262,3 +4262,108 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   unfocused; a side-by-side diff on wide terminals; per-file review of a multi-file change; the
   narrow-the-scope key and editable "always" pattern for command cards (MVP-4). *(low · product)*
 
+- [ ] **`surface-db-acquisition.test.ts` hung five cases once in CI under coverage (2026-11-16) — cause not found.** On PR #99 head `a15c8f8e`
+  the push-event run's `engine coverage floor (llm, mcp)` job failed: of the file's 15 cases, `chat` (close failure) and both `chat-resume` and
+  both `home` cases each ran 15.0 s (the 5 s case timeout plus the 10 s `afterEach` hook that awaits the raw case), and `agent` (no close
+  failure) failed its 1 s `vi.waitFor` (`ACTUAL_SURFACE_REACHED_SQLITE_SETUP`); the other nine passed. The pull-event run of the **same SHA**
+  passed the same job (the whole file in 4.5 s, every case under the reporter's 300 ms line), and so did every earlier run (file total 4.5–5.5 s
+  at `56c63ab0`, `b2dff860`, `f29d44ae`). Measured locally on a quiet 18-core machine and under 18 and 54 CPU spinners, with and without
+  `--coverage`: 27 of 27 runs passed, slowest case 180 ms quiet, 643 ms at 3× load, the file 5.4 s at 3× load — so neither the MVP-3d
+  import growth (case cost is unchanged in CI) nor CPU contention reproduces it. The failing log has no stderr, crash or resource message. By reading
+  the code (not confirmed in CI), the design can amplify one missed window into a cascade: when a surface has not reached SQLite setup,
+  `disposeCommand` awaits a `result` that may never settle, so the next cases would wait out `afterEach` too. **Open:** if it recurs, capture the state at the first stuck case (open handles, pending
+  imports, the fixture's `faultEnabled` and close attempts) before touching any timeout; bounding that await would stop the cascade but would
+  not explain the stall. *(low · apps/cli/src/commands/surface-db-acquisition.test.ts, db-fault-acquisition.test-support.ts; one occurrence in about twelve CI runs of the file)*
+- [ ] **SonarCloud: 44 open issues on PR #99, none gating (2026-11-16, head `a15c8f8e`).** The quality gate is **OK** (new reliability, security and
+  maintainability ratings all 1; duplicated lines 0.9 % against 3 %; hotspots 100 % reviewed, none to review), so nothing here blocks the
+  merge. The 44 are issues Sonar reports as open (`OPEN`/`CONFIRMED`, since the PR's leak period) and are separate from the 207 initial reports
+  and 45 follow-ups the PR's Sonar record already dispositions: S3776 cognitive complexity ×10 (CRITICAL), S3358 nested ternary ×8, S6479 index
+  keys ×6, S5906 `toHaveLength` ×5, S4624 nested template ×3, S7780 `String.raw` ×3, S7718 catch-parameter name ×3, S6353 `\d` ×2, S7758
+  `fromCodePoint` ×2, S6606 `??` ×1, S6035 character class ×1. Four came from the last push (created 18:28 UTC): S5906 at
+  `apps/cli/src/chat/restored-transcript.test.ts:632` and `apps/cli/src/render/tui/question-card-record.test.ts:78,79`, and S4624 at
+  `apps/cli/src/render/tui/question-card-record.ts:46`. The rest sit mainly in `tool-review-view.tsx` (8), `ask-user.ts` (5), `denial-text.ts` (4)
+  and `question-card-model.ts` / `question-card.ts` (6). **Decision (maintainer, 2026-11-16): leave the accepted source untouched and take them in a separate
+  Sonar-only increment** — the cognitive-complexity refactors reach `persister.ts`, `turn-receipts.ts`, `ask-user.ts` and `agent-session.ts`,
+  paths the security sittings reviewed, so changing them re-opens the full gate and the review rounds. Each issue needs a source action or a
+  verified remote disposition; setting a remote status needs a maintainer token. *(low · apps/cli, packages/core)*
+- [x] **MVP-3b D64 round and separate security sitting (approval card, modes, denial text — ADR-0129/0130/0131).** Recorded as owed in ADR-0129 and
+  ADR-0130, the phase register and `current.md`, but until the PR #99 independent review (2026-11-17) there was no entry here. **Decision (maintainer,
+  2026-11-17): run one combined round and a separate security sitting over MVP-3b and that day's consent-path corrections** (a repository config layer can
+  no longer choose `accept-edits`; the review card's target projection now reserves the verb prefix so a long path cannot hide its end behind an unlocked
+  Allow; the "Allow stays locked" sentence only before inspection; `[n]` accepted while the card is not visible; `agent run` no longer offers governed
+  tools). **Done 2026-11-17** — one four-reviewer D64 round (one high, three mediums, all fixed), a separate security sitting (one high, two mediums, one low) and two further
+  sittings (a medium and two lows; a medium and three lows) ran; every finding is fixed, the lows and residuals are in the entries below, and the 21-step gate passes on the final source
+  (the [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)). The last medium's fix (the Enter-confirmed `[a]`) was verified
+  by the third sitting's own reproductions, not by a fourth sitting; the maintainer decides whether D64 needs one. The maintainer's acceptance is owed. *(high · process · apps/cli/src/render/tui, apps/cli/src/chat)*
+- [ ] **PR #99 independent review (2026-11-17): verified findings left open.** Six read-only verifiers re-derived each claim; about a third were refuted
+  or are accepted ADR behaviour (for the record: the `#foldableEvidence` trim offset, retention rules #1/#2, #5, #7, #8, #10, #11, #14, #15, #16, U-5, U-8,
+  U-9, #17). Verified and **not** fixed in that round, low unless noted. (1) DB-2: `media-write.ts` leaves a 0-byte `.save-to.<uuid>.tmp` when
+  `handle.stat` throws or `nlink !== 1`; the cleanup's own identity test refuses an unproven path, so the reviewer's "assign `owned` earlier" does not
+  change those branches — decide whether to remove an O_EXCL-created temp after a failed stat. (2) C-3: `gate` resume loads config from the resumer's
+  cwd (`gate.ts` ~296-299, pre-existing): persist the fs tier on the run row or resolve config from `saveToRoot`. (3) C-6: an execute-time `stale_file`
+  after `createParents()` is journaled `ambiguous` and blocks resume by design (`tool-registry.md` ~896-915); only the pre-mutation `stale_file` throws are
+  provably effect-free, and a "refused before native work" marker for those would let them discard. (4) #19: `os.ts` ~255 clipboard/notify children
+  inherit the whole environment on purpose (`os.ts` ~30-34); add a deny-filter for `RELAVIUM_*`, `*_API_KEY`, `*_TOKEN`, `*_SECRET` and keep `DISPLAY` and
+  `DBUS_*`. (5) The overflow-after-tool residual, now an ADR-0119 amendment. (6) UX: U-2 type-ahead is dropped for 250 ms without a hint; U-3 the inline
+  renderer can push the question card off screen (cap the live tool region); U-8 the legend lacks "1–n choose"; U-12 an empty new file shows no body row;
+  U-13 a parked `↑` draft is invisible and not sent; U-14 Backspace on an empty denial reason cannot return to the card; U-18 the approval card shows no
+  protected-path warning although the fs floor refuses. (7) Docs and evidence: the analysis archive redaction is incomplete (`_archive/synthesis-raw.json`
+  names one product four times and four more competitors, `deep-analysis-raw.json:5`, `managed-inference-business-model-2026-06-03.md:71,75,78,211`);
+  the release-admission regex accepts only a bare `Accepted` status line while 22 ADRs use `Accepted — date, by …` (`native-release-admission.mjs`; add a
+  test for that form and for a multi-status file before ADR-0121 is accepted); the `pnpm-workspace.yaml` "cooled" comment for turbo 2.11.11 has no
+  recorded justification (the version was at most about 2.8–4 days old at the bump; the publish date is not verifiable offline, and §9a asks for a stated
+  reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
+  the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
+  check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17).** Measured on the built addon
+  (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
+  and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
+  the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
+  `Index::entries` treats ENOENT between `read_dir` and `open_nofollow` as a fatal `changed` (78 of 200 recovers under a tight churner); skip a vanished
+  `.reserved` or `.prepare` as the TypeScript reader does, keep `.record` strict. (c) H2: Linux `mkdirat(0o700)` has no `fchmod`, so a setgid parent yields
+  mode 02700 and `verify_private_directory` refuses after approval and claim (by reading only; add the `fchmod` that `macos.rs` ~884 has). (d) N-2:
+  `Record::encode` does not enforce `decode`'s invariants (unreachable through the TypeScript host, which realpaths first). (e) N-3: the operator script's
+  `removed + retained > 128` bound is wrong for entry counts (`native-filesystem-metadata.md` ~630-631; up to 385). (f) N-4: Windows stage verify and publish
+  lack `nNumberOfLinks == 1`; N-5: Linux and Windows do not re-prove the staged payload before publish (macOS checks length only); N-6: the Linux private
+  file create skips the parent policy check; N-7: `pin_empty` unlinks `.reserved` without identity revalidation. (g) No `SAFETY:` comments exist (ADR-0125
+  does not require them; a `clippy::undocumented_unsafe_blocks` gate is a quality choice). Needs a native rebuild, the source-binding pins, a security
+  sitting and the eight-target CI legs; Linux and Windows behaviour is verifiable only in CI. *(medium · apps/cli/native/fs-metadata)*
+- [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
+  per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
+  needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads
+  `document.sourceBytes` and the call list's "preview unavailable" marker reads `document === undefined`. (2) C-2: `tools/fs-policy-controls/floor.cases.mjs`
+  (~72-76) lists the credential classes its mutation cases cover; extend it with `.gnupg`, `.password-store`, `Library/Keychains`,
+  `.local/share/keyrings`, `.config/op` and `gh/hosts.yml`, and expect the pinned fs control inventory counts to move. Windows GnuPG keeps its home in
+  `%APPDATA%\gnupg` (no leading dot), which the floor still does not cover. (3) U-7 reserves more than strictly needed: the card strips the `target ` label only from the
+  first row and the second row has spare columns, so a reviewer's probe puts the real headroom at about 15 columns (about 137 characters instead of 122 at
+  80 columns); not worth a second budget. *(low · apps/cli/src/render/tui, apps/cli/src/engine/tool-host)*
+- [ ] **PR #99 D64 round (2026-11-17): lows left open.** Four independent reviewers (approval logic, card/TUI, fs/core/db, honesty and pins) found one high, three
+  mediums and the lows below; the high and the mediums are fixed. (1) A double-tap of `n` after card A can deny card B before its frame is acknowledged — a
+  `user` denial for a call never shown, after which ADR-0117 §3 refuses an identical repeat for the turn; ignore a second `n` for about 150 ms after the review
+  state changes. (2) `accept-edits` as a start mode is enforced only by the shared schema; `auto` also needs `source === 'global'` in
+  `StartingModeAuthority.resolve`, so a card-approved or model-written `[preferences].default_mode = "accept-edits"` in an operator-selected
+  workspace-local `--config` (ADR-0112) would start the next `/clear`, reseat or restart without a card for edits: give `accept-edits` the same
+  global-source check, and give a repository `accept-edits` an actionable `OperatorConfigError` instead of the generic enum message (`load.ts` ~72).
+  (3) A repository's `[chat].allowed_commands` and globs still widen what an operator's own `auto` runs without a card (it needs an agent that grants
+  `run_command`; ADR-0118, still Proposed, records it). (4) `reduceApprovalKey` in `chat-input.ts` mapped `y`, `a`, `1` and `2` to an approve with no
+  visibility gate and was unreachable — **since 2026-11-17 it answers nothing** (only Esc and the Ctrl+T reasoning toggle); the dead legacy prompt around it is its own entry below; `agent:approval_requested` is still published for plan refusals,
+  headless refusals and auto-approved writes with no card (ADR-0130 amendment 4). (5) A masked substring in a target does not lock Allow (conforms to
+  ADR-0120; consider requiring a reveal for any mask in the target field); typing in the denial-reason box can drop characters typed in the same tick (`reviewPage`
+  is reset after every state change); "Review unavailable — the tool identity does not fit; enlarge terminal" is also shown when the identity is invalid
+  because a mask matched, where enlarging does nothing; there is no wide, CJK or emoji target test of the card; a last changed line whose ending-token row is
+  cut counts as not shown on the card; repeated Shift+Tab mid-turn adds one notice row per press. (6) A `.prepare` that vanishes mid-scan is skipped without a retry
+  (documented in the native contract); `list_directory` and `find_files` names still show Unicode format characters (only glob headers escape them);
+  `GH_CONFIG_DIR` outside `gh` and Windows `%APPDATA%\gnupg` are not covered; glob headers are not counted in `sizeBytes` and the escape can expand a name up to
+  6×; `hasSegmentRun` leaves `..` segments alone on purpose. *(low · apps/cli)*
+- [ ] **Chord answer keys: security sitting residuals (2026-11-17; no blocker, high or medium).** (1) `Ctrl+G` is the abort reflex of Emacs, readline, zsh and fzf, and here it starts the most permissive answer: a person who presses it to "cancel" and then Enter 0.8–5 s later grants the session-wide permission (it only asks first; the rows say "Press Enter to allow all … · Any other key cancels"). The sitting judged a different key only marginally safer (every chord has a reflex) and advised keeping it unless a manual test shows the reflex; optionally put the scope first in the confirm row. Test it in the real terminals (VS Code's integrated terminal, tmux, Windows Terminal) before 0.2.0. (2) A terminal left in xterm `modifyOtherKeys` mode (a crashed app can leave it set) sends Ctrl+letter as `ESC[27;5;121~`, which Ink does not read as a chord: every answer chord is ignored and only Esc answers (fail-closed, and a regression from bare letters, which were immune); parse `CSI 27;m;c ~` in the host or reset `CSI > 4;0 m` on mount, and document the Esc fallback. Some hosts may also swallow Ctrl+G/Ctrl+Y/Ctrl+N/Ctrl+R (an Emacs terminal mode, VS Code's `commandsToSkipShell`): unverified here. (3) The `ask_user` refusal of key tokens (`APPROVAL_KEY_TOKEN`) catches the exact `[Ctrl+Y]`-style forms but not look-alikes (full-width brackets or letters, Cyrillic `С`, `<Ctrl+Y>`, `[Ctrl + Y]`, unbracketed `Ctrl+Y Allow`); harmless today because a question card answers no approval, and prose cannot be filtered. (4) A held chord's refusal note reads "Keys were typed just before this answer" although nothing was typed (wording predates the chords); `Ctrl+R` (the reverse-search reflex) opens the reason box, which can be left only by Enter (a denial with the typed text as its reason) or Esc (stops the turn). (5) With no paste listener Ink delivers a pasted 0x19 as Ctrl+Y; the product always mounts one on both surfaces, but a terminal that does not strip `ESC[201~` from pasted content lets a clipboard break out of bracketed paste (the old breakout plus a bare `y` did the same). *(low · apps/cli/src/render/tui, packages/core)*
+- [ ] **Delete the dead legacy approval prompt (found 2026-11-17, with the chord change).** The store opens a card for EVERY approval (`requestApproval` builds a fallback review when the call has no preview), and `handleReviewInput` answers `handled` for every key while one is open, so the older prompt is never reached: the `approval={review === undefined ? approval : undefined}` block in `chat-ink.tsx` / `home-app.tsx` (its hint text is kept truthful meanwhile), the `reasonDraft`/`applyReasonDraft` capture and its React state, `reduceApprovalKey` in `chat-input.ts`, and the `approve`/`reject`/`reject-with-reason` members of `ChatKeyAction` that nothing produces any more. Delete them together with their tests; it touches the approval path, so it takes a review round. Other bare-letter confirms in the CLI (the native prompt host's `y/N`, MCP consent, the workflow gate prompt) are line prompts that a running turn cannot be typed over, a separate surface and not part of this. *(low · apps/cli/src/render/tui)*
+- [ ] **PR #99 separate security sitting (2026-11-17): residuals after the fixes.** The sitting found one high, two mediums and one low; all four are fixed (the approval
+  keys now need a 400 ms dwell and a 300 ms quiet gap; `[a]` only on a page that shows everything it grants; the card names the canonical path when parents are created;
+  `list_directory` no longer resolves a link target). Left open, all low: (1) **Closed 2026-11-17:** a `y` that was the first key after 1.5 s with no other key, and a lone `a` followed by Enter, could not be told from a deliberate press; the maintainer
+  moved every answer key to a Ctrl chord (`Ctrl+Y`, `Ctrl+G` then Enter, `Ctrl+N`, `Ctrl+R` — ADR-0129 note 12), so no letter typed at a card answers it. A bare `v` still opens the full view
+  (inspection only, grants nothing). (2) `read_file`, `find_files`, `search_files` and `list_directory` with a planted link as the root still tell "escapes the allowed filesystem scope" from "does not exist"
+  (and a search over a directory holding such a link counts an existing out-of-scope target as skipped, a missing one as unreadable), so the existence of a protected
+  store is still observable (contents never are); (2b) the question card's `QUESTION_SETTLE_MS` guard still reads the wall clock (`Date.now()`) where the approval guard now uses a monotonic one. (3) Windows: the canonical-path comparison is exact, so a new intermediate
+  directory name with a trailing dot or space is normalised by `mkdir` and is now refused as `stale_file`; the link tests are skipped on Windows. (4) The workflow-level
+  `TURBO_TOKEN`/`TURBO_TEAM` environment applies to every job in `ci.yml` (it predates this change). (5) A shortened target on a call without a diff is not treated as a
+  clipped body for `[a]`; the target already has its own mandatory-inspection lock. *(low · apps/cli, .github)*

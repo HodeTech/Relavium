@@ -183,3 +183,7 @@ future feature, deferral or claim of merge-commit execution.
 > its historical design-checkpoint meaning. The
 > [additional PR #99 correction increment](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-correction-plan-2026-11-13)
 > remains open and requires fresh acceptance; no merge or publication is claimed.
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17.** The "implementation pending" status above has since landed: the starting-mode preference was implemented with MVP-3 Step 3 (see `docs/reference/contracts/config-spec.md`, Starting chat mode — MVP-3). Final-head gates remain with the maintainer.

@@ -262,7 +262,7 @@ The **cumulative cost** carries forward from the session row. The **turn count**
 What a reseat does **not** carry:
 
 - the original agent's **`fallback_chain`**. The new instance builds the default chain for the chosen model, exactly as a fresh session on that model would.
-- the chat **mode** — it resets to fail-closed **`ask`** (the same reset [`/clear`](#the-multi-turn-loop) performs).
+- the chat **mode** — the new instance starts in the **currently configured starting mode**, resolved exactly as a fresh session resolves it (`auto` still needs the revocable startup-auto authority, and a repository config layer can never supply `auto` or `accept-edits`), not in the mode the old instance had ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md), amended 2026-11-11). [`/clear`](#the-multi-turn-loop) does the same.
 - the per-tool **approval once/always cache** — it is instance-scoped, so previously-approved tools **re-prompt** on the new model ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); a new model is a new trust context).
 - a live **`/effort` override** — a stale tier from the old model is never carried; the new instance takes the tier picked in the reseat's effort sub-step, or none.
 
@@ -329,7 +329,9 @@ describe that implementation.
 
 **Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker
 with current-mode selection and a separate `Save startup default` action. Direct
-`/mode <name>` and Shift+Tab still change the next turn's mode without saving.
+`/mode <name>` and Shift+Tab change the mode for the next turn without saving. The engine takes the turn policy once, when a
+turn starts, so while a turn is running Shift+Tab changes nothing and shows `Mode changes apply between turns — Esc stops the running
+turn.`; the footer never names a mode the running turn is not under.
 In idle Home, `/mode` opens only startup-default settings, with no imaginary
 active session; `/mode <name>` there does not silently save. Show the effective
 start and any project/workspace override before saving globally. Confirm `auto`
@@ -352,20 +354,29 @@ target** (`Create merhaba.md`, `Edit src/app.ts`, `Overwrite notes.txt`); the **
 (`+n` additions, `-n` removals, context dimmed, coloured when colour is on) sized to the
 height; one summary row — the tool's id, `+added −removed · N bytes`, and, when the body is
 cut, `… N more lines (M bytes hidden)`; **only the warnings that apply** (a shortened target, masked
-values that require inspection, a non-LF or changed line-ending convention, a lock with no
+values that require inspection, a non-LF or changed line-ending convention or a final newline added or removed, a lock with no
 other stated cause), each wrapped to the card's width; and two key rows —
-`[y] Allow   [a] Allow all <file writes|file edits|<tool> calls> this session   [n] Deny` and
-`[c] Deny + reason   [v] Full diff   Esc stops the turn`. While Allow is locked behind an
-inspection the first key row offers only `[n] Deny` and says why. The card opens with a yellow rule labelled `Approval needed`,
+`[Ctrl+Y] Allow   [Ctrl+G] Allow all <file writes|file edits|<tool> calls> this session` and
+`[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn`. While Allow is locked behind an
+inspection the first key row says so (`(Allow is locked until you inspect the change)`) and the second still offers `[Ctrl+N] Deny`. The card's body opens on the first changed line with up to three lines of unchanged context above it, not on the top of the file;
+if any changed line is not drawn it adds `⚠ N changed lines not shown — press [v] for the full diff.` and withholds `[Ctrl+G]`. A session-wide
+grant is never offered on a partial view, on the card or in the full view: `[Ctrl+G]` appears only while the page drawn shows every changed line, and a call
+without a diff whose content is clipped shows `⚠ N lines of this call are not shown — press [v] for the full view.` and offers no `[Ctrl+G]` either
+(`[Ctrl+Y]` and `[Ctrl+N]` stay). **Every answer key is a Ctrl chord, never a bare letter** — a letter typed while a turn runs is typing, and "yes do it" would otherwise approve a write with its first character; the question card's `Ctrl+S` skip follows the same rule ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), and `Ctrl+A` is deliberately not an answer (the line-start key of every readline habit and the prefix of GNU screen). A bare `y`, `a`, `n` or `c` answers nothing and counts as typed text. An affirmative chord (`Ctrl+Y`, or the first `Ctrl+G`) counts only when it is a deliberate answer: the card has been on screen for at least 400 ms,
+the previous key of any kind is at least 300 ms old, no key that is not a card action (text typed into the composer while the turn ran, a key the card
+ignores, text typed into a search, a reason box or a question card's own answer) arrived in the previous 1.5 s, and no card was resolved by a key in the previous 2 s (a held
+key keeps extending that window). The session-wide `[Ctrl+G]` takes two steps: the first `Ctrl+G` shows
+`Press Enter to allow all … this session · any other key cancels` and Enter 0.8–5 s later with no other key between grants; a second `Ctrl+G`, typed text or a held key never does. A refused chord is ignored
+without effect and the card says why, once. `[Ctrl+N]`, `[Ctrl+R]`, `[v]`, `Esc` and Ctrl-C are never delayed (`Ctrl+N` needs no visible frame, so a card that cannot be read can still be refused); all timing uses a monotonic clock. Typed text can never resolve a card; the one stray source left is a held chord, whose repeats the 2 s lockout refuses. A chord is not an answer inside the reason box, the full view's search box or the call list. The card opens with a yellow rule labelled `Approval needed`,
 its answer keys are coloured, and while it is open the busy line reads `Waiting for your answer <time> · Esc stops the turn`;
-the wait is excluded from the turn's elapsed time and from the footer's duration, which shows `<active> · <wait> waiting for you`. `[n]` and `[c]` deny and
+the wait is excluded from the turn's elapsed time and from the footer's duration, which shows `<active> · <wait> waiting for you`. `[Ctrl+N]` and `[Ctrl+R]` deny and
 **continue**; `Esc` and Ctrl-C **stop** the turn. A clean change shows no zero counts. An ending
 token (`<LF>`, `<CRLF>`) is printed only where a line's ending differs from the rest of its side or
 from the other side; `<EOF:NO_NEWLINE>` always prints. Everything below about inspection,
 masks, exact-frame acknowledgement and resource limits applies to the card and the full view alike.
 
 **Approval and details.** Both chat hosts reuse one pure state machine and views.
-The card names the target, exact changed/hidden byte and line counts, and `[a]`'s tool/session
+The card names the target, exact changed/hidden byte and line counts, and `[Ctrl+G]`'s tool/session
 scope; mask counts and line-ending notes appear on it when non-zero or non-LF, and the full view always
 lists them. `[v]` opens its full view;
 the full view has bounded paging, search, both diff sides, code-point inspection,
@@ -374,8 +385,8 @@ byte count when shortened; the full target remains a paged source field in the
 full view. A shortened target blocks affirmative answers until its complete
 source has actually been displayed there in acknowledged frames. Readable,
 unmasked target bytes need no reveal action; a placeholder never proves visibility
-of its hidden bytes. `[r]` is never an approval key. Any masked
-changed content, or a flagged target/field span, blocks `[y]`/`[a]` until revealed
+of its hidden bytes. A bare `[r]` (reveal) is never an approval key; `Ctrl+R` is the deny-with-reason chord. Any masked
+changed content, or a flagged target/field span, blocks `[Ctrl+Y]`/`[Ctrl+G]` until revealed
 deliberately and the required revealed spans have actually been displayed in
 acknowledged frames; an entirely masked changed line is inspectable under that
 rule, not a blind exception. The approval projection escapes invisible/control/blank
@@ -402,7 +413,7 @@ effect/truncation/mask disclosures and answer controls are fully visible, its
 full view can traverse every admitted change and all required mask inspections
 are acknowledged. Visiting every unmasked diff page is the operator's choice,
 not an implicit approval prerequisite. Coalesced input or paste
-cannot reveal and approve unseen content. Existing rejection, abort, suspend
+cannot reveal and approve unseen content, and typed-ahead, repeated or double-tapped keys are refused by the rules above. Existing rejection, abort, suspend
 and mouse-consumption controls remain; Esc/Ctrl-C cancel these overlays. Resize
 requires fresh visibility acknowledgement. This also applies to an idle Home's
 focused Continue row; prompt/keyless/error/notice rows get explicit priority,
@@ -486,10 +497,10 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 
 | Mode | Advertised tools | A governed action (write / command / network / clipboard) |
 | --- | --- | --- |
-| `ask` (default) | every granted tool | **a card, every time** — `[y]` once · `[a]` always for this tool this session · `[n]` deny and continue · `[c]` deny with a reason · `[v]` full view · `Esc` stops the turn |
+| `ask` (default) | every granted tool | **a card, every time** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always for this tool this session · `Ctrl+N` deny and continue · `Ctrl+R` deny with a reason · `[v]` full view · `Esc` stops the turn |
 | `plan` | granted **non-governed** tools (the built-in agent has read/list/git status/search/find, and `ask_user` where a card can answer) | **refused** with a fixed mode text that **returns to the model** ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); nothing is asked or changed |
-| `accept-edits` | every granted tool | a **file edit inside the workspace is applied without a card** (its transcript row keeps the target and diff statistics); a command, network call, ambient OS action, protected path or delivered saved result still gets a card |
-| `auto` | every granted tool | **auto-approved** for granted actions; hard protected-path and scope refusals remain (a protected target falls back to a card that can never be remembered) |
+| `accept-edits` | every granted tool | a **file edit is applied without a card** — inside the workspace or inside a root the operator authorised with `--allow-fs-root` (its transcript row keeps the target and diff statistics); a command, network call, ambient OS action or delivered saved result still gets a card unless the person already granted `Ctrl+G` for that tool this session. A protected path is refused while the write is prepared, before any card, in every mode |
+| `auto` | every granted tool | **auto-approved** for granted actions; hard protected-path and scope refusals remain (a protected target is refused while the write is prepared, before any card) |
 
 With **no one to answer** — a plain, `--json` or one-shot surface — the effective mode stays `ask`, but the governed tools are **hidden** from the model as in `plan`, and a call that names one anyway is refused with the *unavailable* text. The model never sees a tool it cannot use.
 
@@ -604,7 +615,7 @@ Both data-moving affordances use a **pending-attachment (chip) model** (ADR-0061
 
 **`@`-mention (file-context).** Typing `@` at a word boundary opens a **dir-navigable completion** overlay — arrow/type to filter, `Enter`/`Tab` to descend a directory or accept a file, `..` (or backspace past the filter) to ascend, `Esc` to cancel (restoring the literal keystrokes). Accepting a file inserts a compact **`@path` marker** at the cursor and queues the file as a chip; at submit the file expands into **UNTRUSTED, user-position context** (nonce-fenced `<file>` framing, byte+line bounded so a large file can't freeze the editor) **only if its `@path` marker is still present** — deleting the marker drops the file. The read goes through the **same** `FsCapability` the session's tools use — the workspace **jail**, the sensitive-read **confidentiality floor** (`.ssh` / `.env` / `.aws` / … are never listed nor read), the binary fail-close, and the size cap all apply; a user typing `@path` replaces the `confirmAction` prompt (a stronger consent signal), **never** the floor.
 
-**`!`-shell (command escape).** A message starting with `!` runs the rest as a shell command instead of sending it to the model — through the **one** `run_command` boundary: the `[chat].allowed_commands` allowlist (**exact full-command-string match**, enforced BEFORE approval) → the mode-aware `confirmAction` (denied in `ask`/`plan`, prompted in `accept-edits`, auto in `auto`) → the hardened process arm (`spawn`, `shell:false` — no metachar/glob/`$var` expansion; the command is tokenized to literal argv). While a command runs the busy indicator names it, with **`Esc` to cancel** (Esc aborts the command, keeping the session). The allowlist **defaults empty ⇒ `!`-shell is disabled**; a non-allowlisted command gets an **actionable, secret-free hint** naming the exact `[chat].allowed_commands` line to add (or the mode-switch to make). The command's output is shown **read-only** as a bounded preview and queued as a chip carrying the **UNTRUSTED, nonce-fenced, doubly-bounded** output (the process-arm buffer cap + the injection bound) that rides your next message. See [config-spec.md](../contracts/config-spec.md) `[chat].allowed_commands` + [built-in-tools.md](../shared-core/built-in-tools.md).
+**`!`-shell (command escape).** A message starting with `!` runs the rest as a shell command instead of sending it to the model — through the **one** `run_command` boundary: the `[chat].allowed_commands` allowlist (**exact full-command-string match**, enforced BEFORE approval) → the mode-aware `confirmAction` (a card in `ask`, refused in `plan`, a card in `accept-edits` — only workspace file edits skip it — and auto-approved in `auto`) → the hardened process arm (`spawn`, `shell:false` — no metachar/glob/`$var` expansion; the command is tokenized to literal argv). While a command runs the busy indicator names it, with **`Esc` to cancel** (Esc aborts the command, keeping the session). The allowlist **defaults empty ⇒ `!`-shell is disabled**; a non-allowlisted command gets an **actionable, secret-free hint** naming the exact `[chat].allowed_commands` line to add (or the mode-switch to make). The command's output is shown **read-only** as a bounded preview and queued as a chip carrying the **UNTRUSTED, nonce-fenced, doubly-bounded** output (the process-arm buffer cap + the injection bound) that rides your next message. See [config-spec.md](../contracts/config-spec.md) `[chat].allowed_commands` + [built-in-tools.md](../shared-core/built-in-tools.md).
 
 ## Streaming
 
@@ -717,7 +728,7 @@ or human hint. Other embedding hosts remain responsible for their own reason
 content under the [approval contract](../shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
 No failed-turn retention, return-to-model, retry or mode-authority change is
 selected by this guidance work. (ADR-0117 has since been accepted and
-implemented with MVP-3b; ADR-0119 is implemented as MVP-3c, its review gates owed.)
+implemented with MVP-3b; ADR-0119 is implemented as MVP-3c; its D64 rounds and security sittings are done and the maintainer's acceptance is owed.)
 
 Pin the actual displayed code, sanitized explanation and exact hint in each continuing
 driver, using native metadata refusal, an ask/plan restriction, user rejection
@@ -739,7 +750,7 @@ The model can ask the person a structured question mid-turn with the built-in `a
 key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d). What this surface adds:
 
 - **It is a docked card where the approval card sits**, below the live region, with the conversation still on screen above it. The
-  rule reads `Question from the agent · not an approval`; the keys are the question keys, never `[y]`/`[a]`/`[n]`. An open card is the
+  rule reads `Question from the agent · not an approval`; the keys are the question keys, never `[Ctrl+Y]`/`[Ctrl+G]`/`[Ctrl+N]`. An open card is the
   person's time, not the turn's: the busy line reads `Waiting for your answer <time> · Esc stops the turn` and the turn's active time
   excludes the wait ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) §6).
 - **It opens in every mode**, `auto` and `plan` included; no mode answers a question, and there is **no timeout**.

@@ -172,13 +172,20 @@ MVP-2 is complete and merged to `main` through [PR #98](https://github.com/HodeT
 (2026-11-11):
 readable chat, native provider setup, project initialization and safe session
 discovery/resume. The [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
-records completed review and verification. MVP-3 is implemented and independently
-reviewed on `development`: ranged reads/search, exact edits, inspectable write
-diffs, tool details, preserved filesystem security metadata and configurable
-starting modes. Its [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+records completed review and verification. MVP-3's original three steps
+(ranged reads/search, exact edits, inspectable write diffs, tool details,
+preserved filesystem security metadata and configurable starting modes) are
+implemented and independently reviewed on `development`. MVP-3b (the docked
+approval card and honest chat modes), MVP-3c (an interrupted turn stays as a
+marker) and MVP-3d (`ask_user`, with its question and answer kept with the
+session) are implemented and placed ahead of MVP-4; their review, security and
+acceptance gates are tracked in the
+[phase register](docs/roadmap/phases/phase-2.6-conversational-authoring.md) and
+[current.md](docs/roadmap/current.md). The
+[implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 records completed steps and required combined PR CI/maintainer review. MVP-4
-(command permissions and interruption recovery) is next; the published npm
-version remains `0.1.1`.
+(command permissions, the interrupt keymap and turn ceilings) follows; the
+published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is

@@ -226,3 +226,7 @@ Accepted ADRs; this proposal does not silently rewrite their decisions.
 > card, in `accept-edits` an in-workspace edit is applied without one. The headless rule stands — a surface
 > with no one to answer stays effectively `ask` — and now also hides the governed tools from the model.
 
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17 by [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md).** This ADR's rule is that a repository's config may choose only "a prompting or read-only start". It was written when `accept-edits` still prompted for every write; ADR-0130 §3 made `accept-edits` apply a workspace file edit **without a card**, so the premise no longer holds for that mode. The rule now reads: a project or workspace layer may set `[chat].default_mode` to `ask` or `plan`; `accept-edits` is refused there exactly as `auto` is — a strict config error naming the file and key, also for a shadowed workspace value — and only the operator's global `[preferences].default_mode` may choose it. Reproduced before the correction: a project `[chat].default_mode = "accept-edits"` overrode a global `ask`, and the first unprotected workspace write needed no card. This applies the decision above to ADR-0130's changed meaning; it does not widen it. The contract is `docs/reference/contracts/config-spec.md` (Starting chat mode).

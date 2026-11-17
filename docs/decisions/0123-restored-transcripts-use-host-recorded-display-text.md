@@ -52,10 +52,9 @@ a plain prompt. A caller without that form leaves metadata absent; the persister
 never infers it from canonical submitted text or equality of strings. Plain/JSON
 drivers explicitly pass their captured input line as display text because they
 perform no attachment expansion. A failed or aborted turn keeps today's
-no-transcript-write behavior. ADR-0119 owns interruption markers (Accepted
-2026-11-16 as MVP-3c, after this ADR was written); its user-row insert atomically
-carries the same captured display metadata. This ADR neither accepted nor
-implemented ADR-0119.
+no-transcript-write behavior. MVP-4's still-Proposed ADR-0119 owns interruption
+markers; if accepted, its user-row insert must atomically carry the same captured
+display metadata. This ADR neither accepts nor implements ADR-0119 early.
 
 For legacy user rows with no display metadata, show a fixed explanation that the
 older prompt's display form was not stored and may contain attached context.
@@ -150,3 +149,7 @@ findings; the final complete round and separate D64 security sitting are clean.
 The [step acceptance record](../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 records evidence and checkpoint gates. Earlier unimplemented wording records the
 design stage; this receipt changes no decision or release rule.
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17 by [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md).** ADR-0119 was Accepted 2026-11-16 as MVP-3c, after this ADR was written; its user-row insert atomically carries the same captured display metadata, as this ADR required. The sentence above is kept as it was written.

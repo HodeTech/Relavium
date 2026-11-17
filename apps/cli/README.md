@@ -58,8 +58,8 @@ Standard variables are excluded for custom provider endpoints. The
 [credential-source contract](../../docs/reference/contracts/config-spec.md#proposed-standard-environment-key-consent--mvp-2)
 defines the four supported names and interactive consent.
 
-In a new built-in conversation, ask the agent to read/search the project, then
-use `/mode accept-edits` to review an edit's diff before approving it. `/details`
+In a new built-in conversation, ask the agent to read/search the project and then
+to edit a file: in the default `ask` mode the edit's diff appears on an approval card before it is applied (`/mode accept-edits` applies workspace file edits without asking). `/details`
 inspects live tool calls. Bare `/mode` separates the current mode from saving a
 startup default. Existing saved sessions keep their frozen tool grants; start a
 new built-in conversation to gain the new editing tools. The

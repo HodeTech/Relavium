@@ -41,7 +41,7 @@ All 207 baseline Sonar reports and 45 correction follow-ups have individual
 source actions or verified remote dispositions, including reviewed rescan follow-ups;
 PR #99 requires final-head scanner/platform checks and maintainer review. The
 [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
-owns evidence and limits. MVP-4 is next, with its pending ADR approvals preserved.
+owns evidence and limits. MVP-3b, MVP-3c and MVP-3d are placed ahead of MVP-4; MVP-4 follows, with its pending ADR approvals preserved.
 **PR #99 review follow-up (2026-11-13): implementation and local review complete.**
 The [final development source checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
 records corrected runtime/UX, native lifetime, delivery and scanner behavior.

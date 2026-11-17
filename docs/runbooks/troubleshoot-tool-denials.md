@@ -55,8 +55,10 @@ to a universal OS permission recipe.
    [ADR-0127 role distinction](../reference/cli/native-filesystem-metadata.md#macos-parent-and-file-attribute-profiles--adr-0127)
    permits a bounded parent MACL as unchanged evidence; it does not authorize
    transferring that label to a child or editing a file with its own MACL.
-   Until the correction is implemented and validated, the current native build
-   can still refuse both the observed parent MACL and last-used file name.
+   The ADR-0127 correction is implemented and locally accepted (see the
+   [acceptance record](../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15));
+   a build older than that correction can still refuse both the observed parent
+   MACL and last-used file name, so check which build you run.
 4. If the OS denies access, have the owner review the intended access policy.
    If metadata is unsupported or evidence cannot be read/proved, keep the
    target as-is and report the bounded reproduction to the maintainer. The

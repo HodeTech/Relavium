@@ -217,3 +217,7 @@ and [Apple's metadata copy interface](https://github.com/apple-oss-distributions
 > product names/comparison references are removed from the explanatory prose.
 > The technical decision, status and guarantees are unchanged. See the
 > [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).
+
+## Amendments — 2026-11-17 (PR #99 review)
+
+> **Amended 2026-11-17.** The Related line's "(still Proposed)" for ADR-0117 was true when this ADR was written; ADR-0117 was Accepted 2026-11-16.

@@ -21,15 +21,18 @@ CI and maintainer review. The implementation retains the rules below.
 | Location | Key | Accepted values |
 |---|---|---|
 | Operator global `[preferences]` | `default_mode` | `ask`, `plan`, `accept-edits`, `auto` |
-| Workspace/project `[chat]` | `default_mode` | `ask`, `plan`, `accept-edits` |
+| Workspace/project `[chat]` | `default_mode` | `ask`, `plan` |
 | Operator global `[preferences]` | `default_mode_hint_shown` | Boolean; absent means not acknowledged |
 
 No global `[chat]` table, environment override or new CLI flag is introduced.
-Project > workspace > global > `ask` is the mode preference order. A project may
-select `accept-edits` even when the global preference is `ask` or `plan`; a
-fresh per-call approval is still required unless the operator chooses `[a]`.
-Validate every supplied value before resolving: a shadowed workspace `auto`
-is still a strict-config error. Diagnostics name the file and key, never echo
+Project > workspace > global > `ask` is the mode preference order. A repository
+layer (project or workspace) may choose only a prompting or read-only start —
+`ask` or `plan`. `accept-edits` applies workspace file edits with no card
+([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)
+§3), so like `auto` it is an operator choice and a strict-config error in a
+repository layer; a cloned repository can never lower the operator's approval
+default. Validate every supplied value before resolving: a shadowed workspace
+`accept-edits` or `auto` is still a strict-config error. Diagnostics name the file and key, never echo
 arbitrary rejected values. Repository files cannot set the hint key.
 
 For interactive invocations, read and admit a live startup-auto authority
@@ -281,7 +284,7 @@ video = 10                         # assumed video-SECONDS per media-output turn
 focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
-default_mode = "ask"               # ask | plan | accept-edits; auto is a strict error in every repository layer.
+default_mode = "ask"               # ask | plan; accept-edits and auto are strict errors in every repository layer (operator global [preferences] only).
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063); absent there too ⇒ a model of the first provider with a key (MVP-A4, chat-session.md)
 default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.

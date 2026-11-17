@@ -8,8 +8,10 @@ Use this procedure after implementation authorization to collect real APFS
 evidence for the correction. The native contract owns the predicates and limits;
 this runbook explains how to obtain and distinguish the evidence. Do not change
 an existing user's file, MACL, access policy or OS privacy settings to make a
-fixture pass. No actual host/user-interaction acceptance has been performed at
-this documentation checkpoint.
+fixture pass. The author's real host and editor interactions for the ADR-0127
+correction are recorded in the
+[phase register](../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-implementation-author-verification-2026-11-15);
+use this procedure to repeat or extend them on another host.
 
 ## Full host and actual-interaction evidence
 

@@ -1027,10 +1027,10 @@ security invariants** a review must confirm are:
   provider-URL echo strips a stricter zero-width superset. **Never embed literal bidi bytes in
   source** — the sanitizer regex uses `\u` escapes.
 - **Interactive per-tool approval is fail-closed and cannot be widened by a keystroke.** During a
-  pending approval the key-swallow answers ONLY `[y]/[a]/[n]/[esc]` plus `[c]` (open a
-  reject-with-reason capture) and the VIEW-ONLY reasoning toggle (Ctrl+T — a pure repaint, zero
-  session/decision effect). A modified chord (Ctrl/Alt) never silently picks the most-permissive
-  approve/reject. The `[c]` reason is a USER-typed reject enrichment only — sanitized (terminal +
+  pending approval the card answers ONLY the Ctrl chords `Ctrl+Y` (once), `Ctrl+G` (session-wide, confirmed by Enter), `Ctrl+N` (deny) and
+  `Ctrl+R` (open a reject-with-reason capture), plus `[esc]`/Ctrl-C (stop the turn); while a card is open the card consumes every other key (the
+  VIEW-ONLY reasoning toggle, Ctrl+T, is reachable only when no card is open). A bare letter answers nothing (typing at a card must never decide it, PR #99), and any other modified chord
+  (Ctrl/Alt) never silently picks the most-permissive approve/reject. The `Ctrl+R` reason is a USER-typed reject enrichment only — sanitized (terminal +
   bidi stripped, one line) and length-bounded before it rides the secret-free denial; it never
   changes the floor or "a user deny is final". Off a TTY (`--json` / piped / one-shot `agent run`)
   the one canonical `nonInteractiveApprovalPrompt` DENIES every governed dispatch — never a hang,

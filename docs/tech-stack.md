@@ -30,8 +30,9 @@ adversarially reviewed by a 10-agent workflow before being locked.
 > [MVP-3 Step 2 checkpoint](roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
 > Subsequent PR corrections and final-head acceptance remain separate. Accepted
 > [ADR-0126](decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
-> authorizes its dependent implementation; the current correction implementation,
-> fresh review, security sitting and final-head acceptance remain open.
+> authorizes its dependent implementation; the correction implementation and its
+> review and security sitting are recorded as complete in the roadmap register,
+> and final-head acceptance remains open.
 
 ## Final Stack
 
