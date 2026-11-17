@@ -327,8 +327,13 @@ describe.each([
 
       const listing = await fs.listDirectory(anchor, { recursive: true });
       const names = listing.entries.map((entry) => entry.name);
-      for (const refused of [name, 'ordinary-link.txt', `aliases/${name}`])
-        expect(names).not.toContain(refused);
+      // An entry is hidden by its OWN path and name only. A link is listed from its own directory entry whatever it
+      // points at, so the listing never answers whether a credential store sits behind a link the model can plant;
+      // every read and write through that link is refused above.
+      for (const refused of [name, `aliases/${name}`]) expect(names).not.toContain(refused);
+      expect(listing.entries.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe(
+        'symlink',
+      );
       expect(names).toEqual(expect.arrayContaining(benign));
       expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(name);
       expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
@@ -390,19 +395,16 @@ describe.each([
       );
     }
     expect(observed.open).not.toHaveBeenCalled();
-    const names = (await fs.listDirectory(anchor, { recursive: true })).entries.map(
-      (entry) => entry.name,
-    );
-    for (const path of [
-      '.git/worktrees/linked/config.worktree',
-      'ordinary-link.txt',
-      '.git/config.worktree',
-    ])
+    const listed = (await fs.listDirectory(anchor, { recursive: true })).entries;
+    const names = listed.map((entry) => entry.name);
+    // Hidden by their own path only; a link is listed as a link and its target never decides (every read through it
+    // is refused above).
+    for (const path of ['.git/worktrees/linked/config.worktree', '.git/config.worktree'])
       expect(names).not.toContain(path);
     expect(names).toContain('config.worktree');
-    expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(
-      'ordinary-link.txt',
-    );
+    expect(listed.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe('symlink');
+    const offered = await mention.list(anchor);
+    expect(offered.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe('file');
     expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
       'synthetic-worktree-credential',
     );

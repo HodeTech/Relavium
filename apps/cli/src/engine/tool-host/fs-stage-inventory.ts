@@ -11,6 +11,8 @@ const MAX_RECORDS = 128;
 const MAX_RECORD_BYTES = 16 * 1024;
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const SCAN_MS = 2000;
+/** Whole-scan attempts when a committed record vanishes mid-scan; the one SCAN_MS deadline bounds them all. */
+const SCAN_ATTEMPTS = 3;
 const STAGE_PREFIX = '.relavium-fs-stage-v1.';
 export const FS_PRIVATE_INDEX_PARENT = '.relavium-fs-private-v1';
 const recordName = /^([a-f0-9]{32})\.(record|reserved|prepare)$/;
@@ -90,6 +92,12 @@ export interface FsStageInventory {
 export class FsStageInventoryError extends HostDeniedError {
   constructor(message = 'filesystem staging inventory is unavailable or unsafe') {
     super(message);
+  }
+}
+/** Internal signal: a committed `.record` disappeared between the directory read and its inspection. */
+class RecordVanished extends Error {
+  constructor() {
+    super('a committed staging record vanished during the inventory scan');
   }
 }
 function code(error: unknown): unknown {
@@ -239,169 +247,188 @@ export async function captureFsStageInventory(
       )
         throw new FsStageInventoryError();
     }
-    let indexInfo;
-    try {
-      tick(start, signal);
-      indexInfo = await lstat(requestedIndex, { bigint: true });
-    } catch (error) {
-      if (code(error) === 'ENOENT') {
-        await verifyAbsentIndex();
-        return captured();
-      }
-      throw error;
-    }
-    // Windows follows ADR-0050's explicit operator-home ACL trust boundary. Native
-    // placement proves its private ACL; Node mode bits are never ACL evidence.
-    tick(start, signal);
-    const parent = join(home, FS_PRIVATE_INDEX_PARENT);
-    const index = join(parent, 'fs-staging-v1');
-    tick(start, signal);
-    const parentInfo = await lstat(parent, { bigint: true });
-    if (
-      !parentInfo.isDirectory() ||
-      parentInfo.isSymbolicLink() ||
-      !privatePolicy(parentInfo) ||
-      !indexInfo.isDirectory() ||
-      indexInfo.isSymbolicLink() ||
-      !privatePolicy(indexInfo) ||
-      (await realpath(index)) !== index
-    )
-      throw new FsStageInventoryError();
-    protectIdentity(parentInfo);
-    protectIdentity(indexInfo);
-    tick(start, signal);
-    const directory = await opendir(index);
-    const nonces = new Set<string>();
-    let count = 0;
-    let total = 0;
-    async function captureEntry(entry: import('node:fs').Dirent): Promise<void> {
-      tick(start, signal);
-      const match = recordName.exec(entry.name);
-      if (
-        ++count > MAX_RECORDS * 3 + 1 ||
-        !entry.isFile() ||
-        (entry.name !== 'inventory.lock' && !match)
-      )
-        throw new FsStageInventoryError();
-      if (match?.[1]) nonces.add(match[1]);
-      if (nonces.size > MAX_RECORDS) throw new FsStageInventoryError();
-      const path = join(index, entry.name);
-      let observed;
+    async function scanIndex(): Promise<FsStageInventory> {
+      // Each attempt is one coherent snapshot: nothing a previous, abandoned attempt pinned may survive into it.
+      identities.clear();
+      let indexInfo;
       try {
         tick(start, signal);
-        observed = await lstat(path, { bigint: true });
+        indexInfo = await lstat(requestedIndex, { bigint: true });
       } catch (error) {
-        if (
-          code(error) === 'ENOENT' &&
-          (entry.name.endsWith('.reserved') || entry.name.endsWith('.prepare'))
-        )
-          return;
+        if (code(error) === 'ENOENT') {
+          await verifyAbsentIndex();
+          return captured();
+        }
         throw error;
       }
+      // Windows follows ADR-0050's explicit operator-home ACL trust boundary. Native
+      // placement proves its private ACL; Node mode bits are never ACL evidence.
+      tick(start, signal);
+      const parent = join(home, FS_PRIVATE_INDEX_PARENT);
+      const index = join(parent, 'fs-staging-v1');
+      tick(start, signal);
+      const parentInfo = await lstat(parent, { bigint: true });
       if (
-        !observed.isFile() ||
-        observed.isSymbolicLink() ||
-        observed.nlink !== 1n ||
-        !privatePolicy(observed) ||
-        observed.size > BigInt(MAX_RECORD_BYTES)
+        !parentInfo.isDirectory() ||
+        parentInfo.isSymbolicLink() ||
+        !privatePolicy(parentInfo) ||
+        !indexInfo.isDirectory() ||
+        indexInfo.isSymbolicLink() ||
+        !privatePolicy(indexInfo) ||
+        (await realpath(index)) !== index
       )
         throw new FsStageInventoryError();
-      const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
-      let handle;
-      try {
+      protectIdentity(parentInfo);
+      protectIdentity(indexInfo);
+      tick(start, signal);
+      const directory = await opendir(index);
+      const nonces = new Set<string>();
+      let count = 0;
+      let total = 0;
+      async function captureEntry(entry: import('node:fs').Dirent): Promise<void> {
         tick(start, signal);
-        handle = await open(
-          path,
-          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK,
-        );
-      } catch (error) {
-        if (transient && code(error) === 'ENOENT') return;
-        throw error;
-      }
-      async function inspectOpened(
-        opened: Awaited<ReturnType<typeof open>>,
-        observedEntry: BigIntStats,
-      ): Promise<void> {
-        tick(start, signal);
-        const before = await opened.stat({ bigint: true });
+        const match = recordName.exec(entry.name);
         if (
-          !same(observedEntry, before) ||
-          !before.isFile() ||
-          before.nlink !== 1n ||
-          !privatePolicy(before) ||
-          (!transient && observedEntry.ctimeNs !== before.ctimeNs)
+          ++count > MAX_RECORDS * 3 + 1 ||
+          !entry.isFile() ||
+          (entry.name !== 'inventory.lock' && !match)
         )
           throw new FsStageInventoryError();
-        protectIdentity(before);
-        if (transient || entry.name === 'inventory.lock') {
-          total += Number(before.size);
+        if (match?.[1]) nonces.add(match[1]);
+        if (nonces.size > MAX_RECORDS) throw new FsStageInventoryError();
+        const path = join(index, entry.name);
+        let observed;
+        try {
+          tick(start, signal);
+          observed = await lstat(path, { bigint: true });
+        } catch (error) {
           if (
-            before.size > BigInt(MAX_RECORD_BYTES) ||
-            total > MAX_SCAN_BYTES ||
-            (match?.[2] !== 'prepare' && before.size !== 0n)
+            code(error) === 'ENOENT' &&
+            (entry.name.endsWith('.reserved') || entry.name.endsWith('.prepare'))
+          )
+            return;
+          if (code(error) === 'ENOENT' && match?.[2] === 'record') throw new RecordVanished();
+          throw error;
+        }
+        if (
+          !observed.isFile() ||
+          observed.isSymbolicLink() ||
+          observed.nlink !== 1n ||
+          !privatePolicy(observed) ||
+          observed.size > BigInt(MAX_RECORD_BYTES)
+        )
+          throw new FsStageInventoryError();
+        const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
+        let handle;
+        try {
+          tick(start, signal);
+          handle = await open(
+            path,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK,
+          );
+        } catch (error) {
+          if (transient && code(error) === 'ENOENT') return;
+          if (code(error) === 'ENOENT' && match?.[2] === 'record') throw new RecordVanished();
+          throw error;
+        }
+        async function inspectOpened(
+          opened: Awaited<ReturnType<typeof open>>,
+          observedEntry: BigIntStats,
+        ): Promise<void> {
+          tick(start, signal);
+          const before = await opened.stat({ bigint: true });
+          if (
+            !same(observedEntry, before) ||
+            !before.isFile() ||
+            before.nlink !== 1n ||
+            !privatePolicy(before) ||
+            (!transient && observedEntry.ctimeNs !== before.ctimeNs)
           )
             throw new FsStageInventoryError();
-          return;
+          protectIdentity(before);
+          if (transient || entry.name === 'inventory.lock') {
+            total += Number(before.size);
+            if (
+              before.size > BigInt(MAX_RECORD_BYTES) ||
+              total > MAX_SCAN_BYTES ||
+              (match?.[2] !== 'prepare' && before.size !== 0n)
+            )
+              throw new FsStageInventoryError();
+            return;
+          }
+          tick(start, signal);
+          const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1);
+          tick(start, signal);
+          const { bytesRead } = await opened.read(bytes, 0, bytes.length, 0);
+          total += bytesRead;
+          if (
+            bytesRead > MAX_RECORD_BYTES ||
+            total > MAX_SCAN_BYTES ||
+            BigInt(bytesRead) !== before.size
+          )
+            throw new FsStageInventoryError();
+          tick(start, signal);
+          const after = await opened.stat({ bigint: true });
+          tick(start, signal);
+          const current = await lstat(path, { bigint: true }).catch((error: unknown) => {
+            // Only a committed `.record` reaches this point (reservations/prepares/the lock returned above).
+            throw code(error) === 'ENOENT' ? new RecordVanished() : error;
+          });
+          if (
+            !same(before, after) ||
+            !same(before, current) ||
+            after.nlink !== 1n ||
+            current.nlink !== 1n ||
+            !privatePolicy(current) ||
+            before.ctimeNs !== current.ctimeNs ||
+            before.size !== after.size ||
+            before.mtimeNs !== after.mtimeNs ||
+            before.ctimeNs !== after.ctimeNs
+          )
+            throw new FsStageInventoryError();
+          if (match?.[2] === 'record' && match[1]) {
+            for (const pinned of parseRecord(bytes.subarray(0, bytesRead), match[1], uid))
+              protectIdentity(pinned);
+          }
+          // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
         }
-        tick(start, signal);
-        const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1);
-        tick(start, signal);
-        const { bytesRead } = await opened.read(bytes, 0, bytes.length, 0);
-        total += bytesRead;
-        if (
-          bytesRead > MAX_RECORD_BYTES ||
-          total > MAX_SCAN_BYTES ||
-          BigInt(bytesRead) !== before.size
-        )
-          throw new FsStageInventoryError();
-        tick(start, signal);
-        const after = await opened.stat({ bigint: true });
-        tick(start, signal);
-        const current = await lstat(path, { bigint: true });
-        if (
-          !same(before, after) ||
-          !same(before, current) ||
-          after.nlink !== 1n ||
-          current.nlink !== 1n ||
-          !privatePolicy(current) ||
-          before.ctimeNs !== current.ctimeNs ||
-          before.size !== after.size ||
-          before.mtimeNs !== after.mtimeNs ||
-          before.ctimeNs !== after.ctimeNs
-        )
-          throw new FsStageInventoryError();
-        if (match?.[2] === 'record' && match[1]) {
-          for (const pinned of parseRecord(bytes.subarray(0, bytesRead), match[1], uid))
-            protectIdentity(pinned);
+        try {
+          await inspectOpened(handle, observed);
+        } finally {
+          await handle.close();
         }
-        // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
       }
+      for await (const entry of directory) await captureEntry(entry);
+      tick(start, signal);
+      const final = await lstat(index, { bigint: true });
+      tick(start, signal);
+      const finalParent = await lstat(parent, { bigint: true });
+      tick(start, signal);
+      const finalHome = await stat(requestedHome, { bigint: true });
+      if (
+        !same(homeInfo, finalHome) ||
+        !finalHome.isDirectory() ||
+        (await realpath(requestedHome)) !== home ||
+        !same(indexInfo, final) ||
+        !final.isDirectory() ||
+        !privatePolicy(final) ||
+        !same(parentInfo, finalParent) ||
+        !finalParent.isDirectory() ||
+        !privatePolicy(finalParent)
+      )
+        throw new FsStageInventoryError();
+      return captured();
+    }
+    // A committed record can legitimately vanish mid-scan (a concurrent write completing removes it). Skipping it
+    // would leave a snapshot that never saw that record's pins, so the WHOLE scan runs again, a few times at most
+    // and inside the same deadline. A record that keeps vanishing ends as the same fatal error it always was.
+    for (let attempt = 1; ; attempt++) {
       try {
-        await inspectOpened(handle, observed);
-      } finally {
-        await handle.close();
+        return await scanIndex();
+      } catch (error) {
+        if (!(error instanceof RecordVanished) || attempt >= SCAN_ATTEMPTS) throw error;
       }
     }
-    for await (const entry of directory) await captureEntry(entry);
-    tick(start, signal);
-    const final = await lstat(index, { bigint: true });
-    tick(start, signal);
-    const finalParent = await lstat(parent, { bigint: true });
-    tick(start, signal);
-    const finalHome = await stat(requestedHome, { bigint: true });
-    if (
-      !same(homeInfo, finalHome) ||
-      !finalHome.isDirectory() ||
-      (await realpath(requestedHome)) !== home ||
-      !same(indexInfo, final) ||
-      !final.isDirectory() ||
-      !privatePolicy(final) ||
-      !same(parentInfo, finalParent) ||
-      !finalParent.isDirectory() ||
-      !privatePolicy(finalParent)
-    )
-      throw new FsStageInventoryError();
-    return captured();
   } catch (error) {
     throwIfAborted(signal, 'filesystem staging inventory scan was aborted');
     if (error instanceof FsStageInventoryError) throw error;

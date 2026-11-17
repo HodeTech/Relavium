@@ -8,13 +8,14 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FileWritten, FsPreparedWrite } from '@relavium/core';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createNodeFsCapability } from './fs.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createNodeFsCapability, FsScopeDeniedError } from './fs.js';
 import * as nativeMetadata from './fs-native-metadata.js';
 
 let root: string;
@@ -121,6 +122,142 @@ it('defers parent creation and refuses a staged new-file publication after a com
     }
   }
 });
+
+describe('a cleanup failure after execute', () => {
+  /** A host whose native cleanup of an EXISTING target's preparation always fails (after really releasing it). */
+  async function withFailingCleanup() {
+    const native = await nativeMetadata.loadNativeMetadataWriteAdapter();
+    return vi.spyOn(nativeMetadata, 'loadNativeMetadataWriteAdapter').mockResolvedValue({
+      ...native,
+      releaseExistingMetadata: async (prepared) => {
+        await native.releaseExistingMetadata(prepared);
+        throw new Error('injected cleanup failure');
+      },
+    });
+  }
+
+  it('is plain cleanup, not "needs attention", when the work scope refused before any native work began', async () => {
+    await writeFile(join(root, 'file'), 'old');
+    const loader = await withFailingCleanup();
+    try {
+      const prepared = await host().prepareWrite!({ kind: 'write', path: 'file', content: 'new' });
+      let refusals = 0;
+      const retainWork = (): never => {
+        refusals++;
+        throw new Error('egress work scope has ended'); // a sealed scope refuses before invoking the producer
+      };
+      expect(() => prepared.execute(undefined, { retainWork })).toThrow(
+        'egress work scope has ended',
+      );
+      expect(refusals).toBe(1);
+      // The single-use guarantee is unchanged: the refused handle can neither run again nor be re-claimed.
+      await expect(prepared.execute()).rejects.toThrow('prepared write is no longer available');
+      const failure = await Promise.resolve()
+        .then(() => prepared.release())
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(failure).toMatchObject({ message: 'filesystem metadata cleanup failed' });
+      expect(failure).not.toMatchObject({ runErrorCode: 'effect_needs_attention' });
+      expect(await readFile(join(root, 'file'), 'utf8')).toBe('old');
+    } finally {
+      loader.mockRestore();
+    }
+  });
+
+  it('still reports "needs attention" once the producer has started', async () => {
+    await writeFile(join(root, 'file'), 'old');
+    const loader = await withFailingCleanup();
+    try {
+      const prepared = await host().prepareWrite!({ kind: 'write', path: 'file', content: 'new' });
+      await prepared.execute(undefined, { retainWork: (factory) => factory() });
+      await expect(prepared.release()).rejects.toMatchObject({
+        runErrorCode: 'effect_needs_attention',
+        retryable: false,
+      });
+      expect(await readFile(join(root, 'file'), 'utf8')).toBe('new');
+    } finally {
+      loader.mockRestore();
+    }
+  });
+});
+
+// `retainWork` is host code: it can invoke the factory (native work starts) and THEN throw. execute() throws, so no
+// `pending` was recorded — release() must still join the producer it started, and that producer's later rejection
+// must not surface as an unhandled one nobody can observe, whether it settles before or after release() is called.
+it.each(['while the producer is still running', 'after the producer already settled'] as const)(
+  'joins a producer that a throwing retainer already started and leaves no unhandled rejection: release() %s',
+  async (when) => {
+    await writeFile(join(root, 'file'), 'old');
+    const native = await nativeMetadata.loadNativeMetadataWriteAdapter();
+    let reachedPublish = false;
+    let openGate: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const loader = vi.spyOn(nativeMetadata, 'loadNativeMetadataWriteAdapter').mockResolvedValue({
+      ...native,
+      publishMetadata: async () => {
+        reachedPublish = true;
+        await gate;
+        throw new Error('injected publish failure');
+      },
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      const prepared = await host().prepareWrite!({ kind: 'write', path: 'file', content: 'new' });
+      let lost: Promise<unknown> | undefined;
+      const retainWork = <T>(factory: () => Promise<T>): Promise<T> => {
+        lost = factory();
+        throw new Error('retainer failed');
+      };
+      expect(() => prepared.execute(undefined, { retainWork })).toThrow('retainer failed');
+      expect(lost, 'the retainer really started the producer').toBeDefined();
+      await vi.waitFor(() => expect(reachedPublish).toBe(true));
+      if (when === 'while the producer is still running') {
+        let released = false;
+        const releasing = Promise.resolve(prepared.release()).then(() => {
+          released = true;
+        });
+        await turn();
+        await turn();
+        expect(released, 'release() must not resolve while the producer is still running').toBe(
+          false,
+        );
+        openGate();
+        await releasing;
+      } else {
+        openGate();
+        // The producer's failure path removes its staging record before it rejects.
+        await vi.waitFor(async () =>
+          expect(await readdir(join(root, '.relavium-fs-private-v1', 'fs-staging-v1'))).toEqual([
+            'inventory.lock',
+          ]),
+        );
+        await turn();
+        await turn();
+        await turn();
+        expect(unhandled, 'no rejection before anything observes the producer').toEqual([]);
+        await prepared.release();
+      }
+      await turn();
+      await turn();
+      expect(unhandled, 'the producer rejection was observed').toEqual([]);
+      await expect(lost).rejects.toBeDefined();
+      expect(await readFile(join(root, 'file'), 'utf8')).toBe('old');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      openGate();
+      loader.mockRestore();
+    }
+  },
+);
 
 it('requires promoted matching evidence for each replacement and refuses stale state', async () => {
   const fs = host();
@@ -264,5 +401,141 @@ it.each([false, true])(
       await prepared.release();
     }
     expect(await readFile(join(root, 'file'))).toEqual(Buffer.from(expected));
+  },
+);
+
+// The plain case (no link anywhere) must behave exactly as before, on every platform.
+it('a createDirs write without any link keeps the lexical card path and succeeds', async () => {
+  await mkdir(join(root, 'src'));
+  for (const path of ['brand/new/child.txt', 'src/more/child.txt']) {
+    const prepared = await host().prepareWrite!({
+      kind: 'write',
+      path,
+      content: 'on: push\n',
+      createDirs: true,
+    });
+    try {
+      expect(prepared.path).toBe(join(...path.split('/')));
+      expect((await prepared.execute()).path).toBe(prepared.path);
+      expect(await readFile(join(root, path), 'utf8')).toBe('on: push\n');
+    } finally {
+      await prepared.release();
+    }
+  }
+});
+
+// Consent honesty (PR #99 security sitting F1): a card must name the path that is WRITTEN. An existing parent was
+// always canonicalised; a MISSING parent was not, so a link ancestor made the card name the lexical path while the
+// bytes landed somewhere the person never saw named.
+describe.skipIf(process.platform === 'win32')(
+  'a createDirs write whose missing parents sit under a linked ancestor',
+  () => {
+    const request = (path: string) =>
+      ({ kind: 'write', path, content: 'on: push\n', createDirs: true }) as const;
+
+    it.each(['notes/workflows/release.yml', 'notes/workflows/nested/release.yml'])(
+      'names the canonical path on the card, and the write lands exactly there (%s)',
+      async (path) => {
+        await mkdir(join(root, '.github'));
+        await symlink(join(root, '.github'), join(root, 'notes'), 'dir');
+        const prepared = await host().prepareWrite!(request(path));
+        try {
+          const canonical = join('.github', path.slice('notes/'.length));
+          expect(prepared.path, 'the card names the canonical path, not the link spelling').toBe(
+            canonical,
+          );
+          expect(await readdir(join(root, '.github')), 'prepare creates nothing').toEqual([]);
+          const written = await prepared.execute();
+          expect(written.path, 'the card named exactly what was written').toBe(prepared.path);
+          expect(await readFile(join(root, canonical), 'utf8')).toBe('on: push\n');
+        } finally {
+          await prepared.release();
+        }
+      },
+    );
+
+    it('refuses at prepare when the canonical path is a protected or credential location', async () => {
+      // `.config` is an ordinary directory and `op` an ordinary name; only the canonical `.config/op` run is the
+      // 1Password credential store. Neither the lexical path nor the existing ancestor shows it.
+      await mkdir(join(root, '.config'));
+      await symlink(join(root, '.config'), join(root, 'notes'), 'dir');
+      await expect(host().prepareWrite!(request('notes/op/token.txt'))).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
+      expect(await readdir(join(root, '.config')), 'nothing was created there').toEqual([]);
+    });
+
+    describe('when the link is retargeted after the card was shown', () => {
+      /** Re-point `notes` at `other` the moment the Nth native recheck of the EXECUTE phase runs. */
+      async function retargetOnRecheck(nth: number, onSwap: () => void) {
+        const native = await nativeMetadata.loadNativeMetadataWriteAdapter();
+        let armed = false;
+        let calls = 0;
+        const loader = vi
+          .spyOn(nativeMetadata, 'loadNativeMetadataWriteAdapter')
+          .mockResolvedValue({
+            ...native,
+            recheckNewMetadata: async (prepared, mask) => {
+              if (armed && ++calls === nth) {
+                await rm(join(root, 'notes'));
+                await symlink(join(root, 'other'), join(root, 'notes'), 'dir');
+                onSwap();
+              }
+              return native.recheckNewMetadata(prepared, mask);
+            },
+          });
+        return { loader, arm: () => (armed = true) };
+      }
+
+      it('refuses before creating any directory in the place the card never named', async () => {
+        await mkdir(join(root, '.github'));
+        await mkdir(join(root, 'other'));
+        await symlink(join(root, '.github'), join(root, 'notes'), 'dir');
+        let swapped = false;
+        const { loader, arm } = await retargetOnRecheck(1, () => (swapped = true));
+        try {
+          const prepared = await host().prepareWrite!(request('notes/workflows/release.yml'));
+          try {
+            expect(prepared.path).toBe(join('.github', 'workflows', 'release.yml'));
+            arm();
+            await expect(prepared.execute()).rejects.toMatchObject({ reason: 'stale_file' });
+            expect(swapped, 'the retarget window was really driven').toBe(true);
+            expect(await readdir(join(root, 'other')), 'no directory in the new target').toEqual(
+              [],
+            );
+            expect(await readdir(join(root, '.github'))).toEqual([]);
+          } finally {
+            await prepared.release();
+          }
+        } finally {
+          loader.mockRestore();
+        }
+      });
+
+      it('refuses, publishing nothing, when it is retargeted after the directories were created', async () => {
+        await mkdir(join(root, '.github'));
+        await mkdir(join(root, 'other', 'workflows'), { recursive: true });
+        await symlink(join(root, '.github'), join(root, 'notes'), 'dir');
+        let swapped = false;
+        // The 2nd recheck is the one after the (single) mkdir: the directory exists, the file does not yet.
+        const { loader, arm } = await retargetOnRecheck(2, () => (swapped = true));
+        try {
+          const prepared = await host().prepareWrite!(request('notes/workflows/release.yml'));
+          try {
+            arm();
+            await expect(prepared.execute()).rejects.toMatchObject({ reason: 'stale_file' });
+            expect(swapped, 'the retarget window was really driven').toBe(true);
+            expect(
+              await readdir(join(root, 'other', 'workflows')),
+              'no bytes were published into the place the card never named',
+            ).toEqual([]);
+          } finally {
+            await prepared.release();
+          }
+        } finally {
+          loader.mockRestore();
+        }
+      });
+    });
   },
 );

@@ -1,8 +1,56 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createNodeFsCapability } from './fs.js';
+
+// A file can vanish between the directory read and the per-entry probes. The windows are a few microseconds, so the
+// tests open them deterministically: a probe of a registered path fails with ENOENT exactly as a concurrent unlink
+// would. `paths` fails every `lstat` of the path; `bigintLstat` / `bigintStat` fail only the identity-pinning probe
+// (the `{ bigint: true }` form) so the window BETWEEN the plain probe and the pin is isolated.
+const vanishing = vi.hoisted(() => ({
+  paths: new Set<string>(),
+  bigintLstat: new Set<string>(),
+  bigintStat: new Set<string>(),
+  hits: 0,
+  fired: [] as string[],
+  code: 'ENOENT',
+}));
+vi.mock('node:fs/promises', async (original) => {
+  const native = await original<typeof import('node:fs/promises')>();
+  const asksBigint = (options: unknown): boolean =>
+    typeof options === 'object' &&
+    options !== null &&
+    'bigint' in options &&
+    options.bigint === true;
+  const enoent = () =>
+    Promise.reject(
+      Object.assign(new Error(`${vanishing.code}: injected failure`), { code: vanishing.code }),
+    );
+  return {
+    ...native,
+    lstat: (...args: Parameters<typeof native.lstat>) => {
+      const [path, options] = args;
+      if (typeof path === 'string' && vanishing.paths.has(path)) {
+        vanishing.hits++;
+        return enoent();
+      }
+      if (typeof path === 'string' && asksBigint(options) && vanishing.bigintLstat.has(path)) {
+        vanishing.fired.push(`lstat-bigint:${path}`);
+        return enoent();
+      }
+      return native.lstat(...args);
+    },
+    stat: (...args: Parameters<typeof native.stat>) => {
+      const [path, options] = args;
+      if (typeof path === 'string' && asksBigint(options) && vanishing.bigintStat.has(path)) {
+        vanishing.fired.push(`stat-bigint:${path}`);
+        return enoent();
+      }
+      return native.stat(...args);
+    },
+  };
+});
 
 let root: string;
 beforeEach(async () => {
@@ -120,4 +168,132 @@ it('stops actual adversarial ignore retries at the work ceiling and reports an i
   const result = await capability().findFiles?.('.', { glob: '*.nomatch' });
   expect(result?.stats).toMatchObject({ incomplete: true, limit: 'work' });
   expect(result?.stats.entriesVisited).toBeLessThan(320);
+});
+
+it.each(['find_files', 'search_files'] as const)(
+  '%s skips a file that vanishes between the directory read and its lstat instead of failing the call',
+  async (tool) => {
+    await writeFile(join(root, 'kept.txt'), 'needle\n');
+    await writeFile(join(root, 'gone.txt'), 'needle\n');
+    vanishing.paths.clear();
+    vanishing.hits = 0;
+    vanishing.paths.add(join(root, 'gone.txt'));
+    try {
+      const fs = capability();
+      const paths =
+        tool === 'find_files'
+          ? (await fs.findFiles?.('.', { glob: '*.txt' }))?.files.map((entry) => entry.path)
+          : (await fs.searchFiles?.('.', { pattern: 'needle', glob: '*.txt' }))?.matches.map(
+              (entry) => entry.path,
+            );
+      // The injection really fired on the scan, and the survivors are still reported.
+      expect(vanishing.hits).toBeGreaterThan(0);
+      expect(paths).toEqual(['kept.txt']);
+    } finally {
+      vanishing.paths.clear();
+    }
+  },
+);
+
+// The identity-pinning probe (`stat`/`lstat` with `{ bigint: true }`) sits a few lines after the plain probe that
+// already tolerates a vanished entry. A file unlinked inside THAT window must be skipped too — only ENOENT — instead
+// of failing the whole call (guarded() would turn the raw error into "the filesystem operation failed").
+function resetVanishing(): void {
+  vanishing.paths.clear();
+  vanishing.bigintLstat.clear();
+  vanishing.bigintStat.clear();
+  vanishing.hits = 0;
+  vanishing.fired.length = 0;
+  vanishing.code = 'ENOENT';
+}
+
+it.each(['find_files', 'search_files'] as const)(
+  '%s skips a file that vanishes between its realpath and the identity stat instead of failing the call',
+  async (tool) => {
+    await writeFile(join(root, 'kept.txt'), 'needle\n');
+    await writeFile(join(root, 'gone.txt'), 'needle\n');
+    resetVanishing();
+    vanishing.bigintStat.add(join(root, 'gone.txt'));
+    try {
+      const fs = capability();
+      const paths =
+        tool === 'find_files'
+          ? (await fs.findFiles?.('.', { glob: '*.txt' }))?.files.map((entry) => entry.path)
+          : (await fs.searchFiles?.('.', { pattern: 'needle', glob: '*.txt' }))?.matches.map(
+              (entry) => entry.path,
+            );
+      expect(vanishing.fired).toEqual([`stat-bigint:${join(root, 'gone.txt')}`]);
+      expect(paths).toEqual(['kept.txt']);
+    } finally {
+      resetVanishing();
+    }
+  },
+);
+
+it('list_directory (recursive) skips an entry that vanishes at the lstat identity probe instead of failing the call', async () => {
+  await mkdir(join(root, 'sub'));
+  await writeFile(join(root, 'kept.txt'), 'x');
+  await writeFile(join(root, 'sub', 'also.txt'), 'x');
+  await writeFile(join(root, 'sub', 'gone.txt'), 'x');
+  resetVanishing();
+  vanishing.bigintLstat.add(join(root, 'sub', 'gone.txt'));
+  try {
+    const listing = await capability().listDirectory('.', { recursive: true });
+    expect(vanishing.fired).toEqual([`lstat-bigint:${join(root, 'sub', 'gone.txt')}`]);
+    expect(listing.entries.map((entry) => entry.name).sort()).toEqual([
+      'kept.txt',
+      'sub',
+      'sub/also.txt',
+    ]);
+  } finally {
+    resetVanishing();
+  }
+});
+
+// A listed entry is described from its own directory entry and its own lstat: list_directory takes no second,
+// target-following identity probe (a symlink's target must not decide whether the link is listed). The follow-stat
+// probe is armed on a real entry and must never fire.
+it('list_directory never takes a target-following identity probe of an entry', async () => {
+  await mkdir(join(root, 'sub'));
+  await writeFile(join(root, 'sub', 'gone.txt'), 'x');
+  resetVanishing();
+  vanishing.bigintStat.add(join(root, 'sub', 'gone.txt'));
+  try {
+    const listing = await capability().listDirectory('.', { recursive: true });
+    expect(vanishing.fired).toEqual([]);
+    expect(listing.entries.map((entry) => entry.name).sort()).toEqual(['sub', 'sub/gone.txt']);
+  } finally {
+    resetVanishing();
+  }
+});
+
+it('a glob read skips a match that vanishes between its realpath and the identity stat instead of failing', async () => {
+  await writeFile(join(root, 'kept.txt'), 'KEPT');
+  await writeFile(join(root, 'gone.txt'), 'GONE');
+  resetVanishing();
+  vanishing.bigintStat.add(join(root, 'gone.txt'));
+  try {
+    const result = await capability().readFile('*.txt', { glob: true });
+    expect(vanishing.fired).toEqual([`stat-bigint:${join(root, 'gone.txt')}`]);
+    expect(result.content).toContain('KEPT');
+    expect(result.content).not.toContain('GONE');
+  } finally {
+    resetVanishing();
+  }
+});
+
+it('still fails the call when the identity stat fails with anything other than ENOENT', async () => {
+  await writeFile(join(root, 'kept.txt'), 'needle\n');
+  await writeFile(join(root, 'broken.txt'), 'needle\n');
+  resetVanishing();
+  vanishing.code = 'EIO';
+  vanishing.bigintStat.add(join(root, 'broken.txt'));
+  try {
+    await expect(capability().findFiles?.('.', { glob: '*.txt' })).rejects.toThrow(
+      'the filesystem operation failed',
+    );
+    expect(vanishing.fired).toEqual([`stat-bigint:${join(root, 'broken.txt')}`]);
+  } finally {
+    resetVanishing();
+  }
 });

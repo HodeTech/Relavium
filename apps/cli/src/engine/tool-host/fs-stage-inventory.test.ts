@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   captureFsStageInventory,
@@ -26,6 +26,49 @@ import { createNodeFsCapability } from './fs.js';
 import { loadNativeMetadataWriteAdapter } from './fs-native-metadata.js';
 import { openLocalDb } from '../../db/open.js';
 import { prepareGlobalPreferences } from '../../config/write.js';
+
+// A committed record can vanish between the directory read and the lstat/open/re-lstat of it (a concurrent write
+// completing removes its record). The window is microseconds wide, so the tests open it deterministically through the
+// real calls: `decide` may delete the file just before the real call ('unlink') or fail it outright ('vanish').
+type Decision = 'pass' | 'unlink' | 'vanish';
+const seam = vi.hoisted(() => ({
+  decide: undefined as undefined | ((op: 'lstat' | 'open', name: string, call: number) => Decision),
+  calls: new Map<string, number>(),
+  log: [] as string[],
+}));
+vi.mock('node:fs/promises', async (original) => {
+  const native = await original<typeof import('node:fs/promises')>();
+  const intercept = async (op: 'lstat' | 'open', target: unknown): Promise<void> => {
+    if (typeof target !== 'string' || !target.includes('fs-staging-v1')) return;
+    const name = target.slice(target.lastIndexOf('/') + 1);
+    const call = (seam.calls.get(`${op}:${name}`) ?? 0) + 1;
+    seam.calls.set(`${op}:${name}`, call);
+    seam.log.push(`${op}:${name}`);
+    const decision = seam.decide?.(op, name, call) ?? 'pass';
+    if (decision === 'unlink') {
+      await native.unlink(target);
+      seam.log.push(`unlink:${name}`);
+    }
+    if (decision === 'vanish')
+      throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+  };
+  return {
+    ...native,
+    lstat: async (...args: Parameters<typeof native.lstat>) => {
+      await intercept('lstat', args[0]);
+      return native.lstat(...args);
+    },
+    open: async (...args: Parameters<typeof native.open>) => {
+      await intercept('open', args[0]);
+      return native.open(...args);
+    },
+    opendir: async (...args: Parameters<typeof native.opendir>) => {
+      if (typeof args[0] === 'string' && args[0].endsWith('fs-staging-v1'))
+        seam.log.push('opendir:index');
+      return native.opendir(...args);
+    },
+  };
+});
 
 let home: string;
 let workspace: string;
@@ -39,6 +82,9 @@ beforeEach(async () => {
   await mkdir(index, { mode: 0o700 });
 });
 afterEach(async () => {
+  seam.decide = undefined;
+  seam.calls.clear();
+  seam.log.length = 0;
   await rm(home, { recursive: true, force: true });
 });
 
@@ -439,5 +485,105 @@ it.skipIf(process.platform === 'win32')(
     } finally {
       Object.defineProperty(process, 'platform', platform);
     }
+  },
+);
+
+// Where in `captureEntry` a committed `.record` can vanish: the first lstat, the open, the post-read re-lstat.
+const VANISH_WINDOWS = [
+  { window: 'lstat', op: 'lstat', nth: 1 },
+  { window: 'open', op: 'open', nth: 1 },
+  { window: 're-lstat after the read', op: 'lstat', nth: 2 },
+] as const;
+
+describe.skipIf(process.platform === 'win32')('a committed record that vanishes mid-scan', () => {
+  it.each(VANISH_WINDOWS)(
+    'retries the whole scan once when it vanishes at the $window and still protects the survivor',
+    async ({ op, nth }) => {
+      const gone = await createSyntheticPinnedStage(home, workspace);
+      const kept = await createSyntheticPinnedStage(home, workspace);
+      const goneName = `${/\.([a-f0-9]{32})$/.exec(gone.stage)?.[1]}.record`;
+      seam.decide = (callOp, name, call) =>
+        name === goneName && callOp === op && call === nth ? 'unlink' : 'pass';
+      const inventory = await captureFsStageInventory(home);
+      // The vanish really happened, and the index was read AGAIN (a whole-scan retry, not a skipped entry).
+      expect(seam.log).toContain(`unlink:${goneName}`);
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+      // The coherent second snapshot protects the surviving record's stage.
+      for (const path of [kept.stage, kept.payload]) {
+        const identity = await stat(path, { bigint: true });
+        expect(() => inventory.assertIdentity(identity)).toThrow(FsStageInventoryError);
+      }
+    },
+  );
+
+  it("drops a pin the abandoned attempt took of the vanished record's own inode, keeping the survivor's", async () => {
+    const gone = await createSyntheticPinnedStage(home, workspace);
+    const kept = await createSyntheticPinnedStage(home, workspace);
+    const nameOf = (stage: string): string => `${/\.([a-f0-9]{32})$/.exec(stage)?.[1]}.record`;
+    const goneName = nameOf(gone.stage);
+    // The record file's own identity is pinned (protectIdentity(before)) BEFORE the re-lstat that finds it gone, so
+    // the abandoned attempt leaves a pin behind that the coherent retry must not inherit.
+    const goneRecord = await stat(join(index, goneName), { bigint: true });
+    const keptRecord = await stat(join(index, nameOf(kept.stage)), { bigint: true });
+    seam.decide = (callOp, name, call) =>
+      name === goneName && callOp === 'lstat' && call === 2 ? 'unlink' : 'pass';
+    const inventory = await captureFsStageInventory(home);
+    expect(seam.log).toContain(`unlink:${goneName}`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+    // The vanished record's inode is no longer protected: no stale pin from the abandoned snapshot.
+    expect(() => inventory.assertIdentity(goneRecord)).not.toThrow();
+    // The surviving record's own inode and its stage are protected by the retry's snapshot.
+    for (const identity of [
+      keptRecord,
+      await stat(kept.stage, { bigint: true }),
+      await stat(kept.payload, { bigint: true }),
+    ])
+      expect(() => inventory.assertIdentity(identity)).toThrow(FsStageInventoryError);
+  });
+
+  it.each(VANISH_WINDOWS)(
+    'keeps the fatal inventory error, after a bounded number of scans, when it keeps vanishing at the $window',
+    async ({ op, nth }) => {
+      await createSyntheticPinnedStage(home, workspace);
+      const target = (await readdir(index)).find((entry) => entry.endsWith('.record'));
+      if (!target) throw new Error('fixture record missing');
+      // Every scan reaches the same vanish point. The re-lstat is identified by ORDER (an lstat of the record after
+      // its open in the same scan), not by call parity, so an extra lstat of the file cannot shift which one fails.
+      let opened = false;
+      seam.decide = (callOp, name) => {
+        if (name !== target) return 'pass';
+        if (callOp === 'open') {
+          opened = true;
+          return op === 'open' ? 'vanish' : 'pass';
+        }
+        const afterRead = opened;
+        opened = false;
+        if (op === 'open') return 'pass';
+        return nth === 1 || afterRead ? 'vanish' : 'pass';
+      };
+      const failure = await captureFsStageInventory(home).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FsStageInventoryError);
+      expect(failure).toMatchObject({
+        message: 'filesystem staging inventory is unavailable or unsafe',
+      });
+      // Exactly SCAN_ATTEMPTS (3) whole scans: the first plus two retries, then the error stands.
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(3);
+    },
+  );
+});
+
+it.skipIf(process.platform === 'win32')(
+  'still tolerates a vanishing reservation or prepare file without a retry',
+  async () => {
+    const nonce = 'b'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    seam.decide = (_op, name) =>
+      name.endsWith('.reserved') || name.endsWith('.prepare') ? 'unlink' : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    // Both injected unlinks really fired (so the tolerance below was exercised), and neither caused a second scan.
+    expect(seam.log).toContain(`unlink:${nonce}.reserved`);
+    expect(seam.log).toContain(`unlink:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
   },
 );

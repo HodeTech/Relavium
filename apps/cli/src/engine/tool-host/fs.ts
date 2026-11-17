@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type Dirent } from 'node:fs';
+import { constants, type BigIntStats, type Dirent } from 'node:fs';
 import { lstat, mkdir, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -457,6 +457,33 @@ async function readOne(
   };
 }
 
+/** Unicode FORMAT characters (bidi overrides and isolates, zero-width marks, a BOM, tag characters): invisible text. */
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
+/**
+ * A file name is untrusted text (POSIX permits a newline in one) and the glob view delimits files by header lines
+ * the model reads as structure. Control characters, line separators and every Unicode FORMAT character (which
+ * render as nothing, or reorder what is around them) are written as `\uXXXX` (`\u{XXXXX}` above the BMP), so a name
+ * can neither start a second line of its own — in particular a forged `===== other-file =====` header — nor hide
+ * part of one. Ordinary names pass through byte-for-byte.
+ */
+function headerSafeName(rel: string): string {
+  let safe = '';
+  for (const ch of rel) {
+    const code = ch.codePointAt(0) ?? 0;
+    const unsafe =
+      code < 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      FORMAT_CHARACTER.test(ch);
+    if (!unsafe) safe += ch;
+    else if (code > 0xffff) safe += `\\u{${code.toString(16)}}`;
+    else safe += `\\u${code.toString(16).padStart(4, '0')}`;
+  }
+  return safe;
+}
+
 /** Expand `pattern` over the jailed tree (bounded), reading each text match into one concatenated view. */
 async function readGlob(
   config: NodeFsCapabilityConfig,
@@ -514,7 +541,7 @@ async function readGlob(
     } catch {
       continue;
     }
-    parts.push(`===== ${m.rel} =====\n${text}`);
+    parts.push(`===== ${headerSafeName(m.rel)} =====\n${text}`);
   }
   if (parts.length === 0) {
     throw new FsCapabilityError('read_file: the glob matched only binary/media files');
@@ -935,11 +962,32 @@ const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.terraform.d',
   'gcloud', // Unix XDG and Windows APPDATA stores include token databases and credential-bearing configurations.
   'legacy_credentials',
+  '.gnupg', // GnuPG home — private-keys-v1.d, secring, trustdb.
+  '.password-store', // `pass` — one GPG-encrypted file per secret.
   // `.env` as a DIRECTORY (some tooling stores per-environment secrets as `.env/production`, etc.) — the basename
   // check below only catches a `.env` FILE, so anything NESTED under a `.env/` dir needs the segment guard too.
   // Over-denying a rare `.env` virtualenv read is the safe direction for a confidentiality floor.
   '.env',
 ]);
+/**
+ * Credential stores named by a RUN of consecutive directory segments. The single-segment set above cannot hold
+ * them without over-denying a bare `keyrings`, `op` or `Keychains` elsewhere; these only match the real nesting.
+ * Segments are folded (lower-case), like every other comparison here.
+ */
+const SENSITIVE_READ_DIR_RUNS: ReadonlyArray<readonly string[]> = [
+  ['library', 'keychains'], // macOS login/system keychain databases
+  ['.local', 'share', 'keyrings'], // GNOME Keyring (login.keyring)
+  ['.config', 'op'], // 1Password CLI configuration
+  ['.config', 'gnupg'], // XDG GnuPG home (`$XDG_CONFIG_HOME/gnupg`) — private-keys-v1.d, trustdb
+];
+/** Directory names GitHub CLI keeps its `hosts.yml` in: `~/.config/gh` and Windows `%APPDATA%\GitHub CLI` (folded). */
+const GITHUB_CLI_DIRECTORIES: ReadonlySet<string> = new Set(['gh', 'github cli']);
+function hasSegmentRun(folded: readonly string[], run: readonly string[]): boolean {
+  for (let start = 0; start + run.length <= folded.length; start++) {
+    if (run.every((part, offset) => folded[start + offset] === part)) return true;
+  }
+  return false;
+}
 /** Credential/secret dotfiles refused to READ by basename (git creds, npm/pypi/pg/netrc tokens). */
 const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.gitconfig', // user-global git config — `[credential]`, insteadOf URLs with embedded tokens
@@ -968,11 +1016,20 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
  */
 export function isSensitiveReadPath(absoluteTarget: string): boolean {
   if (isFsStagePath(absoluteTarget)) return true;
-  const folded = absoluteTarget.split(/[\\/]/).map(foldPathComponent);
+  const raw = absoluteTarget.split(/[\\/]/);
+  const folded = raw.map(foldPathComponent);
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
   }
+  // This predicate is exported, so it may see an unnormalised path: an empty (`Library//Keychains`) or `.`
+  // (`Library/./Keychains`) segment must not split a multi-segment credential store. Only the run and parent
+  // comparisons look at the cleaned sequence; a `..` segment is left in place (it folds to an empty, never-matching one).
+  const significant = folded.filter((_, index) => raw[index] !== '' && raw[index] !== '.');
+  if (SENSITIVE_READ_DIR_RUNS.some((run) => hasSegmentRun(significant, run))) return true;
   const base = folded.at(-1) ?? '';
+  // GitHub CLI `hosts.yml` holds the OAuth token; pinned to its `gh` parent (`GitHub CLI` on Windows) so an ordinary
+  // `hosts.yml` (an Ansible inventory, say) elsewhere stays readable.
+  if (base === 'hosts.yml' && GITHUB_CLI_DIRECTORIES.has(significant.at(-2) ?? '')) return true;
   // dotenv secret files — `.env`, `.env.local`, `.env.production`, … (foldPathComponent strips a trailing dot, so
   // `.env.` folds to `.env`). The single most common in-repo secret store.
   if (base === '.env' || base.startsWith('.env.')) return true;
@@ -1116,6 +1173,43 @@ function equalSnapshot(a: PreparedSnapshot | null, b: PreparedSnapshot | null): 
         a.digest === b.digest;
 }
 
+/**
+ * The lexical directories above `start` that do not exist yet (deepest first) and the first one that does. Climbs
+ * only past a proven-missing entry (`lstat` ENOENT), so a dangling link is never mistaken for absence.
+ */
+async function missingParentChain(start: string): Promise<{ existing: string; missing: string[] }> {
+  const missing: string[] = [];
+  let cursor = start;
+  while (true) {
+    try {
+      await lstat(cursor);
+      return { existing: cursor, missing };
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error;
+      missing.push(cursor);
+      const next = dirname(cursor);
+      if (next === cursor) throw nativeWriteAttentionFailure();
+      cursor = next;
+    }
+  }
+}
+
+/**
+ * Where a not-yet-existing parent directory will really be once created: the deepest existing REAL ancestor
+ * (`deepest`, already realpath'd and floor-checked) followed by the remaining lexical names. `existing` is the
+ * lexical ancestor that `deepest` is the real path of, so a later directory maps to `join(deepest, relative(existing, dir))`.
+ */
+async function predictCreatedParent(
+  parent: string,
+  deepest: string,
+): Promise<{ existing: string; canonical: string }> {
+  const { existing } = await missingParentChain(parent);
+  // `deepest` came from the same lexical climb; if the two disagree the tree changed under us.
+  if ((await realpath(existing).catch(() => undefined)) !== deepest)
+    throw new ToolPreparationError('stale_file');
+  return { existing, canonical: join(deepest, relative(existing, parent)) };
+}
+
 async function prepareWrite(
   config: NodeFsCapabilityConfig,
   capability: FsCapability,
@@ -1158,12 +1252,24 @@ async function prepareWrite(
       'write_file: the target directory does not exist (set createDirs to create it)',
     );
   const target = parentReal === undefined ? undefined : join(parentReal, basename(lexical));
-  async function resolveTarget(targetPath: string): Promise<string | undefined> {
+  // The canonical path the bytes will land at. An existing parent is already canonical; a MISSING one is predicted as
+  // the deepest existing real ancestor plus the remaining lexical names, because an ancestor that is a link would
+  // otherwise make the card name a path the write never touches (the card is the person's consent).
+  const predicted =
+    parentReal === undefined
+      ? await predictCreatedParent(parent, deepest)
+      : { existing: parent, canonical: parentReal };
+  const intendedParent = predicted.canonical;
+  const intendedTarget = join(intendedParent, basename(lexical));
+  function admitTarget(targetPath: string): void {
     nativeFloor.assertPath(targetPath);
-    assertInScope(inScope, parentReal!);
+    assertInScope(inScope, intendedParent);
     assertFsPolicyPath(config.pathPolicy, lexical, targetPath);
     assertNotProtectedPath(targetPath, config.pathPolicy);
     assertNotSensitiveReadPath(targetPath, config.pathPolicy);
+  }
+  async function resolveTarget(targetPath: string): Promise<string | undefined> {
+    admitTarget(targetPath);
     const canonicalTarget = await realpath(targetPath).catch((error: unknown) => {
       if (errnoCode(error) === 'ENOENT') return undefined;
       throw error;
@@ -1177,6 +1283,9 @@ async function prepareWrite(
     return canonicalTarget;
   }
   const canonicalTarget = target === undefined ? undefined : await resolveTarget(target);
+  // Same floors on the predicted canonical path as an existing parent gets: a credential store or protected location
+  // that only the canonical spelling reveals is refused here, before the card exists.
+  if (target === undefined) admitTarget(intendedTarget);
   const proposedText = request.kind === 'write' ? request.content : request.newString;
   if (Buffer.byteLength(proposedText, 'utf8') > maxBytes)
     throw new ToolPreparationError('diff_limit');
@@ -1330,8 +1439,12 @@ async function prepareWrite(
     return nativePrepared;
   }
   let nativePrepared = await prepareNative();
+  let claimed = false;
   let used = false;
   let pending: Promise<FileWritten> | undefined;
+  // The producer's own promise, recorded when it starts. `pending` is only assigned if `retainWork` RETURNS, so a
+  // retainer that invokes the factory and then throws would otherwise leave native work no release() can join.
+  let produced: Promise<FileWritten> | undefined;
   let released = false;
   const run = async (executeSignal?: AbortSignalLike): Promise<FileWritten> => {
     throwIfAborted(executeSignal);
@@ -1374,24 +1487,7 @@ async function prepareWrite(
     )
       throw new ToolPreparationError('stale_file');
     async function createParents(): Promise<void> {
-      async function findMissing(): Promise<string[]> {
-        const missing: string[] = [];
-        let cursor = parent;
-        while (true) {
-          try {
-            await lstat(cursor);
-            break;
-          } catch (error) {
-            if (errnoCode(error) !== 'ENOENT') throw error;
-            missing.push(cursor);
-            const next = dirname(cursor);
-            if (next === cursor) throw nativeWriteAttentionFailure();
-            cursor = next;
-          }
-        }
-        return missing;
-      }
-      const missing = await findMissing();
+      const { missing } = await missingParentChain(parent);
       for (const directory of missing.reverse()) {
         throwIfAborted(executeSignal);
         const mask = await executionCreationMask();
@@ -1403,6 +1499,11 @@ async function prepareWrite(
         executionNativeFloor.assertPath(directory);
         assertNotProtectedPath(directory, config.pathPolicy);
         assertFsPolicyPath(config.pathPolicy, lexical, directory);
+        // The card named the predicted canonical directory. A link retargeted since then must not make this mkdir
+        // create a directory somewhere the person never saw named, so the parent is re-resolved right before it.
+        const expectedParent = dirname(join(deepest, relative(predicted.existing, directory)));
+        if ((await realpath(dirname(directory)).catch(() => undefined)) !== expectedParent)
+          throw new ToolPreparationError('stale_file');
         try {
           await mkdir(directory, { mode: 0o700 });
         } catch (error) {
@@ -1430,8 +1531,9 @@ async function prepareWrite(
     assertNotProtectedPath(finalTarget, config.pathPolicy);
     assertNotSensitiveReadPath(finalTarget, config.pathPolicy);
     await assertNotSymlink(finalTarget);
-    if (target !== undefined && finalTarget !== target)
-      throw new ToolPreparationError('stale_file');
+    // What is about to be written must be what the card named: the existing target, or the predicted canonical one
+    // when the parents were created just now.
+    if (finalTarget !== intendedTarget) throw new ToolPreparationError('stale_file');
     const stageMask = await executionCreationMask();
     if (target === undefined) {
       try {
@@ -1470,20 +1572,31 @@ async function prepareWrite(
     };
   };
   return Object.freeze({
-    path: relWorkspace(config, target ?? lexical),
+    path: relWorkspace(config, intendedTarget),
     before: before?.text ?? null,
     after,
     execute: (executeSignal?: AbortSignalLike, options?: ToolHostCallOptions) => {
-      if (used || released)
+      // `claimed` is the single-use guard and is taken synchronously, before anything can re-enter; `used` means
+      // native work MAY have begun, which is what turns a failed cleanup into "needs attention". They differ when
+      // `retainWork` refuses (a sealed work scope throws before invoking the producer): the handle is spent, but
+      // no write ever started, so its cleanup failure is plain cleanup, not an unconfirmed write.
+      if (claimed || released)
         return Promise.reject(new FsCapabilityError('prepared write is no longer available'));
-      used = true;
-      const producer = (): Promise<FileWritten> => guarded(() => run(executeSignal));
+      claimed = true;
+      const producer = (): Promise<FileWritten> => {
+        used = true;
+        const started = guarded(() => run(executeSignal));
+        produced = started;
+        // Observed from the moment it exists, so its rejection can never surface as an unhandled one nobody holds.
+        started.catch(() => undefined);
+        return started;
+      };
       pending = options?.retainWork === undefined ? producer() : options.retainWork(producer);
       return pending;
     },
     release: async () => {
       released = true;
-      await pending?.catch(() => undefined);
+      await (pending ?? produced)?.catch(() => undefined);
       try {
         if (before === null) await native.releaseNewMetadata(nativePrepared);
         else await native.releaseExistingMetadata(nativePrepared);
@@ -1532,28 +1645,25 @@ async function listOne(
     config.pathPolicy,
     async (real, rel, dirent) => {
       if (matcher !== undefined && !matcher(rel)) return true;
-      // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
-      // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
-      // .ssh/.relavium/credential store into the listing. Fall back to the lexical path when realpath fails (a
-      // broken/vanished link) so a sensitively-NAMED entry is still filtered. The DISPLAYED name (`rel`) is unchanged.
-      const realResolved = await realpath(real).catch(() => undefined);
-      if (
-        isSensitivePolicyReadPath(real, config.pathPolicy) ||
-        isSensitivePolicyReadPath(realResolved ?? real, config.pathPolicy)
-      )
-        return true;
+      // The sensitive-read floor applies to the entry's OWN path and name. A symlink is listed from its own directory
+      // entry and its own `lstat` and its target is never resolved for any decision here: resolving it to hide or show
+      // the entry would tell the model, through a link it can plant, whether a credential store exists elsewhere. A
+      // read through the link still takes the read path's jail and floor, and a recursive walk never enters a link.
+      if (isSensitivePolicyReadPath(real, config.pathPolicy)) return true;
       const info = await lstat(real).catch(() => undefined);
       if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
-      stage.assertIdentity(await lstat(real, { bigint: true }));
-      if (realResolved !== undefined)
-        stage.assertIdentity(await stat(realResolved, { bigint: true }));
+      // The identity pin sits a step after the probe above: an entry unlinked in that window is skipped too (only
+      // ENOENT is tolerated), never fatal.
+      const linkIdentity = await identityIfPresent(lstat(real, { bigint: true }));
+      if (linkIdentity === undefined) return true;
+      stage.assertIdentity(linkIdentity);
       if (entries.length >= cap) {
         truncated = true;
         return false;
       }
       entries.push({
         name: rel,
-        type: dirent.isDirectory() ? 'directory' : 'file',
+        type: dirent.isDirectory() ? 'directory' : dirent.isSymbolicLink() ? 'symlink' : 'file',
         sizeBytes: info.size,
         lastModified: info.mtime.toISOString(),
       });
@@ -1848,7 +1958,11 @@ async function discover(
         const match = matchCandidate(entry, candidate, rel, workspaceRel);
         if (match === 'stop') return 'stop';
         if (match === 'ignored') return 'next';
-        stage.assertIdentity(await lstat(candidate, { bigint: true }));
+        // An entry that vanished between the directory read and this lstat is skipped (as `listOne` does), never
+        // fatal: a concurrent unlink must not fail the whole discovery call. Only ENOENT is tolerated.
+        const identity = await identityIfPresent(lstat(candidate, { bigint: true }));
+        if (identity === undefined) return 'next';
+        stage.assertIdentity(identity);
         function queueDirectory(): 'next' | 'stop' {
           if (depth >= SCAN_DEPTH) {
             stop('depth');
@@ -1867,7 +1981,10 @@ async function discover(
         }
         if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) return 'next';
         assertFsPolicyPath(config.pathPolicy, candidate, real);
-        stage.assertIdentity(await stat(real, { bigint: true }));
+        // The same vanish window, between the realpath above and the identity pin: skipped, never fatal.
+        const realIdentity = await identityIfPresent(stat(real, { bigint: true }));
+        if (realIdentity === undefined) return 'next';
+        stage.assertIdentity(realIdentity);
         const info = await stat(real).catch(() => undefined);
         if (info === undefined) {
           stats.unreadable++;
@@ -2361,7 +2478,9 @@ async function collectGlobFiles(
       // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
       const info = await stat(realResolved).catch(() => undefined);
       if (info === undefined || !info.isFile()) return true;
-      stage.assertIdentity(await stat(realResolved, { bigint: true }));
+      const matchIdentity = await identityIfPresent(stat(realResolved, { bigint: true }));
+      if (matchIdentity === undefined) return true; // vanished after the stat above: skipped, never fatal
+      stage.assertIdentity(matchIdentity);
       if (out.length >= maxMatches) {
         matchCap = true;
         return false;
@@ -2498,6 +2617,20 @@ function errnoCode(error: unknown): string | undefined {
     return typeof code === 'string' ? code : undefined;
   }
   return undefined;
+}
+
+/**
+ * Await an identity-pinning `stat`/`lstat` (`{ bigint: true }`). An entry that vanished since the directory read
+ * resolves to `undefined` so the caller can skip it, as it already does for the plain probe beside the pin; ONLY
+ * `ENOENT` is tolerated, every other error still propagates.
+ */
+async function identityIfPresent(probe: Promise<BigIntStats>): Promise<BigIntStats | undefined> {
+  try {
+    return await probe;
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 /** Cooperative cancellation — throw a reason-only error before a (potentially slow) filesystem step. */
