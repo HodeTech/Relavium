@@ -34,6 +34,9 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    // `relavium#test` is `cache: false` in apps/cli/turbo.json: `native/fs-metadata/runtime/**` is git-ignored and not a
+    // task input, so a replayed pass could be reported as tests that ran against a native build it never saw.
+
     // `@relavium/db`'s two-process regressions (`migrate-lock.e2e`, `run-lease.e2e`) spawn real children that
     // import the BUILT package — a child cannot use vitest's source resolution. `^build` builds only
     // UPSTREAM deps, and the required CI lane runs `test` before `build`, so on a clean checkout this

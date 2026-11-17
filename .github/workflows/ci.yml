@@ -727,6 +727,49 @@ jobs:
           fi
           echo "✓ windows headless no-TTY smoke passed"
 
+  # ADVISORY (deliberately not in the `ci` aggregator's needs): the macOS host-side mapping of ADR-0127 (parent MACL and
+  # last-used evidence, AppleDouble) is a darwin-only Vitest suite that no Ubuntu job can run, and the native-fs macOS legs
+  # exercise only the Rust and Node lifecycle. A regression of that mapping was the user-visible bug ADR-0127 corrected.
+  # Promote it to a required context once it has run clean on the hosted runner.
+  macos-native-metadata:
+    needs: native-fs-assets
+    if: ${{ always() }}
+    name: macos · native write metadata host mapping (advisory)
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # This context must fail, rather than skip successfully, if native production fails.
+      - name: Require all native component execution legs
+        env:
+          NATIVE_FS_RESULT: ${{ needs.native-fs-assets.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')"
+      - name: Download the verified current-host native component for source tests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-fs-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/native-fs-assets
+          merge-multiple: false
+      - name: Select the newest verified own-run native component
+        run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' aarch64-apple-darwin
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        id: macos-build
+        run: pnpm turbo run build
+      - name: macOS host-side write-metadata mapping (ADR-0127)
+        if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
+        run: pnpm --filter relavium exec vitest run src/engine/tool-host/fs-macos-metadata.test.ts
+
   # Required exact-artifact controls are independent of the cached workspace build above.
   pack-cli:
     needs: native-fs-assets

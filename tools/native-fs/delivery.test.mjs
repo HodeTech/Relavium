@@ -638,7 +638,7 @@ test('plain Node namespace control reproduces the former shorthand-only export f
 
 function checkRetryConsumers(ci, release) {
   for (const [workflow, count] of [
-    [ci, 10],
+    [ci, 11],
     [release, 1],
   ]) {
     const consumers = Object.entries(workflow.jobs).filter(([, job]) =>
@@ -665,7 +665,11 @@ function checkRetryConsumers(ci, release) {
         );
       else {
         const target =
-          name === 'windows-concurrency' ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
+          name === 'windows-concurrency'
+            ? 'x86_64-pc-windows-msvc'
+            : name === 'macos-native-metadata'
+              ? 'aarch64-apple-darwin'
+              : 'x86_64-unknown-linux-gnu';
         assert.equal(
           next.run,
           `node tools/native-fs/artifact.mjs select '\${{ runner.temp }}/native-fs-assets' ${target}`,
@@ -675,7 +679,7 @@ function checkRetryConsumers(ci, release) {
   }
 }
 
-test('all eleven native consumers keep own-run separated downloads and validate producer attempts before use', () => {
+test('all twelve native consumers keep own-run separated downloads and validate producer attempts before use', () => {
   const ci = parse(read('.github/workflows/ci.yml'));
   const release = parse(read('.github/workflows/release.yml'));
   checkRetryConsumers(ci, release);
