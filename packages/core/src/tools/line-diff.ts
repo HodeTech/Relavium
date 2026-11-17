@@ -58,11 +58,22 @@ function lines(source: string): DiffLine[] {
 function same(a: DiffLine, b: DiffLine): boolean {
   return a.text === b.text && a.ending === b.ending;
 }
+/**
+ * The file's line-ending convention. A final line with no terminator has no ending to compare, so it cannot make
+ * an otherwise uniform file `mixed` (`a\nb` is an LF file whose last line lacks a newline); each line still
+ * carries its own ending, `none` for that one. A lone unterminated line is the `none` case.
+ */
 function endings(source: readonly DiffLine[]): ToolFileEndings {
   if (source.length === 0) return 'empty';
-  const values = new Set(source.map((line) => line.ending));
-  if (values.size > 1) return 'mixed';
-  return endingLabel(source[0]!.ending);
+  const last = source.length - 1;
+  let seen: DiffLine['ending'] | undefined;
+  for (let index = 0; index < source.length; index++) {
+    const ending = source[index]!.ending;
+    if (index === last && last > 0 && ending === '') continue;
+    if (seen === undefined) seen = ending;
+    else if (seen !== ending) return 'mixed';
+  }
+  return endingLabel(seen ?? '');
 }
 function span(line: DiffLine): { line: number; start: number; end: number } {
   return { line: line.line, start: line.start, end: line.end };

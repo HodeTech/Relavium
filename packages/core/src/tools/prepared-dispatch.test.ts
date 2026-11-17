@@ -4,6 +4,7 @@ import { createAbortController, createInMemoryEffectJournal } from '../engine/ex
 import { unwiredEffectJournal, utf8ByteLength } from '@relavium/shared';
 import { BUILTIN_TOOLS } from './builtins.js';
 import { createToolRegistry } from './registry.js';
+import { ToolDispatchError } from './dispatch-error.js';
 import { ToolExecutionError, ToolPreparationError } from './errors.js';
 import type {
   FsCapability,
@@ -242,6 +243,57 @@ describe('prepared filesystem dispatch and retained delivery', () => {
     expect(committed).toHaveBeenCalledOnce();
     expect(events.map((event) => event.phase)).toEqual(['started', 'preview', 'completed']);
     expect(events.every((event) => event.callId === 'engine-call')).toBe(true);
+  });
+  describe('a release failure after a committed write', () => {
+    // Stands in for the CLI's NativeWriteNeedsAttentionError: a host-classified post-claim failure.
+    class NeedsAttention extends ToolDispatchError {
+      readonly code = 'execution_failed';
+      readonly runErrorCode = 'effect_needs_attention';
+      readonly retryable = false;
+      constructor() {
+        super('write or cleanup could not be confirmed', undefined, undefined, false);
+      }
+    }
+    const approve = {
+      confirm: () => Promise.resolve({ outcome: 'approve' } as const),
+    };
+    async function dispatchWithRelease(release: () => Promise<void>) {
+      const f = fixture();
+      f.prepareWrite.mockImplementation(() =>
+        Promise.resolve({
+          path: 'a',
+          before: 'old\n',
+          after: 'new\n',
+          execute: f.execute,
+          release,
+        }),
+      );
+      const effects = port();
+      const failure = await f.registry
+        .dispatch(f.call, context({ effects, approval: approve }))
+        .catch((error: unknown) => error);
+      return { f, effects, failure };
+    }
+    it('keeps the host classification (effect_needs_attention) instead of a generic tool_failed', async () => {
+      const attention = new NeedsAttention();
+      const { f, effects, failure } = await dispatchWithRelease(() => Promise.reject(attention));
+      // The write ran and was journaled committed before the release was attempted ...
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(effects.settle).toHaveBeenCalledOnce();
+      // ... so the specific, non-retryable classification must reach the run, unchanged.
+      expect(failure).toBe(attention);
+      expect(failure).toMatchObject({ runErrorCode: 'effect_needs_attention', retryable: false });
+    });
+    it('still wraps an unclassified release fault as the generic fatal tool failure', async () => {
+      const { failure } = await dispatchWithRelease(() => Promise.reject(new Error('cleanup')));
+      expect(failure).toBeInstanceOf(ToolExecutionError);
+      expect(failure).toMatchObject({
+        runErrorCode: 'tool_failed',
+        message: 'Prepared operation release failed.',
+        retryable: false,
+        recoverable: false,
+      });
+    });
   });
   it('denial releases read-only preparation and creates no row or mutation', async () => {
     const f = fixture();

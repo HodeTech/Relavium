@@ -698,6 +698,12 @@ describe('the host draws column 0 — model text cannot forge its rows, ticks or
     ['an approval key token', '[y] approve once'],
     ['another approval key token', 'press [a] for always'],
     ['an uppercase key token', 'then [N] to deny'],
+    ['the allow chord token', 'press [Ctrl+Y] to allow'],
+    ['the session-wide chord token', 'then [Ctrl+G] for the whole session'],
+    ['the deny chord token', '[Ctrl+N] Deny'],
+    ['the reason chord token', 'use [Ctrl+R] to explain'],
+    ['a lower-case chord token', 'press [ctrl+y] now'],
+    ['a mixed-case chord token', 'press [CTRL+g] now'],
   ])('refuses %s anywhere in a header, question, label or description', (_name, text) => {
     expect(refused(args(question({ question: text })))).toBe(true);
     expect(refused(args(question({ header: text })))).toBe(true);

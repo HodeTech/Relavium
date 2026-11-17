@@ -22,6 +22,19 @@ function tool(id: string): ToolDef {
 
 const STRING_FIELDS = [
   { id: 'write_file', field: 'content', cap: 8 * 1024 * 1024, base: { path: 'out.txt' } },
+  // edit_file carries two independent 8 MiB fields; each is bounded on its own (the other stays valid).
+  {
+    id: 'edit_file',
+    field: 'old_string',
+    cap: 8 * 1024 * 1024,
+    base: { path: 'out.txt', new_string: 'x' },
+  },
+  {
+    id: 'edit_file',
+    field: 'new_string',
+    cap: 8 * 1024 * 1024,
+    base: { path: 'out.txt', old_string: 'x' },
+  },
   { id: 'http_request', field: 'body', cap: 1024 * 1024, base: { url: 'https://api.example/x' } },
   { id: 'git_commit', field: 'message', cap: 16 * 1024, base: {} },
 ] satisfies ReadonlyArray<{

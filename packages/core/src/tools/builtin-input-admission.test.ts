@@ -60,6 +60,24 @@ const RAILS: readonly Rail[] = [
     exact: Array<string>(4).fill('a'.repeat(16 * 1024)),
     over: [CANARY + 'a'.repeat(16 * 1024)],
   },
+  // Appended (the write/http tests above index RAILS[0]/[1]). edit_file's two independent 8 MiB fields: each rail
+  // keeps the other field valid and small.
+  {
+    id: 'edit_file',
+    field: 'old_string',
+    base: { path: 'out.txt', new_string: 'replacement' },
+    small: 'hello',
+    exact: 'a'.repeat(8 * 1024 * 1024),
+    over: CANARY + 'a'.repeat(8 * 1024 * 1024),
+  },
+  {
+    id: 'edit_file',
+    field: 'new_string',
+    base: { path: 'out.txt', old_string: 'observed' },
+    small: 'hello',
+    exact: 'a'.repeat(8 * 1024 * 1024),
+    over: CANARY + 'a'.repeat(8 * 1024 * 1024),
+  },
 ];
 
 function builtin(id: string): ToolDef {
@@ -105,6 +123,24 @@ function harness(
     sequence.push('host');
     return Promise.resolve({ path, bytesWritten: data.length });
   });
+  // Records the prepared request so an edit rail can observe BOTH fields (the fake host only writes `newString`).
+  const prepareWrite = vi.fn<NonNullable<FsCapability['prepareWrite']>>((request) =>
+    Promise.resolve({
+      path: request.path,
+      before: null,
+      after: request.kind === 'write' ? request.content : request.newString,
+      execute: (signal) =>
+        writeFile(
+          request.path,
+          request.kind === 'write' ? request.content : request.newString,
+          request.kind === 'write'
+            ? { append: request.append, createDirs: request.createDirs }
+            : {},
+          signal,
+        ),
+      release: () => undefined,
+    }),
+  );
   const spawn = vi.fn<ProcessCapability['spawn']>(() => {
     sequence.push('host');
     return Promise.resolve({ exitCode: 0, stdout: 'done', stderr: '', durationMs: 1 });
@@ -119,22 +155,7 @@ function harness(
         Promise.resolve({ content: '', mimeType: 'text/plain', sizeBytes: 0, lastModified: 't' }),
       listDirectory: () => Promise.resolve({ entries: [] }),
       writeFile,
-      prepareWrite: (request) =>
-        Promise.resolve({
-          path: request.path,
-          before: null,
-          after: request.kind === 'write' ? request.content : request.newString,
-          execute: (signal) =>
-            writeFile(
-              request.path,
-              request.kind === 'write' ? request.content : request.newString,
-              request.kind === 'write'
-                ? { append: request.append, createDirs: request.createDirs }
-                : {},
-              signal,
-            ),
-          release: () => undefined,
-        }),
+      prepareWrite,
     },
     process: { spawn },
     egress: { fetch },
@@ -194,6 +215,7 @@ function harness(
     discard,
     beforeDispatch,
     writeFile,
+    prepareWrite,
     spawn,
     fetch,
     store,
@@ -247,6 +269,7 @@ function expectRefusal(error: unknown, field: string, h: Harness): void {
     h.discard,
     h.beforeDispatch,
     h.writeFile,
+    h.prepareWrite,
     h.spawn,
     h.fetch,
   ]) {
@@ -256,6 +279,16 @@ function expectRefusal(error: unknown, field: string, h: Harness): void {
 }
 
 function expectHostValue(rail: Rail, value: unknown, h: Harness): void {
+  if (rail.id === 'edit_file')
+    // The accepted value arrives, unchanged, in its own field of the prepared edit; the other field is the base's.
+    expect(h.prepareWrite.mock.calls[0]?.[0]).toEqual({
+      kind: 'edit',
+      path: 'out.txt',
+      oldString: rail.field === 'old_string' ? value : rail.base['old_string'],
+      newString: rail.field === 'new_string' ? value : rail.base['new_string'],
+      replaceAll: undefined,
+      readScope: undefined,
+    });
   if (rail.id === 'write_file')
     expect(h.writeFile.mock.calls[0]?.slice(0, 3)).toEqual([
       'out.txt',

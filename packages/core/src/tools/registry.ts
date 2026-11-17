@@ -453,11 +453,17 @@ async function releasePreparation(
     await prepared.release();
   } catch (cause) {
     // Cleanup preserves user denial/cancellation; a standalone cleanup fault is conservatively fatal.
-    if (!primaryFailure)
+    if (!primaryFailure) {
+      // A host-classified failure (e.g. the native write's `effect_needs_attention`, raised because the write was
+      // dispatched and its cleanup could not be confirmed) already says exactly what happened and what the
+      // operator must do; wrapping it would replace that with a generic `tool_failed`. The journal row is already
+      // committed by this point, so only the classification is at stake.
+      if (cause instanceof ToolDispatchError) throw cause;
       throw new ToolExecutionError(toolId, 'Prepared operation release failed.', cause, {
         recoverable: false,
         retryable: false,
       });
+    }
   }
 }
 

@@ -264,7 +264,7 @@ export interface SessionTurnPolicy {
    * The host's interactive per-tool approval hook ([ConfirmActionHook]{@link ConfirmActionHook}) threaded into
    * the dispatch context's approval regime. Absent **while a policy is set** ⇒ fail-closed (a governed
    * dispatch is denied — a wiring bug can't let `ask` mode write). The host's hook owns the mode policy
-   * (ask denies writes, accept-edits prompts, auto auto-approves), the once/always cache, and protected paths.
+   * (`ask` prompts for every governed call, `plan` refuses, `accept-edits` prompts except for a file edit, `auto` approves), the once/always cache, and protected paths.
    */
   readonly confirm?: ConfirmActionHook;
 }

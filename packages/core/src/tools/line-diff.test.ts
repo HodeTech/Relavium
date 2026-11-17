@@ -34,6 +34,57 @@ describe('bounded line diff', () => {
       stats: { addedLines: 1, afterBytes: 1 },
     });
   });
+  // an unterminated last line has no ending to compare, so it must not turn a uniform file into `mixed`.
+  it.each([
+    ['a\nb', 'a\nc', 'lf', 'lf'],
+    ['a\nb\n', 'a\nc\n', 'lf', 'lf'],
+    ['a\nb\n', 'a\nb', 'lf', 'lf'],
+    ['a\nb', 'a\nb\n', 'lf', 'lf'],
+    ['a\r\nb', 'a\r\nc', 'crlf', 'crlf'],
+    ['a\r\nb\r\n', 'a\r\nb', 'crlf', 'crlf'],
+  ] as const)(
+    'classifies %j -> %j by its terminated lines only (%s / %s)',
+    async (before, after, beforeEndings, afterEndings) => {
+      expect(await diffLines(before, after)).toMatchObject({ beforeEndings, afterEndings });
+    },
+  );
+  it('still calls a file that genuinely mixes LF and CRLF mixed, with every line keeping its own ending', async () => {
+    const diff = await diffLines('a\nb\r\nc', 'a\nb\r\nd');
+    expect(diff).toMatchObject({ beforeEndings: 'mixed', afterEndings: 'mixed' });
+    expect(diff.lines.map((line) => [line.kind, line.text, line.ending])).toEqual([
+      ['context', 'a', 'lf'],
+      ['context', 'b', 'crlf'],
+      ['removed', 'c', 'none'],
+      ['added', 'd', 'none'],
+    ]);
+    // A terminated mixture is mixed whether or not the last line is terminated.
+    expect(await diffLines('a\nb\r\n', 'a\r\nb\n')).toMatchObject({
+      beforeEndings: 'mixed',
+      afterEndings: 'mixed',
+    });
+  });
+  it('keeps the existing labels for a lone unterminated line, an empty side and an absent file', async () => {
+    expect(await diffLines('a', 'b')).toMatchObject({
+      beforeEndings: 'none',
+      afterEndings: 'none',
+    });
+    expect(await diffLines('', 'a\n')).toMatchObject({
+      beforeEndings: 'empty',
+      afterEndings: 'lf',
+    });
+    expect(await diffLines(null, 'a\r\n')).toMatchObject({
+      beforeEndings: 'empty',
+      afterEndings: 'crlf',
+    });
+  });
+  it('keeps the unterminated side of a final-newline-only change visible as a `none` line ending', async () => {
+    const diff = await diffLines('a\nb', 'a\nb\n');
+    expect(diff.lines.map((line) => [line.kind, line.text, line.ending])).toEqual([
+      ['context', 'a', 'lf'],
+      ['removed', 'b', 'none'],
+      ['added', 'b', 'lf'],
+    ]);
+  });
   it('refuses input and adversarial work limits and honors cancellation', async () => {
     await expect(diffLines('x'.repeat(8 * 1024 * 1024 + 1), '')).rejects.toBeInstanceOf(
       DiffLimitError,

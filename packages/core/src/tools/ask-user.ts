@@ -70,7 +70,9 @@ const LIST_MARKER_PREFIX =
 // are made of, the exact tick shapes of a row, and the approval card's single-key tokens.
 const HOST_GLYPH = /[›✎█─-╿]/u;
 const HOST_TICK_SHAPE = /\((?:•| )\)|\[(?:[xX]| )\]/u;
-const APPROVAL_KEY_TOKEN = /\[[yYaAnNcCvV]\]/u;
+// The card's answer keys are Ctrl chords (`[Ctrl+Y] Allow`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]`) and `[v]`; the bare-letter tokens
+// the card drew before it moved to chords stay refused too (only ever more refusals, never fewer).
+const APPROVAL_KEY_TOKEN = /\[(?:[yYaAnNcCvV]|[Cc][Tt][Rr][Ll]\+[YyGgNnRr])\]/u;
 
 /** True when some grapheme cluster of `value` is built from more than {@link MAX_CODE_POINTS_PER_GRAPHEME} code points. */
 function hasOversizedGrapheme(value: string): boolean {

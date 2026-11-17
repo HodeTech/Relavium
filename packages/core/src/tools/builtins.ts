@@ -297,7 +297,7 @@ const readFileTool = defineBuiltin({
     fields: [],
   }),
   description:
-    'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing.',
+    'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing. A glob read grants none either: re-read a file by its own path before editing it.',
   args: z
     .object({
       path: utf8String(4096, 1),
@@ -617,12 +617,13 @@ const editFileTool = defineBuiltin({
         type: 'string',
         minLength: 1,
         maxLength: WRITE_CONTENT_MAX_BYTES,
-        description: 'Exact observed text to replace; unique unless replace_all.',
+        description:
+          'Exact observed text to replace, nonempty and at most 8 MiB of UTF-8 bytes; unique unless replace_all.',
       },
       new_string: {
         type: 'string',
         maxLength: WRITE_CONTENT_MAX_BYTES,
-        description: 'Exact replacement UTF-8 text.',
+        description: 'Exact replacement text, at most 8 MiB of UTF-8 bytes; empty text is allowed.',
       },
       replace_all: {
         type: 'boolean',

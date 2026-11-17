@@ -100,7 +100,11 @@ export interface FileWritten {
 }
 export interface DirEntry {
   readonly name: string;
-  readonly type: 'file' | 'directory';
+  /**
+   * `symlink` is reported from the directory entry itself and its own `lstat`; its target is never resolved,
+   * followed or consulted (a link to an existing store, to a missing target and to an unrelated place list alike).
+   */
+  readonly type: 'file' | 'directory' | 'symlink';
   readonly sizeBytes: number;
   readonly lastModified: string;
 }

@@ -129,6 +129,8 @@ const BOUNDED_FIELDS = [
   { id: 'write_file', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'write_file', field: 'content', cap: 8 * 1024 * 1024, units: /(?:8\s*MiB|8,?388,?608)/i },
   { id: 'edit_file', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
+  { id: 'edit_file', field: 'old_string', cap: 8 * 1024 * 1024, units: /(?:8\s*MiB|8,?388,?608)/i },
+  { id: 'edit_file', field: 'new_string', cap: 8 * 1024 * 1024, units: /(?:8\s*MiB|8,?388,?608)/i },
   { id: 'list_directory', field: 'path', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'list_directory', field: 'glob', cap: 4096, units: /(?:4\s*KiB|4,?096)/i },
   { id: 'http_request', field: 'body', cap: 1024 * 1024, units: /(?:1\s*MiB|1,?048,?576)/i },
