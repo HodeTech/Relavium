@@ -38,8 +38,30 @@ export function cardRowBudget(terminalRows: number): number {
   );
 }
 
+/** Every word the card's title can open with, so the room it takes is derived from the words, not assumed. */
+export const CARD_VERBS = [
+  'Create',
+  'Edit',
+  'Overwrite',
+  'Run',
+  'Request',
+  'Use',
+  'Apply',
+] as const;
+export type CardVerb = (typeof CARD_VERBS)[number];
+/**
+ * Columns the title spends before the target: the longest verb and the space after it. The target is projected
+ * into what is left of the row, so a path that ends at the edge of the projection is also the end of what the
+ * title row can draw — and the shortened-target warning and the Allow lock see the same budget.
+ */
+export const CARD_VERB_COLUMNS = Math.max(...CARD_VERBS.map((verb) => displayWidth(verb))) + 1;
+
 /** What the call does, in one word: the first thing the person needs to know. */
-export function cardVerb(toolId: string, action: string, preview: ToolPreview | undefined): string {
+export function cardVerb(
+  toolId: string,
+  action: string,
+  preview: ToolPreview | undefined,
+): CardVerb {
   const diff = preview?.diff;
   if (diff !== undefined) {
     if (diff.before === null) return 'Create';
@@ -80,6 +102,28 @@ function endingsWord(endings: string): string {
   }
 }
 
+/**
+ * What changed about the line endings, or `undefined` when nothing the person should weigh did: a convention that
+ * is the same on both sides says nothing (a CRLF file edited as CRLF), while a different one, a `mixed` side, or a
+ * change that only adds or drops the final newline does. The ordinary LF/empty pair (a new, emptied or LF file) is
+ * not worth a row either.
+ */
+function endingsWarning(diff: NonNullable<ToolPreview['diff']>): string | undefined {
+  const before = diff.beforeEndings;
+  const after = diff.afterEndings;
+  const plain = (endings: string): boolean => endings === 'lf' || endings === 'empty';
+  if (!(plain(before) && plain(after))) {
+    if (before === 'empty') return endingsWord(after);
+    if (before !== after || before === 'mixed')
+      return `${endingsWord(before)} \u2192 ${endingsWord(after)}`;
+  }
+  // Both sides read the same, so only the last line's terminator can differ: `a\nb` and `a\nb\n` are both `lf`.
+  const was = diff.before ?? '';
+  if (was.length === 0 || diff.after.length === 0) return undefined;
+  if (was.endsWith('\n') === diff.after.endsWith('\n')) return undefined;
+  return diff.after.endsWith('\n') ? 'final newline added' : 'final newline removed';
+}
+
 export interface CardWarningInput {
   readonly document: ReviewDocument | undefined;
   /** The target field did not fit its rows; `hiddenBytes` of it are omitted. */
@@ -87,6 +131,13 @@ export interface CardWarningInput {
   readonly targetHiddenBytes: number;
   /** Whether every requirement for an affirmative answer has been met. */
   readonly inspected: boolean;
+  /** Changed lines this card's body does not draw (`ReviewPage.hiddenChanges`); the person must be told. */
+  readonly changesNotShown: number;
+  /**
+   * Lines of the call this card's body does not draw (`ReviewPage.hiddenLines`), for a preview WITHOUT a diff — a clipped
+   * argument vector is what executes, and no changed-line count sees it. Ignored for a diff (it has `changesNotShown`).
+   */
+  readonly linesNotShown?: number;
   /** The card's drawable width, so a warning is wrapped by US and the row budget is exact. */
   readonly columns: number;
 }
@@ -116,29 +167,43 @@ export function wrapWords(text: string, width: number): readonly string[] {
 export function cardWarnings(input: CardWarningInput): readonly string[] {
   const { document } = input;
   const warnings: string[] = [];
+  // The lock sentence is the instruction for getting Allow back, so it is only true until the person has
+  // inspected: afterwards the key rows offer Allow, and a warning that still says "locked" would contradict them
+  //. The fact itself stays — it is what the person was shown.
   if (input.shortenedTarget) {
     warnings.push(
-      `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press [v] to read all of it; Allow stays locked until you do.`,
+      input.inspected
+        ? `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
+        : `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press [v] to read all of it; Allow stays locked until you do.`,
     );
   }
   if (document !== undefined && document.required.length > 0) {
     const count = document.masks.length;
+    const values = `${count} masked value${count === 1 ? '' : 's'} in this change.`;
     warnings.push(
-      `\u26a0 ${count} masked value${count === 1 ? '' : 's'} in this change. Press [v], then [r] to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
+      input.inspected
+        ? `\u26a0 ${values}`
+        : `\u26a0 ${values} Press [v], then [r] to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
+    );
+  }
+  // A change the body cannot reach is the one thing the person must not approve unseen, so it is named — with the
+  // way to read it — whenever it is true. (The card also offers no Allow-all then: `cardKeyRows`' caller.)
+  if (input.changesNotShown > 0) {
+    warnings.push(
+      `\u26a0 ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press [v] for the full diff.`,
+    );
+  }
+  const linesNotShown = input.linesNotShown ?? 0;
+  if (document !== undefined && document.preview.diff === undefined && linesNotShown > 0) {
+    // The same slot, the same way out as the diff warning above: the full view lists the rest, and no Allow-all is offered.
+    warnings.push(
+      `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
     );
   }
   const diff = document?.preview.diff;
   if (diff !== undefined) {
-    const before = diff.beforeEndings;
-    const after = diff.afterEndings;
-    const plain = (endings: string): boolean => endings === 'lf' || endings === 'empty';
-    if (!(plain(before) && plain(after))) {
-      warnings.push(
-        before === 'empty'
-          ? `\u26a0 Line endings: ${endingsWord(after)}.`
-          : `\u26a0 Line endings: ${endingsWord(before)} \u2192 ${endingsWord(after)}.`,
-      );
-    }
+    const endings = endingsWarning(diff);
+    if (endings !== undefined) warnings.push(`\u26a0 Line endings: ${endings}.`);
   }
   if (warnings.length === 0 && !input.inspected) {
     warnings.push('\u26a0 Allow is locked until the required content has been inspected ([v]).');
@@ -146,7 +211,18 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   return warnings.flatMap((warning) => wrapWords(warning, input.columns));
 }
 
-/** How a tool's `[a]` scope reads: what "always" would cover, in the person's words. */
+/**
+ * The one note a card shows (once per card) when an affirmative key was not counted because of what the keyboard was doing,
+ * not because the card was not ready: it tells the person the press was not lost by accident and what to do. A refusal
+ * because the card has only just appeared says nothing (the person sees the card; the dwell is short). The typing note does
+ * not say WHEN the keys were typed: they may have been typed before the card existed.
+ */
+export const CARD_TYPEAHEAD_NOTE =
+  'Keys were typed just before this answer — wait a moment, then press again.';
+export const CARD_LOCKOUT_NOTE =
+  'This card opened right after your last answer — wait, then press again.';
+
+/** How a tool's `[Ctrl+G]` scope reads: what "always" would cover, in the person's words. */
 export function cardScopePhrase(toolId: string): string {
   if (toolId === 'write_file') return 'file writes';
   if (toolId === 'edit_file') return 'file edits';
@@ -161,14 +237,33 @@ export interface CardKeyInput {
   readonly cacheable: boolean;
   /** The already-escaped scope phrase ({@link cardScopePhrase}, escaped by the caller). */
   readonly scope: string;
+  /** The first `Ctrl+G` was pressed and the card is waiting for ENTER (PR #99 corrective sitting G1, security sitting H1). */
+  readonly confirmAlways?: boolean;
 }
 
-/** The two key rows: the answers, then the rest. Allow is not offered while it is locked. */
+/**
+ * The two key rows: the grants, then the refusals and the rest. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the
+ * legend spells them out; the rows are laid out so that, at 80 columns, the longest scope phrase still leaves both rows whole
+ * and Deny is never the part a narrow terminal cuts. Allow is not offered while it is locked. While the session-wide grant
+ * waits for its confirmation both rows say what the next key does — one question, two rows, so the card keeps its two key
+ * rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of a row. The
+ * confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
+ */
 export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
-  const answers = input.inspected
-    ? `[y] Allow   ${input.cacheable ? `[a] Allow all ${input.scope} this session   ` : ''}[n] Deny`
-    : '[n] Deny   (Allow is locked until you inspect the change)';
-  return [answers, '[c] Deny + reason   [v] Full diff   Esc stops the turn'];
+  if (input.confirmAlways === true)
+    return [
+      `Press Enter to allow all ${input.scope} this session`,
+      'Any other key cancels \u00b7 Esc stops the turn',
+    ];
+  const grants = input.inspected
+    ? `[Ctrl+Y] Allow${input.cacheable ? `   [Ctrl+G] Allow all ${input.scope} this session` : ''}`
+    : '(Allow is locked until you inspect the change)';
+  return [grants, '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn'];
+}
+
+/** The full view's one-line legend while the session-wide grant waits for its confirmation. */
+export function fullViewConfirmLegend(scope: string): string {
+  return `Press Enter to allow all ${scope} this session \u00b7 any other key cancels`;
 }
 
 /** Rows a denial-reason capture takes beyond the key rows it replaces (the disclosure above the input). */

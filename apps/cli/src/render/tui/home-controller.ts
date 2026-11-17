@@ -1744,7 +1744,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — returns `true` when it handled the key.
   // It ONLY opens from a pending approval; if that approval settled out-of-band, the capture is stale → drop it.
-  // Esc CANCELS back to the [y]/[a]/[n] prompt (still pending — not an abort); plain Enter rejects WITH the
+  // Esc CANCELS back to the Ctrl+Y/Ctrl+G/Ctrl+N prompt (still pending — not an abort); plain Enter rejects WITH the
   // sanitized+bounded reason; every other key edits the buffer. Parity with the standalone ChatApp; the floor is
   // unchanged (this only enriches a reject — a governed dispatch still cannot proceed without an explicit decision).
   // Extracted (like routeMentionKey/routeSearchKey) so handleChatKey stays flat.

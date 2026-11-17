@@ -1,5 +1,11 @@
 import type { TranscriptEntry } from './session-view-model.js';
 import type { ReseatTarget } from '../../commands/chat.js';
+import {
+  realModeControl,
+  TURN_COMPLETED,
+  TURN_STARTED,
+} from '../../commands/chat-mode-control.test-support.js';
+import { MODE_CHANGE_RUNNING_NOTICE } from './chat-input.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ChatMode } from '../../chat/chat-mode.js';
@@ -7,6 +13,7 @@ import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { toolReviewPage } from './tool-review-model.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -109,6 +116,48 @@ const type = (c: HomeController, text: string): void => {
 };
 const ENTER = { return: true } as const;
 const CTRL_C = { ctrl: true } as const;
+/**
+ * Every key that ANSWERS an approval card is a Ctrl chord — Ctrl+Y allow, Ctrl+G session-wide, Ctrl+N deny, Ctrl+R deny with a
+ * reason — and a bare letter answers nothing: while a turn runs the person is often typing the next instruction, and a letter
+ * typed at a card that has just appeared is indistinguishable from a deliberate press (PR #99). `{}` in these tests means "a
+ * stray key"; `CHORD` means "the answer key".
+ */
+const CHORD = { ctrl: true } as const;
+/** The timing layers off, so a test pins the ROUTE of an answer, not its timing (the guard has its own tests). */
+const ROUTE_ONLY_GUARD = { settleMs: 0, quietMs: 0, typeaheadMs: 0, confirmAlways: false } as const;
+type HostKey = Parameters<HomeController['handleKey']>[1];
+
+/**
+ * Put the session store's approval card on screen: bind the host's visibility, draw its page and acknowledge the frame, as the
+ * Home host does after a render. A card answers nothing that GRANTS until its frame is acknowledged and visible.
+ */
+function showApprovalCard(store: ChatStoreController): void {
+  store.bindReviewVisibility(() => true);
+  const review = store.getSnapshot().review;
+  if (review === undefined) throw new Error('no approval card is open');
+  store.acknowledgeReviewFrame(review, toolReviewPage(review, 80, 24));
+}
+
+/**
+ * One key through the Home host's pipeline (`home-app.tsx`): EVERY key is offered to the session store's approval card first —
+ * the card owns every answer key — and the controller is handed only what the card did not take; an Esc the card reports as
+ * `abort` reaches the controller as an Esc. The ink-free controller never answers an approval itself (its legacy reducer returns
+ * `none`), so a test that wants an answer must send it through the card, exactly as the host does.
+ */
+function hostKey(
+  c: HomeController,
+  store: ChatStoreController,
+  input: string,
+  key: HostKey = {},
+): void {
+  const action = store.handleReviewInput(input, key);
+  if (action === 'handled') return;
+  if (action === 'abort') {
+    c.handleKey('\u001b', { escape: true });
+    return;
+  }
+  c.handleKey(input, key);
+}
 
 describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   let homeStore: HomeStore;
@@ -417,7 +466,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     ['use the project config instead', 'use the project config instead'],
     [`please avoid sk-${'E'.repeat(60)}`, 'please avoid [REDACTED]'],
   ])(
-    '[c] typed-reason capture protects the submitted diagnostic: %s',
+    '[Ctrl+R] typed-reason capture protects the submitted diagnostic: %s',
     async (typedReason, expectedReason) => {
       const made = makeSession();
       const c = createHomeController({
@@ -439,18 +488,20 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         preview: { path: 'notes.md' },
       } as const;
       const pending = made.store.requestApproval(request, true);
+      showApprovalCard(made.store);
 
-      // `[c]` opens the typed-reason capture (an empty buffer) — the [y]/[a]/[n] prompt is replaced.
-      c.handleKey('c', {});
-      expect(c.getSnapshot().reasonDraft).toEqual({ text: '', cursor: 0 });
+      // Ctrl+R — sent through the card, as the Home host does — opens the typed-reason capture (an empty reason box) on it.
+      hostKey(c, made.store, 'r', CHORD);
+      expect(made.store.getSnapshot().review?.denial).toBe('');
 
-      // Type a reason: a char that would OTHERWISE be an approval answer ('n'/'y') is now ordinary buffer text.
-      type(c, typedReason);
-      expect(c.getSnapshot().reasonDraft?.text).toBe(typedReason);
+      // Type a reason: a char that would be a LETTER ANSWER under another contract ('n', 'y', 'c', 'a'…) is ordinary text.
+      for (const ch of typedReason) hostKey(c, made.store, ch);
+      expect(made.store.getSnapshot().review?.denial).toBe(typedReason);
+      expect(made.store.getSnapshot().approval, 'typing a reason answers nothing').toBeDefined();
+      expect(c.getSnapshot().input.text, 'nothing leaks into the hidden prompt').toBe('');
 
-      // Enter submits the reject WITH the sanitized reason; the capture closes.
-      c.handleKey('', ENTER);
-      expect(c.getSnapshot().reasonDraft).toBeUndefined();
+      // Enter submits the reject WITH the sanitized reason.
+      hostKey(c, made.store, '', ENTER);
       await expect(pending).resolves.toEqual({
         outcome: 'reject',
         reason: expectedReason,
@@ -458,7 +509,72 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     },
   );
 
-  it('[c] then Esc cancels the reason capture — the approval stays pending, a later [n] plain-rejects (Step 14)', async () => {
+  it('a bare `c` — the old reason key — opens no reason capture and answers nothing; neither does a bare `n`', async () => {
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    const pending = made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+      true,
+    );
+    showApprovalCard(made.store);
+    // Through the card (the host's route) and straight to the controller (its own legacy reducer): neither answers.
+    for (const send of [
+      (ch: string) => hostKey(c, made.store, ch),
+      (ch: string) => c.handleKey(ch, {}),
+    ])
+      for (const ch of ['c', 'n', 'y', 'a', 'r', '1', '2', '3']) send(ch);
+    expect(c.getSnapshot().reasonDraft, 'no reason capture opens').toBeUndefined();
+    expect(made.store.getSnapshot().review?.denial, 'the card opens no reason box').toBeUndefined();
+    expect(made.store.getSnapshot().approval, 'no letter answered it').toBeDefined();
+    // Ctrl+N is the deny, and it works (so the bare letters above were refused for being bare, not because the card is dead).
+    hostKey(c, made.store, 'n', CHORD);
+    await expect(pending).resolves.toEqual({ outcome: 'reject' });
+  });
+
+  it('the controller answers no approval itself: a chord sent straight to it (not through the card) changes nothing', async () => {
+    // The card's guards (frame on screen, dwell, typeahead, lockout, the Enter confirmation) live in the store. If the
+    // controller's own key path answered a chord it would bypass every one of them.
+    const made = makeSession({
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+        approvalGuard: ROUTE_ONLY_GUARD,
+      }),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    const pending = made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+      true,
+    );
+    showApprovalCard(made.store);
+    for (const ch of ['y', 'g', 'n', 'r']) c.handleKey(ch, CHORD);
+    expect(made.store.getSnapshot().approval, 'no chord answered it').toBeDefined();
+    expect(c.getSnapshot().reasonDraft).toBeUndefined();
+    // The same Ctrl+Y through the card does answer this store, so the refusal above was the controller's.
+    hostKey(c, made.store, 'y', CHORD);
+    await expect(pending).resolves.toEqual({ outcome: 'approve', scope: 'once' });
+  });
+
+  it('[Ctrl+R] then Esc stops the turn — the reason box has no way back; Esc is the abort path and never leaves a stuck prompt (Step 14)', async () => {
+    // The old reason capture could be cancelled with Esc back to the choices. The card's reason box has the card's own Esc: it
+    // STOPS THE TURN (`Enter denies and continues · Esc stops the turn`), which the Home hands to the controller as an Esc; with
+    // no `onAbort` wired, that Esc rejects the pending approval rather than leaving it hung.
     const made = makeSession();
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -476,15 +592,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       preview: { path: 'notes.md' },
     } as const;
     const pending = made.store.requestApproval(request, true);
+    showApprovalCard(made.store);
 
-    c.handleKey('c', {}); // open the capture
-    expect(c.getSnapshot().reasonDraft).toBeDefined();
-    c.handleKey('', { escape: true }); // Esc CANCELS the reason (not an abort) — back to the choices
-    expect(c.getSnapshot().reasonDraft).toBeUndefined();
-    expect(made.store.getSnapshot().approval).toBeDefined(); // the approval is STILL pending
-
-    c.handleKey('n', {}); // a plain reject (no reason) now settles it
+    hostKey(c, made.store, 'r', CHORD); // open the reason box
+    expect(made.store.getSnapshot().review?.denial).toBe('');
+    hostKey(c, made.store, '', { escape: true }); // Esc: the card reports `abort`; no onAbort → the pending approval is rejected
     await expect(pending).resolves.toEqual({ outcome: 'reject' });
+    expect(made.store.getSnapshot().approval).toBeUndefined();
   });
 
   it('`@` completion: Esc restores the typed keystrokes; a mid-word `@` stays literal (2.5.D step 4)', async () => {
@@ -1377,17 +1491,19 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
         true,
       );
-      // A paste whose CONTENT is exactly the most-permissive approval token must be DROPPED — on ink 7 a paste is a
-      // usePaste event, so it can never be routed to reduceApprovalKey and can never grant an auto-approve.
-      c.handlePaste('a'); // 'a' = approve-always as a KEY; as a paste it must do nothing
+      showApprovalCard(made.store);
+      // A paste whose CONTENT is exactly an approval token must be DROPPED — on ink 7 a paste is a usePaste event, so it can
+      // never be routed to a key reducer and can never grant an auto-approve. The tokens: the answer chords' control bytes
+      // (Ctrl+Y, Ctrl+G, Ctrl+N), and the bare letters that used to answer.
+      for (const token of ['\x19', '\x07', '\x0e', 'y', 'a', 'n']) c.handlePaste(token);
       await flush();
       expect(made.store.getSnapshot().approval).toBeDefined(); // STILL pending — the paste did not answer it
       expect(c.getSnapshot().input.text).toBe(''); // nor did it leak into the hidden prompt buffer
-      c.handleKey('n', {}); // a real [n] key rejects, so the pending promise settles (no dangling handle)
+      hostKey(c, made.store, 'n', CHORD); // a real Ctrl+N key rejects, so the pending promise settles (no dangling handle)
       await expect(pending).resolves.toEqual({ outcome: 'reject' });
     });
 
-    it('drops a paste while the `[c]` reason capture owns the keyboard', async () => {
+    it("drops a paste while the card's reason box owns the keyboard", async () => {
       const made = makeSession();
       const c = createHomeController({
         doctorProbes: STUB_DOCTOR_PROBES,
@@ -1403,13 +1519,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
         true,
       );
-      c.handleKey('c', {}); // open the reason capture
-      expect(c.getSnapshot().reasonDraft).toEqual({ text: '', cursor: 0 });
+      showApprovalCard(made.store);
+      hostKey(c, made.store, 'r', CHORD); // open the reason box on the card
+      expect(made.store.getSnapshot().review?.denial).toBe('');
       c.handlePaste('pasted reason?');
-      expect(c.getSnapshot().reasonDraft?.text).toBe(''); // paste does not fill the reason buffer (dropped)
+      expect(made.store.getSnapshot().review?.denial).toBe(''); // paste does not fill the reason box (dropped)
       expect(c.getSnapshot().input.text).toBe(''); // nor the main prompt
-      c.handleKey('', { escape: true }); // cancel the capture
-      c.handleKey('n', {}); // reject so the pending promise settles
+      hostKey(c, made.store, '', ENTER); // an empty reason denies without one, so the pending promise settles
       await expect(pending).resolves.toEqual({ outcome: 'reject' });
     });
   });
@@ -1743,6 +1859,37 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(onModeChange).toHaveBeenCalledWith('plan'); // default ask → plan
     });
 
+    // D64 round 2, D6, on the Home: the same production mode control the standalone chat has. A mode picked while a
+    // turn runs cannot reach that turn (the engine takes its policy once, at turn start), so Shift+Tab waits.
+    it('Shift+Tab while a turn runs leaves the mode, the policy and the footer alone and says why (D6)', async () => {
+      const m = await realModeControl();
+      try {
+        const c = await inChat(
+          makeSession({ store: m.store, onModeChange: m.control.onModeChange }),
+        );
+        m.store.apply(TURN_STARTED);
+        const before = m.policyPushes();
+        c.handleKey('', { tab: true, shift: true });
+        expect(
+          m.store.getSnapshot().mode,
+          'the footer must not claim a mode the turn is not under',
+        ).toBe('ask');
+        expect(m.policyPushes(), 'no policy is pushed mid-turn').toBe(before);
+        expect(
+          m.store
+            .getSnapshot()
+            .state.transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
+        ).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+        // Once the turn has ended the same key cycles again (ask -> plan).
+        m.store.apply(TURN_COMPLETED);
+        c.handleKey('', { tab: true, shift: true });
+        expect(m.store.getSnapshot().mode).toBe('plan');
+        expect(m.policyPushes()).toBe(before + 1);
+      } finally {
+        await m.dispose();
+      }
+    });
+
     it('Ctrl+T toggles the reasoning panel via the store (2.5.H — parity with relavium chat)', async () => {
       const made = makeSession({});
       const c = await inChat(made);
@@ -1783,27 +1930,41 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(store.getSnapshot().approval).not.toBeUndefined(); // the fallback did NOT answer it — onAbort owns the abort
     });
 
-    it('a pending approval intercepts keys: `/` stays closed and `[y]` approves-once', async () => {
-      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    it('a pending approval intercepts keys: `/` stays closed, a bare `y` answers nothing and `[Ctrl+Y]` approves-once', async () => {
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+        approvalGuard: ROUTE_ONLY_GUARD,
+      });
       const c = await inChat(makeSession({ store }));
       const pending = store.requestApproval(approvalReq, true);
+      showApprovalCard(store);
       c.handleKey('/', {}); // the approval owns the keyboard — the palette must NOT open
       expect(c.getSnapshot().palette).toBeUndefined();
-      c.handleKey('y', {});
+      hostKey(c, store, 'y'); // a letter typed at the card is typing, not an answer
+      c.handleKey('y', {}); // …and the controller's own reducer does not take it as one either
+      expect(store.getSnapshot().approval).toBeDefined();
+      hostKey(c, store, 'y', CHORD);
       await expect(pending).resolves.toEqual({ outcome: 'approve', scope: 'once' });
     });
 
-    it('a pending approval: `[a]` approves-always, `[n]` rejects', async () => {
-      const alwaysStore = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    it('a pending approval: `[Ctrl+G]` approves-always, `[Ctrl+N]` rejects — and a bare `a` / `n` do neither', async () => {
+      // `confirmAlways: false` makes the first Ctrl+G grant: the Enter confirmation is the guard's own concern.
+      const alwaysStore = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+        approvalGuard: ROUTE_ONLY_GUARD,
+      });
       const ca = await inChat(makeSession({ store: alwaysStore }));
       const alwaysPending = alwaysStore.requestApproval(approvalReq, true);
-      ca.handleKey('a', {});
+      showApprovalCard(alwaysStore);
+      hostKey(ca, alwaysStore, 'a');
+      expect(alwaysStore.getSnapshot().approval, 'a bare a is not approve-always').toBeDefined();
+      hostKey(ca, alwaysStore, 'g', CHORD);
       await expect(alwaysPending).resolves.toEqual({ outcome: 'approve', scope: 'always' });
 
       const rejectStore = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const cr = await inChat(makeSession({ store: rejectStore }));
       const rejectPending = rejectStore.requestApproval(approvalReq, true);
-      cr.handleKey('n', {});
+      hostKey(cr, rejectStore, 'n');
+      expect(rejectStore.getSnapshot().approval, 'a bare n is not a deny').toBeDefined();
+      hostKey(cr, rejectStore, 'n', CHORD);
       await expect(rejectPending).resolves.toEqual({ outcome: 'reject' });
     });
   });

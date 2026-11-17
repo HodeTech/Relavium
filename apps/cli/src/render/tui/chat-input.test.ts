@@ -146,7 +146,7 @@ describe('reduceChatKey', () => {
     expect(reduceChatKey('a', { ctrl: true }, 'hi', true)).toEqual({ kind: 'none' }); // Ctrl+A too
   });
 
-  it('maps Shift+Tab to cycle-mode (idle OR running — a mode change applies to the next turn)', () => {
+  it('maps Shift+Tab to cycle-mode idle OR running — the mode control, not the reducer, decides whether it applies (D6)', () => {
     expect(reduceChatKey('', { tab: true, shift: true }, 'h', false)).toEqual({
       kind: 'cycle-mode',
     });
@@ -172,56 +172,84 @@ describe('reduceChatKey', () => {
 
 describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow bypass, ADR-0057)', () => {
   const PENDING = true;
-  it('maps [y]/1 to approve-once and [a]/2 to approve-always', () => {
-    expect(reduceChatKey('y', KEY, '', true, PENDING)).toEqual({ kind: 'approve', scope: 'once' });
-    expect(reduceChatKey('1', KEY, '', true, PENDING)).toEqual({ kind: 'approve', scope: 'once' });
-    expect(reduceChatKey('a', KEY, '', true, PENDING)).toEqual({
-      kind: 'approve',
-      scope: 'always',
-    });
-    expect(reduceChatKey('2', KEY, '', true, PENDING)).toEqual({
-      kind: 'approve',
-      scope: 'always',
-    });
+  /**
+   * What an answer used to be, and what the approval card's answers are now. `reduceChatKey` is the LEGACY reducer: the
+   * approval card (`handleReviewInput`) owns every answer chord, so this one answers NOTHING while an approval is pending —
+   * a bare letter typed at a card is typing, never a decision, and no chord reaches a decision through here either.
+   */
+  const ANSWER_LETTERS = ['y', 'a', 'n', 'r', 'c', 'g', '1', '2', '3'] as const;
+  const ANSWER_ACTIONS: ReadonlyArray<ChatKeyAction['kind']> = [
+    'approve',
+    'reject',
+    'reject-with-reason',
+  ];
+
+  it('a bare [y]/1 or [a]/2 does NOT approve — a letter typed at a pending approval answers nothing', () => {
+    for (const char of ['y', '1', 'a', '2']) {
+      expect(reduceChatKey(char, KEY, '', true, PENDING)).toEqual({ kind: 'none' });
+    }
   });
 
-  it('maps [n]/[r]/3 to reject', () => {
-    expect(reduceChatKey('n', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
-    expect(reduceChatKey('r', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
-    expect(reduceChatKey('3', KEY, '', true, PENDING)).toEqual({ kind: 'reject' });
+  it('a bare [n]/[r]/3 does NOT reject', () => {
+    for (const char of ['n', 'r', '3']) {
+      expect(reduceChatKey(char, KEY, '', true, PENDING)).toEqual({ kind: 'none' });
+    }
   });
 
   it('maps Esc to abort (cancels the whole turn AND the pending approval)', () => {
     expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
   });
 
-  it('maps [c] to reject-with-reason — OPENS the typed-reason capture (Step 14), a distinct action from reject', () => {
-    // `[c]` does NOT itself answer the prompt — it opens the reason-input sub-mode; the surface then captures the
-    // text and submits a `{ outcome: 'reject', reason }`. The bare `[n]`/`[r]`/`3` reject (no reason) is unchanged.
-    expect(reduceChatKey('c', KEY, '', true, PENDING)).toEqual({ kind: 'reject-with-reason' });
-    expect(reduceChatKey('n', KEY, '', true, PENDING)).toEqual({ kind: 'reject' }); // still a bare reject
-    // A modified `c` (Ctrl+C / Alt+C) is NOT the reason chord — it stays swallowed (fail-closed; Ctrl+C never
-    // silently rejects, and an ESC-prefixed Alt+C cannot open the capture either).
+  it('a bare [c] opens no reason capture, and Ctrl+C / Alt+C stay swallowed (fail-closed)', () => {
+    // The typed-reason capture is the approval card's Ctrl+R now; this legacy reducer never opens it.
+    expect(reduceChatKey('c', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
     expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
     expect(reduceChatKey('c', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
   });
 
-  it('a modified CHORD (Ctrl+A/Y/N, Alt+A, Alt+1/2/3) does NOT answer a pending approval (fail-closed floor)', () => {
-    // Ctrl+A is now a line-start motion; during a pending approval it must be SWALLOWED, never silently taken as
-    // the persistent approve-always — that would subvert the ADR-0057 fail-closed confirmAction floor. The DIGIT
-    // shortcuts require `bare` too: Alt+1/2/3 are reachable via ink's ESC-prefixed parsing, so they must NOT answer.
-    expect(reduceChatKey('a', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-always
-    expect(reduceChatKey('y', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-once
-    expect(reduceChatKey('n', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT reject
+  it('NO answer key — bare, Ctrl, Meta or Ctrl+Meta, either case — produces an approve / reject / reject-with-reason action', () => {
+    // The sweep covers every letter and digit that ever answered (y a n r c 1 2 3), the chord letters of the card
+    // (Ctrl+Y/G/N/R), and the upper-case forms a held Shift or Caps Lock produces. Each must come back `none`: an answer
+    // is the card's, never this reducer's. Remove the intercept's "answers nothing" rule and every row here fails.
+    const modifiers: ReadonlyArray<ChatKey> = [
+      KEY,
+      { ctrl: true },
+      { meta: true },
+      { ctrl: true, meta: true },
+      { shift: true },
+    ];
+    for (const letter of ANSWER_LETTERS) {
+      for (const char of [letter, letter.toUpperCase()]) {
+        for (const key of modifiers) {
+          const action = reduceChatKey(char, key, '', true, PENDING);
+          expect(ANSWER_ACTIONS).not.toContain(action.kind);
+          // Ctrl+T is the one chord let through, and it is not one of these letters; Esc is not in this set either.
+          expect(action, `char ${JSON.stringify(char)} key ${JSON.stringify(key)}`).toEqual({
+            kind: 'none',
+          });
+        }
+      }
+    }
+  });
+
+  it('the card chords Ctrl+Y / Ctrl+G / Ctrl+N / Ctrl+R are not answers HERE — the approval card answers them, not this reducer', () => {
+    // Pinned apart from the sweep so a reader sees the division of labour: if this reducer ever started answering the
+    // chords too, the card's guards (dwell, typeahead, lockout, the Enter confirmation) would be bypassed by this path.
+    for (const char of ['y', 'g', 'n', 'r']) {
+      expect(reduceChatKey(char, { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('a modified CHORD (Ctrl+A/E/W, Alt+A, Alt+1/2/3) does NOT answer a pending approval (fail-closed floor)', () => {
+    // Ctrl+A is a line-start motion when idle; during a pending approval it must be SWALLOWED — no motion, no answer.
+    // The digit shortcuts are gone entirely, and Alt+1/2/3 (reachable via ink's ESC-prefixed parsing) answer nothing.
+    for (const char of ['a', 'e', 'w', 'z']) {
+      expect(reduceChatKey(char, { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    }
     expect(reduceChatKey('a', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('1', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+1: NOT approve-once
-    expect(reduceChatKey('2', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+2: NOT approve-always
-    expect(reduceChatKey('3', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+3: NOT reject
-    // A BARE digit still answers (the fast numeric shortcut).
-    expect(reduceChatKey('2', KEY, '', true, PENDING)).toEqual({
-      kind: 'approve',
-      scope: 'always',
-    });
+    for (const digit of ['1', '2', '3']) {
+      expect(reduceChatKey(digit, { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    }
   });
 
   it('whitelists ONLY the view-only reasoning toggle (Ctrl+T) through the swallow (Step 14)', () => {
@@ -239,12 +267,44 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
     expect(reduceChatKey('t', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+T: swallowed
   });
 
-  it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit)', () => {
-    // Even Ctrl-C / Return / a printable are ignored during the approval — only y/a/n/1/2/3/Esc answer, plus the
-    // view-only Ctrl+T toggle (tested above). Nothing else acts.
+  it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit, nothing leaks into the composer)', () => {
+    // Even Ctrl-C / Return / a printable / Shift+Tab are ignored during the approval — only Esc (abort) and the view-only
+    // Ctrl+T toggle act. Nothing reaches the composer: no edit, submit, cancel or mode cycle.
     expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('', { return: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('', { return: true }, 'draft', true, PENDING)).toEqual({ kind: 'none' });
     expect(reduceChatKey('z', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('', { tab: true, shift: true }, '', true, PENDING)).toEqual({
+      kind: 'none',
+    });
+    expect(reduceChatKey('', { backspace: true }, 'draft', true, PENDING)).toEqual({
+      kind: 'none',
+    });
+    expect(reduceChatKey('\n', KEY, 'draft', true, PENDING)).toEqual({ kind: 'none' });
+  });
+
+  it('only abort and toggle-reasoning are ever produced while an approval is pending — across a wide key sweep', () => {
+    // Every printable ASCII character, bare and with Ctrl / Meta: the only action kinds that can come out are the Esc abort
+    // and the view-only Ctrl+T toggle (and `none`). Pins that no key — answer-shaped or not — leaks an edit, a submit, a
+    // mode cycle or an answer out of this reducer while the card owns the keyboard.
+    const allowed = new Set<ChatKeyAction['kind']>(['none', 'abort', 'toggle-reasoning']);
+    const modifiers: ReadonlyArray<ChatKey> = [KEY, { ctrl: true }, { meta: true }];
+    for (let code = 0x20; code < 0x7f; code++) {
+      const char = String.fromCharCode(code);
+      for (const key of modifiers) {
+        const action = reduceChatKey(char, key, 'draft', true, PENDING);
+        expect(allowed.has(action.kind), `${JSON.stringify(char)} ${JSON.stringify(key)}`).toBe(
+          true,
+        );
+      }
+    }
+    // The two producing keys, for completeness: Esc aborts (even with a modifier) and Ctrl+T toggles.
+    expect(reduceChatKey('', { escape: true }, 'draft', true, PENDING).kind).toBe('abort');
+    expect(reduceChatKey('', { escape: true, ctrl: true }, 'draft', true, PENDING).kind).toBe(
+      'abort',
+    );
+    expect(reduceChatKey('t', { ctrl: true }, 'draft', true, PENDING).kind).toBe(
+      'toggle-reasoning',
+    );
   });
 });
 

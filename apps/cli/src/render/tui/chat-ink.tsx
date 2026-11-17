@@ -306,7 +306,7 @@ interface ChatViewProps {
   /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
    *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
   readonly reasoningVisible: boolean;
-  /** An in-flight per-tool approval — when set, the `[y]/[a]/[n]` prompt replaces the idle prompt. */
+  /** An in-flight per-tool approval — when set, the `Ctrl+Y/Ctrl+G/Ctrl+N` prompt replaces the idle prompt. */
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
@@ -324,7 +324,7 @@ interface ChatViewProps {
    *  width (the Home). Absent ⇒ the formatter's 80-col fallback. `| undefined` for the createElement passthrough. */
   readonly columns?: number | undefined;
   /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
-   *  approval prompt shows the reason input instead of the `[y]/[a]/[n]` hint. `| undefined` ⇒ the normal prompt. */
+   *  approval prompt shows the reason input instead of the `Ctrl+Y/Ctrl+G/Ctrl+N` hint. `| undefined` ⇒ the normal prompt. */
   readonly reasonDraft?: EditorState | undefined;
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
@@ -630,8 +630,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
 
       {/* The per-tool approval prompt (ADR-0057) — shown mid-turn when a governed dispatch awaits consent. It
-          OWNS the keyboard via the reduceChatKey approval-intercept (no deadlock): [y] once, [a] always (only
-          when the answer is cacheable — accept-edits, not auto's protected-path fallback), [n] no, Esc aborts. */}
+          is answered by the docked card (`handleReviewInput`, which owns every key): Ctrl+Y once, Ctrl+G always (only
+          when the answer is cacheable — accept-edits, not auto's protected-path fallback), Ctrl+N no, Esc aborts. This block renders
+          only for an approval with NO card, which the store never creates (it always opens a card), so it is dead text kept
+          truthful until the legacy prompt is deleted. */}
       {approval !== undefined && (
         <Box flexDirection="column">
           <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
@@ -658,8 +660,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           ) : (
             <Text {...dimProps(color)}>
               {approval.cacheable
-                ? '[y] yes   [a] always   [n] no   [c] reason   [esc] abort'
-                : '[y] yes   [n] no   [c] reason   [esc] abort'}
+                ? 'Ctrl+Y yes   Ctrl+G always   Ctrl+N no   Ctrl+R reason   [esc] abort'
+                : 'Ctrl+Y yes   Ctrl+N no   Ctrl+R reason   [esc] abort'}
             </Text>
           )}
         </Box>
@@ -786,7 +788,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setScroll(next);
   };
   // NOTE (ADR-0068 §c force-scroll override): a per-tool approval prompt / human gate must never be HIDDEN by a
-  // paused scroll. In this layout it inherently cannot be — the [y]/[a]/[n] prompt renders in the FIXED live region
+  // paused scroll. In this layout it inherently cannot be — the Ctrl+Y/Ctrl+G/Ctrl+N prompt renders in the FIXED live region
   // BELOW the scrollable transcript viewport, so it is always on-screen regardless of the transcript scroll offset.
   // A transcript force-follow would only yank the user off history they are reading, so it is deliberately NOT wired.
   const running = state.status === 'running';
@@ -842,7 +844,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEffortPicker(next);
   };
   // The `[c]` typed-reason capture (Step 14) — a small keyboard-owning buffer opened FROM a pending approval to
-  // record WHY the user denies. `undefined` ⇒ closed (the normal [y]/[a]/[n] prompt). React-local + ref-shadowed
+  // record WHY the user denies. `undefined` ⇒ closed (the normal Ctrl+Y/Ctrl+G/Ctrl+N prompt). React-local + ref-shadowed
   // (survives a coalesced stdin chunk, like the other submodes); only ever open while an approval is pending.
   const [reasonDraft, setReasonDraft] = useState<EditorState | undefined>(undefined);
   const reasonDraftRef = useRef<EditorState | undefined>(undefined);
@@ -1438,7 +1440,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       submitBusyRef.current;
     // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
     // pending approval, so if that approval settled out-of-band (an external abort while typing) the capture is
-    // stale: drop it. Else `Esc` CANCELS back to the [y]/[a]/[n] prompt (the approval is STILL pending — not an
+    // stale: drop it. Else `Esc` CANCELS back to the Ctrl+Y/Ctrl+G/Ctrl+N prompt (the approval is STILL pending — not an
     // abort); plain `Enter` submits the reject with the sanitized+bounded reason; every other key edits the buffer
     // (Ctrl-C / a non-edit chord is a harmless no-op, matching the approval floor's keyboard ownership). Read the
     // REF so a coalesced same-chunk key sees a just-applied open/edit. The floor is unchanged — this only enriches
@@ -1450,7 +1452,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       }
       if (key.escape === true) {
-        applyReasonDraft(undefined); // cancel the reason; the approval stays pending ([y]/[a]/[n] again)
+        applyReasonDraft(undefined); // cancel the reason; the approval stays pending (Ctrl+Y/Ctrl+G/Ctrl+N again)
         return;
       }
       if (key.return === true && key.shift !== true) {
@@ -1608,7 +1610,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
     // scrollback, so these keys fall through to the editor there. The overlays + the `[c]` reason capture `return`
     // ABOVE this, so they keep their keys; a plain pending approval is still REACHED here (it is consumed by
-    // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
+    // reduceChatKey below), which is safe because scroll keys never overlap the Ctrl+Y/Ctrl+G/Ctrl+N answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
       // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.) The scroll

@@ -15,6 +15,7 @@ import {
 } from './measured-frame-acknowledgement.js';
 import {
   reviewInspected,
+  reviewOffersAlways,
   toolReviewPage,
   toolReviewTarget,
   type ToolReviewState,
@@ -25,6 +26,7 @@ import {
   cardStats,
   cardVerb,
   cardWarnings,
+  fullViewConfirmLegend,
 } from './tool-review-card.js';
 import { colorProps, dimProps } from './projection.js';
 import {
@@ -170,12 +172,14 @@ export function ToolReviewHost(
   });
   if (review === undefined) return null;
   if (!reviewTerminalFits(props.size))
-    return <Text>Terminal too small — resize to at least 80×24. Esc cancels.</Text>;
+    return <Text>Terminal too small — resize to at least 80×24. {reviewExitHint(review)}</Text>;
   if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
-        Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.
-        Esc cancels.
+        {identity?.valid === false
+          ? 'Review unavailable — the tool identity does not fit; enlarge terminal.'
+          : 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'}{' '}
+        {reviewExitHint(review)}
       </Text>
     );
   if (review.screen === 'card') {
@@ -214,6 +218,17 @@ export function ToolReviewHost(
   );
 }
 
+/**
+ * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn, Esc stops it. Inside a
+ * modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model
+ * only lets those states act on a frame the person can read — so only Esc is true there.
+ */
+function reviewExitHint(review: ToolReviewState): string {
+  if (review.kind !== 'approval') return 'Esc closes.';
+  const modal = review.denial !== undefined || review.searching;
+  return modal ? 'Esc stops the turn.' : '[Ctrl+N] denies · Esc stops the turn.';
+}
+
 const RULE_LABEL = ' Approval needed ';
 
 /** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
@@ -224,15 +239,15 @@ function approvalRule(columns: number): string {
 /** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
 function keyTone(part: string, color: boolean): Record<string, unknown> {
   if (!color) return {};
-  if (part === '[y]' || part === '[a]') return { color: 'green', bold: true };
-  if (part === '[n]') return { color: 'red', bold: true };
+  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]') return { color: 'green', bold: true };
+  if (part === '[Ctrl+N]') return { color: 'red', bold: true };
   if (part === 'Esc') return { color: 'yellow', bold: true };
-  if (/^\[[cv]\]$/u.test(part)) return { color: 'cyan', bold: true };
+  if (part === '[Ctrl+R]' || part === '[v]') return { color: 'cyan', bold: true };
   return { dimColor: true };
 }
 
 function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
-  const parts = row.split(/(\[[acnvy]\]|Esc)/u).filter((part) => part.length > 0);
+  const parts = row.split(/(\[Ctrl\+[YGNR]\]|\[v\]|Esc)/u).filter((part) => part.length > 0);
   return (
     <Text wrap="truncate-end">
       {parts.map((part, index) => (
@@ -294,18 +309,26 @@ function ReviewCard({
       : targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `  ${row}`));
   const identityText = withoutLabel(identity?.rows[0] ?? '', 'tool');
   const stats = cardStats(document);
-  const inspected = reviewInspected(review);
+  // The lock is read from the page being drawn (its shortened target), not only from the state an acknowledged
+  // frame has updated, so the first frame — and the first frame after a resize — already says Allow is locked.
+  const inspected = reviewInspected(review, page?.requiredTarget);
   const warnings = cardWarnings({
     document,
     shortenedTarget: target?.next !== undefined || target?.valid === false,
     targetHiddenBytes: target?.hiddenBytes ?? 0,
     inspected,
+    changesNotShown: page?.hiddenChanges ?? 0,
+    linesNotShown: page?.hiddenLines ?? 0,
     columns: Math.max(1, columns - 2),
   });
   const keys = cardKeyRows({
     inspected,
-    cacheable: snapshot.approval?.cacheable === true,
+    cacheable: reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     scope: escaped(cardScopePhrase(toolId)),
+    // The question lives only while the card still offers the grant it asks about.
+    confirmAlways:
+      snapshot.alwaysConfirm &&
+      reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
   });
   const cut = (page?.hiddenLines ?? 0) > 0;
   return (
@@ -472,7 +495,7 @@ function ReviewContent({
       </Text>
       {review.kind === 'approval' && (
         <Text>
-          {reviewInspected(review)
+          {reviewInspected(review, page?.requiredTarget)
             ? 'Inspection requirements met.'
             : 'Approval disabled — inspect required target / masked spans.'}
         </Text>
@@ -481,7 +504,7 @@ function ReviewContent({
         <Box flexDirection="column">
           <Text>{denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}</Text>
           <Text wrap="truncate-end">Reason to deny: {inputDisplay(review.denial)}█</Text>
-          <Text wrap="truncate-end">Enter deny · Esc abort</Text>
+          <Text wrap="truncate-end">Enter deny · Esc stops the turn</Text>
         </Box>
       )}
       {review.searching && (
@@ -489,15 +512,19 @@ function ReviewContent({
       )}
       <Text>
         {review.screen === 'card'
-          ? '[v] full view · [c] reason to deny'
+          ? '[v] full view · [Ctrl+R] reason to deny'
           : 'PgUp/PgDn pages · Home start · [r] reveal · [p] code points · / search · [c] copy masked page · [b] back'}
       </Text>
       {review.kind === 'approval' ? (
         <>
           <Text>
-            {snapshot.approval?.cacheable === true
-              ? '[y] once · [a] always for named tool (session) · [n] deny · Esc/Ctrl-C abort'
-              : '[y] once · [n] deny · Esc/Ctrl-C abort'}
+            {reviewOffersAlways(review, page, snapshot.approval?.cacheable === true)
+              ? snapshot.alwaysConfirm
+                ? fullViewConfirmLegend(
+                    escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
+                  )
+                : 'Ctrl+Y once · Ctrl+G always for named tool (session) · Ctrl+N deny · Esc/Ctrl-C stops the turn'
+              : 'Ctrl+Y once · Ctrl+N deny · Esc/Ctrl-C stops the turn'}
           </Text>
           <Text>Approval cannot override protected-path or permission denials.</Text>
         </>

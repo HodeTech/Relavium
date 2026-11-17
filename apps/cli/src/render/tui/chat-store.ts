@@ -11,11 +11,21 @@ import {
 
 import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
 import {
+  approvalKeyRefusal,
+  APPROVAL_CONFIRM_MAX_MS,
+  APPROVAL_CONFIRM_MIN_MS,
   initialToolReview,
+  isAffirmativeReviewKey,
+  isAlwaysConfirmKey,
+  isTypingIntoReview,
   acknowledgeToolReview,
   reduceToolReviewKey,
+  resolveApprovalGuard,
+  type ApprovalGuard,
+  type ApprovalRefusal,
   type ToolReviewState,
 } from './tool-review-model.js';
+import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -65,7 +75,7 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as a `[y] yes / [a] always / [n] no / [c] reason / [esc] abort`
+/** A pending per-tool approval the REPL renders as a `Ctrl+Y yes / Ctrl+G always / Ctrl+N no / Ctrl+R reason / [esc] abort`
  *  prompt (ADR-0057, EA3/EA5). `[c]` opens the typed-reason capture (Step 14) — a reject carrying WHY, via the
  *  `ToolApprovalDecision.reject.reason` seam. */
 export interface PendingApproval {
@@ -96,6 +106,12 @@ export interface ChatStoreSnapshot {
   /** The in-flight approval prompt, if a governed tool dispatch is awaiting the user's decision. */
   readonly approval: PendingApproval | undefined;
   readonly review: ToolReviewState | undefined;
+  /**
+   * The first `Ctrl+G` of the session-wide grant was pressed and the card waits for ENTER (PR #99 corrective sitting G1, security
+   * sitting H1). Derived at each flush from the review it was asked on and the clock, so a resize, a screen change or a new
+   * card — a new review object — or five seconds ends it without any bookkeeping at those places.
+   */
+  readonly alwaysConfirm: boolean;
   /**
    * The open `ask_user` card ([ADR-0132](../../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), if the
    * model asked the person a question. A NEW object on every change, so the measured-frame acknowledgement can tell one frame
@@ -169,7 +185,7 @@ export interface ChatStoreController extends ChatStore {
    * cancel path (not a denial). At most ONE approval is pending at a time (the turn blocks on it).
    */
   requestApproval: ApprovalPrompt;
-  /** Answer the in-flight approval (the input handler's `[y]/[a]/[n]` decision) — a no-op if none is pending. */
+  /** Answer the in-flight approval (the input handler's `Ctrl+Y`/`Ctrl+G`/`Ctrl+N` decision) — a no-op if none is pending. */
   answerApproval: (answer: ApprovalAnswer) => void;
   /**
    * The `ask_user` delegate the session is given on an interactive driver (ADR-0132): publish the question card and RESOLVE with
@@ -196,6 +212,15 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
   'cost:updated',
 ]);
 
+/** What a caller may tune. Production passes nothing: only a test isolates one guard or switches both off. */
+export interface ChatStoreOptions {
+  /**
+   * What an affirmative approval key must clear (default: the product's real numbers; a layer left out keeps its real value,
+   * `0` — or `confirmAlways: false` — switches one off).
+   */
+  readonly approvalGuard?: ApprovalGuard;
+}
+
 /**
  * @param transcriptBound the RENDERER-injected bound on the text a completed turn bakes into the transcript
  *   (ADR-0068 Decision (c)). `FULLSCREEN_TRANSCRIPT_BOUND` in the alt-screen viewport, `INLINE_TRANSCRIPT_BOUND`
@@ -208,6 +233,7 @@ export function createChatStore(
   color: boolean,
   seed: SessionViewSeed | undefined,
   transcriptBound: TranscriptBound,
+  options?: ChatStoreOptions,
 ): ChatStoreController {
   const listeners = new Set<() => void>();
   const markdown = new MarkdownStream();
@@ -238,6 +264,25 @@ export function createChatStore(
   const questionAcceptsKeys = (): boolean =>
     questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
   let review: ToolReviewState | undefined;
+  // What makes an affirmative approval key a DELIBERATE one (PR #99 security sitting E1 and the corrective sitting G1): the
+  // review whose frame was acknowledged last and when, when the previous key of any kind arrived, when the last FOREIGN key
+  // (one the card has no use for) arrived, and when a card was last resolved by a key. See `approvalKeyRefusal`. Every one
+  // of these times is on the MONOTONIC clock (`performance.now()`): the wall clock can be stepped by NTP or by hand, which
+  // would silence every answer (a step back) or let a key through the dwell (a step forward) — G3.
+  const approvalGuard = resolveApprovalGuard(options?.approvalGuard);
+  let acknowledgedReview: ToolReviewState | undefined;
+  let acknowledgedAt = 0;
+  let lastKeyAt = Number.NEGATIVE_INFINITY;
+  let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
+  let lastResolvedAt = Number.NEGATIVE_INFINITY;
+  // The session-wide grant is a two-step answer: the review the first `Ctrl+G` was pressed on and when. ENTER confirms it.
+  let alwaysAsk: { readonly review: ToolReviewState; readonly at: number } | undefined;
+  // Whether this card has already shown its one refusal note.
+  let refusalNoted = false;
+  const alwaysAsked = (now: number): boolean =>
+    alwaysAsk !== undefined &&
+    alwaysAsk.review === review &&
+    now - alwaysAsk.at <= APPROVAL_CONFIRM_MAX_MS;
   let toolDisplays = new Map<string, ToolDisplay>();
   let sealed = false;
   let reviewVisible: (() => boolean) | undefined;
@@ -254,6 +299,7 @@ export function createChatStore(
     reasoningVisible,
     approval,
     review,
+    alwaysConfirm: false,
     question,
     questionFrame,
     toolDisplays,
@@ -269,6 +315,7 @@ export function createChatStore(
       reasoningVisible,
       approval,
       review,
+      alwaysConfirm: alwaysAsked(performance.now()),
       question,
       questionFrame,
       toolDisplays,
@@ -390,7 +437,8 @@ export function createChatStore(
       }
       toolDisplays = new Map(toolDisplays).set(
         event.callId,
-        updateToolDisplay(toolDisplays.get(event.callId), event),
+        // A read-only turn refuses a governed call, so no card ever shows its preview: do not project it.
+        updateToolDisplay(toolDisplays.get(event.callId), event, mode !== 'plan'),
       );
       retainToolDisplays();
       flush();
@@ -400,6 +448,7 @@ export function createChatStore(
       sealed = true;
       toolDisplays = new Map();
       review = undefined;
+      acknowledgedReview = undefined;
       reviewPage = undefined;
       settleApproval?.({ outcome: 'reject' });
       // A question still open when the store seals is a CANCEL, never a skip (ADR-0132 §4): the call must be recorded
@@ -423,6 +472,7 @@ export function createChatStore(
     closeDetails: () => {
       if (review?.kind === 'details') {
         review = undefined;
+        acknowledgedReview = undefined;
         reviewPage = undefined;
         flush();
       }
@@ -447,6 +497,13 @@ export function createChatStore(
     },
     acknowledgeReviewFrame: (expected, page) => {
       if (review !== expected) return;
+      // The host acknowledges the same review again on every re-render (a spinner tick flushes the store); only a
+      // DIFFERENT review — a new card, a resize, a screen change, any state change — is a new frame the person must be
+      // given time to read, so only that restarts the dwell.
+      if (acknowledgedReview !== expected) {
+        acknowledgedReview = expected;
+        acknowledgedAt = performance.now();
+      }
       reviewPage = page;
       if (page === undefined) return;
       const updated = acknowledgeToolReview(review, page);
@@ -456,10 +513,20 @@ export function createChatStore(
       }
     },
     handleReviewInput: (input, key) => {
+      // The single choke point: the host routes EVERY key here first, including the ones the composer then drops while a
+      // turn runs and the ones a card swallows, so "the previous key" is the person's real previous key.
+      const now = performance.now();
+      const previousKeyAt = lastKeyAt;
+      lastKeyAt = now;
       // An open question card owns the keyboard (ADR-0132 §3): the stop keys abort the turn, a choosing key is applied only
       // once the card's exact frame has been acknowledged visible, and every other key is consumed.
       if (question !== undefined) {
         const action = reduceQuestionKey(question, input, key, questionAcceptsKeys());
+        // Everything the question card takes — the characters of an own answer, the Enter that submits it, a choosing key, a
+        // key typed before its frame settled — is a person at the keyboard, and the governed call the model made right after
+        // the question opens its card a few milliseconds later: a key typed into the question is not an answer to THAT card
+        // (PR #99 security sitting H3). Only the stop keys are exempt: they leave the turn, they do not type.
+        if (action.kind !== 'stop') lastForeignKeyAt = now;
         switch (action.kind) {
           case 'stop':
             return 'abort';
@@ -470,9 +537,13 @@ export function createChatStore(
             flush();
             break;
           case 'submit':
+            // The key that answered the question is held, double-tapped or repeated onto the card that follows it: a
+            // key-resolved question starts the same lockout a key-resolved card does.
+            lastResolvedAt = now;
             settleQuestionWith(action.answer);
             break;
           case 'skip':
+            lastResolvedAt = now;
             settleQuestionWith({ kind: 'skipped' });
             break;
           case 'none':
@@ -480,17 +551,103 @@ export function createChatStore(
         }
         return 'handled';
       }
-      if (review === undefined) return undefined;
+      if (review === undefined) {
+        // No card exists: the composer owns this key and drops it while a turn runs. That is a person typing the next
+        // instruction — a foreign key, evidence that a `Ctrl+Y` or `Ctrl+G` in the next second and a half is not an answer (G1).
+        lastForeignKeyAt = now;
+        return undefined;
+      }
       const calls = [...toolDisplays.values()];
+      const cacheable = approval?.cacheable === true;
+      const visible = reviewVisible?.() === true;
       const action = reduceToolReviewKey(
         review,
         input,
         key,
-        reviewVisible?.() === true,
+        visible,
         reviewPage,
-        approval?.cacheable === true,
+        cacheable,
         calls.length,
       );
+      // What the guard compares THIS key against is what happened before it.
+      const priorForeignKeyAt = lastForeignKeyAt;
+      // The session-wide grant's question — raised by a first `Ctrl+G` that passed every guard — is answered by ENTER and by no
+      // other key (PR #99 security sitting H1: a second `a` was typing or a held key whatever the gap between them; the chord keeps that rule). It must
+      // be on the same review, no older than the window and no younger than the minimum, and the card must still accept an
+      // `Ctrl+G` and the Enter must clear the guard as an answer. Nothing else may have arrived since the `Ctrl+G`: any other key —
+      // an early Enter and another `Ctrl+G` included — has already ended the question (below).
+      const asked = alwaysAsk !== undefined && alwaysAsked(now) ? alwaysAsk : undefined;
+      const mayConfirm =
+        asked !== undefined &&
+        isAlwaysConfirmKey(review, key) &&
+        now - asked.at >= APPROVAL_CONFIRM_MIN_MS;
+      const grant = mayConfirm
+        ? reduceToolReviewKey(
+            review,
+            'g',
+            { ctrl: true },
+            visible,
+            reviewPage,
+            cacheable,
+            calls.length,
+          )
+        : undefined;
+      const confirmed =
+        grant?.kind === 'approve' &&
+        grant.scope === 'always' &&
+        approvalKeyRefusal(approvalGuard, {
+          now,
+          shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
+          previousKeyAt,
+          lastForeignKeyAt: priorForeignKeyAt,
+          lastResolvedAt,
+        }) === undefined;
+      if (
+        !confirmed &&
+        action.kind !== 'abort' &&
+        // Text typed into the reason box or the search query is typing whatever the key is — and so is the Enter that
+        // submits it; a stray key the card has no use for is too (PR #99 security sitting H3).
+        (isTypingIntoReview(review) ||
+          (action.kind === 'none' &&
+            !isAffirmativeReviewKey(review, input, key) &&
+            // A key the card would act on once its frame is visible is the person using the card, not typing at it.
+            (visible ||
+              reduceToolReviewKey(review, input, key, true, reviewPage, cacheable, calls.length)
+                .kind === 'none')))
+      )
+        lastForeignKeyAt = now;
+      // A held key goes on being held: an affirmative key that arrives inside the lockout restarts it, so the key must be
+      // RELEASED for the whole window before the next card can be answered (PR #99 security sitting H2: a slow auto-repeat
+      // used to slip past the window that counted from the resolving key only). Not only a refused answer: a repeat that lands
+      // on a frame not yet acknowledged is no answer either, and it must not let the window run out.
+      if (
+        isAffirmativeReviewKey(review, input, key) &&
+        approvalGuard.lockoutMs > 0 &&
+        now - lastResolvedAt < approvalGuard.lockoutMs
+      )
+        lastResolvedAt = now;
+      // The question ends at the next key that is not its confirming Enter — typing, a held `Ctrl+G`, an early Enter, anything.
+      if (!confirmed && alwaysAsk !== undefined) {
+        alwaysAsk = undefined;
+        if (action.kind !== 'abort') flush();
+      }
+      if (confirmed) {
+        lastResolvedAt = now;
+        settleApproval?.({ outcome: 'approve', scope: 'always' });
+        flush();
+        return 'handled';
+      }
+      // Tell the person why a key was not counted — once per card, and only for a refusal that needs words.
+      const refuse = (refusal: ApprovalRefusal): void => {
+        if (refusal === 'dwell' || refusalNoted || review === undefined) return;
+        refusalNoted = true;
+        review = {
+          ...review,
+          message: refusal === 'lockout' ? CARD_LOCKOUT_NOTE : CARD_TYPEAHEAD_NOTE,
+        };
+        reviewPage = undefined;
+        flush();
+      };
       switch (action.kind) {
         case 'state': {
           review = transitionReviewState(review, action.state, calls);
@@ -501,6 +658,7 @@ export function createChatStore(
         case 'abort':
           return 'abort';
         case 'deny':
+          lastResolvedAt = now;
           settleApproval?.(
             action.reason === undefined
               ? { outcome: 'reject' }
@@ -508,12 +666,36 @@ export function createChatStore(
           );
           flush();
           break;
-        case 'approve':
+        case 'approve': {
+          // A `Ctrl+G` that arrives while the question is open is the key that CANCELS it (above): it neither grants nor asks
+          // again, so a held or repeated `Ctrl+G` never keeps a confirmation alive for an Enter to land on.
+          if (asked !== undefined && action.scope === 'always') break;
+          // A key that is not a deliberate answer changes nothing and is consumed (never composer text).
+          const refusal = approvalKeyRefusal(approvalGuard, {
+            now,
+            shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
+            previousKeyAt,
+            lastForeignKeyAt: priorForeignKeyAt,
+            lastResolvedAt,
+          });
+          if (refusal !== undefined) {
+            refuse(refusal);
+            break;
+          }
+          if (action.scope === 'always' && approvalGuard.confirmAlways) {
+            // The session-wide grant takes two presses: this one only asks; ENTER, no other key between, grants.
+            alwaysAsk = { review, at: now };
+            flush();
+            break;
+          }
+          lastResolvedAt = now;
           settleApproval?.({ outcome: 'approve', scope: action.scope });
           flush();
           break;
+        }
         case 'close':
           review = undefined;
+          acknowledgedReview = undefined;
           reviewPage = undefined;
           flush();
           break;
@@ -649,7 +831,9 @@ export function createChatStore(
         const clear = (): void => {
           approval = undefined;
           review = undefined;
+          acknowledgedReview = undefined;
           reviewPage = undefined;
+          alwaysAsk = undefined;
           settleApproval = undefined;
           state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
@@ -667,6 +851,8 @@ export function createChatStore(
           resolve(answer);
         };
         approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
+        alwaysAsk = undefined;
+        refusalNoted = false; // a card of its own gets its own note
         state = approvalOpened(state, Date.now());
         const fallback = {
           kind: 'operation',
@@ -678,7 +864,7 @@ export function createChatStore(
           createReviewDocument(live?.preview ?? fallback),
         );
         signal?.addEventListener('abort', onAbort);
-        flush(); // render the [y]/[a]/[n] prompt
+        flush(); // render the approval card
       }),
     answerApproval: (answer) => {
       // A no-op if nothing is pending (a stray keypress); else settle the in-flight promise + repaint.
@@ -782,18 +968,27 @@ function boundedDisplayText(source: string, limit: number): string {
   return `${text.slice(0, end)} … (${reviewBytes(text.slice(end))} display bytes omitted)`;
 }
 
-function updateToolDisplay(previous: ToolDisplay | undefined, event: ToolLiveEvent): ToolDisplay {
+/**
+ * @param withDocument whether a preview event is projected into a review document now. Projecting scans every
+ *   field for secrets (260 ms per MiB of diff), so it is skipped for a call nothing will ask the person about; the
+ *   display keeps its target and stats, and its details say the preview was not retained.
+ */
+function updateToolDisplay(
+  previous: ToolDisplay | undefined,
+  event: ToolLiveEvent,
+  withDocument: boolean,
+): ToolDisplay {
   let next: ToolDisplay = previous ?? {
     callId: event.callId,
     toolId: event.toolId,
     outcome: 'running',
   };
   if (event.phase === 'preview') {
-    const document = createReviewDocument(event.preview);
-    if (event.preview.kind === 'saved-result') {
+    const document = withDocument ? createReviewDocument(event.preview) : undefined;
+    if (event.preview.kind === 'saved-result' || document === undefined) {
       const delivery = { ...next };
       delete delivery.document;
-      delete delivery.stats;
+      if (event.preview.kind === 'saved-result') delete delivery.stats;
       next = delivery;
     }
     return {
@@ -802,7 +997,7 @@ function updateToolDisplay(previous: ToolDisplay | undefined, event: ToolLiveEve
         ? {}
         : { target: boundedDisplayText(event.preview.target, 512) }),
       ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
-      document,
+      ...(document === undefined ? {} : { document }),
     };
   }
   if (event.phase === 'completed')
@@ -815,6 +1010,9 @@ function updateToolDisplay(previous: ToolDisplay | undefined, event: ToolLiveEve
 }
 function detailsDocument(selected: ToolDisplay) {
   const preview = selected.document?.preview;
+  // Nothing to add to what the call already retained: it is the same document, not a second projection of it.
+  // (An invalid one retains no preview, and its details are rebuilt from the empty one it carries.)
+  if (selected.document?.valid === true && selected.summary === undefined) return selected.document;
   return createReviewDocument({
     ...(preview ?? { kind: 'operation', fields: [] }),
     fields: [

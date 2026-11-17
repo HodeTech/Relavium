@@ -53,6 +53,10 @@ export interface ReviewDocument {
   /** Suffix counts over the lines the COMPACT card shows (everything but {@link ReviewSourceLine.cardSkip}). */
   readonly cardRemainingLines: readonly number[];
   readonly cardRemainingBytes: readonly number[];
+  /** Suffix counts of the changed (added or removed) lines: entry `n` is how many changed lines sit at index `n` or later. */
+  readonly changedRemainingLines: readonly number[];
+  /** Index of the first changed line, so the compact card can open on the change rather than on the file's top. */
+  readonly firstChangedLine: number | undefined;
 }
 export interface ReviewCursor {
   readonly line: number;
@@ -62,8 +66,19 @@ export const REVIEW_START: ReviewCursor = Object.freeze({ line: 0, offset: 0 });
 const encoder = new TextEncoder();
 export const reviewBytes = (text: string): number => encoder.encode(text).byteLength;
 
+/**
+ * What scanning one text for review costs, and the only part of a field that does: the secret spans, the
+ * display-floor check and the byte index. It does not depend on where the text sits in a document, so a diff
+ * side is analysed once and re-stamped into every document built from the same diff.
+ */
+interface TextAnalysis {
+  readonly text: string;
+  readonly spans: readonly { readonly start: number; readonly end: number }[];
+  readonly byteIndex: ReviewField['byteIndex'];
+}
+
 /** Compose the diagnostic floor without guessing where replacement strings came from. */
-function maskField(text: string, field: number, firstId: number): ReviewField {
+function analyseText(text: string): TextAnalysis {
   let spans = secretMaskRanges(text);
   let projected = '',
     cursor = 0;
@@ -87,10 +102,16 @@ function maskField(text: string, field: number, firstId: number): ReviewField {
       next += 1024;
     }
   }
+  return { text, spans, byteIndex };
+}
+
+/** Place an analysed text in a document: only the masks carry the field index and the running mask id. */
+function maskField(analysis: TextAnalysis, field: number, firstId: number): ReviewField {
+  const { text } = analysis;
   return {
     text,
-    byteIndex,
-    masks: spans.map((span, index) => ({
+    byteIndex: analysis.byteIndex,
+    masks: analysis.spans.map((span, index) => ({
       ...span,
       field,
       id: firstId + index,
@@ -100,8 +121,60 @@ function maskField(text: string, field: number, firstId: number): ReviewField {
   };
 }
 
-/** Source snapshots occur once; row indexes and masks refer to absolute original UTF-16 offsets. */
+type DiffSide = 'before' | 'after';
+/**
+ * The analysis of a diff's sides, by the diff object. The text is compared too, so an entry can never describe a
+ * side that has since changed; a diff that is rebuilt into a new document (the details view adds fields to the
+ * same diff) therefore does not scan its multi-MiB sides again.
+ */
+const diffAnalyses = new WeakMap<object, Partial<Record<DiffSide, TextAnalysis>>>();
+function analyseDiffSide(diff: object, side: DiffSide, text: string): TextAnalysis {
+  const known = diffAnalyses.get(diff)?.[side];
+  if (known?.text === text) return known;
+  const analysis = analyseText(text);
+  diffAnalyses.set(diff, { ...diffAnalyses.get(diff), [side]: analysis });
+  return analysis;
+}
+
+const documents = new WeakMap<ToolPreview, ReviewDocument>();
+
+/**
+ * Whether a preview can no longer change, so a document built from it stays true for as long as the preview
+ * lives. The engine's registry delivers every preview deeply frozen (the preview, its fields, and the diff with
+ * its lines and spans); anything else — a hand-built fixture, a surface stub — is rebuilt each time.
+ */
+function isImmutablePreview(preview: ToolPreview): boolean {
+  if (!Object.isFrozen(preview) || !Object.isFrozen(preview.fields)) return false;
+  if (!preview.fields.every((field) => Object.isFrozen(field))) return false;
+  const diff = preview.diff;
+  if (diff === undefined) return true;
+  return (
+    Object.isFrozen(diff) &&
+    Object.isFrozen(diff.stats) &&
+    Object.isFrozen(diff.lines) &&
+    diff.lines.every(
+      (line) =>
+        Object.isFrozen(line) &&
+        (line.before === undefined || Object.isFrozen(line.before)) &&
+        (line.after === undefined || Object.isFrozen(line.after)),
+    )
+  );
+}
+
+/**
+ * Source snapshots occur once; row indexes and masks refer to absolute original UTF-16 offsets. Building scans
+ * every field for secrets, which is the cost of the review (260 ms per MiB), so the one preview that is shown as
+ * a tool event, then as a card, then as details is built once: the document is kept for the frozen preview.
+ */
 export function createReviewDocument(preview: ToolPreview): ReviewDocument {
+  const known = documents.get(preview);
+  if (known !== undefined) return known;
+  const built = buildReviewDocument(preview);
+  if (isImmutablePreview(preview)) documents.set(preview, built);
+  return built;
+}
+
+function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   const invalid = (): ReviewDocument => ({
     valid: false,
     preview: { kind: preview.kind, fields: [] },
@@ -115,14 +188,20 @@ export function createReviewDocument(preview: ToolPreview): ReviewDocument {
     remainingBytes: [0],
     cardRemainingLines: [0],
     cardRemainingBytes: [0],
+    changedRemainingLines: [0],
+    firstChangedLine: undefined,
   });
   if (!validPreviewBounds(preview) || !validPreviewDiff(preview)) return invalid();
   const fields: ReviewField[] = [],
     lines: ReviewSourceLine[] = [],
     masks: ReviewMask[] = [];
-  const add = (text: string): number => {
+  const add = (text: string, side?: DiffSide): number => {
     const field = fields.length;
-    const value = maskField(text, field, masks.length + 1);
+    const analysis =
+      side === undefined || preview.diff === undefined
+        ? analyseText(text)
+        : analyseDiffSide(preview.diff, side, text);
+    const value = maskField(analysis, field, masks.length + 1);
     fields.push(value);
     masks.push(...value.masks);
     return field;
@@ -158,6 +237,8 @@ export function createReviewDocument(preview: ToolPreview): ReviewDocument {
     remainingBytes,
     cardRemainingLines: cardLines,
     cardRemainingBytes: cardBytes,
+    changedRemainingLines: indexRemainingChanges(lines),
+    firstChangedLine: firstChangedIndex(lines),
     sourceBytes: fields.reduce((sum, field) => sum + reviewBytes(field.text), 0),
     changedBytes,
     changedLines,
@@ -187,7 +268,38 @@ export interface ReviewPage {
   readonly next: ReviewCursor | undefined;
   readonly hiddenLines: number;
   readonly hiddenBytes: number;
+  /**
+   * Changed (added or removed) lines of the document that are NOT drawn in this page — before its first line or
+   * from its cut onwards. A card that cannot show every change must say so and must not grant more than one answer.
+   */
+  readonly hiddenChanges: number;
   readonly valid: boolean;
+}
+
+/** Lines of unchanged context the compact card keeps above the first change. */
+export const CARD_CONTEXT_LINES = 3;
+
+/**
+ * The line the compact card opens on. A long file's first rows are not what the person is deciding on, so the card
+ * opens on the first changed line with up to {@link CARD_CONTEXT_LINES} lines of context above it, never before
+ * `base` (the first line the card would otherwise show). A preview whose rows before the diff are not diff rows (a
+ * target or field row) keeps `base`: those rows are the call's identity and must stay on the card.
+ */
+export function cardStartLine(document: ReviewDocument, base: number): number {
+  const first = document.firstChangedLine;
+  if (first === undefined || first <= base || document.lines[base]?.kind === undefined) return base;
+  let start = first,
+    context = 0;
+  while (start > base && context < CARD_CONTEXT_LINES) {
+    const line = document.lines[start - 1];
+    if (line === undefined) break;
+    if (line.cardSkip !== true) {
+      if (line.kind !== 'context') break;
+      context++;
+    }
+    start--;
+  }
+  return start;
 }
 
 /** Expand only this bounded viewport. Synthetic tokens are indivisible and never rescanned as source. */
@@ -252,8 +364,35 @@ export function projectReviewPage(
       ? (document.cardRemainingLines[next?.line ?? document.lines.length] ?? 0)
       : document.lines.length - (next?.line ?? document.lines.length),
     hiddenBytes: hiddenReviewBytes(document, next, compact),
+    hiddenChanges: hiddenChangedLines(document, cursor, next),
     valid: page.valid,
   };
+}
+
+/**
+ * Changed lines before the page's first line plus those from its cut onwards: every one the page does not draw. A page
+ * that STARTS PARTWAY through a changed line (the later pages of one long line) does not draw that line's beginning, so
+ * the line is not fully shown either — counted here unless the page's own cut is inside the same line, which the
+ * from-the-cut count already holds. A cursor's offset is an ABSOLUTE offset into its field (the projection starts a row at
+ * `Math.max(line.start, offset)` and a search returns `line.start + relative`), so "partway" is past the line's own start:
+ * a page that starts exactly there — or below it, which the projection clamps — draws the line from its beginning.
+ */
+function hiddenChangedLines(
+  document: ReviewDocument,
+  cursor: ReviewCursor,
+  next: ReviewCursor | undefined,
+): number {
+  const suffix = document.changedRemainingLines;
+  const before = document.changedLines - (suffix[cursor.line] ?? 0);
+  const lineStart = document.lines[cursor.line]?.start ?? 0;
+  const startsInsideChangedLine =
+    cursor.offset > lineStart && (suffix[cursor.line] ?? 0) - (suffix[cursor.line + 1] ?? 0) === 1;
+  const cutInsideSameLine = next !== undefined && next.line === cursor.line;
+  return (
+    before +
+    (startsInsideChangedLine && !cutInsideSameLine ? 1 : 0) +
+    (suffix[next?.line ?? document.lines.length] ?? 0)
+  );
 }
 
 interface PageProjection {
@@ -560,12 +699,12 @@ function validPreviewDiff(preview: ToolPreview): boolean {
 }
 function appendDiffLines(
   diff: PreviewDiff,
-  add: (text: string) => number,
+  add: (text: string, side?: DiffSide) => number,
   fields: readonly ReviewField[],
   lines: ReviewSourceLine[],
 ): { changedBytes: number; changedLines: number } {
-  const before = add(diff.before ?? ''),
-    after = add(diff.after);
+  const before = add(diff.before ?? '', 'before'),
+    after = add(diff.after, 'after');
   let changedBytes = 0,
     changedLines = 0;
   for (const line of diff.lines) {
@@ -645,6 +784,17 @@ function indexRemainingBytes(
           : 0);
   }
   return remaining;
+}
+/** Suffix counts of the changed lines. */
+function indexRemainingChanges(lines: readonly ReviewSourceLine[]): number[] {
+  const remaining: number[] = Array.from({ length: lines.length + 1 }, () => 0);
+  for (let index = lines.length - 1; index >= 0; index--)
+    remaining[index] = (remaining[index + 1] ?? 0) + (lines[index]?.changed === true ? 1 : 0);
+  return remaining;
+}
+function firstChangedIndex(lines: readonly ReviewSourceLine[]): number | undefined {
+  const index = lines.findIndex((line) => line.changed);
+  return index < 0 ? undefined : index;
 }
 /** Suffix counts of the lines the compact card shows. */
 function indexRemainingLines(lines: readonly ReviewSourceLine[]): number[] {

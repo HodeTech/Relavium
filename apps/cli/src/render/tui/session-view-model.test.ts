@@ -208,7 +208,7 @@ describe('session-view-model', () => {
     const state = reduceAll([
       e.started(),
       e.turnStarted(),
-      // No token — the common abort-during-approval case (Esc at the [y]/[a]/[n] prompt before any text streamed).
+      // No token — the common abort-during-approval case (Esc at the approval card before any text streamed).
       e.turnCompleted({ stopReason: 'aborted' }),
     ]);
     expect(state.transcript).toHaveLength(1); // NOT silently dropped

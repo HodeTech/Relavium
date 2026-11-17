@@ -818,7 +818,7 @@ describe('chat-projection', () => {
     });
   });
 
-  describe('sanitizeApprovalReason ([c] typed denial reason, Step 14)', () => {
+  describe('sanitizeApprovalReason ([Ctrl+R] typed denial reason, Step 14)', () => {
     it('redacts the original diagnostic before the producer cap and existing JSON/error copies', () => {
       const credential = `sk-${'A'.repeat(60)}`;
       const reason = sanitizeApprovalReason(`${'x '.repeat(140)}${credential}`);

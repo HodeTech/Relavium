@@ -76,44 +76,30 @@ export type ChatKeyAction =
   | { readonly kind: 'toggle-reasoning' }
   /** Esc mid-turn — abort the in-flight turn but KEEP the session alive (EA7), distinct from `cancel`. */
   | { readonly kind: 'abort' }
-  /** An approval-prompt decision (accept-edits / auto's protected-path fallback): `[y]` once / `[a]` always. */
+  /** An approval-prompt decision. NOT PRODUCED by {@link reduceChatKey} any more: the approval card (the chat store's
+   *  `handleReviewInput`) owns every answer key, and an answer is a Ctrl chord, never a bare letter. Kept only so the surfaces'
+   *  switch over this union stays exhaustive until the legacy prompt is deleted. */
   | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
-  /** An approval-prompt rejection (`[n]`). */
+  /** An approval-prompt rejection. Not produced (see `approve`). */
   | { readonly kind: 'reject' }
-  /** `[c]` at the approval prompt — START capturing a typed denial reason (Step 14). The surface opens a small
-   *  reason-input buffer; on submit it rejects with `{ outcome: 'reject', reason }`, so the model/turn outcome
-   *  carries WHY (not a bare "denied by the user"). A pure UI transition — it does not itself answer the prompt. */
+  /** Start capturing a typed denial reason at the legacy prompt. Not produced (see `approve`). */
   | { readonly kind: 'reject-with-reason' };
 
 /**
- * The approval-prompt keystroke intercept (accept-edits / auto's protected-path fallback), extracted so
- * {@link reduceChatKey} stays flat: `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`r`/`3` reject,
- * `Esc` aborts the whole turn (and this pending approval); the VIEW-ONLY reasoning toggle (Ctrl+T) is the one
- * non-answer chord let through (Step 14); every other key is ignored. It bypasses the running-swallow so a
- * pending approval can never deadlock.
+ * The keystroke intercept while an approval is pending, extracted so {@link reduceChatKey} stays flat. It answers NOTHING.
+ * The approval card owns the answers (`Ctrl+Y`, `Ctrl+G`, `Ctrl+N`, `Ctrl+R` — see `reviewAnswerKey`), and the host routes every
+ * key to the card first; this reducer runs only for a key the card did not take. The bare letters this function once
+ * mapped (`y`/`1` approve, `a`/`2` approve always, `n`/`r`/`3` reject, `c` reason) are gone on purpose: they carried none of
+ * the card's guards, and a letter typed while a turn runs is typing, not a decision (PR #99). `Esc` aborts the turn; the
+ * VIEW-ONLY reasoning toggle (Ctrl+T) is the one other key let through (Step 14); every other key is ignored. It bypasses the
+ * running-swallow so a pending approval can never deadlock.
  */
 function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   if (key.escape === true) return { kind: 'abort' }; // Esc aborts regardless of modifiers
-  // The collapsible "thinking" panel toggle (Ctrl+T) is whitelisted through the fail-closed swallow (Step 14):
-  // it is a PURE store-view flip (`toggleReasoning` only flips `reasoningVisible` + repaints — zero session /
-  // approval / decision effect), so a user can expand the model's reasoning to INFORM the pending decision
-  // without it counting as an answer. It is the ONLY non-answer chord allowed — a mode cycle / edit / submit
-  // stays swallowed, so the approval input set is exactly {y/1, a/2, n/r/3, esc} plus this view-only toggle.
-  // Matched BEFORE the `bare` gate (Ctrl+T is a modified chord) but AFTER `escape` (abort wins).
+  // The collapsible "thinking" panel toggle (Ctrl+T) is whitelisted through the fail-closed swallow (Step 14): it is a PURE
+  // store-view flip (`toggleReasoning` only flips `reasoningVisible` + repaints — zero session / approval / decision
+  // effect), so a user can expand the model's reasoning to INFORM the pending decision without it counting as an answer.
   if (key.ctrl === true && key.meta !== true && char === 't') return { kind: 'toggle-reasoning' };
-  // Only an UNMODIFIED key answers the prompt. Otherwise a now-bound editor chord (Ctrl+A line-start, Ctrl+W kill,
-  // Alt+B word-left) OR a meta+digit (Alt+1 — reachable via ink's ESC-prefixed parsing, `\x1b1` → char '1',
-  // meta:true) would, during a pending approval, silently pick the most-permissive, session-persistent approve /
-  // reject, subverting the fail-closed confirmAction floor (ADR-0057). Both letters AND digits require `bare`.
-  const bare = key.ctrl !== true && key.meta !== true;
-  if (!bare) return { kind: 'none' };
-  if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
-  if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
-  if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
-  // `[c]` opens the typed-reason capture (Step 14) — a reject that records WHY the user denied, instead of a bare
-  // "denied by the user". A separate keyboard-owning sub-mode captures the text (the surface owns its buffer), so
-  // it does not collide with the `[n]`/`[r]`/`3` bare reject here.
-  if (char === 'c') return { kind: 'reject-with-reason' };
   return { kind: 'none' };
 }
 
@@ -220,16 +206,26 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
 }
 
 /**
+ * What Shift+Tab says while a turn is running instead of changing the mode. The engine snapshots the turn policy when
+ * a turn starts, so the running turn keeps the previous mode's approval hook: a footer that switched at once would
+ * show `ask` while that turn's later writes were still approved without a card.
+ */
+export const MODE_CHANGE_RUNNING_NOTICE =
+  'Mode changes apply between turns \u2014 Esc stops the running turn.';
+
+/**
  * Reduce one keystroke of the chat prompt to an action.
  *
  * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard (see {@link reduceApprovalKey}) —
  * the in-flight key-swallow bypass (ADR-0057, no deadlock). Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
- * streaming turn can always be interrupted); `Shift+Tab` cycles the mode (harmless mid-turn — it applies to the
- * next turn); `Esc` while `running` is a mid-turn `abort` (EA7); while a turn is `running` every OTHER key is
- * ignored (one turn at a time). Idle, the buffer edits + cursor motions come from the shared
- * {@link reduceEditorMotion}; a plain `Return` (which that helper declines) submits the buffer. The edit/motion
- * ops carry no buffer value — the caller folds them functionally over the accumulated editor, preserving the
- * accumulating semantics across a batched multi-event chunk.
+ * streaming turn can always be interrupted); `Shift+Tab` always reduces to `cycle-mode` — the mode control decides
+ * whether it may apply, and mid-turn it may not (the engine takes its turn policy once, at turn start, so a mode
+ * picked while a turn runs could not reach it: {@link MODE_CHANGE_RUNNING_NOTICE}); `Esc` while `running` is a
+ * mid-turn `abort` (EA7); while a turn is `running` every OTHER key is ignored (one turn at a time). Idle, the
+ * buffer edits + cursor motions come from the shared {@link reduceEditorMotion}; a plain `Return` (which that
+ * helper declines) submits the buffer. The edit/motion ops carry no buffer value — the caller folds them
+ * functionally over the accumulated editor, preserving the accumulating semantics across a batched multi-event
+ * chunk.
  */
 export function reduceChatKey(
   char: string,
