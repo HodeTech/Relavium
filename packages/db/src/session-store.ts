@@ -230,6 +230,14 @@ function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSess
   delete mutable.totalConservativeMicrocents;
   // ADR-0098: not part of AgentSessionRecord/toAgentSessionRow at all; only the allocator writes this mark.
   delete mutable.effectTurnHighWater;
+  // A record that does not CARRY one of these optional columns says nothing about it, so the UPDATE leaves the stored
+  // value alone. `toAgentSessionRow` maps "absent" to NULL (right for an INSERT), and the persister's row carries none
+  // of them: without this, every flush after a resume erased `chat export`'s workflow path, the agent link, and a
+  // soft-delete mark. A record that carries a value still sets it (that is how `chat export` records its path); a
+  // column can therefore no longer be cleared by omission, only overwritten.
+  if (mutable.agentId === null) delete mutable.agentId;
+  if (mutable.exportedWorkflowPath === null) delete mutable.exportedWorkflowPath;
+  if (mutable.deletedAt === null) delete mutable.deletedAt;
   return mutable;
 }
 
