@@ -843,6 +843,46 @@ describe('createSessionPersister', () => {
       expect(after?.status).toBe('active');
     });
 
+    // A failed read is not "not superseded": writing blind could put the old model and `ended` back over a reseated
+    // row, so the terminal write is skipped (a stale `active` row is the cost) and the failure is surfaced and latched
+    // like any failed durable write instead of vanishing.
+    it('skips the terminal write and surfaces the failure when the reseat check cannot read the row', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const row = store.loadFull(built.sessionId)?.session;
+      store.updateSession({
+        ...(row as AgentSessionRecord),
+        agentSnapshot: { ...built.agent, model: 'the-model-the-person-switched-to' },
+        status: 'active',
+      });
+      const update = vi.spyOn(store, 'updateSession');
+      const load = vi.spyOn(store, 'loadSession').mockImplementation(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      built.session.cancel();
+      expect(load, 'the reseat check really tried to read the row').toHaveBeenCalled();
+      expect(update, 'no blind terminal write over the reseated row').not.toHaveBeenCalled();
+      expect(persister.durabilityFailure?.message).toContain('database is locked');
+      expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+      load.mockRestore();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe('the-model-the-person-switched-to');
+      expect(after?.status).toBe('active');
+    });
+
+    it('still writes the terminal row when the row is simply not found (not a read failure)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const update = vi.spyOn(store, 'updateSession');
+      vi.spyOn(store, 'loadSession').mockReturnValue(undefined);
+      built.session.cancel();
+      expect(update).toHaveBeenCalledOnce();
+      expect(update.mock.calls[0]?.[0].status).toBe('ended');
+      expect(persister.durabilityFailure).toBeUndefined();
+    });
+
     it('still marks the session ended when the row names its own model (the standalone teardown-first order)', async () => {
       const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
       persister.start();
@@ -862,6 +902,32 @@ describe('createSessionPersister', () => {
       expect(() => persister.start()).not.toThrow();
       persister.close();
     });
+  });
+
+  it('a resumed session keeps the workflow path `chat export` recorded through a completed turn', async () => {
+    // The live effect of the persister's row carrying no `exportedWorkflowPath`: export, resume, complete a turn.
+    const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5, 'adopt');
+    store.createSession({
+      id: built.sessionId,
+      agentSlug: built.agent.id,
+      agentSnapshot: built.agent,
+      context: built.context,
+      status: 'exported',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      exportedWorkflowPath: 'flows/chat.relavium.yaml',
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+    const row = store.loadFull(built.sessionId)?.session;
+    expect(row?.status, 'the turn flush really rewrote the row').toBe('active');
+    expect(row?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
   });
 
   it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {

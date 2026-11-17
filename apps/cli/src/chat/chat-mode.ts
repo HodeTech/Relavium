@@ -25,13 +25,15 @@ export type { ChatMode } from '@relavium/shared';
  * model's reach), while the `confirm` hook is AUTHORITATIVE — the registry calls it for every governed-class
  * dispatch (fs_write / egress / a model-controlled process), so even if the model names a hidden tool the
  * mode policy still decides. Per [ADR-0130](../../../../docs/decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md):
- * `ask` prompts (`[y]/[a]/[n]`) before every governed action, with a session once/always memory; `plan` is
+ * `ask` prompts (`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`) before every governed action, with a session once/always memory; `plan` is
  * read-only — governed tools are hidden and a call that arrives anyway is refused with a fixed message that
- * RETURNS to the model (ADR-0117), so the turn continues; `accept-edits` applies file edits inside the
- * workspace without a card (the write is never silent — its row keeps the target and diff stats) but still
- * prompts for commands, network, ambient OS actions and protected paths; `auto` auto-approves EXCEPT a
- * protected-path write, which falls back to a prompt (and the fs layer hard-denies protected paths
- * regardless — the floor beneath every mode).
+ * RETURNS to the model (ADR-0117), so the turn continues; `accept-edits` applies file edits (inside the
+ * workspace or a root the operator authorised) without a card (the write is never silent — its row keeps the target and diff stats) but still
+ * prompts for commands, network and ambient OS actions; `auto` auto-approves every granted governed action.
+ * A protected path is not a prompt in any mode: the fs layer refuses it while the write is being prepared,
+ * before any card exists — the floor beneath every mode. The protected-target branches in {@link confirmFor}
+ * (a prompt that is never offered "always") are a defensive fallback behind that refusal, not a path a
+ * person is expected to see.
  */
 
 /** The default mode: `ask` (secure by default — no governed action without the person's explicit, previewed answer). */
@@ -51,7 +53,7 @@ export const MODE_DESCRIPTION: Record<ChatMode, string> = {
   ask: 'asks before each write, command or network call — the default',
   plan: 'read-only — nothing is changed; the agent drafts a plan first',
   'accept-edits':
-    'applies file edits without asking; still asks for commands, network and protected paths',
+    'applies file edits without asking; still asks for commands and network; refuses protected paths',
   auto: 'approves granted actions; scope and protected-path rules still apply',
 };
 
@@ -97,7 +99,7 @@ export type ApprovalAnswer =
 /**
  * The interactive prompt the REPL supplies (accept-edits, and auto's protected-path fallback). `cacheable`
  * tells the REPL whether an "always" answer will actually be REMEMBERED for the session: `true` in accept-edits
- * (offer `[a]lways`), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
+ * (offer "always"), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
  * REPL should grey out / omit the `always` choice rather than silently discard it). It is a UX signal only —
  * the `toDecision` floor still enforces the same rule if a prompt returns `always` anyway.
  */
@@ -175,7 +177,7 @@ export interface TurnPolicyDeps {
   /** The REPL interactive prompt (ask, accept-edits for non-edits and protected paths, and auto's protected-path fallback). */
   readonly prompt: ApprovalPrompt;
   /**
-   * Whether a person can answer a card. `false` (a plain / `--json` chat, a one-shot run) means no `[y]` can ever
+   * Whether a person can answer a card. `false` (a plain / `--json` chat, a one-shot run) means no `Ctrl+Y` can ever
    * come, so the governed tools are hidden from the model exactly as in `plan` rather than offered and then
    * refused: it never sees a tool it cannot use, and no approval request is published that nothing could answer.
    * The confirm floor still refuses if the model names a hidden tool. Absent ⇒ `true`.
@@ -202,8 +204,14 @@ export interface TurnPolicyDeps {
  * write. `plan` also hides governed tools from the model (best-effort); `ask`/`accept-edits`/`auto` advertise
  * every granted tool and rely on `confirm`.
  */
-export function buildTurnPolicy(mode: ChatMode, deps: TurnPolicyDeps): SessionTurnPolicy {
-  const advertise = advertiseFor(mode, deps.governed, deps.canAsk !== false);
+export function buildTurnPolicy(requested: ChatMode, deps: TurnPolicyDeps): SessionTurnPolicy {
+  const canAsk = deps.canAsk !== false;
+  // Fail closed HERE, not only in the callers: with no one to answer a card, a mode that approves a governed
+  // action without one (accept-edits, auto) is never honoured — it degrades to `ask`, which asks every time and so
+  // refuses through the non-interactive prompt. `plan` already refuses everything and stays as it is.
+  const mode: ChatMode =
+    !canAsk && (requested === 'accept-edits' || requested === 'auto') ? 'ask' : requested;
+  const advertise = advertiseFor(mode, deps.governed, canAsk);
   const confirm = confirmFor(mode, deps);
   const live = deps.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: deps.onToolLiveEvent };
   return advertise === undefined ? { confirm, ...live } : { advertise, confirm, ...live };
@@ -268,11 +276,11 @@ function isInformative(value: string | undefined): boolean {
 }
 
 /**
- * Ask the person, remembering an `[a]lways` answer only when the preview showed a concrete target. A BLANK
+ * Ask the person, remembering an "always" answer only when the preview showed a concrete target. A BLANK
  * preview (mcp_call / web_search — `previewFor` returns no path/command/host) gives the user nothing to review,
- * so `[a]lways` there would be an unreviewed, session-long blank check over any future server/tool/args (a
+ * so "always" there would be an unreviewed, session-long blank check over any future server/tool/args (a
  * prompt-injection-after-one-grant hazard, ADR-0057 review). For those the grant is once-only (cacheable=false
- * ⇒ the REPL greys out `[a]` and toDecision never caches).
+ * ⇒ the REPL greys out `Ctrl+G` and toDecision never caches).
  */
 async function askPerson(
   request: ToolApprovalRequest,

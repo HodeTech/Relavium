@@ -878,6 +878,54 @@ describe('agentRunCommand (2.Q)', () => {
     expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // refused BEFORE any write — no file on disk
   });
 
+  // a one-shot has no one to answer a card, so a governed tool is hidden from the model — the same advertise
+  // filter `plan` and a non-interactive chat use — instead of being offered and then refused.
+  it('does not advertise governed tools to the model in a one-shot, though the agent is granted them', async () => {
+    const governed = [
+      'write_file',
+      'edit_file',
+      'run_command',
+      'git_commit',
+      'http_request',
+      'web_search',
+      'read_clipboard',
+      'notify',
+    ];
+    writeFileSync(
+      join(cwd, 'granted.agent.yaml'),
+      `${AGENT_YAML.replace('  - read_file', ['read_file', ...governed].map((id) => `  - ${id}`).join('\n'))}`,
+    );
+    const resolver = scriptedResolver([textTurn('done')]);
+    const provider = resolver.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const offered: string[][] = [];
+    const { d } = deps('use your tools', {
+      providers: {
+        ...resolver,
+        resolveProvider: (id) =>
+          id === 'anthropic'
+            ? {
+                ...provider,
+                stream: (request, options) => {
+                  offered.push((request.tools ?? []).map((tool) => tool.name));
+                  return provider.stream(request, options);
+                },
+              }
+            : undefined,
+      },
+    });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'granted.agent.yaml'), input: [], allowMcpStdio: [] },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(offered).toHaveLength(1);
+    // The read-only grant is still offered (the filter is not "no tools"), the governed ones are not.
+    expect(offered[0]).toContain('read_file');
+    for (const id of governed) expect(offered[0], id).not.toContain(id);
+  });
+
   it('a PLAIN-mode failed turn shows the bare code, NOT a session-continuity hint (2.5.H — one-shot)', async () => {
     // The one-shot cancels its session in `finally`, so the chat recovery hints ("the session is still active",
     // `/compact`, resend) would be FALSE here — the plain printer must suppress them (recoveryHints=false).

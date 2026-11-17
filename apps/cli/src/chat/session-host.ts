@@ -497,7 +497,7 @@ function buildSessionRuntime(
   // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
   // os) jailed to the session's fs-scope tier. Safety rests on the mode's per-tool APPROVAL floor, not on
   // capability absence — the REPL activates the fail-closed `confirmAction` regime via `applyChatMode` (default
-  // `ask` denies every governed action). Building it pins native filesystem identities, so we always assemble it for the policy
+  // `ask` shows a card for every governed action; `plan` refuses them). Building it pins native filesystem identities, so we always assemble it for the policy
   // even when a test injects its own `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion).
   const factoryEnv = assembleToolEnv({
     profile: 'chat-read-write',

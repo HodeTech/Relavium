@@ -39,9 +39,9 @@ describe('starting mode resolution and operator publication', () => {
   it('resolves project > workspace > global > ask with source attribution', () => {
     const global = GlobalConfigSchema.parse({ preferences: { default_mode: 'auto' } });
     const shared = ProjectConfigSchema.parse({ chat: { default_mode: 'plan' } });
-    const project = ProjectConfigSchema.parse({ chat: { default_mode: 'accept-edits' } });
+    const project = ProjectConfigSchema.parse({ chat: { default_mode: 'ask' } });
     expect(resolveConfig({ global, workspace: shared, project }).chat).toMatchObject({
-      defaultMode: 'accept-edits',
+      defaultMode: 'ask',
       defaultModeSource: 'project',
     });
     expect(resolveConfig({ global, workspace: shared }).chat).toMatchObject({
@@ -65,6 +65,47 @@ describe('starting mode resolution and operator publication', () => {
       () => loadResolvedConfig({ cwd: workspace, home }),
       'W2_STARTUP_REPOSITORY_AUTO_REFUSAL',
     ).toThrow('chat.default_mode');
+  });
+
+  // accept-edits dispatches fs_write without a card (ADR-0130 §3), so a cloned repository must not be able
+  // to start the chat in it. The operator's own (global) default may still select it.
+  it.each([
+    ['project', 'project.toml'],
+    ['workspace', 'workspace.toml'],
+  ])('refuses a %s accept-edits default naming the file and key', (_layer, file) => {
+    const target = join(workspace, '.relavium', file);
+    writeFileSync(target, '[chat]\ndefault_mode="accept-edits"\n');
+    let failure: unknown;
+    try {
+      loadResolvedConfig({ cwd: workspace, home });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) throw new Error('expected config refusal');
+    expect(failure.message).toContain(target);
+    expect(failure.message).toContain('chat.default_mode');
+    expect(failure.message).toContain('must be one of: ask, plan');
+  });
+
+  it('validates a shadowed workspace accept-edits before returning the project choice', () => {
+    writeFileSync(
+      join(workspace, '.relavium/workspace.toml'),
+      '[chat]\ndefault_mode="accept-edits"\n',
+    );
+    writeFileSync(join(workspace, '.relavium/project.toml'), '[chat]\ndefault_mode="ask"\n');
+    expect(
+      () => loadResolvedConfig({ cwd: workspace, home }),
+      'W2_STARTUP_REPOSITORY_AUTO_REFUSAL',
+    ).toThrow('chat.default_mode');
+  });
+
+  it('keeps accept-edits available to the operator global default', () => {
+    const global = GlobalConfigSchema.parse({ preferences: { default_mode: 'accept-edits' } });
+    expect(resolveConfig({ global }).chat).toMatchObject({
+      defaultMode: 'accept-edits',
+      defaultModeSource: 'global',
+    });
   });
 
   it('reports the invalid field and file without echoing its value', () => {

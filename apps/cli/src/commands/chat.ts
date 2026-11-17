@@ -154,6 +154,7 @@ import {
   type SuspendPort,
 } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { MODE_CHANGE_RUNNING_NOTICE } from '../render/tui/chat-input.js';
 import {
   errorRecoveryHint,
   contextOverflowRemedy,
@@ -1611,7 +1612,8 @@ export interface ChatModeControl {
  * approval regime. It builds the session-scoped mode env (the once/always cache, the governed hide-set from the
  * effective tool defs, the workspace-anchored protected-path check; the interactive prompt IS the store's
  * `requestApproval`) and **applies the initial mode immediately** — so the regime is active from the first turn
- * (default `ask` denies every governed action). The returned `onModeChange` re-applies on a Shift+Tab / `/mode`.
+ * (default `ask` shows a card for every governed action). The returned `onModeChange` re-applies on a Shift+Tab / `/mode`
+ * between turns; while a turn runs it only shows a notice.
  */
 /**
  * Whether the chat surface can answer an interactive approval prompt — the ink UI is mounted (stdout is a TTY
@@ -1688,6 +1690,13 @@ export function createChatModeControl(
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
     },
     onModeChange: (mode) => {
+      // The engine takes the turn policy ONCE, when a turn starts, so a mode applied mid-turn cannot reach the turn
+      // that is running: the footer would show `ask` while that turn's later writes were still approved without a
+      // card. Both surfaces (this chat and the Home) reach the mode only through here, so the refusal lives here.
+      if (store.getSnapshot().state.status === 'running') {
+        store.notice(MODE_CHANGE_RUNNING_NOTICE);
+        return;
+      }
       const effective = interactive ? mode : 'ask';
       store.setMode(effective);
       applyChatMode(modeEnv, effective);

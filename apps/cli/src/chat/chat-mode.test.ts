@@ -8,6 +8,7 @@ import {
   DEFAULT_CHAT_MODE,
   governedToolIds,
   isGovernedTool,
+  MODE_DESCRIPTION,
   nextMode,
   nonInteractiveApprovalPrompt,
   parseMode,
@@ -172,6 +173,65 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     });
   });
 
+  // The fail-closed guarantee lives in buildTurnPolicy itself, not only in the callers that coerce a no-approver
+  // surface to `ask`: with nobody to answer, accept-edits and auto must not approve a governed action unseen.
+  const GOVERNED_REQUESTS = [
+    req(),
+    req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+    req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+    req({ toolId: 'notify', action: 'os', preview: {} }),
+  ];
+
+  it.each(['accept-edits', 'auto'] as const)(
+    '%s with no one to answer (canAsk:false) decides exactly as ask does: no governed action is approved without a card',
+    async (mode) => {
+      const decide = async (asked: 'ask' | typeof mode) => {
+        const prompt = vi.fn<ApprovalPrompt>(() =>
+          Promise.resolve({
+            outcome: 'reject',
+            reason: 'unavailable here',
+            denialClass: 'unavailable',
+          }),
+        );
+        const policy = buildTurnPolicy(asked, { ...deps({ prompt }), canAsk: false });
+        const decisions = [];
+        for (const request of GOVERNED_REQUESTS) decisions.push(await policy.confirm!(request));
+        return {
+          decisions,
+          prompts: prompt.mock.calls.length,
+          advertised: ['read_file', 'write_file', 'run_command', 'http_request', 'notify'].map(
+            (id) => policy.advertise?.(id),
+          ),
+        };
+      };
+      const coerced = await decide(mode);
+      const reference = await decide('ask');
+      expect(coerced).toEqual(reference);
+      // The reference itself is the refusing behaviour (not an accidental shared approval).
+      expect(reference.prompts).toBe(GOVERNED_REQUESTS.length);
+      expect(reference.decisions.every((decision) => decision.outcome === 'reject')).toBe(true);
+      expect(reference.advertised).toEqual([true, false, false, false, false]);
+    },
+  );
+
+  it('plan keeps refusing with its fixed mode refusal when canAsk is false', async () => {
+    const policy = buildTurnPolicy('plan', { ...deps(), canAsk: false });
+    expect(await policy.confirm!(req())).toMatchObject({ outcome: 'reject', denialClass: 'mode' });
+  });
+
+  it.each([undefined, true])(
+    'accept-edits and auto behave as before when canAsk is %s: a normal edit is applied without a card',
+    async (canAsk) => {
+      for (const mode of ['accept-edits', 'auto'] as const) {
+        const d = deps({ ...(canAsk === undefined ? {} : { canAsk }) });
+        const policy = buildTurnPolicy(mode, d);
+        expect(policy.advertise).toBeUndefined();
+        expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+        expect(d.prompt).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('plan: hides governed tools (incl. git_commit) AND refuses every governed class with a FIXED mode refusal that returns to the model', async () => {
     const d = deps();
     const policy = buildTurnPolicy('plan', d);
@@ -250,7 +310,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     ]) {
       const request = req({ toolId: 'write_file', action: 'fs_write', preview });
       expect(await successful(policy.confirm!(request))).toEqual({ outcome: 'approve' });
-      // cacheable=false: the REPL greys out `[a]`, and the "always" is downgraded to a once.
+      // cacheable=false: the card offers no `[Ctrl+G]`, and the "always" is downgraded to a once.
       expect(prompt).toHaveBeenLastCalledWith(request, false, undefined, undefined);
     }
     // …so a LATER call still prompts rather than short-circuiting on a cached grant.
@@ -301,7 +361,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     const policy = buildTurnPolicy('ask', deps({ prompt }));
     const blank = req({ toolId: 'mcp_call', action: 'egress', preview: {} }); // no path/command/host to review
     expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
-    // The prompt is told cacheable=false (the REPL greys out `[a]`), and the "always" is downgraded to once…
+    // The prompt is told cacheable=false (the card offers no `[Ctrl+G]`), and the "always" is downgraded to once…
     expect(prompt).toHaveBeenNthCalledWith(1, blank, false, undefined, undefined);
     // …so the SECOND identical call re-prompts (not blanket-approved for the whole session).
     expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
@@ -420,6 +480,23 @@ async function successful(decision: Promise<import('@relavium/core').ToolApprova
   if (result.outcome === 'approve') result.onDispatchSucceeded?.();
   return result.outcome === 'approve' ? { outcome: 'approve' } : result;
 }
+
+describe('the /mode descriptions', () => {
+  // a protected path is refused by the filesystem layer before any card exists, so no description may
+  // promise that a mode will ASK about one; accept-edits says what really happens.
+  it('says accept-edits refuses a protected path, and never that it asks or prompts for one', () => {
+    const clauses = MODE_DESCRIPTION['accept-edits'].split(';').map((clause) => clause.trim());
+    const protectedClauses = clauses.filter((clause) => /protected/iu.test(clause));
+    expect(protectedClauses.length).toBeGreaterThan(0);
+    for (const clause of protectedClauses) {
+      expect(clause).toMatch(/refus/iu);
+      expect(clause).not.toMatch(/\bask|prompt/iu);
+    }
+    // The rest of the sentence is unchanged: edits are applied, commands and network still ask.
+    expect(MODE_DESCRIPTION['accept-edits']).toMatch(/applies file edits without asking/u);
+    expect(MODE_DESCRIPTION['accept-edits']).toMatch(/still asks for commands and network/u);
+  });
+});
 
 describe('accept-edits — file edits are applied without a card, everything else still asks (ADR-0130)', () => {
   const deps = (over: Partial<Parameters<typeof buildTurnPolicy>[1]> = {}) => ({

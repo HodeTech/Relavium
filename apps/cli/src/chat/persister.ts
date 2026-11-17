@@ -284,16 +284,13 @@ export function createSessionPersister(
   /**
    * True when another persister has adopted this session's row for a DIFFERENT model or provider — a build-first
    * `/models` reseat (the Home): the row's agent snapshot is then no longer this persister's own, and its terminal write
-   * would put the old model back. A failed read means "not superseded": the terminal write stays the default, and a failure
-   * there is surfaced by the durable-write path as before.
+   * would put the old model back. A row that is simply absent, or names this persister's own agent, is "not superseded"
+   * and the terminal write proceeds. A read FAILURE is not an answer, so it is NOT caught here: it propagates to the
+   * caller's `persistDurably`, which skips the terminal write (the cost is a stale `active` status; writing blind could
+   * put the old model back over a reseated row) and latches and surfaces the failure like any failed durable write.
    */
   const supersededByReseat = (): boolean => {
-    let stored: AgentSessionRecord | undefined;
-    try {
-      stored = deps.store.loadSession(deps.sessionId);
-    } catch {
-      return false;
-    }
+    const stored = deps.store.loadSession(deps.sessionId);
     const agent = stored?.agentSnapshot;
     return (
       agent !== undefined &&
